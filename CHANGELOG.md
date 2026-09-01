@@ -13,6 +13,28 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — M1.10, the places where flat thinking breaks
+
+- `tests/test_global.py` — the **assembled** machinery at nine hostile coordinates: the
+  equator, the antimeridian from both sides, the arctic, the antarctic, a tenth of a degree
+  short of each pole, and each pole exactly. Frame round trip, orthonormal basis, stable
+  basis across calls, a metre being a metre at every latitude, no cliff under refinement, a
+  circle of constant latitude closing on itself, a plate margin crossed through a region
+  frame, features stamped at a pole, and a hull sailed over the top.
+- Nothing failed. Which is expected — M1.1 built the geometry on unit vectors so these
+  would not be special cases — but "designed not to break" and "sailed a hull over the
+  north pole" are different statements and only one is a test.
+
+### Fixed — M1.10
+
+Two failures, both in the tests and both the same mistake in different clothes: asserting a
+proxy for the property rather than the property. A `RAISE` rock placed at the north pole did
+nothing, because the pole of this world is thirty-one metres of dry land and a raise
+correctly declines to dig. And "she did not get past the pole" was checking that her
+latitude dropped — but from 89.4 degrees, a hundred and twenty kilometres north leaves her
+at 89.52, past the pole and heading south while still north of where she started. The
+signature is the meridian flip.
+
 ### Added — M1.9, the maritime seam
 
 - `worldbuilder/integration/maritime.py` — the generated planet, presented as a map

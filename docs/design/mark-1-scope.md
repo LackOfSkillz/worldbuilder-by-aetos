@@ -533,3 +533,50 @@ of water on it. Which is the argument for live verification in one sentence - th
 were green throughout.
 
 24 new tests, 178 in total.
+
+---
+
+# M1.10 result: the places where flat thinking breaks
+
+The field-level versions of these already existed - M1.6 and M1.5 both cross the
+antimeridian and stand on both poles. What M1.10 adds is the **assembled** case: a region,
+its tangent frame, the features stamped in it and the provider maritime talks to, all at
+the coordinates where the geometry is hostile.
+
+That distinction is the phase. A continuous elevation field is necessary and nowhere near
+sufficient, because everything a ship actually uses goes through a projection - and a
+projection is exactly the thing that has a pole and a seam. A world can be perfectly smooth
+and still put a vessel on the wrong side of the planet when she sails north past
+eighty-nine degrees.
+
+Nine places, three questions each:
+
+    the equator, the antimeridian from both sides, the arctic, the antarctic,
+    a tenth of a degree short of each pole, and each pole exactly
+
+    does the ground stay continuous       the field, through a frame
+    does the frame stay a frame           basis, scale, and round trip
+    does a ship get where she is going    the provider, over a track
+
+Nothing failed. Which is the expected result, because M1.1 built the geometry on unit
+vectors precisely so that these would not be special cases - but "we designed it not to
+break" and "we sailed a hull over the north pole and it did not break" are different
+statements, and only one of them is a test.
+
+## Two failures, both in the tests
+
+**A rock placed at the north pole did nothing.** The pole of this world is thirty-one
+metres of dry land, and a `RAISE` to three metres below datum correctly declines to dig.
+The composition rule working exactly as designed, and the test asking the wrong question.
+
+**"She did not get past the pole."** From 89.4 degrees the pole is sixty-seven kilometres
+north; a hundred and twenty kilometres puts her fifty-three past it, at 89.52 degrees -
+*higher* than she started, and heading south on the opposite meridian. The test asserted
+that her latitude would drop, which only happens beyond a hundred and thirty-three
+kilometres. The signature that actually distinguishes going over a pole from turning back
+at it is the meridian flip, and that is what it checks now.
+
+Both are the same mistake in different clothes: asserting a proxy for the property rather
+than the property. It is the fourth time on this project.
+
+16 new tests, 194 in total.
