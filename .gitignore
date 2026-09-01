@@ -9,3 +9,9 @@ dist/
 *.egg-info/
 .idea/
 .vscode/
+
+# diagnostic renders
+*.ppm
+plates.png
+margins.png
+motion.png
