@@ -44,6 +44,7 @@ import math
 from dataclasses import dataclass
 
 from ..bathymetry.features import CARVE, RAISE, SHAPE, Feature, Features
+from ..bathymetry.substrate import MUD, ROCK, SAND
 from ..geometry.sphere import EARTH_RADIUS_M, SpherePoint
 from ..geometry.tangent import TangentFrame
 
@@ -160,10 +161,12 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         Feature(
             kind="harbour basin", at=coast.at(-2_000.0, 0.0), target_m=-9.0,
             length_m=3_000.0, width_m=1_400.0, bearing_deg=seaward, compose=SHAPE,
+            substrate=MUD,
         ),
         Feature(
             kind="entrance", at=coast.at(1_200.0, 0.0), target_m=-9.0,
             length_m=3_600.0, width_m=400.0, bearing_deg=seaward, compose=CARVE,
+            substrate=SAND,
         ),
         # Arms, because this coast rises three metres a kilometre and a harbour on a
         # shore that flat is a pair of moles or it is nothing. Raised after the entrance
@@ -177,11 +180,13 @@ def demo_region(radius_m=EARTH_RADIUS_M):
             kind="north mole", at=coast.at(1_600.0, 620.0), target_m=4.0,
             length_m=2_000.0, width_m=170.0, bearing_deg=seaward, compose=RAISE,
             marked=True,
+            substrate=ROCK,
         ),
         Feature(
             kind="south mole", at=coast.at(1_600.0, -620.0), target_m=4.0,
             length_m=2_000.0, width_m=170.0, bearing_deg=seaward, compose=RAISE,
             marked=True,
+            substrate=ROCK,
         ),
         # And then shoal the bottom back up across the mouth, which is what a bar is.
         # Marked, because a four-hundred-metre grid prints seven metres of water over
@@ -191,6 +196,7 @@ def demo_region(radius_m=EARTH_RADIUS_M):
             kind="harbour bar", at=coast.at(3_400.0, 0.0), target_m=-3.2,
             length_m=1_200.0, width_m=550.0, bearing_deg=alongshore, compose=RAISE,
             marked=True,
+            substrate=SAND,
         ),
         # Starting outside the bar, because a bar is the thing a dredger cannot keep
         # clear. Reaching over it, the channel cut straight through it and the harbour
@@ -203,6 +209,7 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         Feature(
             kind="approach channel", at=coast.at(8_000.0, 0.0), target_m=-30.0,
             length_m=4_000.0, width_m=900.0, bearing_deg=seaward, compose=CARVE,
+            substrate=MUD,
         ),
         # Running seaward alongside the channel, not across it. Given the alongshore
         # bearing these were thirteen kilometres long *parallel to the beach*, which put
@@ -210,14 +217,17 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         Feature(
             kind="north bank", at=coast.at(8_000.0, 3_000.0), target_m=-6.0,
             length_m=4_500.0, width_m=1_600.0, bearing_deg=seaward, compose=RAISE,
+            substrate=SAND,
         ),
         Feature(
             kind="south bank", at=coast.at(8_000.0, -3_000.0), target_m=-7.5,
             length_m=4_500.0, width_m=1_600.0, bearing_deg=seaward, compose=RAISE,
+            substrate=SAND,
         ),
         Feature(
             kind="drying rock", at=coast.at(4_000.0, -5_000.0), target_m=1.0,
             length_m=45.0, width_m=45.0, compose=RAISE, marked=True,
+            substrate=ROCK,
         ),
         # A hundred and forty metres across, in twenty-five of water, and placed clear of
         # the banks so that what it sits on is ordinary seabed rather than another
@@ -226,14 +236,17 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         Feature(
             kind="pinnacle", at=coast.at(8_000.0, 6_500.0), target_m=-3.5,
             length_m=70.0, width_m=70.0, compose=RAISE, marked=True,
+            substrate=ROCK,
         ),
         Feature(
             kind="headland", at=coast.at(-800.0, 14_000.0), target_m=70.0,
             length_m=4_000.0, width_m=3_000.0, bearing_deg=seaward, compose=RAISE,
+            substrate=ROCK,
         ),
         Feature(
             kind="steep-to water", at=coast.at(3_500.0, 15_000.0), target_m=-32.0,
             length_m=5_000.0, width_m=3_000.0, bearing_deg=alongshore, compose=CARVE,
+            substrate=ROCK,
         ),
     ]
     return Region("demonstration coast", coast, REACH_M, Features(placed, radius_m))

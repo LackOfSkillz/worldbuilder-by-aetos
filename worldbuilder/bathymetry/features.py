@@ -64,8 +64,12 @@ class Feature:
         bearing_deg (float): Which way it runs, degrees true.
         compose (str): `RAISE`, `CARVE` or `SHAPE`.
         marked (bool): Whether a chart should carry a symbol for it regardless of what
-            the soundings say. True for anything small enough to fall between chart
-            samples - which is the whole reason the marks layer exists.
+            the soundings say. True exactly when a chart sampling the terrain would
+            print more water over the feature than there is - which is the whole
+            reason the marks layer exists, and is measured rather than judged.
+        substrate (str, optional): What it is made of, if it overrules the ordinary
+            bottom. None leaves the bottom to be derived from the shape of the ground,
+            which is right for a bank but wrong for a rock.
 
     """
 
@@ -77,6 +81,7 @@ class Feature:
     bearing_deg: float = 0.0
     compose: str = RAISE
     marked: bool = False
+    substrate: str = None
 
     def reach_m(self):
         """Beyond this the bump is exactly nothing, so nothing need be evaluated."""

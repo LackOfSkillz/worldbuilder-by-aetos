@@ -78,21 +78,25 @@ coordinates at all sit on a planet and still have a dock at an exact latitude.
   come from a marks layer. A hundred-and-forty-metre pinnacle is not smoothed away by a
   four-hundred-metre grid, it is *missed* - and missed differently depending on where the
   grid falls, so it would blink as a ship moved.
+- **Bottom type is a mixture, not a category.** Sand, mud and rock are three fractions that
+  sum to one and vary smoothly; the single word is only ever the largest of them, and
+  nothing continuous is ever computed from the word. Anchor holding wants the fractions.
 
 ## What is built
 
     worldbuilder/geometry/      unit vectors, sphere points, tangent frames
     worldbuilder/plates/        plates, Euler poles, margins, relative motion
     worldbuilder/terrain/       continentality, tectonics, band-limited detail, surface
-    worldbuilder/bathymetry/    the shelf, and explicitly placed features
+    worldbuilder/bathymetry/    the shelf, placed features, and what the bottom is made of
     worldbuilder/regions/       the demonstration coast
     worldbuilder/debug/         diagnostics, all of which write PPM and need no libraries
 
-Standard library only. 135 tests.
+Standard library only. 154 tests.
 
 ## Looking at it
 
     python -m worldbuilder.debug.harbour            the demonstration coast, twice
+    python -m worldbuilder.debug.bottom             sand, mud and rock, as a mixture
     python -m worldbuilder.debug.macro_map          the whole planet
     python -m worldbuilder.debug.lod_shift          what zoom costs a coastline
     python -m worldbuilder.debug.projection_error   the region cap, measured

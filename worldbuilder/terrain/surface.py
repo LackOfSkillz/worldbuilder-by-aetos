@@ -24,6 +24,7 @@ find is not a bar.
 
 from ..bathymetry.features import Features
 from ..bathymetry.shelf import Shelf
+from ..bathymetry.substrate import Substrate
 from ..geometry.sphere import EARTH_RADIUS_M
 from ..plates.generation import DEFAULT_PLATE_COUNT, plates_for
 from .continentality import LAND_FRACTION, Continentality
@@ -63,6 +64,7 @@ class Surface:
         elif not isinstance(features, Features):
             features = Features(features, radius_m)
         self.features = features
+        self.substrate = Substrate(self)
 
     def structural_m(self, point):
         """
@@ -109,3 +111,22 @@ class Surface:
         # Where somebody stated a shape, roughness defers to it.
         amplitude *= 1.0 - authority
         return shaped + self.detail.offset_m(point, amplitude, resolution_m)
+
+    def bottom_at(self, point):
+        """
+        What the bottom is made of, as fractions of sand, mud and rock.
+
+        Args:
+            point (SpherePoint): Anywhere on the planet.
+
+        Returns:
+            composition (Composition): Fractions summing to one.
+
+        Notes:
+            Costs several times an elevation, because it needs the local slope and a slope
+            is four probes. Affordable because a ship sounds continuously and anchors
+            once - and the same intermediates can be handed in when a caller already has
+            them, the way the shelf takes them.
+
+        """
+        return self.substrate.at(point)

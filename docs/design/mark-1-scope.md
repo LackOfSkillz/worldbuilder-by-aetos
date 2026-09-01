@@ -348,3 +348,101 @@ more roughness than a demonstration where a player navigates a twenty-metre chan
 Retuning it belongs to a phase that can re-measure M1.6's coastline-shift table afterwards,
 not to this one - changing an amplitude here would quietly invalidate a published result.
 Recorded rather than silently adjusted.
+
+---
+
+# M1.8 result: what the bottom is made of
+
+Maritime asks two things of a world: how deep the water is, and what is under it. M1.5
+through M1.7 answered the first. This answers the second.
+
+## A category is the wrong shape for the answer, and the right shape for the question
+
+Everything in this engine is continuous because hard decisions on continuous quantities
+make cliffs, and "sand" is about as hard a decision as exists. Three named bottom types
+with boundaries between them would put a discontinuity in anchor holding, in grounding
+damage, and in anything else that read the name.
+
+So the field is a **composition** - three fractions summing to one, each varying smoothly -
+and the single-word answer is whichever fraction is largest. Nothing continuous is ever
+computed from the word.
+
+That is not a dodge. Composition is what the physics actually wants. Holding ground is a
+matter of how much mud is in it; a bottom three-quarters sand over rock behaves like
+neither; and `holding()` is expressed from the fractions for exactly that reason, because a
+bottom that is half rock is genuinely half as good and a word cannot say that.
+
+There are three fractions rather than eight on purpose. Gravel, shell, weed, coral and clay
+are all real and all wanted eventually, and every one of them is a *fourth fraction* rather
+than a change of shape - which is the point of getting the shape right first.
+
+## Derived from three things, none stored
+
+    slope       fines do not stay on a steep bottom, so steep means rock
+    depth       above wave base the sea winnows the fines out; below, they settle
+    tectonics   ground the plates lifted is rock whatever its slope
+
+And overridden, smoothly and by weight, by anything placed. The dredged basin is mud
+because that is what settles in still water behind a mole; the moles are rock because
+somebody built them out of stone; the bar is sand because a bar is what the ebb dropped.
+
+## The bug this phase produces
+
+**A finite difference cannot see anything narrower than its own baseline.** At six hundred
+metres, the slope probe straddled the pinnacle. The bottom a hundred and thirty metres from
+a rock standing twenty metres proud read *perfectly flat*, because both probes missed it;
+the bottom three hundred metres away read steep, because one probe landed on it.
+
+The render showed it immediately: rock in **rings**, with sand at the centre of every
+hazard. It is the substrate equivalent of the moving-grid problem, and it earned the test
+with teeth - walking away from a rock the bottom may stop being rocky, but it may not stop
+and then start again.
+
+The baseline is sixty metres now, smaller than the narrowest thing anybody placed. There is
+no opposing constraint, because the probe reads `structural_m`, which carries no detail:
+measured across the planet, the structural slope distribution is identical at three hundred,
+six hundred and two thousand metres. Structure is smooth at every scale. Only features and
+detail are not, and features are what this needs to see.
+
+## A calibration that was wrong, and how it showed
+
+At a four-hundred-metre threshold on tectonic contribution the whole demonstration coast
+came out a third rock. A passive margin carries about a hundred and fifty metres of broad
+tectonic rise, and a broad rise is not a rock face. Twelve hundred metres is the scale of
+real tectonic structure - a trench wall, a ridge crest - and the slope term was already
+there to catch steepness. A trench of eleven hundred and twenty-six metres now reads
+ninety-nine per cent rock; the shelf reads under six.
+
+## What a placed feature does to its own flanks
+
+A bank declaring sand has flanks of its own making, and those flanks are the steepest ground
+for miles. There was a real question about whether the slope term would win there and ring
+every placed feature with rock it never asked for.
+
+Measured across the north bank, the rock share peaks at 0.29 on the flank and sand stays
+dominant over the whole support. So the render shows the bank rimmed with a coarse *tint*
+rather than a rock bottom - which is also the right answer, because a scoured bank edge is
+coarser than its crest, and with three fractions the coarse end is what rock means. Asserted
+in the tests, so a later change to either term cannot quietly reverse it.
+
+## What it costs, and the shape of the bargain
+
+    a bottom      661 us a sample
+    a sounding    150 us a sample     4.4x
+
+Four probes and a frame. Affordable only because bottom type is asked far less often than
+depth - a ship sounds continuously and anchors once - and because the same intermediates
+can be handed in when a caller already has them, the way the shelf takes them.
+
+## One thing worth knowing about Mark 1
+
+The steepest **structural** ground anywhere on this planet is one and a half per cent, at
+any baseline. Mark 1 makes no cliffs: relief is tens of metres over wavelengths of hundreds
+to thousands. So on a Mark 1 world the slope term fires almost entirely on placed features,
+where slopes reach twenty-seven per cent, and hardly at all on ordinary ground.
+
+That is not a defect to fix here. It is a measured statement about what this prototype does
+and does not contain, and it is the sort of thing that would otherwise be discovered by a
+Mark 5 seabed suddenly turning to rock everywhere.
+
+19 new tests, 154 in total.

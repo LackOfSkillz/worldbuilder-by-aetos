@@ -117,8 +117,12 @@ def render(world_seed=WORLD_SEED, into=".", width=WIDTH, height=HEIGHT, half_m=H
     for feature in region.features:
         truth_m = world.elevation_m(feature.at)
         charted_m = charted(world, frame, feature, half_m)
-        missed = feature.marked and abs(charted_m - truth_m) > 5.0
-        note = "  <- missed, carried as a mark" if missed else ""
+        # The same two metres the tests use, so the render and the suite cannot
+        # disagree about which features a chart lies about.
+        lied = truth_m - charted_m > 2.0
+        note = "  <- a chart lies here" if lied else ""
+        if lied != feature.marked:
+            note += "   ** AND IS NOT MARKED **" if lied else "   ** MARKED ANYWAY **"
         print(f"      {feature.kind:18} {truth_m:8.1f} {charted_m:9.1f}{note}")
     for path in paths:
         print(f"    wrote {path}")

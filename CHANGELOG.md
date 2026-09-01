@@ -13,6 +13,44 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — M1.8, what the bottom is made of
+
+- `worldbuilder/bathymetry/substrate.py` — sand, mud and rock, as a **composition** rather
+  than a category. Three fractions summing to one, each varying smoothly; the one-word
+  answer is whichever is largest, and nothing continuous is ever computed from the word.
+  Three names would otherwise be about as hard a decision as this engine contains.
+- Derived from slope, depth and tectonic contribution, and overridden smoothly by anything
+  placed. A pinnacle is rock because somebody said so; a dredged basin is mud because that
+  is what settles in still water behind a mole.
+- `Composition.holding` — how well an anchor bites, expressed from the fractions rather
+  than the word, because a bottom that is half rock is genuinely half as good.
+- `Feature.substrate`, `Surface.bottom_at`, and a substrate on every placed feature.
+- `worldbuilder/debug/bottom.py` — the composition drawn as a mixture, not three flat
+  colours, so a boundary that should be a gradient cannot hide as one that is an edge.
+
+### Fixed — M1.8
+
+- **The slope probe could not see what it was measuring.** A finite difference is blind to
+  anything narrower than its baseline, and at six hundred metres it straddled the pinnacle:
+  the bottom a hundred and thirty metres from a rock standing twenty metres proud read
+  perfectly flat, while the bottom three hundred metres away read steep because one probe
+  landed on it. Rock came out in *rings*. The baseline is sixty metres now — smaller than
+  the narrowest thing placed — which costs nothing, because measured across the planet the
+  structural slope distribution is identical at 300 m, 600 m and 2 km. Structure is smooth
+  at every scale; only features and detail are not.
+- **A gentle regional swell was being called rock.** At a 400 m threshold on tectonic
+  contribution, the whole demonstration coast came out a third rock, because a passive
+  margin carries about 150 m of broad tectonic rise. Twelve hundred metres is the scale of
+  real tectonic structure — a trench wall, a ridge crest — and the slope term is already
+  there to catch steepness.
+
+### Measured — M1.8
+
+A bottom costs 661 µs against 150 µs for a sounding — 4.4×, which is four probes and a
+frame. Affordable because a ship sounds continuously and anchors once. The steepest
+*structural* ground anywhere on this planet is 1.4 % at any baseline, so on Mark 1 worlds
+the slope term fires almost entirely on placed features, where slopes reach 27 %.
+
 ### Added — M1.7, placed features and the marks layer
 
 - `worldbuilder/bathymetry/features.py` — a small explicit list of things somebody put
