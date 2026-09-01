@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from ..geometry.sphere import EARTH_RADIUS_M
 from ..geometry.vectors import DEGENERATE
 
+#: How wide the fade is when a third plate shadows a bisector, as a difference of dot
+#: products. Small: a margin is genuine or it is not, and this only smooths the handover.
+SHADOW_BLEND = 0.02
+
 
 @dataclass(frozen=True)
 class Margin:
@@ -150,6 +154,107 @@ class PlateSet:
             neighbour=across,
             distance_m=math.asin(min(1.0, closest_sine)) * radius_m,
         )
+
+    def margins_within(self, point, range_m, radius_m=EARTH_RADIUS_M):
+        """
+        Every margin of this point's plate that is near enough to matter.
+
+        Args:
+            point (SpherePoint): Anywhere on the planet.
+            range_m (float): How far a margin may be and still count.
+            radius_m (float, optional): The planet's radius.
+
+        Returns:
+            found (tuple): The plate the point is on, and a list of
+                `(other_plate, distance_m, bisector_normal, weight)` for each margin in
+                range. The weight fades a margin out where a third plate shadows it.
+
+        Notes:
+            **Because picking one margin is not continuous, even when its distance is.**
+            `margin_at` returns a distance that varies smoothly, but the *identity* of the
+            neighbour it belongs to still jumps: at a point equidistant from two of a
+            plate's margins, which one is "the" margin flips under a step of a metre, and
+            everything derived from it - the normal, the relative motion, what lies either
+            side - flips with it. Terrain built on that gained five hundred metres of cliff
+            wherever a plate had two margins the same distance away.
+
+            The honest answer is that both margins are there. A caller that sums their
+            effects is continuous, because each contribution depends on its own distance
+            and each fades out at its own range.
+
+            Costs nothing extra where nothing is happening: the distance test is a dot
+            product and a comparison, and a plate interior fails all of them.
+
+        """
+        nearest, _ = self.nearest_two(point)
+        if len(self.plates) < 2:
+            return nearest, ()
+
+        # Compared as sines, so the arc sine is paid only for the few that are in range.
+        limit = math.sin(min(math.pi / 2, range_m / radius_m))
+        found = []
+        for other, normal in zip(self.plates, self._bisectors[nearest.index]):
+            if normal is None:
+                continue
+            offset = abs(point.vector.dot(normal))
+            if offset > limit:
+                continue
+
+            # Is this bisector actually a margin here, or is a third plate in the way?
+            #
+            # Two seeds always have a bisector, but it is only part of the cell boundary
+            # where those two are genuinely the nearest pair. Elsewhere it runs through
+            # some other plate's territory, imaginary. Summing those cost a hundred and
+            # seventy kilometres of phantom mountain range, and worse, it was
+            # discontinuous: crossing from plate 5 to plate 0 swapped bisector(5,8) for
+            # bisector(0,8) - different planes with no reason to agree - for two hundred
+            # and sixty metres of cliff.
+            #
+            # The test is to stand at the closest point on the bisector and ask who the
+            # neighbours are. One extra lookup, paid only for candidates already in range,
+            # and none at all in a plate interior.
+            foot = point.vector - normal.scaled(point.vector.dot(normal))
+            if foot.length() <= DEGENERATE:
+                continue
+            standing = foot.normalised()
+
+            # How far a third plate would have to be for this to be a real margin, against
+            # how far the nearest one actually is. Positive means genuine; negative means
+            # somebody else's territory.
+            mine = standing.dot(nearest.seed.vector)
+            shadow = 2.0
+            for third in self.plates:
+                if third.index in (nearest.index, other.index):
+                    continue
+                shadow = min(shadow, mine - standing.dot(third.seed.vector))
+
+            # **A weight, not a test.** The first version rejected shadowed bisectors with
+            # a boolean, and that switched a margin on and off in one step wherever it
+            # ended at a triple junction - a hundred and forty metres of cliff. The third
+            # time the same mistake appeared in this phase: a hard decision taken on a
+            # continuous quantity. It fades now.
+            genuine = min(1.0, max(0.0, shadow / SHADOW_BLEND))
+            if genuine <= 0.0:
+                continue
+            genuine = genuine * genuine * (3.0 - 2.0 * genuine)
+
+            found.append(
+                (other, math.asin(min(1.0, offset)) * radius_m, normal, genuine)
+            )
+        return nearest, tuple(found)
+
+    def flattened(self, point, normal):
+        """
+        A bisector normal laid flat on the surface at a point.
+
+        Returns:
+            normal (Vec3 or None): Unit vector across the margin, tangent to the sphere.
+
+        """
+        flat = normal - point.vector.scaled(point.vector.dot(normal))
+        if flat.length() <= DEGENERATE:
+            return None
+        return flat.normalised()
 
     def margin_normal(self, point, margin):
         """

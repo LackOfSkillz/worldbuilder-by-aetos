@@ -67,6 +67,43 @@ def surface_velocity(plate, point, radius_m=EARTH_RADIUS_M):
     return plate.angular_velocity().cross(point.vector).scaled(radius_m)
 
 
+def motion_between(near, far, point, normal, radius_m=EARTH_RADIUS_M):
+    """
+    What two named plates are doing to each other at a point.
+
+    Args:
+        near (Plate): The plate the point is on.
+        far (Plate): The plate across the margin.
+        point (SpherePoint): Where.
+        normal (Vec3): Across the margin, tangent to the surface, pointing towards `near`.
+        radius_m (float, optional): The planet's radius.
+
+    Returns:
+        motion (Motion): Closing and sliding speeds, and a name for them.
+
+    Notes:
+        Split out from `motion_at` so a caller can ask about a margin it has chosen rather
+        than the one that happens to be nearest - which is what lets several margins be
+        summed instead of one being picked.
+
+    """
+    relative = surface_velocity(near, point, radius_m) - surface_velocity(
+        far, point, radius_m
+    )
+    closing = -relative.dot(normal)
+    along = relative - normal.scaled(relative.dot(normal))
+    sliding = along.length()
+
+    speed = relative.length()
+    if speed <= 0.0 or abs(closing) / speed < ACROSS_ENOUGH:
+        kind = TRANSFORM
+    elif closing > 0.0:
+        kind = CONVERGENT
+    else:
+        kind = DIVERGENT
+    return Motion(margin=None, closing_m_per_myr=closing, sliding_m_per_myr=sliding, kind=kind)
+
+
 def motion_at(point, plates, radius_m=EARTH_RADIUS_M):
     """
     What is happening across the nearest plate edge, here.
