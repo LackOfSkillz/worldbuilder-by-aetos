@@ -378,3 +378,58 @@ class TestTheRocksReachThePaper(ProviderTestCase):
             self.world, self.region, region_name="demo", features=Features()
         )
         self.assertEqual(bare.charted_dangers(Position(0.0, 0.0), 60_000.0), ())
+
+
+class TestThePaperShowsOneSymbolPerThing(ProviderTestCase):
+    """
+    A hull is measured against every part of an obstruction; a chart draws it once.
+
+    The two questions are genuinely different rather than one being a shortcut. *What
+    might this hull touch* wants all twelve circles of a breakwater, so that nothing
+    passes between them. *What should the paper show* wants the breakwater.
+
+    Publishing the circles put twenty-five danger symbols on a sheet for four things and
+    buried the harbour they were supposed to be warning about.
+    """
+
+    def test_a_breakwater_is_one_symbol_and_a_dozen_obstructions(self):
+        circles = [d for d in self.provider.dangers if d.key.startswith("north mole")]
+        symbols = [
+            d
+            for d in self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0)
+            if d.key.startswith("north mole")
+        ]
+        self.assertGreater(len(circles), 5)
+        self.assertEqual(len(symbols), 1)
+
+    def test_every_marked_feature_gets_exactly_one(self):
+        shown = self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0)
+        names = [danger.key for danger in shown]
+        self.assertEqual(sorted(names), sorted(set(names)), "something is drawn twice")
+        marked = {f.kind for f in self.region.features if f.marked}
+        self.assertEqual(set(names), marked)
+
+    def test_the_symbol_stands_at_the_worst_of_what_is_there(self):
+        """
+        A chart symbol means "the shallowest thing here", so it has to be taken at the
+        shallowest circle rather than at the middle of the feature - the worst of a
+        breakwater is wherever it comes nearest the surface, which need not be its centre.
+
+        """
+        for symbol in self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0):
+            circles = [
+                d
+                for d in self.provider.dangers
+                if d.key.split(" (")[0] == symbol.key
+            ]
+            self.assertAlmostEqual(symbol.top_z, max(d.top_z for d in circles), places=6)
+
+    def test_the_paper_and_the_hull_still_agree_about_the_danger(self):
+        """
+        Fewer symbols must not mean fewer dangers. Everything the chart shows is a thing
+        the hull can strike, and every thing the hull can strike has a symbol.
+
+        """
+        struck = {d.key.split(" (")[0] for d in self.provider.dangers}
+        shown = {d.key for d in self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0)}
+        self.assertEqual(struck, shown)

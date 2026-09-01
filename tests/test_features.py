@@ -93,27 +93,87 @@ class TestNoCliffs(RegionTestCase):
                 f"({coarse:.3f} -> {fine:.3f} m)",
             )
 
-    def test_the_cheap_rejection_sits_outside_the_support(self):
+    def test_the_rejection_never_suppresses_a_bump_that_was_worth_something(self):
         """
+        The claim itself, asked of the feature rather than of the ground, and asked
+        everywhere rather than at the boundary.
+
         `weight_at` skips the projection past `reach_m`. If the bump were still worth
         anything there, that saving would be a wall round every feature - which is M1.4's
         trench bug and M1.5's window bug, for the third time.
 
+        Checking only *at* `reach_m` would be checking the one place a broken rejection has
+        already moved away from: pull the cutoff in to six tenths and a boundary test still
+        sees zero on both sides, because the wall is now somewhere else entirely. So this
+        compares the real answer against the same feature with its rejection disabled,
+        across the whole footprint. Anywhere the two disagree, the saving has eaten a bump.
+
         """
-        for feature in self.region.features:
+        for placed in self.region.features.placed:
+            frame = TangentFrame.at(placed.feature.at)
+            span = placed.feature.reach_m() * 1.2
+            rejecting = placed._cos_reach
+            try:
+                for row in range(-8, 9):
+                    for column in range(-8, 9):
+                        at = frame.local_to_sphere(column * span / 8.0, row * span / 8.0)
+                        placed._cos_reach = rejecting
+                        gated = placed.weight_at(at)
+                        placed._cos_reach = -1.0
+                        ungated = placed.weight_at(at)
+                        self.assertAlmostEqual(
+                            gated,
+                            ungated,
+                            places=9,
+                            msg=f"{placed.feature.kind}: the rejection cut a bump worth "
+                            f"{ungated:.4f} down to {gated:.4f}",
+                        )
+            finally:
+                placed._cos_reach = rejecting
+
+    def test_and_crossing_it_makes_no_step_in_the_ground(self):
+        """
+        The same claim, asked of the finished terrain - and asked by halving, because a
+        fixed threshold cannot tell a cliff from a hill.
+
+        It was a fixed threshold, and it broke the moment two features overlapped: an
+        island placed on the flank of a bank has its foreshore crossing that bank's
+        rejection boundary, so the test sampled an ordinary one-in-seventeen slope, called
+        it a step, and failed. Nothing was wrong with the ground. The weight at the
+        boundary was nine parts in a million million.
+
+        So this uses the same argument as everything else in this file: halve the distance
+        and a slope halves its drop, while a discontinuity does not care. A boundary that
+        still steps when the samples close in is a wall; one whose step follows the spacing
+        is a hillside, and a feature is entitled to sit on one.
+
+        """
+        for placed in self.region.features.placed:
+            feature = placed.feature
             frame = TangentFrame.at(feature.at)
             reach = feature.reach_m()
             for bearing in range(0, 360, 15):
                 radians = math.radians(bearing)
-                inside = frame.local_to_sphere(
-                    math.sin(radians) * reach * 0.999, math.cos(radians) * reach * 0.999
-                )
-                outside = frame.local_to_sphere(
-                    math.sin(radians) * reach * 1.001, math.cos(radians) * reach * 1.001
-                )
+
+                def across(gap):
+                    near = frame.local_to_sphere(
+                        math.sin(radians) * reach * (1.0 - gap),
+                        math.cos(radians) * reach * (1.0 - gap),
+                    )
+                    far = frame.local_to_sphere(
+                        math.sin(radians) * reach * (1.0 + gap),
+                        math.cos(radians) * reach * (1.0 + gap),
+                    )
+                    return abs(self.world.structural_m(near) - self.world.structural_m(far))
+
+                wide, narrow = across(0.001), across(0.0005)
+                if wide < 0.05:
+                    continue
                 self.assertLess(
-                    abs(self.world.structural_m(inside) - self.world.structural_m(outside)),
-                    0.5,
+                    narrow,
+                    wide * 0.75,
+                    f"{feature.kind} at {bearing} deg steps {narrow:.3f} m over half the "
+                    f"distance that gave {wide:.3f} m - that is a wall, not a slope",
                 )
 
     def worst_authority_step(self, feature, steps):

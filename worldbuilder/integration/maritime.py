@@ -137,6 +137,7 @@ class WorldbuilderTerrain:
         self.frame = TangentFrame.at(anchor, surface.radius_m)
         self.features = features if features is not None else surface.features
         self.dangers = self._survey()
+        self.marks = self._chartable()
 
     def point_at(self, position):
         """
@@ -169,6 +170,24 @@ class WorldbuilderTerrain:
 
         """
         return self.surface.elevation_m(self.point_at(position))
+
+    def geographic_at(self, position):
+        """
+        Where in the world a maritime position is.
+
+        Args:
+            position (WorldPosition): Where.
+
+        Returns:
+            place (tuple): `(latitude, longitude)` in degrees.
+
+        Notes:
+            The one question only a round world can answer, and what lets a flat chart
+            be ruled with meridians that converge. Free here: the frame already maps
+            local metres onto the sphere, and a sphere point knows its own latitude.
+
+        """
+        return self.point_at(position).to_latlon()
 
     def bottom_type_at(self, position):
         """
@@ -217,7 +236,7 @@ class WorldbuilderTerrain:
 
     def charted_dangers(self, position, reach):
         """
-        Every mark inside the square a sheet covers.
+        Every mark inside the square a sheet covers, one symbol to a thing.
 
         Args:
             position (WorldPosition): Where the sheet is centred.
@@ -227,10 +246,18 @@ class WorldbuilderTerrain:
             dangers (tuple): What a survey would have recorded, shallowest first.
 
         Notes:
-            The same circles `hazards_touching` measures a hull against, asked about a
-            box instead of a track. That they are the same list is the point: a chart
-            that showed one set of rocks while the physics used another would be a chart
-            that lies in a new and more interesting way.
+            **One entry per feature, not per circle.** A hull is measured against the
+            circles - a mole is a dozen of them so that nothing passes between - but a
+            chart draws a breakwater once. Publishing the circles put twenty-five danger
+            symbols on the paper for four things and buried the harbour it was supposed
+            to be warning about.
+
+            Which is the two questions being genuinely different rather than a shortcut.
+            *What might this hull touch* wants every part of the obstruction. *What should
+            the paper show* wants the thing itself, at its shallowest point, once.
+
+            The two still agree about what is dangerous and where, because both are built
+            from the same survey in `_survey`.
 
             A square, because that is the shape of the paper and a rock just off the
             corner of it is still on it.
@@ -238,11 +265,39 @@ class WorldbuilderTerrain:
         """
         reach = abs(reach)
         near = [
-            danger for danger in self.dangers
+            danger for danger in self.marks
             if abs(danger.x - position.x) <= reach and abs(danger.y - position.y) <= reach
         ]
         near.sort(key=lambda danger: -danger.top_z)
         return tuple(near)
+
+    def _chartable(self):
+        """
+        One danger per placed feature, for the paper.
+
+        Returns:
+            marks (tuple): The shallowest circle of each marked feature, under the
+                feature's own name.
+
+        Notes:
+            Taken at the shallowest circle rather than at the feature's middle. A chart
+            symbol stands for the worst of what is there, and the worst of a breakwater
+            is wherever it comes nearest the surface - which is not necessarily the
+            middle of it.
+
+        """
+        worst = {}
+        for danger in self.dangers:
+            name = danger.key.split(" (")[0]
+            if name not in worst or danger.top_z > worst[name].top_z:
+                worst[name] = danger
+        return tuple(
+            Danger(
+                key=name, x=found.x, y=found.y, radius=found.radius,
+                top_z=found.top_z, bottom=found.bottom, region=found.region,
+            )
+            for name, found in worst.items()
+        )
 
     def _survey(self):
         """

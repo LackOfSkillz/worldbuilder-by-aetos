@@ -129,6 +129,21 @@ demonstration coast's pinnacle - a hazard 140 m across that sixty-three chart gr
 sixty-four cannot see - while one drawing 2.5 m passes over it, and a 3.5 m hull goes
 aground on sand across the harbour bar.
 
+### Somewhere to sail to
+
+The coast carries a harbour, its approaches and six islands - Gannet Isle, Kettle Rock,
+Longhope, The Brothers, Sandhaven and Outer Skerry - strung south-east of the fairway. A
+coast on its own gives a player one thing to do, which is leave and come back; a chain gives
+them a destination, a passage between two of them, and a reason to plot a course rather than
+steer one.
+
+The legs are 1,387 m, which is eight minutes under working sail. That figure was measured
+from a vessel rather than assumed, and so was the placement: five arrangements were tried
+and scored on how long the run out takes, whether six islands come out as six separate
+landmasses, how much water lies in the gaps, and how much lies on the way. The chain runs
+deliberately close to the drying rock, because a rock awash between two harbours is the best
+hazard on this coast.
+
 ## Layout
 
     CHANGELOG.md                             phase by phase, with the measurements

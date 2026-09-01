@@ -34,6 +34,12 @@ What is here, and what each is for:
                                                       by physics and invisible to sampling
     headland            a landfall                    high ground, seen from far off
     steep-to water      nowhere to anchor             deep water hard against the shore
+    six islands         somewhere to go               a chain south-east of the approach
+
+The islands are what make it a world rather than a harbour. A coast alone gives a player
+one thing to do - leave, and come back - and every question a chart answers is a question
+about the water directly ahead. A chain gives them a destination, a passage between two
+destinations, and a reason to plot a course rather than steer one.
 
 The pinnacle is the load-bearing one. Everything else could be found by a chart sampling
 the terrain; that cannot, and a generator whose charts silently omit isolated dangers is
@@ -68,6 +74,66 @@ SEAWARD_DEG = 296.49
 #: two hundred kilometres a tangent plane holds a chart to.
 REACH_M = 60_000.0
 
+# --- the archipelago --------------------------------------------------------
+
+#: How far apart the islands stand, in metres.
+#:
+#: **Measured, not chosen.** The hand-authored world this coast replaces recorded the
+#: exact mistake worth not repeating: its islands were spaced using a guessed four metres
+#: a second when the craft actually made two point two, so every leg was nearly twice as
+#: long as intended - and the test that checked the spacing passed, because it was
+#: checking against the same guess.
+#:
+#: So the figure comes from a vessel. A working-sail rig on this coast makes 4.05 m/s at
+#: best and 2.83 m/s averaged over every point of sail, which is the honest number for a
+#: passage that has to beat as well as run. At that speed this is a leg of about eight
+#: minutes: long enough to be a passage, short enough that a player sails the whole chain
+#: in an evening.
+ISLAND_LEG_M = 1_390.0
+
+#: How high an island stands at its middle, and how far its ground reaches.
+#:
+#: The reach is a half-extent, and the ground tapers smoothly to nothing across it - so an
+#: island gets its shoaling foreshore from the same arithmetic that raises it, rather than
+#: from a second authored shape. Without that an island is a cliff: twenty metres of water
+#: one step and dry sand the next, and a lead line shows nothing at all until she strikes.
+ISLAND_Z = 12.0
+
+#: Where the chain begins and which way it runs, as offshore and alongshore metres.
+#:
+#: South-east, starting just outside the bar. **Chosen by measuring five candidate
+#: placements, not by eye**, against four things at once: how long the run out from the
+#: entrance takes, whether the six come out as six separate islands, how much water lies
+#: in the gaps between them, and how much lies on the way there.
+#:
+#: The first placement tried put the chain in open water seven and a half kilometres out,
+#: which measured beautifully on every count except the one that matters - it was a
+#: forty-five minute passage before a player reached anything. This is twenty minutes at
+#: the average and fourteen with the wind fair, over twenty metres of water, into gaps
+#: carrying eighteen.
+#:
+#: It passes close by the drying rock, and that is deliberate. A rock awash in the middle
+#: of an island passage is the best hazard on this coast: it is on the chart, it is out of
+#: sight at high water, and it sits exactly where somebody in a hurry between two harbours
+#: would like to cut the corner. Checked rather than hoped for - the rock still stands
+#: alone in eighteen metres, and no island has swallowed it.
+ISLAND_START = (3_400.0, -2_600.0)
+ISLAND_STEP = (600.0, -1_250.0)
+
+#: Each island's name and how far its ground reaches from the middle.
+#:
+#: Named, because a destination without a name is a shape. Sized unevenly, because a chain
+#: of six identical discs reads as a generated thing rather than as a place - and because
+#: the smallest of them is a genuinely different navigational problem from the largest.
+ISLANDS = (
+    ("Gannet Isle", 430.0),
+    ("Kettle Rock", 250.0),
+    ("Longhope", 520.0),
+    ("The Brothers", 300.0),
+    ("Sandhaven", 470.0),
+    ("Outer Skerry", 210.0),
+)
+
 #: The world these coordinates were measured on. Placing them on another seed puts a
 #: harbour in whatever happens to be there, which may be the middle of an ocean.
 WORLD_SEED = 20260831
@@ -84,8 +150,9 @@ class Coast:
 
     """
 
-    def __init__(self, lat=ANCHOR_LAT, lon=ANCHOR_LON, seaward_deg=SEAWARD_DEG,
-                 radius_m=EARTH_RADIUS_M):
+    def __init__(
+        self, lat=ANCHOR_LAT, lon=ANCHOR_LON, seaward_deg=SEAWARD_DEG, radius_m=EARTH_RADIUS_M
+    ):
         self.origin = SpherePoint.from_latlon(lat, lon)
         self.frame = TangentFrame.at(self.origin, radius_m)
         self.seaward_deg = seaward_deg
@@ -159,13 +226,23 @@ def demo_region(radius_m=EARTH_RADIUS_M):
     placed = [
         # Cut the harbour first, so everything after it can argue with a real basin.
         Feature(
-            kind="harbour basin", at=coast.at(-2_000.0, 0.0), target_m=-9.0,
-            length_m=3_000.0, width_m=1_400.0, bearing_deg=seaward, compose=SHAPE,
+            kind="harbour basin",
+            at=coast.at(-2_000.0, 0.0),
+            target_m=-9.0,
+            length_m=3_000.0,
+            width_m=1_400.0,
+            bearing_deg=seaward,
+            compose=SHAPE,
             substrate=MUD,
         ),
         Feature(
-            kind="entrance", at=coast.at(1_200.0, 0.0), target_m=-9.0,
-            length_m=3_600.0, width_m=400.0, bearing_deg=seaward, compose=CARVE,
+            kind="entrance",
+            at=coast.at(1_200.0, 0.0),
+            target_m=-9.0,
+            length_m=3_600.0,
+            width_m=400.0,
+            bearing_deg=seaward,
+            compose=CARVE,
             substrate=SAND,
         ),
         # Arms, because this coast rises three metres a kilometre and a harbour on a
@@ -177,14 +254,24 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         # wall. Marked - which is why the rule is a feature's *narrowest* dimension
         # and not its size.
         Feature(
-            kind="north mole", at=coast.at(1_600.0, 620.0), target_m=4.0,
-            length_m=2_000.0, width_m=170.0, bearing_deg=seaward, compose=RAISE,
+            kind="north mole",
+            at=coast.at(1_600.0, 620.0),
+            target_m=4.0,
+            length_m=2_000.0,
+            width_m=170.0,
+            bearing_deg=seaward,
+            compose=RAISE,
             marked=True,
             substrate=ROCK,
         ),
         Feature(
-            kind="south mole", at=coast.at(1_600.0, -620.0), target_m=4.0,
-            length_m=2_000.0, width_m=170.0, bearing_deg=seaward, compose=RAISE,
+            kind="south mole",
+            at=coast.at(1_600.0, -620.0),
+            target_m=4.0,
+            length_m=2_000.0,
+            width_m=170.0,
+            bearing_deg=seaward,
+            compose=RAISE,
             marked=True,
             substrate=ROCK,
         ),
@@ -193,8 +280,13 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         # its three-metre crest - a bar is charted by its controlling depth, not by
         # whatever sounding happened to land near it.
         Feature(
-            kind="harbour bar", at=coast.at(3_400.0, 0.0), target_m=-3.2,
-            length_m=1_200.0, width_m=550.0, bearing_deg=alongshore, compose=RAISE,
+            kind="harbour bar",
+            at=coast.at(3_400.0, 0.0),
+            target_m=-3.2,
+            length_m=1_200.0,
+            width_m=550.0,
+            bearing_deg=alongshore,
+            compose=RAISE,
             marked=True,
             substrate=SAND,
         ),
@@ -207,26 +299,46 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         # fill - correctly - so the feature contributed nothing anywhere along its length.
         # It is also kept short enough not to reach back over the bar.
         Feature(
-            kind="approach channel", at=coast.at(8_000.0, 0.0), target_m=-30.0,
-            length_m=4_000.0, width_m=900.0, bearing_deg=seaward, compose=CARVE,
+            kind="approach channel",
+            at=coast.at(8_000.0, 0.0),
+            target_m=-30.0,
+            length_m=4_000.0,
+            width_m=900.0,
+            bearing_deg=seaward,
+            compose=CARVE,
             substrate=MUD,
         ),
         # Running seaward alongside the channel, not across it. Given the alongshore
         # bearing these were thirteen kilometres long *parallel to the beach*, which put
         # both of them on top of the channel they were supposed to flank.
         Feature(
-            kind="north bank", at=coast.at(8_000.0, 3_000.0), target_m=-6.0,
-            length_m=4_500.0, width_m=1_600.0, bearing_deg=seaward, compose=RAISE,
+            kind="north bank",
+            at=coast.at(8_000.0, 3_000.0),
+            target_m=-6.0,
+            length_m=4_500.0,
+            width_m=1_600.0,
+            bearing_deg=seaward,
+            compose=RAISE,
             substrate=SAND,
         ),
         Feature(
-            kind="south bank", at=coast.at(8_000.0, -3_000.0), target_m=-7.5,
-            length_m=4_500.0, width_m=1_600.0, bearing_deg=seaward, compose=RAISE,
+            kind="south bank",
+            at=coast.at(8_000.0, -3_000.0),
+            target_m=-7.5,
+            length_m=4_500.0,
+            width_m=1_600.0,
+            bearing_deg=seaward,
+            compose=RAISE,
             substrate=SAND,
         ),
         Feature(
-            kind="drying rock", at=coast.at(4_000.0, -5_000.0), target_m=1.0,
-            length_m=45.0, width_m=45.0, compose=RAISE, marked=True,
+            kind="drying rock",
+            at=coast.at(4_000.0, -5_000.0),
+            target_m=1.0,
+            length_m=45.0,
+            width_m=45.0,
+            compose=RAISE,
+            marked=True,
             substrate=ROCK,
         ),
         # A hundred and forty metres across, in twenty-five of water, and placed clear of
@@ -234,19 +346,80 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         # feature. No chart that samples terrain will ever see it, and every hull that
         # touches it will.
         Feature(
-            kind="pinnacle", at=coast.at(8_000.0, 6_500.0), target_m=-3.5,
-            length_m=70.0, width_m=70.0, compose=RAISE, marked=True,
+            kind="pinnacle",
+            at=coast.at(8_000.0, 6_500.0),
+            target_m=-3.5,
+            length_m=70.0,
+            width_m=70.0,
+            compose=RAISE,
+            marked=True,
             substrate=ROCK,
         ),
         Feature(
-            kind="headland", at=coast.at(-800.0, 14_000.0), target_m=70.0,
-            length_m=4_000.0, width_m=3_000.0, bearing_deg=seaward, compose=RAISE,
+            kind="headland",
+            at=coast.at(-800.0, 14_000.0),
+            target_m=70.0,
+            length_m=4_000.0,
+            width_m=3_000.0,
+            bearing_deg=seaward,
+            compose=RAISE,
             substrate=ROCK,
         ),
         Feature(
-            kind="steep-to water", at=coast.at(3_500.0, 15_000.0), target_m=-32.0,
-            length_m=5_000.0, width_m=3_000.0, bearing_deg=alongshore, compose=CARVE,
+            kind="steep-to water",
+            at=coast.at(3_500.0, 15_000.0),
+            target_m=-32.0,
+            length_m=5_000.0,
+            width_m=3_000.0,
+            bearing_deg=alongshore,
+            compose=CARVE,
             substrate=ROCK,
         ),
     ]
+    placed.extend(_archipelago(coast))
     return Region("demonstration coast", coast, REACH_M, Features(placed, radius_m))
+
+
+def _archipelago(coast):
+    """
+    The island chain, strung south-east of the approach.
+
+    Args:
+        coast (Coast): Somewhere to place them from.
+
+    Returns:
+        islands (list): One `Feature` each, in order out from the land.
+
+    Notes:
+        Round, so they have no bearing worth giving: `length_m` and `width_m` are the same
+        reach, and the bump that raises them falls to nothing in every direction alike.
+        That taper is the foreshore - the ground comes up out of the water rather than
+        standing out of it, so a lead line warns before a hull finds anything.
+
+        **Marked, every one.** Not because an island is subtle, but because a chart drawn
+        at a wide scale samples the seabed every few kilometres and one eight hundred
+        metres across falls between the soundings - so it would appear as she zoomed in
+        and vanish as she zoomed out. That is precisely the case `marked` exists for, and
+        it is the same rule that put a symbol on the moles.
+
+        The outermost is rock and the rest are sand, which is what a chain like this
+        usually is: the far end of it is what the sea has not yet finished with.
+
+    """
+    offshore, along = ISLAND_START
+    ahead, aside = ISLAND_STEP
+    islands = []
+    for index, (name, reach_m) in enumerate(ISLANDS):
+        islands.append(
+            Feature(
+                kind=name,
+                at=coast.at(offshore + ahead * index, along + aside * index),
+                target_m=ISLAND_Z,
+                length_m=reach_m,
+                width_m=reach_m,
+                compose=RAISE,
+                marked=True,
+                substrate=ROCK if index == len(ISLANDS) - 1 else SAND,
+            )
+        )
+    return islands

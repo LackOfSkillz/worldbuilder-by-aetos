@@ -13,6 +13,46 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — somewhere to sail to
+
+- **Six islands off the demonstration coast**, strung south-east of the approach: Gannet
+  Isle, Kettle Rock, Longhope, The Brothers, Sandhaven and Outer Skerry. A coast alone gives
+  a player one thing to do — leave, and come back — and every question a chart answers is a
+  question about the water dead ahead. A chain gives them a destination, a passage between
+  two destinations, and a reason to plot a course rather than steer one.
+- **The spacing was measured, not chosen.** A working-sail rig on this coast makes 4.05 m/s
+  at best and 2.83 averaged over every point of sail, so the legs are 1,387 m — about eight
+  minutes, long enough to be a passage and short enough to sail the chain in an evening.
+  The hand-authored world this replaces recorded exactly the mistake worth not repeating:
+  its islands were spaced using a *guessed* 4 m/s when the craft made 2.2, and the test that
+  checked the spacing passed because it was checking the same guess.
+- **The placement was chosen by measuring five candidates**, against four things at once:
+  how long the run out from the fairway takes, whether six islands come out as six separate
+  landmasses, how much water lies in the gaps, and how much lies on the way there. The first
+  arrangement tried measured beautifully on every count except the one that mattered — it
+  was a forty-five minute passage before a player reached anything. The chain that shipped
+  is twenty minutes at the average, over twenty metres of water, into gaps carrying eighteen.
+- The chain passes deliberately close to the drying rock, because a rock awash in the middle
+  of an island passage is the best hazard on this coast. Checked rather than hoped for: the
+  rock still stands alone in eighteen metres.
+- `WorldbuilderTerrain.geographic_at` — where a maritime position is, in degrees. Free, since
+  the frame already maps local metres onto the sphere, and it is what lets a flat chart be
+  ruled with meridians that visibly converge.
+
+### Fixed
+
+- **A guard test could not tell a cliff from a hillside.** `test_the_cheap_rejection_sits_
+  outside_the_support` compared the ground either side of a feature's rejection boundary
+  against a fixed half-metre, which broke the moment two features overlapped: an island on
+  the flank of a bank has its foreshore crossing that bank's boundary, so the test sampled
+  an ordinary one-in-seventeen slope and called it a wall. Nothing was wrong with the ground
+  — the weight at the boundary was nine parts in a million million.
+- It now uses the argument the rest of the file already uses: halve the distance, and a
+  slope halves its drop while a discontinuity does not care. A second test asks the claim
+  directly, comparing every feature against itself with the rejection disabled across the
+  whole footprint — which the old test could not do, because checking only *at* `reach_m` is
+  checking the one place a broken rejection has already moved away from.
+
 ### Added — the rocks reach the paper
 
 - `WorldbuilderTerrain.charted_dangers` — the same circles `hazards_touching` measures a
