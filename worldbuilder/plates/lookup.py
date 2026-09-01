@@ -67,6 +67,23 @@ class PlateSet:
             for plate in self.plates
         )
 
+        # The same geometry again as bare component triples.
+        #
+        # Every question asked of this class is a sweep of dot products over a couple of
+        # dozen vectors, and profiling a chart redraw found ninety-nine `Vec3.dot` calls
+        # per terrain sample - three multiplies each, wrapped in a Python method call
+        # costing rather more than the arithmetic. Unrolled against these tuples the
+        # arithmetic is identical, in the same order, with no call at all.
+        self._seed_xyz = tuple(
+            (plate.seed.vector.x, plate.seed.vector.y, plate.seed.vector.z)
+            for plate in self.plates
+        )
+        self._bisector_xyz = tuple(
+            tuple(None if normal is None else (normal.x, normal.y, normal.z)
+                  for normal in row)
+            for row in self._bisectors
+        )
+
     def __len__(self):
         return len(self.plates)
 
@@ -93,10 +110,12 @@ class PlateSet:
             that were already in order.
 
         """
+        vector = point.vector
+        px, py, pz = vector.x, vector.y, vector.z
         best = second = None
         best_dot = second_dot = -2.0
-        for plate in self.plates:
-            alignment = point.vector.dot(plate.seed.vector)
+        for plate, (sx, sy, sz) in zip(self.plates, self._seed_xyz):
+            alignment = px * sx + py * sy + pz * sz
             if alignment > best_dot:
                 second, second_dot = best, best_dot
                 best, best_dot = plate, alignment
@@ -141,12 +160,14 @@ class PlateSet:
         if len(self.plates) < 2:
             return Margin(nearest=nearest, neighbour=None, distance_m=float("inf"))
 
+        vector = point.vector
+        px, py, pz = vector.x, vector.y, vector.z
         closest_sine = 2.0
         across = None
-        for other, normal in zip(self.plates, self._bisectors[nearest.index]):
+        for other, normal in zip(self.plates, self._bisector_xyz[nearest.index]):
             if normal is None:
                 continue
-            offset = abs(point.vector.dot(normal))
+            offset = abs(px * normal[0] + py * normal[1] + pz * normal[2])
             if offset < closest_sine:
                 closest_sine = offset
                 across = other
@@ -194,11 +215,18 @@ class PlateSet:
 
         # Compared as sines, so the arc sine is paid only for the few that are in range.
         limit = math.sin(min(math.pi / 2, range_m / radius_m))
+        vector = point.vector
+        px, py, pz = vector.x, vector.y, vector.z
+        seeds = self._seed_xyz
         found = []
-        for other, normal in zip(self.plates, self._bisectors[nearest.index]):
+        for index, (other, normal) in enumerate(
+            zip(self.plates, self._bisector_xyz[nearest.index])
+        ):
             if normal is None:
                 continue
-            offset = abs(point.vector.dot(normal))
+            nx, ny, nz = normal
+            signed = px * nx + py * ny + pz * nz
+            offset = abs(signed)
             if offset > limit:
                 continue
 
@@ -215,20 +243,25 @@ class PlateSet:
             # The test is to stand at the closest point on the bisector and ask who the
             # neighbours are. One extra lookup, paid only for candidates already in range,
             # and none at all in a plate interior.
-            foot = point.vector - normal.scaled(point.vector.dot(normal))
-            if foot.length() <= DEGENERATE:
+            foot_x = px - nx * signed
+            foot_y = py - ny * signed
+            foot_z = pz - nz * signed
+            reach = math.sqrt(foot_x * foot_x + foot_y * foot_y + foot_z * foot_z)
+            if reach <= DEGENERATE:
                 continue
-            standing = foot.normalised()
+            scale = 1.0 / reach
+            stand_x, stand_y, stand_z = foot_x * scale, foot_y * scale, foot_z * scale
 
             # How far a third plate would have to be for this to be a real margin, against
             # how far the nearest one actually is. Positive means genuine; negative means
             # somebody else's territory.
-            mine = standing.dot(nearest.seed.vector)
+            here = seeds[nearest.index]
+            mine = stand_x * here[0] + stand_y * here[1] + stand_z * here[2]
             shadow = 2.0
-            for third in self.plates:
-                if third.index in (nearest.index, other.index):
+            for third, (tx, ty, tz) in zip(self.plates, seeds):
+                if third.index == nearest.index or third.index == other.index:
                     continue
-                shadow = min(shadow, mine - standing.dot(third.seed.vector))
+                shadow = min(shadow, mine - (stand_x * tx + stand_y * ty + stand_z * tz))
 
             # **A weight, not a test.** The first version rejected shadowed bisectors with
             # a boolean, and that switched a margin on and off in one step wherever it
@@ -240,9 +273,14 @@ class PlateSet:
                 continue
             genuine = genuine * genuine * (3.0 - 2.0 * genuine)
 
-            found.append(
-                (other, math.asin(min(1.0, offset)) * radius_m, normal, genuine)
-            )
+            # The Vec3 form, not the components: callers take bearings off this and
+            # the unrolled triples exist only for the arithmetic above.
+            found.append((
+                other,
+                math.asin(min(1.0, offset)) * radius_m,
+                self._bisectors[nearest.index][index],
+                genuine,
+            ))
         return nearest, tuple(found)
 
     def flattened(self, point, normal):

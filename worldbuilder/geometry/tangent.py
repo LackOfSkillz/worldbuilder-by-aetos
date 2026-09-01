@@ -108,16 +108,33 @@ class TangentFrame:
             projection equidistant, and what stops a thousand-mile chart quietly claiming
             more ocean than the planet has.
 
+            **Written out in components rather than in vector algebra, which is not how
+            the rest of this package is written and so needs the excuse.** Profiling a
+            chart redraw put this at a quarter of the whole cost: it is called six times
+            per terrain sample - four gradient probes and two tectonic ones - and the tidy
+            version built seven intermediate vectors each time, forty-two objects a sample
+            to produce one answer. What follows is the same operations in the same order,
+            which was checked by hashing every value the world produces before and after.
+
         """
         distance = math.hypot(x_m, y_m)
         if distance == 0.0:
             return self.origin
 
         angle = distance / self.radius_m
-        heading = self.east.scaled(x_m / distance) + self.north.scaled(y_m / distance)
-        return SpherePoint.from_vector(
-            self.up.scaled(math.cos(angle)) + heading.scaled(math.sin(angle))
-        )
+        along, across = x_m / distance, y_m / distance
+        east, north, up = self.east, self.north, self.up
+        heading_x = east.x * along + north.x * across
+        heading_y = east.y * along + north.y * across
+        heading_z = east.z * along + north.z * across
+
+        forward, outward = math.cos(angle), math.sin(angle)
+        x = up.x * forward + heading_x * outward
+        y = up.y * forward + heading_y * outward
+        z = up.z * forward + heading_z * outward
+
+        scale = 1.0 / math.sqrt(x * x + y * y + z * z)
+        return SpherePoint(Vec3(x * scale, y * scale, z * scale))
 
     def sphere_to_local(self, point):
         """

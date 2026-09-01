@@ -9,13 +9,19 @@ basis. Nothing else earns its place.
 Frozen, because a position is a reading. Code that could edit one in place would change it
 for everything else holding the same object, and the whole design rests on the same point
 answering the same way every time it is asked.
+
+**Slotted, because this is the hottest type in the engine.** A chart redraw builds and
+reads hundreds of thousands of these, and a frozen dataclass without slots keeps a
+per-instance dictionary and goes through `object.__setattr__` to fill it. Slots make
+construction and attribute access materially cheaper and change no value whatsoever -
+which was checked by hashing every answer the world gives before and after.
 """
 
 import math
 from dataclasses import dataclass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Vec3:
     """
     Attributes:

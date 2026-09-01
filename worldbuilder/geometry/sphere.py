@@ -27,7 +27,7 @@ from .vectors import Vec3
 EARTH_RADIUS_M = 6_371_000.0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SpherePoint:
     """
     A place on the planet, as a unit vector from its centre.

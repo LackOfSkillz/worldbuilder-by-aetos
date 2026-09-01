@@ -68,13 +68,32 @@ class Noise:
         self.seed = (seed * 0x100000001B3) ^ (salt * 0x9E3779B97F4A7C15)
         self._corners = {}
 
-    def _corner(self, ix, iy, iz):
-        key = (ix, iy, iz)
-        value = self._corners.get(key)
-        if value is None:
-            value = _lattice(ix, iy, iz, self.seed)
-            self._corners[key] = value
-        return value
+    def _fill(self, key):
+        """
+        The eight lattice values around one cell, worked out once and kept.
+
+        Notes:
+            **Cached by cell rather than by corner: the same values in one lookup instead
+            of eight.** The first version kept a dictionary of corners and called a method
+            per corner. Profiling a chart redraw found 2.9 million of those calls, and the
+            *call overhead* was twice the cost of the dictionary lookup inside it.
+
+            Neighbouring cells store their shared corners twice over, which is eight times
+            the memory for the same coverage and worth it - a corner is a float, and what
+            it buys is seven fewer Python-level lookups on the hottest path in the engine.
+
+        """
+        ix, iy, iz = key
+        seed = self.seed
+        jx, jy, jz = ix + 1, iy + 1, iz + 1
+        corners = (
+            _lattice(ix, iy, iz, seed), _lattice(jx, iy, iz, seed),
+            _lattice(ix, jy, iz, seed), _lattice(jx, jy, iz, seed),
+            _lattice(ix, iy, jz, seed), _lattice(jx, iy, jz, seed),
+            _lattice(ix, jy, jz, seed), _lattice(jx, jy, jz, seed),
+        )
+        self._corners[key] = corners
+        return corners
 
     def at(self, x, y, z):
         """
@@ -92,6 +111,10 @@ class Noise:
             visible creases along every lattice plane - and on terrain a crease is a cliff
             somebody sails into.
 
+            Written flat rather than tidily. This is called about forty times per terrain
+            sample and several million times per chart, so the arithmetic is inline, the
+            lattice lookup is one dictionary hit, and nothing here builds an object.
+
         """
         ix, iy, iz = int(x // 1), int(y // 1), int(z // 1)
         fx, fy, fz = x - ix, y - iy, z - iz
@@ -99,15 +122,11 @@ class Noise:
         uy = fy * fy * (3.0 - 2.0 * fy)
         uz = fz * fz * (3.0 - 2.0 * fz)
 
-        corner = self._corner
-        c000 = corner(ix, iy, iz)
-        c100 = corner(ix + 1, iy, iz)
-        c010 = corner(ix, iy + 1, iz)
-        c110 = corner(ix + 1, iy + 1, iz)
-        c001 = corner(ix, iy, iz + 1)
-        c101 = corner(ix + 1, iy, iz + 1)
-        c011 = corner(ix, iy + 1, iz + 1)
-        c111 = corner(ix + 1, iy + 1, iz + 1)
+        key = (ix, iy, iz)
+        corners = self._corners.get(key)
+        if corners is None:
+            corners = self._fill(key)
+        c000, c100, c010, c110, c001, c101, c011, c111 = corners
 
         x00 = c000 + (c100 - c000) * ux
         x10 = c010 + (c110 - c010) * ux

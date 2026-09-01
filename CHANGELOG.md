@@ -13,6 +13,53 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Changed — M1.11, performance
+
+Three optimisations, none of which altered a single value:
+
+- **Noise caches whole lattice cells rather than corners.** A chart redraw made 2.9 million
+  `_corner` calls, and the call overhead was twice the dictionary lookup inside it.
+- **The projection is unrolled into components.** `local_to_sphere` is called six times per
+  terrain sample and the tidy version built seven throwaway vectors each time — forty-two
+  objects a sample for one answer.
+- **The plate sweep is unrolled and the two hottest types are slotted.** Ninety-nine
+  `Vec3.dot` calls per sample: three multiplies wrapped in a Python method call.
+
+**129.5 µs → 86.6 µs a sample, 1.50×, bit-identical.** Proved rather than asserted: every
+elevation, structural height, band-limited height and bottom composition at fifteen hundred
+scattered points and a hundred and sixty coastal ones was hashed before and after, and the
+digest is unchanged. The test suite went from 37 s to 23 s on the way past.
+
+### Added — M1.11
+
+- `tests/test_performance.py` — a regression gate rather than a budget assertion, plus four
+  tests whose only job is to keep the optimisations free: the lattice cache against the
+  lattice function, the unrolled projection against its own inverse, the unrolled plate
+  sweep against the vector algebra it replaced, and a check that a margin normal is still a
+  vector and not one of the component triples now living beside it.
+
+### Measured — M1.11
+
+End to end in a real Evennia environment, through maritime's own `client.cartography.sample`:
+
+| grid | soundings | a hand-written ramp | the generated planet |
+|---|---|---|---|
+| 96 × 96 | 9,216 | 18.0 ms | 725.4 ms |
+| 48 × 48 | 2,304 | 4.7 ms | 163.9 ms |
+| 32 × 32 | 1,024 | 2.1 ms | 70.5 ms |
+
+**The remaining gap is not a Python problem.** A sample evaluates thirty-nine octaves of
+noise plus the plate geometry; even perfectly written that is tens of microseconds in this
+language. It has to be chosen away, and every option costs something that is not
+performance — coarser charts (a maritime decision), a coarse lattice for the slow fields or
+an analytic gradient (both change the world's values), or an exact provider cache (free, but
+only helps a stationary ship redrawing). None is a decision this phase should take alone.
+
+Also unexpected: `resolution_m` barely helps. At 400 m a sample costs 81.3 µs against 80.5
+canonical — *slower*, because the fade arithmetic costs more than the two octaves it drops.
+Detail is 15 µs of 80. The expensive part of this world is its **structure**, which is
+exactly the thing that must not thin out with zoom.
+
 ### Added — M1.10, the places where flat thinking breaks
 
 - `tests/test_global.py` — the **assembled** machinery at nine hostile coordinates: the

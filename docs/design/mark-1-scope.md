@@ -580,3 +580,97 @@ Both are the same mistake in different clothes: asserting a proxy for the proper
 than the property. It is the fourth time on this project.
 
 16 new tests, 194 in total.
+
+---
+
+# M1.11 result: the performance gate, and the honest position on it
+
+Maritime does not read a map. It asks how high the ground is at a point, and a chart redraw
+asks 9,216 times. That number is the whole reason this generator is a function of position
+rather than a stored heightmap, so it is the number the generator has to answer to.
+
+## Where it stands
+
+Measured end to end in a real Evennia environment, through maritime's own
+`client.cartography.sample`, against the same chart on the same machine:
+
+| grid | soundings | a hand-written ramp | the generated planet |
+|---|---|---|---|
+| 96 x 96 | 9,216 | 18.0 ms | 725.4 ms |
+| 48 x 48 | 2,304 | 4.7 ms | 163.9 ms |
+| 32 x 32 | 1,024 | 2.1 ms | 70.5 ms |
+
+A canonical sample costs about eighty microseconds; a hand-written seabed costs about two.
+
+## Half of it was ordinary care, and cost nothing
+
+Three changes, none of which altered a single value:
+
+| what | why it was slow |
+|---|---|
+| noise caches whole lattice cells | 2.9 million method calls a redraw, where the *call* cost twice the dictionary lookup inside it |
+| the projection is unrolled into components | called six times a sample, building seven throwaway vectors each time - forty-two objects for one answer |
+| the plate sweep is unrolled, both types slotted | ninety-nine `Vec3.dot` calls a sample: three multiplies wrapped in a Python method call |
+
+**129.5 to 86.6 microseconds a sample, 1.50x, bit-identical.** Proved rather than asserted:
+every elevation, structural height, band-limited height and bottom composition the world
+produces at fifteen hundred scattered points and a hundred and sixty coastal ones was hashed
+before and after, and the digest is unchanged. The test suite went from 37 seconds to 23 on
+the way past.
+
+## The rest is not a Python problem
+
+A terrain sample evaluates **thirty-nine octaves of noise** plus the plate geometry. Even
+perfectly written that is tens of microseconds in this language, so the remaining gap cannot
+be optimised away - it has to be *chosen* away, and every choice costs something that is not
+performance:
+
+**Coarser charts.** 32 x 32 puts a redraw at 70 ms, and a chart at six hundred metres a
+sounding is a real chart. Costs detail; costs no *safety* at all, because the marks layer
+already carries everything sampling misses - which is the argument M1.7 measured and the
+reason a coarser chart is not a more dangerous one.
+
+**A coarse lattice for the slow fields.** Continentality's finest structure is six hundred
+and forty kilometres, and the gradient of it is a third of the whole cost. Sampling it on a
+fixed world-anchored lattice and interpolating with smoothstep - the same trick the noise
+itself uses, and C1 for the same reason - would be an order of magnitude. Costs a small
+change to every elevation in the world, which wants measuring before it is chosen.
+
+**An analytic gradient.** The four probes behind the shelf are sixteen of the thirty-nine
+noise evaluations, plus a tangent frame and four projections. The derivative of a
+smoothstep-trilinear fbm has a closed form costing about one evaluation. It is *more*
+accurate than the finite difference it replaces, and it still moves every coastline
+slightly.
+
+**Caching in the provider.** An anchored ship redraws the same grid. An exact cache keyed on
+the position pair makes repeats free and changes nothing whatsoever - but does nothing for
+the first redraw or for a ship under way.
+
+The first is a maritime decision, the second and third change the world's values, and the
+fourth is free but partial. None of them is a decision this phase should take on its own,
+which is why the phase ends with the measurement rather than with a fix.
+
+## One thing the table says that was not expected
+
+`resolution_m` barely helps. At four hundred metres a sample costs 81.3 microseconds against
+80.5 canonical - *slower*, because the fade arithmetic costs more than the two octaves it
+drops. Only at ten kilometres does it win, and only to 74.6.
+
+That is not a defect in band-limiting; it is a statement about where the cost is. Detail is
+fifteen microseconds of eighty. The expensive part of this world is its **structure**, and
+structure is the thing that must not thin out with zoom.
+
+## The gate itself
+
+A regression gate, not a budget assertion. A hard assert on microseconds would fail on a
+loaded machine and teach everybody to ignore it, so what is guarded is that the shape of the
+cost stays right - each layer dearer than the one under it, a coarse chart cheaper than a
+canonical one, a bottom still about five soundings - under a ceiling generous enough to
+catch a doubling and nothing tighter.
+
+Four of the eight tests exist only to keep the optimisations free: the lattice cache against
+the lattice function, the unrolled projection against its own inverse, the unrolled plate
+sweep against the vector algebra it replaced, and a check that a margin normal is still a
+vector rather than one of the component triples that now live beside it.
+
+8 new tests, 202 in total.
