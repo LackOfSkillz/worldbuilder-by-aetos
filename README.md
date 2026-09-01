@@ -89,9 +89,10 @@ coordinates at all sit on a planet and still have a dock at an exact latitude.
     worldbuilder/terrain/       continentality, tectonics, band-limited detail, surface
     worldbuilder/bathymetry/    the shelf, placed features, and what the bottom is made of
     worldbuilder/regions/       the demonstration coast
+    worldbuilder/integration/   the maritime seam, and the only file that knows both
     worldbuilder/debug/         diagnostics, all of which write PPM and need no libraries
 
-Standard library only. 154 tests.
+Standard library only. 178 tests.
 
 ## Looking at it
 
@@ -104,6 +105,29 @@ Standard library only. 154 tests.
 `harbour` is the one worth running. It draws the same water twice - as the terrain holds
 it, and as a chart sampling every four hundred metres would print it - and the difference
 between those two renders is the whole argument for how charts have to be built.
+
+## Sailing on it
+
+The maritime contrib asks a world three things, and a generated planet answers all three
+without maritime knowing it exists:
+
+```python
+from worldbuilder.integration.maritime import maritime_provider
+from worldbuilder.regions.demo import WORLD_SEED, demo_region
+from worldbuilder.terrain.surface import Surface
+
+region = demo_region()
+provider = maritime_provider(Surface(WORLD_SEED, features=region.features), region)
+```
+
+Point `MARITIME_MAP_PROVIDER` at a class built that way and a game is sailing on a planet.
+The dependency runs one way: maritime never imports this, and the generator imports Evennia
+in exactly one function, inside the call.
+
+Handed to maritime's own grounding code, a hull drawing 4.5 m is holed on rock over the
+demonstration coast's pinnacle - a hazard 140 m across that sixty-three chart grids in
+sixty-four cannot see - while one drawing 2.5 m passes over it, and a 3.5 m hull goes
+aground on sand across the harbour bar.
 
 ## Layout
 

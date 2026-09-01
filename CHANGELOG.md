@@ -13,6 +13,55 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — M1.9, the maritime seam
+
+- `worldbuilder/integration/maritime.py` — the generated planet, presented as a map
+  provider the maritime contrib can sail on. **Nothing in maritime changed to accept it**:
+  the interface is the one its base provider already declares, and maritime tests none of
+  its providers with `isinstance`. Swapping a hand-written seabed for a planet is one
+  settings line.
+- The dependency runs one way and the generator keeps none. `WorldbuilderTerrain` carries
+  all the behaviour and imports nothing from Evennia; `maritime_provider` is the single
+  function that needs the contrib present, and it imports inside the call. A test reads the
+  module's own source to assert there is no top-level Evennia import.
+- Long features become **overlapping circles**, because maritime's hazard is a circle and
+  one circle round a two-kilometre mole would either miss most of it or declare a harbour
+  approach foul. A test steers a hull across every gap between neighbours.
+- `pyproject.toml`, so the generator is installable rather than a directory on a path.
+
+### Fixed — M1.9
+
+- **Thirty of fifty-seven hazard circles were open water.** The tapering ends of a mole
+  fade into ordinary seabed seventeen metres down, and kept unconditionally they came back
+  as dangers — two kilometres of harbour approach foul either side of a structure a hull
+  could not have touched. A circle is now kept only where a chart would lie about it, which
+  is the same rule that decided the feature was marked in the first place. Twenty-seven
+  circles, every one of them ground a chart gets wrong.
+
+### Verified — M1.9
+
+Built as a provider in the maritime testbed and handed to maritime's own grounding code, in
+a real Evennia environment:
+
+| what | draught | outcome |
+|---|---|---|
+| over the pinnacle, 3.5 m on it | 2.5 m | clears |
+| | 4.5 m | **holed on rock**, 1.00 m short |
+| | 6.0 m | **holed on rock**, 2.50 m short |
+| the same track, 900 m off | any | clears |
+| across the bar, 3.2 m on it | 2.0 m | crosses |
+| | 3.5 m | **aground on sand**, 0.30 m short |
+
+Three phases arriving at once: the rock is there because M1.7 placed it and the marks layer
+carried it past a chart that cannot see it, and the difference between *holed* and *aground*
+is M1.8's substrate reaching maritime's damage model.
+
+The run also caught something the unit tests could not — maritime's `GroundingResult` is
+falsy when it represents a failure, so a first pass testing the result for truth reported
+that a six-metre draught sailed over a rock with three and a half metres of water on it.
+That was the probe rather than the code, and it is the argument for live verification in one
+sentence.
+
 ### Added — M1.8, what the bottom is made of
 
 - `worldbuilder/bathymetry/substrate.py` — sand, mud and rock, as a **composition** rather

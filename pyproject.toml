@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worldbuilder-by-aetos"
+version = "0.1.0"
+description = "A deterministic planet generator for Evennia games that already have a world."
+readme = "README.md"
+requires-python = ">=3.10"
+# No license field yet: the repository has no LICENSE, and which one it carries is
+# not a decision this file should make. Evennia and the maritime contrib are both
+# BSD 3-Clause, which is the obvious match when somebody chooses.
+# Deliberately none. The generator is standard library only, which is what lets it be
+# tested without an Evennia install and adopted without a dependency argument.
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["worldbuilder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

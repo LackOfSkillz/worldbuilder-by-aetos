@@ -446,3 +446,90 @@ and does not contain, and it is the sort of thing that would otherwise be discov
 Mark 5 seabed suddenly turning to rock everywhere.
 
 19 new tests, 154 in total.
+
+---
+
+# M1.9 result: the seam, and a hull holed on a generated rock
+
+The generated planet, presented as a map provider the maritime contrib can sail on.
+
+## The dependency runs one way
+
+Maritime never imports worldbuilder and never will. A contrib that needed a planet
+generator installed to work would be a contrib nobody could adopt. So the adapter lives on
+the generator's side, in the one file that knows both, and fits itself to maritime.
+
+**Nothing in maritime changed to accept it.** The interface is the one its base provider
+already declares - `terrain_z_at`, `bottom_type_at`, `hazards_touching` - and maritime tests
+none of its providers with `isinstance`, so a duck answers. Swapping a hand-written seabed
+for a planet is one settings line.
+
+The generator keeps no dependency either. `WorldbuilderTerrain` carries all the behaviour
+and imports nothing from Evennia, which is what lets it be tested without an Evennia install;
+`maritime_provider` is the single function that needs the contrib present, and it imports
+inside the call. Asserted in the tests by reading the module's own source for a top-level
+Evennia import.
+
+## A region is a tangent plane, which is what a chart is
+
+Maritime works in flat metres east and north within a named region; the planet works in unit
+vectors. One `TangentFrame` per region converts between them. The two-hundred-kilometre cap
+M1.1 measured is a cap on how large a region may be, and the demonstration coast is sixty:
+measured round the whole compass at its own reach, the worst projection error is under a
+metre.
+
+## Depth is truth; error is the chart's job
+
+`terrain_z_at` answers canonically. Maritime already models a chart's ignorance separately -
+`charted_terrain_z_at` adds a deterministic sounding error on top of whatever the world says
+- so a provider that answered approximately would put a second, unmodelled error underneath
+the first, and a ship taking a fix would be wrong in a way nothing had accounted for.
+
+## A circle is a bad fit for a breakwater, so a breakwater becomes several
+
+Maritime's hazard is a circle with a radius and a shallowest point. That is right for a
+pinnacle and wrong for a mole, and a single circle round a mole would either miss most of it
+or declare two square kilometres of harbour approach foul. Long features become overlapping
+circles of their own width, laid along their length, and a test steers a hull across every
+gap between neighbours to prove nothing passes through.
+
+**And a circle is only kept where a chart would lie about it** - the same rule that decided
+the feature was marked in the first place, applied one level down. A feature is marked
+because a chart lies about it *somewhere*; a circle is a hazard where a chart lies about it
+*there*. Without that rule the tapering ends of a mole, which fade into ordinary seabed
+seventeen metres down, came back as dangers: fifty-seven circles, of which thirty were
+open water. Twenty-seven now, and every one of them is ground a chart gets wrong.
+
+Each circle takes its elevation from the terrain at its own centre rather than from the
+feature's stated target, so a hazard and the water under a hull cannot disagree.
+
+## Live, in a real Evennia environment
+
+The generator's own suite cannot import maritime - its package pulls in Twisted - so the
+tests here run against a stand-in with the three attributes the adapter reads, and the seam
+was then verified where it actually runs. Built as a provider in the maritime testbed and
+handed to maritime's own grounding code:
+
+| what | draught | outcome |
+|---|---|---|
+| over the pinnacle, 3.5 m on it | 2.5 m | clears |
+| | 3.4 m | clears |
+| | 4.5 m | **holed on rock**, 1.00 m short |
+| | 6.0 m | **holed on rock**, 2.50 m short |
+| the same track, 900 m off | any | clears |
+| across the bar, 3.2 m on it | 2.0 m | crosses |
+| | 3.5 m | **aground on sand**, 0.30 m short |
+| | 5.0 m | **aground on sand**, 1.80 m short |
+
+Three phases arriving at once. The rock is there because M1.7 placed it and the marks layer
+carried it past a chart that cannot see it; the difference between *holed* and *aground* is
+M1.8's substrate reaching maritime's damage model; and none of it required a line of change
+in the contrib.
+
+One thing the run caught, and it was the probe rather than the code: maritime's
+`GroundingResult` is falsy when it represents a failure, so a first pass testing the result
+for truth reported that a six-metre draught sailed over a rock with three and a half metres
+of water on it. Which is the argument for live verification in one sentence - the unit tests
+were green throughout.
+
+24 new tests, 178 in total.
