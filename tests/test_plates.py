@@ -17,6 +17,7 @@ import time
 import unittest
 
 from worldbuilder.geometry.sphere import EARTH_RADIUS_M, SpherePoint
+from worldbuilder.geometry.tangent import TangentFrame
 from worldbuilder.geometry.vectors import Vec3
 from worldbuilder.plates.generation import DEFAULT_PLATE_COUNT, plates_for
 from worldbuilder.plates.kinematics import (
@@ -330,3 +331,74 @@ class TestCost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMarginDistanceAgainstBruteForce(unittest.TestCase):
+    """
+    The reference check for the one piece of load-bearing geology arithmetic.
+
+    `margin_at` claims a real distance in metres to the edge of a plate's cell, and from
+    M1.4 onwards terrain will read that number as metres - a shelf eighty kilometres wide,
+    an uplift belt decaying over three hundred. If it were quietly a proximity score
+    instead, every one of those constants would mean something else and nothing would
+    obviously be wrong.
+
+    So the claim is checked against a method that shares none of its reasoning: walk
+    outwards from the point in many directions until the nearest plate changes, and take
+    the shortest walk that crossed. Slow, obvious, and independent.
+    """
+
+    def setUp(self):
+        self.plates = plates_for(SEED)
+
+    def _walked(self, point, radius_m=EARTH_RADIUS_M, bearings=72, steps=260, reach_m=900_000.0):
+        """
+        Brute force: how far to walk before standing on a different plate.
+
+        Notes:
+            Deliberately naive. It knows nothing of bisectors and does not care which
+            plate it ends up on - only that the answer changed, which is the definition
+            of having crossed an edge.
+
+        """
+        frame = TangentFrame.at(point, radius_m)
+        here, _ = self.plates.nearest_two(point)
+        shortest = float("inf")
+        for turn in range(bearings):
+            bearing = 2.0 * math.pi * turn / bearings
+            east, north = math.sin(bearing), math.cos(bearing)
+            for step in range(1, steps + 1):
+                distance = reach_m * step / steps
+                if distance >= shortest:
+                    break
+                out = frame.local_to_sphere(east * distance, north * distance)
+                if self.plates.nearest_two(out)[0].index != here.index:
+                    shortest = distance
+                    break
+        return shortest
+
+    def test_the_computed_distance_matches_a_walk(self):
+        tolerance_m = 900_000.0 / 260 * 2  # two steps of the walk's own resolution
+        checked = 0
+        for point in scattered(60):
+            walked = self._walked(point)
+            if not math.isfinite(walked):
+                continue  # deep inside a plate, further than the walk reaches
+            computed = self.plates.margin_at(point).distance_m
+            self.assertAlmostEqual(
+                computed, walked, delta=tolerance_m,
+                msg=f"at {point.to_latlon()}: computed {computed:.0f} walked {walked:.0f}",
+            )
+            checked += 1
+        self.assertGreater(checked, 25, "too few points were near enough a margin to check")
+
+    def test_it_is_never_an_overestimate(self):
+        """
+        The direction that would matter. Too small merely puts a mountain range slightly
+        wide; too large would claim open plate interior where an edge actually is.
+
+        """
+        for point in scattered(40):
+            walked = self._walked(point)
+            if math.isfinite(walked):
+                self.assertLessEqual(self.plates.margin_at(point).distance_m, walked + 8000.0)
