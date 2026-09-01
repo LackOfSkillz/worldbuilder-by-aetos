@@ -160,6 +160,17 @@ further at springs, without either the generator or the game being told to make 
 Which is also why nothing here knows what a tide is. The maritime contrib supplies the water
 level; this supplies the ground. Neither imports the other.
 
+### And a pond that is not the sea
+
+Above the creek, a closed bowl five metres deep whose water stands twenty-three metres above
+sea level. It exists to be the opposite of everything else on the coast: still, fresh, and
+entirely indifferent to the tide.
+
+The generator only cuts the bowl. What stands in it is the maritime side's business — its
+water model answers by region, so a position in the pond gets one level and the very same
+spot asked about as sea gets another. A world that can only have one water level can only
+have sea.
+
 ## Layout
 
     CHANGELOG.md                             phase by phase, with the measurements

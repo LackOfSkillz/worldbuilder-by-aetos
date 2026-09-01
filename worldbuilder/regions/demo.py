@@ -36,12 +36,18 @@ What is here, and what each is for:
     steep-to water      nowhere to anchor             deep water hard against the shore
     six islands         somewhere to go               a chain south-east of the approach
     a tidal creek       water that comes and goes     a channel inland, dry at low water
+    a pond              still water, its own level    a closed bowl in the hills
 
 The creek is the coast's argument for the tide. It is cut inland from the harbour, and its
 bed climbs as it goes, so the sea reaches further up it at high water than at low - which
 means its head is not a place but a *time*. Nothing computes where the water stops; the
 channel and the tide decide between them, and at springs the sea gets a good deal further
 than at neaps. A boat that goes up on a making tide and dawdles comes back down through mud.
+
+The pond is here to be the opposite of everything else. It is still, it is fresh, it does
+not care what the tide is doing, and it sits twenty metres above the sea - which is why it
+needs the water model to answer *by region* rather than with one surface for the world. A
+world that can only have one water level can only have sea.
 
 The islands are what make it a world rather than a harbour. A coast alone gives a player
 one thing to do - leave, and come back - and every question a chart answers is a question
@@ -171,6 +177,37 @@ CREEK_REACHES = (
 #: Over one, so consecutive reaches overlap and the channel is continuous - under it, the
 #: creek would be a string of ponds with sills between them.
 CREEK_OVERLAP = 0.75
+
+# --- the pond ---------------------------------------------------------------
+
+#: Where the pond lies, how deep its floor is cut, and how far it reaches.
+#:
+#: Above the head of the creek, in ground standing twenty-four metres or so, so the bowl has
+#: a rim all the way round it. A closed basin: nothing here models water flowing downhill,
+#: so a pond with a notch in its rim would be a pond that ought to empty and does not, which
+#: is worse than one that plainly never had an outlet.
+#: Sited by measuring five candidates for the lowest point anywhere on their rim, which is
+#: the only number that decides whether a closed basin is closed. The first place tried sat
+#: within reach of the creek's own carve, so the channel cut a notch in the rim two metres
+#: below where the water was meant to stand - and a coarse sweep of that rim, at thirty
+#: degrees and fifty-metre steps, walked straight past the notch and reported that the pond
+#: held by a comfortable quarter of a metre. A finer sweep found it at once. The lowest point
+#: of a rim is found by looking, and how hard you look is part of the measurement.
+POND_AT = (-12_000.0, 3_000.0)
+POND_FLOOR_M = 18.0
+POND_REACH_M = 600.0
+
+#: Where its water stands, in metres above the datum. Not a terrain figure - the ground only
+#: makes the bowl - but it belongs beside the bowl it has to fit inside, because the two are
+#: a pair and changing one without the other empties the pond or floods the hill.
+#:
+#: Five metres of water, with the lowest point of the rim standing two and a half metres
+#: above it. Deliberately generous: the rim is natural ground with texture on it, so a pond
+#: that holds by a hand's breadth is a pond that leaks on the next seed.
+POND_SURFACE_M = 23.0
+
+#: What a game calls this water, so the maritime side can be told to give it its own level.
+POND_REGION = "the pond"
 
 #: The world these coordinates were measured on. Placing them on another seed puts a
 #: harbour in whatever happens to be there, which may be the middle of an ocean.
@@ -416,6 +453,17 @@ def demo_region(radius_m=EARTH_RADIUS_M):
     ]
     placed.extend(_archipelago(coast))
     placed.extend(_creek(coast))
+    placed.append(
+        Feature(
+            kind="pond",
+            at=coast.at(*POND_AT),
+            target_m=POND_FLOOR_M,
+            length_m=POND_REACH_M,
+            width_m=POND_REACH_M,
+            compose=CARVE,
+            substrate=MUD,
+        )
+    )
     return Region("demonstration coast", coast, REACH_M, Features(placed, radius_m))
 
 

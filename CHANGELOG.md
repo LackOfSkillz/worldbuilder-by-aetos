@@ -13,6 +13,25 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — a pond that holds water
+
+- **A closed bowl in the hills**, five metres deep, its water standing twenty-three metres
+  above the sea. Nothing here models water running downhill, so a pond whose rim dips below
+  its own surface is not a pond with a stream out of it — it is a picture of water standing
+  above a gap. The rim has to hold all the way round.
+- **Sited by measuring five candidates for the lowest point anywhere on the rim**, which is
+  the only figure that decides whether a closed basin is closed. The first site sat within
+  reach of the creek's own carve, and the channel cut a notch two metres below the intended
+  waterline.
+- **And the first sweep of that rim missed the notch entirely.** At thirty degrees and
+  fifty-metre steps it reported the pond holding by a comfortable quarter of a metre; at five
+  degrees and twenty it found the breach at once. The lowest point of a rim is found by
+  looking, and how hard you look is part of the measurement — so the test sweeps finely, on
+  purpose, and says why.
+- The water level is not a terrain figure and lives here anyway, beside the bowl it has to
+  fit inside. The two are a pair, and changing one without the other either empties the pond
+  or floods the hill.
+
 ### Added — a creek whose head is a time
 
 - **A tidal creek**, cut inland from the harbour in six reaches, its bed climbing from seven

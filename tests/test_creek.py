@@ -18,7 +18,14 @@ knowing about the other.
 import math
 import unittest
 
-from worldbuilder.regions.demo import CREEK_REACHES, WORLD_SEED, demo_region
+from worldbuilder.regions.demo import (
+    CREEK_REACHES,
+    POND_AT,
+    POND_REACH_M,
+    POND_SURFACE_M,
+    WORLD_SEED,
+    demo_region,
+)
 from worldbuilder.terrain.surface import Surface
 
 #: Water levels to ask the creek about, in metres relative to datum. Chosen to bracket an
@@ -174,3 +181,83 @@ class TestItJoinsTheHarbour(CreekTestCase):
 
         """
         self.assertGreater(self.navigable_to(LOW_SPRINGS, CREEK_DRAFT_M), 1_500.0)
+
+
+class TestThePondHoldsWater(CreekTestCase):
+    """
+    A closed basin, and the only question that matters is whether it is closed.
+
+    Nothing in this generator models water running downhill, so a pond whose rim dips below
+    its own surface is not a pond with a stream out of it - it is a picture of water standing
+    above a gap. The rim has to hold all the way round, and "all the way round" is a claim
+    about the *lowest* point of it, which is found by looking.
+
+    How hard you look is part of the measurement. A sweep at thirty degrees and fifty-metre
+    steps reported the first site holding by a comfortable quarter of a metre; a finer sweep
+    found a notch two metres below the waterline, cut by the creek's own carve reaching
+    further than anybody had checked. So this sweeps finely, on purpose.
+    """
+
+    RIM_STEP_DEG = 5
+    RIM_STEP_M = 20
+    RIM_OUT_M = 1_200
+
+    #: How much rim a pond must have above its water before it counts as holding. Generous,
+    #: because the rim is natural ground with texture on it.
+    FREEBOARD_M = 1.0
+
+    def ground(self, offshore, along):
+        return self.surface.elevation_m(self.coast.at(offshore, along))
+
+    def lowest_rim(self):
+        """
+        Returns:
+            lowest (float): The lowest ground anywhere on the ring outside the pond.
+
+        """
+        lowest = math.inf
+        for step in range(0, 360, self.RIM_STEP_DEG):
+            east = math.sin(math.radians(step))
+            north = math.cos(math.radians(step))
+            for out in range(
+                int(POND_REACH_M), int(POND_REACH_M) + self.RIM_OUT_M, self.RIM_STEP_M
+            ):
+                lowest = min(lowest, self.ground(POND_AT[0] + east * out, POND_AT[1] + north * out))
+        return lowest
+
+    def test_there_is_water_in_it(self):
+        floor = self.ground(*POND_AT)
+        self.assertLess(floor, POND_SURFACE_M, "the pond's floor stands above its own water")
+        self.assertGreater(POND_SURFACE_M - floor, 2.0, "the pond is a puddle")
+
+    def test_and_the_rim_holds_it_all_the_way_round(self):
+        rim = self.lowest_rim()
+        self.assertGreater(
+            rim,
+            POND_SURFACE_M + self.FREEBOARD_M,
+            f"the rim dips to {rim:.2f} m and the water stands at {POND_SURFACE_M:.2f} - it leaks",
+        )
+
+    def test_it_is_big_enough_to_be_worth_putting_a_boat_on(self):
+        across = sum(
+            1
+            for out in range(0, 1500, 10)
+            if self.ground(POND_AT[0] + out, POND_AT[1]) < POND_SURFACE_M
+        )
+        self.assertGreater(
+            across * 10 * 2, 300.0, "the pond is smaller than a boat's turning circle"
+        )
+
+    def test_it_is_well_clear_of_the_creek(self):
+        """
+        The two must not meet. They did: the creek's last reach is long enough to overlap
+        its neighbour, which put its carve inside the first pond's rim.
+
+        """
+        head = CREEK_REACHES[-1]
+        away = math.hypot(POND_AT[0] - head[0], POND_AT[1] - head[1])
+        self.assertGreater(away, 2_500.0, "the creek reaches the pond and cuts its rim")
+
+    def test_it_sits_well_above_the_sea(self):
+        """The whole reason it needs its own water level. A pond at datum is a bay."""
+        self.assertGreater(POND_SURFACE_M, 10.0)
