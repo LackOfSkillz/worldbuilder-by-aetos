@@ -215,6 +215,35 @@ class WorldbuilderTerrain:
         touched.sort(key=lambda danger: -danger.top_z)
         return tuple(touched)
 
+    def charted_dangers(self, position, reach):
+        """
+        Every mark inside the square a sheet covers.
+
+        Args:
+            position (WorldPosition): Where the sheet is centred.
+            reach (float): How far it extends from there, in metres.
+
+        Returns:
+            dangers (tuple): What a survey would have recorded, shallowest first.
+
+        Notes:
+            The same circles `hazards_touching` measures a hull against, asked about a
+            box instead of a track. That they are the same list is the point: a chart
+            that showed one set of rocks while the physics used another would be a chart
+            that lies in a new and more interesting way.
+
+            A square, because that is the shape of the paper and a rock just off the
+            corner of it is still on it.
+
+        """
+        reach = abs(reach)
+        near = [
+            danger for danger in self.dangers
+            if abs(danger.x - position.x) <= reach and abs(danger.y - position.y) <= reach
+        ]
+        near.sort(key=lambda danger: -danger.top_z)
+        return tuple(near)
+
     def _survey(self):
         """
         Work out every hazard in the region, once.

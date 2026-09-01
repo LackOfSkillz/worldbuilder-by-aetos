@@ -13,6 +13,22 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — the rocks reach the paper
+
+- `WorldbuilderTerrain.charted_dangers` — the same circles `hazards_touching` measures a
+  hull against, asked about a box instead of a track, so the chart and the physics are two
+  questions about one list. A chart showing one set of rocks while the hull was measured
+  against another would be a chart that lies in a new and more interesting way.
+- Maritime gained the matching half in the same pass: `charted_dangers` on its base
+  provider, published on the chart sheet, and drawn as a starred symbol with the least
+  depth beside it. Its own design doc had said since the interface was specified that the
+  charted layer carries hazards; the layer existed, the drawing never did, and grounding
+  had been asking about rocks the whole time — so an authored rock would hole a hull while
+  the chart drew open water over it.
+- Verified end to end in a real Evennia environment: a ship 1,750 m from the generated
+  pinnacle is now shown it, at 3.5 m over rock, alongside the harbour bar at 3.2 m over
+  sand. A hand-written seabed that authors no hazards still publishes none.
+
 ### Changed — M1.11, performance
 
 Three optimisations, none of which altered a single value:

@@ -92,7 +92,7 @@ coordinates at all sit on a planet and still have a dock at an exact latitude.
     worldbuilder/integration/   the maritime seam, and the only file that knows both
     worldbuilder/debug/         diagnostics, all of which write PPM and need no libraries
 
-Standard library only. 202 tests.
+Standard library only. 208 tests.
 
 ## Looking at it
 

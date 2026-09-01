@@ -321,3 +321,60 @@ class TestItFitsTheInterfaceItClaimsTo(ProviderTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheRocksReachThePaper(ProviderTestCase):
+    """
+    The other end of the marks layer, and the one a captain actually gets to use.
+
+    `hazards_touching` answers what a hull would hit; this answers what the paper should
+    show. M1.7 measured why the second cannot be derived from the first by sampling: a
+    four-hundred-metre grid finds this pinnacle in one chart in sixty-four. The rock has
+    to arrive as a symbol or it does not arrive at all.
+    """
+
+    def test_the_pinnacle_belongs_on_the_paper(self):
+        keys = [d.key for d in self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0)]
+        self.assertIn("pinnacle", keys)
+        self.assertIn("drying rock", keys)
+
+    def test_a_sheet_that_does_not_reach_it_does_not_show_it(self):
+        near = self.local(self.named("pinnacle").at)
+        far = Position(near.x + 40_000.0, near.y + 40_000.0)
+        keys = [d.key for d in self.provider.charted_dangers(far, 2_000.0)]
+        self.assertNotIn("pinnacle", keys)
+
+    def test_the_worst_news_is_first(self):
+        found = self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0)
+        tops = [danger.top_z for danger in found]
+        self.assertEqual(tops, sorted(tops, reverse=True))
+
+    def test_the_paper_and_the_physics_are_one_list(self):
+        """
+        The property that makes this worth having. A chart showing one set of rocks while
+        the hull was measured against another would be a chart that lies in a new and
+        more interesting way.
+
+        """
+        here = self.local(self.named("pinnacle").at)
+        drawn = self.provider.charted_dangers(here, 3_000.0)
+        struck = self.provider.hazards_touching(
+            Position(here.x - 400.0, here.y), Position(here.x + 400.0, here.y), width=8.0
+        )
+        for danger in struck:
+            self.assertIn(danger.key, [shown.key for shown in drawn])
+
+    def test_the_box_is_square_because_the_paper_is(self):
+        """A rock off the corner of the sheet is still on the sheet."""
+        here = self.local(self.named("pinnacle").at)
+        corner = Position(here.x - 900.0, here.y - 900.0)
+        keys = [d.key for d in self.provider.charted_dangers(corner, 1_000.0)]
+        self.assertIn("pinnacle", keys)
+
+    def test_a_region_with_nothing_marked_shows_nothing(self):
+        from worldbuilder.bathymetry.features import Features
+
+        bare = WorldbuilderTerrain(
+            self.world, self.region, region_name="demo", features=Features()
+        )
+        self.assertEqual(bare.charted_dangers(Position(0.0, 0.0), 60_000.0), ())
