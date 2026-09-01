@@ -138,6 +138,27 @@ class Continentality:
         """
         return self._noise.fbm(point, BASE_FREQUENCY, OCTAVES)
 
+    def above_shore(self, point):
+        """
+        How far above the shoreline this point stands, in field units.
+
+        Args:
+            point (SpherePoint): Anywhere on the planet.
+
+        Returns:
+            value (float): Zero exactly at the coast, positive inland.
+
+        Notes:
+            The raw field is *not* zero at the shore - sea level is a calibrated quantile
+            of it, chosen to give the asked-for land fraction, and that threshold is
+            nowhere near zero. Anything wanting to know how far the coast is has to
+            measure from here, and the first version of the shelf did not: it estimated
+            the distance to where the raw field crossed zero and reported coastlines
+            fifteen hundred kilometres away.
+
+        """
+        return self.at(point) - self._shore
+
     def base_elevation(self, point):
         """
         Args:
@@ -161,10 +182,19 @@ class Continentality:
             leave room for one, and a gentle ramp here would have used up the space.
 
         """
-        above = (self.at(point) - self._shore) / self._spread
+        above = self.above_shore(point) / self._spread
         if above >= 0.0:
             return CONTINENT_M * min(1.0, above) ** 0.75
-        return ABYSS_M * min(1.0, -above) ** 0.5
+        # Linear on the seaward side, and that number was measured rather than chosen.
+        #
+        # It began at 0.5, on the reasoning that a bimodal planet wants a *narrow*
+        # transition so that M1.5 has room to build a shelf into it. That went too far:
+        # at an exponent of a half the seabed was already a thousand metres down eighty
+        # kilometres offshore, so there was no room for a shelf at all and the shelf
+        # would have been inventing nine hundred metres of ground rather than shaping it.
+        # Linear puts that same point at about two hundred and forty metres, which is a
+        # margin a shelf can plausibly correct.
+        return ABYSS_M * min(1.0, -above)
 
     def gradient(self, point):
         """
