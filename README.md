@@ -71,10 +71,41 @@ coordinates at all sit on a planet and still have a dock at an exact latitude.
   world to tell a ship how deep its own water is.
 - **Determinism, not statelessness.** Generated-once-and-stored is still deterministic.
   Only the functional fields need answering cheaply at arbitrary coordinates.
+- **Detail is texture; features are placed.** Noise makes roughness and nothing else. A
+  bank, a bar or a reef is a thing somebody put somewhere, so finding one on a chart means
+  something.
+- **A chart has two channels.** Soundings come from sampling the terrain; isolated dangers
+  come from a marks layer. A hundred-and-forty-metre pinnacle is not smoothed away by a
+  four-hundred-metre grid, it is *missed* - and missed differently depending on where the
+  grid falls, so it would blink as a ship moved.
+
+## What is built
+
+    worldbuilder/geometry/      unit vectors, sphere points, tangent frames
+    worldbuilder/plates/        plates, Euler poles, margins, relative motion
+    worldbuilder/terrain/       continentality, tectonics, band-limited detail, surface
+    worldbuilder/bathymetry/    the shelf, and explicitly placed features
+    worldbuilder/regions/       the demonstration coast
+    worldbuilder/debug/         diagnostics, all of which write PPM and need no libraries
+
+Standard library only. 135 tests.
+
+## Looking at it
+
+    python -m worldbuilder.debug.harbour            the demonstration coast, twice
+    python -m worldbuilder.debug.macro_map          the whole planet
+    python -m worldbuilder.debug.lod_shift          what zoom costs a coastline
+    python -m worldbuilder.debug.projection_error   the region cap, measured
+
+`harbour` is the one worth running. It draws the same water twice - as the terrain holds
+it, and as a chart sampling every four hundred metres would print it - and the difference
+between those two renders is the whole argument for how charts have to be built.
 
 ## Layout
 
+    CHANGELOG.md                             phase by phase, with the measurements
     docs/design/anchoring-architecture.md    the core: anchors, seams, authority
     docs/design/2026-08-31-planet-design.md  decisions and what they were taken against
     docs/design/2026-08-31-generator-spec.md the generator itself
+    docs/design/mark-1-scope.md              what Mark 1 is for, and each phase result
     docs/design/gpt-brief.md                 the brief sent for outside review

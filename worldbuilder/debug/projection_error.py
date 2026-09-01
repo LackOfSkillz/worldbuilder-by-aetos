@@ -24,7 +24,7 @@ Instrumentation, not product. Run it directly.
 
 import math
 
-from ..geometry.sphere import EARTH_RADIUS_M, SpherePoint
+from ..geometry.sphere import EARTH_RADIUS_M
 from ..geometry.tangent import TangentFrame
 
 #: Ranges to report, in metres. Chosen to bracket every plausible region size, from a
@@ -94,8 +94,13 @@ def measure(latitude_deg=0.0, radius_m=EARTH_RADIUS_M):
 
 def report(latitude_deg=0.0):
     """Print the table. The whole point of the exercise."""
-    print(f"  azimuthal equidistant, frame centred at {latitude_deg:.0f} degrees latitude\n")
-    print(f"  {'range':>10}  {'radial error':>16}  {'transverse error':>18}  {'as a fraction':>14}")
+    print(
+        f"  azimuthal equidistant, frame centred at {latitude_deg:.0f} degrees latitude\n"
+    )
+    print(
+        f"  {'range':>10}  {'radial error':>16}  "
+        f"{'transverse error':>18}  {'as a fraction':>14}"
+    )
     print(f"  {'-' * 10}  {'-' * 16}  {'-' * 18}  {'-' * 14}")
     for row in measure(latitude_deg):
         print(

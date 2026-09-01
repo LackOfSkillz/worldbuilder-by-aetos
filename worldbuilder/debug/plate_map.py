@@ -12,7 +12,6 @@ not run.
 Run directly:  python -m worldbuilder.debug.plate_map
 """
 
-import math
 
 from ..geometry.sphere import SpherePoint
 from ..plates.generation import DEFAULT_PLATE_COUNT, plates_for

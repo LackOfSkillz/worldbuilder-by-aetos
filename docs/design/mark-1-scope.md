@@ -152,3 +152,199 @@ calls would move every ship it held.
 
 23 tests, covering both poles exactly, the band just off them, the antimeridian from both
 sides, and the local-sphere-local round trip at five frames.
+
+---
+
+# M1.7 result: placed features, and the second channel a chart needs
+
+Everything before this phase decides what ordinary ground looks like. This is the other
+channel: a short list of named things, stamped where somebody wants them.
+
+The division only became defensible because M1.6 proved its half of it. Detail makes
+texture and demonstrably not landforms - land fraction moves by under two per cent when it
+is applied - so a bank on the chart is a bank somebody placed, and finding one means
+something. Had noise been allowed to make plausible shoals, this phase would have had
+nothing left to do and every hazard in the world would have been an accident of a spectrum.
+
+## Constructed, not found
+
+The obvious move is to search the globe for a coast with a good natural harbour. That needs
+a global enumeration pass - sample the planet, score every coastal cell, keep the best -
+which is exactly the stored-world machinery Mark 1 exists to avoid.
+
+So the coast was chosen for its *ordinary* virtues, which a few thousand samples can find,
+and the interesting parts were placed.
+
+## Choosing it took three attempts, and each failure was a measurement of the wrong thing
+
+**First: the land gradient measured at the wrong place.** A sweep kept coasts at mid
+latitude, no tectonic contribution worth speaking of, a monotonic shelf, and land rising
+inland. Nineteen survived, the best was taken, and the render showed no harbour at all -
+just a slightly deeper patch of an already-submerged plain. The land rose at four tenths of
+a metre a kilometre, because "rising inland" had been measured at the *sampled candidate*,
+which sat twenty kilometres inland of the actual shore.
+
+**Second: the world does not have the coast I was looking for.** Measured at the waterline
+across seventy-two monotonic passive coasts, this planet offers a median of four metres of
+land four kilometres inland and a best of twenty-seven. Its margins are gentle everywhere.
+That is not a defect - a passive margin *is* gentle, and the shelf phase was built to make
+it so - but it means a harbour here is a low-lying one with moles rather than a fjord, and
+the demonstration had to accept the world it was placed in.
+
+**Third: the alongshore axis was not parallel to the shore.** The seaward bearing had been
+taken from the steepest descent of *continentality*. A shoreline is a contour of the
+**finished** field, and the shelf and the tectonics both tilt it, so those are different
+directions. A line meant to run parallel to the beach two kilometres inland went from
+fourteen metres of land at one end to fourteen metres of water at the other, and a harbour
+cut on it had open sea on one flank.
+
+Taken from the structural field instead, the same line holds between 6.3 and 7.5 metres
+over sixteen kilometres, which is what parallel to a shore means:
+
+    anchor        21.5841 S, 149.8703 E
+    seaward       296.5 degrees true
+    inland        +3 m at 1 km, +6 at 2, +13 at 4, +31 at 10
+    seaward       -6 m at 2 km, -25 at 8, -50 at 16, -121 at 40
+
+The lesson is one this project keeps relearning: **a diagnostic that measures a proxy tells
+you about the proxy.** Land fraction was measured on equirectangular pixels in M1.3, the
+coastal distance was measured to the wrong zero in M1.5, and here the coast was measured
+with the wrong gradient. Each time, the generator was right.
+
+## Composition is explicit, and it is one-way
+
+A feature says what the ground should be and how it should argue with what is there.
+`RAISE` may only make it shallower, `CARVE` only deeper, `SHAPE` either. Adding offsets
+would have let a bank inside a channel cancel out into ordinary seabed.
+
+**One-way is not a hard decision in disguise.** A raise whose target is already below the
+ground contributes nothing, and at the moment the two are equal it contributes nothing
+either - so the switch happens exactly where the effect is zero, and the ground stays
+continuous. That is the same argument every tectonic gate in M1.4 had to survive.
+
+The *authority* a feature has over detail needed that argument made a second time and
+differently. It would have jumped from nothing to full weight the instant a feature began
+to apply, putting a ring of abruptly smooth seabed around every bank. It ramps over three
+metres of relief instead - which is also the behaviour worth having, since a feature
+reshaping the bed by centimetres has no business taking its texture away.
+
+## Two placement bugs, both found by measuring
+
+Neither was visible in a render, and both are the kind that would have been argued about.
+
+**The approach channel dredged away the harbour bar.** Listed after the bar and long
+enough to reach it, so it cut straight through the one feature that makes a harbour
+interesting. The bar read -7.4 m where it was stated at -3.2. Order in the list is
+composition; the channel now starts outside the bar, which is also the real story, because
+a bar is the thing a dredger cannot keep clear.
+
+**Both flanking banks sat on top of the channel they were meant to flank.** Given an
+alongshore bearing, their thirteen-kilometre length ran *parallel to the beach* rather than
+out to sea, so each of them covered the leading line. A bank flanking a channel runs with
+it.
+
+**And the channel itself was a no-op.** Stated at fifteen metres on a shelf already
+twenty-five metres down eight kilometres out, a one-way carve could not fill - correctly -
+so the feature contributed nothing anywhere along its length. Deepened to thirty and kept
+short enough not to reach back over the bar, the approach now reads -30 m on the leading
+line with the banks at -13 and -9.5 either side, which is a gut worth staying in.
+
+## The measurement the phase exists for
+
+An isolated pinnacle: a hundred and forty metres across, standing twenty-four metres proud
+of a twenty-eight-metre bottom. Sixty-four chart grids were swept across it at each of
+three resolutions, because a chart is centred on the ship and its phase relative to a fixed
+rock is arbitrary and changes as she moves.
+
+| chart spacing | grids that found it | shoalest sounding printed |
+|---|---|---|
+| 400 m | 1 in 64 | -21.6 m to -3.5 m |
+| 200 m | 5 in 64 | -21.1 m to -3.5 m |
+| 100 m | 21 in 64 | -20.9 m to -3.5 m |
+
+Three things follow, and the third is the one that matters.
+
+**It is missed, not smoothed.** Sixty-three grids in sixty-four print twenty metres of
+water over a rock with three and a half on it.
+
+**Sampling finer buys hit rate, not certainty.** At a hundred metres - a quarter the cell
+area and four times the cost - most grids still miss it.
+
+**Whether it appears depends on where the grid falls**, which makes it a correctness
+problem rather than a fidelity one. The same rock reads -21.6 m or -3.5 m depending on
+nothing but grid phase, so it would blink in and out as a ship moved. A hazard that blinks
+is worse than one never drawn.
+
+Hence the two channels. Soundings come from sampling terrain; isolated dangers come from
+`marks_near`, the way real charts give them symbols rather than contours. The terrain still
+carries the rock at full height for anything that asks canonically - which is everything
+that can run aground on it.
+
+## What gets marked is a measurement, not a judgement
+
+The first rule was a size heuristic - mark anything under five hundred metres across - and
+the render showed it was wrong. It marked the pinnacle and the drying rock and stopped.
+
+It left **the moles**, which are two kilometres long and three hundred and forty metres
+wide, so a four-hundred-metre grid prints six metres of water over a four-metre breakwater.
+It left **the harbour bar**, over whose three-metre crest the same grid prints seven. Both
+are large features; both are narrow in one dimension, which is all sampling cares about.
+
+So the rule is stated as the thing it was standing in for: **a feature is marked exactly
+when a chart would lie about it.** Measured over every feature in the region, as the
+difference between the truth and the shoalest sounding a four-hundred-metre lattice would
+print near it - positive meaning the chart claims more water than there is, which is the
+only direction that drowns anybody:
+
+| feature | truth | charted | the chart is |
+|---|---|---|---|
+| pinnacle | -3.5 m | -27.6 m | optimistic by 24.1 m |
+| drying rock | +1.0 m | -14.1 m | optimistic by 15.1 m |
+| north mole | +4.0 m | -6.6 m | optimistic by 10.6 m |
+| harbour bar | -3.2 m | -7.3 m | optimistic by 4.1 m |
+| north bank | -6.0 m | -6.1 m | right |
+| approach channel | -30.0 m | -30.0 m | right |
+| headland | +70.0 m | +69.8 m | right |
+| harbour basin | -9.0 m | -6.0 m | pessimistic, which is safe |
+
+The two sets separate cleanly - nothing marked is under-reported by less than four metres,
+nothing unmarked by more than nothing - and the test asserts the equivalence rather than
+the size, so a feature added later cannot quietly be both dangerous and unmarked.
+
+## Testing steep against discontinuous
+
+A pinnacle rising twenty-four metres in seventy is *supposed* to be abrupt, so the fixed
+per-step threshold every earlier phase used would either pass a cliff or fail a rock.
+Refinement is the test instead: sample a line across the feature at N points and at 2N, and
+a continuous function roughly halves its worst neighbour-to-neighbour change while a step
+function cannot. Applied to elevation and to authority alike.
+
+## What is here
+
+    harbour basin       somewhere to lie              -9 m, kept
+    entrance            a gut through the shore       -9 m, 800 m wide
+    two moles           arms a flat coast cannot make +4 m, either side of the entrance
+    bar                 the reason for a tide table   -3.2 m across the mouth
+    approach channel    a dredged lane                -30 m, starting outside the bar
+    two banks           a gut worth staying in        -6 m and -7.5 m either side
+    drying rock         a mark that is land at datum  +1.0 m, 90 m across
+    pinnacle            the argument for marks        -3.5 m, 140 m across, in 24 of water
+    headland            a landfall                    +70 m
+    steep-to water      nowhere to anchor             -32 m within 4 km of the shore
+
+28 new tests, 135 in total. The repository also gained a flake8 configuration, which it had
+never had, and the sixty-odd pre-existing violations it immediately found are fixed.
+
+## One thing measured and deliberately not fixed here
+
+Placed features hold their stated shape exactly - the bar reads -3.2 m canonically, both
+marks read their targets to a tenth. The **ordinary shelf around them** does not: detail
+moves the bottom by twelve to fifteen metres in four to ten kilometres of water, because
+M1.6 gives coastal ground thirty-five metres of amplitude and the shelf weight does not
+pull it down far enough this close in.
+
+That is within everything M1.6 asserted and measured, so it is not a regression. It is also
+more roughness than a demonstration where a player navigates a twenty-metre channel wants.
+Retuning it belongs to a phase that can re-measure M1.6's coastline-shift table afterwards,
+not to this one - changing an amplitude here would quietly invalidate a published result.
+Recorded rather than silently adjusted.

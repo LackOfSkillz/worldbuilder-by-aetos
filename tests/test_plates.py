@@ -351,7 +351,8 @@ class TestMarginDistanceAgainstBruteForce(unittest.TestCase):
     def setUp(self):
         self.plates = plates_for(SEED)
 
-    def _walked(self, point, radius_m=EARTH_RADIUS_M, bearings=72, steps=260, reach_m=900_000.0):
+    def _walked(self, point, radius_m=EARTH_RADIUS_M, bearings=72, steps=260,
+                reach_m=900_000.0):
         """
         Brute force: how far to walk before standing on a different plate.
 
@@ -401,4 +402,6 @@ class TestMarginDistanceAgainstBruteForce(unittest.TestCase):
         for point in scattered(40):
             walked = self._walked(point)
             if math.isfinite(walked):
-                self.assertLessEqual(self.plates.margin_at(point).distance_m, walked + 8000.0)
+                self.assertLessEqual(
+                    self.plates.margin_at(point).distance_m, walked + 8000.0
+                )

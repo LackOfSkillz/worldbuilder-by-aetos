@@ -23,7 +23,6 @@ this near a coast". M1.4 produced four separate cliffs from four hard decisions 
 continuous quantities, and every equivalent temptation here is answered with a weight.
 """
 
-import math
 from dataclasses import dataclass
 
 from ..geometry.sphere import EARTH_RADIUS_M

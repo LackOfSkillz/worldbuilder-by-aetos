@@ -119,7 +119,9 @@ class Continentality:
             ring = math.sqrt(max(0.0, 1.0 - z * z))
             angle = golden * index
             values.append(
-                self.at(SpherePoint(Vec3(math.cos(angle) * ring, math.sin(angle) * ring, z)))
+                self.at(
+                    SpherePoint(Vec3(math.cos(angle) * ring, math.sin(angle) * ring, z))
+                )
             )
         values.sort()
         shore = values[int((1.0 - self.land_fraction) * (len(values) - 1))]

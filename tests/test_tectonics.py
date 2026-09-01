@@ -20,7 +20,7 @@ import math
 import time
 import unittest
 
-from worldbuilder.geometry.sphere import EARTH_RADIUS_M, SpherePoint
+from worldbuilder.geometry.sphere import SpherePoint
 from worldbuilder.geometry.tangent import TangentFrame
 from worldbuilder.geometry.vectors import Vec3
 from worldbuilder.plates.generation import plates_for

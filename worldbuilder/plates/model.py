@@ -19,7 +19,6 @@ and the boundaries are exactly where that error would show.
 from dataclasses import dataclass
 
 from ..geometry.sphere import SpherePoint
-from ..geometry.vectors import Vec3
 
 
 @dataclass(frozen=True)

@@ -58,7 +58,9 @@ class PlateSet:
         self._bisectors = tuple(
             tuple(
                 None
-                if other is plate or (plate.seed.vector - other.seed.vector).length() <= DEGENERATE
+                if other is plate or (
+                    plate.seed.vector - other.seed.vector
+                ).length() <= DEGENERATE
                 else (plate.seed.vector - other.seed.vector).normalised()
                 for other in self.plates
             )

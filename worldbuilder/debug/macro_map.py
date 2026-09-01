@@ -38,11 +38,16 @@ def _ground(metres):
         rise = min(1.0, metres / 2200.0)
         return (int(70 + 150 * rise), int(105 + 100 * rise), int(60 + 70 * rise))
     depth = min(1.0, -metres / 6500.0)
-    return (int(20 + 25 * (1 - depth)), int(60 + 95 * (1 - depth)), int(90 + 120 * (1 - depth)))
+    return (
+        int(20 + 25 * (1 - depth)),
+        int(60 + 95 * (1 - depth)),
+        int(90 + 120 * (1 - depth)),
+    )
 
 
 def _contribution(metres):
-    """Red where the plates lift the ground, blue where they drop it, black where neither."""
+    """Red where the plates lift the ground, blue where they drop it, black for
+    neither."""
     if metres > 0.0:
         weight = min(1.0, metres / 1600.0)
         return (int(30 + 225 * weight), int(30 + 60 * weight), 30)

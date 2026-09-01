@@ -17,7 +17,7 @@ import math
 import time
 import unittest
 
-from worldbuilder.geometry.sphere import EARTH_RADIUS_M, SpherePoint
+from worldbuilder.geometry.sphere import SpherePoint
 from worldbuilder.geometry.tangent import TangentFrame
 from worldbuilder.geometry.vectors import Vec3
 from worldbuilder.terrain.continentality import Continentality
@@ -152,7 +152,8 @@ class TestTheShapeOfTheWorld(unittest.TestCase):
         crossings = 0
         previous = None
         for step in range(201):
-            metres = self.land.base_elevation(frame.local_to_sphere(-500_000.0 + step * 5_000.0, 0.0))
+            out = frame.local_to_sphere(-500_000.0 + step * 5_000.0, 0.0)
+            metres = self.land.base_elevation(out)
             wet = metres < 0.0
             if previous is not None and wet != previous:
                 crossings += 1

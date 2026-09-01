@@ -7,14 +7,22 @@ ground at this point. Everything else in the engine exists to answer that.
     continentality      where land is                    structural
     tectonics           what the plates did to it        structural
     shelf               what the coast does to the water structural
+    features            what somebody put there          structural
     detail              roughness                        resolution-aware
 
-**Only the last of those thins out with zoom.** The first three are geography and answer
-the same at every scale; a chart drawn at twenty miles shows the same world as one drawn
-at one, generalised rather than replaced. If structure faded with sampling, zooming out
-would not simplify the coastline - it would move it.
+**Only the last of those thins out with zoom.** The rest are geography and answer the same
+at every scale; a chart drawn at twenty miles shows the same world as one drawn at one,
+generalised rather than replaced. If structure faded with sampling, zooming out would not
+simplify the coastline - it would move it.
+
+**Features come after the shelf and before detail, and that ordering is the phase.** After
+the shelf, because a harbour is cut into real bathymetry rather than instead of it. Before
+detail, because detail then knows to get out of their way: thirty-five metres of coastal
+roughness would erase a bar standing four metres proud of the bottom, and a bar nobody can
+find is not a bar.
 """
 
+from ..bathymetry.features import Features
 from ..bathymetry.shelf import Shelf
 from ..geometry.sphere import EARTH_RADIUS_M
 from ..plates.generation import DEFAULT_PLATE_COUNT, plates_for
@@ -29,8 +37,9 @@ class Surface:
 
     Notes:
         Built from a seed and a handful of parameters, and holding a few kilobytes: the
-        plate records, the continentality calibration, and two noise lattices that fill
-        themselves in as they are used. Nothing resembling a map is stored anywhere.
+        plate records, the continentality calibration, two noise lattices that fill
+        themselves in as they are used, and however many features somebody placed. Nothing
+        resembling a map is stored anywhere.
 
     """
 
@@ -40,6 +49,7 @@ class Surface:
         radius_m=EARTH_RADIUS_M,
         plate_count=DEFAULT_PLATE_COUNT,
         land_fraction=LAND_FRACTION,
+        features=None,
     ):
         self.world_seed = world_seed
         self.radius_m = radius_m
@@ -48,6 +58,11 @@ class Surface:
         self.tectonics = Tectonics(self.plates, self.land, radius_m)
         self.shelf = Shelf(self.tectonics, self.land, radius_m)
         self.detail = Detail(world_seed, radius_m)
+        if features is None:
+            features = Features((), radius_m)
+        elif not isinstance(features, Features):
+            features = Features(features, radius_m)
+        self.features = features
 
     def structural_m(self, point):
         """
@@ -60,7 +75,7 @@ class Surface:
             metres (float): Relative to datum.
 
         """
-        return self.shelf.elevation_m(point)
+        return self.features.apply(point, self.shelf.elevation_m(point))[0]
 
     def elevation_m(self, point, resolution_m=None):
         """
@@ -87,7 +102,10 @@ class Surface:
         # for its weight and the tectonics for their offset separately recomputed the
         # gradient twice and the plate work three times, for four times the cost.
         reading = self.shelf.evaluate(point)
+        shaped, authority = self.features.apply(point, reading.elevation_m)
         amplitude = self.detail.amplitude_m(
-            point, reading.elevation_m, reading.weight, reading.tectonic_m
+            point, shaped, reading.weight, reading.tectonic_m
         )
-        return reading.elevation_m + self.detail.offset_m(point, amplitude, resolution_m)
+        # Where somebody stated a shape, roughness defers to it.
+        amplitude *= 1.0 - authority
+        return shaped + self.detail.offset_m(point, amplitude, resolution_m)

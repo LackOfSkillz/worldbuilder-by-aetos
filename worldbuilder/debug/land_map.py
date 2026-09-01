@@ -33,7 +33,11 @@ def _shade(metres):
         rise = min(1.0, metres / 900.0)
         return (int(70 + 120 * rise), int(105 + 85 * rise), int(60 + 55 * rise))
     depth = min(1.0, -metres / 4800.0)
-    return (int(20 + 25 * (1 - depth)), int(60 + 95 * (1 - depth)), int(90 + 120 * (1 - depth)))
+    return (
+        int(20 + 25 * (1 - depth)),
+        int(60 + 95 * (1 - depth)),
+        int(90 + 120 * (1 - depth)),
+    )
 
 
 def _write(path, width, height, pixels):
@@ -81,7 +85,7 @@ def render(world_seed, width=WIDTH, height=HEIGHT, into="."):
 
     print(f"  world {world_seed}")
     print(f"    land            {100.0 * dry / total:5.1f} % of the surface")
-    print(f"    correlation between continentality and distance-to-plate-edge:")
+    print("    correlation between continentality and distance-to-plate-edge:")
     print(f"                    {correlation:+.4f}   (wanted: near zero)")
     print(f"    wrote {path}")
     return correlation

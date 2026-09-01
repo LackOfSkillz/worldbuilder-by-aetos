@@ -11,7 +11,6 @@ makes a generated world's geology look like it has reasons.
 out at the point somebody asks about, from the two plates' motion there.
 """
 
-import math
 from dataclasses import dataclass
 
 from ..geometry.sphere import EARTH_RADIUS_M
@@ -101,7 +100,9 @@ def motion_between(near, far, point, normal, radius_m=EARTH_RADIUS_M):
         kind = CONVERGENT
     else:
         kind = DIVERGENT
-    return Motion(margin=None, closing_m_per_myr=closing, sliding_m_per_myr=sliding, kind=kind)
+    return Motion(
+        margin=None, closing_m_per_myr=closing, sliding_m_per_myr=sliding, kind=kind
+    )
 
 
 def motion_at(point, plates, radius_m=EARTH_RADIUS_M):

@@ -206,8 +206,12 @@ class Tectonics:
         to_inboard = -distance_m + PROBE_M
         to_outboard = -distance_m - PROBE_M
         return Setting(
-            inboard=self.land.at(frame.local_to_sphere(east * to_inboard, north * to_inboard)),
-            outboard=self.land.at(frame.local_to_sphere(east * to_outboard, north * to_outboard)),
+            inboard=self.land.at(
+                frame.local_to_sphere(east * to_inboard, north * to_inboard)
+            ),
+            outboard=self.land.at(
+                frame.local_to_sphere(east * to_outboard, north * to_outboard)
+            ),
         )
 
     def offset_m(self, point):
