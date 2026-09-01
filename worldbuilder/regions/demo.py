@@ -35,6 +35,13 @@ What is here, and what each is for:
     headland            a landfall                    high ground, seen from far off
     steep-to water      nowhere to anchor             deep water hard against the shore
     six islands         somewhere to go               a chain south-east of the approach
+    a tidal creek       water that comes and goes     a channel inland, dry at low water
+
+The creek is the coast's argument for the tide. It is cut inland from the harbour, and its
+bed climbs as it goes, so the sea reaches further up it at high water than at low - which
+means its head is not a place but a *time*. Nothing computes where the water stops; the
+channel and the tide decide between them, and at springs the sea gets a good deal further
+than at neaps. A boat that goes up on a making tide and dawdles comes back down through mud.
 
 The islands are what make it a world rather than a harbour. A coast alone gives a player
 one thing to do - leave, and come back - and every question a chart answers is a question
@@ -133,6 +140,37 @@ ISLANDS = (
     ("Sandhaven", 470.0),
     ("Outer Skerry", 210.0),
 )
+
+# --- the creek --------------------------------------------------------------
+
+#: The reaches of the tidal creek, from the harbour inland: offshore, alongshore, the bed
+#: it is cut to, and how wide it runs.
+#:
+#: The bed climbs from six metres below datum to a metre and a half above it, which is what
+#: puts the tidal limit inside the tide's own range rather than outside it. A creek cut
+#: entirely below low water is a canal - always navigable, and it teaches nothing. One cut
+#: entirely above high water is a dry ditch. The interesting part is the stretch the sea
+#: covers and uncovers, and these numbers exist to put that stretch where a player will sail
+#: into it.
+#: The seaward reach's bed does nothing, and that is correct rather than an oversight. It
+#: lies inside the harbour basin, which is dredged to nine metres, and a carve only ever
+#: deepens - so the ground there comes from the basin and this figure is never reached. It
+#: is kept because it states the intent (this reach must be at least this deep) and would
+#: take effect if the basin were ever made shallower. Said out loud because a number that
+#: quietly does nothing is the kind that gets edited for an afternoon.
+CREEK_REACHES = (
+    (-2_600.0, 200.0, -6.0, 260.0),
+    (-3_600.0, 700.0, -4.5, 200.0),
+    (-4_700.0, 1_300.0, -3.0, 160.0),
+    (-5_800.0, 1_900.0, -1.5, 120.0),
+    (-6_900.0, 2_500.0, 0.0, 90.0),
+    (-8_000.0, 3_100.0, 1.5, 70.0),
+)
+
+#: How far along its own course each reach reaches, as a fraction of the gap to the next.
+#: Over one, so consecutive reaches overlap and the channel is continuous - under it, the
+#: creek would be a string of ponds with sills between them.
+CREEK_OVERLAP = 0.75
 
 #: The world these coordinates were measured on. Placing them on another seed puts a
 #: harbour in whatever happens to be there, which may be the middle of an ocean.
@@ -377,7 +415,75 @@ def demo_region(radius_m=EARTH_RADIUS_M):
         ),
     ]
     placed.extend(_archipelago(coast))
+    placed.extend(_creek(coast))
     return Region("demonstration coast", coast, REACH_M, Features(placed, radius_m))
+
+
+def _creek(coast):
+    """
+    The tidal creek, cut inland from the harbour.
+
+    Args:
+        coast (Coast): Somewhere to place it from.
+
+    Returns:
+        reaches (list): One `Feature` per reach, seaward first.
+
+    Notes:
+        Carved rather than raised, so it takes the ground down to its bed wherever the
+        ground is higher and does nothing where it is already lower. That is what lets one
+        list of reaches run from a dredged harbour basin out into rising country without
+        anybody working out where the land starts.
+
+        Each reach is turned to face the next, and made long enough to overlap it. A creek
+        of features that merely touch is a string of ponds with sills between them, and the
+        sills would be invisible on any chart and absolutely present to a keel.
+
+        The last reach has nothing to face, so it keeps the bearing of the one before -
+        which is what a river does at its head anyway.
+
+    """
+    cut = []
+    for index, (offshore, along, bed_m, width_m) in enumerate(CREEK_REACHES):
+        ahead = CREEK_REACHES[min(index + 1, len(CREEK_REACHES) - 1)]
+        step = (ahead[0] - offshore, ahead[1] - along)
+        if step == (0.0, 0.0):
+            behind = CREEK_REACHES[index - 1]
+            step = (offshore - behind[0], along - behind[1])
+        run = math.hypot(*step)
+        cut.append(
+            Feature(
+                kind=f"creek reach {index + 1}",
+                at=coast.at(offshore, along),
+                target_m=bed_m,
+                length_m=run * (1.0 + CREEK_OVERLAP),
+                width_m=width_m,
+                bearing_deg=_bearing_along(coast, step),
+                compose=CARVE,
+                substrate=MUD,
+            )
+        )
+    return cut
+
+
+def _bearing_along(coast, step):
+    """
+    Args:
+        coast (Coast): The frame the step is expressed in.
+        step (tuple): `(offshore, alongshore)` metres.
+
+    Returns:
+        bearing (float): Degrees true.
+
+    Notes:
+        The coast's two axes are perpendicular and alongshore is seaward turned ninety
+        degrees, so a step in the two of them is a rotation of the seaward bearing. Doing
+        it this way rather than by hand is what stops the third feature laid on a diagonal
+        from running at an angle to the two either side of it.
+
+    """
+    offshore, along = step
+    return (coast.seaward_deg - math.degrees(math.atan2(along, offshore))) % 360.0
 
 
 def _archipelago(coast):

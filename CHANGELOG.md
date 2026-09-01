@@ -13,6 +13,28 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### Added — a creek whose head is a time
+
+- **A tidal creek**, cut inland from the harbour in six reaches, its bed climbing from seven
+  metres below datum to a metre and a half above. Nothing computes where the water stops:
+  the channel and the water level decide between them, so the head of the creek moves on its
+  own. Measured — navigable water reaches 3.00 km up at low water springs and 6.13 km at
+  high water, and springs get a kilometre further than neaps.
+- That three-kilometre stretch is the point of it. A boat goes up on a making tide, dawdles,
+  and comes back down through mud.
+- **The generator never mentions a tide**, and the tests do not either. A creek is a shape in
+  the ground; what the water does to it belongs to the maritime contrib, which this must
+  never import. The tests hand the bed a water level as a plain number and ask how far up the
+  water gets — and the whole thing works without either side knowing about the other, which
+  is the separation doing its job rather than a limitation being worked around.
+- The reaches overlap by three quarters of the gap between them, because a creek of features
+  that merely touch is a string of ponds with sills between them — invisible on any chart and
+  entirely present to a keel. Each reach is turned to face the next rather than given the
+  coast's bearing, or every reach on a diagonal would run at an angle to the two either side.
+- Noted rather than left to be rediscovered: the seaward reach's bed figure never takes
+  effect, because it lies inside a basin already dredged deeper and a carve only deepens. A
+  number that quietly does nothing is the kind that gets edited for an afternoon.
+
 ### Added — somewhere to sail to
 
 - **Six islands off the demonstration coast**, strung south-east of the approach: Gannet

@@ -144,6 +144,22 @@ landmasses, how much water lies in the gaps, and how much lies on the way. The c
 deliberately close to the drying rock, because a rock awash between two harbours is the best
 hazard on this coast.
 
+### A creek that comes and goes
+
+A channel runs inland from the harbour, its bed climbing as it goes, so the sea reaches
+further up it at high water than at low. Its head is not a place but a time.
+
+    low water, springs      navigable 3.00 km up
+    high water, neaps       navigable 5.13 km up
+    high water, springs     navigable 6.13 km up
+
+Nothing works that out. The channel is a shape in the ground and the water level is a number,
+and where one meets the other is the head of the creek — so it moves with the tide, and reaches
+further at springs, without either the generator or the game being told to make it.
+
+Which is also why nothing here knows what a tide is. The maritime contrib supplies the water
+level; this supplies the ground. Neither imports the other.
+
 ## Layout
 
     CHANGELOG.md                             phase by phase, with the measurements
