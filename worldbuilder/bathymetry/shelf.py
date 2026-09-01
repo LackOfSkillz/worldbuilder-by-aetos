@@ -77,6 +77,23 @@ def _smooth(fraction):
 
 
 @dataclass(frozen=True)
+class Reading:
+    """
+    The ground at a point, with the expensive intermediates that produced it.
+
+    Attributes:
+        elevation_m (float): Relative to datum, structural only.
+        weight (float): How much say the shelf had, nothing to one.
+        tectonic_m (float): What the plates contributed.
+
+    """
+
+    elevation_m: float
+    weight: float
+    tectonic_m: float
+
+
+@dataclass(frozen=True)
 class Coastal:
     """
     Where a point stands relative to the nearest shore, as far as can be told locally.
@@ -171,13 +188,15 @@ class Shelf:
         break_at = SHELF_BREAK_M * max(0.15, coastal.breadth)
         return SHELF_EDGE_M * _smooth(offshore / break_at)
 
-    def weight(self, point, coastal):
+    def weight(self, point, coastal, tectonic_m=None):
         """
         How much say the shelf has here.
 
         Args:
             point (SpherePoint): Where.
             coastal (Coastal): From `coastal`.
+            tectonic_m (float, optional): The tectonic offset, if the caller already has
+                it. Worked out again if not, which is what makes it worth passing.
 
         Returns:
             weight (float): Nothing to one.
@@ -210,10 +229,43 @@ class Shelf:
         else:
             seaward = 1.0 - _smooth(-offshore / INLAND_REACH_M)
 
-        tectonic = abs(self.tectonics.offset_m(point))
-        authority = 1.0 - _smooth(tectonic / TECTONIC_AUTHORITY_M)
+        if tectonic_m is None:
+            tectonic_m = self.tectonics.offset_m(point)
+        authority = 1.0 - _smooth(abs(tectonic_m) / TECTONIC_AUTHORITY_M)
 
         return seaward * coastal.breadth * authority
+
+    def evaluate(self, point):
+        """
+        The ground here, and the working that produced it.
+
+        Args:
+            point (SpherePoint): Anywhere on the planet.
+
+        Returns:
+            reading (Reading): Elevation, the shelf's weight, and the tectonic offset.
+
+        Notes:
+            The intermediates come back because the layer above wants them and they are
+            expensive. Asking separately cost the gradient twice and the tectonics three
+            times over, which took a whole-pipeline chart from three hundred milliseconds
+            to twelve hundred - a comment claiming the values were "recovered rather than
+            recomputed where it is free" while they were being recomputed.
+
+        """
+        tectonic = self.tectonics.offset_m(point)
+        macro = self.land.base_elevation(point) + tectonic
+
+        coastal = self.coastal(point)
+        if coastal is None:
+            return Reading(elevation_m=macro, weight=0.0, tectonic_m=tectonic)
+
+        weight = self.weight(point, coastal, tectonic)
+        if weight <= 0.0:
+            return Reading(elevation_m=macro, weight=0.0, tectonic_m=tectonic)
+
+        shaped = macro + weight * (self.target_depth_m(coastal) - macro)
+        return Reading(elevation_m=shaped, weight=weight, tectonic_m=tectonic)
 
     def elevation_m(self, point):
         """
@@ -226,13 +278,4 @@ class Shelf:
             metres (float): Relative to datum.
 
         """
-        macro = self.tectonics.elevation_m(point)
-        coastal = self.coastal(point)
-        if coastal is None:
-            return macro
-
-        weight = self.weight(point, coastal)
-        if weight <= 0.0:
-            return macro
-
-        return macro + weight * (self.target_depth_m(coastal) - macro)
+        return self.evaluate(point).elevation_m
