@@ -113,3 +113,42 @@ disposable by definition, so versioning them is ceremony. We are genuinely unsur
 
 **5. What are we about to learn the hard way?**
 Anything you would expect a first seabed to get wrong, that we could simply not get wrong.
+
+---
+
+# M1.1 result: the projection, and the region cap it earns
+
+**Projection chosen: azimuthal equidistant.** Distance and bearing from the frame's origin
+are exact at any range, by construction. The error lives entirely in how two points *away
+from* the origin relate to each other.
+
+Measured rather than asserted, which is what the earlier `(d/R)^2 / 2` guess could not be:
+
+| range | radial error | transverse error | as a fraction |
+|---|---|---|---|
+| 25 km | 0 | 0.01 m | 0.0003 % |
+| 50 km | 0 | 0.09 m | 0.0010 % |
+| 100 km | 0 | 0.71 m | 0.0041 % |
+| 200 km | 0 | 5.68 m | 0.0163 % |
+| 500 km | 0 | 88.76 m | 0.1019 % |
+| 1000 km | 0 | 709.50 m | 0.4087 % |
+
+**The cap: 200 km, from a stated tolerance.** At 200 km the worst error between two charted
+points is under six metres - a third of a cutter's length, and far below the four hundred
+metres between printed soundings on a chart. At 500 km it is 89 m, which is several ship
+lengths and would show as a bad landfall. The tolerance is therefore *error smaller than a
+ship*, and 200 km is where that holds with room to spare.
+
+**The error does not depend on latitude.** Measured at 0, 45 and 80 degrees: identical to
+six decimal places. That is a real consequence of working in unit vectors - high latitudes
+are not a special case, which a latitude-and-longitude implementation could never have
+claimed - and it is why the polar handling is two lines rather than a subsystem.
+
+**At a pole, east is chosen rather than derived.** Every direction from the north pole is
+south and none is east, so the cross product that defines east goes to zero. A fixed
+reference direction is used instead. Which direction is irrelevant; that it is the same one
+on every call is the whole requirement, because a frame that reshuffled itself between two
+calls would move every ship it held.
+
+23 tests, covering both poles exactly, the band just off them, the antimeridian from both
+sides, and the local-sphere-local round trip at five frames.
