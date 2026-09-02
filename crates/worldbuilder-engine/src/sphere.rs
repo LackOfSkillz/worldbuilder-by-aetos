@@ -47,11 +47,7 @@ impl SpherePoint {
             self.vector.z
         };
         let latitude = m::to_degrees(m::asin(clamped));
-        let longitude = if clamped == 1.0 || clamped == -1.0 {
-            0.0
-        } else {
-            m::to_degrees(m::atan2(self.vector.y, self.vector.x))
-        };
+        let longitude = m::to_degrees(m::atan2(self.vector.y, self.vector.x));
         (latitude, longitude)
     }
 
@@ -83,10 +79,23 @@ mod tests {
     }
 
     #[test]
-    fn a_pole_reports_zero_longitude_by_convention() {
+    fn an_exact_pole_vector_reports_zero_longitude() {
+        // atan2(0.0, 0.0) is 0.0, so a vector whose x and y are exactly zero gives zero.
+        // This is the only case where the "longitude is zero at a pole" convention holds.
+        let north = SpherePoint { vector: Vec3::new(0.0, 0.0, 1.0) };
+        let (lat, lon) = north.to_latlon();
+        assert_eq!(lat.to_bits(), 90.0f64.to_bits());
+        assert_eq!(lon.to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn a_pole_built_from_latlon_keeps_its_longitude() {
+        // cos(radians(90)) is 6.123e-17, not 0, so x and y are tiny but non-zero and
+        // atan2 recovers the angle. The Python does exactly this, and the port must
+        // agree with the Python rather than with the tidier story in its docstring.
         let (lat, lon) = SpherePoint::from_latlon(90.0, 137.0).to_latlon();
         assert!((lat - 90.0).abs() < 1e-9, "lat was {}", lat);
-        assert_eq!(lon.to_bits(), 0.0f64.to_bits());
+        assert!((lon - 137.0).abs() < 1e-9, "lon was {}", lon);
     }
 
     #[test]
