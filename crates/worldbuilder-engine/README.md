@@ -111,12 +111,24 @@ finding.
 
 **`TangentFrame` is the first module held to both contracts at once.** `at` -- the frame
 constructor, with its pole fallback chain -- is held strictly: its only transcendental is
-`sqrt`, which IEEE-754 requires to be correctly rounded, and it agreed exactly across 446
-origins and 4,014 component comparisons, including both poles. `local_to_sphere` and
-`sphere_to_local` route through `hypot`, `cos`, `sin`, and `atan2`, so they are held to the
-same 4-ULP bound as `sphere.rs`, for the same libm-versus-libm reason; the worst observed
-divergence across the sweep is 3 ULP, on `sphere_to_local`. Altogether the frame
-conformance section makes roughly 13,390 individual comparisons.
+`sqrt`, which IEEE-754 requires to be correctly rounded, and it agreed exactly across 459
+origins and 4,131 component comparisons, including both poles. (`frame_origins()` sweeps
+`range(-85, 86, 5)` latitudes -- 35 of them, not 34 -- times 13 longitudes, plus 4 named
+points: 35 x 13 + 4 = 459 origins, each contributing 9 component comparisons: 459 x 9 =
+4,131.) `local_to_sphere` and `sphere_to_local` route through `hypot`, `cos`, `sin`, and
+`atan2`, so they are held to the same 4-ULP bound as `sphere.rs`, for the same
+libm-versus-libm reason; the worst observed divergence across the sweep is 3 ULP, on
+`sphere_to_local` -- while `local_to_sphere` came back exact, 0 ULP across the entire
+sweep, even though it is held to the bounded contract too and not the strict one: `cos`,
+`sin`, and `hypot` all sit in its path, and it happened to agree with the Python bit for
+bit anyway. That is a stronger result than the 3-ULP figure alone suggests, and it is the
+point this module makes concrete twice over: a function is bounded because a
+platform-dependent transcendental sits in its path, not because it was observed to
+diverge. Altogether the frame conformance section makes 15,622 individual comparisons,
+counted by instrumenting every `same()`/`close_enough()` call the section's tests make:
+4,131 from `at()`, 6 from the pole-stability check, 6,885 from `local_to_sphere`, 4,590
+from `sphere_to_local` (including the origin/antipode degenerate branch), and 10 from the
+extended round-trip table.
 
 The point this module makes concrete: **the contract split is per code path, not per
 module.** A module is not itself "strict" or "bounded" -- a function is, depending on
