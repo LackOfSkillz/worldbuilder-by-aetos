@@ -166,6 +166,17 @@ impl Continentality {
         }
     }
 
+    /// Where sea level fell for this calibration. Exposed for bindings and tests alike --
+    /// the calibration pair is itself part of the conformance surface, not an internal.
+    pub fn shore(&self) -> f64 {
+        self.shore
+    }
+
+    /// The spread used to normalise `above_shore` before the elevation curve.
+    pub fn spread(&self) -> f64 {
+        self.spread
+    }
+
     #[cfg(test)]
     pub fn shore_for_test(&self) -> f64 {
         self.shore

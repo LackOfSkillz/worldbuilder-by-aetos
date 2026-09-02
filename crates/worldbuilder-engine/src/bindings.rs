@@ -1,10 +1,39 @@
 //! PyO3 surface. Conversion only — no arithmetic lives here, so the maths modules stay
 //! usable from a plain Rust or WASM build with no Python anywhere in the picture.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use pyo3::prelude::*;
 
+use crate::continentality::Continentality;
 use crate::sphere::SpherePoint;
 use crate::vectors::Vec3;
+
+/// Cache of calibrated `Continentality` instances, keyed on `(seed, land_fraction bits,
+/// radius_m bits)`. Calibration is a 4,000-sample sort and costs a few milliseconds;
+/// building one per binding call would make a corpus loop over thousands of points
+/// unusably slow. Keying on the bit pattern of the floats (rather than the floats
+/// themselves) sidesteps `f64: !Eq` while never comparing two distinct callers' values as
+/// equal when they are not bit-identical -- which is exactly the equality the cache is
+/// permitted to use, since anything coarser could serve a value calibrated for a
+/// different land fraction. The map only ever grows, which is fine here: callers pass a
+/// small, fixed number of (seed, land_fraction) pairs per process (tests, or one running
+/// game world), not an unbounded stream.
+type ContinentalityCache = Mutex<HashMap<(u64, u64, u64), Continentality>>;
+
+fn continentality_cache() -> &'static ContinentalityCache {
+    static CACHE: OnceLock<ContinentalityCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_continentality(seed: u64, radius_m: f64, land_fraction: f64) -> Continentality {
+    let key = (seed, radius_m.to_bits(), land_fraction.to_bits());
+    let mut cache = continentality_cache().lock().expect("continentality cache poisoned");
+    *cache
+        .entry(key)
+        .or_insert_with(|| Continentality::new(seed, radius_m, land_fraction))
+}
 
 #[pyfunction]
 pub fn vec3_length(x: f64, y: f64, z: f64) -> f64 {
@@ -97,4 +126,43 @@ pub fn frame_sphere_to_local(
     let origin = SpherePoint { vector: Vec3::new(x, y, z) };
     let f = crate::tangent::TangentFrame::at(&origin, radius_m);
     f.sphere_to_local(&SpherePoint { vector: Vec3::new(px, py, pz) })
+}
+
+#[pyfunction]
+pub fn continentality_calibration(seed: u64, land_fraction: f64) -> (f64, f64) {
+    let c = cached_continentality(seed, crate::sphere::EARTH_RADIUS_M, land_fraction);
+    (c.shore(), c.spread())
+}
+
+#[pyfunction]
+pub fn continentality_at(seed: u64, land_fraction: f64, x: f64, y: f64, z: f64) -> f64 {
+    let c = cached_continentality(seed, crate::sphere::EARTH_RADIUS_M, land_fraction);
+    c.at(&SpherePoint { vector: Vec3::new(x, y, z) })
+}
+
+#[pyfunction]
+pub fn continentality_above_shore(seed: u64, land_fraction: f64, x: f64, y: f64, z: f64) -> f64 {
+    let c = cached_continentality(seed, crate::sphere::EARTH_RADIUS_M, land_fraction);
+    c.above_shore(&SpherePoint { vector: Vec3::new(x, y, z) })
+}
+
+#[pyfunction]
+pub fn continentality_base_elevation(seed: u64, land_fraction: f64, x: f64, y: f64, z: f64) -> f64 {
+    let c = cached_continentality(seed, crate::sphere::EARTH_RADIUS_M, land_fraction);
+    c.base_elevation(&SpherePoint { vector: Vec3::new(x, y, z) })
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn continentality_gradient(
+    seed: u64,
+    land_fraction: f64,
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> (f64, f64) {
+    let c = cached_continentality(seed, radius_m, land_fraction);
+    let g = c.gradient(&SpherePoint { vector: Vec3::new(x, y, z) });
+    (g.east, g.north)
 }
