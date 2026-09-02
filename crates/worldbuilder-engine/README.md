@@ -274,6 +274,90 @@ against placeholder on the pole and rate fields and pass trivially -- false conf
 conformance. The binding contract must change before then to carry real, independently
 varying poles and rates from the Python harness.
 
+## Margins
+
+**The binding fix is real.** `plateset_from_parts` now takes three flat lists -- seeds,
+Euler poles, and rates -- and builds a `Plate` with real, independently-varying values in
+every field, instead of fabricating `pole = seed` and `rate = 0.0` as it did through the
+previous slice. That part of the limitation above is fixed, plainly: the fixture data feeding
+the tests below actually varies pole and rate per plate, not just seed.
+
+**But this slice's tests do not, and cannot, exercise a fabrication regression, and the
+prior report claiming otherwise was wrong.** `margin_at`, `margin_normal`, and `flattened`
+never read `euler_pole` or `rate_rad_per_myr` -- only `Plate::angular_velocity()` does, and
+no binding in this slice calls it. This was not reasoned out; it was proven by mutation
+during review: `plateset_from_parts` was edited back to `pole = seed`, `rate = 0.0`, the
+crate rebuilt, and all 44 conformance tests still passed. The doc comment on
+`plateset_from_parts` in `bindings.rs` says this plainly now, and this section is written to
+match it rather than to repeat the earlier, disproven claim. **The fabrication guard belongs
+to the kinematics slice**, where `angular_velocity` genuinely reads `euler_pole` and
+`rate_rad_per_myr` and a fabricated value would actually be caught -- it must not be assumed
+to exist before then. A claim that carrying real values through a struct field is itself a
+regression test was believed and repeated across two slices before this mutation disproved
+it; treat "the fields are populated" and "something reads them" as separate facts from now
+on, here and in any future binding.
+
+**`margin_at` splits across both conformance contracts, and the split is a property, not
+luck.** Neighbour selection -- which plate is "across" -- is a minimum over bisector sines,
+each computed from a dot product and an `abs`, with no transcendental anywhere in the
+comparison. A discrete choice made on exactly-computed values compares as exact integers
+across languages, so the *identity* of the chosen neighbour is held to the strict contract
+and agrees exactly. Only the last step, converting that sine to a distance in metres, calls
+`asin`, so only the distance is bounded to the 4-ULP contract everything else in this file
+built. One function, two contracts, because the split runs per operation, not per function --
+the same lesson `TangentFrame` recorded above, one level further in.
+
+**Why the minimum is taken over every bisector, not just the nearest one.** `lookup.py`
+records that an earlier version measured only the second-nearest plate's bisector, and the
+answer jumped by five hundred kilometres. The numerator of the sine -- the point's distance
+from a candidate plane -- is continuous as the point moves, but which bisector is
+second-nearest is not: it can hand off from one plane to a completely unrelated one between
+two adjacent points, and the distance measured off the new plane owes nothing to the old
+one. Taking the minimum over every bisector fixes this because a minimum of continuous
+functions is itself continuous, even though the arg-min -- which function attained it -- can
+still jump. `lookup.py` attributes four separate bugs in this module to the same root cause:
+a hard decision taken on a continuous quantity. This is the second of the four; `margins_within`,
+not ported in this slice, carries the other three (the shadow weight, the phantom-bisector
+test, and the fade that replaced a boolean), which is exactly why it gets its own slice
+rather than riding along with this one.
+
+**The minimum sine gap, measured rather than assumed, for the third time in this crate.**
+Across the combined corpus used for margin conformance -- the pinned poles and meridian
+points, roughly 3,000 pseudo-random points, and 1,500 points deliberately built near a
+bisector midpoint and nudged off it, the case most likely to produce a near-tie -- the
+smallest observed gap between the two closest bisector sines at any point is
+`1.3689896544988311e-05` (about 1.37e-5), at the sphere point `(-0.0162, -0.6887, -0.7248)`.
+A ULP at the magnitude these sines take (0.01 to 1.0) is on the order of 1e-16 to 1e-18, so
+the measured gap is roughly eleven orders of magnitude wider than rounding error, in the
+corpus that specifically goes looking for a close call. The neighbour selection is discrete,
+but it is not fragile. This is the third slice in this crate to measure a safety margin
+like this instead of assuming one: the sphere-function ULP bound above ("The bound is
+measured, not assumed") is the first, the `Continentality::calibration` sort-gap check is
+the second, and this is the third.
+
+**A deliberate deviation from the Python, recorded rather than hidden.** The bisector table
+is built by loop position on both sides of it in Rust: `PlateSet::new` fills row and column
+by position, and both `margin_at` and `margin_normal` address it by position on both axes.
+The Python is not internally consistent about which key it uses: `margin_at` addresses the
+table's row by `nearest.index` and its column by position (via `zip(self.plates, ...)`),
+while `margin_normal` addresses both row and column by `.index`. The two Python functions
+only ever agree with each other, and with the Rust, because `generation.py` assigns
+`index=index for index in range(count)` -- position and index are the same number for every
+plate the corpus builds. For a hand-built `PlateSet` where a plate's `index` does not match
+its position in the list, the Python's own two functions would disagree with each other, and
+the Rust -- consistently by-position everywhere -- would disagree with both. That is a real
+difference in behaviour outside the regime this corpus exercises, not a bug being smoothed
+over: it is written down here, in the doc comments on `margin_at` and `margin_normal` in
+`plates.rs`, and in the test file's comment warning against ever building a corpus with
+index != position, so that nobody "strengthens" the suite later by shuffling indices and
+reports a divergence that is really Python's own inconsistency.
+
+Run the margin tests together with the rest of `test_conformance.py` the same way as
+before; 44 tests pass in that file (34 from the earlier `Plate`/`PlateSet` sections plus 10
+new for margins), 284 in the full Python suite, and 74 crate tests plus the 6-test
+`no_std_math` guard in the Rust suite -- all verified by running them, not carried over from
+an earlier report.
+
 ## Constants transcribed from Python: a rule learned the hard way
 
 The noise port's seed multiplier -- the FNV-1a 64-bit prime, `0x100000001B3` in the
