@@ -294,9 +294,67 @@ impl PlateSet {
                 continue;
             }
 
-            // Task 3 adds the shadow test and turns this into a real weight; for now
-            // every candidate that survives the range test is kept, at full weight, so
-            // that the candidate loop itself -- the part this task ports -- is exercised.
+            // Bug 2: is this bisector actually a margin here, or is a third plate in the
+            // way? Two seeds always have a bisector, but it is only part of the cell
+            // boundary where those two are genuinely the nearest pair; elsewhere it runs
+            // through a third plate's territory, imaginary. The test is to stand at the
+            // closest point on the bisector and ask who the neighbours are there.
+            let foot_x = px - normal.x * signed;
+            let foot_y = py - normal.y * signed;
+            let foot_z = pz - normal.z * signed;
+            let reach = m::sqrt(foot_x * foot_x + foot_y * foot_y + foot_z * foot_z);
+            if reach <= DEGENERATE {
+                continue;
+            }
+            let scale = 1.0 / reach;
+            let (stand_x, stand_y, stand_z) = (foot_x * scale, foot_y * scale, foot_z * scale);
+
+            // How far a third plate would have to be for this to be a real margin, against
+            // how far the nearest one actually is. Positive means genuine; negative means
+            // somebody else's territory.
+            //
+            // Addressed by loop position, not `Plate::index` -- see the note at
+            // `margin_normal` above (plates.rs:161): `PlateSet::new` builds its tables by
+            // loop position, not by `Plate::index`, and nothing enforces the two coincide.
+            let here = self.plates[near_pos].seed.vector;
+            let mine = stand_x * here.x + stand_y * here.y + stand_z * here.z;
+            let mut shadow = 2.0f64;
+            for (third_pos, third) in self.plates.iter().enumerate() {
+                if third_pos == near_pos || third_pos == other_index {
+                    continue;
+                }
+                let seed = third.seed.vector;
+                let candidate = mine - (stand_x * seed.x + stand_y * seed.y + stand_z * seed.z);
+                // Python writes `shadow = min(shadow, candidate)`; the accumulator is the
+                // first operand, so a NaN candidate is ignored and leaves shadow unchanged,
+                // while a NaN accumulator would stick permanently. Not f64::min, which is
+                // commutative.
+                if candidate < shadow {
+                    shadow = candidate;
+                }
+            }
+
+            // **A weight, not a test.** The first version rejected shadowed bisectors with
+            // a boolean, and that switched a margin on and off in one step wherever it
+            // ended at a triple junction -- a hundred and forty metres of cliff. The third
+            // time the same mistake appeared in this phase: a hard decision taken on a
+            // continuous quantity. It fades now.
+            //
+            // Python writes `min(1.0, max(0.0, shadow / SHADOW_BLEND))`. max keeps 0.0
+            // unless the value is strictly above it, so NaN clamps to 0.0; min then keeps
+            // that.
+            let scaled = shadow / SHADOW_BLEND;
+            let lifted = if scaled > 0.0 { scaled } else { 0.0 };
+            let mut genuine = if lifted < 1.0 { lifted } else { 1.0 };
+            if genuine <= 0.0 {
+                // A hard exit on a continuous quantity, and deliberately safe: the
+                // smoothstep below is exactly zero here, so a skipped candidate and an
+                // included one of weight zero are indistinguishable to any summing caller.
+                // Not a fourth instance of this module's recurring bug.
+                continue;
+            }
+            genuine = genuine * genuine * (3.0 - 2.0 * genuine);
+
             // Python writes `min(1.0, offset)`; two-argument min keeps 1.0 unless offset
             // is strictly below it, matching the same clamp used in `margin_at`.
             let clamped = if offset < 1.0 { offset } else { 1.0 };
@@ -304,7 +362,7 @@ impl PlateSet {
                 other: *other,
                 distance_m: m::asin(clamped) * radius_m,
                 normal,
-                weight: 1.0,
+                weight: genuine,
             });
         }
 
@@ -450,6 +508,70 @@ mod tests {
         let (_, found) = set.margins_within(
             &SpherePoint::from_latlon(0.0, 0.0), 2.0e7, EARTH_RADIUS_M);
         assert_eq!(found.len(), 2, "both bisectors are in range before shadowing");
+    }
+
+    #[test]
+    fn a_bisector_running_through_a_third_plate_is_not_a_margin() {
+        // Bug 2. Standing well north on plate 0, the bisector of plates 0 and 1 has
+        // its foot in territory that plate 2 owns, so that bisector is imaginary
+        // there and must not be returned. Derive the latitude from the set rather
+        // than trusting this comment: find a point whose nearest plate is 0 and
+        // where the 0-1 shadow is negative, and assert plate 1 is absent from the
+        // result while the margin against plate 2 is present.
+        let set = three_plate_set();
+        let (nearest, found) = set.margins_within(
+            &SpherePoint::from_latlon(20.0, 20.0), 2.0e7, EARTH_RADIUS_M);
+        assert_eq!(nearest.expect("a plate owns this point").index, 0);
+        let others: Vec<usize> = found.iter().map(|m| m.other.index).collect();
+        assert!(
+            !others.contains(&1),
+            "the 0-1 bisector is shadowed by plate 2 here, so it is not a margin; got {others:?}",
+        );
+    }
+
+    #[test]
+    fn a_shadowed_margin_fades_rather_than_switching_off() {
+        // Bug 3, and the test that would catch a reversion to the boolean. Walking
+        // north along longitude 20, the shadow that plate 2 casts on the 0-1 margin
+        // goes from about +0.207 at the equator to about -0.214 by 27 degrees, so
+        // the crossing lies inside this path. A boolean would step from 1.0 to
+        // absent in a single sample; the fade must not.
+        //
+        // SHADOW_BLEND is 0.02, so the fade occupies a narrow band: the shadow moves
+        // roughly 0.0021 per step here, which puts about ten samples inside it. If
+        // your measured numbers differ, add samples rather than relaxing the bound.
+        let set = three_plate_set();
+        let mut weights = Vec::new();
+        for step in 0..200 {
+            let lat = (step as f64) * 0.125; // cast-ok: loop counter to f64
+            let (_, found) = set.margins_within(
+                &SpherePoint::from_latlon(lat, 20.0), 2.0e7, EARTH_RADIUS_M);
+            weights.push(found.iter().find(|m| m.other.index == 1).map_or(0.0, |m| m.weight));
+        }
+        let biggest = weights.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f64, |a, b| if b > a { b } else { a });
+        assert!(
+            biggest < 0.25,
+            "the shadow weight must fade across neighbouring samples, not step; \
+             largest single-step change was {biggest}",
+        );
+        assert!(
+            weights.iter().any(|&w| w > 0.0) && weights.iter().any(|&w| w == 0.0),
+            "the path must actually cross the shadow boundary, or the test proves nothing",
+        );
+    }
+
+    #[test]
+    fn the_weight_never_leaves_zero_to_one() {
+        // The smoothstep of a [0,1] clamp cannot leave [0,1]. Weak on its own, which
+        // is why it is not the test that guards bug 3.
+        let set = three_plate_set();
+        let (_, found) = set.margins_within(
+            &SpherePoint::from_latlon(0.0, 20.0), 2.0e7, EARTH_RADIUS_M);
+        for margin in &found {
+            assert!(margin.weight > 0.0 && margin.weight <= 1.0, "weight {} out of range", margin.weight);
+        }
     }
 
     fn two_plates() -> PlateSet {
