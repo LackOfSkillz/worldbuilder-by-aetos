@@ -61,20 +61,78 @@ pub struct Continentality {
 
 impl Continentality {
     pub fn new(world_seed: u64, radius_m: f64, land_fraction: f64) -> Self {
-        // shore and spread are placeholders until the calibration lands in the next task.
+        // Calibration runs before the struct is built, so no partially-built value with
+        // placeholder shore/spread can ever exist — mirroring the Python, where
+        // `_calibrate()` runs inside `__init__` and there is no window to observe an
+        // uncalibrated instance.
+        let noise = Noise::new(world_seed, NOISE_SALT);
+        let (shore, spread) = Self::calibrate(&noise, land_fraction);
         Self {
             radius_m,
             land_fraction,
-            noise: Noise::new(world_seed, NOISE_SALT),
-            shore: 0.0,
-            spread: 1.0,
+            noise,
+            shore,
+            spread,
         }
+    }
+
+    /// Where sea level falls, and how varied the field is.
+    ///
+    /// The sample points are a fixed Fibonacci spiral and the field is a pure function, so
+    /// this is generated-and-stored and still perfectly deterministic.
+    fn calibrate(noise: &Noise, land_fraction: f64) -> (f64, f64) {
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        let n = CALIBRATION_SAMPLES;
+        let mut values: Vec<f64> = Vec::with_capacity(n);
+
+        for index in 0..n {
+            let z = 1.0 - 2.0 * (index as f64 + 0.5) / (n as f64); // cast-ok: loop counter to float, no truncation
+            let inner = 1.0 - z * z;
+            // Python writes max(0.0, 1.0 - z*z); two-argument max returns the second
+            // argument when the comparison is false, so a NaN inner would yield 0.0.
+            let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+            let angle = golden * index as f64; // cast-ok: loop counter to float, no truncation
+            let point = SpherePoint {
+                vector: crate::vectors::Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z),
+            };
+            // The sample point is deliberately NOT normalised — the Python builds the
+            // vector directly and hands it to SpherePoint, and the spiral already lies on
+            // the unit sphere to within rounding.
+            let v = point.vector;
+            values.push(noise.fbm(v.x, v.y, v.z, BASE_FREQUENCY, OCTAVES, 0.5, 2.0));
+        }
+
+        // Python's list.sort() on floats and Rust's stable sort_by agree: no NaN is
+        // produced here, and -0.0 compares equal to 0.0 in both, with stability keeping
+        // the original order in that case.
+        values.sort_by(|a, b| a.partial_cmp(b).expect("the field produces no NaN"));
+
+        let last = (n - 1) as f64; // cast-ok: count to float, exact for n far below 2^53
+        let shore_index = ((1.0 - land_fraction) * last) as usize; // cast-ok: truncation, matching Python's int()
+        let spread_index = (0.84 * last) as usize; // cast-ok: truncation, matching Python's int()
+        let shore = values[shore_index];
+        let middle = values[n / 2];
+        let difference = values[spread_index] - middle;
+        // Python writes `... or 1e-6`, and both 0.0 and -0.0 are falsy there, so either
+        // becomes 1e-6. NaN is truthy and passes through unchanged.
+        let spread = if difference == 0.0 { 1e-6 } else { difference };
+        (shore, spread)
     }
 
     /// The raw field, before sea level has been decided.
     pub fn at(&self, point: &SpherePoint) -> f64 {
         let v = point.vector;
         self.noise.fbm(v.x, v.y, v.z, BASE_FREQUENCY, OCTAVES, 0.5, 2.0)
+    }
+
+    #[cfg(test)]
+    pub fn shore_for_test(&self) -> f64 {
+        self.shore
+    }
+
+    #[cfg(test)]
+    pub fn spread_for_test(&self) -> f64 {
+        self.spread
     }
 }
 
@@ -116,5 +174,29 @@ mod tests {
         let b = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
         let p = SpherePoint::from_latlon(31.0, 7.0);
         assert_eq!(a.at(&p).to_bits(), b.at(&p).to_bits());
+    }
+
+    #[test]
+    fn calibration_reproduces_the_python_reference() {
+        // Measured from the Python on seed 12345 at the default land fraction.
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        assert!((c.shore_for_test() - 0.09556581019557257).abs() < 1e-12,
+                "shore was {}", c.shore_for_test());
+        assert!((c.spread_for_test() - 0.1984287160252961).abs() < 1e-12,
+                "spread was {}", c.spread_for_test());
+    }
+
+    #[test]
+    fn a_higher_land_fraction_lowers_the_shore() {
+        // More land means sea level sits at a lower quantile of the same field.
+        let less = Continentality::new(12345, EARTH_RADIUS_M, 0.2);
+        let more = Continentality::new(12345, EARTH_RADIUS_M, 0.5);
+        assert!(more.shore_for_test() < less.shore_for_test());
+    }
+
+    #[test]
+    fn the_spread_is_never_zero() {
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        assert!(c.spread_for_test() != 0.0);
     }
 }
