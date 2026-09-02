@@ -163,8 +163,9 @@ strictly: it is `Noise::fbm` wired straight through and nothing else, so it inhe
 agrees with the Python exactly, 0 ULP, across the corpus. `calibration`, `above_shore`,
 `base_elevation`, and `gradient` are all bounded, because each puts a transcendental in
 its path that `at` does not: `calibration` runs a Fibonacci spiral through `cos`, `sin`,
-and `sqrt` to place its sample points; `above_shore` and `gradient` both read the stored
-calibration and `gradient` additionally walks a `TangentFrame`; `base_elevation` calls
+and `sqrt` to place its sample points; `above_shore` reads the stored calibration, so it
+inherits that bound; `gradient` reads neither `shore` nor `spread` and is bounded solely
+because it walks a `TangentFrame`; `base_elevation` calls
 `powf` to shape the curve between shore and each extreme. Measured results: `at` exact at
 0 ULP; `above_shore` 0 ULP; `gradient` 0 ULP; `base_elevation` 2 ULP, from `powf`;
 calibration 71 of 72 sampled (seed, land_fraction) pairs exact, with one -- `shore` at
