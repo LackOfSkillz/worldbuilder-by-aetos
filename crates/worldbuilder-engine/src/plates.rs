@@ -232,6 +232,105 @@ impl PlateSet {
         let clamped = if closest_sine < 1.0 { closest_sine } else { 1.0 };
         Margin { nearest: Some(near), neighbour: across, distance_m: m::asin(clamped) * radius_m }
     }
+
+    /// Every margin of the point's plate that is near enough to matter, not just the
+    /// nearest one.
+    ///
+    /// **Because picking one margin is not continuous, even when its distance is.**
+    /// `margin_at` returns a distance that varies smoothly, but the *identity* of the
+    /// neighbour it belongs to still jumps: at a point equidistant from two of a plate's
+    /// margins, which one is "the" margin flips under a step of a metre, and everything
+    /// derived from it -- the normal, the relative motion, what lies either side -- flips
+    /// with it. Terrain built on that gained five hundred metres of cliff wherever a plate
+    /// had two margins the same distance away.
+    ///
+    /// The honest answer is that both margins are there. A caller that sums their effects
+    /// is continuous, because each contribution depends on its own distance and each fades
+    /// out at its own range.
+    ///
+    /// Ported from `worldbuilder/plates/lookup.py:212-231` (the early exit, the range
+    /// threshold, and the candidate loop; the shadow-and-weight logic follows in Task 3).
+    pub fn margins_within(
+        &self,
+        point: &SpherePoint,
+        range_m: f64,
+        radius_m: f64,
+    ) -> (Option<Plate>, Vec<NearbyMargin>) {
+        let (nearest, _) = self.nearest_two(point);
+        if self.plates.len() < 2 {
+            return (nearest, Vec::new());
+        }
+
+        // Python writes `min(math.pi / 2, range_m / radius_m)`; two-argument min keeps
+        // pi/2 unless the ratio is strictly below it, so a NaN ratio saturates to pi/2
+        // rather than propagating. Not f64::min, which would return the ratio.
+        let ratio = range_m / radius_m;
+        let angle = if ratio < core::f64::consts::FRAC_PI_2 { ratio } else { core::f64::consts::FRAC_PI_2 };
+        let limit = m::sin(angle);
+
+        let v = point.vector;
+        let (px, py, pz) = (v.x, v.y, v.z);
+
+        // The nearest plate's *position* in `self.plates`, not `Plate::index` -- see the
+        // note at `margin_normal` above: `PlateSet::new` addresses its tables by loop
+        // position, not by `Plate::index`, and nothing enforces the two coincide.
+        let near_pos = match nearest {
+            Some(near) => match self.plates.iter().position(|p| p.index == near.index) {
+                Some(pos) => pos,
+                None => return (nearest, Vec::new()),
+            },
+            None => return (nearest, Vec::new()),
+        };
+
+        let mut found = Vec::new();
+        for (other_index, other) in self.plates.iter().enumerate() {
+            let normal = match self.bisector(near_pos, other_index) {
+                Some(n) => n,
+                None => continue,
+            };
+            let signed = px * normal.x + py * normal.y + pz * normal.z;
+            let offset = signed.abs();
+            if offset > limit {
+                continue;
+            }
+
+            // Task 3 adds the shadow test and turns this into a real weight; for now
+            // every candidate that survives the range test is kept, at full weight, so
+            // that the candidate loop itself -- the part this task ports -- is exercised.
+            // Python writes `min(1.0, offset)`; two-argument min keeps 1.0 unless offset
+            // is strictly below it, matching the same clamp used in `margin_at`.
+            let clamped = if offset < 1.0 { offset } else { 1.0 };
+            found.push(NearbyMargin {
+                other: *other,
+                distance_m: m::asin(clamped) * radius_m,
+                normal,
+                weight: 1.0,
+            });
+        }
+
+        (nearest, found)
+    }
+}
+
+/// How wide the fade zone is where a third plate shadows a bisector, in the same units
+/// as the `shadow` quantity in `margins_within` (a difference of two dot products of unit
+/// vectors, i.e. dimensionless). Ported from `worldbuilder/plates/lookup.py`.
+pub const SHADOW_BLEND: f64 = 0.02;
+
+/// One margin found near a point, on the way to becoming a weighted contribution.
+///
+/// See `margins_within` for why there can be more than one, and why each carries its own
+/// weight rather than the caller picking a single "the" margin.
+#[derive(Debug, Clone, Copy)]
+pub struct NearbyMargin {
+    /// The plate across this margin.
+    pub other: Plate,
+    /// Metres to it, along the surface.
+    pub distance_m: f64,
+    /// The bisector's plane normal.
+    pub normal: Vec3,
+    /// How much this margin's effect should count, from 0 (shadowed away) to 1 (genuine).
+    pub weight: f64,
 }
 
 /// TEMPORARY -- slice 1g Task 1 measurement scaffolding only. Delete or replace when
@@ -298,6 +397,59 @@ mod tests {
         assert_eq!(omega.x.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.y.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.z.to_bits(), 0.0f64.to_bits());
+    }
+
+    /// No prior helper in this file is parametrised by lat/lon (the closest, `a_plate`,
+    /// takes only an index and a rate against a fixed seed). Added to match the brief's
+    /// `test_plate(index, lat, lon)` name and signature, with a pole and rate that are
+    /// non-degenerate and differ from the seed, per the binding contract fixed in 1f.
+    fn test_plate(index: usize, lat: f64, lon: f64) -> Plate {
+        Plate {
+            index,
+            seed: SpherePoint::from_latlon(lat, lon),
+            euler_pole: SpherePoint::from_latlon(80.0, 5.0),
+            rate_rad_per_myr: 0.01,
+        }
+    }
+
+    /// Two seeds on the equator and one lifted off it. The third seed must NOT lie on
+    /// the great circle bisecting the other two -- see `a_wide_range_admits_every_candidate_bisector`.
+    fn three_plate_set() -> PlateSet {
+        PlateSet::new(vec![
+            test_plate(0, 0.0, 0.0),
+            test_plate(1, 0.0, 90.0),
+            test_plate(2, 60.0, 45.0),
+        ])
+    }
+
+    #[test]
+    fn a_single_plate_set_has_no_margins() {
+        let set = PlateSet::new(vec![test_plate(0, 0.0, 0.0)]);
+        let (nearest, found) = set.margins_within(
+            &SpherePoint::from_latlon(10.0, 10.0), 1.0e6, EARTH_RADIUS_M);
+        assert!(nearest.is_some(), "one plate still owns every point");
+        assert!(found.is_empty(), "fewer than two plates means no margin can exist");
+    }
+
+    #[test]
+    fn a_plate_interior_finds_nothing_in_a_short_range() {
+        // Standing on seed 0, the nearer bisector is the one with seed 2, roughly
+        // 35 degrees away - about 3,900 km. A 1,000 km range must reject both on
+        // the range test alone, before any shadow work is done.
+        let set = three_plate_set();
+        let (_, found) = set.margins_within(
+            &SpherePoint::from_latlon(0.0, 0.0), 1.0e6, EARTH_RADIUS_M);
+        assert!(found.is_empty(), "every candidate is beyond the range limit");
+    }
+
+    #[test]
+    fn a_wide_range_admits_every_candidate_bisector() {
+        // A range spanning the planet admits both of plate 0's candidate bisectors.
+        // This is the pre-shadow count; Task 3 re-verifies it once shadowing exists.
+        let set = three_plate_set();
+        let (_, found) = set.margins_within(
+            &SpherePoint::from_latlon(0.0, 0.0), 2.0e7, EARTH_RADIUS_M);
+        assert_eq!(found.len(), 2, "both bisectors are in range before shadowing");
     }
 
     fn two_plates() -> PlateSet {
