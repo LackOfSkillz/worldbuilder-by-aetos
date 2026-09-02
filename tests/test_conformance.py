@@ -400,3 +400,111 @@ def test_noise_seed_and_salt_agree():
                 want = py.at(x, y, z)
                 got = engine.noise_at(seed, salt, x, y, z)
                 assert same(want, got), f"seed={seed} salt={salt} at({x},{y},{z})"
+
+
+# ---------------------------------------------------------------------------
+# TangentFrame
+#
+# This module spans BOTH contracts, which is why it is a useful one to port early.
+#
+#   at()               cross products, dot products and sqrt. IEEE-754 requires sqrt
+#                      correctly rounded, so this is held STRICTLY, bit-for-bit.
+#   local_to_sphere()  hypot, cos, sin, sqrt -- bounded at MAX_TRANSCENDENTAL_ULPS.
+#   sphere_to_local()  atan2, sqrt            -- bounded likewise.
+#
+# The split is per code path, not per module. A strict failure below is a real defect.
+# ---------------------------------------------------------------------------
+
+from worldbuilder.geometry.tangent import TangentFrame as PyTangentFrame
+
+FRAME_RADIUS = EARTH_RADIUS_M
+
+
+def frame_origins():
+    """Ordinary places, both poles, and the meridian — where a frame breaks first."""
+    yield (0.0, 0.0, 1.0)
+    yield (0.0, 0.0, -1.0)
+    yield (1.0, 0.0, 0.0)
+    yield (-1.0, 0.0, 0.0)
+    for lat in range(-85, 86, 5):
+        for lon in range(-180, 181, 30):
+            v = SpherePoint.from_latlon(float(lat), float(lon)).vector
+            yield (v.x, v.y, v.z)
+
+
+def test_frame_at_agrees_exactly():
+    """Strict: at() has no transcendental in its path beyond a correctly-rounded sqrt."""
+    for x, y, z in frame_origins():
+        py = PyTangentFrame.at(SpherePoint(Vec3(x, y, z)), FRAME_RADIUS)
+        got = engine.frame_at(x, y, z, FRAME_RADIUS)
+        want = (py.east.x, py.east.y, py.east.z,
+                py.north.x, py.north.y, py.north.z,
+                py.up.x, py.up.y, py.up.z)
+        for i, (w, g) in enumerate(zip(want, got)):
+            assert same(w, g), f"frame_at({x},{y},{z}) component {i}: {w!r} vs {g!r}"
+
+
+def test_frame_at_is_stable_at_the_poles():
+    """
+    A frame that reshuffled itself between two calls would move every ship it held, so
+    the pole fallback must be the same choice every time and the same choice as Python's.
+    """
+    for pole in [(0.0, 0.0, 1.0), (0.0, 0.0, -1.0)]:
+        first = engine.frame_at(*pole, FRAME_RADIUS)
+        second = engine.frame_at(*pole, FRAME_RADIUS)
+        assert first == second
+        py = PyTangentFrame.at(SpherePoint(Vec3(*pole)), FRAME_RADIUS)
+        assert same(py.east.x, first[0]) and same(py.east.y, first[1]) and same(py.east.z, first[2])
+
+
+def test_local_to_sphere_agrees_within_bound():
+    for x, y, z in frame_origins():
+        py = PyTangentFrame.at(SpherePoint(Vec3(x, y, z)), FRAME_RADIUS)
+        for east_m, north_m in [(0.0, 0.0), (1_000.0, 0.0), (0.0, -25_000.0),
+                                (200_000.0, 200_000.0), (-1_000_000.0, 500_000.0)]:
+            want = py.local_to_sphere(east_m, north_m).vector
+            got = engine.frame_local_to_sphere(x, y, z, FRAME_RADIUS, east_m, north_m)
+            for w, g in zip((want.x, want.y, want.z), got):
+                assert close_enough(w, g), (
+                    f"local_to_sphere at ({x},{y},{z}) + ({east_m},{north_m}): "
+                    f"{w!r} vs {g!r}, {ulps_apart(w, g)} ULP"
+                )
+
+
+def test_sphere_to_local_agrees_within_bound():
+    for x, y, z in frame_origins():
+        py = PyTangentFrame.at(SpherePoint(Vec3(x, y, z)), FRAME_RADIUS)
+        for east_m, north_m in [(1_000.0, 0.0), (0.0, -25_000.0), (200_000.0, 200_000.0)]:
+            there = py.local_to_sphere(east_m, north_m)
+            want = py.sphere_to_local(there)
+            got = engine.frame_sphere_to_local(
+                x, y, z, FRAME_RADIUS, there.vector.x, there.vector.y, there.vector.z
+            )
+            for w, g in zip(want, got):
+                assert close_enough(w, g), (
+                    f"sphere_to_local at ({x},{y},{z}): {w!r} vs {g!r}, {ulps_apart(w, g)} ULP"
+                )
+
+
+def test_the_projection_error_table_reproduces():
+    """
+    The 200 km region cap is a measured engineering limit, not an assertion, and the spec
+    quotes the table it came from. If the Rust reproduced the projection but not its error
+    profile, the cap would silently stop meaning what it says.
+
+    This asserts the Rust's round-trip error tracks the Python's at the same distances,
+    rather than pinning absolute figures that belong to the spec.
+    """
+    py = PyTangentFrame.at_latlon(45.0, 0.0, FRAME_RADIUS)
+    for metres in [25_000.0, 100_000.0, 200_000.0, 500_000.0, 1_000_000.0]:
+        there_py = py.local_to_sphere(metres, 0.0)
+        back_py = py.sphere_to_local(there_py)
+        origin = py.origin.vector
+        got_there = engine.frame_local_to_sphere(
+            origin.x, origin.y, origin.z, FRAME_RADIUS, metres, 0.0
+        )
+        back_rs = engine.frame_sphere_to_local(
+            origin.x, origin.y, origin.z, FRAME_RADIUS, *got_there
+        )
+        for w, g in zip(back_py, back_rs):
+            assert close_enough(w, g), f"round trip at {metres} m: {w!r} vs {g!r}"

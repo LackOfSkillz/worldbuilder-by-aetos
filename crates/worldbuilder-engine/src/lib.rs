@@ -32,5 +32,8 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::sphere_distance_to, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::noise_at, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::noise_fbm, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::frame_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::frame_local_to_sphere, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::frame_sphere_to_local, m)?)?;
     Ok(())
 }

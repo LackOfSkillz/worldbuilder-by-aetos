@@ -71,3 +71,30 @@ pub fn noise_fbm(
 ) -> f64 {
     crate::noise::Noise::new(seed, salt).fbm(x, y, z, frequency, octaves, gain, lacunarity)
 }
+
+#[pyfunction]
+pub fn frame_at(x: f64, y: f64, z: f64, radius_m: f64) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    let origin = SpherePoint { vector: Vec3::new(x, y, z) };
+    let f = crate::tangent::TangentFrame::at(&origin, radius_m);
+    (f.east.x, f.east.y, f.east.z, f.north.x, f.north.y, f.north.z, f.up.x, f.up.y, f.up.z)
+}
+
+#[pyfunction]
+pub fn frame_local_to_sphere(
+    x: f64, y: f64, z: f64, radius_m: f64, east_m: f64, north_m: f64,
+) -> (f64, f64, f64) {
+    let origin = SpherePoint { vector: Vec3::new(x, y, z) };
+    let f = crate::tangent::TangentFrame::at(&origin, radius_m);
+    let p = f.local_to_sphere(east_m, north_m);
+    (p.vector.x, p.vector.y, p.vector.z)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn frame_sphere_to_local(
+    x: f64, y: f64, z: f64, radius_m: f64, px: f64, py: f64, pz: f64,
+) -> (f64, f64) {
+    let origin = SpherePoint { vector: Vec3::new(x, y, z) };
+    let f = crate::tangent::TangentFrame::at(&origin, radius_m);
+    f.sphere_to_local(&SpherePoint { vector: Vec3::new(px, py, pz) })
+}
