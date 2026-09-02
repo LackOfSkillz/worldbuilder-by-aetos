@@ -10,6 +10,7 @@ pub mod vectors;
 pub mod sphere;
 pub mod bindings;
 pub mod noise;
+pub mod tangent;
 
 use pyo3::prelude::*;
 
