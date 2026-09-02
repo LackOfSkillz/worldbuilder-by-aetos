@@ -6,6 +6,7 @@
 //! to be looking at the same world.
 
 pub mod detmath;
+pub mod vectors;
 
 use pyo3::prelude::*;
 
