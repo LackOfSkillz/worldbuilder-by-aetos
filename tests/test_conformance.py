@@ -684,42 +684,52 @@ def test_continentality_calibration_agreement_is_far_tighter_than_the_sort_gap()
     anywhere near that gap's size would mean a sample landed on the other side of a
     neighbour and the sort picked a different index, not that arithmetic drifted.
     """
-    seed = CONTINENTALITY_SEED
-    land_fraction = PY_LAND_FRACTION
-    py = PyContinentality(seed, EARTH_RADIUS_M, land_fraction)
+    # The calibration pair that agreed exactly (0 ULP) and the one pair the wider
+    # sweep above actually found diverging (shore differs by 2 ULP: Python
+    # -0.3543061605914575 vs Rust -0.3543061605914576). Checking only the exact
+    # pair would make the "not a reordered sort" conclusion an extrapolation from
+    # a case with nothing to explain -- the divergent pair is the one that needs
+    # the gap measured against it.
+    for seed, land_fraction in (
+        (CONTINENTALITY_SEED, PY_LAND_FRACTION),
+        (2**63 - 1, 0.95),
+    ):
+        py = PyContinentality(seed, EARTH_RADIUS_M, land_fraction)
 
-    golden = math.pi * (3.0 - math.sqrt(5.0))
-    n = 4000
-    values = []
-    for index in range(n):
-        z = 1.0 - 2.0 * (index + 0.5) / n
-        ring = math.sqrt(max(0.0, 1.0 - z * z))
-        angle = golden * index
-        point = SpherePoint(Vec3(math.cos(angle) * ring, math.sin(angle) * ring, z))
-        values.append(py.at(point))
-    values.sort()
+        golden = math.pi * (3.0 - math.sqrt(5.0))
+        n = 4000
+        values = []
+        for index in range(n):
+            z = 1.0 - 2.0 * (index + 0.5) / n
+            ring = math.sqrt(max(0.0, 1.0 - z * z))
+            angle = golden * index
+            point = SpherePoint(Vec3(math.cos(angle) * ring, math.sin(angle) * ring, z))
+            values.append(py.at(point))
+        values.sort()
 
-    shore_index = int((1.0 - land_fraction) * (n - 1))
-    spread_index = int(0.84 * (n - 1))
+        shore_index = int((1.0 - land_fraction) * (n - 1))
+        spread_index = int(0.84 * (n - 1))
 
-    def neighbour_gap(i):
-        gaps = []
-        if i > 0:
-            gaps.append(abs(values[i] - values[i - 1]))
-        if i < n - 1:
-            gaps.append(abs(values[i + 1] - values[i]))
-        return min(gaps)
+        def neighbour_gap(i):
+            gaps = []
+            if i > 0:
+                gaps.append(abs(values[i] - values[i - 1]))
+            if i < n - 1:
+                gaps.append(abs(values[i + 1] - values[i]))
+            return min(gaps)
 
-    shore_gap = neighbour_gap(shore_index)
-    spread_gap = neighbour_gap(spread_index)
+        shore_gap = neighbour_gap(shore_index)
+        spread_gap = neighbour_gap(spread_index)
 
-    got_shore, got_spread = engine.continentality_calibration(seed, land_fraction)
-    shore_diff = abs(py._shore - got_shore)
-    spread_diff = abs(py._spread - got_spread)
+        got_shore, got_spread = engine.continentality_calibration(seed, land_fraction)
+        shore_diff = abs(py._shore - got_shore)
+        spread_diff = abs(py._spread - got_spread)
 
-    assert shore_diff < shore_gap / 100, (
-        f"shore diff {shore_diff!r} is not far below the neighbour gap {shore_gap!r}"
-    )
-    assert spread_diff < spread_gap / 100, (
-        f"spread diff {spread_diff!r} is not far below the neighbour gap {spread_gap!r}"
-    )
+        assert shore_diff < shore_gap / 100, (
+            f"seed={seed} land_fraction={land_fraction} shore diff {shore_diff!r} "
+            f"is not far below the neighbour gap {shore_gap!r}"
+        )
+        assert spread_diff < spread_gap / 100, (
+            f"seed={seed} land_fraction={land_fraction} spread diff {spread_diff!r} "
+            f"is not far below the neighbour gap {spread_gap!r}"
+        )
