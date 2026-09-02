@@ -92,6 +92,26 @@ impl TangentFrame {
         let scale = 1.0 / m::sqrt(x * x + y * y + z * z);
         SpherePoint { vector: Vec3::new(x * scale, y * scale, z * scale) }
     }
+
+    /// Where a place on the globe falls on this chart.
+    ///
+    /// The exact inverse of `local_to_sphere`, and tested as one. A point directly
+    /// opposite the origin has no direction on this chart at all — every bearing reaches
+    /// it — and returns the origin rather than failing, because a chart of half a planet
+    /// is a misuse the caller should not have to guard against.
+    pub fn sphere_to_local(&self, point: &SpherePoint) -> (f64, f64) {
+        let along = self.up.dot(&point.vector);
+        let sideways = point.vector.sub(&self.up.scaled(along));
+        let across = sideways.length();
+        if across <= DEGENERATE {
+            // The origin itself, or its antipode.
+            return (0.0, 0.0);
+        }
+
+        let heading = sideways.scaled(1.0 / across);
+        let distance = m::atan2(across, along) * self.radius_m;
+        (heading.dot(&self.east) * distance, heading.dot(&self.north) * distance)
+    }
 }
 
 #[cfg(test)]
@@ -182,5 +202,33 @@ mod tests {
         let frame = TangentFrame::at_latlon(-40.0, 170.0, EARTH_RADIUS_M);
         let there = frame.local_to_sphere(300_000.0, -200_000.0);
         assert!((there.vector.length() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_origin_maps_back_to_zero() {
+        let frame = TangentFrame::at_latlon(51.5, -0.12, EARTH_RADIUS_M);
+        let (x, y) = frame.sphere_to_local(&frame.origin);
+        assert_eq!(x.to_bits(), 0.0f64.to_bits());
+        assert_eq!(y.to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn the_antipode_returns_the_origin_rather_than_failing() {
+        let frame = TangentFrame::at_latlon(10.0, 20.0, EARTH_RADIUS_M);
+        let opposite = SpherePoint { vector: frame.up.scaled(-1.0) };
+        let (x, y) = frame.sphere_to_local(&opposite);
+        assert_eq!(x.to_bits(), 0.0f64.to_bits());
+        assert_eq!(y.to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn the_round_trip_returns_where_it_started() {
+        let frame = TangentFrame::at_latlon(-33.0, 151.0, EARTH_RADIUS_M);
+        for (x_m, y_m) in [(1_000.0, 0.0), (0.0, 25_000.0), (120_000.0, -80_000.0)] {
+            let there = frame.local_to_sphere(x_m, y_m);
+            let (back_x, back_y) = frame.sphere_to_local(&there);
+            assert!((back_x - x_m).abs() < 1e-6, "x {} came back {}", x_m, back_x);
+            assert!((back_y - y_m).abs() < 1e-6, "y {} came back {}", y_m, back_y);
+        }
     }
 }
