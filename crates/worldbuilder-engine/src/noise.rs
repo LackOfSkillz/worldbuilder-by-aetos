@@ -102,6 +102,42 @@ impl Noise {
         let y1 = x01 + (x11 - x01) * uy;
         y0 + (y1 - y0) * uz
     }
+
+    /// Several octaves summed, each half the amplitude and twice the frequency of the last.
+    ///
+    /// The octave count is a parameter rather than a constant because a chart drawn at
+    /// twenty-two miles has samples four hundred metres apart, and octaves finer than that
+    /// are invisible — they cost time to produce detail below the resolution being drawn,
+    /// and they alias while doing it. The caller decides.
+    ///
+    /// The loop's update order is transcribed from the Python and must not be rearranged:
+    /// the sum is order-dependent and this has to agree bit-for-bit.
+    pub fn fbm(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        frequency: f64,
+        octaves: u32,
+        gain: f64,
+        lacunarity: f64,
+    ) -> f64 {
+        let mut total = 0.0f64;
+        let mut amplitude = 1.0f64;
+        let mut loudest = 0.0f64;
+        let mut frequency = frequency;
+        for _ in 0..octaves {
+            total += (self.at(x * frequency, y * frequency, z * frequency) - 0.5) * amplitude;
+            loudest += amplitude;
+            amplitude *= gain;
+            frequency *= lacunarity;
+        }
+        if loudest == 0.0 {
+            0.0
+        } else {
+            2.0 * total / loudest
+        }
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +206,29 @@ mod tests {
         let below = n.at(-0.000_000_001, 0.5, 0.5);
         let above = n.at(0.000_000_001, 0.5, 0.5);
         assert!((below - above).abs() < 1e-6, "discontinuity at zero: {} vs {}", below, above);
+    }
+
+    #[test]
+    fn zero_octaves_is_silent() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        assert_eq!(n.fbm(0.3, 0.4, 0.5, 1.25, 0, 0.5, 2.0).to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn one_octave_is_the_sample_recentred() {
+        // With a single octave, loudest is 1.0 and the result is 2 * (at(..) - 0.5).
+        let n = Noise::new(12345, 0x0C0FFEE);
+        let expected = 2.0 * (n.at(0.3 * 1.25, 0.4 * 1.25, 0.5 * 1.25) - 0.5);
+        assert_eq!(n.fbm(0.3, 0.4, 0.5, 1.25, 1, 0.5, 2.0).to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn more_octaves_stay_centred_near_zero() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        for i in 0..500 {
+            let t = i as f64 * 0.021;
+            let v = n.fbm(t, -t, t * 0.5, 1.25, 4, 0.5, 2.0);
+            assert!((-1.5..1.5).contains(&v), "fbm at {} was {}", t, v);
+        }
     }
 }
