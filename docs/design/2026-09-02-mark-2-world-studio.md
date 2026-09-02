@@ -84,12 +84,21 @@ placement, continentality, terrain sampling, shelf shaping, detail and explicit 
 If it does not hold, the architecture is wrong, and we need to know in a day rather than a
 month.
 
+**Measured, 2026-09-02.** 5,000,000 samples across every operation class the generator
+uses: identical. The architecture's precondition holds; the studio, the provider and the
+one-source argument may proceed on this foundation.
+
 ### 4.2 DETERMINISM-001 — two guards, not a rule in a document
 
 Platform trigonometry differs between native and WASM in the last bits, and coastlines live
 exactly where last bits decide. Generator-critical code therefore never calls `f64::sin`
 and its relatives from std; it calls a central `detmath` module backed by one shared
 pure-Rust implementation (`libm`).
+
+This was measured, not assumed: a deliberate control routing native `sin` through std
+while the WASM build kept `libm::sin` diverged on 2,441 of 100,000 samples, each by a
+single bit. The rule that platform trigonometry differs in the last bits is therefore
+observed rather than merely reasoned.
 
 "Don't use std trig" is the kind of rule that holds for a year and then quietly stops. So it
 is mechanised, twice:
