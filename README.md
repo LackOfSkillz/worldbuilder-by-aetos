@@ -178,4 +178,6 @@ have sea.
     docs/design/2026-08-31-planet-design.md  decisions and what they were taken against
     docs/design/2026-08-31-generator-spec.md the generator itself
     docs/design/mark-1-scope.md              what Mark 1 is for, and each phase result
+    docs/design/2026-09-02-mark-2-world-studio.md
+                                             Mark 2: the studio, and the route into Evennia
     docs/design/gpt-brief.md                 the brief sent for outside review
