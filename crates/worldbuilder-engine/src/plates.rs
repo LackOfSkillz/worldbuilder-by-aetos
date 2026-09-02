@@ -7,7 +7,7 @@
 //! quickly, and of asking how far the point is from the answer changing.
 
 use crate::sphere::SpherePoint;
-use crate::vectors::Vec3;
+use crate::vectors::{Vec3, DEGENERATE};
 
 /// One plate: where it is, what it turns about, and how fast.
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +30,68 @@ impl Plate {
     /// product rather than a special case at the pole itself.
     pub fn angular_velocity(&self) -> Vec3 {
         self.euler_pole.vector.scaled(self.rate_rad_per_myr)
+    }
+}
+
+/// Every plate on a world, with the arithmetic needed to ask questions about them.
+///
+/// Holds one precomputed table: for each ordered pair, the normal of the plane bisecting
+/// them. Points equidistant from seeds A and B satisfy `dot(P, A) == dot(P, B)`, which
+/// rearranges to `dot(P, A - B) == 0` — so the margin between two plates is a great circle
+/// whose plane normal is `normalise(A - B)`, and the distance from any point to it is an
+/// arc sine away.
+///
+/// The Python keeps a second copy of this geometry as bare component triples, because a
+/// Python method call costs more than the three multiplies inside `Vec3.dot` and a chart
+/// redraw makes ninety-nine of them per terrain sample. That duplication is deliberately
+/// not ported: in Rust the field access is free, the arithmetic is identical, and one
+/// representation cannot fall out of step with itself.
+pub struct PlateSet {
+    plates: Vec<Plate>,
+    /// Row-major, `plates.len()` squared. `None` where the pair cannot define a bisector.
+    bisectors: Vec<Option<Vec3>>,
+}
+
+impl PlateSet {
+    pub fn new(plates: Vec<Plate>) -> Self {
+        let n = plates.len();
+        let mut bisectors = Vec::with_capacity(n * n);
+        for i in 0..n {
+            for j in 0..n {
+                let difference = plates[i].seed.vector.sub(&plates[j].seed.vector);
+                // Python tests `other is plate` first, then the length. Comparing loop
+                // positions (i == j) is the faithful translation of that identity check,
+                // independent of whether indices are unique within the set.
+                let entry = if i == j || difference.length() <= DEGENERATE {
+                    None
+                } else {
+                    difference.normalised()
+                };
+                bisectors.push(entry);
+            }
+        }
+        Self { plates, bisectors }
+    }
+
+    pub fn len(&self) -> usize {
+        self.plates.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.plates.is_empty()
+    }
+
+    pub fn plate(&self, index: usize) -> Plate {
+        self.plates[index]
+    }
+
+    pub fn plates(&self) -> &[Plate] {
+        &self.plates
+    }
+
+    /// The bisector normal for an ordered pair, or `None` where none is defined.
+    pub fn bisector(&self, a: usize, b: usize) -> Option<Vec3> {
+        self.bisectors[a * self.plates.len() + b]
     }
 }
 
@@ -72,5 +134,61 @@ mod tests {
         assert_eq!(omega.x.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.y.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.z.to_bits(), 0.0f64.to_bits());
+    }
+
+    fn two_plates() -> PlateSet {
+        PlateSet::new(vec![
+            Plate { index: 0, seed: SpherePoint::from_latlon(0.0, 0.0),
+                    euler_pole: SpherePoint::from_latlon(90.0, 0.0), rate_rad_per_myr: 0.01 },
+            Plate { index: 1, seed: SpherePoint::from_latlon(0.0, 90.0),
+                    euler_pole: SpherePoint::from_latlon(90.0, 0.0), rate_rad_per_myr: 0.01 },
+        ])
+    }
+
+    #[test]
+    fn the_set_reports_its_plates() {
+        let set = two_plates();
+        assert_eq!(set.len(), 2);
+        assert!(!set.is_empty());
+        assert_eq!(set.plate(1).index, 1);
+    }
+
+    #[test]
+    fn a_plate_has_no_bisector_with_itself() {
+        assert!(two_plates().bisector(0, 0).is_none());
+        assert!(two_plates().bisector(1, 1).is_none());
+    }
+
+    #[test]
+    fn a_bisector_is_the_normalised_difference_of_the_seeds() {
+        let set = two_plates();
+        let a = set.plate(0).seed.vector;
+        let b = set.plate(1).seed.vector;
+        let want = a.sub(&b).normalised().expect("distinct seeds");
+        let got = set.bisector(0, 1).expect("distinct seeds");
+        assert_eq!(got.x.to_bits(), want.x.to_bits());
+        assert_eq!(got.y.to_bits(), want.y.to_bits());
+        assert_eq!(got.z.to_bits(), want.z.to_bits());
+    }
+
+    #[test]
+    fn the_bisector_reverses_with_the_pair() {
+        let set = two_plates();
+        let forward = set.bisector(0, 1).expect("distinct");
+        let backward = set.bisector(1, 0).expect("distinct");
+        assert_eq!(backward.x.to_bits(), (-forward.x).to_bits());
+        assert_eq!(backward.z.to_bits(), (-forward.z).to_bits());
+    }
+
+    #[test]
+    fn coincident_seeds_have_no_bisector() {
+        // Closer together than DEGENERATE, so the difference has no trustworthy
+        // direction and the table records that rather than inventing one.
+        let here = SpherePoint::from_latlon(12.0, 34.0);
+        let set = PlateSet::new(vec![
+            Plate { index: 0, seed: here, euler_pole: here, rate_rad_per_myr: 0.0 },
+            Plate { index: 1, seed: here, euler_pole: here, rate_rad_per_myr: 0.0 },
+        ]);
+        assert!(set.bisector(0, 1).is_none());
     }
 }
