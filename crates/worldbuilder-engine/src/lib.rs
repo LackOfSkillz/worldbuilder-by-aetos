@@ -7,6 +7,7 @@
 
 pub mod detmath;
 pub mod vectors;
+pub mod sphere;
 
 use pyo3::prelude::*;
 
