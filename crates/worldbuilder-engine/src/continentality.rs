@@ -152,6 +152,20 @@ impl Continentality {
         }
     }
 
+    /// Which way continentality rises, measured along the surface.
+    pub fn gradient(&self, point: &SpherePoint) -> Gradient {
+        let frame = crate::tangent::TangentFrame::at(point, self.radius_m);
+        let step = GRADIENT_STEP_M;
+        let east = self.at(&frame.local_to_sphere(step, 0.0));
+        let west = self.at(&frame.local_to_sphere(-step, 0.0));
+        let north = self.at(&frame.local_to_sphere(0.0, step));
+        let south = self.at(&frame.local_to_sphere(0.0, -step));
+        Gradient {
+            east: (east - west) / (2.0 * step),
+            north: (north - south) / (2.0 * step),
+        }
+    }
+
     #[cfg(test)]
     pub fn shore_for_test(&self) -> f64 {
         self.shore
@@ -249,12 +263,33 @@ mod tests {
     }
 
     #[test]
+    fn the_gradient_points_uphill() {
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        let p = SpherePoint::from_latlon(20.0, 30.0);
+        let g = c.gradient(&p);
+        let frame = crate::tangent::TangentFrame::at(&p, EARTH_RADIUS_M);
+        // Stepping a little way along the gradient should raise the field.
+        let step = 5000.0;
+        let scale = step / g.magnitude();
+        let uphill = frame.local_to_sphere(g.east * scale, g.north * scale);
+        assert!(c.at(&uphill) > c.at(&p), "gradient did not point uphill");
+    }
+
+    #[test]
+    fn the_gradient_is_finite_everywhere_including_the_poles() {
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        for (lat, lon) in [(90.0, 0.0), (-90.0, 0.0), (0.0, 0.0), (45.0, -170.0)] {
+            let g = c.gradient(&SpherePoint::from_latlon(lat, lon));
+            assert!(g.east.is_finite() && g.north.is_finite(), "at {},{}", lat, lon);
+        }
+    }
+
+    #[test]
     fn the_seaward_side_is_linear() {
         // Twice as far below the shore is twice as deep, until the abyss clamps it.
         let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
-        let spread = c.spread_for_test();
-        let quarter = c.elevation_from_above(-0.25 * spread / spread);
-        let half = c.elevation_from_above(-0.5 * spread / spread);
+        let quarter = c.elevation_from_above(-0.25);
+        let half = c.elevation_from_above(-0.5);
         assert!((half - 2.0 * quarter).abs() < 1e-9, "{} vs {}", half, quarter);
     }
 }
