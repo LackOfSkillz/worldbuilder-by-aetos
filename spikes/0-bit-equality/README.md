@@ -35,13 +35,32 @@ passing by construction.
 ## What was NOT tested, and matters
 
 **Python-to-Rust equality.** This spike compares Rust to Rust. It says nothing about
-whether the Rust core reproduces the existing Python generator bit-for-bit — and there is
-specific reason to think it may not. The Python lattice hash multiplies arbitrary-precision
-signed integers and masks only at the end, so for negative lattice coordinates its
-intermediate values are not the same as wrapping `u64` arithmetic. Slice 1 must decide
-whether to reproduce Python's exact semantics or to accept that the port is a new generator
-version. Under VERSION-001 that is a legitimate choice, but it is a choice, and it must be
-made deliberately rather than discovered.
+whether the Rust core reproduces the existing Python generator bit-for-bit, and slice 1 owns
+that question. Two things about it were checked afterwards and are recorded here because one
+of them corrects an earlier draft of this section.
+
+*The lattice hash is not the problem.* An earlier draft warned that Python's hash multiplies
+arbitrary-precision signed integers and masks only at the end, so negative lattice
+coordinates might not match wrapping `u64` arithmetic. That is wrong, and measurably so:
+200,000 random cases, 174,958 of them carrying at least one negative coordinate, produced
+zero divergence between the Python hash and a faithful `u64`-wrapping emulation of it. The
+reason is algebraic rather than lucky — multiplication and XOR both commute with truncation
+mod 2^64, so masking once at the end is equivalent to masking at every step. The hash ports
+exactly.
+
+*Floor versus truncate is the problem.* `worldbuilder/terrain/noise.py` derives its lattice
+cell as `int(x // 1)`, which floors toward negative infinity. Rust's `as i64` truncates
+toward zero. For any negative coordinate — half the sphere — those pick a *different lattice
+cell*: `-2.3` floors to `-3` and truncates to `-2`, and `-1e-9` floors to `-1` and truncates
+to `0`. A port that writes the obvious `as i64` produces a subtly different world, with no
+error raised and no test failing. Rust's `f64::floor` is the correct translation, routed
+through `detmath` like everything else.
+
+Neither point makes the port bit-exact by itself. They are the two traps found by looking;
+slice 1 must still establish equality by measurement, using the existing 208 Python tests as
+the conformance suite. But the choice that earlier draft posed — reproduce Python's semantics
+or accept a new generator version — is not forced by the hash, and should not be taken as
+settled in that direction.
 
 **`powf` sensitivity.** `powf` enters the probe attenuated: it contributes as `p * 1e-6`,
 where `p` is on the order of 31-37, so its share of a result of order 1.6 is roughly 3.7e-5.
