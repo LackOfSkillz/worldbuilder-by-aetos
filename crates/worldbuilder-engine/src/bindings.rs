@@ -50,3 +50,24 @@ pub fn sphere_distance_to(
     let b = SpherePoint { vector: Vec3::new(bx, by, bz) };
     a.distance_to(&b, radius_m)
 }
+
+#[pyfunction]
+pub fn noise_at(seed: u64, salt: u64, x: f64, y: f64, z: f64) -> f64 {
+    crate::noise::Noise::new(seed, salt).at(x, y, z)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn noise_fbm(
+    seed: u64,
+    salt: u64,
+    x: f64,
+    y: f64,
+    z: f64,
+    frequency: f64,
+    octaves: u32,
+    gain: f64,
+    lacunarity: f64,
+) -> f64 {
+    crate::noise::Noise::new(seed, salt).fbm(x, y, z, frequency, octaves, gain, lacunarity)
+}

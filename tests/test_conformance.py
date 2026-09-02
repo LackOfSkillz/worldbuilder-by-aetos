@@ -288,3 +288,90 @@ def test_close_enough_can_actually_fail():
     value = 0.1
     nudged = struct.unpack("<d", struct.pack("<Q", bits(value) + MAX_TRANSCENDENTAL_ULPS + 1))[0]
     assert not close_enough(value, nudged)
+
+
+# ---------------------------------------------------------------------------
+# Noise
+#
+# Unlike the sphere functions, Noise contains NO transcendentals: a 64-bit integer
+# hash, a floor, and pure arithmetic. It therefore falls entirely under the strict
+# contract -- every one of these comparisons is bit-for-bit, with no ULP bound
+# anywhere. If one of them ever needs loosening, something is wrong with the port,
+# not with the standard.
+# ---------------------------------------------------------------------------
+
+from worldbuilder.terrain.noise import Noise as PyNoise
+
+NOISE_SEED = 12345
+NOISE_SALT = 0x0C0FFEE
+
+
+def noise_points(count=5000):
+    """Hashed sample positions, including negatives so the floor path is exercised."""
+    state = 0x9E3779B97F4A7C15
+    mask = (1 << 64) - 1
+    yield (0.0, 0.0, 0.0)
+    yield (-0.0, -0.0, -0.0)
+    yield (1.0, 2.0, 3.0)
+    yield (-1.0, -2.0, -3.0)
+    yield (-0.000000001, 0.5, 0.5)
+    for _ in range(count):
+        comps = []
+        for _ in range(3):
+            state = (state * 6364136223846793005 + 1442695040888963407) & mask
+            h = state ^ (state >> 29)
+            comps.append(((h >> 11) / float(1 << 53)) * 20.0 - 10.0)
+        yield tuple(comps)
+
+
+def test_noise_at_agrees_exactly():
+    py = PyNoise(NOISE_SEED, salt=NOISE_SALT)
+    for x, y, z in noise_points():
+        want = py.at(x, y, z)
+        got = engine.noise_at(NOISE_SEED, NOISE_SALT, x, y, z)
+        assert same(want, got), f"at({x}, {y}, {z}): {want!r} vs {got!r}"
+
+
+def test_noise_at_agrees_on_negative_coordinates():
+    """
+    The floor-versus-truncate trap, exercised deliberately.
+
+    Python derives its lattice cell with int(x // 1), which floors toward negative
+    infinity; a Rust `as i64` truncates toward zero. On any negative coordinate those
+    select different cells, and the resulting world would differ everywhere south and
+    west of the origin with nothing raised and no test failing -- unless this one does.
+    """
+    py = PyNoise(NOISE_SEED, salt=NOISE_SALT)
+    for i in range(2000):
+        t = -0.0005 * i
+        want = py.at(t, t * 0.5, t * 0.25)
+        got = engine.noise_at(NOISE_SEED, NOISE_SALT, t, t * 0.5, t * 0.25)
+        assert same(want, got), f"at({t}): {want!r} vs {got!r}"
+
+
+def test_noise_fbm_agrees_exactly():
+    py = PyNoise(NOISE_SEED, salt=NOISE_SALT)
+
+    class _Point:
+        """The Python fbm takes a SpherePoint and reads .vector; this is the smallest
+        thing that satisfies it without dragging in normalisation."""
+
+        def __init__(self, x, y, z):
+            self.vector = Vec3(x, y, z)
+
+    for x, y, z in noise_points(1500):
+        for octaves in (0, 1, 4, 8):
+            want = py.fbm(_Point(x, y, z), 1.25, octaves)
+            got = engine.noise_fbm(NOISE_SEED, NOISE_SALT, x, y, z, 1.25, octaves, 0.5, 2.0)
+            assert same(want, got), f"fbm({x},{y},{z},oct={octaves}): {want!r} vs {got!r}"
+
+
+def test_noise_seed_and_salt_agree():
+    """Different worlds and different fields on one world must both track the Python."""
+    for seed in (0, 1, 12345, 2**31, 2**63):
+        for salt in (0, NOISE_SALT):
+            py = PyNoise(seed, salt=salt)
+            for x, y, z in noise_points(200):
+                want = py.at(x, y, z)
+                got = engine.noise_at(seed, salt, x, y, z)
+                assert same(want, got), f"seed={seed} salt={salt} at({x},{y},{z})"
