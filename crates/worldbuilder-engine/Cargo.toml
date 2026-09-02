@@ -1,0 +1,20 @@
+[package]
+name = "worldbuilder-engine"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "worldbuilder_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libm = "=0.2.11"
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[profile.release]
+# Determinism first. Matches the slice 0 spike, minus panic=abort, which this
+# crate must not carry because it breaks `cargo test --release` on a library.
+opt-level = 2
+lto = false
+codegen-units = 1

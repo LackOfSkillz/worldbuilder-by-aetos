@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/worldbuilder-engine"]
+resolver = "2"
+
+# The spike under spikes/0-bit-equality is deliberately NOT a workspace member.
+# It is throwaway, it is frozen, and it must not be built or tested with the engine.
+exclude = ["spikes/0-bit-equality"]
