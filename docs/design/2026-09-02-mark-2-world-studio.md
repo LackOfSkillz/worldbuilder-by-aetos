@@ -99,6 +99,36 @@ is mechanised, twice:
 
 Generator code never chooses its own math provider.
 
+### 4.3 Not a vendored contrib, and dependencies are allowed
+
+Evennia's contribs are pure Python shipped inside Evennia itself. A compiled extension asks
+upstream for wheels, per-platform build infrastructure and a Rust toolchain in their CI, and
+that is not a reasonable thing to ask. So Worldbuilder does not target
+`evennia/contrib/`. It is a separate package a game installs, with a thin integration layer —
+the shape maritime already has. Upstream may link to it; it does not vendor it.
+
+The consequence is deliberate: **Evennia's contrib conventions do not bind this project, and
+dependencies may be added where they make the tool better.** A dependency argument is not a
+reason to ship something worse.
+
+Two constraints survive that freedom, because neither was ever contrib etiquette.
+
+**The engine crate stays strict.** Nothing may enter it that breaks §4.1. No GPU compute —
+GPU floating point is not bit-reproducible across vendors or drivers, which is why World
+Creator's architecture cannot be adopted. No fast-math or reassociating optimisations. No
+dependency that reaches platform libm behind our back. Parallelism only where the result does
+not depend on scheduling: sampling independent points, yes; anything with an order-sensitive
+reduction, only if determinism is proved rather than assumed.
+
+**The Python layer stays conservative**, for a reason that outlives the contrib question: we
+install into somebody else's Evennia virtualenv. A dependency that pins Django or Twisted can
+break a working game on `pip install`, and the blame will land here. Prefer the standard
+library; where a dependency is warranted, it must tolerate the versions Evennia pins rather
+than dictate them.
+
+**The studio has free rein.** It is a static bundle that no game runtime imports, so nothing
+it depends on can break anybody's server. Make it good.
+
 ## 5. The declared parameter surface
 
 Mark 2 requires one declared, versioned, serialisable generator parameter schema: key,
