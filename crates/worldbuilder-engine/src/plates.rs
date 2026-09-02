@@ -6,7 +6,8 @@
 //! construction. Everything else here is arithmetic in service of asking that question
 //! quickly, and of asking how far the point is from the answer changing.
 
-use crate::sphere::SpherePoint;
+use crate::detmath as m;
+use crate::sphere::{SpherePoint, EARTH_RADIUS_M};
 use crate::vectors::{Vec3, DEGENERATE};
 
 /// One plate: where it is, what it turns about, and how fast.
@@ -21,6 +22,17 @@ pub struct Plate {
     /// Radians per million years. **Signed**: the sign and the pole together give the
     /// sense of rotation, so there is no separate clockwise flag to get wrong.
     pub rate_rad_per_myr: f64,
+}
+
+/// Where a point stands relative to the edge of its plate.
+#[derive(Debug, Clone, Copy)]
+pub struct Margin {
+    /// The plate the point is on.
+    pub nearest: Option<Plate>,
+    /// The plate across the nearest stretch of that edge.
+    pub neighbour: Option<Plate>,
+    /// Metres to it, along the surface.
+    pub distance_m: f64,
 }
 
 impl Plate {
@@ -124,6 +136,67 @@ impl PlateSet {
             }
         }
         (best, second)
+    }
+
+    /// How far a point is from the edge of the plate it is on.
+    ///
+    /// **The minimum over every bisector of the nearest plate**, and it has to be. The
+    /// obvious shortcut is to measure only the bisector with the second-nearest seed,
+    /// which is nearly always the right one and is a single arc sine. It is also
+    /// discontinuous, and the walk-across-a-margin test caught it jumping by five hundred
+    /// kilometres: the distance to a bisector is `asin(dot(P, normalise(A - B)))`, and
+    /// when the runner-up changes from B to C the numerator is continuous but the
+    /// normalisation is not, because `|A - B|` and `|A - C|` differ. Terrain built on that
+    /// would have grown a wall wherever a third plate became the runner-up.
+    ///
+    /// The minimum is taken on the sine rather than the angle: arc sine is monotonic over
+    /// the range in question, so the smallest sine is the smallest angle, and one
+    /// transcendental call at the end does for the lot.
+    pub fn margin_at(&self, point: &SpherePoint, radius_m: f64) -> Margin {
+        if self.plates.len() < 2 {
+            let (nearest, _) = self.nearest_two(point);
+            return Margin { nearest, neighbour: None, distance_m: f64::INFINITY };
+        }
+
+        let v = point.vector;
+        let (px, py, pz) = (v.x, v.y, v.z);
+
+        // The nearest plate's *position* in `self.plates`, not `Plate::index`.
+        // `PlateSet::new` builds the bisector table by loop position and never touches
+        // the `index` field it was handed, so the table is only addressable by position.
+        // Nothing in this module enforces `index == position`, so recompute the nearest
+        // plate here (mirroring `nearest_two`'s tie-breaking) rather than trying to
+        // recover a position from `near.index` after the fact.
+        let mut near_pos = 0usize;
+        let mut best_dot = -2.0f64;
+        for (i, plate) in self.plates.iter().enumerate() {
+            let s = plate.seed.vector;
+            let alignment = px * s.x + py * s.y + pz * s.z;
+            if alignment > best_dot {
+                near_pos = i;
+                best_dot = alignment;
+            }
+        }
+        let near = self.plates[near_pos];
+
+        let mut closest_sine = 2.0f64;
+        let mut across: Option<Plate> = None;
+        for (other_index, other) in self.plates.iter().enumerate() {
+            let normal = match self.bisector(near_pos, other_index) {
+                Some(n) => n,
+                None => continue,
+            };
+            let offset = (px * normal.x + py * normal.y + pz * normal.z).abs();
+            if offset < closest_sine {
+                closest_sine = offset;
+                across = Some(*other);
+            }
+        }
+
+        // Python writes `min(1.0, closest_sine)`; two-argument min keeps 1.0 unless the
+        // value is strictly below it, so a NaN would clamp to 1.0 rather than propagate.
+        let clamped = if closest_sine < 1.0 { closest_sine } else { 1.0 };
+        Margin { nearest: Some(near), neighbour: across, distance_m: m::asin(clamped) * radius_m }
     }
 }
 
@@ -295,6 +368,58 @@ mod tests {
         let (best, second) = set.nearest_two(&SpherePoint::from_latlon(0.0, 0.0));
         assert_eq!(best.expect("a nearest").index, 0);
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn a_single_plate_has_no_margin() {
+        let only = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(5.0, 5.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.0,
+        };
+        let set = PlateSet::new(vec![only]);
+        let m = set.margin_at(&SpherePoint::from_latlon(0.0, 0.0), EARTH_RADIUS_M);
+        assert_eq!(m.nearest.expect("a nearest").index, 0);
+        assert!(m.neighbour.is_none());
+        assert!(m.distance_m.is_infinite());
+    }
+
+    #[test]
+    fn a_point_on_the_bisector_is_at_zero_distance() {
+        // Equidistant from both seeds, so it stands on their shared edge.
+        let set = two_plates();
+        let a = set.plate(0).seed.vector;
+        let b = set.plate(1).seed.vector;
+        let midpoint = SpherePoint {
+            vector: a.add(&b).normalised().expect("distinct seeds"),
+        };
+        let m = set.margin_at(&midpoint, EARTH_RADIUS_M);
+        assert!(m.distance_m.abs() < 1e-6, "distance was {}", m.distance_m);
+        assert!(m.neighbour.is_some());
+    }
+
+    #[test]
+    fn a_point_at_a_seed_is_a_quarter_turn_from_the_edge() {
+        // With two seeds ninety degrees apart, standing on one puts the shared edge
+        // forty-five degrees away.
+        let set = two_plates();
+        let m = set.margin_at(&set.plate(0).seed, EARTH_RADIUS_M);
+        let expected = (std::f64::consts::PI / 4.0) * EARTH_RADIUS_M;
+        assert!((m.distance_m - expected).abs() < 1.0, "distance was {}", m.distance_m);
+        assert_eq!(m.neighbour.expect("a neighbour").index, 1);
+    }
+
+    #[test]
+    fn the_distance_never_exceeds_a_quarter_turn() {
+        // asin caps at pi/2, and the sine is clamped to 1.0 before it.
+        let set = two_plates();
+        for lat in (-80..81).step_by(20) {
+            for lon in (-180..181).step_by(45) {
+                let m = set.margin_at(&SpherePoint::from_latlon(lat as f64, lon as f64), EARTH_RADIUS_M);
+                assert!(m.distance_m <= (std::f64::consts::PI / 2.0) * EARTH_RADIUS_M + 1.0);
+            }
+        }
     }
 
 }
