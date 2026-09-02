@@ -215,6 +215,69 @@ pub fn plateset_nearest_two(
     (best.map(|p| p.index), second.map(|p| p.index))
 }
 
+/// Nearest index, neighbour index, distance in metres. Conversion only: `margin_at` does
+/// all the arithmetic; this just unwraps the `Margin` it returns into a shape PyO3 can
+/// hand back, positionally -- a `None` on the Rust side must come back as `None` here,
+/// not be coerced into anything that could compare equal to a real index by accident.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plateset_margin_at(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> (Option<usize>, Option<usize>, f64) {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let margin = set.margin_at(&point, radius_m);
+    (
+        margin.nearest.map(|p| p.index),
+        margin.neighbour.map(|p| p.index),
+        margin.distance_m,
+    )
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plateset_margin_normal(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> Option<(f64, f64, f64)> {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let margin = set.margin_at(&point, radius_m);
+    let normal = set.margin_normal(&point, &margin)?;
+    Some((normal.x, normal.y, normal.z))
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plateset_flattened(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    x: f64,
+    y: f64,
+    z: f64,
+    nx: f64,
+    ny: f64,
+    nz: f64,
+) -> Option<(f64, f64, f64)> {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let normal = Vec3::new(nx, ny, nz);
+    let flat = set.flattened(&point, &normal)?;
+    Some((flat.x, flat.y, flat.z))
+}
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn continentality_gradient(

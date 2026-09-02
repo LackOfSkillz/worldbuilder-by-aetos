@@ -45,5 +45,8 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::plate_angular_velocity, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::plateset_bisector, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::plateset_nearest_two, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plateset_margin_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plateset_margin_normal, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plateset_flattened, m)?)?;
     Ok(())
 }
