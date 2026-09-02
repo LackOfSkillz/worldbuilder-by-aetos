@@ -15,6 +15,7 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
     src/noise.rs     Noise: 64-bit lattice hash, trilinear sample, fBm
     src/tangent.rs   TangentFrame: at, local_to_sphere, sphere_to_local
     src/continentality.rs  Continentality: at, calibration, above_shore, base_elevation, gradient
+    src/plates.rs    Plate, PlateSet: the bisector table and the nearest-two Voronoi lookup
     src/bindings.rs  the PyO3 surface, conversion only
 
 The Python in `worldbuilder/` is still the reference implementation and is unchanged.
@@ -218,10 +219,58 @@ Run it with:
 
     python -m pytest tests/test_conformance.py -v
 
-268 Python tests and 58 crate tests pass in the full suite. The harness includes a test
+274 Python tests and 72 crate tests pass in the full suite. The harness includes a test
 asserting that `same` can distinguish a one-bit difference and a test asserting that
 `close_enough` rejects a difference past the ULP bound, because a conformance suite that
 cannot fail proves nothing.
+
+**`Plate` and `PlateSet` are entirely strict, and unusually so: this is the first ported
+module with no transcendental anywhere in it.** `nearest_two` compares seeds by dot product
+rather than by angle, because for unit vectors a larger dot product *is* a smaller angle --
+converting to distances would only be undone by the comparison, at the cost of two dozen
+transcendental calls per sample to sort numbers that were already in order. Building the
+bisector table is a subtraction, a `length()`, and a `normalised()`, all IEEE-754-exact or
+correctly-rounded. So there is no ULP bound anywhere in this slice, and none was needed:
+this and the noise module are the two ports so far where "strict" needed no defending.
+
+The bisector table is the entire stored geometry of a planet's tectonics. Points equidistant
+from seeds A and B satisfy `dot(P, A) == dot(P, B)`, which rearranges to
+`dot(P, A - B) == 0`, so the margin between two plates is a great circle whose plane normal
+is `normalise(A - B)`. A couple of dozen plates makes a few hundred such vectors, and that
+table is what the next slice's margin queries will read.
+
+The Python's duplicated component-triple table -- the same geometry kept twice, because a
+Python method call costs more than the three multiplies inside `Vec3.dot`, and profiling
+found ninety-nine such calls per terrain sample -- is not ported. In Rust the field access is
+free, so the second copy buys nothing and one representation cannot fall out of step with
+itself; this is the same call already made when `Noise`'s corner cache was dropped, above.
+
+Two IEEE-754 properties were established by proof during review, not just observed, because
+the next person writing a test here will need them. `normalise(B - A)` is the exact
+component-wise negation of `normalise(A - B)` for any non-zero component, for any seed pair:
+subtraction is exactly negated, `length()` squares away the sign so both directions share one
+scale factor, and multiplying an exactly-negated component by that same positive scale is
+again exact. But a component where the seeds are equal gives `+0.0` in both directions, never
+`-0.0`, because each direction computes its own subtraction rather than negating the other --
+asserting a sign flip there would assert something untrue, and a test in this slice did
+exactly that before it was corrected.
+
+`nearest_two`'s tie rule matters for the same reason. Both comparisons are strict `>`, so a
+tie keeps the earlier plate, which is what makes the answer independent of iteration order
+rather than an accident of it. Review confirmed the property holds for second place as well
+as first: `best` is always the earliest plate holding the running maximum, every demotion
+moves that same `best` into `second` rather than the incoming plate, and the `else if`
+installs the current plate only on a strict `>`. This matters because the margin machinery
+the next slice adds consumes second place, not just first.
+
+**A limitation of the plate bindings that the next slice must fix.** `bindings.rs` rebuilds a
+`PlateSet` from seed components alone, fabricating `pole = seed` and `rate = 0.0` for every
+plate. That is provably inert today, because `PlateSet::new` and `nearest_two` read only the
+seed. It will not stay inert: `Margin` carries whole `Plate` values, so once `margin_at` and
+`margin_normal` are exposed through the same reconstruction they would compare placeholder
+against placeholder on the pole and rate fields and pass trivially -- false confidence, not
+conformance. The binding contract must change before then to carry real, independently
+varying poles and rates from the Python harness.
 
 ## Constants transcribed from Python: a rule learned the hard way
 
