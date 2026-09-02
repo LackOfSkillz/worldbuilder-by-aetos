@@ -5,6 +5,8 @@
 //! targets agree bit-for-bit, which is the only reason a studio and a game can be trusted
 //! to be looking at the same world.
 
+pub mod detmath;
+
 use pyo3::prelude::*;
 
 /// The engine's own version, so a caller can tell which core answered.
