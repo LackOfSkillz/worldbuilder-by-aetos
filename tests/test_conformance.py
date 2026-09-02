@@ -24,7 +24,7 @@ import struct
 import pytest
 
 from worldbuilder.geometry.sphere import EARTH_RADIUS_M, SpherePoint
-from worldbuilder.geometry.vectors import Vec3
+from worldbuilder.geometry.vectors import DEGENERATE, Vec3
 
 if os.environ.get("WORLDBUILDER_REQUIRE_ENGINE"):
     # Opt-in escape from importorskip below: on a machine that is supposed to have the
@@ -1280,3 +1280,370 @@ def test_the_minimum_bisector_sine_gap_is_measured_not_assumed():
         "-- neighbour selection may be fragile at this point"
     )
     assert minimum_gap < math.inf
+
+
+# --- PlateSet: margins_within -------------------------------------------------------------
+#
+# The split contract from the brief, applied without blurring it -- and Task 1's finding
+# applied without overstating it:
+#
+#   - List membership and ordering: Task 1 measured `limit` bit-identical between Python
+#     and Rust across every range tested (worst 0 ULP), so this compares strictly -- same
+#     length, same plate indices, same order. A mismatch is a real defect, not rounding.
+#   - Plate indices (`nearest`, and each entry's `other`): exact integers.
+#   - weight: `same()`, strictly. Algebraic throughout -- dot products, a division, two
+#     clamps and a polynomial. Nothing transcendental touches it.
+#   - normal: `same()`, strictly, component-wise.
+#   - distance_m: `close_enough` at MAX_TRANSCENDENTAL_ULPS -- the one bounded quantity,
+#     because of asin.
+#   - `None` / empty: compared positionally. `nearest` is `None` exactly where Python's is,
+#     never merely "both sides happen to have nothing"; an empty list must come back empty,
+#     not padded.
+#
+# What is deliberately NOT done here: no permanent binding is added to pin bit-identity of
+# `limit`, and Task 1's measurement is not re-asserted as bit-identity. Task 5 deletes
+# `tests/test_limit_ulps.py` and the TEMPORARY `margins_within_limit` scaffolding, which
+# removes the only thing that pinned it -- and bit-identity of `sin` is platform-contingent
+# (measured against Windows' UCRT; another libm could differ) so it would be the wrong
+# thing to lean on permanently anyway. What strict membership actually depends on is the
+# *geometric* margin: how close any real candidate's `offset` comes to `limit`. Task 1
+# measured that separation at 2.858e-07 against a one-ULP scale of about 1e-16 -- nine
+# orders of headroom -- for one range value over its corpus.
+# `test_the_closest_approach_to_the_range_boundary_is_measured_not_assumed` below
+# re-measures that quantity independently, from the Python side alone (so it needs no
+# special binding), across a spread of ranges and this file's corpus, and asserts a floor
+# on it with the observed value in the failure message -- not merely printed, per the
+# vacuous-test failure mode this project has already shipped three times.
+# `test_the_smallest_shadow_gap_is_measured_not_assumed` does the same for the other hard
+# decision in this function: `genuine <= 0: continue`, taken on the sign of `shadow`.
+
+def _range_values_for_margins():
+    """
+    A spread of range_m from selecting nothing, through selecting some, to spanning more
+    than the planet -- reused by every margins_within test below so "none/some/all" is
+    exercised consistently rather than each test inventing its own numbers.
+    """
+    return (1.0e3, 1.0e4, 1.0e5, 1.0e6, 4.0e6, 5.0e6, 2.0e7, EARTH_RADIUS_M * math.pi)
+
+
+def _assert_margins_within_match(want_nearest, want_found, got_nearest, got_found, context):
+    """
+    The split contract, applied to one `margins_within` call: nearest and every `other` as
+    exact integers, `None` positionally, length and order compared before any element (so a
+    length mismatch is reported as a length mismatch, not an off-by-one zip truncation),
+    weight and normal strictly, distance through `close_enough`.
+    """
+    want_nearest_index = None if want_nearest is None else want_nearest.index
+    assert want_nearest_index == got_nearest, (*context, "nearest", want_nearest_index, got_nearest)
+    assert len(want_found) == len(got_found), (
+        *context, "length",
+        [o.index for o, _, _, _ in want_found], [o for o, _, _, _ in got_found],
+    )
+    for (w_other, w_dist, w_normal, w_weight), (g_other, g_dist, g_normal, g_weight) in zip(
+        want_found, got_found
+    ):
+        assert w_other.index == g_other, (*context, "other", w_other.index, g_other)
+        assert close_enough(w_dist, g_dist), (
+            *context, "distance_m", w_dist, g_dist, ulps_apart(w_dist, g_dist),
+        )
+        assert (
+            same(w_normal.x, g_normal[0])
+            and same(w_normal.y, g_normal[1])
+            and same(w_normal.z, g_normal[2])
+        ), (*context, "normal", (w_normal.x, w_normal.y, w_normal.z), g_normal)
+        assert same(w_weight, g_weight), (*context, "weight", w_weight, g_weight)
+
+
+def test_plateset_margins_within_agrees_over_a_corpus_of_points():
+    """The corpus against the standing 12-plate multi-plate set, across every range value
+    from `_range_values_for_margins` -- selecting nothing, something, and everything."""
+    checked = 0
+    for point in _margins_corpus(800):
+        v = point.vector
+        for range_m in _range_values_for_margins():
+            want_nearest, want_found = PY_PLATE_SET.margins_within(point, range_m, EARTH_RADIUS_M)
+            got_nearest, got_found = engine.plateset_margins_within(
+                PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+                v.x, v.y, v.z, range_m, EARTH_RADIUS_M,
+            )
+            _assert_margins_within_match(
+                want_nearest, want_found, got_nearest, got_found, (v.x, v.y, v.z, range_m)
+            )
+            checked += 1
+    assert checked > 0
+
+
+def test_plateset_margins_within_agrees_at_the_poles_and_the_meridian():
+    """The six pinned points, explicitly, across every range value."""
+    for x, y, z in ((0.0, 0.0, 1.0), (0.0, 0.0, -1.0), (1.0, 0.0, 0.0),
+                    (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
+        point = SpherePoint(Vec3(x, y, z))
+        for range_m in _range_values_for_margins():
+            want_nearest, want_found = PY_PLATE_SET.margins_within(point, range_m, EARTH_RADIUS_M)
+            got_nearest, got_found = engine.plateset_margins_within(
+                PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, x, y, z, range_m, EARTH_RADIUS_M
+            )
+            _assert_margins_within_match(
+                want_nearest, want_found, got_nearest, got_found, (x, y, z, range_m)
+            )
+
+
+def test_plateset_margins_within_agrees_near_bisectors():
+    """
+    Points deliberately close to a bisector (offset near zero), where a candidate is most
+    likely to sit right at the edge of being included at all as range shrinks, and where
+    the shadow test is most sensitive to a third plate's position.
+    """
+    checked = 0
+    for point in _bisector_points_near_margin(PLATE_SEED_VECTORS, 600):
+        v = point.vector
+        for range_m in (1.0e4, 1.0e6, 2.0e7):
+            want_nearest, want_found = PY_PLATE_SET.margins_within(point, range_m, EARTH_RADIUS_M)
+            got_nearest, got_found = engine.plateset_margins_within(
+                PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+                v.x, v.y, v.z, range_m, EARTH_RADIUS_M,
+            )
+            _assert_margins_within_match(
+                want_nearest, want_found, got_nearest, got_found, (v.x, v.y, v.z, range_m)
+            )
+            checked += 1
+    assert checked > 0
+
+
+def test_plateset_margins_within_agrees_with_a_single_plate_set():
+    """A single-plate set: the nearest plate is returned, and the margin list is empty on
+    both sides -- positionally, not merely "both sides happen to have nothing"."""
+    seed = Vec3(0.0, 0.0, 1.0)
+    py_set, flat, poles_flat, rates = _build_plateset_pair([seed])
+    for x, y, z in [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)]:
+        point = SpherePoint(Vec3(x, y, z))
+        for range_m in _range_values_for_margins():
+            want_nearest, want_found = py_set.margins_within(point, range_m, EARTH_RADIUS_M)
+            got_nearest, got_found = engine.plateset_margins_within(
+                flat, poles_flat, rates, x, y, z, range_m, EARTH_RADIUS_M
+            )
+            assert want_nearest.index == got_nearest == 0, (x, y, z, range_m, got_nearest)
+            assert want_found == (), "python fixture sanity: one plate has no margins"
+            assert got_found == [], (x, y, z, range_m, got_found)
+
+
+def _three_plate_py_set():
+    """
+    Mirrors `plates.rs`'s `three_plate_set` Rust unit test fixture exactly: two seeds on
+    the equator, one lifted off it, chosen so the third is not on the great circle
+    bisecting the other two. Reuses `_build_plateset_pair` for real, distinct poles and
+    rates rather than fabricating them.
+    """
+    seeds = [
+        SpherePoint.from_latlon(0.0, 0.0).vector,
+        SpherePoint.from_latlon(0.0, 90.0).vector,
+        SpherePoint.from_latlon(60.0, 45.0).vector,
+    ]
+    return _build_plateset_pair(seeds)
+
+
+def test_plateset_margins_within_agrees_across_ranges_that_select_none_some_and_all_margins():
+    """
+    Standing on plate 0's seed: the 0-1 bisector is about 5,003,772 m away and the 0-2
+    bisector about 3,852,637 m away (measured from the Python reference, not assumed), so a
+    1e6 m range selects neither, a 4e6 m range selects only the nearer one, and a 2e7 m
+    range selects both -- none, some, and all, from the same point.
+    """
+    py_set, flat, poles_flat, rates = _three_plate_py_set()
+    point = SpherePoint.from_latlon(0.0, 0.0)
+    v = point.vector
+    expectations = {1.0e6: [], 4.0e6: [2], 2.0e7: [1, 2]}
+    for range_m, expected_others in expectations.items():
+        want_nearest, want_found = py_set.margins_within(point, range_m, EARTH_RADIUS_M)
+        assert [o.index for o, _, _, _ in want_found] == expected_others, (
+            "python fixture sanity", range_m, [o.index for o, _, _, _ in want_found]
+        )
+        got_nearest, got_found = engine.plateset_margins_within(
+            flat, poles_flat, rates, v.x, v.y, v.z, range_m, EARTH_RADIUS_M
+        )
+        _assert_margins_within_match(
+            want_nearest, want_found, got_nearest, got_found, (v.x, v.y, v.z, range_m)
+        )
+
+
+def test_plateset_margins_within_finds_a_weight_strictly_between_zero_and_one_near_a_triple_junction():
+    """
+    Walking north along longitude 20 in the three-plate fixture, the shadow that plate 2
+    casts on the 0-1 margin crosses zero somewhere between 11 and 13 degrees latitude
+    (measured from the Python reference; see the Rust unit test
+    `a_shadowed_margin_fades_rather_than_switching_off` for the same walk). At 11.75
+    degrees the weight of the 0-1 margin is strictly between 0 and 1 -- neither fully
+    genuine nor fully shadowed -- which is exactly the case a boolean shadow test would get
+    wrong and this contract (weight compared strictly, via `same()`) must still agree on.
+    """
+    py_set, flat, poles_flat, rates = _three_plate_py_set()
+    point = SpherePoint.from_latlon(11.75, 20.0)
+    v = point.vector
+    want_nearest, want_found = py_set.margins_within(point, 2.0e7, EARTH_RADIUS_M)
+    want_weight = next((w for o, _, _, w in want_found if o.index == 1), None)
+    assert want_weight is not None and 0.0 < want_weight < 1.0, (
+        f"fixture sanity: weight was {want_weight!r}, not strictly between 0 and 1"
+    )
+    got_nearest, got_found = engine.plateset_margins_within(
+        flat, poles_flat, rates, v.x, v.y, v.z, 2.0e7, EARTH_RADIUS_M
+    )
+    _assert_margins_within_match(
+        want_nearest, want_found, got_nearest, got_found, (v.x, v.y, v.z, "triple-junction")
+    )
+
+
+def _non_saturating_range_values():
+    """
+    A spread of range_m that stays strictly below the point where `min(pi/2, range_m /
+    radius_m)` saturates -- unlike `_range_values_for_margins`, which deliberately
+    includes a saturating range so "select all" is exercised for membership tests.
+
+    At saturation `limit` pins at exactly `sin(pi/2) == 1.0`, an exact value rather than
+    one reached through rounding, and `offset` (a dot product of two unit vectors) can
+    itself equal 1.0 exactly whenever a bisector normal is parallel to the point -- e.g.
+    at a pinned pole. That makes `abs(offset - limit) == 0.0` a real but uninteresting
+    coincidence of exact arithmetic, not the near-boundary fragility this floor exists to
+    detect, so it must not be allowed to swallow the measurement. Task 1 measured its
+    2.858e-07 figure at range_m=1e5, well inside this non-saturating band.
+    """
+    return (1.0e3, 1.0e4, 1.0e5, 1.0e6, 4.0e6, 5.0e6)
+
+
+def _closest_approach_to_range_boundary(points, range_values):
+    """
+    For every (point, range_m) pair, the minimum `abs(offset - limit)` over every defined
+    bisector of the nearest plate -- the raw geometric quantity `margins_within`'s
+    membership test (`if offset > limit: continue`) is actually taken on. Returns the
+    smallest gap found, and the `(x, y, z, range_m, offset, limit)` context that produced
+    it, so a caller can re-test membership exactly there.
+    """
+    minimum = math.inf
+    minimum_context = None
+    for point in points:
+        v = point.vector
+        nearest, _ = PY_PLATE_SET.nearest_two(point)
+        px, py, pz = v.x, v.y, v.z
+        for range_m in range_values:
+            limit = math.sin(min(math.pi / 2, range_m / EARTH_RADIUS_M))
+            for normal in PY_PLATE_SET._bisector_xyz[nearest.index]:
+                if normal is None:
+                    continue
+                offset = abs(px * normal[0] + py * normal[1] + pz * normal[2])
+                gap = abs(offset - limit)
+                if gap < minimum:
+                    minimum = gap
+                    minimum_context = (v.x, v.y, v.z, range_m, offset, limit)
+    return minimum, minimum_context
+
+
+def test_the_closest_approach_to_the_range_boundary_is_measured_not_assumed():
+    """
+    Task 1 measured this quantity at one range value (2.858e-07, against a one-ULP scale
+    of about 1e-16 -- nine orders of headroom) and found it robust to a few-ULP divergence
+    in `limit`. This recomputes the same quantity independently, from the Python side
+    alone, across the spread of ranges this file's other margins_within tests use and this
+    file's corpus, and asserts a floor on it -- not merely prints it, per the vacuous-test
+    failure mode (asserting only `>= 0.0` and `< inf`, which an exact tie would pass) that
+    slice 1f's sine-gap test had to be fixed for.
+
+    If this floor ever fires, that is the signal to revisit strict comparison for
+    membership -- and it is precisely the signal bit-identity of `limit` would not have
+    given, since bit-identity is platform-contingent (measured against Windows' UCRT here)
+    while this geometric margin is not.
+    """
+    points = list(_margins_corpus(2000)) + list(_bisector_points_near_margin(PLATE_SEED_VECTORS, 1000))
+    minimum, context = _closest_approach_to_range_boundary(points, _non_saturating_range_values())
+    assert context is not None, "corpus produced no measurable candidate"
+
+    print(f"\nclosest approach to the range boundary: {minimum!r} at {context}")
+
+    assert minimum >= 1e-9, (
+        f"closest observed approach to the range boundary collapsed to {minimum!r} at "
+        f"{context} -- strict membership may be fragile here"
+    )
+
+    # The point and range that produced the smallest gap, explicitly re-tested: this is
+    # the "points deliberately placed near the range boundary" case the brief asks for,
+    # and it is exactly the case a bit-identity assumption about `limit` would have been
+    # needed to cover, rather than the geometric margin this test measures instead.
+    x, y, z, range_m, offset, limit = context
+    point = SpherePoint(Vec3(x, y, z))
+    want_nearest, want_found = PY_PLATE_SET.margins_within(point, range_m, EARTH_RADIUS_M)
+    got_nearest, got_found = engine.plateset_margins_within(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, x, y, z, range_m, EARTH_RADIUS_M
+    )
+    _assert_margins_within_match(
+        want_nearest, want_found, got_nearest, got_found, (x, y, z, range_m)
+    )
+
+
+def _shadow_values_for_point(point, range_m):
+    """
+    Reimplements the shadow computation inside `margins_within` (lookup.py, the loop
+    building `found`) to surface the raw `shadow` value the `genuine <= 0: continue`
+    decision is taken on -- a quantity the public API never returns. Mirrors the algorithm
+    exactly, the same approach `test_the_minimum_bisector_sine_gap_is_measured_not_assumed`
+    takes for the neighbour-selection decision above.
+    """
+    nearest, _ = PY_PLATE_SET.nearest_two(point)
+    v = point.vector
+    px, py, pz = v.x, v.y, v.z
+    limit = math.sin(min(math.pi / 2, range_m / EARTH_RADIUS_M))
+    seeds = PY_PLATE_SET._seed_xyz
+    values = []
+    for other, normal in zip(PY_PLATE_SET.plates, PY_PLATE_SET._bisector_xyz[nearest.index]):
+        if normal is None:
+            continue
+        nx, ny, nz = normal
+        signed = px * nx + py * ny + pz * nz
+        offset = abs(signed)
+        if offset > limit:
+            continue
+        foot_x, foot_y, foot_z = px - nx * signed, py - ny * signed, pz - nz * signed
+        reach = math.sqrt(foot_x * foot_x + foot_y * foot_y + foot_z * foot_z)
+        if reach <= DEGENERATE:
+            continue
+        scale = 1.0 / reach
+        stand_x, stand_y, stand_z = foot_x * scale, foot_y * scale, foot_z * scale
+        here = seeds[nearest.index]
+        mine = stand_x * here[0] + stand_y * here[1] + stand_z * here[2]
+        shadow = 2.0
+        for third, (tx, ty, tz) in zip(PY_PLATE_SET.plates, seeds):
+            if third.index == nearest.index or third.index == other.index:
+                continue
+            shadow = min(shadow, mine - (stand_x * tx + stand_y * ty + stand_z * tz))
+        values.append(shadow)
+    return values
+
+
+def test_the_smallest_shadow_gap_is_measured_not_assumed():
+    """
+    The other hard decision in `margins_within`: `genuine <= 0: continue`, taken on the
+    sign of `shadow`. Like the range-boundary gap above, this is a discrete membership
+    decision on a continuous quantity, and the same hazard applies -- a candidate whose
+    `shadow` sits right at zero is one rounding difference away from being included by one
+    implementation and excluded by the other.
+
+    Measured across this file's corpus and range spread, floored rather than printed, for
+    the same reason as `test_the_closest_approach_to_the_range_boundary_is_measured_not_assumed`.
+    """
+    minimum = math.inf
+    minimum_context = None
+    points = list(_margins_corpus(2000)) + list(_bisector_points_near_margin(PLATE_SEED_VECTORS, 1000))
+    for point in points:
+        for range_m in _range_values_for_margins():
+            for shadow in _shadow_values_for_point(point, range_m):
+                gap = abs(shadow)
+                if gap < minimum:
+                    minimum = gap
+                    v = point.vector
+                    minimum_context = (v.x, v.y, v.z, range_m, shadow)
+
+    assert minimum_context is not None, "corpus produced no candidate that reached the shadow test"
+
+    print(f"\nsmallest observed |shadow|: {minimum!r} at {minimum_context}")
+
+    assert minimum >= 1e-9, (
+        f"smallest observed |shadow| collapsed to {minimum!r} at {minimum_context} -- "
+        "the shadow/genuine decision may be fragile here"
+    )

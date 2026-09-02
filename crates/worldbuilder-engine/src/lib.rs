@@ -49,5 +49,6 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::plateset_margin_normal, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::plateset_flattened, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::margins_within_limit, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plateset_margins_within, m)?)?;
     Ok(())
 }

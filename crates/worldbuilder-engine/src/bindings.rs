@@ -271,6 +271,34 @@ pub fn margins_within_limit(range_m: f64, radius_m: f64) -> f64 {
     crate::plates::margins_within_limit(range_m, radius_m)
 }
 
+/// Nearest index, then every margin in range as `(other_index, distance_m, normal, weight)`.
+/// Conversion only: `margins_within` does all the arithmetic; this unwraps its `Plate`
+/// values into indices and its `Vec3` into a triple, positionally -- a `None` nearest on
+/// the Rust side must come back as `None` here, not coerced into anything that could
+/// compare equal to a real index by accident, and an empty list must come back empty
+/// rather than padded with placeholders.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plateset_margins_within(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    x: f64,
+    y: f64,
+    z: f64,
+    range_m: f64,
+    radius_m: f64,
+) -> (Option<usize>, Vec<(usize, f64, (f64, f64, f64), f64)>) {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let (nearest, found) = set.margins_within(&point, range_m, radius_m);
+    let margins = found
+        .into_iter()
+        .map(|m| (m.other.index, m.distance_m, (m.normal.x, m.normal.y, m.normal.z), m.weight))
+        .collect();
+    (nearest.map(|p| p.index), margins)
+}
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn plateset_flattened(
