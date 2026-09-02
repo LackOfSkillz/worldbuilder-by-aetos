@@ -11,6 +11,7 @@ pub mod sphere;
 pub mod bindings;
 pub mod noise;
 pub mod tangent;
+pub mod continentality;
 
 use pyo3::prelude::*;
 
