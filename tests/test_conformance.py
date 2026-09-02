@@ -1264,19 +1264,19 @@ def test_the_minimum_bisector_sine_gap_is_measured_not_assumed():
 
     assert minimum_gap_point is not None, "corpus produced no point with two or more margins"
 
-    one_ulp_near_one = ulps_apart(1.0, struct.unpack("<d", struct.pack("<Q", bits(1.0) + 1))[0])
-    assert one_ulp_near_one == 1  # sanity: confirms the ULP-distance measure used below
-
     print(
         f"\nminimum observed gap between the two smallest bisector sines: {minimum_gap!r} "
         f"at point {minimum_gap_point}"
     )
 
-    # Report, rather than assert a specific bound: whether this is "comparable to a ULP"
-    # depends on the magnitude of the sines involved, which varies with the corpus. A gap
-    # many orders of magnitude above machine epsilon at that magnitude means neighbour
-    # selection is robust across this corpus; a gap down near 1e-16 (double precision's
-    # rough ULP spacing near 1.0, or proportionally smaller near 0.0) would mean the
-    # opposite, and that finding belongs in the report, not silently passed over.
-    assert minimum_gap >= 0.0
+    # Assert a real floor rather than merely printing the value: a passing run swallows
+    # `print`, so without this the 1.369e-5 figure the README cites as evidence of
+    # robustness is pinned nowhere, and an exact tie (gap 0.0 -- precisely the fragility
+    # this test exists to detect) would pass silently. 1e-9 sits four orders below the
+    # observed gap and seven above the ~1e-16 scale where a tie hazard would actually
+    # live, so it has margin on both sides without masking a real regression.
+    assert minimum_gap >= 1e-9, (
+        f"minimum bisector sine gap collapsed to {minimum_gap!r} at {minimum_gap_point} "
+        "-- neighbour selection may be fragile at this point"
+    )
     assert minimum_gap < math.inf

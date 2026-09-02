@@ -7,7 +7,7 @@
 //! quickly, and of asking how far the point is from the answer changing.
 
 use crate::detmath as m;
-use crate::sphere::{SpherePoint, EARTH_RADIUS_M};
+use crate::sphere::SpherePoint;
 use crate::vectors::{Vec3, DEGENERATE};
 
 /// One plate: where it is, what it turns about, and how fast.
@@ -155,28 +155,17 @@ impl PlateSet {
     /// perpendicular to the margin; this is its component in the tangent plane, which is
     /// what "away from the margin" means to somebody standing there.
     pub fn margin_normal(&self, point: &SpherePoint, margin: &Margin) -> Option<Vec3> {
+        let nearest = margin.nearest?;
         let neighbour = margin.neighbour?;
-        let _nearest = margin.nearest?;
 
-        // Find the position of the nearest plate within self.plates. The Python indexes
-        // the bisector table by margin.nearest.index and margin.neighbour.index, but the
-        // Rust PlateSet::new builds the table by loop position and does not enforce
-        // index == position. Position is used here for consistency with margin_at, which
-        // also scans for the nearest plate's position rather than trusting its index field.
-        let mut near_pos = 0usize;
-        let mut best_dot = -2.0f64;
-        let v = point.vector;
-        let (px, py, pz) = (v.x, v.y, v.z);
-        for (i, plate) in self.plates.iter().enumerate() {
-            let s = plate.seed.vector;
-            let alignment = px * s.x + py * s.y + pz * s.z;
-            if alignment > best_dot {
-                near_pos = i;
-                best_dot = alignment;
-            }
-        }
-
-        // Find the position of the neighbour plate.
+        // The Python indexes the bisector table by margin.nearest.index and
+        // margin.neighbour.index unconditionally. The Rust PlateSet::new instead builds
+        // the table by loop position, and nothing enforces index == position, so both
+        // axes here are resolved from the passed `margin` by looking up each plate's
+        // *position* in self.plates rather than trusting its index field. That is a
+        // deliberate deviation from the Python, not a bug: for every set generation.py
+        // can build, index and position coincide, so the two addressing schemes agree.
+        let near_pos = self.plates.iter().position(|p| p.index == nearest.index)?;
         let neighbour_pos = self.plates.iter().position(|p| p.index == neighbour.index)?;
 
         let normal = self.bisector(near_pos, neighbour_pos)?;
@@ -248,6 +237,7 @@ impl PlateSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sphere::EARTH_RADIUS_M;
 
     fn a_plate(index: usize, rate: f64) -> Plate {
         Plate {

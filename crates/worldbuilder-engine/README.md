@@ -317,9 +317,12 @@ one. Taking the minimum over every bisector fixes this because a minimum of cont
 functions is itself continuous, even though the arg-min -- which function attained it -- can
 still jump. `lookup.py` attributes four separate bugs in this module to the same root cause:
 a hard decision taken on a continuous quantity. This is the second of the four; `margins_within`,
-not ported in this slice, carries the other three (the shadow weight, the phantom-bisector
-test, and the fade that replaced a boolean), which is exactly why it gets its own slice
-rather than riding along with this one.
+not ported in this slice, carries the other three (the arg-min flip that its own docstring
+opens with -- picking one margin is not continuous, even when its distance is, and cost five
+hundred metres of cliff; the phantom-bisector test, where a bisector belongs to two plates
+that are not actually the nearest pair anywhere near it; and the shadow weight that replaced
+a boolean, one bug rather than two, since the fade *is* the fix for the hard decision), which
+is exactly why it gets its own slice rather than riding along with this one.
 
 **The minimum sine gap, measured rather than assumed, for the third time in this crate.**
 Across the combined corpus used for margin conformance -- the pinned poles and meridian
