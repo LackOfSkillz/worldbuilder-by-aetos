@@ -6,7 +6,7 @@
 //! than nudging raw coordinates, which would step off the sphere entirely.
 
 use crate::detmath as m;
-use crate::sphere::{SpherePoint, EARTH_RADIUS_M};
+use crate::sphere::SpherePoint;
 use crate::vectors::{Vec3, DEGENERATE, NORTH_AXIS, POLAR_FALLBACK};
 
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +47,9 @@ impl TangentFrame {
         // the fallback chain has guaranteed a non-zero result, so the None case is
         // unreachable. Falling back to POLAR_FALLBACK rather than panicking keeps the
         // function total, and the conformance corpus covers the poles.
-        let east = sideways.normalised().unwrap_or(POLAR_FALLBACK);
+        let east = sideways
+            .normalised()
+            .expect("the fallback chain guarantees a non-zero sideways vector");
         let north = up.cross(&east);
         Self { origin: *origin, east, north, up, radius_m }
     }
@@ -55,6 +57,40 @@ impl TangentFrame {
     /// Convenience: a frame centred on a named latitude and longitude.
     pub fn at_latlon(latitude_deg: f64, longitude_deg: f64, radius_m: f64) -> Self {
         Self::at(&SpherePoint::from_latlon(latitude_deg, longitude_deg), radius_m)
+    }
+
+    /// Where a point on the chart actually is.
+    ///
+    /// The local distance is taken as an arc along the surface rather than a straight
+    /// line across the tangent plane, which is what makes the projection equidistant.
+    ///
+    /// Written out in components rather than in vector algebra, which is not how the rest
+    /// of this crate is written and so needs the excuse: the Python's profiling put this
+    /// at a quarter of a chart redraw's cost, it is called six times per terrain sample,
+    /// and the tidy version built seven intermediate vectors each time. Same operations,
+    /// same order.
+    pub fn local_to_sphere(&self, x_m: f64, y_m: f64) -> SpherePoint {
+        let distance = m::hypot(x_m, y_m);
+        if distance == 0.0 {
+            return self.origin;
+        }
+
+        let angle = distance / self.radius_m;
+        let along = x_m / distance;
+        let across = y_m / distance;
+        let (east, north, up) = (self.east, self.north, self.up);
+        let heading_x = east.x * along + north.x * across;
+        let heading_y = east.y * along + north.y * across;
+        let heading_z = east.z * along + north.z * across;
+
+        let forward = m::cos(angle);
+        let outward = m::sin(angle);
+        let x = up.x * forward + heading_x * outward;
+        let y = up.y * forward + heading_y * outward;
+        let z = up.z * forward + heading_z * outward;
+
+        let scale = 1.0 / m::sqrt(x * x + y * y + z * z);
+        SpherePoint { vector: Vec3::new(x * scale, y * scale, z * scale) }
     }
 }
 
@@ -110,5 +146,41 @@ mod tests {
         assert_eq!(frame.up.x.to_bits(), origin.vector.x.to_bits());
         assert_eq!(frame.up.y.to_bits(), origin.vector.y.to_bits());
         assert_eq!(frame.up.z.to_bits(), origin.vector.z.to_bits());
+    }
+
+    #[test]
+    fn the_origin_maps_to_itself() {
+        let frame = TangentFrame::at_latlon(51.5, -0.12, EARTH_RADIUS_M);
+        let there = frame.local_to_sphere(0.0, 0.0);
+        assert_eq!(there.vector.x.to_bits(), frame.origin.vector.x.to_bits());
+        assert_eq!(there.vector.y.to_bits(), frame.origin.vector.y.to_bits());
+        assert_eq!(there.vector.z.to_bits(), frame.origin.vector.z.to_bits());
+    }
+
+    #[test]
+    fn a_step_east_lands_east() {
+        let frame = TangentFrame::at_latlon(0.0, 0.0, EARTH_RADIUS_M);
+        let (_, lon) = frame.local_to_sphere(100_000.0, 0.0).to_latlon();
+        assert!(lon > 0.0, "stepping east gave longitude {}", lon);
+    }
+
+    #[test]
+    fn the_projection_is_equidistant() {
+        // The defining property: local distance equals great-circle distance from the
+        // origin. If this drifts, a chart is claiming more ocean than the planet has.
+        let frame = TangentFrame::at_latlon(20.0, 30.0, EARTH_RADIUS_M);
+        for metres in [1_000.0, 25_000.0, 200_000.0, 1_000_000.0] {
+            let there = frame.local_to_sphere(metres, 0.0);
+            let measured = frame.origin.distance_to(&there, EARTH_RADIUS_M);
+            let error = (measured - metres).abs();
+            assert!(error < 1e-6, "at {} m the arc measured {} m", metres, measured);
+        }
+    }
+
+    #[test]
+    fn the_result_is_a_unit_vector() {
+        let frame = TangentFrame::at_latlon(-40.0, 170.0, EARTH_RADIUS_M);
+        let there = frame.local_to_sphere(300_000.0, -200_000.0);
+        assert!((there.vector.length() - 1.0).abs() < 1e-12);
     }
 }
