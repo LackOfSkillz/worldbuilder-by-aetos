@@ -768,21 +768,46 @@ def _plate_seed_vectors(count=12):
     return seeds
 
 
+def _pole_for_seed(seed):
+    """
+    A pole distinct from its seed: a cyclic permutation of the seed's components. That
+    permutation is a rotation (determinant +1), so the result is still a unit vector, and
+    for every seed in this file's corpus (none of which is on the x == y == z line) it
+    differs from the seed itself -- which is what "derived by some rotation" needs to mean
+    for the harness to exercise a genuinely different pole per plate.
+    """
+    return Vec3(seed.z, seed.x, seed.y)
+
+
+def _rate_for_index(index):
+    """A rate that differs for every plate index, including the sign and a zero-adjacent
+    value, so no two plates in a generated set share a rate."""
+    return 0.01 * (index + 1) * (-1.0 if index % 2 else 1.0)
+
+
 def _build_plateset_pair(seed_vectors):
-    """A matching (Python PlateSet, flat seed list) pair, index-aligned with each other."""
+    """
+    A matching (Python PlateSet, flat seeds/poles/rates) tuple, index-aligned with each
+    other. Poles and rates are derived per-plate (see `_pole_for_seed` and
+    `_rate_for_index`) rather than fabricated as the seed and zero, so both sides of the
+    comparison carry real, independently-varying values -- the point of this slice.
+    """
+    poles = [_pole_for_seed(v) for v in seed_vectors]
+    rates = [_rate_for_index(i) for i in range(len(seed_vectors))]
     py_plates = [
-        PyPlate(index=i, seed=SpherePoint(v), euler_pole=SpherePoint(v), rate_rad_per_myr=0.0)
-        for i, v in enumerate(seed_vectors)
+        PyPlate(index=i, seed=SpherePoint(v), euler_pole=SpherePoint(p), rate_rad_per_myr=r)
+        for i, (v, p, r) in enumerate(zip(seed_vectors, poles, rates))
     ]
     py_set = PyPlateSet(py_plates)
-    flat = []
-    for v in seed_vectors:
-        flat.extend((v.x, v.y, v.z))
-    return py_set, flat
+    seeds_flat, poles_flat = [], []
+    for v, p in zip(seed_vectors, poles):
+        seeds_flat.extend((v.x, v.y, v.z))
+        poles_flat.extend((p.x, p.y, p.z))
+    return py_set, seeds_flat, poles_flat, list(rates)
 
 
 PLATE_SEED_VECTORS = _plate_seed_vectors(12)
-PY_PLATE_SET, PLATE_SEEDS_FLAT = _build_plateset_pair(PLATE_SEED_VECTORS)
+PY_PLATE_SET, PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES = _build_plateset_pair(PLATE_SEED_VECTORS)
 
 
 def test_plate_angular_velocity_agrees_over_poles_and_rates():
@@ -823,7 +848,7 @@ def test_plateset_bisector_agrees_on_every_ordered_pair_including_none():
     for a in range(n):
         for b in range(n):
             want = PY_PLATE_SET._bisectors[a][b]
-            got = engine.plateset_bisector(PLATE_SEEDS_FLAT, a, b)
+            got = engine.plateset_bisector(PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, a, b)
             assert (want is None) == (got is None), (a, b, want, got)
             if want is not None:
                 assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2]), (
@@ -835,7 +860,7 @@ def test_plateset_bisector_agrees_on_every_ordered_pair_including_none():
     # it must be None -- a plate has no bisector with itself.
     for i in range(n):
         assert PY_PLATE_SET._bisectors[i][i] is None
-        assert engine.plateset_bisector(PLATE_SEEDS_FLAT, i, i) is None
+        assert engine.plateset_bisector(PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, i, i) is None
 
 
 def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
@@ -847,11 +872,11 @@ def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
     here = Vec3(0.0, 0.0, 1.0)
     elsewhere = Vec3(0.0, 1.0, 0.0)
     seeds = [here, here, elsewhere]
-    py_set, flat = _build_plateset_pair(seeds)
+    py_set, flat, poles_flat, rates = _build_plateset_pair(seeds)
 
     for a, b in ((0, 1), (1, 0)):
         want = py_set._bisectors[a][b]
-        got = engine.plateset_bisector(flat, a, b)
+        got = engine.plateset_bisector(flat, poles_flat, rates, a, b)
         assert want is None, "python fixture sanity: coincident seeds have no bisector"
         assert got is None, (a, b, got)
 
@@ -859,7 +884,7 @@ def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
     # entries are not a symptom of every pair coming back None.
     for a, b in ((0, 2), (2, 0), (1, 2), (2, 1)):
         want = py_set._bisectors[a][b]
-        got = engine.plateset_bisector(flat, a, b)
+        got = engine.plateset_bisector(flat, poles_flat, rates, a, b)
         assert want is not None and got is not None, (a, b, want, got)
         assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
 
@@ -875,7 +900,8 @@ def test_plateset_nearest_two_agrees_over_a_corpus_of_points():
         point = SpherePoint(Vec3(x, y, z).normalised())
         want_best, want_second = PY_PLATE_SET.nearest_two(point)
         got_best, got_second = engine.plateset_nearest_two(
-            PLATE_SEEDS_FLAT, point.vector.x, point.vector.y, point.vector.z
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+            point.vector.x, point.vector.y, point.vector.z
         )
         want_best_index = None if want_best is None else want_best.index
         want_second_index = None if want_second is None else want_second.index
@@ -891,7 +917,9 @@ def test_plateset_nearest_two_agrees_at_the_poles_and_the_meridian():
                     (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
         point = SpherePoint(Vec3(x, y, z))
         want_best, want_second = PY_PLATE_SET.nearest_two(point)
-        got_best, got_second = engine.plateset_nearest_two(PLATE_SEEDS_FLAT, x, y, z)
+        got_best, got_second = engine.plateset_nearest_two(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, x, y, z
+        )
         assert want_best.index == got_best, (x, y, z, want_best.index, got_best)
         assert want_second.index == got_second, (x, y, z, want_second.index, got_second)
 
@@ -906,13 +934,13 @@ def test_plateset_nearest_two_agrees_with_coincident_seeds():
     here = Vec3(0.0, 0.0, 1.0)
     elsewhere = Vec3(0.0, 1.0, 0.0)
     seeds = [here, here, elsewhere]
-    py_set, flat = _build_plateset_pair(seeds)
+    py_set, flat, poles_flat, rates = _build_plateset_pair(seeds)
 
     for x, y, z in list(corpus(500)) + [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)]:
         point = SpherePoint(Vec3(x, y, z).normalised())
         want_best, want_second = py_set.nearest_two(point)
         got_best, got_second = engine.plateset_nearest_two(
-            flat, point.vector.x, point.vector.y, point.vector.z
+            flat, poles_flat, rates, point.vector.x, point.vector.y, point.vector.z
         )
         assert want_best.index == got_best, (x, y, z, want_best.index, got_best)
         want_second_index = None if want_second is None else want_second.index

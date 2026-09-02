@@ -153,21 +153,27 @@ pub fn continentality_base_elevation(seed: u64, land_fraction: f64, x: f64, y: f
     c.base_elevation(&SpherePoint { vector: Vec3::new(x, y, z) })
 }
 
-/// Rebuilds a `PlateSet` from a flat list of seed components.
+/// Rebuilds a `PlateSet` from three flat lists -- seeds, Euler poles, and rates -- so the
+/// harness supplies real, independently-varying values for every field of `Plate` rather
+/// than fabricating `euler_pole` and `rate_rad_per_myr` from the seed alone.
 ///
-/// Each plate gets its position in the list as `index`, and a placeholder Euler pole and
-/// rate (its own seed, and zero). Neither field is read by `PlateSet::new` or
-/// `nearest_two` -- only `seed.vector` is -- so the placeholder cannot affect either
-/// function under test; that is a property of the Rust source, checked by reading
-/// `PlateSet::new` and `nearest_two` in `plates.rs`, not assumed.
-fn plateset_from_seeds(seeds_flat: &[f64]) -> PlateSet {
+/// Each plate gets its position in the list as `index`. `bisector` and `nearest_two` read
+/// only `seed.vector` -- checked by reading `PlateSet::new` and `nearest_two` in
+/// `plates.rs`, not assumed -- so real poles and rates cannot affect either function under
+/// test today; they exist so that functions which *do* read those fields (starting with
+/// `margin_at`) are tested against genuinely varying data rather than trivially-matching
+/// fabrications.
+fn plateset_from_parts(seeds_flat: &[f64], poles_flat: &[f64], rates: &[f64]) -> PlateSet {
     let plates = seeds_flat
         .chunks_exact(3)
+        .zip(poles_flat.chunks_exact(3))
+        .zip(rates.iter())
         .enumerate()
-        .map(|(index, chunk)| {
-            let vector = Vec3::new(chunk[0], chunk[1], chunk[2]);
-            let seed = SpherePoint { vector };
-            Plate { index, seed, euler_pole: seed, rate_rad_per_myr: 0.0 }
+        .map(|(index, ((seed, pole), rate))| Plate {
+            index,
+            seed: SpherePoint { vector: Vec3::new(seed[0], seed[1], seed[2]) },
+            euler_pole: SpherePoint { vector: Vec3::new(pole[0], pole[1], pole[2]) },
+            rate_rad_per_myr: *rate,
         })
         .collect();
     PlateSet::new(plates)
@@ -183,14 +189,27 @@ pub fn plate_angular_velocity(pole_x: f64, pole_y: f64, pole_z: f64, rate: f64) 
 }
 
 #[pyfunction]
-pub fn plateset_bisector(seeds_flat: Vec<f64>, a: usize, b: usize) -> Option<(f64, f64, f64)> {
-    let set = plateset_from_seeds(&seeds_flat);
+pub fn plateset_bisector(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    a: usize,
+    b: usize,
+) -> Option<(f64, f64, f64)> {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
     set.bisector(a, b).map(|v| (v.x, v.y, v.z))
 }
 
 #[pyfunction]
-pub fn plateset_nearest_two(seeds_flat: Vec<f64>, x: f64, y: f64, z: f64) -> (Option<usize>, Option<usize>) {
-    let set = plateset_from_seeds(&seeds_flat);
+pub fn plateset_nearest_two(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> (Option<usize>, Option<usize>) {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
     let (best, second) = set.nearest_two(&point);
     (best.map(|p| p.index), second.map(|p| p.index))
