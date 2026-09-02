@@ -138,6 +138,51 @@ impl PlateSet {
         (best, second)
     }
 
+    /// A bisector normal laid flat on the surface at a point.
+    pub fn flattened(&self, point: &SpherePoint, normal: &Vec3) -> Option<Vec3> {
+        let v = point.vector;
+        let flat = normal.sub(&v.scaled(v.dot(normal)));
+        if flat.length() <= DEGENERATE {
+            return None;
+        }
+        flat.normalised()
+    }
+
+    /// Which way is across the margin, in the tangent plane at this point.
+    ///
+    /// Wanted by the kinematics, which need to know whether two plates approach each other
+    /// *across* their margin or slide *along* it. The bisector's plane normal is already
+    /// perpendicular to the margin; this is its component in the tangent plane, which is
+    /// what "away from the margin" means to somebody standing there.
+    pub fn margin_normal(&self, point: &SpherePoint, margin: &Margin) -> Option<Vec3> {
+        let neighbour = margin.neighbour?;
+        let _nearest = margin.nearest?;
+
+        // Find the position of the nearest plate within self.plates. The Python indexes
+        // the bisector table by margin.nearest.index and margin.neighbour.index, but the
+        // Rust PlateSet::new builds the table by loop position and does not enforce
+        // index == position. Position is used here for consistency with margin_at, which
+        // also scans for the nearest plate's position rather than trusting its index field.
+        let mut near_pos = 0usize;
+        let mut best_dot = -2.0f64;
+        let v = point.vector;
+        let (px, py, pz) = (v.x, v.y, v.z);
+        for (i, plate) in self.plates.iter().enumerate() {
+            let s = plate.seed.vector;
+            let alignment = px * s.x + py * s.y + pz * s.z;
+            if alignment > best_dot {
+                near_pos = i;
+                best_dot = alignment;
+            }
+        }
+
+        // Find the position of the neighbour plate.
+        let neighbour_pos = self.plates.iter().position(|p| p.index == neighbour.index)?;
+
+        let normal = self.bisector(near_pos, neighbour_pos)?;
+        self.flattened(point, &normal)
+    }
+
     /// How far a point is from the edge of the plate it is on.
     ///
     /// **The minimum over every bisector of the nearest plate**, and it has to be. The
@@ -420,6 +465,51 @@ mod tests {
                 assert!(m.distance_m <= (std::f64::consts::PI / 2.0) * EARTH_RADIUS_M + 1.0);
             }
         }
+    }
+
+    #[test]
+    fn a_flattened_normal_lies_in_the_tangent_plane() {
+        let set = two_plates();
+        let p = SpherePoint::from_latlon(20.0, 40.0);
+        let normal = set.bisector(0, 1).expect("distinct seeds");
+        let flat = set.flattened(&p, &normal).expect("not degenerate here");
+        // Perpendicular to up, and unit length.
+        assert!(flat.dot(&p.vector).abs() < 1e-12, "dot was {}", flat.dot(&p.vector));
+        assert!((flat.length() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_normal_parallel_to_up_has_no_flat_direction() {
+        // Standing exactly where the bisector's normal points straight up leaves no
+        // component in the tangent plane, so there is no "across" to report.
+        let set = two_plates();
+        let normal = set.bisector(0, 1).expect("distinct seeds");
+        let straight_up = SpherePoint { vector: normal };
+        assert!(set.flattened(&straight_up, &normal).is_none());
+    }
+
+    #[test]
+    fn a_margin_with_no_neighbour_has_no_normal() {
+        let only = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(5.0, 5.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.0,
+        };
+        let set = PlateSet::new(vec![only]);
+        let p = SpherePoint::from_latlon(0.0, 0.0);
+        let margin = set.margin_at(&p, EARTH_RADIUS_M);
+        assert!(set.margin_normal(&p, &margin).is_none());
+    }
+
+    #[test]
+    fn the_margin_normal_points_across_the_margin() {
+        let set = two_plates();
+        let p = SpherePoint::from_latlon(10.0, 30.0);
+        let margin = set.margin_at(&p, EARTH_RADIUS_M);
+        let across = set.margin_normal(&p, &margin).expect("a neighbour exists here");
+        assert!(across.dot(&p.vector).abs() < 1e-12);
+        assert!((across.length() - 1.0).abs() < 1e-12);
     }
 
 }
