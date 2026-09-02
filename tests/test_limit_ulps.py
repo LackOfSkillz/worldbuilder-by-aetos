@@ -83,10 +83,15 @@ def test_frac_pi_2_matches_python_half_pi():
     (which it already does; this test pins the reason why that matters).
     """
     rs_half_pi = engine.margins_within_limit(SATURATING_RANGE_M, EARTH_RADIUS_M * 1e-300)
-    # SATURATING case forces `sin(half_pi)` on both sides via the saturating branch, so
-    # this indirectly checks the constant only when combined with the printed report
-    # below; the direct constant comparison lives in report().
-    assert math.isfinite(rs_half_pi)
+    # The saturating branch makes this reproducible from the repo alone, which a
+    # scratch rustc build comparing the two constants directly would not be. If
+    # Rust's half-pi differed from CPython's `math.pi / 2` by even one ULP, the
+    # sine of it would differ and this comparison would fail.
+    py_half_pi = math.sin(math.pi / 2.0)
+    assert bits(rs_half_pi) == bits(py_half_pi), (
+        f"the saturating branch diverged: Rust {bits(rs_half_pi):#018x} vs "
+        f"CPython {bits(py_half_pi):#018x} -- Rust's half-pi is not CPython's"
+    )
 
 
 def report():
@@ -187,9 +192,20 @@ def test_report_limit_measurement():
     `-s`) and record the answer in task-1-report.md / the ledger."""
     text, worst_ulps, min_gap, _ = report()
     print("\n" + text)
-    # Sanity: the measurement itself must produce finite numbers.
-    assert math.isfinite(min_gap)
-    assert worst_ulps >= 0
+    # Assert the finding, not merely that the arithmetic produced numbers. The
+    # previous form asserted `worst_ulps >= 0`, which is true at any divergence
+    # whatsoever, so it would have passed while the thing this exists to establish
+    # was false.
+    assert worst_ulps == 0, (
+        f"`limit` is no longer bit-identical between CPython and the engine: worst "
+        f"distance {worst_ulps} ULPs. Membership in `margins_within` is a discrete "
+        f"choice tested against this threshold, so result lists may now differ in "
+        f"length. Re-measure the margin of safety before relying on strict comparison."
+    )
+    assert min_gap >= 1e-9, (
+        f"the closest approach to the range boundary collapsed to {min_gap:g}; at "
+        f"that separation a one-ULP change in `limit` could flip membership"
+    )
 
 
 if __name__ == "__main__":
