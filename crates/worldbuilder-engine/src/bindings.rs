@@ -264,6 +264,13 @@ pub fn plateset_margin_normal(
     Some((normal.x, normal.y, normal.z))
 }
 
+/// TEMPORARY -- slice 1g Task 1 measurement scaffolding only, see
+/// `plates::margins_within_limit`. Deleted or replaced by Task 4/5.
+#[pyfunction]
+pub fn margins_within_limit(range_m: f64, radius_m: f64) -> f64 {
+    crate::plates::margins_within_limit(range_m, radius_m)
+}
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn plateset_flattened(
