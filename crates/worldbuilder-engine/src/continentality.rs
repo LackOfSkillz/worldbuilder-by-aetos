@@ -125,6 +125,33 @@ impl Continentality {
         self.noise.fbm(v.x, v.y, v.z, BASE_FREQUENCY, OCTAVES, 0.5, 2.0)
     }
 
+    /// How far above the shoreline this point stands, in field units. Zero exactly at the
+    /// coast, positive inland.
+    pub fn above_shore(&self, point: &SpherePoint) -> f64 {
+        self.at(point) - self.shore
+    }
+
+    /// Elevation relative to datum, before tectonics or detail.
+    pub fn base_elevation(&self, point: &SpherePoint) -> f64 {
+        self.elevation_from_above(self.above_shore(point) / self.spread)
+    }
+
+    /// The curve itself, separated so it can be exercised without hunting for a point that
+    /// happens to land at a given height.
+    pub fn elevation_from_above(&self, above: f64) -> f64 {
+        if above >= 0.0 {
+            // Python: CONTINENT_M * min(1.0, above) ** 0.75
+            let capped = if above < 1.0 { above } else { 1.0 };
+            CONTINENT_M * m::powf(capped, 0.75)
+        } else {
+            // Linear on the seaward side, and that number was measured rather than chosen.
+            // Python: ABYSS_M * min(1.0, -above)
+            let depth = -above;
+            let capped = if depth < 1.0 { depth } else { 1.0 };
+            ABYSS_M * capped
+        }
+    }
+
     #[cfg(test)]
     pub fn shore_for_test(&self) -> f64 {
         self.shore
@@ -198,5 +225,36 @@ mod tests {
     fn the_spread_is_never_zero() {
         let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
         assert!(c.spread_for_test() != 0.0);
+    }
+
+    #[test]
+    fn above_shore_is_zero_at_the_calibrated_shoreline() {
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        // A point whose raw field equals the shore has above_shore exactly zero.
+        let p = SpherePoint::from_latlon(17.0, 43.0);
+        let expected = c.at(&p) - c.shore_for_test();
+        assert_eq!(c.above_shore(&p).to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn elevation_is_bounded_by_the_continent_and_the_abyss() {
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        for lat in (-80..81).step_by(10) {
+            for lon in (-180..181).step_by(20) {
+                let e = c.base_elevation(&SpherePoint::from_latlon(lat as f64, lon as f64));
+                assert!(e <= CONTINENT_M, "{} at {},{}", e, lat, lon);
+                assert!(e >= ABYSS_M, "{} at {},{}", e, lat, lon);
+            }
+        }
+    }
+
+    #[test]
+    fn the_seaward_side_is_linear() {
+        // Twice as far below the shore is twice as deep, until the abyss clamps it.
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        let spread = c.spread_for_test();
+        let quarter = c.elevation_from_above(-0.25 * spread / spread);
+        let half = c.elevation_from_above(-0.5 * spread / spread);
+        assert!((half - 2.0 * quarter).abs() < 1e-9, "{} vs {}", half, quarter);
     }
 }
