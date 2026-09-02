@@ -351,7 +351,101 @@ Terrain remains a **total field** underneath all of it. An anchored area governs
 representation authority, never whether physical geography exists; `terrain_z_at` answers
 beneath an authored harbour, or a ship cannot anchor in its own port.
 
-## 13. Apply
+## 13. Maritime, and the water a world holds
+
+Maritime is the first consumer of a generated planet and the only one that exists today, so
+its needs are a requirement rather than a courtesy. It must be able to take a Worldbuilder
+planet as a whole new world, not merely as one patch of coast.
+
+Most of the receiving machinery already exists in the contrib and is not to be duplicated
+here. Maritime bakes a world to disk, at the zoom steps its client actually asks for, and
+validates a bake by sounding a fixed scatter of points and hashing the result — a
+fingerprint that deliberately requires the provider to say nothing about itself. Its
+measured figures decide the shape of what follows:
+
+    whole planet at chart detail        11 days      23 GB     out of the question
+    whole planet at five kilometres     28 minutes   41 MB     the globe's layer
+    one inhabited coast at chart detail 27 seconds    1 MB     the one that matters
+
+Nobody bakes a planet at chart detail, and nobody needs to.
+
+### 13.1 Two provider scales, one protocol
+
+Today's seam serves a single region — local metres, one tangent frame, a cap of about
+200 km. That stays exactly as it is.
+
+Mark 2 adds a **planet-scale provider** answering over the whole sphere, so maritime can
+bake its globe layer. Same protocol, different extent. Maritime must not learn a second
+interface, and it still never sees sphere points, latitude, longitude or plates.
+
+The two scales are not two worlds. A coast baked finely and the globe baked coarsely are
+the same field sampled differently, and where they overlap they agree.
+
+### 13.2 Water bodies are a generated structure, not a field
+
+"Is there water here" is a functional field, answered from terrain and a water level. "Which
+body of water is this" is not: it needs a flood fill over the terrain, which cannot be
+evaluated at an arbitrary point in microseconds. So water bodies belong to the second data
+class — generated once, deterministically, and stored small, like rivers and settlements.
+
+Worldbuilder therefore emits a **water manifest**: named bodies, each with extent, surface
+level and kind.
+
+    ocean   the datum
+    lake    its own level, indifferent to tide
+    pond    the same, smaller
+    river   an ordered set of reaches
+
+Maritime already models exactly this. Its tide layer keeps a mapping of named waters, a
+world position carries the region that decides which water answers, and anything unnamed
+falls back to the sea. The manifest populates that mapping; no new concept is required on
+either side.
+
+The demonstration coast is the test of whether the model is right, and it passes: the tidal
+creek is **sea**, because the sea reaches up it, while the closed bowl above it is a
+**pond** with its own level twenty-three metres up. One is not a separate body merely for
+being inland, and the other is not the sea merely for holding water.
+
+**Rivers ship with reaches from the start**, even though Mark 2 populates only ocean, lake
+and pond. A reach carries its bed gradient. Retrofitting that later would be a schema break;
+carrying it now costs nothing.
+
+### 13.3 Waterfalls are derived, not declared
+
+A waterfall is not a body of water. It is a property of a reach — where the bed loses
+elevation faster than water can stay in it — and it is derived from gradient rather than
+authored as a kind. That is the same reasoning the creek already demonstrates: its head is a
+time rather than a place because nobody declared where it ends.
+
+To maritime a fall is not water to be in, it is a **limit**: the upstream end of
+navigability, absolute rather than tidal, and a hazard met from above. It therefore belongs
+on the marks channel, alongside other isolated dangers a survey records, and not in
+soundings.
+
+Waterfalls become real when rivers do. Until then the manifest must simply not preclude
+them.
+
+### 13.4 Discovery has a cost nobody has measured
+
+Finding the bowls that hold water means flooding the terrain field, and at planet scale that
+is a real computation with an unknown price. The Mark 1 habit applies: measure it before
+designing around it, as the 9,216 samples were measured rather than assumed.
+
+The design choice waiting behind that measurement is not an implementation detail. Depressions
+may be **filled**, which makes a lake, or **breached**, which cuts an outlet and makes a
+stream. That single choice decides how many lakes a planet has — and lakes are what maritime
+just asked for.
+
+### 13.5 Air is not scope, but it is not designed out either
+
+The terrain field is total and answers everywhere, so a layer above the ground is the same
+provider queried on the other side of the surface, against the same vertical datum. Airships
+and mounted flight are therefore not precluded by anything here.
+
+They are also not Mark 2. This clause exists so that a later system does not discover the
+vertical datum was quietly assumed to point downwards.
+
+## 14. Apply
 
     worldbuilder export
     worldbuilder apply <worldfile>
@@ -381,7 +475,7 @@ CONFLICT and HOST-OWNED–WILL-NOT-MODIFY. Reviewability is mandatory; the wordi
 **Apply is idempotent.** The same worldfile applied twice performs its changes once and then
 does nothing.
 
-## 14. Creating an area
+## 15. Creating an area
 
 One primitive — **plant anchored area** — with creation parameters. Not a stub path and a
 generation path; those diverge, and the divergence is where the bugs live.
@@ -407,7 +501,7 @@ same machinery, reversed by the same deletion-safety rules. The first room is th
 forty-room dungeon may occupy a small planetary footprint; a six-room wilderness crossing may
 span many kilometres.
 
-## 15. Acceptance
+## 16. Acceptance
 
 **Determinism.** For a fixed seed, generator version and parameter set, a fixed coordinate
 corpus evaluated through the WASM engine and through the Python-bound native engine returns
@@ -427,14 +521,14 @@ is eligible for removal, and that removal blocks where host content depends on i
 type, seam semantics and ownership semantics through the same pipeline, with no second
 creation path, and remains idempotent on reapply.
 
-## 16. Non-goals for Mark 2
+## 17. Non-goals for Mark 2
 
 Live collaborative editing. Direct browser-to-database connection. Procedural city, quest or
 culture generation. Production climate simulation. Realistic rivers. Economies. Flora and
 fauna. Discovery economy. Seasonal ice. Automatic conversion of rooms to coordinates.
 Authoritative automatic hierarchy inference. Destructive migration of any existing game data.
 
-## 17. Amendments carried into this baseline
+## 18. Amendments carried into this baseline
 
     APPLY-001         apply executes in the live Evennia process
     DETERMINISM-001   CI forbids non-approved math in generator-critical Rust, and runs the
@@ -444,7 +538,7 @@ Authoritative automatic hierarchy inference. Destructive migration of any existi
     IDENTITY-001      two identity strategies: stable instance tags for Worldbuilder-owned
                       objects, dbref-plus-fingerprint for host-owned ones
 
-## 18. Still open
+## 19. Still open
 
 **Build order — Open Item B.** The four subsystems (shared Rust engine, studio, inventory and
 discovery, desired-state apply) have no settled implementation order. It should be decided as
@@ -494,3 +588,39 @@ rooms to `default_region`.
 
 **Mark 1 measurements** are not restated here; see `mark-1-scope.md` and
 `2026-08-31-generator-spec.md`.
+
+**Prior art studied**, checked out under `D:/dev/worldbuilder_research/` and split by what
+its licence permits.
+
+Borrowable — code may be read, ported and shipped with attribution:
+
+- `mapgen4` (Apache-2.0) — the nearest prior art to the studio: a builder paints, the map
+  regenerates interactively, rivers included. The edit-and-respond loop, not the terrain model.
+- `Fantasy-Map-Generator` (MIT) — the most-used worldbuilding tool there is. Studied for its
+  interface, not its Voronoi heightmap.
+- `SimpleHydrology`, `SimpleErosion`, `SoilMachine` — particle hydrology producing streams
+  *and pools*. Pools are lakes, which is §13.2's open problem. Licence is stated as MIT in
+  each README but no LICENCE file is present and no copyright holder is named; before any
+  code is ported, that needs confirming with the author.
+- `FastNoiseLite`, `OpenSimplex2` — noise. The Rust port of FastNoise Lite carries a `libm`
+  feature for `no_std`, which is DETERMINISM-001's requirement available off the shelf and
+  worth evaluating against writing `detmath` ourselves.
+
+Read for strategy only — GPL-3.0, kept in a separate directory so provenance stays obvious:
+
+- `richdem` — the reference implementation of Priority-Flood depression filling. It is read
+  to understand the parts papers gloss: how flats and plateaus are given a drainage
+  direction, how tiled processing handles data larger than memory, and the difference between
+  *filling* a depression and *breaching* it. **No code from it enters Worldbuilder.** The
+  implementation source is Barnes, Lehman and Mulla (2014) and Barnes (2016), which carry the
+  pseudocode.
+
+**Not applicable.** World Creator, which prompted this survey, runs its erosion on the GPU.
+GPU floating point is not bit-reproducible across vendors, drivers or precision modes, so
+that architecture cannot be adopted without abandoning §4.1. Its interaction model is worth
+copying; its compute model is not.
+
+**A consequence of the survey worth recording.** Erosion cannot be a functional field. The
+eroded height of a point is not computable without simulating its whole watershed, so if
+erosion ever enters this project it enters as a generated structure — computed once,
+deterministically, stored — and never as something `terrain_z_at` performs.
