@@ -151,16 +151,20 @@ State which of the two outcomes holds, with the evidence. If `limit` is bit-iden
 ```rust
 #[cfg(test)]
 fn three_plate_set() -> PlateSet {
-    // Seeds on the equator at 0, 45 and 90 degrees. The middle seed sits exactly on
-    // the great circle bisecting the outer two, which is what makes this set useful
-    // for the shadow tests in Task 3 as well.
+    // Two seeds on the equator and one lifted off it. The third seed must NOT lie on
+    // the great circle bisecting the other two - see the note below, which cost this
+    // plan a rewrite.
     PlateSet::new(vec![
         test_plate(0, 0.0, 0.0),
-        test_plate(1, 0.0, 45.0),
-        test_plate(2, 0.0, 90.0),
+        test_plate(1, 0.0, 90.0),
+        test_plate(2, 60.0, 45.0),
     ])
 }
 ```
+
+**Why the third seed is off the equator, because the obvious arrangement does not work.** The natural choice is seeds at 0, 45 and 90 degrees along the equator. It is useless for testing the fade. The bisector of the outer two is the great circle through 45 degrees, the middle seed sits exactly on it, and the shadow along that circle works out to `-0.293 * cos(phi)` — negative everywhere, reaching zero only at the pole. The weight is therefore zero at every sample, and a fade test on that set records two hundred identical zeros, computes a largest-step change of `0.0`, and passes while testing nothing.
+
+With the third seed at 60N 45E the shadow genuinely changes sign: on the bisector of plates 0 and 1 it is about `+0.207` at the equator and about `-0.214` by 27 degrees north, so the crossing — and the whole fade — lies inside a path the test can walk.
 
 where `test_plate(index, lat, lon)` is whatever the existing helpers already provide — match their name and signature rather than adding a second convention. Poles and rates must be non-degenerate and differ from the seeds, per the binding contract fixed in slice 1f.
 
@@ -176,9 +180,9 @@ fn a_single_plate_set_has_no_margins() {
 
 #[test]
 fn a_plate_interior_finds_nothing_in_a_short_range() {
-    // Standing on seed 0, the nearest bisector is the one with seed 1, half of
-    // 45 degrees away - about 2,500 km. A 1,000 km range must reject it on the
-    // range test alone, before any shadow work is done.
+    // Standing on seed 0, the nearer bisector is the one with seed 2, roughly
+    // 35 degrees away - about 3,900 km. A 1,000 km range must reject both on
+    // the range test alone, before any shadow work is done.
     let set = three_plate_set();
     let (_, found) = set.margins_within(
         &SpherePoint::from_latlon(0.0, 0.0), 1.0e6, EARTH_RADIUS_M);
@@ -186,11 +190,9 @@ fn a_plate_interior_finds_nothing_in_a_short_range() {
 }
 
 #[test]
-fn a_wide_range_finds_the_margin_that_is_genuine() {
-    // A range spanning the planet admits both of plate 0's candidate bisectors,
-    // but only the one against plate 1 is a real margin: the bisector of 0 and 2
-    // runs through plate 1's territory and Task 3's shadow test will remove it.
-    // Until Task 3 lands, this asserts the pre-shadow count of 2.
+fn a_wide_range_admits_every_candidate_bisector() {
+    // A range spanning the planet admits both of plate 0's candidate bisectors.
+    // This is the pre-shadow count; Task 3 re-verifies it once shadowing exists.
     let set = three_plate_set();
     let (_, found) = set.margins_within(
         &SpherePoint::from_latlon(0.0, 0.0), 2.0e7, EARTH_RADIUS_M);
@@ -244,32 +246,41 @@ This task encodes bugs 2 and 3. Transcribe lines 233-283.
 ```rust
 #[test]
 fn a_bisector_running_through_a_third_plate_is_not_a_margin() {
-    // Bug 2. In three_plate_set the seeds sit at 0, 45 and 90 degrees, so the
-    // bisector of plates 0 and 2 is the great circle through 45 degrees - which
-    // is exactly where plate 1's seed is. Along the equator that bisector runs
-    // through plate 1's territory and is imaginary, so a query from plate 0 must
-    // return only the margin against plate 1, never the one against plate 2.
+    // Bug 2. Standing well north on plate 0, the bisector of plates 0 and 1 has
+    // its foot in territory that plate 2 owns, so that bisector is imaginary
+    // there and must not be returned. Derive the latitude from the set rather
+    // than trusting this comment: find a point whose nearest plate is 0 and
+    // where the 0-1 shadow is negative, and assert plate 1 is absent from the
+    // result while the margin against plate 2 is present.
     let set = three_plate_set();
     let (nearest, found) = set.margins_within(
-        &SpherePoint::from_latlon(0.0, 10.0), 2.0e7, EARTH_RADIUS_M);
+        &SpherePoint::from_latlon(20.0, 20.0), 2.0e7, EARTH_RADIUS_M);
     assert_eq!(nearest.expect("a plate owns this point").index, 0);
     let others: Vec<usize> = found.iter().map(|m| m.other.index).collect();
-    assert_eq!(others, vec![1], "the bisector of 0 and 2 is shadowed by plate 1");
+    assert!(
+        !others.contains(&1),
+        "the 0-1 bisector is shadowed by plate 2 here, so it is not a margin; got {others:?}",
+    );
 }
 
 #[test]
 fn a_shadowed_margin_fades_rather_than_switching_off() {
-    // Bug 3, and the test that would catch a reversion to the boolean. Walk a
-    // path across the region where plate 1's shadow falls on the 0-2 bisector
-    // and collect the weight of that margin at each step. A boolean would step
-    // from 1.0 to absent in a single sample; the fade must not.
+    // Bug 3, and the test that would catch a reversion to the boolean. Walking
+    // north along longitude 20, the shadow that plate 2 casts on the 0-1 margin
+    // goes from about +0.207 at the equator to about -0.214 by 27 degrees, so
+    // the crossing lies inside this path. A boolean would step from 1.0 to
+    // absent in a single sample; the fade must not.
+    //
+    // SHADOW_BLEND is 0.02, so the fade occupies a narrow band: the shadow moves
+    // roughly 0.0021 per step here, which puts about ten samples inside it. If
+    // your measured numbers differ, add samples rather than relaxing the bound.
     let set = three_plate_set();
     let mut weights = Vec::new();
     for step in 0..200 {
-        let lat = -20.0 + (step as f64) * 0.2;  // cast-ok: loop counter to f64
+        let lat = (step as f64) * 0.125;  // cast-ok: loop counter to f64
         let (_, found) = set.margins_within(
-            &SpherePoint::from_latlon(lat, 10.0), 2.0e7, EARTH_RADIUS_M);
-        weights.push(found.iter().find(|m| m.other.index == 2).map_or(0.0, |m| m.weight));
+            &SpherePoint::from_latlon(lat, 20.0), 2.0e7, EARTH_RADIUS_M);
+        weights.push(found.iter().find(|m| m.other.index == 1).map_or(0.0, |m| m.weight));
     }
     let biggest = weights.windows(2)
         .map(|w| (w[1] - w[0]).abs())
@@ -302,7 +313,7 @@ fn the_weight_never_leaves_zero_to_one() {
 
 Then **confirm the test can fail**: temporarily replace the smoothstep weight with the boolean it replaced (`1.0` when `shadow > 0.0`, skip otherwise), observe this test fail, and revert. Report what you observed. A test guarding a bug-fix that has never been seen to fail against the bug is not yet known to guard anything.
 
-**Also update `a_wide_range_finds_the_margin_that_is_genuine` from Task 2** — with shadowing implemented, the expected count drops from 2 to 1. Change the assertion and its comment; do not delete the test.
+**Also re-verify `a_wide_range_admits_every_candidate_bisector` from Task 2.** Standing on seed 0, both candidate bisectors are expected to survive shadowing — the 0-1 bisector has its foot near 45 degrees east on the equator, where the shadow works out to roughly `+0.207`, comfortably genuine. Confirm that empirically rather than trusting this paragraph. If the count changes, update the assertion and say why in the commit; do not delete the test, and do not adjust it merely to make it pass.
 
 - [ ] **Step 2: Run them and confirm they fail.**
 
