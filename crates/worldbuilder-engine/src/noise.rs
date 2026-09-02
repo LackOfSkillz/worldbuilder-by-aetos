@@ -56,6 +56,52 @@ impl Noise {
         h ^= h >> 33;
         h as f64 / SCALE
     }
+
+    /// Trilinear between the eight surrounding lattice values, with each fraction put
+    /// through a smoothstep first. Straight linear interpolation would leave visible
+    /// creases along every lattice plane — and on terrain a crease is a cliff somebody
+    /// sails into.
+    ///
+    /// Written flat rather than tidily, matching the Python: this is called about forty
+    /// times per terrain sample and several million times per chart. It is also transcribed
+    /// in exactly the Python's order because floating-point addition is not associative and
+    /// this must agree bit-for-bit.
+    pub fn at(&self, x: f64, y: f64, z: f64) -> f64 {
+        // floor, never a cast: Python uses int(x // 1), which floors toward negative
+        // infinity, and every negative coordinate would otherwise land in the wrong cell.
+        let fx_floor = m::floor(x);
+        let fy_floor = m::floor(y);
+        let fz_floor = m::floor(z);
+        let ix = fx_floor as i64; // cast-ok: already floored, mirrors Python's int(x // 1)
+        let iy = fy_floor as i64; // cast-ok: already floored, mirrors Python's int(y // 1)
+        let iz = fz_floor as i64; // cast-ok: already floored, mirrors Python's int(z // 1)
+
+        let fx = x - fx_floor;
+        let fy = y - fy_floor;
+        let fz = z - fz_floor;
+
+        let ux = fx * fx * (3.0 - 2.0 * fx);
+        let uy = fy * fy * (3.0 - 2.0 * fy);
+        let uz = fz * fz * (3.0 - 2.0 * fz);
+
+        let (jx, jy, jz) = (ix + 1, iy + 1, iz + 1);
+        let c000 = self.lattice(ix, iy, iz);
+        let c100 = self.lattice(jx, iy, iz);
+        let c010 = self.lattice(ix, jy, iz);
+        let c110 = self.lattice(jx, jy, iz);
+        let c001 = self.lattice(ix, iy, jz);
+        let c101 = self.lattice(jx, iy, jz);
+        let c011 = self.lattice(ix, jy, jz);
+        let c111 = self.lattice(jx, jy, jz);
+
+        let x00 = c000 + (c100 - c000) * ux;
+        let x10 = c010 + (c110 - c010) * ux;
+        let x01 = c001 + (c101 - c001) * ux;
+        let x11 = c011 + (c111 - c011) * ux;
+        let y0 = x00 + (x10 - x00) * uy;
+        let y1 = x01 + (x11 - x01) * uy;
+        y0 + (y1 - y0) * uz
+    }
 }
 
 #[cfg(test)]
@@ -90,5 +136,39 @@ mod tests {
         let a = Noise::new(12345, 0);
         let b = Noise::new(12345, 0x0C0FFEE);
         assert_ne!(a.lattice(2, 2, 2).to_bits(), b.lattice(2, 2, 2).to_bits());
+    }
+
+    #[test]
+    fn sampling_is_continuous_across_a_cell_boundary() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        let just_below = n.at(0.999_999_999, 0.3, 0.3);
+        let just_above = n.at(1.000_000_001, 0.3, 0.3);
+        assert!((just_below - just_above).abs() < 1e-6, "{} vs {}", just_below, just_above);
+    }
+
+    #[test]
+    fn sampling_at_a_lattice_point_returns_that_corner() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        assert_eq!(n.at(2.0, 3.0, 4.0).to_bits(), n.lattice(2, 3, 4).to_bits());
+    }
+
+    #[test]
+    fn sampling_stays_in_the_unit_interval() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        for i in 0..1000 {
+            let t = i as f64 * 0.0137;
+            let v = n.at(t, -t * 0.5, t * 0.25);
+            assert!((0.0..1.0).contains(&v), "at({}) was {}", t, v);
+        }
+    }
+
+    #[test]
+    fn negative_coordinates_floor_rather_than_truncate() {
+        // The trap this port exists to avoid. -0.5 lies in cell -1, not cell 0, so a
+        // sample just below zero must interpolate from the -1 cell's corners.
+        let n = Noise::new(12345, 0x0C0FFEE);
+        let below = n.at(-0.000_000_001, 0.5, 0.5);
+        let above = n.at(0.000_000_001, 0.5, 0.5);
+        assert!((below - above).abs() < 1e-6, "discontinuity at zero: {} vs {}", below, above);
     }
 }
