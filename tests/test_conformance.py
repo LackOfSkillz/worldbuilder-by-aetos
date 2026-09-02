@@ -18,6 +18,7 @@ with no Rust.
 """
 
 import math
+import os
 import struct
 
 import pytest
@@ -25,10 +26,17 @@ import pytest
 from worldbuilder.geometry.sphere import EARTH_RADIUS_M, SpherePoint
 from worldbuilder.geometry.vectors import Vec3
 
-engine = pytest.importorskip(
-    "worldbuilder_engine",
-    reason="Rust engine not built; run `maturin develop --release` in crates/worldbuilder-engine",
-)
+if os.environ.get("WORLDBUILDER_REQUIRE_ENGINE"):
+    # Opt-in escape from importorskip below: on a machine that is supposed to have the
+    # engine built (CI, in particular), a missing or stale `worldbuilder_engine` must
+    # fail the run loudly rather than skip it -- a skipped conformance suite reports
+    # green while comparing nothing at all, which is worse than no suite.
+    import worldbuilder_engine as engine
+else:
+    engine = pytest.importorskip(
+        "worldbuilder_engine",
+        reason="Rust engine not built; run `maturin develop --release` in crates/worldbuilder-engine",
+    )
 
 
 def bits(value):
@@ -350,6 +358,13 @@ def test_noise_at_agrees_on_negative_coordinates():
 
 
 def test_noise_fbm_agrees_exactly():
+    """
+    Covers argument VALUES, not just presence. A suite that only ever exercised the
+    defaults (frequency=1.25, gain=0.5, lacunarity=2.0) would still pass if `gain` and
+    `lacunarity` were transposed inside `fbm`, because Rust and Python would each be
+    silently fed the same swapped pair. Running distinct, non-default combinations
+    below -- including a second frequency -- makes a transposition visible.
+    """
     py = PyNoise(NOISE_SEED, salt=NOISE_SALT)
 
     class _Point:
@@ -361,9 +376,19 @@ def test_noise_fbm_agrees_exactly():
 
     for x, y, z in noise_points(1500):
         for octaves in (0, 1, 4, 8):
-            want = py.fbm(_Point(x, y, z), 1.25, octaves)
-            got = engine.noise_fbm(NOISE_SEED, NOISE_SALT, x, y, z, 1.25, octaves, 0.5, 2.0)
-            assert same(want, got), f"fbm({x},{y},{z},oct={octaves}): {want!r} vs {got!r}"
+            for frequency, gain, lacunarity in (
+                (1.25, 0.5, 2.0),
+                (1.25, 0.4, 2.7),
+                (0.6, 0.4, 2.7),
+            ):
+                want = py.fbm(_Point(x, y, z), frequency, octaves, gain=gain, lacunarity=lacunarity)
+                got = engine.noise_fbm(
+                    NOISE_SEED, NOISE_SALT, x, y, z, frequency, octaves, gain, lacunarity
+                )
+                assert same(want, got), (
+                    f"fbm({x},{y},{z},oct={octaves},freq={frequency},"
+                    f"gain={gain},lac={lacunarity}): {want!r} vs {got!r}"
+                )
 
 
 def test_noise_seed_and_salt_agree():

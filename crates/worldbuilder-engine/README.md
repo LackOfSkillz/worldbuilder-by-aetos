@@ -108,11 +108,17 @@ Windows versus Linux. This has not been measured -- it would require running the
 suite on Linux and comparing against a Windows run -- so treat it as a hypothesis, not a
 finding.
 
+Skips the whole file if `worldbuilder_engine` is not built, so the Python suite still runs
+on a machine with no Rust -- except when `WORLDBUILDER_REQUIRE_ENGINE` is set to anything
+non-empty, in which case a missing or stale engine fails the session instead of skipping
+it. Set that variable in CI, where a silent skip would report green while comparing
+nothing.
+
 Run it with:
 
     python -m pytest tests/test_conformance.py -v
 
-256 Python tests and 33 crate tests pass in the full suite. The harness includes a test
+256 Python tests and 34 crate tests pass in the full suite. The harness includes a test
 asserting that `same` can distinguish a one-bit difference and a test asserting that
 `close_enough` rejects a difference past the ULP bound, because a conformance suite that
 cannot fail proves nothing.
@@ -135,10 +141,22 @@ Two rules follow from this, for every future module port:
    digits differently than the source is itself a transcription error waiting to happen,
    and a literal that matches the Python character-for-character can be compared by eye
    without doing arithmetic in your head.
-2. **Constants are verified by conformance, never by review.** Do not ask a reviewer to
-   certify a hex or decimal literal by reading it next to another one -- two people did
-   exactly that here and both blessed the wrong value, because eyeballing a long constant
-   is a task human review is bad at, not a matter of carelessness. The conformance harness
-   compares computed output against the Python end to end, which exercises every constant
-   in the path whether or not anyone thought to check it by hand. That is what caught this
-   one after two reviews had already passed it.
+2. **Constants are verified by conformance, never by review -- but only for the path the
+   corpus actually reaches.** Do not ask a reviewer to certify a hex or decimal literal by
+   reading it next to another one -- two people did exactly that here and both blessed the
+   wrong value, because eyeballing a long constant is a task human review is bad at, not a
+   matter of carelessness. The conformance harness compares computed output against the
+   Python end to end, which exercises every constant in the path whether or not anyone
+   thought to check it by hand. That is what caught this one after two reviews had already
+   passed it. `Noise`'s eight constants all sit on its one unconditional hot path, so any
+   corpus that calls `at` or `fbm` at all reaches every one of them -- that is what makes
+   conformance a complete substitute for review here. That guarantee does not carry over to
+   a constant reached only conditionally -- a per-biome coefficient, a threshold crossed
+   only above some latitude, one row of a lookup table -- because conformance only verifies
+   what the corpus happens to hit. For a constant like that, either show that the corpus
+   exercises the branch it lives on, or give it its own test pinning it against the
+   Python's value, the way `the_seed_multiplier_is_the_fnv_prime` now pins this module's
+   multiplier by observing `Noise::new`'s effect rather than restating the literal. This
+   matters most for the modules still to be ported -- continentality, tectonics, and the
+   shelf all carry far more constants than this one, and far more of them sit behind a
+   branch.

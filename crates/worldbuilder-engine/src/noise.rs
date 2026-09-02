@@ -41,6 +41,14 @@ impl Noise {
         }
     }
 
+    /// Exposes the mixed seed for the pinning test below. `#[cfg(test)]` only: this is not
+    /// part of the crate's public surface, just a window for a test that would otherwise
+    /// have no way to observe a private field.
+    #[cfg(test)]
+    fn seed_for_test(&self) -> u64 {
+        self.seed
+    }
+
     /// An integer avalanche rather than a cryptographic digest. A real digest would be just
     /// as deterministic and about thirty times slower, and this is called eight times per
     /// octave per sample.
@@ -149,7 +157,15 @@ mod tests {
         // Transcribed from worldbuilder/terrain/noise.py. Written without separators
         // because a mis-grouped one survived two reviews and only the differential
         // conformance harness caught it.
-        assert_eq!(0x100000001B3u64, 1_099_511_628_211);
+        //
+        // This must observe `Noise::new`'s actual literal, not just restate it -- a
+        // bare `assert_eq!(0x100000001B3u64, 1_099_511_628_211)` is a tautology the
+        // compiler folds away without ever reading noise.rs's own constant, so it stays
+        // green even if that literal is changed or corrupted. With `salt = 0`, `new`
+        // mixes to `seed.wrapping_mul(0x100000001B3) ^ 0`, so `Noise::new(1, 0)`'s
+        // internal seed equals the multiplier exactly.
+        let n = Noise::new(1, 0);
+        assert_eq!(n.seed_for_test(), 1_099_511_628_211);
     }
 
     #[test]
