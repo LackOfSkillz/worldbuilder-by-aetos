@@ -150,6 +150,17 @@ Publishing the engine as a standalone crate later remains open. Splitting it now
 running the conformance tests across two repositories during exactly the period they matter
 most.
 
+**Slice 1a, 2026-09-02.** The crate exists at `crates/worldbuilder-engine`, Python calls it
+through PyO3, and the geometry layer is ported and checked against its Python original by
+`tests/test_conformance.py` -- strictly, bit-for-bit, where no transcendental is in the
+path, and within a measured 4-ULP bound where one is, because Python's `sin`/`cos`/`atan2`
+delegate to the platform C library while the engine deliberately uses pure-Rust `libm` so
+its native and WASM builds agree with each other instead. Two rules are now mechanised
+rather than written down: a build-failing guard forbids std float maths outside `detmath`,
+and `detmath::floor` exists because Python's `int(x // 1)` floors where Rust's `as i64`
+truncates -- a difference that would have moved every lattice cell in the southern half of
+the sphere without raising anything.
+
 ## 5. The declared parameter surface
 
 Mark 2 requires one declared, versioned, serialisable generator parameter schema: key,
