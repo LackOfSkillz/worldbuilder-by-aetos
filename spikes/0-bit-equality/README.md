@@ -13,8 +13,11 @@ one-source argument all conditional on the answer.
 
     samples      5,000,000
     verdict      IDENTICAL
-    native       1.2 s
+    native       1.4 s
     wasm         7.2 s
+
+Figures are from a from-scratch build (`cargo clean` before rebuilding both targets), not
+an incremental one.
 
 ## What was tested
 
