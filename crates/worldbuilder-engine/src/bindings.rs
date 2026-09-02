@@ -7,6 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use pyo3::prelude::*;
 
 use crate::continentality::Continentality;
+use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::vectors::Vec3;
 
@@ -150,6 +151,49 @@ pub fn continentality_above_shore(seed: u64, land_fraction: f64, x: f64, y: f64,
 pub fn continentality_base_elevation(seed: u64, land_fraction: f64, x: f64, y: f64, z: f64) -> f64 {
     let c = cached_continentality(seed, crate::sphere::EARTH_RADIUS_M, land_fraction);
     c.base_elevation(&SpherePoint { vector: Vec3::new(x, y, z) })
+}
+
+/// Rebuilds a `PlateSet` from a flat list of seed components.
+///
+/// Each plate gets its position in the list as `index`, and a placeholder Euler pole and
+/// rate (its own seed, and zero). Neither field is read by `PlateSet::new` or
+/// `nearest_two` -- only `seed.vector` is -- so the placeholder cannot affect either
+/// function under test; that is a property of the Rust source, checked by reading
+/// `PlateSet::new` and `nearest_two` in `plates.rs`, not assumed.
+fn plateset_from_seeds(seeds_flat: &[f64]) -> PlateSet {
+    let plates = seeds_flat
+        .chunks_exact(3)
+        .enumerate()
+        .map(|(index, chunk)| {
+            let vector = Vec3::new(chunk[0], chunk[1], chunk[2]);
+            let seed = SpherePoint { vector };
+            Plate { index, seed, euler_pole: seed, rate_rad_per_myr: 0.0 }
+        })
+        .collect();
+    PlateSet::new(plates)
+}
+
+#[pyfunction]
+pub fn plate_angular_velocity(pole_x: f64, pole_y: f64, pole_z: f64, rate: f64) -> (f64, f64, f64) {
+    let euler_pole = SpherePoint { vector: Vec3::new(pole_x, pole_y, pole_z) };
+    // The seed is irrelevant to `angular_velocity`, which reads only the pole and rate.
+    let plate = Plate { index: 0, seed: euler_pole, euler_pole, rate_rad_per_myr: rate };
+    let omega = plate.angular_velocity();
+    (omega.x, omega.y, omega.z)
+}
+
+#[pyfunction]
+pub fn plateset_bisector(seeds_flat: Vec<f64>, a: usize, b: usize) -> Option<(f64, f64, f64)> {
+    let set = plateset_from_seeds(&seeds_flat);
+    set.bisector(a, b).map(|v| (v.x, v.y, v.z))
+}
+
+#[pyfunction]
+pub fn plateset_nearest_two(seeds_flat: Vec<f64>, x: f64, y: f64, z: f64) -> (Option<usize>, Option<usize>) {
+    let set = plateset_from_seeds(&seeds_flat);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let (best, second) = set.nearest_two(&point);
+    (best.map(|p| p.index), second.map(|p| p.index))
 }
 
 #[pyfunction]

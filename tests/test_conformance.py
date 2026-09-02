@@ -733,3 +733,187 @@ def test_continentality_calibration_agreement_is_far_tighter_than_the_sort_gap()
             f"seed={seed} land_fraction={land_fraction} spread diff {spread_diff!r} "
             f"is not far below the neighbour gap {spread_gap!r}"
         )
+
+
+# --- PlateSet: Plate, the bisector table, and nearest_two -------------------------------
+#
+# Everything below is held to `same()`, not `close_enough()`. The brief for this slice is
+# explicit that nothing in this path is transcendental: `nearest_two` is multiplies and
+# adds, and the bisector table is a subtraction, a `length()` and a `normalised()`, all
+# IEEE-exact or correctly-rounded. A divergence here is a real defect, not float noise.
+
+from worldbuilder.plates.model import Plate as PyPlate
+from worldbuilder.plates.lookup import PlateSet as PyPlateSet
+
+
+def _plate_seed_vectors(count=12):
+    """
+    A small, fixed set of unit vectors to seed a `PlateSet` with: the six poles/meridian
+    points first (explicitly, per the brief), then `count - 6` pseudo-random unit vectors
+    drawn from the same corpus used everywhere else in this file.
+    """
+    pinned = [
+        Vec3(0.0, 0.0, 1.0), Vec3(0.0, 0.0, -1.0),
+        Vec3(1.0, 0.0, 0.0), Vec3(-1.0, 0.0, 0.0),
+        Vec3(0.0, 1.0, 0.0), Vec3(0.0, -1.0, 0.0),
+    ]
+    pinned_keys = {(v.x, v.y, v.z) for v in pinned}
+    seeds = list(pinned)
+    for x, y, z in corpus():
+        if len(seeds) >= count:
+            break
+        if (x, y, z) in pinned_keys:
+            continue
+        seeds.append(Vec3(x, y, z).normalised())
+    return seeds
+
+
+def _build_plateset_pair(seed_vectors):
+    """A matching (Python PlateSet, flat seed list) pair, index-aligned with each other."""
+    py_plates = [
+        PyPlate(index=i, seed=SpherePoint(v), euler_pole=SpherePoint(v), rate_rad_per_myr=0.0)
+        for i, v in enumerate(seed_vectors)
+    ]
+    py_set = PyPlateSet(py_plates)
+    flat = []
+    for v in seed_vectors:
+        flat.extend((v.x, v.y, v.z))
+    return py_set, flat
+
+
+PLATE_SEED_VECTORS = _plate_seed_vectors(12)
+PY_PLATE_SET, PLATE_SEEDS_FLAT = _build_plateset_pair(PLATE_SEED_VECTORS)
+
+
+def test_plate_angular_velocity_agrees_over_poles_and_rates():
+    """
+    Plate.angular_velocity is the pole scaled by the rate -- three multiplies, nothing
+    transcendental -- so this is bit-for-bit over a spread of poles (including the poles
+    and meridian) and rates (including zero and negative).
+    """
+    poles = PLATE_SEED_VECTORS + [Vec3(x, y, z).normalised() for x, y, z in list(corpus(200))[:60]]
+    rates = (0.0, 1.0, -1.0, 0.01, -0.01, 0.037, -12.5, 1000.0, -1000.0)
+    checked = 0
+    for pole in poles:
+        for rate in rates:
+            plate = PyPlate(index=0, seed=SpherePoint(pole), euler_pole=SpherePoint(pole),
+                             rate_rad_per_myr=rate)
+            want = plate.angular_velocity()
+            got = engine.plate_angular_velocity(pole.x, pole.y, pole.z, rate)
+            assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2]), (
+                pole, rate, want, got
+            )
+            checked += 1
+    assert checked == len(poles) * len(rates)
+
+
+def test_plateset_bisector_agrees_on_every_ordered_pair_including_none():
+    """
+    The whole bisector table for a generated 12-plate set, every ordered pair.
+
+    This is the comparison the brief calls out by name: a table that had a vector where
+    Python has None would sail through a check that only compared vectors where both
+    sides had one, so the "is None" agreement is asserted first and separately from the
+    component comparison, and the diagonal (a plate against itself, always None) is
+    included by iterating the full a in range(n), b in range(n) square rather than only
+    a != b.
+    """
+    n = len(PLATE_SEED_VECTORS)
+    checked = 0
+    for a in range(n):
+        for b in range(n):
+            want = PY_PLATE_SET._bisectors[a][b]
+            got = engine.plateset_bisector(PLATE_SEEDS_FLAT, a, b)
+            assert (want is None) == (got is None), (a, b, want, got)
+            if want is not None:
+                assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2]), (
+                    a, b, want, got
+                )
+            checked += 1
+    assert checked == n * n
+    # The diagonal is exactly the a == b slice of the square above, and every entry on
+    # it must be None -- a plate has no bisector with itself.
+    for i in range(n):
+        assert PY_PLATE_SET._bisectors[i][i] is None
+        assert engine.plateset_bisector(PLATE_SEEDS_FLAT, i, i) is None
+
+
+def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
+    """
+    A set containing two coincident seeds, so the DEGENERATE branch (the difference's
+    length being too small to trust a direction from) is exercised against the Python
+    reference rather than only in the Rust unit test that already covers it in isolation.
+    """
+    here = Vec3(0.0, 0.0, 1.0)
+    elsewhere = Vec3(0.0, 1.0, 0.0)
+    seeds = [here, here, elsewhere]
+    py_set, flat = _build_plateset_pair(seeds)
+
+    for a, b in ((0, 1), (1, 0)):
+        want = py_set._bisectors[a][b]
+        got = engine.plateset_bisector(flat, a, b)
+        assert want is None, "python fixture sanity: coincident seeds have no bisector"
+        assert got is None, (a, b, got)
+
+    # The distinct pairs in the same set still have a real bisector, so the degenerate
+    # entries are not a symptom of every pair coming back None.
+    for a, b in ((0, 2), (2, 0), (1, 2), (2, 1)):
+        want = py_set._bisectors[a][b]
+        got = engine.plateset_bisector(flat, a, b)
+        assert want is not None and got is not None, (a, b, want, got)
+        assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
+
+
+def test_plateset_nearest_two_agrees_over_a_corpus_of_points():
+    """
+    nearest_two over a corpus of sphere points, comparing both returned indices --
+    comparing only the first would miss a defect in second place, which is exactly what
+    the margin machinery in the next slice will read.
+    """
+    checked = 0
+    for x, y, z in corpus(3000):
+        point = SpherePoint(Vec3(x, y, z).normalised())
+        want_best, want_second = PY_PLATE_SET.nearest_two(point)
+        got_best, got_second = engine.plateset_nearest_two(
+            PLATE_SEEDS_FLAT, point.vector.x, point.vector.y, point.vector.z
+        )
+        want_best_index = None if want_best is None else want_best.index
+        want_second_index = None if want_second is None else want_second.index
+        assert want_best_index == got_best, (x, y, z, want_best_index, got_best)
+        assert want_second_index == got_second, (x, y, z, want_second_index, got_second)
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_nearest_two_agrees_at_the_poles_and_the_meridian():
+    """The six pinned points, explicitly, rather than trusting they survive inside a loop."""
+    for x, y, z in ((0.0, 0.0, 1.0), (0.0, 0.0, -1.0), (1.0, 0.0, 0.0),
+                    (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
+        point = SpherePoint(Vec3(x, y, z))
+        want_best, want_second = PY_PLATE_SET.nearest_two(point)
+        got_best, got_second = engine.plateset_nearest_two(PLATE_SEEDS_FLAT, x, y, z)
+        assert want_best.index == got_best, (x, y, z, want_best.index, got_best)
+        assert want_second.index == got_second, (x, y, z, want_second.index, got_second)
+
+
+def test_plateset_nearest_two_agrees_with_coincident_seeds():
+    """
+    The DEGENERATE branch affects the bisector table, not nearest_two -- a coincident
+    seed is still a perfectly good candidate for "nearest" -- but the tie-breaking rule
+    (strict comparisons, so the earlier plate wins) has to resolve identically between the
+    two implementations when two seeds are literally the same point.
+    """
+    here = Vec3(0.0, 0.0, 1.0)
+    elsewhere = Vec3(0.0, 1.0, 0.0)
+    seeds = [here, here, elsewhere]
+    py_set, flat = _build_plateset_pair(seeds)
+
+    for x, y, z in list(corpus(500)) + [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)]:
+        point = SpherePoint(Vec3(x, y, z).normalised())
+        want_best, want_second = py_set.nearest_two(point)
+        got_best, got_second = engine.plateset_nearest_two(
+            flat, point.vector.x, point.vector.y, point.vector.z
+        )
+        assert want_best.index == got_best, (x, y, z, want_best.index, got_best)
+        want_second_index = None if want_second is None else want_second.index
+        assert want_second_index == got_second, (x, y, z, want_second_index, got_second)

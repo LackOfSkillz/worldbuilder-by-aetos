@@ -42,5 +42,8 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::continentality_above_shore, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::continentality_base_elevation, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::continentality_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plate_angular_velocity, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plateset_bisector, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::plateset_nearest_two, m)?)?;
     Ok(())
 }
