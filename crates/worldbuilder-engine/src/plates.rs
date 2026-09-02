@@ -93,6 +93,38 @@ impl PlateSet {
     pub fn bisector(&self, a: usize, b: usize) -> Option<Vec3> {
         self.bisectors[a * self.plates.len() + b]
     }
+
+    /// The two plates whose seeds are closest.
+    ///
+    /// Compared by dot product rather than by angle: for unit vectors a larger dot product
+    /// *is* a smaller angle, so converting to distances would only be undone by the
+    /// comparison — two dozen transcendental calls a sample, to sort numbers that were
+    /// already in order.
+    ///
+    /// Both comparisons are strict, so a tie keeps the earlier plate and the answer does
+    /// not depend on iteration order.
+    pub fn nearest_two(&self, point: &SpherePoint) -> (Option<Plate>, Option<Plate>) {
+        let v = point.vector;
+        let (px, py, pz) = (v.x, v.y, v.z);
+        let mut best: Option<Plate> = None;
+        let mut second: Option<Plate> = None;
+        let mut best_dot = -2.0f64;
+        let mut second_dot = -2.0f64;
+        for plate in &self.plates {
+            let s = plate.seed.vector;
+            let alignment = px * s.x + py * s.y + pz * s.z;
+            if alignment > best_dot {
+                second = best;
+                second_dot = best_dot;
+                best = Some(*plate);
+                best_dot = alignment;
+            } else if alignment > second_dot {
+                second = Some(*plate);
+                second_dot = alignment;
+            }
+        }
+        (best, second)
+    }
 }
 
 #[cfg(test)]
@@ -206,4 +238,57 @@ mod tests {
         ]);
         assert!(set.bisector(0, 1).is_none());
     }
+
+    #[test]
+    fn a_point_on_a_seed_belongs_to_that_plate() {
+        let set = two_plates();
+        let (best, second) = set.nearest_two(&set.plate(0).seed);
+        assert_eq!(best.expect("a nearest").index, 0);
+        assert_eq!(second.expect("a second").index, 1);
+    }
+
+    #[test]
+    fn the_second_is_the_other_one() {
+        let set = two_plates();
+        let (best, second) = set.nearest_two(&set.plate(1).seed);
+        assert_eq!(best.expect("a nearest").index, 1);
+        assert_eq!(second.expect("a second").index, 0);
+    }
+
+    #[test]
+    fn a_tie_keeps_the_earlier_plate() {
+        // Equidistant from both seeds. Both comparisons are strict, so the lower index
+        // wins and the answer does not depend on iteration order.
+        // The point (0, 45) is not exactly equidistant in floating point (off by one ULP),
+        // so we construct the tie directly: take the two seed vectors, add them, normalise.
+        let set = two_plates();
+        let s0 = set.plate(0).seed.vector;
+        let s1 = set.plate(1).seed.vector;
+        let sum = s0.add(&s1);
+        let tie_point = SpherePoint { vector: sum.normalised().expect("distinct non-opposite seeds") };
+        let (best, _) = set.nearest_two(&tie_point);
+        assert_eq!(best.expect("a nearest").index, 0);
+    }
+
+    #[test]
+    fn an_empty_set_has_no_nearest() {
+        let set = PlateSet::new(vec![]);
+        let (best, second) = set.nearest_two(&SpherePoint::from_latlon(0.0, 0.0));
+        assert!(best.is_none() && second.is_none());
+    }
+
+    #[test]
+    fn a_single_plate_has_no_second() {
+        let only = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(5.0, 5.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.0,
+        };
+        let set = PlateSet::new(vec![only]);
+        let (best, second) = set.nearest_two(&SpherePoint::from_latlon(0.0, 0.0));
+        assert_eq!(best.expect("a nearest").index, 0);
+        assert!(second.is_none());
+    }
+
 }
