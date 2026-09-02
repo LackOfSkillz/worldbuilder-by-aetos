@@ -9,6 +9,7 @@ pub mod detmath;
 pub mod vectors;
 pub mod sphere;
 pub mod bindings;
+pub mod noise;
 
 use pyo3::prelude::*;
 
