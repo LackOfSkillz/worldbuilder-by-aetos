@@ -129,6 +129,17 @@ than dictate them.
 **The studio has free rein.** It is a static bundle that no game runtime imports, so nothing
 it depends on can break anybody's server. Make it good.
 
+### 4.4 Where the code lives
+
+The engine is a crate inside this repository, under `crates/`, alongside the Python it
+replaces. One history, one place - and while the port is in progress the conformance suite can
+see both implementations at once, which is the whole mechanism by which the Rust core is proved
+to agree with the Python one before that Python is deleted.
+
+Publishing the engine as a standalone crate later remains open. Splitting it now would mean
+running the conformance tests across two repositories during exactly the period they matter
+most.
+
 ## 5. The declared parameter surface
 
 Mark 2 requires one declared, versioned, serialisable generator parameter schema: key,
@@ -647,7 +658,8 @@ Authoritative automatic hierarchy inference. Destructive migration of any existi
                       objects, dbref-plus-fingerprint for host-owned ones
     CORE-001          the Rust core carries both the continuous field and the stream graph
                       from slice 1, because retrofitting one costs a version bump
-    BUILD-001         the slice order of section 20, riskiest product claim before any UI
+    BUILD-001         the slice order of section 20: riskiest product claim first, with a
+                      read-only viewer alongside it so the project is never invisible
 
 ## 20. Build order
 
@@ -658,7 +670,8 @@ most likely to be wrong is tested before anything is built on top of it.
     1  Rust core                    the existing field, the declared parameter surface,
                                     Python bindings, and the planet-scale provider
     2  inventory and apply          brownfield only: nothing created, nothing modified
-    3  studio globe                 WASM and 3D rendering, then placement and worldfiles
+       + a viewer, read-only        rotate and zoom a planet, and nothing else
+    3  studio                       placement, anchor tree, seams, worldfiles
     4  greenfield stub              creation through Evennia's prototype system
     5  erosion bake                 rivers, lakes, and a populated water manifest
 
@@ -673,11 +686,18 @@ maritime bake a globe.
 
 **Slice 2 is early on purpose, and it is the one to defend.** It proves the entire product claim
 - a fifteen-year-old game gains a planet, nothing is created, nothing is modified - with no
-globe involved and no object creation at all. It is the claim most likely to be wrong, and the
-slice least able to hide behind a nice picture. Building the studio first would mean discovering
-a broken integration model with a beautiful interface already sitting on top of it.
+object creation at all. It is the claim most likely to be wrong, and the one least able to hide
+behind a nice picture. Building the studio first would mean discovering a broken integration
+model with a beautiful interface already sitting on top of it.
 
-**Slices 3 and 4** deliver the visible product: the globe a builder rotates, and the smallest
+**A read-only viewer rides alongside slice 2.** Rotate and zoom a generated planet; no
+placement, no editing, no Evennia. It exists because a stretch of months with nothing to look at
+is its own risk - to motivation, and to explaining the project to anybody else - and because the
+viewer is the cheapest possible test that the WASM engine actually renders. It is deliberately
+minimal, and some of it will be thrown away when slice 3 builds the real studio around it. That
+duplication is the price of not going dark, and it is worth paying.
+
+**Slice 3 and 4** deliver the product proper: the studio the viewer grows into, and the smallest
 thing a click can create.
 
 **Slice 5 is last** because it is the most expensive, the least measured, and the only one

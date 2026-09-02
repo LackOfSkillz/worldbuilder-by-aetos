@@ -94,6 +94,13 @@ coordinates at all sit on a planet and still have a dock at an exact latitude.
 
 Standard library only. 208 tests.
 
+That describes Mark 1, which is what exists today. Mark 2 moves the generator core to
+Rust - one implementation, compiled native for Evennia and to WASM for the browser studio,
+so the world a builder sees and the world a game sails on cannot drift apart. It also ends
+the zero-dependency stance deliberately: Worldbuilder does not target Evennia's vendored
+contrib tree, so contrib conventions do not bind it. See
+`docs/design/2026-09-02-mark-2-world-studio.md`, section 4.
+
 ## Looking at it
 
     python -m worldbuilder.debug.harbour            the demonstration coast, twice
