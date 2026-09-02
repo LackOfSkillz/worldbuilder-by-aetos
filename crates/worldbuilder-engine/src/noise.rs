@@ -36,8 +36,8 @@ impl Noise {
     pub fn new(seed: u64, salt: u64) -> Self {
         Self {
             seed: seed
-                .wrapping_mul(0x0000_0001_0000_01B3)
-                ^ salt.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                .wrapping_mul(0x100000001B3)
+                ^ salt.wrapping_mul(0x9E3779B97F4A7C15),
         }
     }
 
@@ -45,14 +45,14 @@ impl Noise {
     /// as deterministic and about thirty times slower, and this is called eight times per
     /// octave per sample.
     fn lattice(&self, ix: i64, iy: i64, iz: i64) -> f64 {
-        let h = (ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)  // cast-ok: convert signed lattice coordinate to unsigned for hash
-            ^ (iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)   // cast-ok: convert signed lattice coordinate to unsigned for hash
-            ^ (iz as u64).wrapping_mul(0x1656_67B1_9E37_79F9);  // cast-ok: convert signed lattice coordinate to unsigned for hash
-        let mut h = h ^ self.seed.wrapping_mul(0x27D4_EB2F_1656_67C5);
+        let h = (ix as u64).wrapping_mul(0x9E3779B97F4A7C15)  // cast-ok: convert signed lattice coordinate to unsigned for hash
+            ^ (iy as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)   // cast-ok: convert signed lattice coordinate to unsigned for hash
+            ^ (iz as u64).wrapping_mul(0x165667B19E3779F9);  // cast-ok: convert signed lattice coordinate to unsigned for hash
+        let mut h = h ^ self.seed.wrapping_mul(0x27D4EB2F165667C5);
         h ^= h >> 33;
-        h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        h = h.wrapping_mul(0xFF51AFD7ED558CCD);
         h ^= h >> 33;
-        h = h.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+        h = h.wrapping_mul(0xC4CEB9FE1A85EC53);
         h ^= h >> 33;
         h as f64 / SCALE
     }
@@ -143,6 +143,14 @@ impl Noise {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_seed_multiplier_is_the_fnv_prime() {
+        // Transcribed from worldbuilder/terrain/noise.py. Written without separators
+        // because a mis-grouped one survived two reviews and only the differential
+        // conformance harness caught it.
+        assert_eq!(0x100000001B3u64, 1_099_511_628_211);
+    }
 
     #[test]
     fn the_lattice_is_a_pure_function_of_its_coordinates() {
