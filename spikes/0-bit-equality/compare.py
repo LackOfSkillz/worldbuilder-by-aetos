@@ -22,7 +22,9 @@ def main():
     lines.append(f"samples compared: {n}")
     lines.append(f"divergent:        {len(diffs)}")
 
-    if diffs:
+    if n == 0:
+        lines.append("VERDICT: NO DATA")
+    elif diffs:
         first = diffs[0]
         lines.append(f"first divergence at index {first}")
         lines.append(f"  native {native[first]}")
@@ -38,7 +40,7 @@ def main():
     with open("results/verdict.txt", "w", encoding="ascii") as handle:
         handle.write(text)
     print(text, end="")
-    return 1 if diffs or len(native) != len(wasm) else 0
+    return 1 if n == 0 or diffs or len(native) != len(wasm) else 0
 
 
 if __name__ == "__main__":

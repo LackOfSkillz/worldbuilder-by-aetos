@@ -85,9 +85,9 @@ If it does not hold, the architecture is wrong, and we need to know in a day rat
 month.
 
 **Measured, 2026-09-02.** 5,000,000 samples across every operation class this probe
-exercises, on rustc 1.98.0, x86_64 Windows native vs. `wasm32-unknown-unknown`: identical.
-The architecture's precondition holds; the studio, the provider and the one-source
-argument may proceed on this foundation.
+exercises, on rustc 1.98.0, x86_64 Windows native vs. `wasm32-unknown-unknown` under Node
+22.17.0 (V8): identical. The architecture's precondition holds; the studio, the provider
+and the one-source argument may proceed on this foundation.
 
 ### 4.2 DETERMINISM-001 — two guards, not a rule in a document
 
