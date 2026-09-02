@@ -475,7 +475,85 @@ and mounted flight are therefore not precluded by anything here.
 They are also not Mark 2. This clause exists so that a later system does not discover the
 vertical datum was quietly assumed to point downwards.
 
-## 14. Apply
+## 14. Erosion, rivers and lakes
+
+Mark 2 ends with a world that has rivers and lakes. That is a scope decision taken
+deliberately: maritime asked for water bodies, and a planet whose only water is ocean is not
+the world this tool exists to build.
+
+The method is Cordonnier et al. (2016), *Large Scale Terrain Generation from Tectonic Uplift
+and Fluvial Erosion*. It is a paper, not a dependency; the implementation is ours.
+
+### 14.1 Why this method and not the others
+
+Almost every generator surveyed is a heightmap-grid simulator. Cordonnier is not: terrain is a
+geometric graph over Poisson-sampled points, each node carrying its Voronoi cell area, with
+boundary nodes tagged as river mouths. Poisson points and Voronoi areas transfer to a sphere
+directly - no projection, no grid seam, no pole singularity. Of everything surveyed, almost
+nothing else has that property, and for a project whose canonical position is a unit vector it
+is decisive.
+
+Erosion is the stream power equation
+
+    dh/dt = u - k * A^m * s^n        with n = 1, m = 0.5
+
+solved by an implicit scheme in O(N) per iteration by walking the stream trees from root to
+leaves. Convergence takes 100-300 iterations, and - the useful part - **the iteration count
+does not depend on resolution**. A thermal-erosion correction caps slopes at 30 degrees, to
+stop the equation growing spikes where drainage area is small.
+
+### 14.2 Lakes are part of the algorithm, not a separate pass
+
+Root nodes that are not on the boundary *are* lakes. A super-graph of lakes handles overflow
+between them in O(N + M log M), where the number of lakes M is far below the number of nodes N.
+
+Two consequences, both simplifications:
+
+- **The water manifest of section 13.2 is a byproduct.** Lakes and the stream network fall out
+  of the simulation. No separate flood-fill discovery pass is needed, and the unmeasured cost
+  that section 13.4 worried about is replaced by the cost of the erosion bake itself.
+- **The fill-versus-breach question is dissolved rather than answered.** Cordonnier does
+  neither. Nor does a graph with explicit receivers suffer the flats problem that forces raster
+  methods to fabricate a drainage direction across level ground - RichDEM's own documentation
+  is candid that once a depression is filled no local gradient information survives, and every
+  reconstructed drainage pattern is equally arbitrary. That is an argument for the graph
+  representation made by the raster library's own authors.
+
+### 14.3 Erosion is a bake, and the query stays a function
+
+Their measured figure: 160,000 nodes over a 50 x 50 km domain, about 200 steps, **252 seconds**
+on a 2016 desktop.
+
+Extrapolated - and this is arithmetic, not a measurement - that is roughly 64 nodes per square
+kilometre. A whole planet at five-kilometre node spacing, the resolution maritime already bakes
+its globe layer at, is about 20 million nodes: some 128 times their largest run. Their
+per-iteration cost scales worse than linearly (1.8x the nodes cost 3.2x the time), so a naive
+single-threaded port is plausibly many hours. Rust, parallelism and a decade of hardware cut
+that, but the conclusion does not change: **planetary erosion is a one-time bake per seed, not
+a query.**
+
+Which is exactly the second data class. Erosion cannot be a functional field - the eroded
+height of a point is not computable without simulating its whole watershed - so it is computed
+once, deterministically, and stored.
+
+The reason this fits rather than fights: Cordonnier converts the graph back into terrain by
+blending landform feature kernels whose parameters come from the graph. That is an analytic
+evaluation over placed primitives, which is both what "detail is texture; features are placed"
+already asserts and what `terrain_z_at` needs in order to answer anywhere in microseconds. The
+structure is stored; the query remains a function.
+
+### 14.4 CORE-001 - the core holds two representations from the start
+
+The Rust core's data model must accommodate both the continuous field and a graph of nodes,
+receivers, drainage areas and lakes, from slice 1 - even though nothing populates the graph
+until slice 5.
+
+This costs design effort now, against a use case that cannot yet be fully specified. The
+alternative costs more: retrofitting a graph into an engine built only for scalar fields is
+precisely the change that forces a generator version bump, and by then worldfiles exist that
+declare the old version. VERSION-001 makes that expensive on purpose.
+
+## 15. Apply
 
     worldbuilder export
     worldbuilder apply <worldfile>
@@ -505,7 +583,7 @@ CONFLICT and HOST-OWNED–WILL-NOT-MODIFY. Reviewability is mandatory; the wordi
 **Apply is idempotent.** The same worldfile applied twice performs its changes once and then
 does nothing.
 
-## 15. Creating an area
+## 16. Creating an area
 
 One primitive — **plant anchored area** — with creation parameters. Not a stub path and a
 generation path; those diverge, and the divergence is where the bugs live.
@@ -531,7 +609,7 @@ same machinery, reversed by the same deletion-safety rules. The first room is th
 forty-room dungeon may occupy a small planetary footprint; a six-room wilderness crossing may
 span many kilometres.
 
-## 16. Acceptance
+## 17. Acceptance
 
 **Determinism.** For a fixed seed, generator version and parameter set, a fixed coordinate
 corpus evaluated through the WASM engine and through the Python-bound native engine returns
@@ -551,14 +629,14 @@ is eligible for removal, and that removal blocks where host content depends on i
 type, seam semantics and ownership semantics through the same pipeline, with no second
 creation path, and remains idempotent on reapply.
 
-## 17. Non-goals for Mark 2
+## 18. Non-goals for Mark 2
 
 Live collaborative editing. Direct browser-to-database connection. Procedural city, quest or
-culture generation. Production climate simulation. Realistic rivers. Economies. Flora and
+culture generation. Production climate simulation. Economies. Flora and
 fauna. Discovery economy. Seasonal ice. Automatic conversion of rooms to coordinates.
 Authoritative automatic hierarchy inference. Destructive migration of any existing game data.
 
-## 18. Amendments carried into this baseline
+## 19. Amendments carried into this baseline
 
     APPLY-001         apply executes in the live Evennia process
     DETERMINISM-001   CI forbids non-approved math in generator-critical Rust, and runs the
@@ -567,14 +645,46 @@ Authoritative automatic hierarchy inference. Destructive migration of any existi
                       no commitment to permanent retention
     IDENTITY-001      two identity strategies: stable instance tags for Worldbuilder-owned
                       objects, dbref-plus-fingerprint for host-owned ones
+    CORE-001          the Rust core carries both the continuous field and the stream graph
+                      from slice 1, because retrofitting one costs a version bump
+    BUILD-001         the slice order of section 20, riskiest product claim before any UI
 
-## 19. Still open
+## 20. Build order
 
-**Build order — Open Item B.** The four subsystems (shared Rust engine, studio, inventory and
-discovery, desired-state apply) have no settled implementation order. It should be decided as
-vertical slices against dependency and risk, not as four isolated projects, and not by
-whichever is most convenient to start. The bit-equality spike of §4.1 precedes anything that
-assumes it.
+Vertical slices, not four parallel subsystem projects. The ordering principle is that the claim
+most likely to be wrong is tested before anything is built on top of it.
+
+    0  bit-equality spike           native vs WASM, over the full deterministic contract
+    1  Rust core                    the existing field, the declared parameter surface,
+                                    Python bindings, and the planet-scale provider
+    2  inventory and apply          brownfield only: nothing created, nothing modified
+    3  studio globe                 WASM and 3D rendering, then placement and worldfiles
+    4  greenfield stub              creation through Evennia's prototype system
+    5  erosion bake                 rivers, lakes, and a populated water manifest
+
+**Slice 0 precedes everything**, because the studio, the provider and the whole one-source
+argument rest on native and WASM agreeing. If they do not, the architecture is wrong, and a day
+spent finding out is cheap.
+
+**Slice 1 keeps maritime working throughout.** The port is of a field that already exists and
+already has 208 tests; those tests become the conformance suite the Rust core must satisfy. The
+planet-scale provider is nearly free here - the same field, a wider extent - and it is what lets
+maritime bake a globe.
+
+**Slice 2 is early on purpose, and it is the one to defend.** It proves the entire product claim
+- a fifteen-year-old game gains a planet, nothing is created, nothing is modified - with no
+globe involved and no object creation at all. It is the claim most likely to be wrong, and the
+slice least able to hide behind a nice picture. Building the studio first would mean discovering
+a broken integration model with a beautiful interface already sitting on top of it.
+
+**Slices 3 and 4** deliver the visible product: the globe a builder rotates, and the smallest
+thing a click can create.
+
+**Slice 5 is last** because it is the most expensive, the least measured, and the only one
+nothing else depends on. It is also the one that makes a world look like a world.
+
+Nothing here is a schedule. The order is a dependency and risk argument, and a slice that proves
+its claim early frees the next one to move.
 
 ## Appendix — verified facts and their sources
 
