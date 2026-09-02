@@ -184,17 +184,81 @@ def test_transcendental_divergence_stays_within_its_measured_bound():
     The bound is a measurement, not a tolerance to hide behind. If a future change
     widens it, this fails and someone has to look at why rather than nudging the
     number up.
+
+    A comparison that cannot be measured (NaN, infinity, or a sign-straddle) must not
+    be silently dropped from `worst` -- that is exactly the failure-open shape that
+    would let a NaN sail through unnoticed. Every comparison in this sweep is expected
+    to be measurable, so any skip at all is itself a failure.
     """
     worst = 0
+    skipped = 0
     for lat in range(-90, 91):
         for lon in range(-180, 181, 5):
             want = SpherePoint.from_latlon(float(lat), float(lon)).vector
             got = engine.sphere_from_latlon(float(lat), float(lon))
             for w, g in zip((want.x, want.y, want.z), got):
                 d = ulps_apart(w, g)
-                if d is not None:
+                if d is None:
+                    skipped += 1
+                else:
                     worst = max(worst, abs(d))
+    assert skipped == 0, f"{skipped} comparisons could not be measured (NaN, inf or sign-straddle)"
     assert worst <= MAX_TRANSCENDENTAL_ULPS, f"divergence grew to {worst} ULP"
+
+
+def test_transcendental_divergence_stays_within_its_measured_bound_for_every_sphere_function():
+    """
+    The test above anchors the bound to `from_latlon` alone. `to_latlon`, `angle_to`
+    and `distance_to` are exercised by their own agreement tests but nothing records
+    their worst case, so a regression from (say) 1 ULP to 4 would pass silently. This
+    sweeps all four sphere functions over the same corpus and tracks a worst case for
+    each, so a regression names which function moved.
+    """
+    worst = {"from_latlon": 0, "to_latlon": 0, "angle_to": 0, "distance_to": 0}
+    skipped = {"from_latlon": 0, "to_latlon": 0, "angle_to": 0, "distance_to": 0}
+
+    def record(name, w, g):
+        d = ulps_apart(w, g)
+        if d is None:
+            skipped[name] += 1
+        else:
+            worst[name] = max(worst[name], abs(d))
+
+    for lat in range(-90, 91):
+        for lon in range(-180, 181, 5):
+            want = SpherePoint.from_latlon(float(lat), float(lon)).vector
+            got = engine.sphere_from_latlon(float(lat), float(lon))
+            for w, g in zip((want.x, want.y, want.z), got):
+                record("from_latlon", w, g)
+
+    for x, y, z in corpus():
+        point = SpherePoint(Vec3(x, y, z).normalised())
+        want = point.to_latlon()
+        got = engine.sphere_to_latlon(point.vector.x, point.vector.y, point.vector.z)
+        for w, g in zip(want, got):
+            record("to_latlon", w, g)
+
+    points = list(corpus(2000))
+    for (ax, ay, az), (bx, by, bz) in zip(points, points[1:]):
+        a = SpherePoint(Vec3(ax, ay, az).normalised())
+        b = SpherePoint(Vec3(bx, by, bz).normalised())
+        av, bv = a.vector, b.vector
+
+        want_angle = a.angle_to(b)
+        got_angle = engine.sphere_angle_to(av.x, av.y, av.z, bv.x, bv.y, bv.z)
+        record("angle_to", want_angle, got_angle)
+
+        want_distance = a.distance_to(b)
+        got_distance = engine.sphere_distance_to(av.x, av.y, av.z, bv.x, bv.y, bv.z, EARTH_RADIUS_M)
+        record("distance_to", want_distance, got_distance)
+
+    for name in worst:
+        assert skipped[name] == 0, (
+            f"{name}: {skipped[name]} comparisons could not be measured (NaN, inf or sign-straddle)"
+        )
+        assert worst[name] <= MAX_TRANSCENDENTAL_ULPS, (
+            f"{name}: divergence grew to {worst[name]} ULP"
+        )
 
 
 def test_the_strict_contract_is_still_strict():
@@ -203,7 +267,7 @@ def test_the_strict_contract_is_still_strict():
         assert same(Vec3(x, y, z).length(), engine.vec3_length(x, y, z))
 
 
-def test_the_harness_can_actually_fail():
+def test_the_strict_comparison_can_actually_fail():
     """
     A conformance suite that cannot fail proves nothing. This asserts that `same` really
     distinguishes a one-bit difference, so a passing run above means something.
@@ -213,3 +277,14 @@ def test_the_harness_can_actually_fail():
     assert value != nudged
     assert not same(value, nudged)
     assert math.isclose(value, nudged)  # and a tolerance would have called them equal
+
+
+def test_close_enough_can_actually_fail():
+    """
+    Only `same` was proved falsifiable above. `close_enough` is the other contract this
+    harness leans on, and it needs the same proof: a difference past the bound must be
+    rejected, not just a difference within it accepted.
+    """
+    value = 0.1
+    nudged = struct.unpack("<d", struct.pack("<Q", bits(value) + MAX_TRANSCENDENTAL_ULPS + 1))[0]
+    assert not close_enough(value, nudged)

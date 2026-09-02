@@ -27,7 +27,10 @@ outside that file, and the guard has been observed to fail, not merely to pass.
 **Floor, never cast.** `worldbuilder/terrain/noise.py` derives lattice cells with
 `int(x // 1)`, which floors toward negative infinity; Rust's `as i64` truncates toward
 zero. For any negative coordinate they select a different cell, silently. Use
-`detmath::floor`.
+`detmath::floor`. `tests/no_std_math.rs` bans `as i64`/`as i32`/`as u64`/`as u32` outright,
+with a `// cast-ok: <reason>` escape hatch for casts that are genuinely integer-to-integer
+and not a float truncation -- so this is mechanised the same way the no-std-maths rule is,
+not merely documented.
 
 ## Building it
 
@@ -65,6 +68,13 @@ ULP of headroom over the worst case observed. A bound this tight still catches
 structural errors -- substituting `acos` for `atan2` in `angle_to`, or reordering a
 cross product, would diverge by orders of magnitude more, not by one or two extra ULP.
 
+Every per-function figure quoted above is defended by a test, not just quoted in this
+file: `test_transcendental_divergence_stays_within_its_measured_bound_for_every_sphere_function`
+sweeps `from_latlon`, `to_latlon`, `angle_to`, and `distance_to` independently, tracks a
+worst-ULP-per-function, asserts zero unmeasurable comparisons (NaN, infinity, or a
+sign-straddle) for each, and names the function in its failure message so a regression
+says which one moved.
+
 **What this means for generator identity.** The Rust core is not a bit-exact
 reimplementation of the Python; it is a new generator version under VERSION-001. Mark
 1's measured world figures describe the Python generator and will need re-measuring once
@@ -80,6 +90,7 @@ Run it with:
 
     python -m pytest tests/test_conformance.py -v
 
-250 tests pass in the full suite (240 pre-existing plus 10 conformance tests). The
-harness includes a test asserting that it can distinguish a one-bit difference, because a
+252 tests pass in the full suite (240 pre-existing plus 12 conformance tests). The
+harness includes a test asserting that `same` can distinguish a one-bit difference and a
+test asserting that `close_enough` rejects a difference past the ULP bound, because a
 conformance suite that cannot fail proves nothing.

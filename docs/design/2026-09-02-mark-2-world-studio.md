@@ -104,8 +104,13 @@ observed rather than merely reasoned.
 "Don't use std trig" is the kind of rule that holds for a year and then quietly stops. So it
 is mechanised, twice:
 
-    static guard       CI rejects banned math APIs in generator-critical crates
-    behavioural guard  CI runs a native-vs-WASM equality corpus
+    static guard       a test in the engine crate rejects banned math APIs
+    behavioural guard  a native-vs-WASM equality corpus, run so far as a one-off spike
+
+Today the static guard runs as `cargo test -p worldbuilder-engine` (`tests/no_std_math.rs`),
+not yet in continuous integration -- there is no CI in this repository. The behavioural
+guard lives in the frozen slice-0 spike (`spikes/0-bit-equality/`) and has not been re-run
+since. Wiring both into CI is outstanding work, not yet done.
 
 Generator code never chooses its own math provider.
 
@@ -156,10 +161,13 @@ through PyO3, and the geometry layer is ported and checked against its Python or
 path, and within a measured 4-ULP bound where one is, because Python's `sin`/`cos`/`atan2`
 delegate to the platform C library while the engine deliberately uses pure-Rust `libm` so
 its native and WASM builds agree with each other instead. Two rules are now mechanised
-rather than written down: a build-failing guard forbids std float maths outside `detmath`,
-and `detmath::floor` exists because Python's `int(x // 1)` floors where Rust's `as i64`
-truncates -- a difference that would have moved every lattice cell in the southern half of
-the sphere without raising anything.
+rather than written down: a test-failing guard forbids std float maths outside `detmath`,
+and that same guard now also forbids `as i64`/`as i32`/`as u64`/`as u32` (with a
+`// cast-ok:` escape hatch for genuine integer-to-integer casts), because Python's
+`int(x // 1)` floors where Rust's `as i64` truncates -- a difference that would have moved
+every lattice cell in the southern half of the sphere without raising anything. Both checks
+run today as `cargo test -p worldbuilder-engine`; neither runs in CI yet, because there is
+no CI in this repository.
 
 ## 5. The declared parameter surface
 
