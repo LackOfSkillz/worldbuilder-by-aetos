@@ -391,24 +391,6 @@ pub struct NearbyMargin {
     pub weight: f64,
 }
 
-/// TEMPORARY -- slice 1g Task 1 measurement scaffolding only. Delete or replace when
-/// Task 4 ports the real `margins_within` (Task 5 removes anything Task 1 left behind).
-///
-/// Reproduces `limit = math.sin(min(math.pi / 2, range_m / radius_m))` from
-/// `worldbuilder/plates/lookup.py:217`, routed through `detmath::sin`, with the same
-/// operand order and the same two-argument-`min` clamp semantics as the Python: `pi / 2`
-/// is kept unless `range_m / radius_m` is strictly below it. `pi / 2` is computed the way
-/// Python computes it (`math.pi / 2`), not via `std::f64::consts::FRAC_PI_2`, so that any
-/// divergence measured against CPython is isolated to `sin` itself rather than to a
-/// possible difference between the two half-pi constants -- which Task 1 checks
-/// separately.
-pub fn margins_within_limit(range_m: f64, radius_m: f64) -> f64 {
-    let half_pi = std::f64::consts::PI / 2.0;
-    let ratio = range_m / radius_m;
-    let clamped = if ratio < half_pi { ratio } else { half_pi };
-    m::sin(clamped)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

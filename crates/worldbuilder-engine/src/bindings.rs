@@ -264,13 +264,6 @@ pub fn plateset_margin_normal(
     Some((normal.x, normal.y, normal.z))
 }
 
-/// TEMPORARY -- slice 1g Task 1 measurement scaffolding only, see
-/// `plates::margins_within_limit`. Deleted or replaced by Task 4/5.
-#[pyfunction]
-pub fn margins_within_limit(range_m: f64, radius_m: f64) -> f64 {
-    crate::plates::margins_within_limit(range_m, radius_m)
-}
-
 /// Nearest index, then every margin in range as `(other_index, distance_m, normal, weight)`.
 /// Conversion only: `margins_within` does all the arithmetic; this unwraps its `Plate`
 /// values into indices and its `Vec3` into a triple, positionally -- a `None` nearest on
