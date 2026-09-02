@@ -1,0 +1,23 @@
+[package]
+name = "bit_equality_spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libm = "=0.2.11"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "native_probe"
+path = "src/main.rs"
+
+[profile.release]
+# Determinism first. No fast-math equivalents, no aggressive float reassociation.
+opt-level = 2
+lto = false
+codegen-units = 1
+panic = "abort"
