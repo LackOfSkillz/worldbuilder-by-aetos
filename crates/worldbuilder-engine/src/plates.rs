@@ -176,8 +176,23 @@ mod tests {
         let set = two_plates();
         let forward = set.bisector(0, 1).expect("distinct");
         let backward = set.bisector(1, 0).expect("distinct");
+        // x and y are non-zero in this fixture and do reverse exactly.
         assert_eq!(backward.x.to_bits(), (-forward.x).to_bits());
-        assert_eq!(backward.z.to_bits(), (-forward.z).to_bits());
+        assert_eq!(backward.y.to_bits(), (-forward.y).to_bits());
+    }
+
+    #[test]
+    fn a_zero_component_does_not_reverse() {
+        // Both seeds lie on the equator, so both have z = 0 and each direction's
+        // subtraction gives 0.0 - 0.0 = +0.0 under round-to-nearest. The bisector is
+        // computed as its own subtraction in each direction rather than as one negated,
+        // so the zero component is +0.0 both ways -- it does not become -0.0. Asserting
+        // a sign flip here would be asserting something untrue.
+        let set = two_plates();
+        let forward = set.bisector(0, 1).expect("distinct");
+        let backward = set.bisector(1, 0).expect("distinct");
+        assert_eq!(forward.z.to_bits(), 0.0f64.to_bits());
+        assert_eq!(backward.z.to_bits(), 0.0f64.to_bits());
     }
 
     #[test]
