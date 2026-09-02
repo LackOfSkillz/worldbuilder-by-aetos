@@ -799,6 +799,16 @@ def _build_plateset_pair(seed_vectors):
         for i, (v, p, r) in enumerate(zip(seed_vectors, poles, rates))
     ]
     py_set = PyPlateSet(py_plates)
+    # The margin tests below, and the index-vs-position comment above them, both depend
+    # on index == position for every plate. Assert it here rather than merely documenting
+    # it, so a future edit to this fixture that broke the premise would fail loudly
+    # instead of silently making Python's own margin_at/margin_normal internally
+    # inconsistent with each other.
+    for position, plate in enumerate(py_plates):
+        assert plate.index == position, (
+            f"fixture invariant violated: plate at position {position} has index "
+            f"{plate.index}"
+        )
     seeds_flat, poles_flat = [], []
     for v, p in zip(seed_vectors, poles):
         seeds_flat.extend((v.x, v.y, v.z))

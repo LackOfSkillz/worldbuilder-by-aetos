@@ -157,12 +157,18 @@ pub fn continentality_base_elevation(seed: u64, land_fraction: f64, x: f64, y: f
 /// harness supplies real, independently-varying values for every field of `Plate` rather
 /// than fabricating `euler_pole` and `rate_rad_per_myr` from the seed alone.
 ///
-/// Each plate gets its position in the list as `index`. `bisector` and `nearest_two` read
-/// only `seed.vector` -- checked by reading `PlateSet::new` and `nearest_two` in
-/// `plates.rs`, not assumed -- so real poles and rates cannot affect either function under
-/// test today; they exist so that functions which *do* read those fields (starting with
-/// `margin_at`) are tested against genuinely varying data rather than trivially-matching
-/// fabrications.
+/// Each plate gets its position in the list as `index`. Checked by reading `plates.rs`,
+/// not assumed: `bisector`, `nearest_two`, `margin_at`, `margin_normal` and `flattened`
+/// read only `seed.vector` (and, for the two margin functions, positions in the bisector
+/// table) -- none of them touch `euler_pole` or `rate_rad_per_myr`. Only
+/// `Plate::angular_velocity()` reads those two fields, and it is not reachable through any
+/// binding in this slice. So carrying real poles and rates through this function does not,
+/// by itself, make today's conformance tests exercise a fabrication regression -- verified
+/// by mutating this function back to `pole = seed`, `rate = 0.0` and observing all 44
+/// conformance tests still pass. They are carried anyway because the binding contract
+/// calls for the whole `Plate`, and because the kinematics slice will add a binding to
+/// `angular_velocity`, where a fabricated pole or rate would be caught. That guard belongs
+/// there, not here.
 fn plateset_from_parts(seeds_flat: &[f64], poles_flat: &[f64], rates: &[f64]) -> PlateSet {
     let plates = seeds_flat
         .chunks_exact(3)
