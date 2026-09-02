@@ -8,6 +8,7 @@
 pub mod detmath;
 pub mod vectors;
 pub mod sphere;
+pub mod bindings;
 
 use pyo3::prelude::*;
 
@@ -20,5 +21,12 @@ fn version() -> &'static str {
 #[pymodule]
 fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::vec3_length, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::vec3_cross, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::vec3_normalised, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::sphere_from_latlon, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::sphere_to_latlon, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::sphere_angle_to, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::sphere_distance_to, m)?)?;
     Ok(())
 }
