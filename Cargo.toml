@@ -5,3 +5,11 @@ resolver = "2"
 # The spike under spikes/0-bit-equality is deliberately NOT a workspace member.
 # It is throwaway, it is frozen, and it must not be built or tested with the engine.
 exclude = ["spikes/0-bit-equality"]
+
+[profile.release]
+# Determinism first. codegen-units = 1 so codegen decisions cannot vary between
+# builds; no lto and no fast-math equivalents. Must live at the workspace root -
+# cargo ignores [profile.*] in member manifests.
+opt-level = 2
+lto = false
+codegen-units = 1
