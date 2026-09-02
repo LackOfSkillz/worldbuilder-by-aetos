@@ -39,13 +39,14 @@ impl SpherePoint {
     /// At a pole the longitude returned is zero, which is a convention rather than a
     /// fact: every meridian meets there and none of them is the answer.
     pub fn to_latlon(&self) -> (f64, f64) {
-        let clamped = if self.vector.z < -1.0 {
-            -1.0
-        } else if self.vector.z > 1.0 {
-            1.0
-        } else {
-            self.vector.z
-        };
+        // Python writes `max(-1.0, min(1.0, z))`. That form is preserved rather than
+        // tidied because CPython's two-argument min/max return their FIRST argument when
+        // the comparison is false, and every comparison against NaN is false - so a NaN z
+        // clamps to 1.0 and reports latitude 90, where an obvious if/else would return
+        // NaN. Unreachable from a unit vector, reachable through the bindings, and the
+        // standard here is bit-for-bit.
+        let lower = if self.vector.z < 1.0 { self.vector.z } else { 1.0 };
+        let clamped = if lower > -1.0 { lower } else { -1.0 };
         let latitude = m::to_degrees(m::asin(clamped));
         let longitude = m::to_degrees(m::atan2(self.vector.y, self.vector.x));
         (latitude, longitude)
@@ -125,5 +126,12 @@ mod tests {
     fn from_vector_normalises() {
         let point = SpherePoint::from_vector(&Vec3::new(0.0, 0.0, 9.0)).expect("non-zero");
         assert_eq!(point.vector.z.to_bits(), 1.0f64.to_bits());
+    }
+
+    #[test]
+    fn a_nan_z_clamps_the_way_python_does() {
+        let point = SpherePoint { vector: Vec3::new(0.0, 0.0, f64::NAN) };
+        let (lat, _lon) = point.to_latlon();
+        assert_eq!(lat.to_bits(), 90.0f64.to_bits());
     }
 }
