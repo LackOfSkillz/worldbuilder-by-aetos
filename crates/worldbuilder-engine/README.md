@@ -225,7 +225,9 @@ asserting that `same` can distinguish a one-bit difference and a test asserting 
 cannot fail proves nothing.
 
 **`Plate` and `PlateSet` are entirely strict, and unusually so: this is the first ported
-module with no transcendental anywhere in it.** `nearest_two` compares seeds by dot product
+module with no transcendental anywhere in it** (the `sqrt` inside `length()` does route
+through `detmath`, but `sqrt` is algebraic, not transcendental, and IEEE-754 requires it
+correctly rounded, so it costs no bound). `nearest_two` compares seeds by dot product
 rather than by angle, because for unit vectors a larger dot product *is* a smaller angle --
 converting to distances would only be undone by the comparison, at the cost of two dozen
 transcendental calls per sample to sort numbers that were already in order. Building the

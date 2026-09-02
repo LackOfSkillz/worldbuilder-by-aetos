@@ -157,12 +157,18 @@ mod tests {
         let forward = a_plate(0, 0.01).angular_velocity();
         let backward = a_plate(0, -0.01).angular_velocity();
         assert_eq!(backward.x.to_bits(), (-forward.x).to_bits());
+        assert_eq!(backward.y.to_bits(), (-forward.y).to_bits());
         assert_eq!(backward.z.to_bits(), (-forward.z).to_bits());
     }
 
     #[test]
     fn a_zero_rate_is_a_still_plate() {
         let omega = a_plate(0, 0.0).angular_velocity();
+        // +0.0, not -0.0, because this fixture's pole has all-positive components:
+        // from_latlon(80.0, 5.0) is about (+0.1729, +0.01514, +0.9848), both angles
+        // lying strictly between 0 and 90 degrees. `negative * 0.0` is `-0.0` and
+        // to_bits() tells the two apart, so a southern or western pole would need
+        // different expectations here.
         assert_eq!(omega.x.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.y.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.z.to_bits(), 0.0f64.to_bits());
