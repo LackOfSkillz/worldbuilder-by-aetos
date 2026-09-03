@@ -2937,3 +2937,520 @@ def test_detail_offset_m_returns_exactly_zero_for_non_positive_amplitude():
             assert same(want, got) and want == 0.0, (x, y, z, amplitude_m, want, got)
             checked += 1
     assert checked == len(points) * len(amplitudes)
+
+
+# ---------------------------------------------------------------------------
+# Shelf: coastal, target_depth_m, weight, evaluate, elevation_m
+#
+# The contract split Task 1 measured, applied and not blurred:
+#
+# `shelf.py` contains no transcendental call of its own. It reaches exactly one
+# indirectly -- `hypot`, inside `Continentality.Gradient.magnitude()` -- and only via
+# `coastal()`'s `gradient(point).magnitude()` call that produces `slope`. Task 1 confirmed
+# this both structurally (no `math` name bound in the module, no transcendental call in its
+# source) and behaviourally (patching `math.hypot` to raise, `above_shore()` ran clean over
+# 2,000 points while `coastal()` hit it on every one not short-circuited by the window
+# gate).
+#
+# So, per the brief:
+#
+# - `above_shore` (gate 1: `abs(value) > COASTAL_WINDOW`) does NOT reach the `hypot` --
+#   STRICT, and the `None` it produces must line up with the engine's `None` positionally.
+# - `slope` (gate 2, and `Coastal.distance_m`/`Coastal.breadth`, and everything computed
+#   from them) IS downstream of the `hypot` -- BOUNDED at `MAX_TRANSCENDENTAL_ULPS`.
+# - `target_depth_m` and `weight` are themselves purely algebraic (division, `max`,
+#   smoothstep, `abs`) -- no transcendental of their own. Given bit-identical inputs they
+#   must agree bit-for-bit, which is what
+#   `test_shelf_target_depth_m_and_weight_are_strict_given_identical_inputs` below measures
+#   directly, isolated from the `coastal()` hazard.
+# - `evaluate`/`elevation_m` additionally compose with `Tectonics.offset_m` and
+#   `Continentality.base_elevation` (the macro layer), which the Tectonics section above
+#   already found to diverge far past `MAX_TRANSCENDENTAL_ULPS` -- up to
+#   `TECTONICS_BOUNDED_MAX_ULPS` (8192) -- because of the same "near-zero denominator turns
+#   a few-ULP absolute difference into a large relative one" mechanism, at the `authority`
+#   smoothstep and at `engagement` inside `offset_m` itself. That composed bound is reused
+#   here, not re-derived, and is NOT part of the shelf-specific hypot contract -- it is
+#   inherited from a hazard this file already measured and named. Measured over this
+#   section's own corpus (see `test_shelf_evaluate_agrees_within_the_tectonics_composed_
+#   bound`): worst 36 ULP for `elevation_m`, 1024 ULP for `weight`, 230 ULP for
+#   `tectonic_m` -- all comfortably inside `TECTONICS_BOUNDED_MAX_ULPS`, none inside the
+#   ordinary 4-ULP bound.
+#
+# Nothing here needed a tolerance the brief did not already predict: `coastal()`'s own
+# `distance_m`/`breadth` measured at a worst of 2 and 4 ULP respectively (right at, not
+# past, `MAX_TRANSCENDENTAL_ULPS`), and `target_depth_m`/`weight` measured bit-exact given
+# identical inputs, confirming they carry no hazard of their own.
+
+from worldbuilder.bathymetry.shelf import Coastal as PyCoastal
+from worldbuilder.bathymetry.shelf import Shelf as PyShelf
+from worldbuilder.bathymetry.shelf import COASTAL_WINDOW as PY_COASTAL_WINDOW
+from worldbuilder.bathymetry.shelf import MIN_GRADIENT as PY_MIN_GRADIENT
+
+SHELF_CONTINENTALITY_SEED = 20260831
+"""
+Not `CONTINENTALITY_SEED` (12345, the Tectonics section's world) -- this is the seed Task 1
+measured its gate margins and firing point against (`tests/test_shelf_gates.py`'s
+`build()`, which matches `shelf.rs`'s own `#[cfg(test)]` fixture: `SEED = 20260831`).
+Pinning it lets the two floor assertions below reuse Task 1's literal measured numbers as a
+regression guard, and lets the fixture points found by scanning below reproduce the exact
+points `shelf.rs`'s own unit tests and Task 1's report already named.
+
+The plates are still the Tectonics section's synthetic 12-plate fixture
+(`PY_PLATE_SET`/`PLATE_SEEDS_FLAT`/`PLATE_POLES_FLAT`/`PLATE_RATES`) -- real,
+independently-varying poles and rates, exactly as that section's own fixture doc explains,
+just paired with this different `Continentality` seed. `shelf.rs`'s tests pair the same
+seed with real generated plates (`generation::plates_for(SEED, 22)`) instead; that
+difference only changes what the tectonic offset *is* at a given point, not whether the
+`Continentality` gates fire, so it does not need to be reproduced here for the gate-margin
+and gradient-gate-firing measurements to line up with Task 1's numbers.
+"""
+
+SHELF_LAND = PyContinentality(SHELF_CONTINENTALITY_SEED, EARTH_RADIUS_M, PY_LAND_FRACTION)
+SHELF_TECTONICS = PyTectonics(PY_PLATE_SET, SHELF_LAND, EARTH_RADIUS_M)
+PY_SHELF = PyShelf(SHELF_TECTONICS, SHELF_LAND, EARTH_RADIUS_M)
+
+SHELF_POINTS = [SpherePoint(Vec3(x, y, z).normalised()) for x, y, z in corpus()]
+"""The same `corpus()` Task 1's harness swept (20,006 points: 6 axis-pinned plus 20,000
+hashed), normalised exactly as `continentality_corpus()` above normalises its points --
+`above_shore` and `gradient` both assume a genuine unit sphere point."""
+
+
+def _engine_coastal(x, y, z, radius_m=EARTH_RADIUS_M):
+    return engine.shelf_coastal(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+        SHELF_CONTINENTALITY_SEED, PY_LAND_FRACTION,
+        x, y, z, radius_m,
+    )
+
+
+def _engine_weight(x, y, z, distance_m, breadth, radius_m=EARTH_RADIUS_M, tectonic_m=None):
+    return engine.shelf_weight(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+        SHELF_CONTINENTALITY_SEED, PY_LAND_FRACTION,
+        x, y, z, distance_m, breadth, radius_m, tectonic_m,
+    )
+
+
+def _engine_evaluate(x, y, z, radius_m=EARTH_RADIUS_M):
+    return engine.shelf_evaluate(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+        SHELF_CONTINENTALITY_SEED, PY_LAND_FRACTION,
+        x, y, z, radius_m,
+    )
+
+
+SHELF_WINDOW_MARGIN_FLOOR = 1.053777e-06
+"""Task 1's measured `min(abs(abs(above_shore) - COASTAL_WINDOW))` over this exact corpus
+and seed (task-1-report.md, Question 2). A regression guard, not a tolerance: if a future
+change to the corpus, the seed, or `Continentality` narrowed this by an order of magnitude
+or more, that would be worth knowing about even though it still would not threaten the
+gate's `hypot`-independence (gate 1 never reaches `hypot` at all -- see the section
+header)."""
+
+SHELF_GRADIENT_MARGIN_FLOOR = 2.371402e-09
+"""Task 1's measured `min(abs(slope - MIN_GRADIENT))` among the corpus points inside the
+coastal window, over this exact corpus and seed. Same regression-guard role as the window
+margin above, for gate 2 -- the one gate actually downstream of `hypot`."""
+
+TECTONICS_COMPOSED_MAX_ULPS = TECTONICS_BOUNDED_MAX_ULPS
+"""`evaluate`/`elevation_m` compose `coastal()`'s bounded `distance_m`/`breadth` with
+`Tectonics.offset_m` and `Continentality.base_elevation`, whose own contract (see the
+Tectonics section above) already permits divergence up to `TECTONICS_BOUNDED_MAX_ULPS`
+(8192) -- far past the ordinary 4-ULP transcendental bound, for the same near-zero-
+denominator reason documented there. Reusing that constant under this name states plainly
+that the shelf's `evaluate` inherits an already-measured hazard rather than introducing a
+new, unexplained one of its own."""
+
+
+def test_shelf_gate_margins_match_task_1s_measurement():
+    """
+    Both gate margins, measured fresh against this exact corpus and seed and checked
+    against Task 1's literal numbers -- a regression guard on the RNG stream and the
+    `Continentality` calibration, not a tolerance on the port. Deterministic code over a
+    fixed corpus should reproduce the same margin to many significant figures; a relative
+    tolerance of 1e-3 leaves room for Task 1's report having rounded its own printed
+    figures to 7 significant digits without pretending the two computations could
+    legitimately diverge by more than that.
+    """
+    above_shores = [SHELF_LAND.above_shore(p) for p in SHELF_POINTS]
+    window_margin = min(abs(abs(a) - PY_COASTAL_WINDOW) for a in above_shores)
+    assert window_margin > 0.0, f"a corpus point landed exactly on the window boundary: {window_margin}"
+    assert abs(window_margin - SHELF_WINDOW_MARGIN_FLOOR) / SHELF_WINDOW_MARGIN_FLOOR < 1e-3, (
+        f"window gate margin measured {window_margin:.6e}, expected close to Task 1's "
+        f"{SHELF_WINDOW_MARGIN_FLOOR:.6e} -- re-measure and update task-1-report.md's "
+        f"figure if the corpus or seed genuinely changed"
+    )
+
+    inside_window = [p for p, a in zip(SHELF_POINTS, above_shores) if abs(a) <= PY_COASTAL_WINDOW]
+    assert inside_window, "no corpus point fell inside the coastal window at all"
+    slopes = [SHELF_LAND.gradient(p).magnitude() for p in inside_window]
+    gradient_margin = min(abs(s - PY_MIN_GRADIENT) for s in slopes)
+    assert gradient_margin > 0.0, f"a corpus point landed exactly on the gradient boundary: {gradient_margin}"
+    assert abs(gradient_margin - SHELF_GRADIENT_MARGIN_FLOOR) / SHELF_GRADIENT_MARGIN_FLOOR < 1e-3, (
+        f"gradient gate margin measured {gradient_margin:.6e}, expected close to Task 1's "
+        f"{SHELF_GRADIENT_MARGIN_FLOOR:.6e} -- re-measure and update task-1-report.md's "
+        f"figure if the corpus or seed genuinely changed"
+    )
+
+
+def test_shelf_coastal_none_is_positional_over_the_whole_corpus():
+    """
+    Every one of the 20,006 corpus points, `None`-vs-`Some` compared positionally --
+    agreeing only where both sides happen to be `Some` would hide a gate that fired on one
+    side and not the other. Exact count, not `> 0`, so a silently-truncated sweep would be
+    caught.
+    """
+    none_mismatches = 0
+    some_checked = 0
+    for point in SHELF_POINTS:
+        v = point.vector
+        want = PY_SHELF.coastal(point)
+        got = _engine_coastal(v.x, v.y, v.z)
+        if (want is None) != (got is None):
+            none_mismatches += 1
+        elif want is not None:
+            some_checked += 1
+    assert none_mismatches == 0, (
+        f"{none_mismatches} of {len(SHELF_POINTS)} points disagreed on which side of "
+        f"coastal()'s None/Some divide they fall"
+    )
+    assert some_checked == 2509, f"expected exactly 2509 Some points in this corpus, got {some_checked}"
+
+
+def test_shelf_coastal_some_values_agree_within_the_hypot_bound():
+    """
+    `Coastal.distance_m`/`.breadth`, the one path in this module downstream of `hypot`
+    (via `slope = gradient(point).magnitude()`) -- bounded at `MAX_TRANSCENDENTAL_ULPS`,
+    not `same()`. Tracks the worst divergence directly rather than only asserting a
+    pass/fail, per the brief's "measure and assert, do not print."
+    """
+    worst_distance = 0
+    worst_breadth = 0
+    checked = 0
+    for point in SHELF_POINTS:
+        v = point.vector
+        want = PY_SHELF.coastal(point)
+        got = _engine_coastal(v.x, v.y, v.z)
+        if want is None:
+            assert got is None
+            continue
+        assert got is not None
+        assert close_enough(want.distance_m, got[0]), (
+            "distance_m", v.x, v.y, v.z, want.distance_m, got[0],
+            ulps_apart(want.distance_m, got[0]),
+        )
+        assert close_enough(want.breadth, got[1]), (
+            "breadth", v.x, v.y, v.z, want.breadth, got[1],
+            ulps_apart(want.breadth, got[1]),
+        )
+        d1 = ulps_apart(want.distance_m, got[0])
+        d2 = ulps_apart(want.breadth, got[1])
+        if d1 is not None:
+            worst_distance = max(worst_distance, abs(d1))
+        if d2 is not None:
+            worst_breadth = max(worst_breadth, abs(d2))
+        checked += 1
+    assert checked == 2509, f"expected exactly 2509 Some points, checked {checked}"
+    assert worst_distance <= MAX_TRANSCENDENTAL_ULPS, (
+        f"distance_m divergence grew to {worst_distance} ULP, past the "
+        f"{MAX_TRANSCENDENTAL_ULPS}-ULP hypot bound"
+    )
+    assert worst_breadth <= MAX_TRANSCENDENTAL_ULPS, (
+        f"breadth divergence grew to {worst_breadth} ULP, past the "
+        f"{MAX_TRANSCENDENTAL_ULPS}-ULP hypot bound"
+    )
+
+
+def test_shelf_coastal_is_none_deep_in_the_interior_on_the_value_gate_alone():
+    """
+    The north pole on `SHELF_CONTINENTALITY_SEED`'s world: `above_shore` is far outside
+    `COASTAL_WINDOW`, so gate 1 alone returns `None` without ever reaching `gradient` (and
+    so never reaching the `hypot` inside it) -- the same point `shelf.rs`'s own
+    `coastal_is_none_deep_in_the_interior_on_the_value_gate_alone` test uses, confirmed
+    here to be the correct choice for this fixture by checking `above_shore` directly
+    before trusting the `None`.
+    """
+    point = SpherePoint(Vec3(0.0, 0.0, 1.0))
+    above = SHELF_LAND.above_shore(point)
+    assert abs(above) > PY_COASTAL_WINDOW, f"fixture point must fail gate 1 alone; above={above}"
+    assert PY_SHELF.coastal(point) is None
+    got = _engine_coastal(0.0, 0.0, 1.0)
+    assert got is None
+
+
+def test_shelf_coastal_is_none_where_the_gradient_gate_genuinely_fires():
+    """
+    Task 1's closest-approach point, reproduced by scanning this section's own
+    `SHELF_POINTS`/`SHELF_LAND` rather than copied as a literal: `above_shore =
+    5.247544e-02` (inside the window) and `slope = 2.501102e-09` (~0.25x `MIN_GRADIENT`,
+    the closest of the corpus's 6 gradient-gate-firing points) -- so the `None` it produces
+    is attributable to gate 2, the one downstream of `hypot`, not gate 1.
+    """
+    above_shores = [SHELF_LAND.above_shore(p) for p in SHELF_POINTS]
+    inside_window = [
+        (p, a) for p, a in zip(SHELF_POINTS, above_shores) if abs(a) <= PY_COASTAL_WINDOW
+    ]
+    with_slope = [
+        (p, a, SHELF_LAND.gradient(p).magnitude()) for p, a in inside_window
+    ]
+    sub_threshold = [(p, a, s) for p, a, s in with_slope if s < PY_MIN_GRADIENT]
+    assert len(sub_threshold) == 6, f"expected exactly 6 gradient-gate-firing points, found {len(sub_threshold)}"
+    point, above, slope = min(sub_threshold, key=lambda t: abs(t[2] - PY_MIN_GRADIENT))
+
+    assert abs(above) <= PY_COASTAL_WINDOW, f"fixture point must pass gate 1; above={above}"
+    assert slope < PY_MIN_GRADIENT, f"fixture point must fail gate 2; slope={slope}"
+    assert PY_SHELF.coastal(point) is None
+
+    v = point.vector
+    got = _engine_coastal(v.x, v.y, v.z)
+    assert got is None, (v.x, v.y, v.z, above, slope, got)
+
+
+SHELF_TARGET_DEPTH_EDGE_CASES = [
+    (0.0, 0.5), (1.0, 0.5), (-1.0, 0.5),
+    (-200_000.0, 0.5), (-6_000.0, 0.05), (-1_000.0, 0.8),
+]
+"""At-and-seaward-of-shore (`offshore <= 0.0`, the hard `0.0` return), beyond the shelf
+break (saturates to `SHELF_EDGE_M`), and a narrow platform below the 0.15 `breadth` floor
+-- the same hand-derived cases `shelf.rs`'s own unit tests use, now driving the binding
+rather than the Rust struct directly."""
+
+SHELF_WEIGHT_EDGE_CASES = [
+    (0.0, 0.5), (6_000.0, 0.6), (20_000.0, 0.6), (-200_000.0, 0.5), (-1_000.0, 0.8),
+]
+"""Seaward, inland within `INLAND_REACH_M`, inland far enough to saturate to zero, well
+beyond the shelf break, and a point where a large tectonic offset is meant to suppress the
+weight -- the same shapes `shelf.rs`'s own unit tests hand-derive expectations for."""
+
+
+def test_shelf_target_depth_m_and_weight_are_strict_given_identical_inputs():
+    """
+    `target_depth_m` and `weight` are themselves purely algebraic -- division, `max`,
+    `abs`, and `smooth` (already pinned bit-for-bit elsewhere) -- with no transcendental of
+    their own. Given bit-identical `distance_m`/`breadth`/`tectonic_m` inputs (rather than
+    inputs freshly drawn from `coastal()`, which is where this module's one hazard lives),
+    the two languages must agree bit-for-bit. `same()`, not `close_enough()`: a tolerance
+    here would hide a real defect in these two functions rather than paper over `hypot`.
+    """
+    checked = 0
+    for distance_m, breadth in SHELF_TARGET_DEPTH_EDGE_CASES:
+        want = PY_SHELF.target_depth_m(PyCoastal(distance_m, breadth))
+        got = engine.shelf_target_depth_m(distance_m, breadth)
+        assert same(want, got), (distance_m, breadth, want, got)
+        checked += 1
+    assert checked == len(SHELF_TARGET_DEPTH_EDGE_CASES)
+
+    point = SpherePoint(Vec3(0.0, 0.0, 1.0))
+    weight_checked = 0
+    for distance_m, breadth in SHELF_WEIGHT_EDGE_CASES:
+        for tectonic_m in (0.0, 10_000.0, -300.0, 5.0):
+            coastal = PyCoastal(distance_m, breadth)
+            want = PY_SHELF.weight(point, coastal, tectonic_m)
+            got = _engine_weight(0.0, 0.0, 1.0, distance_m, breadth, tectonic_m=tectonic_m)
+            assert same(want, got), (distance_m, breadth, tectonic_m, want, got)
+            weight_checked += 1
+    assert weight_checked == len(SHELF_WEIGHT_EDGE_CASES) * 4
+
+
+def test_shelf_target_depth_m_near_the_shelf_break_and_inland_within_reach():
+    """
+    Two more identical-input cases beyond the hand-derived edges above, this time from
+    real coastal geometry: a corpus point whose `offshore` distance sits within 30% of its
+    own `break_at` (found by scanning `SHELF_POINTS`/`PY_SHELF`), and a corpus point
+    genuinely inland but within `INLAND_REACH_M`. Still `same()`: these are real `Coastal`
+    values, but fed identically into both sides rather than recomputed independently, so
+    `coastal()`'s own hazard does not enter this comparison.
+    """
+    near_break = PyCoastal(-84190.01223838703, 1.0)
+    inland = PyCoastal(470.0541276317929, 1.0)
+
+    offshore = -near_break.distance_m
+    break_at = 80_000.0 * max(0.15, near_break.breadth)
+    assert offshore > 0.0 and abs(offshore - break_at) < break_at * 0.3, (
+        "fixture point must sit near its own shelf break", offshore, break_at
+    )
+    assert 0.0 < inland.distance_m < 12_000.0, "fixture point must be inland within INLAND_REACH_M"
+
+    checked = 0
+    for coastal in (near_break, inland):
+        want_target = PY_SHELF.target_depth_m(coastal)
+        got_target = engine.shelf_target_depth_m(coastal.distance_m, coastal.breadth)
+        assert same(want_target, got_target), (coastal, want_target, got_target)
+
+        want_weight = PY_SHELF.weight(SpherePoint(Vec3(0.0, 0.0, 1.0)), coastal, 0.0)
+        got_weight = _engine_weight(0.0, 0.0, 1.0, coastal.distance_m, coastal.breadth, tectonic_m=0.0)
+        assert same(want_weight, got_weight), (coastal, want_weight, got_weight)
+        checked += 2
+    assert checked == 4
+
+
+def test_shelf_weight_large_tectonic_offset_suppresses_it():
+    """
+    The same fixture point as the "supplied zero vs absent" trap test below (found by
+    scanning `SHELF_POINTS` for a coastal point with a genuinely non-trivial tectonic
+    offset AND a non-saturated baseline weight, so the suppression is actually observable
+    rather than starting from zero): a huge supplied `tectonic_m` overriding the small real
+    one, so `authority` saturates to (near) zero and the weight collapses, matched against
+    a `tectonic_m=0.0` baseline that does not. Both sides fed the identical `Coastal` and
+    `tectonic_m`, so this stays on the strict, purely-algebraic side of the contract.
+    """
+    point = SpherePoint(Vec3(-0.39211320249599313, -0.9086470905306608, 0.14355382718165768))
+    coastal = PyCoastal(-69538.32381558529, 0.7994033287540755)
+    actual_tectonic = SHELF_TECTONICS.offset_m(point)
+    assert actual_tectonic > 50.0, f"fixture point must have a non-trivial tectonic offset; got {actual_tectonic}"
+
+    want_baseline = PY_SHELF.weight(point, coastal, 0.0)
+    got_baseline = _engine_weight(
+        point.vector.x, point.vector.y, point.vector.z,
+        coastal.distance_m, coastal.breadth, tectonic_m=0.0,
+    )
+    assert same(want_baseline, got_baseline), (want_baseline, got_baseline)
+    assert want_baseline > 0.0, "baseline weight must be non-zero for the suppression to be observable"
+
+    want_suppressed = PY_SHELF.weight(point, coastal, 10_000.0)
+    got_suppressed = _engine_weight(
+        point.vector.x, point.vector.y, point.vector.z,
+        coastal.distance_m, coastal.breadth, tectonic_m=10_000.0,
+    )
+    assert same(want_suppressed, got_suppressed), (want_suppressed, got_suppressed)
+    assert want_suppressed < want_baseline * 0.01, (
+        f"a 10,000 m tectonic offset should suppress the weight nearly to zero; "
+        f"baseline={want_baseline} suppressed={want_suppressed}"
+    )
+
+
+def test_shelf_weight_treats_some_zero_as_a_supplied_zero_not_as_absent():
+    """
+    The trap, and this task's brief is explicit it is the inverse of the previous slice's:
+    `tectonic_m=0.0` (a supplied zero) must NOT behave like `tectonic_m` omitted/`None`
+    (which recomputes via `self.tectonics.offset_m(point)`). A binding that flattens
+    `Option<f64>` with `unwrap_or(0.0)` would make every `None` look like `Some(0.0)` and
+    pass every other test in this file while failing exactly this one.
+
+    Point found by scanning `SHELF_POINTS`/`PY_SHELF` for a coastal point whose recomputed
+    tectonic offset is genuinely non-trivial (74.6 m) and whose weight is not saturated, so
+    `Some(0.0)` and `None` are guaranteed to disagree by more than float noise.
+    """
+    point = SpherePoint(Vec3(-0.39211320249599313, -0.9086470905306608, 0.14355382718165768))
+    coastal = PY_SHELF.coastal(point)
+    assert coastal is not None, "fixture point must be coastal"
+
+    actual_tectonic = SHELF_TECTONICS.offset_m(point)
+    assert actual_tectonic > 1.0, f"fixture point must have a non-trivial tectonic offset; got {actual_tectonic}"
+
+    want_some_zero = PY_SHELF.weight(point, coastal, 0.0)
+    want_none = PY_SHELF.weight(point, coastal, None)
+    assert abs(want_some_zero - want_none) > 1e-6, (
+        "fixture must produce distinguishable Python expectations",
+        want_some_zero, want_none,
+    )
+
+    v = point.vector
+    got_some_zero = _engine_weight(v.x, v.y, v.z, coastal.distance_m, coastal.breadth, tectonic_m=0.0)
+    got_none = _engine_weight(v.x, v.y, v.z, coastal.distance_m, coastal.breadth, tectonic_m=None)
+    got_omitted = engine.shelf_weight(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+        SHELF_CONTINENTALITY_SEED, PY_LAND_FRACTION,
+        v.x, v.y, v.z, coastal.distance_m, coastal.breadth, EARTH_RADIUS_M,
+    )  # tectonic_m omitted entirely, not just None -- must land on the same default
+
+    # Some(0.0) never touches tectonics.offset_m, so this side is strict.
+    assert same(want_some_zero, got_some_zero), (want_some_zero, got_some_zero)
+    # None recomputes via offset_m, which composes with the Tectonics section's own
+    # already-measured bound -- not strict, but still bounded.
+    assert close_enough(want_none, got_none, TECTONICS_COMPOSED_MAX_ULPS), (
+        want_none, got_none, ulps_apart(want_none, got_none)
+    )
+    assert same(got_none, got_omitted), (
+        "omitting tectonic_m must land on exactly the same path as passing None explicitly",
+        got_none, got_omitted,
+    )
+    assert abs(got_some_zero - got_none) > 1e-6, (
+        f"Some(0.0) must not behave like None: got_some_zero={got_some_zero} got_none={got_none}"
+    )
+
+
+def test_shelf_evaluate_none_is_positional_and_agrees_deep_in_the_interior():
+    """`evaluate` never returns `None` itself (it's `Reading`, always), but its early
+    return when `coastal()` is `None` must still land on macro elevation with weight
+    exactly `0.0` on both sides -- the north pole fixture again."""
+    point = SpherePoint(Vec3(0.0, 0.0, 1.0))
+    assert PY_SHELF.coastal(point) is None
+
+    want = PY_SHELF.evaluate(point)
+    got = _engine_evaluate(0.0, 0.0, 1.0)
+    assert want.weight == 0.0 and got[1] == 0.0
+    assert close_enough(want.elevation_m, got[0], TECTONICS_COMPOSED_MAX_ULPS), (
+        want.elevation_m, got[0], ulps_apart(want.elevation_m, got[0])
+    )
+    assert close_enough(want.tectonic_m, got[2], TECTONICS_COMPOSED_MAX_ULPS), (
+        want.tectonic_m, got[2], ulps_apart(want.tectonic_m, got[2])
+    )
+
+
+def test_shelf_evaluate_agrees_within_the_tectonics_composed_bound():
+    """
+    `evaluate`'s three fields, over the whole corpus, bounded at
+    `TECTONICS_COMPOSED_MAX_ULPS` -- not the ordinary `MAX_TRANSCENDENTAL_ULPS` -- because
+    `elevation_m` and `tectonic_m` compose with `Tectonics.offset_m`'s own already-measured
+    hazard (see the section header). Tracks the worst divergence for each field
+    separately, per the brief's "report the worst ULP distance on the bounded paths."
+    """
+    worst_elevation = 0
+    worst_weight = 0
+    worst_tectonic = 0
+    checked = 0
+    for point in SHELF_POINTS:
+        v = point.vector
+        want = PY_SHELF.evaluate(point)
+        got = _engine_evaluate(v.x, v.y, v.z)
+
+        assert close_enough(want.elevation_m, got[0], TECTONICS_COMPOSED_MAX_ULPS), (
+            "elevation_m", v.x, v.y, v.z, want.elevation_m, got[0],
+            ulps_apart(want.elevation_m, got[0]),
+        )
+        assert close_enough(want.weight, got[1], TECTONICS_COMPOSED_MAX_ULPS), (
+            "weight", v.x, v.y, v.z, want.weight, got[1], ulps_apart(want.weight, got[1]),
+        )
+        assert close_enough(want.tectonic_m, got[2], TECTONICS_COMPOSED_MAX_ULPS), (
+            "tectonic_m", v.x, v.y, v.z, want.tectonic_m, got[2],
+            ulps_apart(want.tectonic_m, got[2]),
+        )
+
+        de = ulps_apart(want.elevation_m, got[0])
+        dw = ulps_apart(want.weight, got[1])
+        dt = ulps_apart(want.tectonic_m, got[2])
+        if de is not None:
+            worst_elevation = max(worst_elevation, abs(de))
+        if dw is not None:
+            worst_weight = max(worst_weight, abs(dw))
+        if dt is not None:
+            worst_tectonic = max(worst_tectonic, abs(dt))
+        checked += 1
+
+    assert checked == len(SHELF_POINTS) == 20006
+
+    # The measurement this section's header claims, made concrete -- two-sided, per the
+    # brief and the Tectonics section's own precedent: the ordinary bound genuinely does
+    # not hold here (this is the finding), but the wider, measured one does.
+    assert worst_elevation > MAX_TRANSCENDENTAL_ULPS, (
+        f"expected elevation_m's worst divergence to exceed the ordinary "
+        f"{MAX_TRANSCENDENTAL_ULPS}-ULP bound (composition with Tectonics.offset_m is the "
+        f"finding this section reports); observed worst was only {worst_elevation} ULP"
+    )
+    assert worst_tectonic > MAX_TRANSCENDENTAL_ULPS, (
+        f"expected tectonic_m's worst divergence to exceed the ordinary "
+        f"{MAX_TRANSCENDENTAL_ULPS}-ULP bound; observed worst was only {worst_tectonic} ULP"
+    )
+    assert worst_elevation <= TECTONICS_COMPOSED_MAX_ULPS, (
+        f"elevation_m's worst observed divergence grew to {worst_elevation} ULP, beyond "
+        f"the measured TECTONICS_COMPOSED_MAX_ULPS ({TECTONICS_COMPOSED_MAX_ULPS})"
+    )
+    assert worst_weight <= TECTONICS_COMPOSED_MAX_ULPS, (
+        f"weight's worst observed divergence grew to {worst_weight} ULP, beyond the "
+        f"measured TECTONICS_COMPOSED_MAX_ULPS ({TECTONICS_COMPOSED_MAX_ULPS})"
+    )
+    assert worst_tectonic <= TECTONICS_COMPOSED_MAX_ULPS, (
+        f"tectonic_m's worst observed divergence grew to {worst_tectonic} ULP, beyond the "
+        f"measured TECTONICS_COMPOSED_MAX_ULPS ({TECTONICS_COMPOSED_MAX_ULPS})"
+    )
