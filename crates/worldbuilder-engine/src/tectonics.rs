@@ -90,7 +90,7 @@ pub const RIFT_WIDTH_M: f64 = 70_000.0;
 /// between.
 ///
 /// Args:
-///     value: Continentality on one side of a margin.
+/// value: Continentality on one side of a margin.
 pub(crate) fn continental(value: f64) -> f64 {
     let fraction = (value - CONTINENTAL_ENOUGH) / CONTINENTAL_BLEND * 0.5 + 0.5;
     // Python writes `max(0.0, min(1.0, fraction))`; the two-argument forms are asymmetric
@@ -105,16 +105,16 @@ pub(crate) fn continental(value: f64) -> f64 {
 /// A smooth hump: one at the centre, nothing at the edge, and no corner anywhere.
 ///
 /// Args:
-///     distance_m: How far from the middle of the feature.
-///     width_m: Where it reaches zero.
+/// distance_m: How far from the middle of the feature.
+/// width_m: Where it reaches zero.
 ///
 /// Returns a weight between zero and one.
 ///
 /// Notes:
-///     Smoothstep rather than a cosine or a straight taper, because it is flat at both
-///     ends: the derivative is zero at the centre *and* at the edge. A profile that
-///     merely reached zero would still leave a crease where it met the untouched ground,
-///     and a crease in terrain is a cliff somebody sails into.
+/// Smoothstep rather than a cosine or a straight taper, because it is flat at both
+/// ends: the derivative is zero at the centre *and* at the edge. A profile that
+/// merely reached zero would still leave a crease where it met the untouched ground,
+/// and a crease in terrain is a cliff somebody sails into.
 pub(crate) fn bump(distance_m: f64, width_m: f64) -> f64 {
     if width_m <= 0.0 {
         return 0.0;
@@ -131,8 +131,8 @@ pub(crate) fn bump(distance_m: f64, width_m: f64) -> f64 {
 /// What kind of ground lies either side of a margin, here.
 ///
 /// Attributes:
-///     inboard: Continentality on the nearest plate's side.
-///     outboard: Continentality on the neighbour's side.
+/// inboard: Continentality on the nearest plate's side.
+/// outboard: Continentality on the neighbour's side.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Setting {
     pub inboard: f64,
@@ -152,10 +152,10 @@ impl Setting {
     /// Which side is the more continental, from -1 to +1, and how decidedly.
     ///
     /// Notes:
-    ///     Near zero where the two sides are alike, which is what lets an asymmetric
-    ///     profile fade out rather than flip. A hard comparison here would have put a
-    ///     trench on one side of a symmetric margin and the other side of it a metre
-    ///     away.
+    /// Near zero where the two sides are alike, which is what lets an asymmetric
+    /// profile fade out rather than flip. A hard comparison here would have put a
+    /// trench on one side of a symmetric margin and the other side of it a metre
+    /// away.
     pub fn lean(&self) -> f64 {
         m::tanh((self.inboard - self.outboard) * SIDE_SHARPNESS)
     }
@@ -164,10 +164,10 @@ impl Setting {
 /// The tectonic contribution to elevation, worked out where it matters and nowhere else.
 ///
 /// Notes:
-///     Holds the plates and the continentality field and combines them. It is the first
-///     thing in the engine that knows about both, which is deliberate - they were built
-///     in ignorance of each other so that continents would not inherit plate shapes, and
-///     this is the seam where they are allowed to meet.
+/// Holds the plates and the continentality field and combines them. It is the first
+/// thing in the engine that knows about both, which is deliberate - they were built
+/// in ignorance of each other so that continents would not inherit plate shapes, and
+/// this is the seam where they are allowed to meet.
 pub struct Tectonics {
     plates: PlateSet,
     land: Continentality,
@@ -182,17 +182,17 @@ impl Tectonics {
     /// What lies either side of the margin near this point.
     ///
     /// Args:
-    ///     point: Where.
-    ///     distance_m: How far the margin is.
-    ///     normal: Away from the margin, into the nearest plate.
+    /// point: Where.
+    /// distance_m: How far the margin is.
+    /// normal: Away from the margin, into the nearest plate.
     ///
     /// Returns the continentality on each side.
     ///
     /// Notes:
-    ///     The probes are placed relative to the *margin*, not to the point, so that two
-    ///     samples on opposite sides of the same boundary describe the same stretch of it
-    ///     and agree about what it is. Probing outward from each point instead would have
-    ///     let a margin be a subduction zone from one side and a collision from the other.
+    /// The probes are placed relative to the *margin*, not to the point, so that two
+    /// samples on opposite sides of the same boundary describe the same stretch of it
+    /// and agree about what it is. Probing outward from each point instead would have
+    /// let a margin be a subduction zone from one side and a collision from the other.
     pub fn setting_at(&self, point: &SpherePoint, distance_m: f64, normal: &Vec3) -> Setting {
         let frame = TangentFrame::at(point, self.radius_m);
         let east = normal.dot(&frame.east);
@@ -212,33 +212,33 @@ impl Tectonics {
     /// How much the plates raise or lower the ground here.
     ///
     /// Args:
-    ///     point: Anywhere on the planet.
+    /// point: Anywhere on the planet.
     ///
     /// Returns metres, to be *added* to the continental base elevation.
     ///
     /// Notes:
-    ///     **Every margin in range, summed - not the nearest one, chosen.**
+    /// **Every margin in range, summed - not the nearest one, chosen.**
     ///
-    ///     Picking the nearest margin is not continuous even though its distance is. The
-    ///     identity of the neighbour jumps: at a point equidistant from two of a plate's
-    ///     margins the choice flips under a step of a metre, and the relative motion, the
-    ///     normal and what lies either side all flip with it. Measured at five hundred and
-    ///     sixty metres of cliff, a hundred and thirty kilometres from any boundary, where
-    ///     one margin was transform and the other divergent.
+    /// Picking the nearest margin is not continuous even though its distance is. The
+    /// identity of the neighbour jumps: at a point equidistant from two of a plate's
+    /// margins the choice flips under a step of a metre, and the relative motion, the
+    /// normal and what lies either side all flip with it. Measured at five hundred and
+    /// sixty metres of cliff, a hundred and thirty kilometres from any boundary, where
+    /// one margin was transform and the other divergent.
     ///
-    ///     Summing is continuous because each term depends only on its own distance and
-    ///     fades to nothing at its own range. It is also the truer answer: near a triple
-    ///     junction there really are two margins acting on the ground.
+    /// Summing is continuous because each term depends only on its own distance and
+    /// fades to nothing at its own range. It is also the truer answer: near a triple
+    /// junction there really are two margins acting on the ground.
     ///
-    ///     Costs nothing where nothing is happening. A plate interior fails the distance
-    ///     test on every bisector, having done one dot product each - and that is 69 per
-    ///     cent of the planet.
+    /// Costs nothing where nothing is happening. A plate interior fails the distance
+    /// test on every bisector, having done one dot product each - and that is 69 per
+    /// cent of the planet.
     ///
-    ///     **Iteration order is load-bearing.** Floating-point addition is not
-    ///     associative, so the total depends on the order the margins are summed in.
-    ///     `margins_within` returns them in plate-position order, and this loop must
-    ///     accumulate in that same order - no sorting, no reversing, no parallel
-    ///     accumulation.
+    /// **Iteration order is load-bearing.** Floating-point addition is not
+    /// associative, so the total depends on the order the margins are summed in.
+    /// `margins_within` returns them in plate-position order, and this loop must
+    /// accumulate in that same order - no sorting, no reversing, no parallel
+    /// accumulation.
     pub fn offset_m(&self, point: &SpherePoint) -> f64 {
         let (nearest, margins) =
             self.plates.margins_within(point, MAX_TECTONIC_RANGE_M, self.radius_m);
@@ -270,7 +270,7 @@ impl Tectonics {
     /// The macro elevation: continental base plus whatever the plates have done to it.
     ///
     /// Args:
-    ///     point: Anywhere on the planet.
+    /// point: Anywhere on the planet.
     ///
     /// Returns metres, relative to datum, before shelves or detail.
     pub fn elevation_m(&self, point: &SpherePoint) -> f64 {
@@ -280,11 +280,11 @@ impl Tectonics {
     /// One margin's contribution to the ground here.
     ///
     /// Args:
-    ///     point: Where.
-    ///     near: The plate the point is on.
-    ///     far: The plate across this margin.
-    ///     distance_m: How far the margin is.
-    ///     normal: Across it, tangent to the surface, pointing towards `near`.
+    /// point: Where.
+    /// near: The plate the point is on.
+    /// far: The plate across this margin.
+    /// distance_m: How far the margin is.
+    /// normal: Across it, tangent to the surface, pointing towards `near`.
     ///
     /// Returns metres, which may be zero, and usually is.
     fn from_margin(
