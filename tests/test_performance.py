@@ -56,6 +56,7 @@ import unittest
 
 from worldbuilder.geometry.tangent import TangentFrame
 from worldbuilder.regions.demo import WORLD_SEED, demo_region
+from worldbuilder.terrain import noise as noise_module
 from worldbuilder.terrain.surface import Surface
 
 #: One maritime chart redraw, as maritime actually draws it.
@@ -133,13 +134,51 @@ class TestWhatAChartCosts(ChartTestCase):
         for cheaper, dearer in zip(measured, measured[1:]):
             self.assertGreater(dearer, cheaper * 0.9)
 
-    def test_a_coarse_chart_is_cheaper_than_a_canonical_one(self):
+    def _noise_evaluations(self, work):
+        """
+        How many times the noise is sampled, which is what band-limiting actually skips.
+
+        """
+        original = noise_module.Noise.at
+        counted = 0
+
+        def counting(inner_self, *args, **keywords):
+            nonlocal counted
+            counted += 1
+            return original(inner_self, *args, **keywords)
+
+        noise_module.Noise.at = counting
+        try:
+            for point in self.points[::16]:
+                work(point)
+        finally:
+            noise_module.Noise.at = original
+        return counted
+
+    def test_a_coarse_chart_does_less_work_than_a_canonical_one(self):
         """
         Band-limiting has to do real work, or `resolution_m` is a parameter that lies.
 
+        This counts noise evaluations rather than timing them, and the reason is
+        measured rather than stylistic. The saving is real but small - 22,464
+        evaluations against 18,432, so 17.9% fewer - while the wall-clock gap is
+        nearer 10%, because what band-limiting skips is the cheap end of the octave
+        stack. On this machine the two timing distributions **overlap**: over nine
+        samples each, the fastest canonical pass (94.10 us) came in slower than the
+        slowest coarse one (114.69 us), and 11 of 81 pairings had the coarse chart
+        looking dearer. Taking the minimum of five passes each did not fix it either
+        - still 2 of 16, with the ranges still touching.
+
+        So this claim cannot be measured by wall clock on a machine doing anything
+        else, and the test said so by failing intermittently for nine slices. The
+        count is exact, repeats to the evaluation, and tests the claim the docstring
+        actually makes.
+
         """
-        canonical = self.timed(self.world.elevation_m)
-        coarse = self.timed(lambda p: self.world.elevation_m(p, 10_000.0))
+        canonical = self._noise_evaluations(self.world.elevation_m)
+        coarse = self._noise_evaluations(
+            lambda point: self.world.elevation_m(point, 10_000.0)
+        )
         self.assertLess(coarse, canonical)
 
     def test_a_bottom_costs_a_few_soundings_and_no_more(self):
