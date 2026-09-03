@@ -5020,3 +5020,1081 @@ def test_features_substrate_none_survives_the_crossing_as_none_not_as_empty():
     assert len(PyFeatures(features, EARTH_RADIUS_M)) == count
     assert [f.kind for f in python_side] == kinds
     assert [f.substrate for f in python_side] == substrates
+
+
+# --- substrate -------------------------------------------------------------------------
+#
+# What is STRICT here and what is BOUNDED, and why the split falls where it does:
+#
+#   _smooth                          STRICT   two comparisons and a polynomial
+#   Composition(...) / dominant      STRICT   a sum, three divisions, three comparisons
+#   holding / blended_towards        STRICT   multiplies and adds, then Composition again
+#   natural                          STRICT   _smooth, a max, and arithmetic
+#   slope_at                         BOUNDED  math.hypot, once directly and four times
+#                                             inside local_to_sphere. SUBSTRATE_SLOPE
+#                                             _DRIFT_REL, and NOT borrowed from anywhere.
+#   at / dominant_at, optionals given STRICT  measured, and a finding -- see
+#                                             test_substrate_at_is_strict_when_every
+#                                             _optional_is_supplied
+#   at / dominant_at, slope derived  BOUNDED  slope_at is inside it. SUBSTRATE_AT_DERIVED
+#                                             _SLOPE_MAX_ABS, measured separately.
+#
+# **Every bound in this section was measured over this section's own corpora and none was
+# borrowed.** `features.rs`'s FEATURES_WEIGHT_MAX_ABS in particular is NOT reused, even
+# though `at` calls `weight_at`: it is sized for a 250:1 dredged channel probed at its own
+# support edge, which is 20x looser than anything the substrate corpora reach, and a
+# borrowed bound admits whatever the lending module admits.
+#
+# **Two corpora with opposite shapes, and every figure below states its population and its
+# scan resolution**, because both of these quantities are properties of the scan:
+#
+#   the pinnacle grid   a SMALL STEEP feature, scanned in 2-D. The only thing that reaches
+#                       `natural`'s slope clamp at all -- a planetary scatter reads the
+#                       clamp as dead code, and a LINE through the same pinnacle tops out
+#                       at 7.80 x ROCK_SLOPE against the grid's 8.13 x at any density.
+#   the open-water grid GENTLE ground far from anything placed, which is where the
+#                       blending guard and the smallest composition margins live.
+
+from worldbuilder.bathymetry.substrate import MUD as PY_MUD
+from worldbuilder.bathymetry.substrate import PURE as PY_PURE
+from worldbuilder.bathymetry.substrate import ROCK as PY_ROCK
+from worldbuilder.bathymetry.substrate import ROCK_SLOPE as PY_ROCK_SLOPE
+from worldbuilder.bathymetry.substrate import ROCK_TECTONIC_M as PY_ROCK_TECTONIC_M
+from worldbuilder.bathymetry.substrate import SAND as PY_SAND
+from worldbuilder.bathymetry.substrate import SETTLED_M as PY_SETTLED_M
+from worldbuilder.bathymetry.substrate import SLOPE_BASELINE_M as PY_SLOPE_BASELINE_M
+from worldbuilder.bathymetry.substrate import SWEPT_M as PY_SWEPT_M
+from worldbuilder.bathymetry.substrate import Composition as PyComposition
+from worldbuilder.bathymetry.substrate import Substrate as PySubstrate
+from worldbuilder.bathymetry.substrate import _smooth as py_substrate_smooth
+from worldbuilder.regions.demo import WORLD_SEED as PY_WORLD_SEED
+from worldbuilder.regions.demo import demo_region as py_demo_region
+from worldbuilder.terrain.surface import Surface as PySurface
+
+SUBSTRATE_SLOPE_DRIFT_REL = 2.3e-16
+"""
+`Substrate.slope_at`'s bound, as a fraction of the answer. ONE ULP, and measured here over
+this section's own corpora rather than taken on trust from the crate.
+
+**It is a bound on `slope_at` ALONE, and the comparison that produces it drives both sides
+from the SAME `structural_m`** -- the Python surface's, handed to the engine as a callable.
+That is not a convenience. Driving the engine's `slope_at` with the PORT'S own elevation
+field instead moves the answer by up to 7.968304e-11 relative, a factor of 3.46e5 over this
+bound -- five orders of magnitude, because the ported elevation itself differs by up to
+3.07e-12 m. That drift belongs to `shelf.rs` and `features.rs`. Measuring both ports at
+once measures their sum and can attribute it to neither, so this bound is never quoted for
+a comparison that crosses the elevation-field boundary, and no test below does.
+
+Measured, both sides on the Python field:
+
+    pinnacle 2-D grid, +-140 m       3,721 pts   4.667 m/step   1 ULP, rel 2.212201e-16
+    open-water 2-D grid              961 pts     6000x2000 m    1 ULP, rel 2.136838e-16
+
+**HOST-CONDITIONAL.** One ULP holds only because `local_to_sphere` agreed bit-for-bit at
+every measured point on this host, so none of the drift comes from the probe positions.
+Nudge a single probe coordinate by one ULP and the answer moves by 3.167834e-09 relative --
+seven orders above this bound. A host where that stops being true needs the bound
+RE-MEASURED, never widened: widening hides exactly the divergence the bound exists to
+detect.
+"""
+
+SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS = 6.6e-16
+"""
+`Substrate.at`/`dominant_at` when `slope` is left to be derived -- ABSOLUTE, on a fraction
+whose whole range is [0, 1], so an absolute bound is the meaningful one.
+
+This is a DIFFERENT quantity from SUBSTRATE_SLOPE_DRIFT_REL and gets its own name and its
+own measurement, because it covers a different span of the stack: `slope_at`'s one ULP is
+here amplified through `natural`'s smoothstep and then through however many blends the
+placed features contribute. The elevation field is still the Python's on both sides.
+
+Measured worst absolute divergence in any one of the three fractions:
+
+    pinnacle 2-D grid    3,721 pts   4.667 m/step   3.330669e-16   (16 ULP, rel 1.938755e-15)
+    open-water 2-D grid    961 pts   6000x2000 m    1.110223e-16   ( 4 ULP, rel 6.592115e-16)
+
+**Headroom 1.98x** over the legitimate 3.330669e-16, deliberately about two rather than
+about a hundred, and the test asserts the measurement lands in [bound/2, bound] rather than
+merely under it -- a test that only checks a ceiling ratchets loose for free and passes
+more comfortably as the code degrades.
+
+Zero dominant flips over both corpora in both supply modes. The word is what maritime
+consumes, and no tolerance could absorb a flip in it.
+"""
+
+SUBSTRATE_GUARD_WORST_ABS = 2.220446049250313e-16
+"""
+How far `blended_towards(..., 0.0)` moves a composition -- what the `weight > 0.0` guard in
+`at` exists to prevent. **ABSOLUTE, not relative**, which matters because it sits a hair
+above SUBSTRATE_SLOPE_DRIFT_REL's measured 2.212201e-16 and reads like the same kind of
+quantity. It is not. The worst RELATIVE shift is 1.249555e-15, 5.63x larger, and the worst
+distance is 11 ULP, not 1. (The absolute figure is exactly one machine epsilon,
+2.220446049250313e-16, which is why it is written out in full rather than rounded -- the
+assertion below is on bits.)
+
+Blending at weight exactly zero is not the identity because `blended_towards` re-enters
+`Composition.__init__`, and the renormalising division there moves fractions whose total is
+not exactly 1.0 (an exhaustive sweep of `natural`'s domain puts that total as low as two
+ULP below one).
+
+**THE RATE IS A PROPERTY OF THE SAMPLING CONVENTION AND MEANS NOTHING WITHOUT IT: name the
+FRAME, the STEP and the SPAN, all three.** Over the demonstration coast's own frame --
+`Coast.at(offshore_m, along_m)`, centred on the anchor:
+
+    61x61, 1,500 m per step  (span +-45,000 m)    67/3,721 = 1.80%
+    61x61, span +-1,500 m    (50 m per step)     185/3,721 = 4.97%
+
+Using `TangentFrame.at(region.origin)` instead of the coast frame moves the first of those
+to 62/3,721 = 1.67%, and seven further conventions a reviewer tried give counts from 18 to
+159. The CONCLUSION is robust under every one of them -- the guard is bit-observable, and
+it must be transcribed rather than simplified away -- but the RATE is not a property of the
+module. This is the third narrowing this one number has needed.
+"""
+
+SUBSTRATE_CLAMP_SATURATION = 8.0
+"""
+How far past `ROCK_SLOPE` the steepest ground in the corpus reaches. **The slope clamp is
+not dead code, and only a 2-D scan of a small steep feature shows that.** On the demo
+world's 140 m pinnacle at `Coast.at(8_000, 6_500)`:
+
+    61x61 grid, +-140 m, 4.667 m/step     0.3252142109022925   8.1304 x ROCK_SLOPE
+    61-point E-W line through it          0.3042234484625276   7.6056 x
+    61-point N-S line through it          0.3014451002052766   7.5361 x
+    61-point diagonal line                0.3119559807440774   7.7990 x
+    400-point planetary scatter           0.0143501550330470   0.3588 x  -- reads DEAD
+
+Resolution does not rescue a line; a second dimension does, because a feature's weight is a
+product of two `bump` factors and the steepest ground is off-axis.
+"""
+
+
+_SUBSTRATE_DEMO = []
+
+
+def _demo_world():
+    """The demonstration coast and a `Surface` carrying it.
+
+    Built once for the whole section and reused. Calibrating `Continentality` is a
+    4,000-sample sort, and every test here would otherwise pay for it again; the world is
+    read-only to all of them.
+    """
+    if not _SUBSTRATE_DEMO:
+        region = py_demo_region()
+        _SUBSTRATE_DEMO.append((region, PySurface(PY_WORLD_SEED, features=region.features)))
+    return _SUBSTRATE_DEMO[0]
+
+
+def _engine_field(surface):
+    """`surface.structural_m` in the flat `(x, y, z)` shape the binding calls back through.
+
+    **The Python surface's own field, handed to the engine.** See
+    SUBSTRATE_SLOPE_DRIFT_REL for why substituting the port's would make every number in
+    this section unattributable.
+    """
+    return lambda x, y, z: surface.structural_m(SpherePoint(Vec3(x, y, z)))
+
+
+def _engine_tectonic(surface):
+    return lambda x, y, z: surface.tectonics.offset_m(SpherePoint(Vec3(x, y, z)))
+
+
+def _substrate_grid(coast, offshore_m, along_m, half_m, side):
+    """A square 2-D grid in the coast's own frame, centred on a point offshore.
+
+    Returns `(points, step_m)`. The step is returned rather than assumed because every
+    saturation figure in this section is a property of it.
+    """
+    step = 2.0 * half_m / (side - 1)
+    points = [
+        coast.at(offshore_m - half_m + column * step, along_m - half_m + row * step)
+        for row in range(side)
+        for column in range(side)
+    ]
+    return points, step
+
+
+PINNACLE_OFFSHORE_M, PINNACLE_ALONG_M = 8000.0, 6500.0
+"""`Coast.at` coordinates of the demo world's 140 m pinnacle -- a 70x70 m RAISE to -3.5 m
+standing in about 25 m of water. The small steep feature every corpus here needs."""
+
+
+def _open_water_points(coast):
+    """Gentle ground 20-200 km offshore, 31x31 at 6,000 x 2,000 m per step."""
+    return [
+        coast.at(20000.0 + column * 6000.0, -30000.0 + row * 2000.0)
+        for row in range(31)
+        for column in range(31)
+    ]
+
+
+class _RecordingHost:
+    """
+    A `Substrate` host that answers analytically and writes down which member was asked.
+
+    Two things it is for. The resolution order of `at`'s three optionals is observable only
+    through WHICH host call each missing one triggers, so the recorder is the instrument
+    that makes it observable -- from Python, across the FFI, rather than only from inside
+    the crate. And an analytic field costs nothing, so the order tests do not have to build
+    a planet to ask a question that has nothing to do with one.
+    """
+
+    def __init__(self, features, radius_m=EARTH_RADIUS_M):
+        self.radius_m = radius_m
+        self.features = features if isinstance(features, PyFeatures) \
+            else PyFeatures(features, radius_m)
+        self.calls = []
+        host = self
+
+        class _Tectonics:
+            def offset_m(self, point):
+                host.calls.append("tectonic")
+                return 140.0 * point.vector.y
+
+        self.tectonics = _Tectonics()
+
+    def structural_m(self, point):
+        self.calls.append("structural")
+        # A tilted, gently curved bottom: enough slope to be non-zero everywhere, no
+        # transcendental of its own, so nothing the host adds can drift.
+        v = point.vector
+        return -60.0 + 900.0 * v.z + 300.0 * v.x * v.y
+
+
+def _engine_at(host, point, **known):
+    v = point.vector
+    return engine.substrate_at(
+        [_feature_tuple(f) for f in host.features], host.radius_m, v.x, v.y, v.z,
+        _engine_field(host), _engine_tectonic(host), **known,
+    )
+
+
+def _engine_dominant_at(host, point, **known):
+    v = point.vector
+    return engine.substrate_dominant_at(
+        [_feature_tuple(f) for f in host.features], host.radius_m, v.x, v.y, v.z,
+        _engine_field(host), _engine_tectonic(host), **known,
+    )
+
+
+def test_substrate_constants_agree():
+    """The three names and the five numbers, so everything below compares like with like
+    rather than each language against its own copy of the literals. STRICT: no path."""
+    (sand, mud, rock, rock_slope, rock_tectonic_m, swept_m, settled_m, baseline_m,
+     drift_rel) = engine.substrate_constants()
+    assert (sand, mud, rock) == (PY_SAND, PY_MUD, PY_ROCK)
+    assert same(rock_slope, PY_ROCK_SLOPE)
+    assert same(rock_tectonic_m, PY_ROCK_TECTONIC_M)
+    assert same(swept_m, PY_SWEPT_M)
+    assert same(settled_m, PY_SETTLED_M)
+    assert same(baseline_m, PY_SLOPE_BASELINE_M)
+    assert same(drift_rel, SUBSTRATE_SLOPE_DRIFT_REL), (
+        "the bound this section applies is no longer the bound the engine documents; one "
+        "of the two moved, and they have to be re-measured together", drift_rel,
+    )
+
+
+def test_substrate_smooth_agrees_bit_for_bit():
+    """`substrate.py`'s `_smooth`, reached through the crate's `pub use` of `detail::smooth`
+    rather than through a fourth transcription of it. STRICT: two comparisons and a cubic.
+
+    Both clamps are probed from both sides, because the reuse is only safe while the two
+    Python modules' `_smooth` are character-for-character identical, and the clamps are
+    where a divergence would first show.
+    """
+    values = [
+        -1e300, -1.0, -1e-300, -0.0, 0.0, 1e-300, 0.25, 0.5, 0.75,
+        1.0 - 2.220446049250313e-16, 1.0, 1.0 + 2.220446049250313e-16, 1.5, 1e300,
+    ]
+    values += [i / 997.0 * 1.4 - 0.2 for i in range(998)]
+    for fraction in values:
+        assert same(py_substrate_smooth(fraction), engine.substrate_smooth(fraction)), fraction
+        # And the re-export really is the same function `detail_smooth` exposes.
+        assert same(engine.substrate_smooth(fraction), engine.detail_smooth(fraction)), fraction
+
+
+_COMPOSITION_TRIPLES = [
+    (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+    (1.0, 1.0, 1.0), (0.25, 0.25, 0.5), (0.5, 0.25, 0.25), (0.25, 0.5, 0.25),
+    (0.1, 0.2, 0.7), (1e-18, 1.0, 1e-18), (1e18, 1.0, 1.0),
+    (0.3333333333333333, 0.3333333333333333, 0.3333333333333333),
+    (0.0, 0.0, 0.0), (5e-324, 0.0, 0.0), (0.0, 5e-324, 0.0), (0.0, 0.0, 5e-324),
+    (-1.0, 0.5, 0.5), (-1.0, -1.0, -1.0), (1.0, -1.0, 0.0), (-0.0, -0.0, -0.0),
+    (0.7, -0.7, 0.4),
+]
+"""Pure corners, ties, three-way ties, wildly unequal magnitudes, and the whole
+neighbourhood of the `total <= 0.0` boundary from both sides."""
+
+
+def test_substrate_composition_normalises_and_answers_bit_for_bit():
+    """`Composition.__init__`, `.dominant` and `.holding` off ONE constructed instance.
+    STRICT: a sum, three divisions, two multiplies and three comparisons.
+
+    `dominant` is compared as the WORD it is. There is no tolerance that could absorb a
+    flip in it, which is why it is checked at every tie the triples list carries.
+    """
+    for sand, mud, rock in _COMPOSITION_TRIPLES:
+        want = PyComposition(sand, mud, rock)
+        got_sand, got_mud, got_rock, got_dominant, got_holding = \
+            engine.substrate_composition(sand, mud, rock)
+        assert same(want.sand, got_sand), (sand, mud, rock)
+        assert same(want.mud, got_mud), (sand, mud, rock)
+        assert same(want.rock, got_rock), (sand, mud, rock)
+        assert want.dominant == got_dominant, (sand, mud, rock, want.dominant, got_dominant)
+        assert same(want.holding(), got_holding), (sand, mud, rock)
+
+
+def test_composition_total_guard_fires_through_the_public_constructor_and_does_not_converge():
+    """
+    `total <= 0.0` is a real branch, and it is a CLIFF rather than a limit.
+
+    One ULP above zero the result points whichever way the triple points; AT zero it snaps
+    to pure rock, because the Python assigns `0.0, 0.0, 1.0, 1.0` in that order. So the
+    answer at the boundary is not the limit of the answers approaching it, and a port that
+    "smoothed" the guard would be wrong in a way no nearby sample could reveal.
+
+    Reached through the public constructor, which is the only way a caller has -- `PURE`'s
+    own three entries go through it too.
+    """
+    for triple in [(0.0, 0.0, 0.0), (-0.0, -0.0, -0.0), (-1.0, -1.0, -1.0),
+                   (1.0, -1.0, 0.0), (-2.0, 1.0, 1.0)]:
+        want = PyComposition(*triple)
+        assert (want.sand, want.mud, want.rock) == (0.0, 0.0, 1.0), triple
+        assert engine.substrate_composition(*triple)[:3] == (0.0, 0.0, 1.0), triple
+        assert engine.substrate_composition(*triple)[3] == PY_ROCK
+
+    # One ULP above zero in each direction: a value, not an absence, and it does not point
+    # at rock unless the triple did.
+    tiny = 5e-324
+    for triple, expected in [((tiny, 0.0, 0.0), PY_SAND),
+                             ((0.0, tiny, 0.0), PY_MUD),
+                             ((0.0, 0.0, tiny), PY_ROCK)]:
+        want = PyComposition(*triple)
+        got = engine.substrate_composition(*triple)
+        assert want.dominant == expected and got[3] == expected, triple
+        assert (same(want.sand, got[0]) and same(want.mud, got[1]) and same(want.rock, got[2]))
+    assert PyComposition(tiny, 0.0, 0.0).dominant != PyComposition(0.0, 0.0, 0.0).dominant, (
+        "the guard converges after all -- one ULP either side of the boundary now gives "
+        "the same word, so this test can no longer show the discontinuity it is named for"
+    )
+
+
+def test_substrate_dominant_at_and_near_ties_in_all_three_precedence_orders():
+    """
+    ROCK > SAND > MUD, each an independent comparison, and each probed AT the tie and one
+    ULP either side of it.
+
+    The output is a WORD. No tolerance anywhere could absorb a flip across one of these
+    cliffs, so the only thing that can hold the precedence is a test that stands on it.
+    """
+    def nudge(value, up):
+        return math.nextafter(value, math.inf if up else -math.inf)
+
+    cases = [
+        # (sand, mud, rock, expected) -- ties first.
+        (1.0, 1.0, 1.0, PY_ROCK),        # three-way tie -> rock
+        (1.0, 0.5, 1.0, PY_ROCK),        # rock/sand tie, mud below -> rock
+        (0.5, 1.0, 1.0, PY_ROCK),        # rock/mud tie, sand below -> rock
+        (1.0, 1.0, 0.5, PY_SAND),        # sand/mud tie, rock below -> sand
+        (1.0, 0.5, 0.5, PY_SAND),
+        (0.5, 1.0, 0.5, PY_MUD),
+        (0.5, 0.5, 1.0, PY_ROCK),
+    ]
+    for sand, mud, rock, expected in cases:
+        assert PyComposition(sand, mud, rock).dominant == expected, (sand, mud, rock)
+        assert engine.substrate_composition(sand, mud, rock)[3] == expected, (sand, mud, rock)
+
+    # One ULP off each tie, both ways, comparing the two languages rather than an
+    # expectation -- what matters is that they step off the cliff together.
+    for sand, mud, rock, _ in cases:
+        for index in range(3):
+            for up in (True, False):
+                triple = [sand, mud, rock]
+                triple[index] = nudge(triple[index], up)
+                want = PyComposition(*triple).dominant
+                got = engine.substrate_composition(*triple)[3]
+                assert want == got, (triple, want, got)
+
+    # **A ONE-ULP NUDGE OFF A TIE DOES NOT ALWAYS CHANGE THE WORD, and that is the
+    # normalising division talking rather than the comparison.** `Composition.__init__`
+    # divides all three by their total, and the total moves with the nudge, so at
+    # `(1.0, 1.0, nextafter(1.0, -inf))` the three quotients come back exactly equal and
+    # the answer is still ROCK. So the precedence chain is walked with the SMALLEST nudge
+    # that actually survives normalisation, found rather than assumed -- and the engine is
+    # required to step off the cliff at exactly the same place, not merely somewhere near.
+    def smallest_surviving(base, index, expected):
+        value = base[index]
+        for _ in range(80):
+            value = nudge(value, False)
+            triple = list(base)
+            triple[index] = value
+            if PyComposition(*triple).dominant == expected:
+                return tuple(triple)
+        raise AssertionError(("no nudge within 80 ULP changed the word", base, index))
+
+    down_rock = smallest_surviving((1.0, 1.0, 1.0), 2, PY_SAND)
+    assert engine.substrate_composition(*down_rock)[3] == PY_SAND, down_rock
+    # One ULP back the other way is still ROCK on BOTH sides -- the cliff is in the same
+    # place, not merely crossed somewhere.
+    just_above = list(down_rock)
+    just_above[2] = nudge(just_above[2], True)
+    assert PyComposition(*just_above).dominant == PY_ROCK, just_above
+    assert engine.substrate_composition(*just_above)[3] == PY_ROCK, just_above
+
+    down_both = smallest_surviving(down_rock, 0, PY_MUD)
+    assert engine.substrate_composition(*down_both)[3] == PY_MUD, down_both
+    just_above = list(down_both)
+    just_above[0] = nudge(just_above[0], True)
+    assert PyComposition(*just_above).dominant == engine.substrate_composition(*just_above)[3]
+
+
+def test_substrate_pure_table_agrees_and_misses_the_same_words():
+    """`PURE` holds exactly three keys, and the engine's `pure` misses on exactly the words
+    Python's dict lookup raises on -- the empty string among them."""
+    for name in (PY_SAND, PY_MUD, PY_ROCK):
+        want = PY_PURE[name]
+        got = engine.substrate_pure(name)
+        assert got is not None, name
+        assert same(want.sand, got[0]) and same(want.mud, got[1]) and same(want.rock, got[2])
+    for name in ("", " ", "Rock", "ROCK", "gravel", "shell", "sand ", "none"):
+        assert name not in PY_PURE, name
+        assert engine.substrate_pure(name) is None, name
+
+
+def test_substrate_blended_towards_agrees_bit_for_bit_including_weight_zero():
+    """
+    `blended_towards` over weights spanning and overshooting [0, 1]. STRICT: multiplies,
+    adds, and `Composition.__init__` again.
+
+    Weight exactly `0.0` and one ULP above it are both in the list, and they are not the
+    same case: at exactly zero the blend is arithmetically the identity but the
+    renormalisation inside `Composition.__init__` is not, which is the whole reason `at`
+    guards the call rather than making it unconditionally.
+
+    **The receiver and the target cross as ALREADY-NORMALISED fields**, because that is
+    what they are in Python -- two constructed instances, each divided by its own total
+    once. A binding that rebuilt them from the raw triple would normalise a second time,
+    and since a real composition's fractions do not sum to exactly 1.0 the second division
+    moves them. The first version of this binding did exactly that and this test caught it,
+    at `0.2781153660496104` against `0.27811536604961046`.
+    """
+    weights = [
+        -0.5, -5e-324, -0.0, 0.0, 5e-324, 1e-16, 1e-8, 0.25, 0.5, 0.75,
+        1.0 - 2.220446049250313e-16, 1.0, 1.0 + 2.220446049250313e-16, 1.5, 2.0,
+    ]
+    for sand, mud, rock in _COMPOSITION_TRIPLES:
+        base = PyComposition(sand, mud, rock)
+        for name in (PY_SAND, PY_MUD, PY_ROCK):
+            other = PY_PURE[name]
+            for weight in weights:
+                want = base.blended_towards(other, weight)
+                got = engine.substrate_blended_towards(
+                    base.sand, base.mud, base.rock,
+                    other.sand, other.mud, other.rock, weight,
+                )
+                assert same(want.sand, got[0]), (sand, mud, rock, name, weight)
+                assert same(want.mud, got[1]), (sand, mud, rock, name, weight)
+                assert same(want.rock, got[2]), (sand, mud, rock, name, weight)
+
+
+def test_the_weight_zero_guard_is_bit_observable_and_its_rate_needs_a_named_convention():
+    """
+    `at`'s `if weight > 0.0` is not a shortcut, and the guard's shift is measurable.
+
+    **The figure to quote carefully.** The worst shift is ABSOLUTE, 2.220446e-16, and it
+    sits a hair above SUBSTRATE_SLOPE_DRIFT_REL's measured 2.212201e-16 -- close enough to
+    read as the same kind of quantity, which it is not. The worst RELATIVE shift is
+    1.249555e-15, 5.63x larger, and the worst distance is 11 ULP, not 1.
+
+    **And the RATE is a property of the sampling convention, not of the module**, so the
+    frame, the step and the span are all three named here and in
+    SUBSTRATE_GUARD_WORST_ABS. Under the demonstration coast's own frame, 61x61 at 1,500 m
+    per step, it is 67/3,721 = 1.80%; the same 3,721 points read as a +-1,500 m span give
+    185, and a `TangentFrame.at(origin)` grid gives different numbers again. What is robust
+    under every convention is that the count is not zero.
+    """
+    region, world = _demo_world()
+    coast, placed = region.coast, world.features.placed
+    side, half_m = 61, 45000.0
+    points, step_m = _substrate_grid(coast, 0.0, 0.0, half_m, side)
+    assert len(points) == side * side == 3721
+    assert step_m == 1500.0, step_m
+
+    shifted_points = 0
+    worst_abs = 0.0
+    worst_rel = 0.0
+    worst_ulp = 0
+    flips = 0
+    for point in points:
+        composition = world.substrate.at(point)
+        walked = composition
+        moved = False
+        for one in placed:
+            declared = one.feature.substrate
+            if declared is None:
+                continue
+            if one.weight_at(point) == 0.0:
+                blended = walked.blended_towards(PY_PURE[declared], 0.0)
+                # The engine agrees about the shift itself, bit for bit.
+                got = engine.substrate_blended_towards(
+                    walked.sand, walked.mud, walked.rock,
+                    PY_PURE[declared].sand, PY_PURE[declared].mud, PY_PURE[declared].rock,
+                    0.0,
+                )
+                assert same(blended.sand, got[0]) and same(blended.mud, got[1]) \
+                    and same(blended.rock, got[2])
+                if (bits(blended.sand), bits(blended.mud), bits(blended.rock)) != \
+                        (bits(walked.sand), bits(walked.mud), bits(walked.rock)):
+                    moved = True
+                walked = blended
+        if moved:
+            shifted_points += 1
+            for a, b in zip((composition.sand, composition.mud, composition.rock),
+                            (walked.sand, walked.mud, walked.rock)):
+                worst_abs = max(worst_abs, abs(a - b))
+                if max(abs(a), abs(b)) > 0.0:
+                    worst_rel = max(worst_rel, abs(a - b) / max(abs(a), abs(b)))
+                worst_ulp = max(worst_ulp, abs(bits(a) - bits(b)))
+            if walked.dominant != composition.dominant:
+                flips += 1
+
+    assert shifted_points > 0, (
+        "no point in this population has a placed feature at weight exactly 0.0 whose "
+        "blend would shift the composition, so this corpus can no longer show that the "
+        "guard is bit-observable -- re-site it rather than dropping the assertion"
+    )
+    assert shifted_points == 67, (
+        "the guard rate moved under a convention that is fully pinned here (Coast.at "
+        "frame, 61x61, 1,500 m per step, span +-45,000 m about the anchor)", shifted_points,
+    )
+    assert same(worst_abs, SUBSTRATE_GUARD_WORST_ABS), (worst_abs, SUBSTRATE_GUARD_WORST_ABS)
+    assert abs(worst_rel - 1.249555e-15) < 1e-20, worst_rel
+    assert worst_rel > worst_abs * 5.0, (
+        "the relative shift is no longer several times the absolute one, which was the "
+        "whole reason the two figures must not be quoted for each other", worst_abs, worst_rel,
+    )
+    assert worst_ulp == 11, ("worst distance is 11 ULP, not 1", worst_ulp)
+    assert flips == 0, ("a guard-sized shift moved the one-word answer", flips)
+
+
+def test_substrate_natural_agrees_bit_for_bit_over_both_corpora():
+    """
+    `natural` is STRICT -- `_smooth`, a two-argument `max` and arithmetic, zero
+    transcendentals -- so every fraction is compared as raw bits with no tolerance at all.
+
+    Driven from the Python surface's own elevation, slope and tectonics at every point of
+    both corpora, so the arguments reaching the two `natural`s are identical and only
+    `natural` itself is under test.
+    """
+    region, world = _demo_world()
+    coast = region.coast
+    pinnacle, _ = _substrate_grid(
+        coast, PINNACLE_OFFSHORE_M, PINNACLE_ALONG_M, 140.0, 61,
+    )
+    for label, points in (("pinnacle", pinnacle), ("open water", _open_water_points(coast))):
+        for point in points:
+            elevation_m = world.structural_m(point)
+            tectonic_m = world.tectonics.offset_m(point)
+            slope = world.substrate.slope_at(point)
+            want = world.substrate.natural(elevation_m, slope, tectonic_m)
+            got = engine.substrate_natural(elevation_m, slope, tectonic_m)
+            assert same(want.sand, got[0]), (label, elevation_m, slope, tectonic_m)
+            assert same(want.mud, got[1]), (label, elevation_m, slope, tectonic_m)
+            assert same(want.rock, got[2]), (label, elevation_m, slope, tectonic_m)
+
+
+def test_substrate_natural_slope_clamp_is_reached_only_by_a_two_dimensional_scan():
+    """
+    The slope clamp is not dead code, and the corpus shape is what decides whether anybody
+    can tell. See SUBSTRATE_CLAMP_SATURATION for the table.
+
+    A LINE through the pinnacle tops out below 8x at any density and any direction, because
+    a feature's weight is a product of two `bump` factors and the steepest ground is
+    off-axis. A planetary scatter never approaches the clamp at all and would report it
+    dead. Only the grid saturates it.
+    """
+    region, world = _demo_world()
+    coast = region.coast
+    grid, step_m = _substrate_grid(
+        coast, PINNACLE_OFFSHORE_M, PINNACLE_ALONG_M, 140.0, 61,
+    )
+    assert len(grid) == 3721 and abs(step_m - 4.666666666666667) < 1e-12
+
+    grid_worst = max(world.substrate.slope_at(point) for point in grid)
+    assert grid_worst / PY_ROCK_SLOPE > SUBSTRATE_CLAMP_SATURATION, (
+        "the 2-D scan no longer saturates the slope clamp, so nothing in this suite "
+        "exercises it", grid_worst, grid_worst / PY_ROCK_SLOPE,
+    )
+
+    span = 280.0
+    lines = {
+        "east-west": [coast.at(PINNACLE_OFFSHORE_M - 140.0 + i * span / 60.0,
+                               PINNACLE_ALONG_M) for i in range(61)],
+        "north-south": [coast.at(PINNACLE_OFFSHORE_M,
+                                 PINNACLE_ALONG_M - 140.0 + i * span / 60.0)
+                        for i in range(61)],
+        "diagonal": [coast.at(PINNACLE_OFFSHORE_M - 140.0 + i * span / 60.0,
+                              PINNACLE_ALONG_M - 140.0 + i * span / 60.0)
+                     for i in range(61)],
+    }
+    for name, points in lines.items():
+        line_worst = max(world.substrate.slope_at(point) for point in points)
+        assert line_worst < grid_worst, (name, line_worst, grid_worst)
+        assert line_worst / PY_ROCK_SLOPE < SUBSTRATE_CLAMP_SATURATION, (name, line_worst)
+
+    # And at the saturated point the two languages agree on the composition, bit for bit.
+    steepest_point = max(grid, key=world.substrate.slope_at)
+    elevation_m = world.structural_m(steepest_point)
+    tectonic_m = world.tectonics.offset_m(steepest_point)
+    want = world.substrate.natural(elevation_m, grid_worst, tectonic_m)
+    got = engine.substrate_natural(elevation_m, grid_worst, tectonic_m)
+    assert want.dominant == PY_ROCK
+    assert same(want.sand, got[0]) and same(want.mud, got[1]) and same(want.rock, got[2])
+
+
+def test_substrate_slope_at_agrees_within_its_own_measured_bound():
+    """
+    `slope_at` is the ONE bounded function in this module, and this is the comparison the
+    bound was measured on: both sides driven by the SAME `structural_m` -- the Python
+    surface's, handed to the engine as a callable -- so nothing but `slope_at` itself can
+    differ. See SUBSTRATE_SLOPE_DRIFT_REL.
+
+    The assertion is two-sided. Every measured worst must land in [bound/2, bound], not
+    merely under it: a test that only checks a ceiling ratchets loose for free and would
+    pass more comfortably as the code degraded.
+    """
+    region, world = _demo_world()
+    coast = region.coast
+    field = _engine_field(world)
+    pinnacle, _ = _substrate_grid(
+        coast, PINNACLE_OFFSHORE_M, PINNACLE_ALONG_M, 140.0, 61,
+    )
+    populations = {
+        "pinnacle 2-D grid, 3,721 pts at 4.667 m/step": pinnacle,
+        "open water 2-D grid, 961 pts at 6,000 x 2,000 m": _open_water_points(coast),
+    }
+    for label, points in populations.items():
+        worst_rel = 0.0
+        worst_ulp = 0
+        for point in points:
+            v = point.vector
+            want = world.substrate.slope_at(point)
+            got = engine.substrate_slope_at(
+                EARTH_RADIUS_M, v.x, v.y, v.z, PY_SLOPE_BASELINE_M, field,
+            )
+            assert abs(want - got) <= abs(want) * SUBSTRATE_SLOPE_DRIFT_REL, (
+                label, v.x, v.y, v.z, want, got,
+            )
+            if want != got:
+                worst_rel = max(worst_rel, abs(want - got) / abs(want))
+                worst_ulp = max(worst_ulp, abs(bits(want) - bits(got)))
+        assert worst_ulp == 1, (
+            "the drift is no longer one ULP of the final hypot. A wider distance means "
+            "local_to_sphere has stopped agreeing bit-for-bit, and this bound must be "
+            "RE-MEASURED on this host, never widened -- widening hides exactly the "
+            "divergence it exists to detect", label, worst_ulp,
+        )
+        assert SUBSTRATE_SLOPE_DRIFT_REL * 0.5 <= worst_rel <= SUBSTRATE_SLOPE_DRIFT_REL, (
+            "the measured worst no longer sits in the top half of its own bound, so the "
+            "bound has drifted loose and admits more than it was sized for",
+            label, worst_rel, SUBSTRATE_SLOPE_DRIFT_REL,
+        )
+
+    # The baseline is an argument, not a constant, and a wider one is a different answer.
+    probe = coast.at(PINNACLE_OFFSHORE_M + 40.0, PINNACLE_ALONG_M - 25.0)
+    v = probe.vector
+    for baseline_m in (6.0, 60.0, 600.0, 2000.0):
+        want = world.substrate.slope_at(probe, baseline_m)
+        got = engine.substrate_slope_at(EARTH_RADIUS_M, v.x, v.y, v.z, baseline_m, field)
+        assert abs(want - got) <= abs(want) * SUBSTRATE_SLOPE_DRIFT_REL, (baseline_m, want, got)
+    assert world.substrate.slope_at(probe, 6.0) != world.substrate.slope_at(probe, 600.0), (
+        "the baseline no longer changes the answer, so passing it proves nothing"
+    )
+
+
+def test_substrate_at_is_strict_when_every_optional_is_supplied():
+    """
+    With `elevation_m`, `slope` and `tectonic_m` all handed in, `at` reaches no
+    transcendental of its own -- only `natural`, `Placed.weight_at` and `blended_towards`.
+
+    **And it comes out bit-identical over both corpora, which is a finding rather than an
+    assumption.** `weight_at` IS bounded (`atan2` and `hypot` inside `sphere_to_local`), so
+    a tolerance would have been defensible here; over 4,682 points across the pinnacle and
+    the open water, against all 25 placed features of the demo coast, the measured
+    divergence is exactly zero in every one of the three fractions. So this asserts raw
+    bits. `features.rs`'s own FEATURES_WEIGHT_MAX_ABS is 2.2e-14 and is NOT borrowed here:
+    it is sized for a 250:1 dredged channel probed at its own support edge, which is
+    nothing this corpus reaches, and importing it would let a real defect sit green.
+
+    If this ever needs a tolerance, that is a finding to report, not a bound to add.
+    """
+    region, world = _demo_world()
+    coast = region.coast
+    tuples = [_feature_tuple(f) for f in world.features]
+    field, tectonic = _engine_field(world), _engine_tectonic(world)
+    pinnacle, _ = _substrate_grid(
+        coast, PINNACLE_OFFSHORE_M, PINNACLE_ALONG_M, 140.0, 61,
+    )
+    checked = 0
+    for label, points in (("pinnacle", pinnacle),
+                          ("open water", _open_water_points(coast))):
+        for point in points:
+            v = point.vector
+            known = dict(
+                elevation_m=world.structural_m(point),
+                slope=world.substrate.slope_at(point),
+                tectonic_m=world.tectonics.offset_m(point),
+            )
+            want = world.substrate.at(point, **known)
+            got = engine.substrate_at(
+                tuples, EARTH_RADIUS_M, v.x, v.y, v.z, field, tectonic, **known,
+            )
+            assert same(want.sand, got[0]), (label, v, want.sand, got[0])
+            assert same(want.mud, got[1]), (label, v, want.mud, got[1])
+            assert same(want.rock, got[2]), (label, v, want.rock, got[2])
+            assert want.dominant == engine.substrate_dominant_at(
+                tuples, EARTH_RADIUS_M, v.x, v.y, v.z, field, tectonic, **known,
+            ), (label, v)
+            checked += 1
+    assert checked == 3721 + 961
+
+
+def test_substrate_at_with_a_derived_slope_stays_inside_its_own_bound():
+    """
+    The same two corpora with every optional left `None`, so `slope_at` runs inside `at`
+    and its one ULP is amplified through `natural`'s smoothstep and the blends.
+
+    Bounded by SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS, which is measured for THIS comparison
+    and is a different quantity from SUBSTRATE_SLOPE_DRIFT_REL -- absolute rather than
+    relative, and covering a longer span of the stack. Two-sided, so a later widening
+    fails rather than passing.
+    """
+    region, world = _demo_world()
+    coast = region.coast
+    tuples = [_feature_tuple(f) for f in world.features]
+    field, tectonic = _engine_field(world), _engine_tectonic(world)
+    pinnacle, _ = _substrate_grid(
+        coast, PINNACLE_OFFSHORE_M, PINNACLE_ALONG_M, 140.0, 61,
+    )
+    overall_worst = 0.0
+    for label, points in (("pinnacle", pinnacle),
+                          ("open water", _open_water_points(coast))):
+        worst = 0.0
+        flips = 0
+        for point in points:
+            v = point.vector
+            want = world.substrate.at(point)
+            got = engine.substrate_at(tuples, EARTH_RADIUS_M, v.x, v.y, v.z, field, tectonic)
+            for a, b in zip((want.sand, want.mud, want.rock), got):
+                assert abs(a - b) <= SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS, (label, v, a, b)
+                worst = max(worst, abs(a - b))
+            if want.dominant != engine.substrate_dominant_at(
+                tuples, EARTH_RADIUS_M, v.x, v.y, v.z, field, tectonic,
+            ):
+                flips += 1
+        assert flips == 0, (
+            "the one-word answer flipped, which no tolerance can absorb because the "
+            "output is a word", label, flips,
+        )
+        overall_worst = max(overall_worst, worst)
+    assert SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS * 0.5 <= overall_worst \
+        <= SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS, (
+        "the measured worst no longer sits in the top half of its own bound", overall_worst,
+    )
+
+
+def test_substrate_at_maps_its_keywords_by_name_not_by_position():
+    """
+    **THE LIVE TRAP IN THIS BINDING.** `substrate.py` declares `at(point, elevation_m=None,
+    slope=None, tectonic_m=None)`; `substrate::at` takes `elevation_m, tectonic_m, slope`,
+    in the order the body RESOLVES them. All three are `Option<f64>`, so a binding that
+    forwarded its arguments positionally would compile, type-check and be silently wrong --
+    feeding the slope in as tectonic metres and the tectonic metres in as a dimensionless
+    slope.
+
+    Nothing catches that but a test. These probes are chosen so a swap changes the answer
+    without either arm saturating a clamp -- a saturating case would give 1.0 both ways and
+    prove nothing -- and the last of them flips the one-word answer outright.
+
+    Verified against the mutation: swapping the two arguments at the engine call site in
+    `bindings::substrate_at` fails this test on its first case.
+    """
+    host = _RecordingHost([])
+    point = SpherePoint.from_latlon(11.0, 47.0)
+    v = point.vector
+
+    swap_cases = [
+        # (elevation_m, slope, tectonic_m). tectonic_m is small enough that
+        # `tectonic_m / ROCK_TECTONIC_M` is negligible, and large enough that
+        # `tectonic_m / ROCK_SLOPE` is a real fraction -- so a swap is loud but neither
+        # side of it clamps.
+        (-80.0, 0.020, 0.024),
+        (-45.0, 0.006, 0.012),
+        (-100.0, 0.030, 0.036),
+    ]
+    for elevation_m, slope, tectonic_m in swap_cases:
+        want = PyComposition(*_natural_triple(elevation_m, slope, tectonic_m))
+        swapped = PyComposition(*_natural_triple(elevation_m, tectonic_m, slope))
+        assert not (same(want.sand, swapped.sand) and same(want.rock, swapped.rock)), (
+            "this probe no longer tells a correct mapping from a swapped one",
+            elevation_m, slope, tectonic_m,
+        )
+        got = _engine_at(host, point, elevation_m=elevation_m, slope=slope,
+                         tectonic_m=tectonic_m)
+        assert same(want.sand, got[0]), (elevation_m, slope, tectonic_m, want.sand, got[0])
+        assert same(want.mud, got[1]), (elevation_m, slope, tectonic_m)
+        assert same(want.rock, got[2]), (elevation_m, slope, tectonic_m, want.rock, got[2])
+        assert not same(swapped.rock, got[2]), (
+            "the binding answered what a POSITIONAL forward would have answered -- the "
+            "slope reached the engine as the tectonic contribution",
+            elevation_m, slope, tectonic_m,
+        )
+
+    # And a swap that changes the WORD, which is what maritime consumes.
+    elevation_m, slope, tectonic_m = -80.0, 0.0104, 0.0248
+    assert PyComposition(*_natural_triple(elevation_m, slope, tectonic_m)).dominant == PY_SAND
+    assert PyComposition(*_natural_triple(elevation_m, tectonic_m, slope)).dominant == PY_ROCK
+    assert _engine_dominant_at(
+        host, point, elevation_m=elevation_m, slope=slope, tectonic_m=tectonic_m,
+    ) == PY_SAND
+
+    # The same three values against the live Python, so the expectation is not this test's
+    # own arithmetic.
+    live = PySubstrate(host)
+    for elevation_m, slope, tectonic_m in swap_cases:
+        want = live.at(point, elevation_m=elevation_m, slope=slope, tectonic_m=tectonic_m)
+        got = _engine_at(host, point, elevation_m=elevation_m, slope=slope,
+                         tectonic_m=tectonic_m)
+        assert same(want.sand, got[0]) and same(want.mud, got[1]) and same(want.rock, got[2])
+
+
+def _natural_triple(elevation_m, slope, tectonic_m):
+    """`Substrate.natural`'s three fractions, from the live Python, host-free."""
+    composition = PySubstrate(None).natural(elevation_m, slope, tectonic_m)
+    return composition.sand, composition.mud, composition.rock
+
+
+def test_substrate_at_resolves_elevation_then_tectonic_then_slope():
+    """
+    Each `None` triggers a DIFFERENT host call, so the resolution order is observable
+    across the FFI -- not merely inside the crate, where Task 4 already pins it.
+
+    All three absent gives `[structural, tectonic, structural x4]`: the elevation, then the
+    tectonic offset, then `slope_at`'s own four probes. Every partial combination drops
+    exactly its own call from that sequence, and the ORDER of what remains is the
+    signature. A binding that mapped its keywords positionally would produce a different
+    sequence for two of these eight combinations, and a port that resolved slope before
+    tectonic would produce a different one for all of them.
+    """
+    point = SpherePoint.from_latlon(-19.0, 122.0)
+    for supply in range(8):
+        known = {}
+        if supply & 1:
+            known["elevation_m"] = -70.0
+        if supply & 2:
+            known["tectonic_m"] = 220.0
+        if supply & 4:
+            known["slope"] = 0.011
+
+        expected = []
+        if "elevation_m" not in known:
+            expected.append("structural")
+        if "tectonic_m" not in known:
+            expected.append("tectonic")
+        if "slope" not in known:
+            expected += ["structural"] * 4
+
+        python_host = _RecordingHost([])
+        PySubstrate(python_host).at(point, **known)
+        assert python_host.calls == expected, (known, python_host.calls, expected)
+
+        engine_host = _RecordingHost([])
+        _engine_at(engine_host, point, **known)
+        assert engine_host.calls == python_host.calls, (
+            "the port asked the host for different things, or asked in a different order",
+            known, engine_host.calls, python_host.calls,
+        )
+
+
+def test_substrate_at_treats_a_supplied_zero_as_a_value_not_an_absence():
+    """
+    `0.0` is a value. Elevation `0.0` is the datum, slope `0.0` is dead-flat ground and
+    tectonic `0.0` is ground the plates did nothing to -- and re-deriving any of them would
+    call the host and get a different number.
+
+    Two assertions, because either alone is weak: the answer must match the Python's, AND
+    the host must not be asked for the thing that was supplied. A binding that flattened
+    the sentinel with a falsy test would pass the first and fail the second.
+    """
+    point = SpherePoint.from_latlon(4.0, -63.0)
+    for name in ("elevation_m", "tectonic_m", "slope"):
+        known = {name: 0.0}
+        python_host = _RecordingHost([])
+        want = PySubstrate(python_host).at(point, **known)
+
+        engine_host = _RecordingHost([])
+        got = _engine_at(engine_host, point, **known)
+        assert same(want.sand, got[0]) and same(want.mud, got[1]) and same(want.rock, got[2]), name
+        assert engine_host.calls == python_host.calls, (name, engine_host.calls)
+
+        derived_host = _RecordingHost([])
+        derived = PySubstrate(derived_host).at(point)
+        assert len(derived_host.calls) > len(python_host.calls), (
+            "supplying this optional no longer saves a host call, so this probe cannot "
+            "tell a supplied zero from an absent value", name,
+        )
+        if name != "slope":
+            assert not same(derived.rock, want.rock) or not same(derived.sand, want.sand), (
+                "the host happens to return exactly 0.0 for this member, so supplying "
+                "0.0 is indistinguishable from deriving it and the probe proves nothing",
+                name,
+            )
+
+
+def test_substrate_at_skips_a_feature_that_omits_a_substrate():
+    """
+    `if declared is None: continue` -- a genuine skip, and it is NOT the same branch as a
+    feature that declared a word `PURE` has no entry for.
+
+    **All 25 features on the demo coast declare a substrate**, so a corpus built from that
+    world alone never takes this branch and never exercises either side of the guard. This
+    fixture puts an omitting feature exactly where a declaring one also reaches, so the
+    skip is load-bearing: with it skipped the answer is the ground's own composition
+    blended once, and if it were not skipped there would be no `PURE[None]` to blend
+    towards at all.
+    """
+    at = SpherePoint.from_latlon(-6.0, 88.0)
+    silent = _feature(kind="silent", lat=-6.0, lon=88.0, length_m=4000.0, width_m=4000.0,
+                      substrate=None)
+    stated = _feature(kind="stated", lat=-6.0, lon=88.0, length_m=4000.0, width_m=4000.0,
+                      substrate=PY_MUD)
+    host_both = _RecordingHost([silent, stated])
+    host_stated = _RecordingHost([stated])
+
+    probe = at
+    v = probe.vector
+    assert host_both.features.placed[0].weight_at(probe) > 0.0, (
+        "the omitting feature does not reach this probe, so its skip is never taken here"
+    )
+
+    want_both = PySubstrate(host_both).at(probe)
+    want_stated = PySubstrate(host_stated).at(probe)
+    assert same(want_both.sand, want_stated.sand) and same(want_both.mud, want_stated.mud) \
+        and same(want_both.rock, want_stated.rock), (
+        "the omitting feature changed the answer in the reference, so it is not being "
+        "skipped and this test is testing something else"
+    )
+    got_both = _engine_at(host_both, probe)
+    got_stated = _engine_at(host_stated, probe)
+    assert same(want_both.sand, got_both[0]) and same(want_both.mud, got_both[1]) \
+        and same(want_both.rock, got_both[2])
+    assert got_both == got_stated, (got_both, got_stated)
+
+    # And it is not merely that the answer is unchanged: the declaring feature really is
+    # doing something here, so "unchanged" is a skip rather than a no-op world.
+    host_none = _RecordingHost([silent])
+    bare = _engine_at(host_none, probe)
+    assert bare != got_both, (
+        "the declaring feature has no effect at this probe either, so the two answers "
+        "would agree whatever the skip did", bare, got_both,
+    )
+
+
+def test_substrate_at_refuses_an_empty_string_substrate_on_both_sides():
+    """
+    An empty string is a word `PURE` has no entry for, and it is NOT the `None` sentinel --
+    `test_features_substrate_none_survives_the_crossing_as_none_not_as_empty` already pins
+    that it crosses the FFI distinct from `None`, so a value this port guarantees can reach
+    `at` is a value that makes the Python raise `KeyError`.
+
+    **Both sides must fail.** A silent success on either would be the worst divergence this
+    module could carry, because the two languages would then disagree about whether an
+    answer EXISTS -- not about its last bit. Continuing past the miss (`if let Some(...)`
+    and on to the next feature) would answer where the reference refuses.
+
+    And the refusal is conditional on the weight, exactly as the Python's is: the lookup
+    lives inside `if weight > 0.0`, so an unreachable feature declaring nonsense is not an
+    error on either side.
+    """
+    for declared in ("", " ", "Rock", "gravel"):
+        bad = _feature(kind="bad", lat=30.0, lon=-15.0, length_m=3000.0, width_m=3000.0,
+                       substrate=declared)
+        host = _RecordingHost([bad])
+        probe = SpherePoint.from_latlon(30.0, -15.0)
+        assert host.features.placed[0].weight_at(probe) > 0.0, declared
+
+        with pytest.raises(KeyError):
+            PySubstrate(host).at(probe)
+        with pytest.raises(engine.UnknownSubstrateError) as raised:
+            _engine_at(host, probe)
+        assert issubclass(engine.UnknownSubstrateError, KeyError), (
+            "the port's refusal is no longer catchable as the KeyError the reference "
+            "raises, so a caller handling one would not handle the other"
+        )
+        assert declared in str(raised.value) or repr(declared) in str(raised.value)
+
+        with pytest.raises(KeyError):
+            PySubstrate(host).dominant_at(probe)
+        with pytest.raises(engine.UnknownSubstrateError):
+            _engine_dominant_at(host, probe)
+
+        # Out of reach: no lookup happens, and neither side raises.
+        far = SpherePoint.from_latlon(-30.0, 165.0)
+        assert host.features.placed[0].weight_at(far) == 0.0, declared
+        unreached = PySubstrate(host).at(far)
+        got = _engine_at(host, far)
+        assert same(unreached.sand, got[0]) and same(unreached.mud, got[1]) \
+            and same(unreached.rock, got[2]), declared
+
+
+def test_substrate_at_with_no_features_one_and_several():
+    """
+    The blend loop at all three of its interesting lengths, plus the `weight > 0.0` guard
+    inside it, on an analytic host so nothing but the loop is under test.
+
+    **Order is composition here too.** Two features declaring different substrates over the
+    same water give different answers reversed, so the reversed pair is compared as well --
+    a port iterating `placed` in any order but construction order would pass the forward
+    case and fail this one.
+    """
+    lat, lon = 22.0, -140.0
+    probe = SpherePoint.from_latlon(lat, lon)
+    rock = _feature(kind="pinnacle", lat=lat, lon=lon, length_m=5000.0, width_m=5000.0,
+                    substrate=PY_ROCK)
+    mud = _feature(kind="basin", lat=lat + 0.01, lon=lon, length_m=6000.0, width_m=6000.0,
+                   substrate=PY_MUD)
+    sand = _feature(kind="bar", lat=lat, lon=lon + 0.01, length_m=6000.0, width_m=6000.0,
+                    substrate=PY_SAND)
+    silent = _feature(kind="silent", lat=lat, lon=lon, length_m=5000.0, width_m=5000.0,
+                      substrate=None)
+    far = _feature(kind="far", lat=-lat, lon=-lon, length_m=800.0, width_m=800.0,
+                   substrate=PY_ROCK)
+
+    populations = {
+        "none": [],
+        "one": [rock],
+        "several": [rock, mud, sand],
+        "several reversed": [sand, mud, rock],
+        "several with an omitter and an unreachable": [rock, silent, mud, far, sand],
+    }
+    answers = {}
+    for label, features in populations.items():
+        host = _RecordingHost(features)
+        want = PySubstrate(host).at(probe)
+        got = _engine_at(host, probe)
+        assert same(want.sand, got[0]), (label, want.sand, got[0])
+        assert same(want.mud, got[1]), (label, want.mud, got[1])
+        assert same(want.rock, got[2]), (label, want.rock, got[2])
+        assert want.dominant == _engine_dominant_at(host, probe), label
+        answers[label] = got
+
+    assert answers["none"] != answers["one"], "one feature made no difference"
+    assert answers["one"] != answers["several"], "the extra two made no difference"
+    assert answers["several"] != answers["several reversed"], (
+        "reversing the features gave the same answer, so this probe cannot tell "
+        "construction order from any other order -- blending is not commutative",
+        answers["several"],
+    )
+    assert answers["several"] == answers["several with an omitter and an unreachable"], (
+        "the omitting feature or the out-of-reach one changed the answer",
+        answers["several"], answers["several with an omitter and an unreachable"],
+    )
