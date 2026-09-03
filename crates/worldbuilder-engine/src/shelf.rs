@@ -25,9 +25,8 @@
 //! on continuous quantities, and every equivalent temptation here is answered with a
 //! weight.
 //!
-//! This task carries the module constants, the `smooth` helper (reused from `detail`, not
-//! duplicated - see below), and the two value types. `Shelf`'s behaviour comes in a later
-//! task.
+//! This module carries the module constants, the `smooth` helper (reused from `detail`,
+//! not duplicated - see below), the two value types, and `Shelf`'s behaviour itself.
 
 use crate::continentality::Continentality;
 use crate::sphere::SpherePoint;
@@ -272,9 +271,14 @@ impl Shelf {
     }
 }
 
-// The behaviour methods (`coastal`, `target_depth_m`, `weight`, `evaluate`,
-// `elevation_m`) land in a later task; these accessors keep the fields from being
-// flagged dead in the meantime and give that task somewhere to start from.
+// `tectonics()` and `land()` are only reached from `#[cfg(test)]` code below (fixtures
+// that need to recompute the same tectonic offset or base elevation the behaviour
+// methods above already fold in), so a non-test build sees no caller and flags them
+// dead without this allow. `radius_m()` has no caller anywhere, test or otherwise -
+// `self.radius_m` is stored (mirroring `Tectonics`'s and `Continentality`'s own
+// constructors) but nothing in this module's behaviour needs it back out. It is kept
+// as part of `Shelf`'s surface rather than deleted; this allow is what's actually
+// suppressing its warning, honestly, not a placeholder for work still to land.
 #[allow(dead_code)]
 impl Shelf {
     pub(crate) fn tectonics(&self) -> &Tectonics {
@@ -316,7 +320,7 @@ mod tests {
         assert_eq!(smooth(0.5), 0.5);
     }
 
-    // Fixture matching tests/test_shelf_gates.py's `build()`: seed 20260831, the default
+    // Fixture matching tests/test_conformance.py's `build()`: seed 20260831, the default
     // plate count (22), Earth radius and land fraction - the same world Task 1 measured
     // its gate margins and firing point against.
     const SEED: i64 = 20260831;
@@ -356,7 +360,7 @@ mod tests {
     #[test]
     fn coastal_returns_some_at_a_genuine_coastal_point() {
         // Located by scanning the same corpus() the Python conformance suite uses (see
-        // tests/test_shelf_gates.py): the first corpus point where shelf.coastal() is not
+        // tests/test_conformance.py): the first corpus point where shelf.coastal() is not
         // None on this world.
         let shelf = build();
         let p = point(

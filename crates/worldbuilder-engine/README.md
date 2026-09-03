@@ -1088,9 +1088,13 @@ blend-rewrite mutation at 203. **`SHELF_WEIGHT_MAX_ULPS = 2048`** (measured wors
 = 512`** (measured worst 230, and this one genuinely *is* inherited, since `tectonic_m` is
 a literal passthrough of `Tectonics.offset_m`). The headroom each bound carries over its
 own measurement -- 2.67x for elevation, 2.0x for weight, 2.2x for tectonic -- sits in the
-same proportionate range across all three, against the discredited 8192, which sat 40x to
-355x above its own legitimate per-field values. **A borrowed bound admits whatever the
-lending module admits, whether or not that is what is actually being measured.**
+same proportionate range across all three, against the discredited 8192, which sat 8.0x
+(weight: 8192/1024), 35.6x (tectonic: 8192/230), and 227.5x (elevation: 8192/36) above its
+own legitimate per-field values -- an 8x-to-228x spread, not the tight one previously
+claimed. Put more precisely than a bare range can: 8192 was 227x too loose for
+`elevation_m` specifically, which is exactly why the 203-ULP blend-rewrite defect above
+passed through it unnoticed. **A borrowed bound admits whatever the lending module
+admits, whether or not that is what is actually being measured.**
 
 **One limitation, stated honestly rather than left implicit.** A 2048-ULP bound on a
 `weight` confined to `[0, 1]` is a weak assertion. Decomposing `weight` into `seaward`,

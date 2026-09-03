@@ -3008,8 +3008,8 @@ from worldbuilder.bathymetry.shelf import MIN_GRADIENT as PY_MIN_GRADIENT
 SHELF_CONTINENTALITY_SEED = 20260831
 """
 Not `CONTINENTALITY_SEED` (12345, the Tectonics section's world) -- this is the seed Task 1
-measured its gate margins and firing point against (`tests/test_shelf_gates.py`'s
-`build()`, which matches `shelf.rs`'s own `#[cfg(test)]` fixture: `SEED = 20260831`).
+measured its gate margins and firing point against (Task 1's own throwaway `build()`,
+since deleted, which matches `shelf.rs`'s own `#[cfg(test)]` fixture: `SEED = 20260831`).
 Pinning it lets the two floor assertions below reuse Task 1's literal measured numbers as a
 regression guard, and lets the fixture points found by scanning below reproduce the exact
 points `shelf.rs`'s own unit tests and Task 1's report already named.
@@ -3498,6 +3498,11 @@ def test_shelf_evaluate_agrees_within_the_shelf_composed_bounds():
     assert worst_tectonic > MAX_TRANSCENDENTAL_ULPS, (
         f"expected tectonic_m's worst divergence to exceed the ordinary "
         f"{MAX_TRANSCENDENTAL_ULPS}-ULP bound; observed worst was only {worst_tectonic} ULP"
+    )
+    assert worst_weight > MAX_TRANSCENDENTAL_ULPS, (
+        f"expected weight's worst divergence to exceed the ordinary "
+        f"{MAX_TRANSCENDENTAL_ULPS}-ULP bound (the seaward cancellation is the finding "
+        f"this section reports); observed worst was only {worst_weight} ULP"
     )
     assert worst_elevation <= SHELF_ELEVATION_MAX_ULPS, (
         f"elevation_m's worst observed divergence grew to {worst_elevation} ULP, beyond "
