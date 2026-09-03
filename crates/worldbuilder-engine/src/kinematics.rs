@@ -9,7 +9,7 @@
 //! **Nothing here is stored.** A margin is not classified once and remembered; it is
 //! worked out at the point somebody asks about, from the two plates' motion there.
 
-use crate::plates::{Margin, Plate};
+use crate::plates::{Margin, Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::vectors::Vec3;
 
@@ -103,9 +103,32 @@ pub fn motion_between(
     }
 }
 
+/// What is happening across the nearest plate edge, here.
+///
+/// Returns `None`, not a `Motion` full of zeros, whenever there is nothing to compare:
+/// no neighbouring plate at all, or a margin whose normal is degenerate. A caller must
+/// be able to tell "no margin here" from "a margin with no motion".
+///
+/// The classification is derived and thrown away. Storing it would mean deciding once,
+/// for a whole margin, what is only true at a point -- and a margin that converges at
+/// one end and slides at the other is the normal case, not an edge one.
+pub fn motion_at(point: &SpherePoint, plates: &PlateSet, radius_m: f64) -> Option<Motion> {
+    let margin = plates.margin_at(point, radius_m);
+    margin.neighbour?;
+
+    let normal = plates.margin_normal(point, &margin)?;
+
+    let nearest = margin.nearest?;
+    let neighbour = margin.neighbour?;
+    let mut motion = motion_between(&nearest, &neighbour, point, &normal, radius_m);
+    motion.margin = Some(margin);
+    Some(motion)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plates::tests::{test_plate, three_plate_set};
     use crate::sphere::EARTH_RADIUS_M;
 
     /// Slice 1g's `test_plate(index, lat, lon)` fixes the pole at (80.0, 5.0) and the
@@ -290,5 +313,53 @@ mod tests {
         // unequal quantities.
         assert_eq!(motion.closing_m_per_myr, 0.0);
         assert_eq!(motion.sliding_m_per_myr, 0.0);
+    }
+
+    #[test]
+    fn a_single_plate_world_has_no_motion_to_report() {
+        // No neighbour, so no margin, so None -- not a Motion full of zeros.
+        let set = PlateSet::new(vec![test_plate(0, 0.0, 0.0)]);
+        assert!(motion_at(&SpherePoint::from_latlon(10.0, 10.0), &set, EARTH_RADIUS_M).is_none());
+    }
+
+    #[test]
+    fn motion_at_agrees_bit_for_bit_with_motion_between_on_the_same_margin() {
+        // This is the point of calling rather than duplicating. Look the margin up by
+        // hand, call motion_between with its parts, and require exact agreement -- not
+        // approximate, because both paths run identical arithmetic in identical order.
+        let set = three_plate_set();
+        let point = SpherePoint::from_latlon(12.0, 20.0);
+        let whole = motion_at(&point, &set, EARTH_RADIUS_M).expect("this point has a margin");
+
+        let margin = set.margin_at(&point, EARTH_RADIUS_M);
+        let normal = set.margin_normal(&point, &margin).expect("and a normal");
+        let by_hand = motion_between(
+            &margin.nearest.expect("a nearest plate"),
+            &margin.neighbour.expect("a neighbour"),
+            &point,
+            &normal,
+            EARTH_RADIUS_M,
+        );
+
+        assert_eq!(
+            whole.closing_m_per_myr.to_bits(),
+            by_hand.closing_m_per_myr.to_bits()
+        );
+        assert_eq!(
+            whole.sliding_m_per_myr.to_bits(),
+            by_hand.sliding_m_per_myr.to_bits()
+        );
+        assert_eq!(whole.kind, by_hand.kind);
+    }
+
+    #[test]
+    fn the_returned_motion_carries_the_margin_it_used() {
+        // motion_between returns margin: None; motion_at fills it in. Without this the
+        // caller cannot tell which plates the numbers describe.
+        let set = three_plate_set();
+        let motion = motion_at(&SpherePoint::from_latlon(12.0, 20.0), &set, EARTH_RADIUS_M)
+            .expect("this point has a margin");
+        let margin = motion.margin.expect("motion_at must attach the margin it used");
+        assert!(margin.nearest.is_some() && margin.neighbour.is_some());
     }
 }
