@@ -5090,12 +5090,17 @@ Measured, both sides on the Python field:
     pinnacle 2-D grid, +-140 m       3,721 pts   4.667 m/step   1 ULP, rel 2.212201e-16
     open-water 2-D grid              961 pts     6000x2000 m    1 ULP, rel 2.136838e-16
 
-**HOST-CONDITIONAL.** One ULP holds only because `local_to_sphere` agreed bit-for-bit at
-every measured point on this host, so none of the drift comes from the probe positions.
-Nudge a single probe coordinate by one ULP and the answer moves by 3.167834e-09 relative --
-seven orders above this bound. A host where that stops being true needs the bound
-RE-MEASURED, never widened: widening hides exactly the divergence the bound exists to
-detect.
+**HOST-CONDITIONAL, and that fragility is the point.** One ULP holds only because
+`local_to_sphere` agreed bit-for-bit at every measured point on this host, so none of the
+drift comes from the probe positions -- and probe positions are one `cos`, `sin` or `sqrt`
+away from a host whose libm differs from CPython's. Measured here: nudging one component of
+the query point by a single ULP moves the answer by up to **2.433094e-09 relative** over
+the pinnacle grid (3 x 3,721 nudges), seven orders of magnitude above this bound; the crate
+records 3.167834e-09 for the equivalent nudge applied to a probe coordinate inside
+`local_to_sphere`.
+
+So a host where `local_to_sphere` stops agreeing needs this bound RE-MEASURED, never
+widened. Widening hides exactly the divergence the bound exists to detect.
 """
 
 SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS = 6.6e-16
@@ -5141,14 +5146,19 @@ ULP below one).
 FRAME, the STEP and the SPAN, all three.** Over the demonstration coast's own frame --
 `Coast.at(offshore_m, along_m)`, centred on the anchor:
 
-    61x61, 1,500 m per step  (span +-45,000 m)    67/3,721 = 1.80%
-    61x61, span +-1,500 m    (50 m per step)     185/3,721 = 4.97%
+    61x61, 1,500 m per step  (span +-45,000 m)    67/3,721 = 1.80%   worst rel 1.249555e-15
+    61x61, span +-1,500 m    (50 m per step)     185/3,721 = 4.97%   worst rel 1.887498e-15
 
 Using `TangentFrame.at(region.origin)` instead of the coast frame moves the first of those
 to 62/3,721 = 1.67%, and seven further conventions a reviewer tried give counts from 18 to
 159. The CONCLUSION is robust under every one of them -- the guard is bit-observable, and
 it must be transcribed rather than simplified away -- but the RATE is not a property of the
-module. This is the third narrowing this one number has needed.
+module.
+
+**Even the worst RELATIVE shift is convention-dependent**: 1.249555e-15 on the first
+reading, 1.887498e-15 on the second. The worst ABSOLUTE shift is one machine epsilon on
+both, which is what makes that the figure worth carrying. Only the first reading is
+asserted below, because it is the only one whose convention is fully pinned here.
 """
 
 SUBSTRATE_CLAMP_SATURATION = 8.0
@@ -5815,8 +5825,12 @@ def test_substrate_at_maps_its_keywords_by_name_not_by_position():
     without either arm saturating a clamp -- a saturating case would give 1.0 both ways and
     prove nothing -- and the last of them flips the one-word answer outright.
 
-    Verified against the mutation: swapping the two arguments at the engine call site in
-    `bindings::substrate_at` fails this test on its first case.
+    Verified against the mutation. Swapping the two arguments at the engine call site in
+    `bindings::substrate_at` -- `at(.., elevation_m, slope, tectonic_m, ..)`, which
+    compiles clean -- fails this test on its first case, and fails
+    `test_substrate_at_resolves_elevation_then_tectonic_then_slope` and
+    `test_substrate_at_treats_a_supplied_zero_as_a_value_not_an_absence` as well. Three
+    independent tests catch it; before they existed nothing did.
     """
     host = _RecordingHost([])
     point = SpherePoint.from_latlon(11.0, 47.0)
