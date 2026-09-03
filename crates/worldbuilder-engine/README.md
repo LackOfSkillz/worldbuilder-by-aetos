@@ -1412,3 +1412,281 @@ with the spike. `tests/test_performance.py` is separately known to be unreliable
 two wall-clock chart timings on about a 3% margin, it has been observed to fail at parent
 commits and in isolation, and it is out of scope here. It happened to pass on the runs above;
 a failure there is pre-existing and is not this section going red.
+
+## `substrate.rs`: the module with no type, one bound, and a rate that has been narrowed five times
+
+`worldbuilder/bathymetry/substrate.py` answers the second thing maritime asks of a world.
+Depth is the first; what the bottom is made of is this. An anchor bites in mud and drags on
+rock, a hull that touches sand is aground and one that touches rock is holed, and a dredger
+can move one and not the other. The field is a **composition** -- three fractions that vary
+smoothly -- and the single-word answer is whichever is largest.
+
+### There is no `Substrate` type in the crate, and no host trait either
+
+Python builds `Surface`'s five layers and hands `self` to `Substrate` on the **last line**
+of `__init__` (`surface.py:67`); `Surface.bottom_at` then calls back in at `:132`. A Rust
+`Substrate<'a>` holding `&'a Surface` could not be a field of that `Surface` -- that is a
+self-referential struct, and every way out of it (`Rc`/`Weak`, `Pin`, raw pointers,
+`ouroboros`) buys lifetime machinery for a type that **holds no state at all**. The Python's
+own docstring says so: *"Holds nothing. Every answer is computed from the surface it was
+given."*
+
+So the port is **free functions plus an on-demand borrow: no trait, no stored field.** A
+`HostSurface` trait was considered and rejected -- `Surface` still could not store the view,
+so `surface.rs` would build one per call anyway, paying all of the same cost plus a
+four-method trait with exactly one implementor.
+
+**The host surface is exactly four members wide, not `Surface` wide.** Task 1 measured it at
+runtime with an attribute-recording proxy, over every entry point crossed with all eight
+combinations of `at`'s three optionals, then cross-checked the census against `grep`:
+
+    surface.radius_m                  slope_at, once
+    surface.structural_m(point)       slope_at, four probes; at, a fifth when elevation is None
+    surface.tectonics.offset_m(point) at, when tectonic_m is None
+    surface.features.placed           at
+
+**Six members that look reachable are genuinely unreached**: `shelf`, `detail`, `land`,
+`plates`, `elevation_m` and `bottom_at`. Confirmed three ways -- absent from the runtime
+census, absent from `self.surface.` in the source, and the spike asserted
+`hasattr(surface, member)` *before* asserting non-reach, so a typo could not masquerade as
+an absence. This is load-bearing rather than trivia: substrate's elevation channel is
+`structural_m`, the feature-shaped ground, and it therefore never sees `detail` -- which is
+exactly what `SLOPE_BASELINE_M` relies on when it says a 60 m baseline costs nothing.
+
+So `slope_at` takes a `&dyn Fn(&SpherePoint) -> f64` for the host field, `at` takes
+`&Features` concretely (`Placed` and its reach gate are already ported and nothing should
+stand between this module and them), and `dominant_at`'s `**known` becomes three
+`Option<f64>` in the order `at` resolves them -- `elevation_m`, then `tectonic_m`, then
+`slope`. That order is observable, because each `None` triggers a different host call.
+
+### The module is STRICT everywhere but `slope_at`
+
+`natural`, `Composition::new`, `blended_towards`, `dominant`, `holding` and `smooth` reach
+**zero transcendentals** -- clamps, a smoothstep, a sum, three divisions, three comparisons
+-- so every test on them compares raw bits with no tolerance at all.
+
+`slope_at` alone reaches `hypot`, five times: once itself and once inside each of four
+`local_to_sphere` calls. That is the one call where the two languages run genuinely
+*different algorithms* -- since 3.8 CPython does not call the platform `hypot`, it computes
+its own Neumaier-compensated norm -- so bit-equality was never something either side
+promised. It carries the module's one bound.
+
+### A strict test caught a real defect, which is the argument for the no-tolerance rule
+
+The first `substrate_blended_towards` binding passed its receiver and its target through
+`Composition::new` before blending. Python does not: both are **already-constructed
+instances**, each divided by its own total once, and `blended_towards` reads them as they
+stand. Rebuilding divides a second time, and a real composition's fractions do not sum to
+exactly 1.0. The divergence was **`0.2781153660496104` against `0.27811536604961046`** --
+one ULP, in a comparison with nothing in it to absorb one.
+
+**Any tolerance at all on `blended_towards` would have left that green.** The fix is that
+both triples now cross the FFI verbatim as fields; `substrate_composition` is the one
+binding that exposes the normalising constructor.
+
+### The bounds, both asserted two-sided
+
+    SUBSTRATE_SLOPE_DRIFT_REL           2.3e-16   slope_at alone, RELATIVE
+    SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS  6.6e-16   at/dominant_at with slope derived, ABSOLUTE
+
+Both are asserted `bound/2 <= measured <= bound`, not merely `<= bound`. A test that checks
+only a ceiling ratchets loose for free and passes more comfortably as the code degrades; a
+two-sided assertion means a later *widening* fails rather than passing quietly.
+
+**`SUBSTRATE_SLOPE_DRIFT_REL` is HOST-CONDITIONAL and that fragility is the point.** One ULP
+holds only because `local_to_sphere` agreed bit-for-bit at every measured point on this
+host, so none of the drift comes from the probe positions -- and probe positions are one
+`cos`, `sin` or `sqrt` away from a host whose libm differs from CPython's. Nudging one
+component of the query point by a single ULP moves the answer by up to **2.433094e-09
+relative** over the pinnacle grid, seven orders above the bound. **A differing host requires
+the bound RE-MEASURED, never widened.** Widening hides exactly the divergence the bound
+exists to detect.
+
+**Do not carry `SUBSTRATE_SLOPE_DRIFT_REL` across the elevation-field boundary.** Every
+comparison that produces it drives *both* sides from the same `structural_m` -- the Python
+surface's, handed to the engine as a callable. Driving the engine's `slope_at` with the
+port's own elevation field instead moves the answer by up to **7.968304e-11** relative,
+about **346,000x** the bound (346,448x exactly), because the ported elevation itself differs
+by up to 3.07e-12 m. That drift belongs to `shelf.rs` and `features.rs`. Measuring both ports
+at once measures their sum and can attribute it to neither. It is the wrong bound for that
+comparison, not a defect in either.
+
+And for the same reason `features.rs`'s `FEATURES_WEIGHT_MAX_ABS` is **not** borrowed here,
+even though `at` calls `weight_at` -- see that module's own warning, which this section
+honoured.
+
+### `at` with all three optionals supplied is STRICT -- and fragile in one direction
+
+With `elevation_m`, `slope` and `tectonic_m` all handed in, `at` reaches no transcendental
+of its own. A tolerance would still have been defensible, because `weight_at` *is* bounded
+(`atan2` and `hypot` inside `sphere_to_local`). Measured over **4,682 points** -- the 3,721
+of the pinnacle grid plus the 961 of the open water -- against all **25** placed features of
+the demo coast, the divergence is **exactly zero in every one of the three fractions**. So
+that test asserts raw bits, and the strictness is a finding rather than an assumption.
+
+**The caveat, recorded honestly: it is fragile in one direction.** The demo coast has no
+250:1 dredged channel probed at its own support edge -- the shape that sized
+`FEATURES_WEIGHT_MAX_ABS` in the previous slice. A corpus containing one would very likely
+need a tolerance. If it does, that is a finding to measure, not a bound to borrow.
+
+### `dominant` returns a WORD, so nothing can absorb a flip
+
+Tie precedence is **ROCK > SAND > MUD**, each an independent comparison in the Python's exact
+directions: rock wins when it is at least sand *and* at least mud, so a three-way tie is
+rock; otherwise sand wins when it is at least mud, so a sand/mud tie is sand. Re-measured
+live: `(1/3,1/3,1/3)` -> rock, `(0.5,0.5,0.0)` -> sand, `(0.0,0.5,0.5)` -> rock,
+`(0.5,0.0,0.5)` -> rock.
+
+**A one-ULP nudge off a tie does not always change the word**, which is the trap that failed
+the first tie test written here. `Composition::new` divides all three fractions by their
+total, and *the total moves with the nudge*: at `(1.0, 1.0, nextafter(1.0, -inf))` the three
+quotients come back exactly equal and the answer is still rock. So "one ULP off a tie" is
+not a usable probe of `dominant` without going through the constructor first. The tests now
+*search* for the smallest nudge that survives normalisation, require the engine to step off
+the cliff at exactly that point, and require one ULP back the other way to stay rock on both
+sides. Both languages agree throughout -- a property of the algorithm, not a divergence.
+
+### The `PURE` lookup raises, on a value the port guarantees can arrive
+
+Python's `PURE[declared]` is a `dict` lookup that raises `KeyError` on any word that is not
+`sand`, `mud` or `rock` -- **and the empty string is such a word.** The conformance suite
+already pins that `substrate=""` survives the FFI crossing *distinct from `None`*, so this
+is not hypothetical: it is a value the port guarantees can reach `at`.
+
+**Ruling: the Rust surfaces a typed error and both sides fail.** `UnknownSubstrate` crosses
+as `UnknownSubstrateError`, a `KeyError` subclass, so a caller handling one handles the
+other. Silently continuing past the miss -- `if let Some(c) = pure(declared)` and on to the
+next feature -- would answer where the Python refuses to, and disagreeing about whether an
+answer *exists* is the worst divergence this module could carry. `" "`, `"Rock"` and
+`"gravel"` are pinned the same way, and the refusal is conditional on the weight on both
+sides: an out-of-reach feature declaring nonsense raises on neither.
+
+`declared is None` is **not** the same case. That is a genuine skip -- the feature has
+nothing to say about substrate and the Python `continue`s before it even asks for a weight.
+Note that **all 25 demo features declare a substrate**, so any corpus meaning to cover the
+skip needs a feature that omits `substrate` deliberately; the suite uses a fixture host for
+exactly that.
+
+### "The composition sums to one" is FALSE and banned, and the ban is executable
+
+The pre-normalisation total is **`0.9999999999999998` at its minimum -- two ULP below one**.
+Re-measured live over the 1,001 x 1,001 `(rock, swept)` grid, and reachable from `natural`'s
+own arguments at elevation -119.8 m, slope 0.0025666666666666667. `loose*swept +
+loose*(1-swept)` does not re-sum to `loose` in floating point.
+
+An earlier extraction argued the total is exactly 1.0 and was wrong. The consequence is
+observable: the normalising division in `Composition::new` is **not** a no-op, and must
+never be skipped, simplified away, or asserted around.
+
+**This ban is executable rather than editorial.**
+`blended_towards_cannot_skip_compositions_normalising_division` blends
+`natural(-119.8, 0.0025666666666666667, 0.0)` towards `Composition::new(0.7, 0.1, 0.2)` at
+weight 0.1 -- a pair whose raw total is `1.0000000000000002`, so every field moves by exactly
+one bit under normalisation. Replacing the constructor with a raw struct literal was proven
+by mutation to turn the suite red.
+
+### The `weight > 0.0` guard is bit-observable, and its rate is a property of the sampling
+
+`at`'s `if weight > 0.0` is not a shortcut. Blending at weight exactly zero is not the
+identity, because `blended_towards` re-enters the normalising constructor and fractions whose
+total is not exactly one move under it. The guard must be transcribed, not simplified away.
+
+**The rate needs its full sampling convention -- the FRAME, the STEP and the SPAN, all
+three.** It has now been narrowed five separate times and each narrowing was correct. Under
+the demonstration coast's own frame, `Coast.at(offshore_m, along_m)` centred on the anchor,
+every reading below re-measured live for this section:
+
+    61x61, 1,500 m per step (span +-45,000 m)    67/3,721  = 1.80%  abs 2.220446e-16  rel 1.249555e-15  11 ULP
+    61x61, span +-1,500 m (50 m per step)       185/3,721  = 4.97%  abs 2.220446e-16  rel 1.887498e-15  13 ULP
+    121x121, 750 m per step                     313/14,641 = 2.14%  abs 2.220446e-16  rel 1.264549e-15  11 ULP
+    61x61, 300 m per step                        21/3,721  = 0.56%  abs 1.110223e-16  rel 3.915580e-16   2 ULP
+    41x41, span +-250,000 m                       5/1,681  = 0.30%  abs 1.110223e-16  rel 2.171242e-16   1 ULP
+    5,000-point jittered scatter, +-45,000 m    101/5,000  = 2.02%  abs 2.220446e-16  rel 1.141701e-15   8 ULP
+    open water 31x31                             11/961    = 1.14%  abs 2.220446e-16  rel 1.166550e-15   7 ULP
+    pinnacle 61x61, +-140 m                       0/3,721  = 0.00%  -- NOTHING SHIFTS AT ALL
+
+Only the first is asserted, because it is the only reading whose convention the suite fully
+pins. A `TangentFrame.at(region.origin)` grid gives different counts again, and seven further
+conventions a reviewer tried gave counts from 18 to 159. **The rate is not a property of the
+module.** Zero dominant flips under any of them.
+
+**The relative figure and the ULP distance belong to ONE reading and must never be quoted
+bare**: 1.249555e-15 / 11 ULP on the first, 1.887498e-15 / 13 ULP on the second, down to
+2.171242e-16 / 1 ULP on the widest span.
+
+**And the absolute figure is a CEILING, not an invariant -- this is the fifth narrowing, and
+it is new in this section.** One machine epsilon, `2.220446049250313e-16`, is the worst
+absolute shift under every convention tried and none has exceeded it; but three of the eight
+above bottom out at *half* of it, and the pinnacle grid observes no shift at all. So the
+honest statement is "nothing tried exceeds one epsilon", not "one epsilon is what you will
+measure" -- and a corpus that is a small steep feature cannot show this guard is live in the
+first place. The worst-absolute figure is still the only one worth carrying between corpora,
+and even it is an upper bound rather than a reading.
+
+### The slope clamp is not dead code, and only a 2-D scan of a small steep feature shows it
+
+On the demo world's 140 m pinnacle at `Coast.at(8_000, 6_500)`, against `ROCK_SLOPE = 0.04`:
+
+    61x61 grid, +-140 m, 4.667 m/step    0.3252142109022925   8.1304 x ROCK_SLOPE
+    61-point diagonal line               0.3119559807440774   7.7990 x
+    61-point east-west line              0.3042234484625276   7.6056 x
+    61-point north-south line            0.3014451002052766   7.5361 x
+    400-point planetary scatter          0.0143501550330470   0.3588 x -- reads DEAD
+
+The test asserts the grid clears 8x **and that all three line directions do not**, so
+"resolution does not rescue a line, a second dimension does" stands on measurement rather
+than on a docstring. The steepest ground is off the feature's axis, because a feature's
+weight is a product of two `bump` factors.
+
+### Two rules this slice earned, which the next slice should inherit
+
+**1. A measurement is a property of its corpus AND its method.** Neither alone.
+
+*Saturation questions need a small steep feature scanned in 2-D.* A planetary scatter never
+reaches `natural`'s slope clamp -- 0.36x, reading as dead code -- and no line direction and
+no density closes the gap to a grid: the same line gave 6.646421e-03 at 0.750 m/step and the
+identical value at 0.188 m/step.
+
+*Boundary-margin questions need gentle open water, which is the opposite corpus* -- and the
+margin then differs by **eleven orders of magnitude** depending on whether it is found by
+grid or by bisection. Both figures are correct, and both were re-measured live for this
+section:
+
+    open water, 31x31 grid                    smallest dominant margin  7.485921e-04
+    open water, bisected onto the crossover   smallest dominant margin  2.109424e-15
+
+A grid samples where its nodes fall; a bisection samples where the boundary is. The 20-200 km
+offshore ray crosses sand -> mud between 25,760 m and 25,850 m and bisects to sides
+`3.637979e-12 m` apart still returning different words. The pinnacle grid's smallest margin is
+2.557239e-03 and its bisection bottoms out four orders *higher* than the open water's, at
+1.29e-11, because exhaustion leaves roughly `gradient x last resolvable step`. **So the rule
+"measure through a small steep feature" is right for the clamps and backwards for
+`dominant`.** A figure like this must name its search, not only its population.
+
+**2. A rate needs its full sampling convention, and only what survives every convention may
+be quoted bare.** The `weight > 0.0` rate is the worked example above: narrowed four times
+before this section and a fifth time in it, with the relative figure, the ULP distance and
+even the absolute ceiling each turning out to belong to a smaller claim than it first
+appeared to.
+
+### The throwaway is gone
+
+Task 1's `tests/test_substrate_gates.py` -- 11 tests that measured the host census, the
+`natural` guard and the tie margins against the live Python before anything in the port
+depended on the answers -- is deleted as of this section. It carried one known unasserted
+claim, a *printed* "no better at 3,200 points than at 800" for the pinnacle line scan, which
+was deliberately left unfixed because the file dies here; the surviving form of that claim is
+asserted in `test_conformance.py`, where all three line directions are required to fall short
+of the grid's 8x saturation.
+
+Every count in this section was verified by running the suites and checking exit status, not
+copied from a report -- and one report figure did not survive that check. `cargo test
+--release` exits 0 at **232** tests (222 lib, 4 `blake2_bytes.rs`, 6 `no_std_math` guard, 0
+doc-tests), unchanged by this task, which added no Rust test; Task 5's report recorded 236 for
+the same command, and 236 is not what the tree runs. `pytest tests/` exits 0 at **375**, down
+from 386 by exactly the 11 tests deleted with the spike, of which `test_conformance.py` is
+**135** and `test_performance.py` is **8**. That performance file is separately known to be
+load-sensitive -- it compares two wall-clock chart timings on a narrow margin and has been
+observed to fail on a busy machine and pass on an idle one. It passed on the run above, taken
+on an otherwise idle machine; a failure there is a statement about the machine, not about this
+branch.
