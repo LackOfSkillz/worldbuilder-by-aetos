@@ -17,6 +17,7 @@ pub mod continentality;
 pub mod plates;
 pub mod kinematics;
 pub mod tectonics;
+pub mod shelf;
 
 use pyo3::prelude::*;
 
