@@ -2730,14 +2730,20 @@ DETAIL_SHELF_WEIGHTS = [0.0, 0.5, 1.0]
 DETAIL_TECTONIC_MS = [0.0, 600.0, 1200.0, 5000.0]  # zero to well past the 1200 saturation
 
 # None (canonical -- every band at full strength), 0.0 (must reach the exact same path as
-# None, per Python's `if resolution_m:` falsiness), a fine spacing that leaves every
-# band's `visible` at 1.0 (100.0, far below even the finest band's fade window), one
-# squarely inside the coarsest band's fade window (wavelength 20000.0 fades for
-# resolution_m in [5000.0, 10000.0], so 7500.0 sits in the middle), and one coarse enough
-# that even the coarsest band's `visible` clamps to 0.0 on the very first iteration,
-# breaking the loop and dropping every octave (50000.0: 20000.0/50000.0 = 0.4, already
-# below BARELY_M).
-DETAIL_RESOLUTIONS_M = [None, 0.0, 100.0, 7500.0, 50000.0]
+# None, per Python's `if resolution_m:` falsiness), -0.0 (also falsy in Python, but not
+# for the reason 0.0 is bit-exact-guarded: `wavelength / -0.0` is `-inf`, `smooth(-inf)`
+# clamps to `0.0`, and `visible <= 0.0` breaks the loop, dropping every band -- so a port
+# that collapses only `0.0` and not `-0.0` to the canonical path diverges here even though
+# it agrees on plain zero), a fine spacing that leaves every band's `visible` at 1.0
+# (100.0, far below even the finest band's fade window), one squarely inside the coarsest
+# band's fade window (wavelength 20000.0 fades for resolution_m in [5000.0, 10000.0], so
+# 7500.0 sits in the middle), one coarse enough that even the coarsest band's `visible`
+# clamps to 0.0 on the very first iteration, breaking the loop and dropping every octave
+# (50000.0: 20000.0/50000.0 = 0.4, already below BARELY_M), and NaN (truthy in Python, so
+# it takes the *resolution* branch rather than the canonical one; `wavelength / NaN` is
+# NaN and `smooth(NaN)` must clamp to exactly `1.0` -- the clamp-order trap -- for this to
+# agree with canonical at all).
+DETAIL_RESOLUTIONS_M = [None, 0.0, -0.0, 100.0, 7500.0, 50000.0, float("nan")]
 
 
 def test_detail_smooth_agrees_bit_for_bit():
@@ -2885,11 +2891,14 @@ def test_detail_offset_m_agrees_bit_for_bit():
 
 def test_detail_offset_m_zero_resolution_matches_omitted_resolution():
     """
-    Python's `if resolution_m:` is false for both `None` and `0.0`, so a caller passing
-    zero must get every octave, not a division by zero -- and the binding must carry that
-    through for a caller that omits the argument entirely, not only one that passes
-    `None` explicitly. All three call shapes -- omitted, `None`, and `0.0` -- must land on
-    the identical bit pattern the Python reference produces for its own default.
+    Python's `if resolution_m:` is false for `None`, `0.0` and `-0.0`, so a caller passing
+    either zero must get every octave, not a division by zero -- and the binding must
+    carry that through for a caller that omits the argument entirely, not only one that
+    passes `None` explicitly. All four call shapes -- omitted, `None`, `0.0`, and `-0.0`
+    -- must land on the identical bit pattern the Python reference produces for its own
+    default. `-0.0` is the case that actually distinguishes a correct collapse from one
+    that only special-cases plain zero: `wavelength / -0.0` is `-inf`, and an unguarded
+    port would drop every band instead of matching canonical.
     """
     seed = DETAIL_WORLD_SEEDS[-1]
     radius_m = DETAIL_RADII[-1]
@@ -2902,11 +2911,13 @@ def test_detail_offset_m_zero_resolution_matches_omitted_resolution():
         got_omitted = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M)
         got_none = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, None)
         got_zero = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, 0.0)
+        got_neg_zero = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, -0.0)
         assert same(want, got_omitted), (x, y, z, "omitted", want, got_omitted)
         assert same(want, got_none), (x, y, z, "none", want, got_none)
         assert same(want, got_zero), (x, y, z, "zero", want, got_zero)
-        checked += 3
-    assert checked == len(points) * 3
+        assert same(want, got_neg_zero), (x, y, z, "neg_zero", want, got_neg_zero)
+        checked += 4
+    assert checked == len(points) * 4
 
 
 def test_detail_offset_m_returns_exactly_zero_for_non_positive_amplitude():
