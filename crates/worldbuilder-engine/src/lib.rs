@@ -7,6 +7,7 @@
 
 pub mod detail;
 pub mod detmath;
+pub mod features;
 pub mod generation;
 pub mod vectors;
 pub mod sphere;
