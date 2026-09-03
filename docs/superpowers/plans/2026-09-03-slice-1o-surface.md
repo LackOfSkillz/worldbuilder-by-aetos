@@ -24,14 +24,23 @@
 
 ## This slice's failure mode is STRUCTURAL, not numeric
 
-**Nothing in this file reorders into a last-bits difference.** Every physically possible reordering was measured on a 625-point demo-coast grid (±45 km, 3,750 m/step, 25 features, seed 20260831, CPython 3.11.0 MSC v.1933 on K2SO, identical under both system and venv interpreters):
+**Nothing in this file reorders into a last-bits difference.** Every physically possible reordering was measured on a 625-point demo-coast grid (±45 km, 3,750 m/step, 25 features, seed 20260831, CPython 3.11.0 MSC v.1933 on K2SO, identical under both system and venv interpreters).
+
+**The reduction and the grid's orientation, which this table did not name and which are the whole
+disagreement.** The figure is the **maximum** of `abs(truth - mutant)` over the 625 points — not the mean,
+which is three orders smaller (0.189 / 0.0099 / 0.0666 / 0.00038 m), and not the RMS. And the 625 points
+are `Coast.at(offshore, along)`, so the square is **rotated by the demo coast's `SEAWARD_DEG = 296.49`**
+about the anchor; it is *not* `TangentFrame.at(origin).local_to_sphere(east, north)`. Both were tried in
+the fix round. On the unrotated frame the same four maxima are **15.969 / 9.347 / 12.994 / 0.0841 m** — a
+different set of 625 points, so a different set of extrema, from one unnamed parameter. Re-derived and
+reproducing to the last digit with the reduction and the orientation named:
 
 | Mutation | Moves the answer by | Reading |
 |---|---|---|
-| Features before shelf | **30.89228988262422 m** | full pipeline |
-| Detail before features | **5.463671791248579 m** | full pipeline |
-| Dropping the authority multiply | **11.744069415078535 m** | full pipeline |
-| Sizing detail off pre-feature ground | **0.04541089914697238 m** | full pipeline |
+| Features before shelf | **30.89228988262422 m** | full pipeline, max over the `Coast.at` grid |
+| Detail before features | **5.463671791248579 m** | full pipeline, max over the `Coast.at` grid |
+| Dropping the authority multiply | **11.744069415078535 m** | full pipeline, max over the `Coast.at` grid |
+| Sizing detail off pre-feature ground | **0.04541089914697238 m** | full pipeline, max over the `Coast.at` grid |
 
 **The extraction's table was two experiments read as one.** Its features-before-shelf figure,
 `30.913586988571197`, is reproduced exactly by a **structure-only** reading — `abs(swapped - shaped)`,

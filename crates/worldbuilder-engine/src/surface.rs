@@ -227,7 +227,15 @@ impl Surface {
     /// gradient twice and the plate work three times, for four times the cost.
     ///
     /// **Three orderings live in this method, and none of them is style.** All three
-    /// were measured full-pipeline over 625 demo-coast points, and each moves the world:
+    /// were measured full-pipeline over 625 demo-coast points, and each moves the world.
+    ///
+    /// The figures below are the **maximum** of `abs(truth - mutant)` over those points -
+    /// the mean is three orders smaller - and the points are `Coast.at(offshore, along)`,
+    /// so the square is rotated by the demo coast's `SEAWARD_DEG = 296.49` about the
+    /// anchor. Both are stated because both were re-derived to recover these numbers: on
+    /// the *unrotated* tangent frame, same span and step, the same three maxima are 9.347,
+    /// 12.994 and 0.0841 m. A different 625 points is a different set of extrema, and a
+    /// budget is a property of its grid as much as of its code.
     ///
     /// - *Dropping the authority multiply* - 11.744 m. `amplitude` is damped by
     ///   `1 - authority` **after** `amplitude_m` sized it and **before** `offset_m`
@@ -481,6 +489,17 @@ mod tests {
 
     #[test]
     fn the_masked_seed_really_would_have_built_a_different_world() {
+        // **This one cannot fail from within `surface.rs`, and that is not a defect - it is
+        // a separation record, not a guard.** `plates_for` takes an `i64` and
+        // `generation::joined_key` keys on `world_seed.to_string()`, so while that signature
+        // holds the masked *decimal string* `18446744073709551611` is unreachable from Rust
+        // at all: no edit to the constructor can make these plates the masked ones. Measured
+        // - corrupting the seed outright (`plates_for(SEED ^ 1, ...)`) fails the sibling above
+        // and leaves this test passing. What guards against the masked world is that
+        // sibling's live-Python comparison; what this records is that the wrong world is far
+        // away, which is what makes the sibling's `1e-12` bound worth stating. Count it as a
+        // documented separation, not as a discriminating test.
+        //
         // The guard above is only worth having if the wrong answer is far away. These are
         // the same components under `plates_for(SEED & (2**64 - 1))`, from the same Python
         // run - a whole different plate, not a rounding difference.
@@ -535,6 +554,65 @@ mod tests {
         assert!(close(reading.tectonic_m, 150.3860222420496, 1e-9));
         assert!(close(surface.shelf.elevation_m(&point), -91.67475102105001, 1e-9));
         assert!(close(surface.land.at(&point), -0.015084155354279434, 1e-12));
+    }
+
+    /// A point in the seed -5 world where `Tectonics::offset_m` is sensitive to *the
+    /// continentality it holds* - which `shelf_water` is not, and that blindness is the
+    /// reason this second probe exists (see the test below).
+    ///
+    /// Chosen deliberately, not by taking a maximum. Over a 5-degree global grid (2,520
+    /// points), a `Tectonics` built on a mis-seeded `Continentality` changes
+    /// `offset_m` at **240** of them; of those 240 this is the point whose *whole
+    /// neighbourhood* separates furthest - over the 25 points within +-1 degree at a
+    /// half-degree step the two fields never come closer than **943.27 m** - so the
+    /// sensitivity is a region, not a knife edge a nudged probe would fall off. It is
+    /// also the largest single separation on that grid (**1,747.98 m**), and the two
+    /// answers have opposite signs: 980 m of down-warp against 768 m of up.
+    fn land_sensitive_probe() -> SpherePoint {
+        SpherePoint::from_latlon(-75.0, 135.0)
+    }
+
+    /// The `Continentality` handed to `Tectonics` is **this world's**, and that link needs
+    /// a probe chosen for it.
+    ///
+    /// `the_layers_are_built_from_each_other_in_the_python_order` above is named for this
+    /// link and does not test it: at `shelf_water`, `Tectonics::offset_m` returns
+    /// `150.3860222420496` whether its `Continentality` was seeded from this world or from
+    /// `noise_seed ^ 1`. Measured - a `Surface` mis-wired that way passed the entire suite.
+    /// "Every stage contributes at this probe" was the wrong question; a stage can
+    /// contribute a great deal and still be flat in one of its own arguments. The question
+    /// is whether corrupting *this argument* moves *this number*.
+    ///
+    /// So the pairing is load-bearing and both halves are asserted: the catch at
+    /// `land_sensitive_probe`, and the blindness at `shelf_water` that makes the first
+    /// probe necessary. The mutant is built here rather than described, so the test proves
+    /// the wrong wiring is caught rather than asserting that it would be.
+    #[test]
+    fn the_tectonics_hold_this_worlds_continentality() {
+        let surface = plain(None);
+        // The mutant differs from the real wiring in the `^ 1` and in nothing else.
+        let noise_seed = SEED as u64; // cast-ok: two's-complement, not a truncation
+        let mis_seeded = Tectonics::new(
+            surface.plates.clone(),
+            Continentality::new(noise_seed ^ 1, EARTH_RADIUS_M, LAND_FRACTION),
+            EARTH_RADIUS_M,
+        );
+        // Both figures from the live Python, which was handed `Continentality(-5, ...)` and
+        // `Continentality(-6, ...)`; `-5 ^ 1 == -6`, and masking commutes with the xor, so
+        // the Python's signed seeds and this `noise_seed ^ 1` are the same two worlds.
+        let probe = land_sensitive_probe();
+        assert!(close(surface.tectonics.offset_m(&probe), -980.1204136079549, 1e-9));
+        assert!(close(mis_seeded.offset_m(&probe), 767.8614639553075, 1e-9));
+        // 1,000 m of separation against a 1e-9 relative bound: nothing can satisfy both.
+        assert!((surface.tectonics.offset_m(&probe) - mis_seeded.offset_m(&probe)).abs() > 1000.0);
+
+        // And the blindness. Not "the other probe is weaker" but "the other probe cannot
+        // see this at all": the two fields agree to the bit there.
+        let blind = shelf_water();
+        assert_eq!(
+            surface.tectonics.offset_m(&blind).to_bits(),
+            mis_seeded.offset_m(&blind).to_bits()
+        );
     }
 
     #[test]
@@ -1075,8 +1153,12 @@ mod tests {
     }
 
     /// The amplitude is sized off the *shaped* ground, not the shelf's. The smallest of
-    /// the three - 0.045 m full-pipeline, 0.083 m and 0.020 m here - and the easiest to
-    /// write by accident, because `reading.elevation_m` is in scope one line above. Two
+    /// the three - 0.045 m full-pipeline over the demo coast, 0.083 m and 0.020 m at these
+    /// two probes - and the easiest to write by accident, because `reading.elevation_m` is
+    /// in scope one line above. **The demo-coast figure is not a ceiling**: the other two
+    /// orderings shrink at these probes (11.744 m to 2.55/2.78, 5.464 m to 0.64/0.33) and
+    /// this one grows, 0.045 m to 0.083 m. A budget measured on one coast bounds nothing
+    /// anywhere else, in either direction. Two
     /// decimal orders above the 1e-9 relative bound the value tests use, so those tests
     /// catch it as well; this one names it.
     #[test]

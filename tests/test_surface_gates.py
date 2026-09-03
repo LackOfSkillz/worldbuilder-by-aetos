@@ -69,7 +69,16 @@ GRID_STEP_M = 2.0 * GRID_SPAN_M / (GRID_STEPS - 1)   # 3,750 m
 
 
 def demo_grid():
-    """625 points, +/-45,000 m, 3,750 m per step, centred on the demo-coast anchor."""
+    """
+    625 points, +/-45,000 m, 3,750 m per step, centred on the demo-coast anchor.
+
+    **The orientation is a parameter, not a detail.** These are `Coast.at(offshore, along)`,
+    so the square is rotated by `SEAWARD_DEG = 296.49` about the anchor -- not
+    `TangentFrame.at(origin).local_to_sphere(east, north)`, which is the same span and step
+    over a *different* 625 points. Every extremum measured on this grid is a property of
+    this orientation: the reordering budget's four maxima are 30.892 / 5.464 / 11.744 /
+    0.0454 m here and 15.969 / 9.347 / 12.994 / 0.0841 m on the unrotated frame.
+    """
     coast = Coast()
     offsets = [-GRID_SPAN_M + index * GRID_STEP_M for index in range(GRID_STEPS)]
     return [coast.at(offshore, along) for offshore in offsets for along in offsets]
@@ -379,6 +388,17 @@ def q2_amplitude_floor():
                                                                             (45 values)
     = 226 x 7 x 45 = 71,190 evaluations. `p` is the demo-coast anchor (`amplitude_m` never
     reads `point`, which is itself worth recording).
+
+    **The `weight` axis is confined to [0, 1], and that is a precondition of the result, not
+    an oversight.** `rough = rough * (1 - w) + SHELF_M * w` is a convex blend only on that
+    interval; outside it the blend extrapolates and the floor is gone -- measured, 66,594 of
+    200,000 draws with `w` in `{1 + 2**-52, 1.0000001, 1.5, 10.0, -1e-18, -0.5}` return
+    `<= 0.0`, worst `-1200.0`. It holds today because `Shelf.weight` is
+    `seaward * coastal.breadth * authority` and all three factors are `_smooth` or
+    `1 - _smooth` outputs (`shelf.py:165`, `shelf.py:225-235`). So the `-0.0` closure has
+    **three** dependencies, not two: the roughness constants staying positive, the statement
+    order in `Features.apply`, and this one. A closure is only as good as the list of things
+    that would reopen it.
     """
     detail = Detail(WORLD_SEED, EARTH_RADIUS_M)
     point = Coast().at(0.0, 0.0)
@@ -423,6 +443,13 @@ def q2_authority_and_negative_zero():
         feature target_m      : the same 17 values
         compose               : RAISE, CARVE, SHAPE                     (3 values)
         offset from centre    : 0, 1, 100, 700, 1400 m                  (5 values)
+                                **seaward**, `Coast.at(offset, 0.0)`, along the demo
+                                coast's `SEAWARD_DEG = 296.49`; the feature sits at
+                                `Coast.at(0.0, 0.0)` with `bearing_deg = 0.0`. The bearing
+                                is stated because a distance without one is not a
+                                parameter. Measured: the counts below are invariant to it
+                                -- seaward, alongshore (`Coast.at(0.0, offset)`) and inland
+                                (`Coast.at(-offset, 0.0)`) all give 95 / 348 / 0.
     = 17 x 17 x 3 x 5 = 4,335 single-feature evaluations.
 
     Plus a two-feature sweep (17 x 17 x 3 = 867 configurations at the centre) whose first
@@ -519,9 +546,21 @@ def q2_authority_needs_three_metres():
     while `shaped == -0.0` requires every *applying* feature to contribute exactly `-0.0`,
     i.e. `abs(lift) == 0.0`.
 
-    Method: coarse sweep of `abs(lift)` over 100,001 even steps in [0, 6] for the first
-    saturating value, then a ULP-resolution sweep starting 2,000 `math.nextafter` steps
-    below 3.0 and walking up to 4,000 steps, for the exact first saturating float.
+    Method: a coarse sweep of `abs(lift)` over 100,001 even steps in [0, 6], which can only
+    ever report "the first grid point at or above the threshold"; then **bisection over the
+    double bit-pattern on [0.0, 3.0] to adjacency** for the threshold itself.
+
+    The bisection replaces a ULP-resolution sweep that started 2,000 `math.nextafter` steps
+    below 3.0 and walked up. That sweep reported `2.999999999999112` and that figure was
+    wrong: `3.0 - 8.88e-13` is **already saturated**, so the walk terminated on its own
+    first sample and returned the start of the scan as if it were a boundary. The true
+    threshold is four orders of magnitude further from 3.0. A scanned extremum is a
+    property of the scan, so the assertion below refuses to let a walk-based version of
+    this measurement be believed again: it checks that the interval being searched really
+    does straddle the transition.
+
+    Returns the threshold (smallest saturating double), the adjacent double below it, and
+    their `_smooth` values, so the reader can see the transition rather than take it.
     """
     from worldbuilder.bathymetry.features import _smooth
 
@@ -531,18 +570,35 @@ def q2_authority_needs_three_metres():
         if _smooth(lift / SETTLE_M) == 1.0:
             smallest = lift
             break
-    probe = SETTLE_M
-    for _ in range(2000):
-        probe = math.nextafter(probe, 0.0)
-    ulp_first = None
-    for _ in range(4000):
-        if _smooth(probe / SETTLE_M) == 1.0:
-            ulp_first = probe
-            break
-        probe = math.nextafter(probe, math.inf)
+
+    def saturates(value):
+        return _smooth(value / SETTLE_M) == 1.0
+
+    def to_bits(value):
+        return struct.unpack("<Q", struct.pack("<d", value))[0]
+
+    def from_bits(pattern):
+        return struct.unpack("<d", struct.pack("<Q", pattern))[0]
+
+    low, high = to_bits(0.0), to_bits(SETTLE_M)
+    # The straddle check. Without it this is the same mistake in a different shape: a
+    # search reporting an endpoint because the endpoint was never on the right side.
+    assert not saturates(from_bits(low)), "the low end must NOT saturate"
+    assert saturates(from_bits(high)), "the high end MUST saturate"
+    while high - low > 1:
+        middle = (low + high) // 2
+        if saturates(from_bits(middle)):
+            high = middle
+        else:
+            low = middle
+    threshold, below = from_bits(high), from_bits(low)
     return {
         "coarse_sweep_first_saturating_lift": smallest,
-        "ulp_sweep_first_saturating_lift": ulp_first,
+        "saturation_threshold": threshold,
+        "largest_non_saturating_lift": below,
+        "smooth_at_threshold": _smooth(threshold / SETTLE_M),
+        "smooth_just_below": _smooth(below / SETTLE_M),
+        "settle_m_minus_threshold": SETTLE_M - threshold,
         "settle_m": SETTLE_M,
     }
 
