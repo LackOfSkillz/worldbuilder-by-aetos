@@ -13,6 +13,7 @@ pub mod noise;
 pub mod tangent;
 pub mod continentality;
 pub mod plates;
+pub mod kinematics;
 
 use pyo3::prelude::*;
 
