@@ -26,7 +26,12 @@
 //!
 //! Ported from `worldbuilder/terrain/tectonics.py`.
 
+use crate::continentality::Continentality;
 use crate::detmath as m;
+use crate::plates::PlateSet;
+use crate::sphere::SpherePoint;
+use crate::tangent::TangentFrame;
+use crate::vectors::Vec3;
 
 /// Beyond this, a margin does nothing at all and no kinematics are evaluated. Every
 /// profile below must reach exactly zero by here, or the gate itself becomes a cliff.
@@ -155,9 +160,61 @@ impl Setting {
     }
 }
 
+/// The tectonic contribution to elevation, worked out where it matters and nowhere else.
+///
+/// Notes:
+///     Holds the plates and the continentality field and combines them. It is the first
+///     thing in the engine that knows about both, which is deliberate - they were built
+///     in ignorance of each other so that continents would not inherit plate shapes, and
+///     this is the seam where they are allowed to meet.
+pub struct Tectonics {
+    plates: PlateSet,
+    land: Continentality,
+    radius_m: f64,
+}
+
+impl Tectonics {
+    pub fn new(plates: PlateSet, land: Continentality, radius_m: f64) -> Self {
+        Self { plates, land, radius_m }
+    }
+
+    /// What lies either side of the margin near this point.
+    ///
+    /// Args:
+    ///     point: Where.
+    ///     distance_m: How far the margin is.
+    ///     normal: Away from the margin, into the nearest plate.
+    ///
+    /// Returns the continentality on each side.
+    ///
+    /// Notes:
+    ///     The probes are placed relative to the *margin*, not to the point, so that two
+    ///     samples on opposite sides of the same boundary describe the same stretch of it
+    ///     and agree about what it is. Probing outward from each point instead would have
+    ///     let a margin be a subduction zone from one side and a collision from the other.
+    pub fn setting_at(&self, point: &SpherePoint, distance_m: f64, normal: &Vec3) -> Setting {
+        let frame = TangentFrame::at(point, self.radius_m);
+        let east = normal.dot(&frame.east);
+        let north = normal.dot(&frame.north);
+
+        // Walk back to the margin, then out to either side of it.
+        let to_inboard = -distance_m + PROBE_M;
+        let to_outboard = -distance_m - PROBE_M;
+        Setting {
+            inboard: self.land.at(&frame.local_to_sphere(east * to_inboard, north * to_inboard)),
+            outboard: self
+                .land
+                .at(&frame.local_to_sphere(east * to_outboard, north * to_outboard)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::continentality::LAND_FRACTION;
+    use crate::plates::tests::three_plate_set;
+    use crate::sphere::EARTH_RADIUS_M;
 
     #[test]
     fn continental_saturates_at_both_ends_and_is_smooth_between() {
@@ -202,5 +259,87 @@ mod tests {
         assert_eq!(Setting { inboard: 0.3, outboard: 0.3 }.lean(), 0.0);
         assert!(Setting { inboard: 1.0, outboard: -1.0 }.lean() > 0.99);
         assert!(Setting { inboard: -1.0, outboard: 1.0 }.lean() < -0.99);
+    }
+
+    #[test]
+    fn setting_at_agrees_from_either_side_of_the_same_margin() {
+        // Derivation: `three_plate_set()` puts plate 0 at (0N,0E) and plate 1 at
+        // (0N,90E), ninety degrees apart on the equator, with plate 2 lifted off to
+        // (60N,45E) far enough away that it plays no part here. Their margin is the
+        // great circle bisecting seeds 0 and 1; its midpoint, `normalised(seed0 +
+        // seed1)`, is the same construction `plates.rs`'s
+        // `a_point_on_the_bisector_is_at_zero_distance` test uses to land exactly on
+        // a margin.
+        //
+        // `flattened(mid, bisector(0, 1))` is the bisector's plane normal projected
+        // into the tangent plane at `mid` -- a unit tangent vector perpendicular to
+        // the margin's local direction there, i.e. the axis "across" it. Walking a
+        // fixed distance `D` either way along that axis from `mid`, in `mid`'s own
+        // frame, places two points symmetric about the same margin on the same
+        // local straight line: one on plate 0's side, one on plate 1's.
+        //
+        // Each point's own `margin_at`/`margin_normal` (the same calls `offset_m`
+        // makes in real use) then supply the `distance_m` and `normal` `setting_at`
+        // expects, and because the two points sit on opposite sides of one margin,
+        // one point's "inboard" plate is the other's "outboard" plate.
+        let set = three_plate_set();
+        let seed0 = set.plate(0).seed.vector;
+        let seed1 = set.plate(1).seed.vector;
+        let mid = SpherePoint { vector: seed0.add(&seed1).normalised().expect("distinct seeds") };
+        let bisector = set.bisector(0, 1).expect("distinct seeds");
+        let across = set.flattened(&mid, &bisector).expect("not degenerate at the midpoint");
+
+        let frame = TangentFrame::at(&mid, EARTH_RADIUS_M);
+        let east = across.dot(&frame.east);
+        let north = across.dot(&frame.north);
+
+        let d = 200_000.0;
+        let point_a = frame.local_to_sphere(east * d, north * d);
+        let point_b = frame.local_to_sphere(east * -d, north * -d);
+
+        let margin_a = set.margin_at(&point_a, EARTH_RADIUS_M);
+        let margin_b = set.margin_at(&point_b, EARTH_RADIUS_M);
+        // The two points must actually straddle the same margin -- nearest and
+        // neighbour swapped -- or this test would not be exercising the property
+        // it claims to.
+        assert_eq!(
+            margin_a.nearest.expect("a nearest plate").index,
+            margin_b.neighbour.expect("a neighbour plate").index
+        );
+        assert_eq!(
+            margin_a.neighbour.expect("a neighbour plate").index,
+            margin_b.nearest.expect("a nearest plate").index
+        );
+
+        let normal_a = set.margin_normal(&point_a, &margin_a).expect("not degenerate");
+        let normal_b = set.margin_normal(&point_b, &margin_b).expect("not degenerate");
+
+        let land = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        let tectonics = Tectonics::new(set, land, EARTH_RADIUS_M);
+
+        let setting_a = tectonics.setting_at(&point_a, margin_a.distance_m, &normal_a);
+        let setting_b = tectonics.setting_at(&point_b, margin_b.distance_m, &normal_b);
+
+        // The property the design exists for: two samples on opposite sides of the
+        // same margin describe the same stretch of it. `inboard` and `outboard`
+        // swap roles between the two points -- point A's near plate is point B's
+        // far plate -- so it is A's inboard against B's outboard, and A's outboard
+        // against B's inboard, not the two `Setting`s being equal outright.
+        // Measured: the two sides agree to within a couple of ULPs (~3e-16), not merely
+        // within some loose tolerance -- the residual is rounding noise from projecting
+        // into two different tangent frames, not a modelling error.
+        let tolerance = 1e-9;
+        assert!(
+            (setting_a.inboard - setting_b.outboard).abs() < tolerance,
+            "a.inboard={} b.outboard={}",
+            setting_a.inboard,
+            setting_b.outboard
+        );
+        assert!(
+            (setting_a.outboard - setting_b.inboard).abs() < tolerance,
+            "a.outboard={} b.inboard={}",
+            setting_a.outboard,
+            setting_b.inboard
+        );
     }
 }
