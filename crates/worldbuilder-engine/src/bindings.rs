@@ -758,3 +758,152 @@ pub fn shelf_evaluate(
     let reading = shelf.evaluate(&point);
     (reading.elevation_m, reading.weight, reading.tectonic_m)
 }
+
+// --- features: bump, Feature.reach_m, Placed.weight_at, Features.apply/marks_near -------
+//
+// Conversion only, as everywhere else in this file. The one shape decision worth naming:
+// a `Feature` is not all-f64 (it carries two strings, a bool and an `Option<String>`
+// sentinel), so the flat-`Vec<f64>` idiom the `PlateSet` bindings use does not fit it.
+// Each feature crosses as one positional tuple in field order instead --
+// `(kind, x, y, z, target_m, length_m, width_m, bearing_deg, compose, marked, substrate)`
+// -- which keeps `substrate`'s `None` distinguishable from an empty string, exactly as
+// `features.py` requires of that sentinel.
+
+/// One `Feature` as PyO3 hands it over: `at` flattened to its three vector components,
+/// everything else in `features.py`'s declaration order.
+type FeatureTuple = (String, f64, f64, f64, f64, f64, f64, f64, String, bool, Option<String>);
+
+fn feature_from_tuple(t: &FeatureTuple) -> crate::features::Feature {
+    let (kind, x, y, z, target_m, length_m, width_m, bearing_deg, compose, marked, substrate) = t;
+    crate::features::Feature {
+        kind: kind.clone(),
+        at: SpherePoint { vector: Vec3::new(*x, *y, *z) },
+        target_m: *target_m,
+        length_m: *length_m,
+        width_m: *width_m,
+        bearing_deg: *bearing_deg,
+        compose: compose.clone(),
+        marked: *marked,
+        // `.clone()` on the `Option`, never `.unwrap_or_default()`: `None` here means
+        // "derive the bottom from the ground" and an empty string does not mean the same
+        // thing, so the sentinel has to survive the crossing intact.
+        substrate: substrate.clone(),
+    }
+}
+
+fn features_from_tuples(features: &[FeatureTuple], radius_m: f64) -> crate::features::Features {
+    crate::features::Features::new(features.iter().map(feature_from_tuple), radius_m)
+}
+
+/// The module's three compose names and `SETTLE_M`, so the Python side can assert it is
+/// comparing against the same constants rather than its own copies of the literals.
+#[pyfunction]
+pub fn features_constants() -> (&'static str, &'static str, &'static str, f64) {
+    (
+        crate::features::RAISE,
+        crate::features::CARVE,
+        crate::features::SHAPE,
+        crate::features::SETTLE_M,
+    )
+}
+
+/// `_bump(distance_m, half_m)`. Conversion only.
+#[pyfunction]
+pub fn features_bump(distance_m: f64, half_m: f64) -> f64 {
+    crate::features::bump(distance_m, half_m)
+}
+
+/// `Feature.reach_m()`. Conversion only -- `hypot` of the two extents, nothing else, so
+/// the whole feature need not cross for it.
+#[pyfunction]
+pub fn features_reach_m(length_m: f64, width_m: f64) -> f64 {
+    crate::features::Feature {
+        kind: String::new(),
+        at: SpherePoint { vector: Vec3::new(0.0, 0.0, 1.0) },
+        target_m: 0.0,
+        length_m,
+        width_m,
+        bearing_deg: 0.0,
+        compose: crate::features::RAISE.to_string(),
+        marked: false,
+        substrate: None,
+    }
+    .reach_m()
+}
+
+/// `Placed(feature, radius_m).weight_at(point)`. Conversion only: the `Placed` is built
+/// here per call (as `Features::new` would build it) and `weight_at` does the arithmetic,
+/// reach gate included.
+#[pyfunction]
+pub fn features_weight_at(
+    feature: FeatureTuple,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> f64 {
+    let placed = crate::features::Placed::new(feature_from_tuple(&feature), radius_m);
+    placed.weight_at(&SpherePoint { vector: Vec3::new(x, y, z) })
+}
+
+/// `Features(features, radius_m).apply(point, elevation_m)`.
+///
+/// Returns `(shaped_metres, authority)` in that order -- an **absolute elevation** first
+/// and a nothing-to-one blend weight second. They are not interchangeable and the tuple
+/// order is the Python's, not a convenience.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn features_apply(
+    features: Vec<FeatureTuple>,
+    x: f64,
+    y: f64,
+    z: f64,
+    elevation_m: f64,
+    radius_m: f64,
+) -> (f64, f64) {
+    let built = features_from_tuples(&features, radius_m);
+    built.apply(&SpherePoint { vector: Vec3::new(x, y, z) }, elevation_m)
+}
+
+/// `Features(features, radius_m).marks_near(point, within_m)`, as `(distance_m, index)`
+/// pairs nearest first.
+///
+/// `marks_near` returns borrowed `&Feature`s. Cloning each one back across the boundary
+/// would hand Python a *copy* whose identity says nothing, and two features may share a
+/// `kind`, so the mark would no longer name which of the placed features it is. The
+/// index into the list as given is that identity, and it also makes the stable-sort
+/// question testable: a tie between two distances must come back in construction order,
+/// which is only observable if the two are told apart. Recovered by pointer identity
+/// against `built.placed` (the borrow points into it), which is O(n^2) over a list the
+/// module's own docs cap at "a dozen, not a million".
+#[pyfunction]
+pub fn features_marks_near(
+    features: Vec<FeatureTuple>,
+    x: f64,
+    y: f64,
+    z: f64,
+    within_m: f64,
+    radius_m: f64,
+) -> Vec<(f64, usize)> {
+    let built = features_from_tuples(&features, radius_m);
+    let marks = built.marks_near(&SpherePoint { vector: Vec3::new(x, y, z) }, within_m);
+    marks
+        .into_iter()
+        .map(|(distance_m, feature)| {
+            let index = built
+                .placed
+                .iter()
+                .position(|placed| std::ptr::eq(&placed.feature, feature))
+                .expect("marks_near borrows from this same Features");
+            (distance_m, index)
+        })
+        .collect()
+}
+
+/// `len(Features(...))` and the `kind` of each feature in `__iter__` order, so the Python
+/// side can check that construction order survives -- order is semantic in this module.
+#[pyfunction]
+pub fn features_kinds(features: Vec<FeatureTuple>, radius_m: f64) -> (usize, Vec<String>) {
+    let built = features_from_tuples(&features, radius_m);
+    (built.len(), built.iter().map(|feature| feature.kind.clone()).collect())
+}

@@ -76,5 +76,12 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::shelf_target_depth_m, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::shelf_weight, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::shelf_evaluate, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_constants, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_bump, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_reach_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_weight_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_apply, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_marks_near, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_kinds, m)?)?;
     Ok(())
 }
