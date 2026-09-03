@@ -35,6 +35,7 @@ use crate::generation::plates_for;
 use crate::plates::PlateSet;
 use crate::shelf::Shelf;
 use crate::sphere::SpherePoint;
+use crate::substrate::{self, Composition, UnknownSubstrate};
 use crate::tectonics::Tectonics;
 
 /// What the caller brought, where Python writes `features=`.
@@ -200,6 +201,178 @@ impl Surface {
     /// the detail amplitude it damps lives.
     pub fn structural_m(&self, point: &SpherePoint) -> f64 {
         self.features.apply(point, self.shelf.elevation_m(point)).0
+    }
+
+    /// How high the ground is.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: How far apart the samples being taken are. `None` asks for
+    /// canonical ground truth, which is what physics uses; a number lets detail finer
+    /// than the sampling drop out, which is both faster and less prone to shimmer.
+    ///
+    /// Returns:
+    /// metres: Relative to datum.
+    ///
+    /// **Canonical is a defined thing.** `None` evaluates every configured octave down
+    /// to the canonical minimum wavelength - not infinite detail. Physics always asks
+    /// canonically, so a rock is where it is regardless of how anybody happens to be
+    /// looking at the sea around it. A resolution finer than that floor is therefore not
+    /// finer than canonical, it *is* canonical: measured, `resolution_m = 25.0` returns
+    /// the same bits as `None` at every probe below.
+    ///
+    /// **One pass, and the intermediates come back with the answer.** `shelf.evaluate`
+    /// is called once and its three fields feed everything downstream; asking the shelf
+    /// for its weight and the tectonics for their offset separately recomputed the
+    /// gradient twice and the plate work three times, for four times the cost.
+    ///
+    /// **Three orderings live in this method, and none of them is style.** All three
+    /// were measured full-pipeline over 625 demo-coast points, and each moves the world:
+    ///
+    /// - *Dropping the authority multiply* - 11.744 m. `amplitude` is damped by
+    ///   `1 - authority` **after** `amplitude_m` sized it and **before** `offset_m`
+    ///   spends it. Where somebody stated a shape, roughness defers to it; a harbour
+    ///   dredged flat that still carries thirty metres of texture is not dredged.
+    /// - *Detail before features* - 5.464 m. Detail is added to `shaped`, so features
+    ///   compose against clean structure and roughness lands on top of them. Rough
+    ///   first would feed noise into the composition gates and let a `RAISE` argue with
+    ///   a texture peak.
+    /// - *Sizing detail off pre-feature ground* - 0.045 m. `amplitude_m` is handed
+    ///   `shaped`, not `reading.elevation_m`. The smallest of the three and the easiest
+    ///   to write by accident, because `reading.elevation_m` is right there in scope.
+    ///
+    /// **The exact invariant this pins**: `elevation_m` is `structural_m` plus the
+    /// detail offset, bit for bit, because `shaped` here and `structural_m`'s answer are
+    /// the same computation on the same inputs. Confirmed over a global grid in both
+    /// languages. It localises a defect to a stage - a failure here is the detail add,
+    /// and a failure of Task 3's invariant is the feature stage - instead of reporting
+    /// only that the total is wrong.
+    pub fn elevation_m(&self, point: &SpherePoint, resolution_m: Option<f64>) -> f64 {
+        let reading = self.shelf.evaluate(point);
+        let (shaped, authority) = self.features.apply(point, reading.elevation_m);
+        let mut amplitude =
+            self.detail
+                .amplitude_m(point, shaped, reading.weight, reading.tectonic_m);
+        // Where somebody stated a shape, roughness defers to it.
+        amplitude *= 1.0 - authority;
+        shaped + self.detail.offset_m(point, amplitude, resolution_m)
+    }
+
+    /// What the bottom is made of, as fractions of sand, mud and rock.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    ///
+    /// Returns:
+    /// composition: Fractions summing to one. `Err` where the Python's `PURE[declared]`
+    /// raises `KeyError` - see `substrate::UnknownSubstrate`. Python's `bottom_at`
+    /// returns a bare `Composition` because a `KeyError` propagates; Rust has no
+    /// propagating raise, so the refusal is in the type.
+    ///
+    /// Costs several times an elevation, because it needs the local slope and a slope is
+    /// four probes. Affordable because a ship sounds continuously and anchors once - and
+    /// the same intermediates can be handed in when a caller already has them, which is
+    /// what `substrate_at` below is for.
+    ///
+    /// **There is no `substrate` field to reach through.** Python's `__init__` ends with
+    /// `self.substrate = Substrate(self)` and this method is `self.substrate.at(point)`;
+    /// `substrate.rs` deliberately has no `Substrate` type, so the free `substrate::at`
+    /// is called with two callbacks over `&self` instead. Nothing here needs `&mut
+    /// self`: both lattices are stateless (see the type docstring), so the callbacks
+    /// borrow immutably and a `Surface` can be asked this from several places at once.
+    ///
+    /// **Six indirect calls, five of them structural.** `structural_m` is called once
+    /// for the elevation and four more times inside `slope_at`'s finite difference;
+    /// `tectonics.offset_m` is called once. A census that says four is counting
+    /// `slope_at`'s probes and forgetting the elevation. The count is pinned by a test,
+    /// with counting closures, because it is the cost of this method.
+    ///
+    /// **And `slope_at` probes through `local_to_sphere`, not the cheap direction.**
+    /// Each of its four probes costs a `hypot`, a `cos`, a `sin` and a `sqrt`, so this
+    /// method carries five `hypot` calls in all - four in the probes and one in
+    /// `slope_at`'s own rise-over-run. A `weight_at`-shaped assumption about the tangent
+    /// frame would miss every one of them.
+    pub fn bottom_at(&self, point: &SpherePoint) -> Result<Composition, UnknownSubstrate> {
+        substrate::at(
+            self.radius_m,
+            point,
+            None,
+            None,
+            None,
+            &|probe| self.structural_m(probe),
+            &|probe| self.tectonics.offset_m(probe),
+            &self.features,
+        )
+    }
+
+    // ---- Forwarders, and they are an API decision rather than a transcription -------
+    //
+    // `surface.py` exposes exactly ONE substrate-facing method, `bottom_at`. The three
+    // below have no counterpart in it, and are added deliberately: Python callers reach
+    // through the `substrate` attribute - `world.substrate.at(point, **known)`,
+    // `world.substrate.slope_at(point, baseline_m)` - and `tests/test_conformance.py`
+    // does exactly that in a dozen places. This port has no object to reach through, so
+    // without these there is no way for a caller to supply known intermediates or to
+    // choose a baseline, and every such caller would have to assemble the callbacks
+    // itself and get the resolution order right. They add no behaviour: each is one call
+    // to the free function of the same name, with the same callbacks `bottom_at` builds.
+    //
+    // Labelled here because an unlabelled fifth and sixth method on this type would read
+    // later as a transcription error against a Python class that has three.
+
+    /// `substrate::at` with this surface's callbacks, and the intermediates optional.
+    ///
+    /// The three `Option`s are `is None` **sentinels**: a supplied `0.0` is a value and
+    /// is used, not re-derived. Declared in resolution order - elevation, tectonic,
+    /// slope - which is Python's *evaluation* order rather than its keyword order; see
+    /// `substrate::at`.
+    pub fn substrate_at(
+        &self,
+        point: &SpherePoint,
+        elevation_m: Option<f64>,
+        tectonic_m: Option<f64>,
+        slope: Option<f64>,
+    ) -> Result<Composition, UnknownSubstrate> {
+        substrate::at(
+            self.radius_m,
+            point,
+            elevation_m,
+            tectonic_m,
+            slope,
+            &|probe| self.structural_m(probe),
+            &|probe| self.tectonics.offset_m(probe),
+            &self.features,
+        )
+    }
+
+    /// The one-word answer, which is what the maritime interface asks for.
+    pub fn substrate_dominant_at(
+        &self,
+        point: &SpherePoint,
+        elevation_m: Option<f64>,
+        tectonic_m: Option<f64>,
+        slope: Option<f64>,
+    ) -> Result<&'static str, UnknownSubstrate> {
+        substrate::dominant_at(
+            self.radius_m,
+            point,
+            elevation_m,
+            tectonic_m,
+            slope,
+            &|probe| self.structural_m(probe),
+            &|probe| self.tectonics.offset_m(probe),
+            &self.features,
+        )
+    }
+
+    /// How steep the structural ground is here, over the given baseline.
+    ///
+    /// Python defaults `baseline_m` to `SLOPE_BASELINE_M`; Rust has no default
+    /// arguments, so callers state it - and conformance genuinely varies it.
+    pub fn substrate_slope_at(&self, point: &SpherePoint, baseline_m: f64) -> f64 {
+        substrate::slope_at(self.radius_m, point, baseline_m, &|probe| {
+            self.structural_m(probe)
+        })
     }
 }
 
@@ -617,6 +790,527 @@ mod tests {
     /// this probe is metres in size, so a stray `+ detail.offset_m(...)` could not hide
     /// inside the bit equality below; the test states the amplitude to make the size of
     /// that guard visible rather than assumed.
+    // ---- Task 4: `elevation_m`, `bottom_at`, and the callbacks -----------------------
+    //
+    // Every probe below is `deep_probe` or `base_sensitive_probe`, both chosen in Task 3
+    // for a reason that binds harder here. `deep_ocean` is NOT used to check any wiring:
+    // the shelf there returns exactly `ABYSS_M` (weight 0.0, tectonic 0.0, elevation
+    // -4600.0 exactly), and its bottom composition is exactly `(0.0, 1.0, 0.0)` - both
+    // constants a badly wired `Surface` reproduces by accident, and a stage contributing
+    // zero cannot show that stage is wired.
+    //
+    // `base_sensitive_probe` carries the elevation claims because its two feature weights
+    // are 0.254 and 0.531, strictly inside (0, 1): at weight one the answer is `target_m`
+    // whatever the base, and here the authority is 0.531, so `1 - authority` is neither 0
+    // nor 1 and dropping the multiply is visible.
+    //
+    // For `bottom_at` the two worlds split the work, and NEITHER probe alone is enough:
+    //
+    // - `plain` at `base_sensitive_probe` - no features, slope 0.0027, tectonic 151 m.
+    //   The rock fraction here comes from the TECTONIC term (smooth(151/1200) = 0.0436),
+    //   which strictly exceeds the slope term, so this probe is where a dead tectonics
+    //   callback shows. The elevation is -87.7 m, between `SETTLED_M` and `SWEPT_M`, so
+    //   sand and mud are both live too.
+    // - `shaped` at the same point - slope 0.0275, so now the SLOPE term dominates
+    //   (0.768 against 0.043) and a dead `slope_at` shows. All three fractions stay
+    //   non-zero and the channel's declared `mud` blends in at weight 0.531.
+    //
+    // `deep_probe` and `shelf_water` in the shaped world are rock-saturated (`natural`
+    // returns pure rock, sand exactly 0.0), which hides the depth term entirely. They are
+    // asserted for their values but not leaned on for wiring.
+
+    // SIXTEEN MUTATIONS WERE WRITTEN INTO THE SOURCE ON PURPOSE AND RUN. Fifteen fail,
+    // named in the tests below. **One survives, and it survives by design rather than by
+    // a flat probe**: handing `detail.amplitude_m` the point of somewhere else changes
+    // nothing, because `amplitude_m` never reads its `point` - the parameter is vestigial
+    // in the Python too (`detail.py:101`, and `detail.rs` carries `#[allow(unused_
+    // variables)]` and says so). No probe anywhere on the planet catches that one, so it
+    // is recorded here rather than chased.
+    //
+    // **The class hunted hardest was a probe that is insensitive to one of an active
+    // stage's own inputs** - a stage can contribute thirty metres and still be constant
+    // in one argument. So each argument was killed separately rather than each stage:
+    // `shelf.evaluate`'s weight and tectonic into `amplitude_m` (caught, and caught
+    // swapped), the point into `offset_m` (caught), the resolution (caught), the
+    // authority (caught), and for `bottom_at` each of the two callbacks and each of the
+    // three sentinels on its own (all caught, but only because TWO worlds are probed -
+    // see `bottom_at_reads_structure_the_tectonics_and_the_slope`, where each world is
+    // provably blind to the mutation the other one catches).
+
+    /// Detail is added under the features instead of on top of them.
+    fn mutant_detail_before_features(surface: &Surface, point: &SpherePoint) -> f64 {
+        let reading = surface.shelf.evaluate(point);
+        let amplitude =
+            surface
+                .detail
+                .amplitude_m(point, reading.elevation_m, reading.weight, reading.tectonic_m);
+        let rough = reading.elevation_m + surface.detail.offset_m(point, amplitude, None);
+        surface.features.apply(point, rough).0
+    }
+
+    /// The authority multiply is left out.
+    fn mutant_no_authority(surface: &Surface, point: &SpherePoint) -> f64 {
+        let reading = surface.shelf.evaluate(point);
+        let (shaped, _) = surface.features.apply(point, reading.elevation_m);
+        let amplitude =
+            surface
+                .detail
+                .amplitude_m(point, shaped, reading.weight, reading.tectonic_m);
+        shaped + surface.detail.offset_m(point, amplitude, None)
+    }
+
+    /// The amplitude is sized off the ground before the features touched it.
+    fn mutant_pre_feature_amplitude(surface: &Surface, point: &SpherePoint) -> f64 {
+        let reading = surface.shelf.evaluate(point);
+        let (shaped, authority) = surface.features.apply(point, reading.elevation_m);
+        let amplitude = surface.detail.amplitude_m(
+            point,
+            reading.elevation_m,
+            reading.weight,
+            reading.tectonic_m,
+        ) * (1.0 - authority);
+        shaped + surface.detail.offset_m(point, amplitude, None)
+    }
+
+    /// The amplitude `elevation_m` spends, rebuilt from the same intermediates, so the
+    /// invariant below can name the detail term exactly rather than approximate it.
+    fn damped_amplitude(surface: &Surface, point: &SpherePoint) -> f64 {
+        let reading = surface.shelf.evaluate(point);
+        let (shaped, authority) = surface.features.apply(point, reading.elevation_m);
+        surface
+            .detail
+            .amplitude_m(point, shaped, reading.weight, reading.tectonic_m)
+            * (1.0 - authority)
+    }
+
+    /// **The second exact invariant**, and it is a bit comparison rather than a bound:
+    /// `elevation_m` is `structural_m` plus the detail offset, the *same f64*, at every
+    /// resolution. Checked over a 625-point global grid in both worlds and at both
+    /// resolutions, and again on a grid three times as fine over the feature field - the
+    /// same test the live Python passes 1250/1250 on.
+    ///
+    /// This is what localises a defect to a stage. Task 3's invariant says the feature
+    /// stage is clean; this one says the detail add is clean; between them a wrong total
+    /// has a named owner instead of being "the number is off".
+    #[test]
+    fn elevation_is_structure_plus_detail_bit_for_bit() {
+        let worlds = [plain(None), shaped()];
+        for surface in &worlds {
+            for i in 0..25 {
+                for j in 0..25 {
+                    let lat = -60.0 + f64::from(i) * 5.0;
+                    let lon = -180.0 + f64::from(j) * 14.4;
+                    let point = SpherePoint::from_latlon(lat, lon);
+                    let amplitude = damped_amplitude(surface, &point);
+                    for resolution in [None, Some(500.0)] {
+                        let total = surface.elevation_m(&point, resolution);
+                        let parts = surface.structural_m(&point)
+                            + surface.detail.offset_m(&point, amplitude, resolution);
+                        assert_eq!(
+                            total.to_bits(),
+                            parts.to_bits(),
+                            "elevation drifted from structure + detail at {lat}, {lon}"
+                        );
+                    }
+                }
+            }
+            // Three times the resolution, over the ground the features actually occupy,
+            // where `shaped` and `structural_m` differ by metres and the amplitude is
+            // damped hardest. A grid that only samples clean structure would be pinning
+            // the easy half of the invariant.
+            for i in 0..31 {
+                for j in 0..31 {
+                    let lat = 30.0 + f64::from(i - 15) * 0.004;
+                    let lon = -65.0 + f64::from(j - 15) * 0.004;
+                    let point = SpherePoint::from_latlon(lat, lon);
+                    let amplitude = damped_amplitude(surface, &point);
+                    let total = surface.elevation_m(&point, None);
+                    let parts = surface.structural_m(&point)
+                        + surface.detail.offset_m(&point, amplitude, None);
+                    assert_eq!(total.to_bits(), parts.to_bits());
+                }
+            }
+            // And at the feature centres themselves.
+            for point in [bank().at, channel().at, deep_probe(), base_sensitive_probe()] {
+                let amplitude = damped_amplitude(surface, &point);
+                assert_eq!(
+                    surface.elevation_m(&point, None).to_bits(),
+                    (surface.structural_m(&point)
+                        + surface.detail.offset_m(&point, amplitude, None))
+                    .to_bits()
+                );
+            }
+        }
+    }
+
+    /// The answer itself, against the live Python. 1e-9 relative: the path reaches sin,
+    /// cos, atan2, asin and hypot many times over, while every ordering error measured
+    /// here misses by centimetres to metres - two decimal orders clear at the tightest.
+    #[test]
+    fn elevation_matches_the_live_python() {
+        let bare = plain(None);
+        assert!(close(bare.elevation_m(&deep_probe(), None), -92.98238988055819, 1e-9));
+        assert!(close(
+            bare.elevation_m(&deep_probe(), Some(500.0)),
+            -92.84942181960578,
+            1e-9
+        ));
+        assert!(close(
+            bare.elevation_m(&base_sensitive_probe(), None),
+            -92.28764692962568,
+            1e-9
+        ));
+        assert!(close(
+            bare.elevation_m(&base_sensitive_probe(), Some(500.0)),
+            -91.87773744848144,
+            1e-9
+        ));
+        assert!(close(bare.elevation_m(&shelf_water(), None), -95.72802561529151, 1e-9));
+
+        let surface = shaped();
+        assert!(close(
+            surface.elevation_m(&deep_probe(), None),
+            -107.41556596585484,
+            1e-9
+        ));
+        assert!(close(
+            surface.elevation_m(&deep_probe(), Some(500.0)),
+            -107.39784621584973,
+            1e-9
+        ));
+        assert!(close(
+            surface.elevation_m(&base_sensitive_probe(), None),
+            -102.59370837944269,
+            1e-9
+        ));
+        assert!(close(
+            surface.elevation_m(&base_sensitive_probe(), Some(500.0)),
+            -102.39404836460825,
+            1e-9
+        ));
+
+        // The intermediates too, so a failure above says which stage moved. All from the
+        // same Python run, at the base-sensitive probe in the shaped world.
+        let reading = surface.shelf.evaluate(&base_sensitive_probe());
+        let (shaped_m, authority) =
+            surface.features.apply(&base_sensitive_probe(), reading.elevation_m);
+        assert!(close(reading.weight, 0.34395031703563544, 1e-9));
+        assert!(close(reading.tectonic_m, 151.11679283543975, 1e-9));
+        assert!(close(shaped_m, -100.34016146516898, 1e-9));
+        assert!(close(authority, 0.5309604191354713, 1e-9));
+        let undamped = surface
+            .detail
+            .amplitude_m(&base_sensitive_probe(), shaped_m, reading.weight, reading.tectonic_m);
+        assert!(close(undamped, 32.971455787700464, 1e-9));
+        assert!(close(undamped * (1.0 - authority), 15.464917803156364, 1e-9));
+    }
+
+    /// A resolution finer than the canonical floor is not finer than canonical - it *is*
+    /// canonical, to the bit. Measured in the live Python, which returns the same repr
+    /// for `None` and `25.0` at all three probes. A coarser one genuinely differs, so the
+    /// argument is not being ignored.
+    #[test]
+    fn a_resolution_below_the_canonical_floor_is_canonical() {
+        let bare = plain(None);
+        for point in [deep_probe(), base_sensitive_probe(), shelf_water()] {
+            assert_eq!(
+                bare.elevation_m(&point, Some(25.0)).to_bits(),
+                bare.elevation_m(&point, None).to_bits()
+            );
+            assert!(
+                (bare.elevation_m(&point, Some(500.0)) - bare.elevation_m(&point, None)).abs()
+                    > 0.1
+            );
+        }
+    }
+
+    /// **Where somebody stated a shape, roughness defers to it.** The largest of this
+    /// method's three orderings - 11.744 m full-pipeline over the demo coast, 2.55 m and
+    /// 2.78 m at these two probes, where the authority is 0.53 and 0.87. The mutant is
+    /// built here rather than described, so the test proves the wrong code is caught.
+    #[test]
+    fn the_authority_damps_the_detail_amplitude() {
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let wrong = mutant_no_authority(&surface, &point);
+        assert!(close(wrong, -105.14476006667721, 1e-9));
+        assert!((surface.elevation_m(&point, None) - wrong).abs() > 2.0);
+        let deep = deep_probe();
+        assert!(close(mutant_no_authority(&surface, &deep), -110.19863071276119, 1e-9));
+        assert!(
+            (surface.elevation_m(&deep, None) - mutant_no_authority(&surface, &deep)).abs()
+                > 2.0
+        );
+        // And it is a damping, not a switch: the authority here is strictly inside (0, 1),
+        // so `1 - authority` is neither a no-op nor a silencer. At authority 1 the mutant
+        // and the truth would be a whole amplitude apart and at 0 they would agree, and
+        // neither case would say anything about the multiply.
+        let reading = surface.shelf.evaluate(&point);
+        let (_, authority) = surface.features.apply(&point, reading.elevation_m);
+        assert!(authority > 0.01 && authority < 0.99, "authority {authority} cannot test this");
+    }
+
+    /// Detail lands on the features, not under them - 5.464 m full-pipeline, 0.64 m and
+    /// 0.33 m here. The mutant roughens the shelf first and then composes onto the
+    /// roughened ground, which is what "detail before features" actually looks like when
+    /// somebody writes it.
+    #[test]
+    fn detail_comes_after_the_features_not_before_them() {
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let wrong = mutant_detail_before_features(&surface, &point);
+        assert!(close(wrong, -101.95844166218137, 1e-9));
+        assert!((surface.elevation_m(&point, None) - wrong).abs() > 0.2);
+        let deep = deep_probe();
+        assert!(close(
+            mutant_detail_before_features(&surface, &deep),
+            -107.0889185504868,
+            1e-9
+        ));
+        assert!(
+            (surface.elevation_m(&deep, None) - mutant_detail_before_features(&surface, &deep))
+                .abs()
+                > 0.2
+        );
+    }
+
+    /// The amplitude is sized off the *shaped* ground, not the shelf's. The smallest of
+    /// the three - 0.045 m full-pipeline, 0.083 m and 0.020 m here - and the easiest to
+    /// write by accident, because `reading.elevation_m` is in scope one line above. Two
+    /// decimal orders above the 1e-9 relative bound the value tests use, so those tests
+    /// catch it as well; this one names it.
+    #[test]
+    fn the_detail_amplitude_is_sized_off_the_shaped_ground() {
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let wrong = mutant_pre_feature_amplitude(&surface, &point);
+        assert!(close(wrong, -102.51022755845966, 1e-9));
+        assert!((surface.elevation_m(&point, None) - wrong).abs() > 0.01);
+        let deep = deep_probe();
+        assert!(close(
+            mutant_pre_feature_amplitude(&surface, &deep),
+            -107.39525177974745,
+            1e-9
+        ));
+        assert!(
+            (surface.elevation_m(&deep, None) - mutant_pre_feature_amplitude(&surface, &deep))
+                .abs()
+                > 0.01
+        );
+    }
+
+    /// `bottom_at` against the live Python, in both worlds. 1e-9 relative on fractions of
+    /// order one, which is far tighter than any wiring error measured below.
+    #[test]
+    fn bottom_at_matches_the_live_python() {
+        let bare = plain(None);
+        let composition = bare.bottom_at(&base_sensitive_probe()).unwrap();
+        assert!(close(composition.sand, 0.34250502480173706, 1e-9));
+        assert!(close(composition.mud, 0.6139135319375312, 1e-9));
+        assert!(close(composition.rock, 0.04358144326073182, 1e-9));
+        assert_eq!(composition.dominant(), crate::substrate::MUD);
+        let deep = bare.bottom_at(&deep_probe()).unwrap();
+        assert!(close(deep.sand, 0.30326208463510135, 1e-9));
+        assert!(close(deep.mud, 0.6528911748797973, 1e-9));
+        assert!(close(deep.rock, 0.04384674048510139, 1e-9));
+
+        let surface = shaped();
+        let composition = surface.bottom_at(&base_sensitive_probe()).unwrap();
+        assert!(close(composition.sand, 0.01647523309801734, 1e-9));
+        assert!(close(composition.mud, 0.623237083798069, 1e-9));
+        assert!(close(composition.rock, 0.36028768310391374, 1e-9));
+        // Rock-saturated in `natural`, so this pair is a value check and not a wiring one.
+        let rocky = surface.bottom_at(&shelf_water()).unwrap();
+        assert!(close(rocky.mud, 0.19479591171649582, 1e-9));
+        assert!(close(rocky.rock, 0.8052040882835042, 1e-9));
+        assert_eq!(rocky.dominant(), crate::substrate::ROCK);
+        // The features moved the bottom, so the placed loop really ran: pure-ish sand and
+        // mud in the bare world against a third rock here.
+        assert!(composition.rock > 8.0 * bare.bottom_at(&base_sensitive_probe()).unwrap().rock);
+    }
+
+    /// **Six indirect calls, five of them structural**, which is what this method costs
+    /// and the reason it is not asked per sounding. Counted, not asserted from reading:
+    /// the callbacks tally themselves, and the tallying pair must return the same bits as
+    /// `bottom_at`'s own. A census that says four has forgotten the elevation.
+    #[test]
+    fn bottom_at_costs_six_indirect_calls_five_of_them_structural() {
+        use std::cell::Cell;
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let structural = Cell::new(0usize);
+        let tectonic = Cell::new(0usize);
+        let counted = crate::substrate::at(
+            surface.radius_m,
+            &point,
+            None,
+            None,
+            None,
+            &|probe| {
+                structural.set(structural.get() + 1);
+                surface.structural_m(probe)
+            },
+            &|probe| {
+                tectonic.set(tectonic.get() + 1);
+                surface.tectonics.offset_m(probe)
+            },
+            &surface.features,
+        )
+        .unwrap();
+        assert_eq!(structural.get(), 5, "one for the elevation and four in slope_at");
+        assert_eq!(tectonic.get(), 1);
+        assert_eq!(structural.get() + tectonic.get(), 6);
+        let direct = surface.bottom_at(&point).unwrap();
+        assert_eq!(counted.sand.to_bits(), direct.sand.to_bits());
+        assert_eq!(counted.mud.to_bits(), direct.mud.to_bits());
+        assert_eq!(counted.rock.to_bits(), direct.rock.to_bits());
+    }
+
+    /// The four slope probes are real places, reached through `local_to_sphere` - the
+    /// expensive frame direction, `hypot` + `cos` + `sin` + `sqrt` each. A cheap-direction
+    /// assumption would put them somewhere else, so the probe geometry is checked rather
+    /// than assumed: four distinct points, none of them the centre, and the east pair and
+    /// the north pair each `SLOPE_BASELINE_M` apart along the surface.
+    #[test]
+    fn the_slope_probes_are_four_real_places_around_the_point() {
+        use std::cell::RefCell;
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let seen: RefCell<Vec<SpherePoint>> = RefCell::new(Vec::new());
+        crate::substrate::at(
+            surface.radius_m,
+            &point,
+            None,
+            None,
+            None,
+            &|probe| {
+                seen.borrow_mut().push(*probe);
+                surface.structural_m(probe)
+            },
+            &|probe| surface.tectonics.offset_m(probe),
+            &surface.features,
+        )
+        .unwrap();
+        let seen = seen.into_inner();
+        assert_eq!(seen.len(), 5);
+        let radius = surface.radius_m;
+        // The first is the elevation, at the point itself; the last four are the probes.
+        assert_eq!(seen[0].vector.x.to_bits(), point.vector.x.to_bits());
+        assert_eq!(seen[0].vector.y.to_bits(), point.vector.y.to_bits());
+        assert_eq!(seen[0].vector.z.to_bits(), point.vector.z.to_bits());
+        // Half a baseline out from the centre, each of the four, and a whole baseline
+        // apart in each pair - a real displacement on a real sphere, which is what
+        // `local_to_sphere` gives and a cheap direction would not. Bounds in millimetres
+        // over 30 m, because the frame is exact geometry and only the libm differs.
+        for probe in &seen[1..] {
+            let out = probe.distance_to(&point, radius);
+            assert!(
+                (out - 30.0).abs() < 1e-3,
+                "a slope probe sat {out} m from the point, not half a baseline"
+            );
+        }
+        let east_span = seen[1].distance_to(&seen[2], radius);
+        assert!((east_span - 60.0).abs() < 1e-3, "east probes span {east_span} m");
+        let north_span = seen[3].distance_to(&seen[4], radius);
+        assert!((north_span - 60.0).abs() < 1e-3, "north probes span {north_span} m");
+        // The east pair and the north pair are not the same pair: the frame really has
+        // two axes, and a `slope_at` that probed one direction twice would read zero
+        // slope across the other.
+        assert!(seen[1].distance_to(&seen[3], radius) > 30.0);
+    }
+
+    /// The callbacks carry what they claim to. Supplying all three intermediates
+    /// explicitly must reproduce `bottom_at` to the bit, and each wrong substitution must
+    /// not - which is the whole point of choosing two probes rather than one, because no
+    /// single point catches all three.
+    #[test]
+    fn bottom_at_reads_structure_the_tectonics_and_the_slope() {
+        let point = base_sensitive_probe();
+        for surface in [plain(None), shaped()] {
+            let truth = surface.bottom_at(&point).unwrap();
+            let explicit = surface
+                .substrate_at(
+                    &point,
+                    Some(surface.structural_m(&point)),
+                    Some(surface.tectonics.offset_m(&point)),
+                    Some(surface.substrate_slope_at(&point, crate::substrate::SLOPE_BASELINE_M)),
+                )
+                .unwrap();
+            assert_eq!(explicit.sand.to_bits(), truth.sand.to_bits());
+            assert_eq!(explicit.mud.to_bits(), truth.mud.to_bits());
+            assert_eq!(explicit.rock.to_bits(), truth.rock.to_bits());
+        }
+
+        // The elevation callback is `structural_m`, NOT `elevation_m`: detail must not
+        // reach the bottom type, or a bar would change what it is made of when somebody
+        // zoomed. 0.078 in the sand fraction in the bare world, measured.
+        let bare = plain(None);
+        let with_detail = bare
+            .substrate_at(&point, Some(bare.elevation_m(&point, None)), None, None)
+            .unwrap();
+        assert!((with_detail.sand - bare.bottom_at(&point).unwrap().sand).abs() > 0.05);
+
+        // The tectonics callback is live, and the BARE world is where that shows: rock
+        // there is the tectonic term (0.0436) strictly above the slope term, so zeroing
+        // the tectonics moves the answer by 0.030. In the shaped world the same mutation
+        // changes nothing at all, because the slope term has overtaken it.
+        let flat_plates = bare.substrate_at(&point, None, Some(0.0), None).unwrap();
+        assert!((flat_plates.rock - bare.bottom_at(&point).unwrap().rock).abs() > 0.02);
+
+        // And the slope is live, which the SHAPED world is where that shows: the features
+        // steepen the ground tenfold, the slope term takes over, and zeroing it moves the
+        // answer by 0.34. In the bare world this mutation is invisible.
+        let surface = shaped();
+        let flat = surface.substrate_at(&point, None, None, Some(0.0)).unwrap();
+        assert!((flat.rock - surface.bottom_at(&point).unwrap().rock).abs() > 0.3);
+        // The pairing is the claim, so state the halves that DO NOT catch their mutation
+        // rather than leaving a reader to assume both probes are equally good.
+        let bare_flat = bare.substrate_at(&point, None, None, Some(0.0)).unwrap();
+        assert_eq!(bare_flat.rock.to_bits(), bare.bottom_at(&point).unwrap().rock.to_bits());
+        let shaped_no_plates = surface.substrate_at(&point, None, Some(0.0), None).unwrap();
+        assert_eq!(
+            shaped_no_plates.rock.to_bits(),
+            surface.bottom_at(&point).unwrap().rock.to_bits()
+        );
+    }
+
+    /// The forwarders are the free functions and nothing else - no second opinion about
+    /// the radius, the callbacks or the resolution order. They exist because Python
+    /// callers reach through `world.substrate`, which this port has no object for; see
+    /// the label in the source above them.
+    #[test]
+    fn the_forwarders_are_the_free_functions_with_this_surfaces_callbacks() {
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let expected = crate::substrate::at(
+            surface.radius_m,
+            &point,
+            None,
+            None,
+            None,
+            &|probe| surface.structural_m(probe),
+            &|probe| surface.tectonics.offset_m(probe),
+            &surface.features,
+        )
+        .unwrap();
+        let got = surface.substrate_at(&point, None, None, None).unwrap();
+        assert_eq!(got.sand.to_bits(), expected.sand.to_bits());
+        assert_eq!(got.mud.to_bits(), expected.mud.to_bits());
+        assert_eq!(got.rock.to_bits(), expected.rock.to_bits());
+        assert_eq!(
+            surface.substrate_dominant_at(&point, None, None, None).unwrap(),
+            expected.dominant()
+        );
+        // `slope_at` at the Python default baseline, against the live Python, and at a
+        // baseline ten times longer, which `test_conformance.py` genuinely varies. The
+        // long one aliases across the channel and reads flatter, which is exactly the
+        // aliasing `SLOPE_BASELINE_M` was shortened to avoid.
+        let slope = surface.substrate_slope_at(&point, crate::substrate::SLOPE_BASELINE_M);
+        assert!(close(slope, 0.027502258572155713, 1e-9));
+        assert!((surface.substrate_slope_at(&point, 600.0) - slope).abs() > 1e-3);
+        assert!(close(plain(None).substrate_slope_at(&point, 60.0), 0.002738132207272028, 1e-9));
+    }
+
     #[test]
     fn structure_carries_no_detail() {
         let surface = plain(None);
