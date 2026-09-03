@@ -34,6 +34,7 @@ use crate::features::{Feature, Features};
 use crate::generation::plates_for;
 use crate::plates::PlateSet;
 use crate::shelf::Shelf;
+use crate::sphere::SpherePoint;
 use crate::tectonics::Tectonics;
 
 /// What the caller brought, where Python writes `features=`.
@@ -163,6 +164,42 @@ impl Surface {
             detail,
             features,
         }
+    }
+
+    /// The ground before any roughness, which is the same at every scale.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    ///
+    /// Returns:
+    /// metres: Relative to datum.
+    ///
+    /// **This one line is three decisions, and every one of them is an ordering.**
+    ///
+    /// The shelf runs first and its answer is the argument, not a sibling term: the
+    /// shelf has already folded continentality and tectonics into one elevation, so
+    /// `shelf.elevation_m` *is* the structural ground, and features argue with that
+    /// rather than with the macro elevation the shelf was built from. Handing
+    /// `land.base_elevation + tectonics.offset_m` here instead compiles, type-checks
+    /// and looks like the same physics; at the probe this module tests it moves the
+    /// answer by 11.4 m, and over a demo-coast grid by 30.89 m. A harbour is cut into
+    /// real bathymetry, not instead of it.
+    ///
+    /// `Features::apply` then walks its list in construction order, each feature
+    /// reading and writing the running result, so the list order is part of the answer
+    /// too - reversing this module's two test features moves the probe by 9.4 m.
+    ///
+    /// And the tuple's **first** element is taken. The second is the authority, a
+    /// weight in `[0, 1]`; it is not an elevation and has no business being returned as
+    /// one, but it is a plausible `f64` in the same position, so the tests pin the
+    /// distance between them (100.9 m at the probe) rather than trusting the index.
+    ///
+    /// Detail does not appear here at all, and that absence is the method: structure
+    /// answers the same at every scale, so nothing resolution-aware may enter. The
+    /// authority the second tuple element carries is consumed by `elevation_m`, where
+    /// the detail amplitude it damps lives.
+    pub fn structural_m(&self, point: &SpherePoint) -> f64 {
+        self.features.apply(point, self.shelf.elevation_m(point)).0
     }
 }
 
@@ -379,5 +416,219 @@ mod tests {
         let weight = surface.features.placed[0].weight_at(&probe());
         assert!(close(weight, 0.9981770094373194, 1e-12));
         assert!((weight - 0.9545181883460445).abs() > 1e-3);
+    }
+
+    // ---- Task 3: `structural_m` and the composition order ----------------------------
+    //
+    // Two features placed near `shelf_water`, deliberately and not for scenery. They sit
+    // where the shelf has real weight (0.34) and the plates have really contributed
+    // (+151 m), so shelf, tectonics and continentality are all live at the probes below.
+    // A feature stamped at `deep_ocean` would have been useless: the shelf there returns
+    // exactly `ABYSS_M` (measured in the live Python - weight 0.0, tectonic 0.0,
+    // elevation -4600.0 exactly), and a `Surface` wired to nothing at all reproduces that
+    // constant by accident.
+    //
+    // The pair also exercises both composition gates rather than one: the bank RAISEs
+    // (target -50 m against roughly -88 m of ground, so its lift is positive and the
+    // RAISE gate passes) and the channel CARVEs (target -120 m, lift negative, the CARVE
+    // gate passes). They overlap, so the running `result` the second one reads is the one
+    // the first one wrote, which is what makes the list order observable.
+
+    fn bank() -> Feature {
+        Feature {
+            kind: "bank".to_string(),
+            at: SpherePoint::from_latlon(30.0, -65.0),
+            target_m: -50.0,
+            length_m: 4000.0,
+            width_m: 2000.0,
+            bearing_deg: 30.0,
+            compose: crate::features::RAISE.to_string(),
+            marked: false,
+            substrate: None,
+        }
+    }
+
+    fn channel() -> Feature {
+        Feature {
+            kind: "channel".to_string(),
+            at: SpherePoint::from_latlon(30.01, -65.0),
+            target_m: -120.0,
+            length_m: 6000.0,
+            width_m: 1500.0,
+            bearing_deg: 75.0,
+            compose: crate::features::CARVE.to_string(),
+            marked: false,
+            substrate: Some("mud".to_string()),
+        }
+    }
+
+    /// Both features bite hard here - weights 0.873 and 0.800 - so the answer is a long
+    /// way from the bare shelf (17.1 m) and a long way from either target. Chosen for
+    /// that: it says the feature stage ran, and that both features ran.
+    fn deep_probe() -> SpherePoint {
+        SpherePoint::from_latlon(30.006, -65.0)
+    }
+
+    /// The base-sensitive probe, and the one that carries the ordering claim. Weights
+    /// 0.254 and 0.531 - **strictly between zero and one on purpose**: at weight one the
+    /// answer is the feature's `target_m` whatever base was handed in, so a saturated
+    /// probe cannot tell a shelf base from a macro base from no base at all. Found by
+    /// scanning a 61x61 grid of milli-degrees around the bank for both weights in
+    /// (0.25, 0.75) and maximising the smaller of (how far the features move the ground,
+    /// how far a wrong base would move the answer). Both come out over 11 m.
+    fn base_sensitive_probe() -> SpherePoint {
+        SpherePoint::from_latlon(30.009, -64.981)
+    }
+
+    fn shaped() -> Surface {
+        plain(Some(FeatureInput::Loose(vec![bank(), channel()])))
+    }
+
+    /// The invariant, and it is a bit comparison rather than a bound: with nothing
+    /// placed, `Features::apply` returns its argument untouched, so `structural_m` must
+    /// be the *same f64* as `shelf.elevation_m` - not close to it. Checked over a
+    /// 625-point global grid, the same grid and the same result as the live Python
+    /// (625/625 there too). This localises a defect to a stage: if it fails, the feature
+    /// stage is doing something to an empty list; if it passes, everything left to go
+    /// wrong is in the composition.
+    #[test]
+    fn with_nothing_placed_structural_is_the_shelf_bit_for_bit() {
+        let surface = plain(None);
+        for i in 0..25 {
+            for j in 0..25 {
+                let lat = -60.0 + f64::from(i) * 5.0;
+                let lon = -180.0 + f64::from(j) * 14.4;
+                let point = SpherePoint::from_latlon(lat, lon);
+                assert_eq!(
+                    surface.structural_m(&point).to_bits(),
+                    surface.shelf.elevation_m(&point).to_bits(),
+                    "no-feature structural drifted from the shelf at {lat}, {lon}"
+                );
+            }
+        }
+        // And at the points the later tests place features on, so the invariant is
+        // pinned exactly where the composition is about to be exercised.
+        for point in [deep_probe(), base_sensitive_probe(), shelf_water(), deep_ocean()] {
+            assert_eq!(
+                surface.structural_m(&point).to_bits(),
+                surface.shelf.elevation_m(&point).to_bits()
+            );
+        }
+        // Rust against Rust proves consistency, not correctness, so one absolute figure
+        // from the live Python as well. 1e-9 relative: the path reaches sin, cos, atan2
+        // and asin many times over, and every wiring error measured here misses by
+        // metres.
+        assert!(close(
+            surface.structural_m(&deep_probe()),
+            -89.95662579145922,
+            1e-9
+        ));
+    }
+
+    /// The composition, against the live Python, at both probes.
+    #[test]
+    fn features_compose_onto_the_shelf_in_construction_order() {
+        let surface = shaped();
+        assert!(close(
+            surface.structural_m(&deep_probe()),
+            -107.01234294485822,
+            1e-9
+        ));
+        assert!(close(
+            surface.structural_m(&base_sensitive_probe()),
+            -100.34016146516898,
+            1e-9
+        ));
+        // The features really moved the ground, so the stage is not a no-op: 17.1 m at
+        // the deep probe, 12.7 m at the base-sensitive one.
+        let deep = surface.structural_m(&deep_probe());
+        assert!((deep - surface.shelf.elevation_m(&deep_probe())).abs() > 10.0);
+        let sensitive = surface.structural_m(&base_sensitive_probe());
+        assert!((sensitive - surface.shelf.elevation_m(&base_sensitive_probe())).abs() > 5.0);
+    }
+
+    /// The base handed to `apply` is the shelf's answer, not the macro elevation the
+    /// shelf was built from, and not the bare continentality underneath it. Both wrong
+    /// bases are code somebody could plausibly write; both figures below are measured,
+    /// from the same Python run, and both are far enough away that no tolerance reaches
+    /// them.
+    #[test]
+    fn the_base_is_the_shelf_not_the_macro_elevation() {
+        let surface = shaped();
+        let point = base_sensitive_probe();
+        let actual = surface.structural_m(&point);
+        // `land.base_elevation + tectonics.offset_m` as the base: -88.90851322503084,
+        // which is 11.43 m away. (At the deep probe the same mutation moves the answer by
+        // only 0.78 m, because weights of 0.87 and 0.80 leave 2.6% of the base showing -
+        // which is exactly why the probe with weights 0.25 and 0.53 is the one asserting
+        // this.)
+        assert!((actual - (-88.908_513_225_030_84)).abs() > 1.0);
+        // `land.base_elevation` alone as the base: -166.40454923699966, 66.06 m away.
+        assert!((actual - (-166.404_549_236_999_66)).abs() > 1.0);
+        // And the wrong bases are genuinely reachable values, not straw men: the macro
+        // elevation here is -54.978 against the shelf's -87.661, a 32.7 m difference in
+        // the argument, which the feature weights then damp to 11.43 m in the answer.
+        let reading = surface.shelf.evaluate(&point);
+        let macro_m = surface.land.base_elevation(&point) + reading.tectonic_m;
+        assert!(close(macro_m, -54.97828011320581, 1e-9));
+        assert!((macro_m - reading.elevation_m).abs() > 30.0);
+    }
+
+    /// Construction order is part of the answer. Same two features, swapped.
+    #[test]
+    fn swapping_the_two_features_moves_the_answer() {
+        let forwards = shaped();
+        let backwards = plain(Some(FeatureInput::Loose(vec![channel(), bank()])));
+        let point = base_sensitive_probe();
+        // From the live Python, the same two features applied in the reverse order onto
+        // the same shelf elevation: 9.45 m away at this probe, 48.9 m at the deep one.
+        assert!(close(backwards.structural_m(&point), -90.88959541251553, 1e-9));
+        assert!((forwards.structural_m(&point) - backwards.structural_m(&point)).abs() > 5.0);
+        assert!(
+            (forwards.structural_m(&deep_probe()) - backwards.structural_m(&deep_probe())).abs()
+                > 40.0
+        );
+    }
+
+    /// `.0`, not `.1`. The authority is an `f64` in the same tuple and would type-check
+    /// in the same place; it is a weight in [0, 1], so returning it puts the seabed a
+    /// hundred metres out of position while still looking like a number of metres.
+    #[test]
+    fn structural_returns_the_elevation_not_the_authority() {
+        let surface = shaped();
+        for point in [deep_probe(), base_sensitive_probe()] {
+            let (elevation, authority) = surface
+                .features
+                .apply(&point, surface.shelf.elevation_m(&point));
+            assert_eq!(surface.structural_m(&point).to_bits(), elevation.to_bits());
+            assert!((surface.structural_m(&point) - authority).abs() > 50.0);
+        }
+        // The authority really is what Python reports, so the distance above is a
+        // measured gap and not an artefact of an authority that never got set.
+        let (_, deep_authority) = surface
+            .features
+            .apply(&deep_probe(), surface.shelf.elevation_m(&deep_probe()));
+        assert!(close(deep_authority, 0.8734505322907488, 1e-9));
+    }
+
+    /// Nothing resolution-aware may enter `structural_m`: structure answers the same at
+    /// every scale. There is no `resolution_m` parameter to pass, so what this can check
+    /// is that the detail stage is absent from the answer entirely. The detail offset at
+    /// this probe is metres in size, so a stray `+ detail.offset_m(...)` could not hide
+    /// inside the bit equality below; the test states the amplitude to make the size of
+    /// that guard visible rather than assumed.
+    #[test]
+    fn structure_carries_no_detail() {
+        let surface = plain(None);
+        let point = deep_probe();
+        let offset = surface.detail.offset_m(&point, 25.0, None);
+        assert!(
+            offset.abs() > 1.0,
+            "detail here is {offset}, too small to guard with"
+        );
+        assert_eq!(
+            surface.structural_m(&point).to_bits(),
+            surface.shelf.elevation_m(&point).to_bits()
+        );
     }
 }
