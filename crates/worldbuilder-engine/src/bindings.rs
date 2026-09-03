@@ -876,6 +876,16 @@ pub fn features_apply(
 /// which is only observable if the two are told apart. Recovered by pointer identity
 /// against `built.placed` (the borrow points into it), which is O(n^2) over a list the
 /// module's own docs cap at "a dozen, not a million".
+///
+/// **The shared-`kind` hazard is a fixture, not a story.** It was a story until this was
+/// written: every conformance fixture used distinct kinds, and the Python-side helper
+/// mapped the returned index straight back to `features[index].kind`, so substituting
+/// `placed.feature.kind == feature.kind` for the `ptr::eq` below passed both suites
+/// outright -- `Vec::position` would then answer index 0 for every mark of a repeated
+/// kind and nothing would notice. `test_features_marks_near_names_which_feature_when
+/// _several_share_a_kind` places five rocks all called `rock` in an order that is not
+/// their distance order and compares raw indices, so the substitution now fails. `kind` is
+/// documented as a chart symbol class, and symbol classes repeat.
 #[pyfunction]
 pub fn features_marks_near(
     features: Vec<FeatureTuple>,
