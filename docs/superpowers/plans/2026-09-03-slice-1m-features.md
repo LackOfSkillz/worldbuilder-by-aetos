@@ -60,7 +60,11 @@ authority = max(authority, weight * _smooth(abs(lift) / SETTLE_M))
 
 At the boundary `lift == 0.0`, **both paths converge on both outputs**: skipping leaves `result` untouched, and taking the branch adds `weight * 0.0`, which is also untouched; the authority term is `weight * _smooth(0.0)`, which is `0.0`, so the `max` is unchanged either way. **A flip at the boundary is unobservable.** Confirm this in Task 1 rather than repeating it.
 
-**The reach gate in `weight_at` is LOAD-BEARING. Measured, not argued.** The extraction claimed both branches give approximately zero weight, so the gate only skips a no-op. **That claim is false.** A ring scan around `reach_m` finds nothing — 30,240 rejected points, zero leaks — which is presumably how the claim was made. Probing the real corner, where `along` and `across` land a hair inside `length` and `width` **simultaneously**, 15,417 of 146,359 gate-rejected points return a non-zero ungated weight (10.53%); largest `1.57e-44`, worst over all offset scales `1.74e-32`. It leaves `result` untouched but **moves `authority` off a hard `0.0`**. And `_cos_reach` is `cos(hypot(L, W) / R)` — two bounded calls — so a one-ULP nudge reclassifies 21.6% of probe points.
+**The reach gate in `weight_at` is LOAD-BEARING. Measured, then re-measured when the first measurement turned out to describe one feature rather than the module.** An earlier extraction claimed both branches give approximately zero weight, so the gate only skips a no-op. **That claim is false.** A ring scan around `reach_m` finds nothing - 30,240 rejected points, zero leaks - which is presumably where it came from. The leak lives in the *corner*, where `along` and `across` land a hair inside `length` and `width` **simultaneously**: 15,417 of 146,359 gate-rejected points (10.53%) return a non-zero ungated weight.
+
+**The leak's magnitude is a property of the feature's shape, not of the module.** The disagreement band is a fixed ~micron of arc whatever the feature's size, so leaked weight scales as roughly `1/(L^2 W^2)`. Measured: `~1.7e-32` at 1200x300, `4.09e-26` at 150x90, `1.13e-12` at 3x2. **Always quote the shape beside the number. A single figure does not bound this module** - the review of Task 1 caught exactly that error, a one-shape measurement being carried forward as a module property and already scheduled into a source comment.
+
+**And at small shapes the gate moves the shaped elevation itself, not merely `authority`.** At 3x2 the ungated `result` is `-29.999999999970655` against `-30.0`. Likewise a one-ULP nudge to the threshold moves `result` by `0.0` at 1200x300 but by `3.75e-10 m` - about **105,470 ULP** - at 3x2. `_cos_reach` is `cos(hypot(L, W) / R)`, two bounded calls, and such a nudge reclassifies about a fifth of corner probe points (21.6% at the measured shape; printed rather than asserted, so treat it as indicative).
 
 **Transcribe the gate and its threshold exactly.** No simplification, and no comment claiming it is a no-op.
 
@@ -131,7 +135,7 @@ This task writes no engine code. It answers three questions the rest of the slic
 
 **`weight_at` must be public** — `Substrate` calls it directly, bypassing `Features::apply`.
 
-**Transcribe the reach gate and its threshold exactly** — Task 1 measured it LOAD-BEARING, contradicting the extraction. Record the measured leak rate in a comment (10.53% of gate-rejected corner points carry non-zero ungated weight, largest `1.74e-32`) so nobody later "simplifies" it back. `_cos_reach` is `cos(hypot(L, W) / R)`: two bounded calls, and a one-ULP nudge reclassifies 21.6% of probe points.
+**Transcribe the reach gate and its threshold exactly** - it is LOAD-BEARING, contradicting the extraction. Record in a comment that 10.53% of gate-rejected corner points carry non-zero ungated weight and that the magnitude **scales as roughly `1/(L^2 W^2)`**, from `~1.7e-32` at 1200x300 to `~1.1e-12` at 3x2, quoting the shape beside any number. Do not write a single figure as a module-wide bound. **At small shapes the leak perturbs the shaped elevation, not just `authority`.**
 
 - [ ] **Steps:** failing tests, run, implement, run, commit.
 
@@ -167,6 +171,10 @@ This task writes no engine code. It answers three questions the rest of the slic
 **`authority` gets its own bound, measured separately from `result`, and its reach-gate test compares RAW BITS rather than a tolerance.** `result` absorbs sub-ULP contributions; `authority` amplifies them off zero, so a tolerance would make Task 1's reach-gate finding untestable. Measure before asserting: if the bounded path cannot support a strict bit comparison, report that rather than widening it quietly.
 
 **`marks_near` is a bounded quantity feeding a DISCRETE output** — chart membership via `distance <= within_m`, and the sort order. Task 1 did not measure it. **Measure the margin between the nearest included and the nearest excluded feature, and report whether a bounded drift could reorder or reclassify.** A discrete flip is the one thing no tolerance absorbs.
+
+**Small features must be in the test matrix.** The reach-gate leak scales as `1/(L^2 W^2)`, so at 1200x300 it hides under any plausible tolerance and a test built only on large features proves nothing. Include a shape around 3x2, where the effect is `1e-12` rather than `1e-32`.
+
+**Do not assume a tight `result` bound.** A one-ULP threshold nudge moves `result` by 0 ULP at 1200x300 and ~105,470 ULP at 3x2. Measure across the shape range, size the bound to the worst, and state the shape that produced it. **If the bound has to be wide, say why** - a bound whose justification is missing is one this project has already been bitten by.
 
 **Cover:** an empty `Features`; a single feature; several in both orders; features whose `lift` sits at and near zero for both RAISE and CARVE; points inside, at and beyond the reach; and `marks_near` at several radii.
 
