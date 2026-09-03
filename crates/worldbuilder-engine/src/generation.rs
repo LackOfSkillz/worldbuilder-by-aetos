@@ -18,6 +18,7 @@ use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 
 use crate::detmath as m;
+use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::vectors::{Vec3, DEGENERATE};
 
@@ -198,6 +199,32 @@ pub fn rate(world_seed: i64, index: usize) -> f64 {
     } else {
         speed
     }
+}
+
+/// Every plate on a world.
+///
+/// Ported from `plates_for` in `worldbuilder/plates/generation.py`.
+///
+/// A tuple of a couple of dozen small records -- a few kilobytes, and the only thing
+/// about the planet's geology that is stored at all. Everything else is worked out from
+/// these when somebody asks.
+pub fn plates_for(world_seed: i64, count: usize) -> PlateSet {
+    let plates = (0..count)
+        .map(|index| Plate {
+            // `index=index` for `index in range(count)` in the Python -- this is the
+            // assignment that makes `index == position` true. plates.rs addresses its
+            // bisector table, and this module addresses its seed and pole tables, by
+            // POSITION on every axis; that only agrees with the `.index` field because
+            // this loop assigns both together. If this line ever assigned anything else
+            // to `index`, the position-indexing ruling from slice 1f would silently
+            // address the wrong rows -- no error, just a different planet.
+            index,
+            seed: spread(world_seed, index, count),
+            euler_pole: pole(world_seed, index),
+            rate_rad_per_myr: rate(world_seed, index),
+        })
+        .collect();
+    PlateSet::new(plates)
 }
 
 #[cfg(test)]
@@ -437,5 +464,51 @@ mod tests {
         assert_eq!(jittered.vector.x.to_bits(), via_impl.vector.x.to_bits());
         assert_eq!(jittered.vector.y.to_bits(), via_impl.vector.y.to_bits());
         assert_eq!(jittered.vector.z.to_bits(), via_impl.vector.z.to_bits());
+    }
+
+    #[test]
+    fn every_plate_has_index_equal_to_its_position() {
+        // The line several earlier slices rest on. plates.rs addresses its bisector and
+        // seed tables by POSITION, and that only agrees with the .index field because
+        // this loop assigns them together. If it ever stopped holding, the position-
+        // indexing ruling from slice 1f would silently address the wrong rows.
+        let set = plates_for(20260831, 22);
+        assert_eq!(set.plates().len(), 22);
+        for (position, plate) in set.plates().iter().enumerate() {
+            assert_eq!(plate.index, position, "index and position must agree");
+        }
+    }
+
+    #[test]
+    fn the_same_seed_always_builds_the_same_world() {
+        // Bit-for-bit, not approximately: nothing here is time-, order- or
+        // allocation-dependent, so two calls must be indistinguishable.
+        let a = plates_for(20260831, 22);
+        let b = plates_for(20260831, 22);
+        for (x, y) in a.plates().iter().zip(b.plates().iter()) {
+            assert_eq!(x.seed.vector.x.to_bits(), y.seed.vector.x.to_bits());
+            assert_eq!(x.euler_pole.vector.z.to_bits(), y.euler_pole.vector.z.to_bits());
+            assert_eq!(x.rate_rad_per_myr.to_bits(), y.rate_rad_per_myr.to_bits());
+        }
+    }
+
+    #[test]
+    fn a_different_seed_builds_a_different_world() {
+        // Weak on its own, but it would catch a world_seed wired to nothing -- which
+        // would otherwise pass every other test in this task.
+        let a = plates_for(20260831, 22);
+        let b = plates_for(20260832, 22);
+        let differs = a.plates().iter().zip(b.plates().iter())
+            .any(|(x, y)| x.rate_rad_per_myr.to_bits() != y.rate_rad_per_myr.to_bits());
+        assert!(differs, "changing the seed must change the world");
+    }
+
+    #[test]
+    fn a_count_of_one_still_builds_a_world() {
+        // The spiral's z = 1 - 2*(0 + 0.5)/1 = 0.0 exactly, so the single seed sits on
+        // the equator with ring = 1. Confirm rather than assume; a count of one is the
+        // degenerate case most likely to divide by something.
+        let set = plates_for(20260831, 1);
+        assert_eq!(set.plates().len(), 1);
     }
 }
