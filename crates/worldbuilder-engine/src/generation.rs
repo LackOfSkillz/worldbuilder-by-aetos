@@ -250,13 +250,23 @@ mod tests {
 
     #[test]
     fn the_jitter_actually_moves_the_point() {
-        // spread_impl exposes a jitter_scale so the test can compare the jittered point
-        // against the same computation with the nudges forced to zero. A jitter wired to
-        // nothing would make this fail, while every other test in this file would still
-        // pass.
-        let jittered = spread_impl(20260831, 5, 22, 1.0);
+        // The production call site is `spread`, not `spread_impl` -- comparing two
+        // `spread_impl` calls against each other (1.0 vs 0.0) only proves the parameter
+        // works, not that `spread` passes 1.0. So the "with jitter" side goes through the
+        // public `spread` function itself; only the "without" side reaches into
+        // `spread_impl` to force the nudges to zero. If `spread` ever stopped passing
+        // 1.0 -- dropped the argument, hardcoded 0.0, anything -- the two sides would
+        // become identical and this assertion would fail.
+        let jittered = spread(20260831, 5, 22);
         let unjittered = spread_impl(20260831, 5, 22, 0.0);
         let moved = jittered.vector.sub(&unjittered.vector).length();
         assert!(moved > 1e-6, "jitter moved the point by only {moved}");
+
+        // States the wiring directly, in addition to the above's proof by consequence:
+        // spread(...) is exactly spread_impl(..., 1.0), bit-for-bit.
+        let via_impl = spread_impl(20260831, 5, 22, 1.0);
+        assert_eq!(jittered.vector.x.to_bits(), via_impl.vector.x.to_bits());
+        assert_eq!(jittered.vector.y.to_bits(), via_impl.vector.y.to_bits());
+        assert_eq!(jittered.vector.z.to_bits(), via_impl.vector.z.to_bits());
     }
 }
