@@ -38,6 +38,11 @@
 with no detail stage — while its other three rows are full-pipeline. **The conformance target is the
 full-pipeline reading**, because that is what a wrongly-ordered `surface.rs` would actually compute.
 
+**These mutations do not all live in the same method.** `structural_m` is
+`features.apply(point, shelf.elevation_m(point))[0]` — it has no detail stage and **no authority
+multiply** — so only *features before shelf* is a mutation of it. The other three belong to `elevation_m`
+and are **Task 4's** to catch.
+
 So a conformance suite built only on ULP bounds would be aiming at the wrong target. **Get the order right and the numbers follow; get it wrong and no tolerance hides it.** Test the structure.
 
 ## Two exact invariants to pin, rather than only testing end-to-end
