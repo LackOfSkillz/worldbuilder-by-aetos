@@ -12,8 +12,17 @@
 //!
 //! This module carries the module constants, `smooth` (reused, not duplicated - see
 //! below), the `Composition` type with its normalising constructor, `blended_towards`,
-//! `dominant` and `holding`, the `PURE` table, and now `natural` and `slope_at`.
-//! `Substrate::at` and the host plumbing are a later task.
+//! `dominant` and `holding`, the `PURE` table, `natural`, `slope_at`, and now `at` and
+//! `dominant_at` with the host plumbing they need. Bindings are a later task.
+//!
+//! **There is no `Substrate` type and no host trait, and that is deliberate.** Python
+//! builds `Surface`'s five layers and hands `self` to `Substrate` on the last line of
+//! `__init__`, so a Rust `Substrate<'a>` borrowing its host could not be a field of that
+//! host - and the Python's own docstring says the thing *holds nothing*. So the four
+//! host members Task 1's runtime census measured (`radius_m`, `structural_m(point)`,
+//! `tectonics.offset_m(point)` and `features.placed`) are passed in: two callbacks, a
+//! radius, and `&Features` concretely, since `Placed` and its load-bearing reach gate
+//! are already ported and nothing should stand between this module and them.
 //!
 //! **Everything here is strict but `slope_at`.** `natural`, `Composition::new`,
 //! `blended_towards`, `dominant`, `holding` and `smooth` reach zero transcendentals, so
@@ -22,6 +31,7 @@
 //! carries the module's one bound, `SLOPE_DRIFT_REL`, measured rather than borrowed.
 
 use crate::detmath as m;
+use crate::features::Features;
 use crate::sphere::SpherePoint;
 use crate::tangent::TangentFrame;
 
@@ -262,6 +272,162 @@ pub fn slope_at(
     m::hypot(east, north)
 }
 
+
+/// What a placed feature declared, that `PURE` has no entry for.
+///
+/// **The `Option` `pure` returns is a trap, and this is the exit from it.** Python's
+/// `PURE[declared]` is a `dict` lookup that raises `KeyError` on any word that is not
+/// `SAND`, `MUD` or `ROCK` - and an empty string is such a word. `tests/test_conformance.py`
+/// already pins that `substrate=""` survives the FFI crossing *distinct from `None`*
+/// (`test_features_substrate_none_survives_the_crossing_as_none_not_as_empty`), so a
+/// value this port guarantees can reach `at` is a value that makes the Python raise.
+/// Continuing past it - `if let Some(c) = pure(declared)` and on to the next feature -
+/// would answer where the Python refuses to, and disagreeing about whether an answer
+/// *exists* is the worst divergence this module could carry.
+///
+/// **Not the same thing as `declared is None`.** That branch is a genuine skip: `None`
+/// means "derive the bottom from the shape of the ground", the feature has nothing to
+/// say about substrate, and the Python `continue`s before it even asks for a weight.
+/// This error is the other case entirely - a feature that *did* declare something, and
+/// declared something no composition exists for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSubstrate {
+    /// The word the feature declared, verbatim - including the empty string.
+    pub declared: String,
+}
+
+impl std::fmt::Display for UnknownSubstrate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no pure composition for the declared substrate {:?}; Python raises KeyError({:?})",
+            self.declared, self.declared,
+        )
+    }
+}
+
+impl std::error::Error for UnknownSubstrate {}
+
+/// What the bottom is made of here.
+///
+/// Args:
+/// radius_m: The planet's radius, from the host surface.
+/// point: Where.
+/// elevation_m: The structural ground, if already to hand.
+/// tectonic_m: The tectonic contribution, if already to hand.
+/// slope: The slope, if already to hand.
+/// structural_m: The host's structural ground, as a callback.
+/// tectonic_offset_m: The host's `tectonics.offset_m`, as a callback.
+/// features: The host's placed features, concretely - `Placed` and its reach gate are
+/// already ported, so nothing stands between this and `features.rs`.
+///
+/// Returns:
+/// composition: Fractions summing to *very nearly* one - see `Composition`. `Err` where
+/// the Python raises `KeyError` - see `UnknownSubstrate`.
+///
+/// Notes:
+/// **The three optionals are `is None` SENTINELS, and a supplied `0.0` is a value.**
+/// This codebase holds three non-interchangeable optional idioms - the sentinel here,
+/// plain default substitution (`radius_m=EARTH_RADIUS_M`) and `detail.py`'s falsy check
+/// where `0.0` counts as absent. Matched with `Option`/`match`, never with a
+/// zero-or-falsy test: a caller handing in an elevation of exactly `0.0` (datum) has
+/// supplied a value, and re-deriving it would call the host and get a different number.
+///
+/// **The resolution order is observable and is transcribed, not chosen**: elevation,
+/// then tectonic, then slope. Each one left `None` triggers a *different* host call -
+/// `structural_m(point)`, `tectonics.offset_m(point)`, and then `slope_at`'s own four
+/// `structural_m` probes - so a host that memoises, counts or logs can tell one order
+/// from another. Measured against the live Python with a recording proxy: all three
+/// `None` gives `[structural, tectonic, structural x4]`, and every partial combination
+/// drops exactly its own call from that sequence.
+///
+/// **`slope` is resolved LAST but declared THIRD**, which is Python's own arrangement
+/// (`at(point, elevation_m=None, slope=None, tectonic_m=None)` resolves elevation,
+/// tectonic, slope). Task 1 ruled that the Rust parameters run in *resolution* order so
+/// the signature and the behaviour cannot drift apart; the keyword names are what a
+/// binding must map, not the positions.
+///
+/// **Iteration over `placed` preserves order**, for the same reason `features.rs` does:
+/// blending is not commutative. Two features declaring different substrates over the
+/// same water give different answers reversed - measured, e.g. pure ROCK one way and
+/// `(0.0, 0.344, 0.656)` the other at the same point.
+#[allow(clippy::too_many_arguments)]
+pub fn at(
+    radius_m: f64,
+    point: &SpherePoint,
+    elevation_m: Option<f64>,
+    tectonic_m: Option<f64>,
+    slope: Option<f64>,
+    structural_m: &dyn Fn(&SpherePoint) -> f64,
+    tectonic_offset_m: &dyn Fn(&SpherePoint) -> f64,
+    features: &Features,
+) -> Result<Composition, UnknownSubstrate> {
+    let elevation_m = match elevation_m {
+        Some(value) => value,
+        None => structural_m(point),
+    };
+    let tectonic_m = match tectonic_m {
+        Some(value) => value,
+        None => tectonic_offset_m(point),
+    };
+    let slope = match slope {
+        Some(value) => value,
+        None => slope_at(radius_m, point, SLOPE_BASELINE_M, structural_m),
+    };
+
+    let mut composition = natural(elevation_m, slope, tectonic_m);
+    for placed in &features.placed {
+        let declared = match placed.feature.substrate.as_deref() {
+            None => continue,
+            Some(declared) => declared,
+        };
+        let weight = placed.weight_at(point);
+        // Python: `if weight > 0.0:`. Transcribed, not simplified away - blending at a
+        // weight of exactly zero is NOT the identity, because `blended_towards` re-enters
+        // `Composition::new` and the renormalising division there moves fractions that
+        // do not sum to exactly one. See the test for the measured populations.
+        if weight > 0.0 {
+            // Python: `PURE[declared]`, INSIDE the guard, and it raises. The lookup only
+            // happens where the feature actually applies, so an unreachable feature
+            // declaring nonsense is not an error - and where it does apply, an unknown
+            // word must refuse to answer rather than quietly skip the blend.
+            let towards = match pure(declared) {
+                Some(towards) => towards,
+                None => return Err(UnknownSubstrate { declared: declared.to_string() }),
+            };
+            composition = composition.blended_towards(&towards, weight);
+        }
+    }
+    Ok(composition)
+}
+
+/// The one-word answer, which is what the maritime interface asks for.
+///
+/// Python's `dominant_at(point, **known)` forwards its keywords to `at`; Rust has no
+/// `**kwargs`, so the three optionals appear explicitly, in `at`'s own order.
+#[allow(clippy::too_many_arguments)]
+pub fn dominant_at(
+    radius_m: f64,
+    point: &SpherePoint,
+    elevation_m: Option<f64>,
+    tectonic_m: Option<f64>,
+    slope: Option<f64>,
+    structural_m: &dyn Fn(&SpherePoint) -> f64,
+    tectonic_offset_m: &dyn Fn(&SpherePoint) -> f64,
+    features: &Features,
+) -> Result<&'static str, UnknownSubstrate> {
+    at(
+        radius_m,
+        point,
+        elevation_m,
+        tectonic_m,
+        slope,
+        structural_m,
+        tectonic_offset_m,
+        features,
+    )
+    .map(|composition| composition.dominant())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1007,5 +1173,558 @@ mod tests {
         assert_eq!(blended.sand.to_bits(), 0x3fe6666666666666);
         assert_eq!(blended.mud.to_bits(), 0x3fb999999999999a);
         assert_eq!(blended.rock.to_bits(), 0x3fc999999999999a);
+    }
+
+    // -- at -----------------------------------------------------------------------
+    //
+    // The host is a duck-typed stand-in on both sides: Task 1's runtime census found
+    // `Substrate` reaches exactly four members of its surface, so the Python twin of
+    // every test below is a plain object carrying `radius_m`, `structural_m`,
+    // `tectonics.offset_m` and `features.placed` - no `Surface` anywhere. That is what
+    // makes these cases STRICT rather than bounded: the structural field is
+    // `analytic_field` less 500 m (pure arithmetic, bit-identical by construction, see
+    // `slope_at`'s corpus above) and the tectonic field is a plane through the unit
+    // vector, so nothing but `at` itself can differ.
+
+    /// The analytic field, dropped 500 m so the bottom is genuinely below wave base.
+    ///
+    /// Deliberately deep: at the shallow field's own elevations `swept` saturates at
+    /// 1.0, so supplying `elevation_m=0.0` and letting the host be asked produce the
+    /// *same* composition and the sentinel test proves nothing. 500 m down, a supplied
+    /// `0.0` is all sand and a derived `-526.86` is all mud.
+    fn deep_field(point: &SpherePoint) -> f64 {
+        analytic_field(point) - 500.0
+    }
+
+    /// A tectonic contribution that is a plane through the unit vector - arithmetic
+    /// only, so it too is bit-identical in both languages.
+    fn analytic_tectonic(point: &SpherePoint) -> f64 {
+        900.0 * point.vector.y - 300.0 * point.vector.x
+    }
+
+    fn declared_feature(
+        kind: &str,
+        centre: SpherePoint,
+        length_m: f64,
+        width_m: f64,
+        bearing_deg: f64,
+        substrate: Option<&str>,
+    ) -> crate::features::Feature {
+        crate::features::Feature {
+            kind: kind.to_string(),
+            at: centre,
+            target_m: -3.5,
+            length_m,
+            width_m,
+            bearing_deg,
+            compose: crate::features::RAISE.to_string(),
+            marked: true,
+            substrate: substrate.map(|word| word.to_string()),
+        }
+    }
+
+    /// The three features the corpus is built on, at the centres the Python placed them:
+    /// a 70x70 ROCK on the analytic feature's own middle, a 300x120 MUD 60 m east of it
+    /// on a 30-degree bearing, and a 200x200 with `substrate=None` 40 m north.
+    fn rock_feature() -> crate::features::Feature {
+        declared_feature(
+            "rock",
+            at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24),
+            70.0,
+            70.0,
+            0.0,
+            Some(ROCK),
+        )
+    }
+
+    fn mud_feature() -> crate::features::Feature {
+        declared_feature(
+            "mud",
+            at_bits(0xbfe9b4fbdf627056, 0x3fddf49367f598cc, 0xbfd7907eeec32f28),
+            300.0,
+            120.0,
+            30.0,
+            Some(MUD),
+        )
+    }
+
+    fn plain_feature() -> crate::features::Feature {
+        declared_feature(
+            "plain",
+            at_bits(0xbfe9b4f61e5e43b9, 0x3fddf4ba6ad5ff1d, 0xbfd7906672ee9ba8),
+            200.0,
+            200.0,
+            0.0,
+            None,
+        )
+    }
+
+    fn corpus_features() -> crate::features::Features {
+        crate::features::Features::new(
+            [rock_feature(), mud_feature(), plain_feature()],
+            EARTH_RADIUS_M,
+        )
+    }
+
+    /// `at` with the corpus host, and the three optionals as given.
+    fn corpus_at(
+        point: &SpherePoint,
+        elevation_m: Option<f64>,
+        tectonic_m: Option<f64>,
+        slope: Option<f64>,
+        features: &crate::features::Features,
+    ) -> Result<Composition, UnknownSubstrate> {
+        at(
+            EARTH_RADIUS_M,
+            point,
+            elevation_m,
+            tectonic_m,
+            slope,
+            &deep_field,
+            &analytic_tectonic,
+            features,
+        )
+    }
+
+    /// The three values every STRICT case below supplies, so that no host call and no
+    /// transcendental stands between the two languages: the elevation and slope that
+    /// `natural`'s own does-not-sum-to-one case uses, and a flat tectonic field.
+    const STRICT_ELEVATION_M: f64 = -119.8;
+    const STRICT_SLOPE: f64 = 0.0025666666666666667;
+    const STRICT_TECTONIC_M: f64 = 0.0;
+
+    fn strict_at(
+        point: &SpherePoint,
+        features: &crate::features::Features,
+    ) -> Result<Composition, UnknownSubstrate> {
+        corpus_at(
+            point,
+            Some(STRICT_ELEVATION_M),
+            Some(STRICT_TECTONIC_M),
+            Some(STRICT_SLOPE),
+            features,
+        )
+    }
+
+    fn assert_bits(c: &Composition, sand: u64, mud: u64, rock: u64, label: &str) {
+        assert_eq!(c.sand.to_bits(), sand, "sand at {label}");
+        assert_eq!(c.mud.to_bits(), mud, "mud at {label}");
+        assert_eq!(c.rock.to_bits(), rock, "rock at {label}");
+    }
+
+    // THE THREE OPTIONALS ARE `is None` SENTINELS, AND THE RESOLUTION ORDER IS
+    // OBSERVABLE.
+    //
+    // Both halves measured against the live Python with a recording proxy standing in
+    // for the host. All three `None` gives
+    //
+    //     ['structural', 'tectonic', 'structural', 'structural', 'structural', 'structural']
+    //
+    // - one structural probe for the elevation, one tectonic, then `slope_at`'s four -
+    // and each optional that IS supplied removes exactly its own call and nothing else.
+    // A supplied `0.0` removes the call too, which is the whole point: `0.0` is the
+    // datum, a perfectly ordinary elevation, and a falsy check would re-derive it.
+    #[test]
+    fn the_three_optionals_are_none_sentinels_resolved_in_the_pythons_order() {
+        use std::cell::RefCell;
+        let empty = crate::features::Features::new([], EARTH_RADIUS_M);
+        let centre = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+
+        for (elevation_m, tectonic_m, slope, expected) in [
+            (
+                None,
+                None,
+                None,
+                &["structural", "tectonic", "structural", "structural", "structural", "structural"]
+                    [..],
+            ),
+            (
+                Some(0.0),
+                None,
+                None,
+                &["tectonic", "structural", "structural", "structural", "structural"][..],
+            ),
+            (
+                None,
+                Some(0.0),
+                None,
+                &["structural", "structural", "structural", "structural", "structural"][..],
+            ),
+            (None, None, Some(0.0), &["structural", "tectonic"][..]),
+            (Some(0.0), Some(0.0), Some(0.0), &[][..]),
+        ] {
+            let seen = RefCell::new(Vec::new());
+            let structural: &dyn Fn(&SpherePoint) -> f64 = &|p: &SpherePoint| {
+                seen.borrow_mut().push("structural");
+                deep_field(p)
+            };
+            let tectonic: &dyn Fn(&SpherePoint) -> f64 = &|p: &SpherePoint| {
+                seen.borrow_mut().push("tectonic");
+                analytic_tectonic(p)
+            };
+            at(
+                EARTH_RADIUS_M,
+                &centre,
+                elevation_m,
+                tectonic_m,
+                slope,
+                structural,
+                tectonic,
+                &empty,
+            )
+            .expect("no feature declares a substrate here");
+            assert_eq!(
+                seen.borrow().as_slice(),
+                expected,
+                "host calls for ({elevation_m:?}, {tectonic_m:?}, {slope:?})",
+            );
+        }
+    }
+
+    // ... and `0.0` is a VALUE, not an absence, in the answer as well as in the call
+    // count. The deep field reads -526.86 m at the middle, well below SETTLED_M, so a
+    // derived elevation is all mud; a supplied 0.0 is above SWEPT_M and all sand. A
+    // falsy check would silently return the first where the caller asked for the second.
+    #[test]
+    fn a_supplied_elevation_of_exactly_zero_is_a_value_and_not_an_absence() {
+        let empty = crate::features::Features::new([], EARTH_RADIUS_M);
+        let centre = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        let derived = corpus_at(&centre, None, Some(0.0), Some(0.0), &empty).unwrap();
+        let supplied = corpus_at(&centre, Some(0.0), Some(0.0), Some(0.0), &empty).unwrap();
+        // python: Substrate(FakeSurface(deep_field, ...)).at(centre, slope=0.0, tectonic_m=0.0)
+        assert_bits(&derived, 0x0, 0x3ff0000000000000, 0x0, "derived elevation");
+        assert_bits(&supplied, 0x3ff0000000000000, 0x0, 0x0, "supplied elevation 0.0");
+        assert_eq!(derived.dominant(), MUD);
+        assert_eq!(supplied.dominant(), SAND);
+    }
+
+    // AN UNKNOWN SUBSTRATE IS AN ERROR, AND THE EMPTY STRING IS THE ONE THAT CAN ARRIVE.
+    //
+    // `PURE[declared]` is a dict lookup in the Python and it raises. Measured on the
+    // live Python against this same host: `KeyError('')`, `KeyError('gravel')` and
+    // `KeyError('Rock')` - the last because the table is case-sensitive and nothing
+    // normalises the word on the way in.
+    //
+    // `tests/test_conformance.py` already pins that `substrate=""` crosses the FFI
+    // boundary as `""` and not as `None`, so this is not a hypothetical input: it is a
+    // value the port guarantees can reach here.
+    #[test]
+    fn an_unknown_substrate_is_an_error_rather_than_a_quietly_skipped_feature() {
+        let centre = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        for word in ["", "gravel", "Rock", "SAND", " sand"] {
+            let features = crate::features::Features::new(
+                [declared_feature("odd", centre, 70.0, 70.0, 0.0, Some(word))],
+                EARTH_RADIUS_M,
+            );
+            assert_eq!(
+                strict_at(&centre, &features),
+                Err(UnknownSubstrate { declared: word.to_string() }),
+                "substrate {word:?} should have refused to answer",
+            );
+        }
+        // The three real words do not.
+        for word in [SAND, MUD, ROCK] {
+            let features = crate::features::Features::new(
+                [declared_feature("known", centre, 70.0, 70.0, 0.0, Some(word))],
+                EARTH_RADIUS_M,
+            );
+            assert!(strict_at(&centre, &features).is_ok(), "substrate {word:?} should answer");
+        }
+    }
+
+    // THE LOOKUP IS INSIDE THE GUARD, so a feature declaring nonsense somewhere else on
+    // the planet does not poison this point: Python evaluates `PURE[declared]` only when
+    // `weight > 0.0`, and at 3 km out the weight is exactly `0.0`. Measured: the Python
+    // returns the ordinary composition there and raises at the middle, with the same
+    // world both times.
+    #[test]
+    fn an_unknown_substrate_out_of_reach_does_not_raise() {
+        let centre = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        let far = at_bits(0xbfe9b6e2e2812110, 0x3fddee0ad1a148a9, 0xbfd7907ec2f31ed6);
+        let features = crate::features::Features::new(
+            [declared_feature("empty", centre, 70.0, 70.0, 0.0, Some(""))],
+            EARTH_RADIUS_M,
+        );
+        assert!(strict_at(&centre, &features).is_err());
+        let out_of_reach = strict_at(&far, &features).expect("out of reach, so never looked up");
+        // python: the same three bits `natural(-119.8, 0.0025666666666666667, 0.0)` gives
+        assert_bits(
+            &out_of_reach,
+            0x3ef3655d63b63ec9,
+            0x3fef9efd22c1f7db,
+            0x3f883704a0d02e62,
+            "far",
+        );
+    }
+
+    // A DECLARED `None` IS A GENUINE SKIP, and not the same thing as the error above.
+    //
+    // In the Python it skips *before* the weight is asked for - measured with a counting
+    // proxy round `Placed`, `weight_at` calls came back `[0, 1]` for a `None` feature and
+    // a ROCK one. Rust cannot observe that call from outside `Placed`, so what is
+    // asserted here is the consequence: the `plain` feature covers the middle at weight
+    // 0.896 and changes nothing at all, bit for bit.
+    #[test]
+    fn a_none_substrate_is_skipped_and_changes_nothing() {
+        let centre = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        let with_plain =
+            crate::features::Features::new([rock_feature(), plain_feature()], EARTH_RADIUS_M);
+        let without = crate::features::Features::new([rock_feature()], EARTH_RADIUS_M);
+        let covered = strict_at(&centre, &with_plain).unwrap();
+        let bare = strict_at(&centre, &without).unwrap();
+        assert_bits(
+            &covered,
+            bare.sand.to_bits(),
+            bare.mud.to_bits(),
+            bare.rock.to_bits(),
+            "a None-substrate feature",
+        );
+        // and it is genuinely overhead - the feature is over the point at weight 0.896.
+        let placed = crate::features::Placed::new(plain_feature(), EARTH_RADIUS_M);
+        assert!(placed.weight_at(&centre) > 0.89, "{}", placed.weight_at(&centre));
+    }
+
+    // THE `weight > 0.0` GUARD IS BIT-OBSERVABLE, and this is one of the points that
+    // shows it with no transcendental anywhere in the comparison.
+    //
+    // 69 m west and 25 m north of the middle: the ROCK feature is still on the point at
+    // weight 4.296169e-4, and the MUD feature's weight is exactly `0.0`. Guarded, MUD is
+    // skipped and the answer is the ROCK blend; ungated, `blended_towards(PURE[MUD],
+    // 0.0)` re-enters `Composition::new` with `keep = 1.0`, and the renormalising
+    // division there is NOT a no-op - the three fractions do not sum to exactly one, so
+    // every one of them moves by an ULP.
+    //
+    // POPULATION MATTERS AND IS QUOTED WITH EVERY RATE. On the real `at()` path over the
+    // demo coast - a 61 x 61 grid at 1,500 m per step, 3,721 points, the full 25-feature
+    // demo world - guarded and ungated differ at **67 points, 1.80%**, worst absolute
+    // shift 2.220446e-16, worst relative 1.249555e-15, worst 11 ULP, and zero `dominant`
+    // flips. The same grid at 50 m per step differs at 167 points (4.49%); over
+    // uniform-random `Composition` triples the rate is 19.24%; and it is the population,
+    // not the guard, that moves those figures.
+    #[test]
+    fn the_weight_guard_is_bit_observable_and_is_not_an_optimisation() {
+        let guard_point = at_bits(0xbfe9b4e91d0cebc8, 0x3fddf4dfd6169558, 0xbfd7906fa15a89ff);
+        let features = corpus_features();
+        let got = strict_at(&guard_point, &features).unwrap();
+        // python: the guarded answer, which is the one the port must produce.
+        assert_bits(
+            &got,
+            0x3ef3633b4a02648a,
+            0x3fef9b82d5522e28,
+            0x3f8915990dcf748b,
+            "the guarded answer",
+        );
+
+        // The ungated answer, computed here from this crate's own arithmetic, so the
+        // difference is demonstrated rather than asserted from a comment.
+        let mut ungated = natural(STRICT_ELEVATION_M, STRICT_SLOPE, STRICT_TECTONIC_M);
+        for placed in &features.placed {
+            let declared = match placed.feature.substrate.as_deref() {
+                None => continue,
+                Some(declared) => declared,
+            };
+            let towards = pure(declared).unwrap();
+            ungated = ungated.blended_towards(&towards, placed.weight_at(&guard_point));
+        }
+        // python: the ungated sand, one ULP above the guarded one.
+        assert_eq!(ungated.sand.to_bits(), 0x3ef3633b4a02648b);
+        assert_ne!(ungated.sand.to_bits(), got.sand.to_bits());
+        assert_ne!(ungated.mud.to_bits(), got.mud.to_bits());
+        assert_ne!(ungated.rock.to_bits(), got.rock.to_bits());
+        // and the MUD feature really is at exactly zero weight here, which is the
+        // condition the guard is reading.
+        let mud = crate::features::Placed::new(mud_feature(), EARTH_RADIUS_M);
+        assert_eq!(mud.weight_at(&guard_point).to_bits(), 0u64);
+        let rock = crate::features::Placed::new(rock_feature(), EARTH_RADIUS_M);
+        assert!(rock.weight_at(&guard_point) > 0.0);
+    }
+
+    // ITERATION OVER `placed` PRESERVES ORDER, because blending is not commutative and
+    // the last feature to speak has the loudest voice. Both orders measured on the live
+    // Python over the same three points.
+    #[test]
+    fn the_order_of_placed_is_preserved_because_blending_is_not_commutative() {
+        let forward = corpus_features();
+        let reversed = crate::features::Features::new(
+            [mud_feature(), rock_feature(), plain_feature()],
+            EARTH_RADIUS_M,
+        );
+        for (label, x, y, z, forwards, backwards) in [
+            (
+                "30 m east",
+                0xbfe9b4f6e6b74c4au64,
+                0x3fddf4a4789d8801u64,
+                0xbfd7907eeec68ce5u64,
+                [0x3eaef3cde062f068u64, 0x3fed85b9b15cacf8u64, 0x3fb3d222fb33a810u64],
+                [0x3eaef3cde062f068u64, 0x3fd926d65e2af2fbu64, 0x3fe36c92e1ada87cu64],
+            ),
+            (
+                "60 m east, 20 m north",
+                0xbfe9b4fdf78d42b7,
+                0x3fddf495d8bfec34,
+                0xbfd79072b0d72695,
+                [0x3ea142b59491f32b, 0x3feff2b6d71cd17a, 0x3f5a90296faa7983],
+                [0x3ea142b59491f32d, 0x3fee917b206cf983, 0x3fa6e83cb67ad349],
+            ),
+            (
+                "the middle, where reversing changes the WORD",
+                0xbfe9b4f1ee09b585,
+                0x3fddf4b589429ce6,
+                0xbfd7907eeec7ac24,
+                [0x0, 0x3fe2a8a0501428b5, 0x3fdaaebf5fd7ae96],
+                [0x0, 0x0, 0x3ff0000000000000],
+            ),
+        ] {
+            let p = at_bits(x, y, z);
+            let one_way = strict_at(&p, &forward).unwrap();
+            let other_way = strict_at(&p, &reversed).unwrap();
+            assert_bits(&one_way, forwards[0], forwards[1], forwards[2], label);
+            assert_bits(&other_way, backwards[0], backwards[1], backwards[2], label);
+            assert_ne!(
+                one_way, other_way,
+                "{label}: reversing the order changed nothing, so order is not preserved",
+            );
+        }
+        // At the middle the ROCK feature has weight exactly 1.0, so with ROCK last the
+        // answer is pure rock and with MUD last it is not - a different word, not a
+        // different ULP.
+        let middle = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        assert_eq!(strict_at(&middle, &forward).unwrap().dominant(), MUD);
+        assert_eq!(strict_at(&middle, &reversed).unwrap().dominant(), ROCK);
+    }
+
+    // `at` against the live Python at six points of the corpus, every optional supplied,
+    // so this is STRICT - raw bits, no tolerance.
+    #[test]
+    fn at_matches_the_python_bit_for_bit_with_the_optionals_supplied() {
+        let features = corpus_features();
+        for (label, x, y, z, sand, mud, rock) in [
+            (
+                "the middle",
+                0xbfe9b4f1ee09b585u64,
+                0x3fddf4b589429ce6u64,
+                0xbfd7907eeec7ac24u64,
+                0x0u64,
+                0x3fe2a8a0501428b5u64,
+                0x3fdaaebf5fd7ae96u64,
+            ),
+            (
+                "30 m east",
+                0xbfe9b4f6e6b74c4a,
+                0x3fddf4a4789d8801,
+                0xbfd7907eeec68ce5,
+                0x3eaef3cde062f068,
+                0x3fed85b9b15cacf8,
+                0x3fb3d222fb33a810,
+            ),
+            (
+                "60 m east, 20 m north",
+                0xbfe9b4fdf78d42b7,
+                0x3fddf495d8bfec34,
+                0xbfd79072b0d72695,
+                0x3ea142b59491f32b,
+                0x3feff2b6d71cd17a,
+                0x3f5a90296faa7983,
+            ),
+            (
+                "40 m north",
+                0xbfe9b4f61e5e43b9,
+                0x3fddf4ba6ad5ff1d,
+                0xbfd7906672ee9ba8,
+                0x3ede7a244cc955ab,
+                0x3fe7b140f953c285,
+                0x3fd09d5f93342e2c,
+            ),
+            (
+                "3 km out, clear of everything",
+                0xbfe9b6e2e2812110,
+                0x3fddee0ad1a148a9,
+                0xbfd7907ec2f31ed6,
+                0x3ef3655d63b63ec9,
+                0x3fef9efd22c1f7db,
+                0x3f883704a0d02e62,
+            ),
+            (
+                "the guard point",
+                0xbfe9b4e91d0cebc8,
+                0x3fddf4dfd6169558,
+                0xbfd7906fa15a89ff,
+                0x3ef3633b4a02648a,
+                0x3fef9b82d5522e28,
+                0x3f8915990dcf748b,
+            ),
+        ] {
+            let p = at_bits(x, y, z);
+            assert_bits(&strict_at(&p, &features).unwrap(), sand, mud, rock, label);
+        }
+    }
+
+    // The fully-resolved path - every optional `None`, so the host is asked five times
+    // and `slope_at` runs - agrees bit-for-bit with handing the same three numbers in.
+    // Cross-language this path carries `slope_at`'s bound and nothing else new, so it is
+    // pinned here against this crate's own arithmetic rather than against a second
+    // measured constant; the Python's own words at these points are quoted alongside.
+    #[test]
+    fn resolving_the_optionals_gives_the_same_answer_as_supplying_them() {
+        let features = corpus_features();
+        for (label, x, y, z) in [
+            ("the middle", 0xbfe9b4f1ee09b585u64, 0x3fddf4b589429ce6u64, 0xbfd7907eeec7ac24u64),
+            ("30 m east", 0xbfe9b4f6e6b74c4a, 0x3fddf4a4789d8801, 0xbfd7907eeec68ce5),
+            ("40 m north", 0xbfe9b4f61e5e43b9, 0x3fddf4ba6ad5ff1d, 0xbfd7906672ee9ba8),
+        ] {
+            let p = at_bits(x, y, z);
+            let resolved = corpus_at(&p, None, None, None, &features).unwrap();
+            let supplied = corpus_at(
+                &p,
+                Some(deep_field(&p)),
+                Some(analytic_tectonic(&p)),
+                Some(slope_at(EARTH_RADIUS_M, &p, SLOPE_BASELINE_M, &deep_field)),
+                &features,
+            )
+            .unwrap();
+            assert_eq!(resolved, supplied, "{label}");
+        }
+        // python, resolving everything: 'mud' at the middle, 'rock' 40 m north.
+        let middle = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        let north = at_bits(0xbfe9b4f61e5e43b9, 0x3fddf4ba6ad5ff1d, 0xbfd7906672ee9ba8);
+        assert_eq!(corpus_at(&middle, None, None, None, &features).unwrap().dominant(), MUD);
+        assert_eq!(corpus_at(&north, None, None, None, &features).unwrap().dominant(), ROCK);
+    }
+
+    // `dominant_at` is `at().dominant`, error and all - it must not answer a word where
+    // `at` refuses to answer at all.
+    #[test]
+    fn dominant_at_is_at_dominant_and_carries_the_same_refusal() {
+        let features = corpus_features();
+        let middle = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
+        let word = dominant_at(
+            EARTH_RADIUS_M,
+            &middle,
+            None,
+            None,
+            None,
+            &deep_field,
+            &analytic_tectonic,
+            &features,
+        );
+        assert_eq!(word, Ok(MUD));
+
+        let odd = crate::features::Features::new(
+            [declared_feature("odd", middle, 70.0, 70.0, 0.0, Some(""))],
+            EARTH_RADIUS_M,
+        );
+        assert_eq!(
+            dominant_at(
+                EARTH_RADIUS_M,
+                &middle,
+                Some(STRICT_ELEVATION_M),
+                Some(STRICT_TECTONIC_M),
+                Some(STRICT_SLOPE),
+                &deep_field,
+                &analytic_tectonic,
+                &odd,
+            ),
+            Err(UnknownSubstrate { declared: String::new() }),
+        );
     }
 }
