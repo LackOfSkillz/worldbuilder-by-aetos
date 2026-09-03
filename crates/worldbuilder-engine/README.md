@@ -1322,6 +1322,11 @@ engine unmutated -- failed two of the sixteen tests outright. The current bounds
 genuinely re-measured rather than scaled off those: the ratios are 22x, 22x, 32x and 40x,
 and the headroom moved independently per bound.
 
+**This envelope is deliberately duplicated into all four constants' docstrings, and the
+duplication is the point.** A README is a file somebody may not open; the docstring is what
+is on screen when the number is read and when it is tempting to reuse. Keep the two in
+sync -- if the envelope is ever re-measured, it is five edits, not one.
+
 ### A known divergence: `marks_near` membership can reclassify across languages
 
 `distance_m` is bounded at 2 ULP and feeds `distance <= within_m`, which is a **discrete**
@@ -1359,10 +1364,14 @@ ULP divergence over the same 98,000 probes, bucketed by how large the weight act
     weight >= 1e-12        32,642,720 ULP
     every point               4.19e18 ULP  -- i.e. no bound at all
 
-(Those are this corpus's numbers, re-measured for this section. The smaller figures of
-145 / 6,239 / 725,675 / 1.8e16 in `FEATURES_WEIGHT_MAX_ABS`'s docstring were measured on
-the earlier 4:1-capped corpus and were not re-measured when it was widened to 250:1; the
-conclusion they support is unchanged and only strengthened.) The same edge produces **312**
+(Those are this corpus's numbers, re-measured for this section, and
+`FEATURES_WEIGHT_MAX_ABS`'s docstring now agrees with them figure for figure. It briefly did
+not: an earlier draft of this paragraph recorded that the docstring still carried
+145 / 6,239 / 725,675 / 1.8e16 from the 4:1-capped corpus, and that was true when it was
+written and false one commit later, when the docstring was re-measured. The old figures
+survive there only as a parenthetical history note, which is where they belong -- the
+collapse is worse than first recorded, so the case for bounding this absolutely is
+strengthened rather than weakened.) The same edge produces **312**
 points where one language returns exactly `0.0` and the other returns up to
 **8.617674e-29** -- infinitely many ULP apart and physically indistinguishable from
 agreement. That census is pinned to 312, so a real divergence could not hide among them,
