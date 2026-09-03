@@ -20,6 +20,7 @@ pub mod kinematics;
 pub mod tectonics;
 pub mod shelf;
 pub mod substrate;
+pub mod surface;
 
 use pyo3::prelude::*;
 

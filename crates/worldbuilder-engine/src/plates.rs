@@ -58,6 +58,7 @@ impl Plate {
 /// redraw makes ninety-nine of them per terrain sample. That duplication is deliberately
 /// not ported: in Rust the field access is free, the arithmetic is identical, and one
 /// representation cannot fall out of step with itself.
+#[derive(Clone)]
 pub struct PlateSet {
     plates: Vec<Plate>,
     /// Row-major, `plates.len()` squared. `None` where the pair cannot define a bisector.
