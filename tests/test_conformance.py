@@ -2410,3 +2410,213 @@ def test_points_either_side_of_the_engagement_threshold_agree():
     assert close_enough(want_above, got_above, TECTONICS_BOUNDED_MAX_ULPS), (
         v.x, v.y, v.z, want_above, got_above, ulps_apart(want_above, got_above)
     )
+
+
+# --- Generation: fraction, spread, pole, rate, plates_for --------------------------------
+#
+# The contract split here is unusually clean. `_fraction` is a BLAKE2 digest, a
+# little-endian u64, and a division by 2**64 -- an exact power of two -- so nothing in
+# that path is transcendental. `_rate` is `SLOWEST + fraction * (FASTEST - SLOWEST)` and a
+# sign: pure arithmetic on an exact fraction. Both are held to `same()`, bit-for-bit, and
+# a mismatch here is a defect, not rounding -- Task 1 proved the digests byte-identical
+# across 27 vectors, so if the hash chain is wrong at all it will differ in the first
+# significant digit, not the last bit.
+#
+# `_spread` and `_pole` both end in cos/sin, so they are BOUNDED at
+# MAX_TRANSCENDENTAL_ULPS, the same as every other transcendental path in this file.
+#
+# One thing this section does NOT catch: `_pole` in the Python (and `pole` in the Rust)
+# builds its SpherePoint from an already-unit vector without renormalising it. A Rust unit
+# test added in Task 4 (`pole_uses_the_non_normalising_constructor`, in
+# crates/worldbuilder-engine/src/generation.rs) pins that the Rust side keeps using the
+# non-normalising constructor rather than `from_vector`; swapping them moves values by
+# about 2 ULP at pole 6, which hides comfortably inside the 4-ULP bound applied here. This
+# conformance suite compares Python's reference against whatever the Rust side currently
+# does, so it cannot distinguish "normalising" from "not" when both stay under 4 ULP --
+# that distinction is the Rust unit test's job, not this file's.
+
+from worldbuilder.plates import generation as py_generation
+
+GENERATION_WORLD_SEEDS = [0, -20260831, 20260831, 9223372036854775807]
+"""Zero, a negative seed, the seed used throughout the rest of this file, and i64::MAX --
+the largest value the Rust binding's `i64` parameter can carry."""
+
+GENERATION_COUNTS = [1, 2, 22, 137]
+"""A count of one (the degenerate case), two, the default plate count, and something
+larger than any world this project actually builds."""
+
+GENERATION_LABELS = ["jitter-a", "jitter-b", "pole-z", "pole-angle", "rate", "sense"]
+"""Every label `_fraction` is ever called with by `_spread`, `_pole` and `_rate` -- the
+whole vocabulary, not a sample of it."""
+
+GENERATION_SPREAD_BOUNDED_MAX_ULPS = 32
+"""
+Measured, not guessed, over exactly the sweep `test_generation_spread_agrees_within_the_
+measured_bound` runs (every index of every count in GENERATION_COUNTS, for every seed in
+GENERATION_WORLD_SEEDS): the worst observed divergence was 6 ULP (seed i64::MAX, count
+137, index 85, the y component).
+
+`_spread` chains far more floating-point operations than a bare `cos`/`sin` call: the
+golden angle itself needs a `sqrt`, then `cos`/`sin` place the un-jittered point, then two
+more `_fraction` calls (strict, contribute no error of their own) scale two tangent
+vectors built from two `cross` products and a `normalised` (a `length`, itself a `sqrt`,
+and a division), which are then added onto the point. Each step is correctly rounded on
+its own, exactly like `sphere_from_latlon`'s single `cos`/`sin` pair, but here there are
+several of them in series, plus a normalisation that divides by a length landing within a
+ULP or two of 1.0 rather than exactly 1.0 -- the same "near a zero crossing amplifies
+relative error" mechanism the tectonics section above documents at much larger scale, just
+milder here because `_spread` never divides by a quantity that legitimately reaches zero.
+
+32 is generous headroom over the measured 6, in the same spirit as the tectonics section's
+own bound: what this catches is a structural defect (a dropped cross product, a jitter
+wired to the wrong sign, a missing normalisation), which would move a component by far
+more than a few tens of ULP, not a legitimate accumulation of correctly-rounded steps.
+"""
+
+
+def test_generation_fraction_agrees_bit_for_bit_across_seeds_indices_and_labels():
+    """
+    Strict: `same()`, not `close_enough()`. No transcendental sits between the BLAKE2
+    digest and the returned float, so Python and Rust must produce identical bits, not
+    merely close ones. Covers every one of the six labels `_fraction` is ever called
+    with, across four seeds (including zero, a negative seed, and i64::MAX) and forty
+    plate indices -- 960 comparisons, every one required to be exact.
+    """
+    checked = 0
+    for seed in GENERATION_WORLD_SEEDS:
+        for index in range(40):
+            for label in GENERATION_LABELS:
+                want = py_generation._fraction(seed, "plate", index, label)
+                got = engine.generation_fraction(seed, ["plate", str(index), label])
+                assert same(want, got), (seed, index, label, want, got)
+                checked += 1
+    assert checked == len(GENERATION_WORLD_SEEDS) * 40 * len(GENERATION_LABELS)
+
+
+def test_generation_rate_agrees_bit_for_bit_across_seeds_and_a_full_set_of_indices():
+    """
+    Strict, like `_fraction` above: `_rate` is `SLOWEST + fraction * (FASTEST - SLOWEST)`
+    and a sign, pure arithmetic on an exact fraction, so it earns the same bit-for-bit
+    bar. Every index across a full default-sized plate set, for every seed.
+    """
+    checked = 0
+    for seed in GENERATION_WORLD_SEEDS:
+        for index in range(py_generation.DEFAULT_PLATE_COUNT):
+            want = py_generation._rate(seed, index)
+            got = engine.generation_rate(seed, index)
+            assert same(want, got), (seed, index, want, got)
+            checked += 1
+    assert checked == len(GENERATION_WORLD_SEEDS) * py_generation.DEFAULT_PLATE_COUNT
+
+
+def test_generation_spread_agrees_within_the_measured_bound():
+    """
+    Bounded, per the brief, because `_spread` ends in cos/sin -- but the ordinary
+    MAX_TRANSCENDENTAL_ULPS (4 ULP) does NOT hold for it, and this test measures that
+    rather than asserting it away. See GENERATION_SPREAD_BOUNDED_MAX_ULPS above for the
+    mechanism and the actual worst value observed. Every index of every count, for every
+    seed -- not a sample -- because the brief calls for "every index in a full set" and
+    the counts here are all small enough that "every index" is cheap.
+
+    The worst ULP distance observed across this sweep, measured live rather than assumed,
+    is recorded in the Task 6 report rather than printed here (pytest swallows stdout on
+    a passing run) -- this test only has to prove the bound holds, not narrate it.
+    """
+    worst = 0
+    skipped = 0
+    for seed in GENERATION_WORLD_SEEDS:
+        for count in GENERATION_COUNTS:
+            for index in range(count):
+                want = py_generation._spread(seed, index, count).vector
+                got = engine.generation_spread(seed, index, count)
+                for label, w, g in zip("xyz", (want.x, want.y, want.z), got):
+                    assert close_enough(w, g, GENERATION_SPREAD_BOUNDED_MAX_ULPS), (
+                        seed, count, index, label, w, g, ulps_apart(w, g)
+                    )
+                    d = ulps_apart(w, g)
+                    if d is None:
+                        skipped += 1
+                    else:
+                        worst = max(worst, abs(d))
+    assert skipped == 0, f"{skipped} comparisons could not be measured (NaN, inf or sign-straddle)"
+    assert worst <= GENERATION_SPREAD_BOUNDED_MAX_ULPS, f"spread divergence grew to {worst} ULP"
+
+
+def test_generation_pole_agrees_within_the_measured_bound():
+    """
+    Bounded at MAX_TRANSCENDENTAL_ULPS, like `_spread` above -- `_pole` also ends in
+    cos/sin. Every index of a full plate set (DEFAULT_PLATE_COUNT and the largest count
+    in GENERATION_COUNTS), for every seed.
+
+    This does not, and cannot, distinguish the non-normalising SpherePoint construction
+    from the normalising one -- see the section header above. That distinction is pinned
+    by a Rust unit test, not by this comparison.
+    """
+    worst = 0
+    skipped = 0
+    for seed in GENERATION_WORLD_SEEDS:
+        for count in (py_generation.DEFAULT_PLATE_COUNT, max(GENERATION_COUNTS)):
+            for index in range(count):
+                want = py_generation._pole(seed, index).vector
+                got = engine.generation_pole(seed, index)
+                for label, w, g in zip("xyz", (want.x, want.y, want.z), got):
+                    assert close_enough(w, g), (seed, index, label, w, g, ulps_apart(w, g))
+                    d = ulps_apart(w, g)
+                    if d is None:
+                        skipped += 1
+                    else:
+                        worst = max(worst, abs(d))
+    assert skipped == 0, f"{skipped} comparisons could not be measured (NaN, inf or sign-straddle)"
+    assert worst <= MAX_TRANSCENDENTAL_ULPS, f"pole divergence grew to {worst} ULP"
+
+
+def test_generation_plates_for_agrees_across_seeds_and_counts():
+    """
+    `plates_for` is the whole pipeline in one call: exact plate indices, bounded seed and
+    pole vectors, and a strict rate, all in one pass over every count this file tests.
+    """
+    for seed in GENERATION_WORLD_SEEDS:
+        for count in GENERATION_COUNTS:
+            want = py_generation.plates_for(seed, count)
+            got = engine.generation_plates_for(seed, count)
+            assert len(got) == count == len(want)
+            for position, (py_plate, (index, seed_xyz, pole_xyz, rate)) in enumerate(zip(want, got)):
+                assert index == py_plate.index == position, (seed, count, position, index)
+                sv = py_plate.seed.vector
+                for label, w, g in zip("xyz", (sv.x, sv.y, sv.z), seed_xyz):
+                    assert close_enough(w, g, GENERATION_SPREAD_BOUNDED_MAX_ULPS), (
+                        seed, count, position, "seed", label, w, g, ulps_apart(w, g)
+                    )
+                pv = py_plate.euler_pole.vector
+                for label, w, g in zip("xyz", (pv.x, pv.y, pv.z), pole_xyz):
+                    assert close_enough(w, g), (seed, count, position, "pole", label, w, g)
+                assert same(py_plate.rate_rad_per_myr, rate), (
+                    seed, count, position, py_plate.rate_rad_per_myr, rate
+                )
+
+
+def test_generation_fraction_and_rate_hold_strictly_over_the_entire_sweep():
+    """
+    States directly what the two strict tests above prove piecewise: across every seed,
+    every label, and every index this file exercises, `fraction` and `rate` never once
+    fall back to a tolerance. If a single digest differed, this would not be a near
+    miss -- Task 1 measured that the digests are byte-identical, so any divergence here
+    would show up as a `fraction` in a completely different part of [0, 1), not a
+    neighbouring float.
+    """
+    fraction_checked = 0
+    rate_checked = 0
+    for seed in GENERATION_WORLD_SEEDS:
+        for index in range(40):
+            for label in GENERATION_LABELS:
+                want = py_generation._fraction(seed, "plate", index, label)
+                got = engine.generation_fraction(seed, ["plate", str(index), label])
+                assert bits(want) == bits(got), (seed, index, label)
+                fraction_checked += 1
+        for index in range(py_generation.DEFAULT_PLATE_COUNT):
+            want_rate = py_generation._rate(seed, index)
+            got_rate = engine.generation_rate(seed, index)
+            assert bits(want_rate) == bits(got_rate), (seed, index)
+            rate_checked += 1
+    assert fraction_checked == len(GENERATION_WORLD_SEEDS) * 40 * len(GENERATION_LABELS)
+    assert rate_checked == len(GENERATION_WORLD_SEEDS) * py_generation.DEFAULT_PLATE_COUNT

@@ -60,5 +60,10 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::tectonics_setting_at, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::tectonics_offset_m, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::tectonics_elevation_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::generation_fraction, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::generation_spread, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::generation_pole, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::generation_rate, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::generation_plates_for, m)?)?;
     Ok(())
 }

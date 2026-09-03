@@ -7,6 +7,8 @@ use std::sync::{Mutex, OnceLock};
 use pyo3::prelude::*;
 
 use crate::continentality::Continentality;
+use crate::generation;
+use crate::generation::Part;
 use crate::kinematics::{motion_at, motion_between, surface_velocity};
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
@@ -525,4 +527,54 @@ pub fn tectonics_elevation_m(
         tectonics_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
     tectonics.elevation_m(&point)
+}
+
+/// `_fraction(world_seed, *parts)` -- Python's variadic mixed int/str arguments become a
+/// flat `Vec<String>` here, the same flattening convention every other binding in this
+/// file uses for structured input (a `PlateSet` as flat `seeds_flat`/`poles_flat`/`rates`
+/// lists, a point as three floats). `generation::Part` distinguishes `Int` from `Str` only
+/// for its `Display` impl, and an integer part's `Display` output is exactly its decimal
+/// string, so a caller-supplied string is indistinguishable from the integer it names --
+/// `str(7)` and `"7"` hash identically. Every part becomes `Part::Str` here; conversion
+/// only, no arithmetic.
+#[pyfunction]
+pub fn generation_fraction(world_seed: i64, label_parts: Vec<String>) -> f64 {
+    let parts: Vec<Part> = label_parts.iter().map(|s| Part::Str(s.as_str())).collect();
+    generation::fraction(world_seed, &parts)
+}
+
+#[pyfunction]
+pub fn generation_spread(world_seed: i64, index: usize, count: usize) -> (f64, f64, f64) {
+    let p = generation::spread(world_seed, index, count).vector;
+    (p.x, p.y, p.z)
+}
+
+#[pyfunction]
+pub fn generation_pole(world_seed: i64, index: usize) -> (f64, f64, f64) {
+    let p = generation::pole(world_seed, index).vector;
+    (p.x, p.y, p.z)
+}
+
+#[pyfunction]
+pub fn generation_rate(world_seed: i64, index: usize) -> f64 {
+    generation::rate(world_seed, index)
+}
+
+/// Every plate on a world, as `(index, seed_xyz, pole_xyz, rate)` tuples in index order.
+/// Conversion only: `generation::plates_for` does all the arithmetic; this just unwraps
+/// each `Plate`'s two `SpherePoint`s into `(f64, f64, f64)` triples.
+#[pyfunction]
+pub fn generation_plates_for(
+    world_seed: i64,
+    count: usize,
+) -> Vec<(usize, (f64, f64, f64), (f64, f64, f64), f64)> {
+    generation::plates_for(world_seed, count)
+        .plates()
+        .iter()
+        .map(|plate| {
+            let seed = plate.seed.vector;
+            let pole = plate.euler_pole.vector;
+            (plate.index, (seed.x, seed.y, seed.z), (pole.x, pole.y, pole.z), plate.rate_rad_per_myr)
+        })
+        .collect()
 }
