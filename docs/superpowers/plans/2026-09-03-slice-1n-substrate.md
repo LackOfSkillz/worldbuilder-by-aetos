@@ -62,17 +62,27 @@ Worst shift 2.22e-16, zero `dominant` flips. **The conclusion holds and the guar
 ## Two corpora, opposite shapes — and my first statement of this rule was backwards
 
 **For the clamps and any saturation question: a small steep feature, scanned in 2-D.** A 3,000-point
-planetary scatter reports `natural`'s slope clamp as never reached — it reads as dead code. Through a
-pinnacle it saturates well over. But **a line through the pinnacle is not enough**: the steepest ground is
-off-axis, because `weight_at` is a product of two `bump` factors. A line at 0.35 m/step peaks at 7.6275
-where a 2-D grid at 0.933 m/step reaches 8.1410; for drying rock, line 4.6182 against grid 5.5970.
-**Resolution does not rescue a line** — a radial found the same 6.646e-3 at 0.75 and at 0.19 m/step, while
-a 2-D grid closed to 1.7e-4.
+planetary scatter reports `natural`'s slope clamp as never reached — it reads as dead code. Through the
+demo pinnacle a 2-D grid at 0.9333 m/step over 90,601 points reaches **8.1410x ROCK_SLOPE**; for drying
+rock, 5.5970x.
+
+**A line through the feature is not enough, and no line direction rescues it.** The steepest ground is
+off-axis, because `weight_at` is a product of two `bump` factors. Offshore reaches 7.6275, alongshore
+7.5556, diagonal 7.8208 — **none of the three reaches the grid's figure**. With extent matched, a +/-70 m
+grid still hits 8.1417, at an offset of (31.73, 15.40) m. Nor does density help: the 401- and 1,601-point
+lines both give 7.6275, unchanged at 4x resolution.
 
 **For `dominant`'s tie margins: gentle open water, and the pinnacle is the wrong corpus.** The smallest
-margin measured is **2.109424e-15**, from a gentle open-water `sand`-to-`mud` crossing. The pinnacle
-bisection bottoms out four orders *higher*, at 1.29e-11, because the residual at exhaustion is the local
-composition gradient — steep ground makes the crossing easier to resolve, not harder.
+margin measured is **2.109424e-15**, offshore, with the bracketing sides `3.638e-12 m` apart. The pinnacle
+bisection bottoms out four orders *higher*, at 1.29e-11. **And resolution does not rescue the steep case
+either** — a radial found the same `6.646421e-03` at both 0.750 and 0.188 m/step, while a 2-D grid closed
+to `1.7e-4`.
+
+**The counter-intuitive half is verified, not assumed.** Steep ground makes a crossing *easier* to
+resolve because the residual at exhaustion is the local composition gradient: 8.2e-3 and 5.7e-3 per metre
+at the two steep crossings, against 1.2e-7 and 2.4e-10 per metre at the gentle ones — monotone with the
+residuals. The offshore ray has the **coarsest** ULP step of any of them, so it is steepness, not
+floating-point resolution, that sets the floor.
 
 **So there is no single "good corpus".** Each question needs the corpus that can express its answer:
 saturation wants steep and two-dimensional, tie margins want gentle and flat. Say which corpus answered
