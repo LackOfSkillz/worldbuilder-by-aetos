@@ -4324,6 +4324,15 @@ def test_features_marks_near_keeps_construction_order_on_a_tie():
     origin (asserted, not assumed). Both build orders are checked: an unstable sort would be
     free to return either order for either build, so testing one build order alone could
     pass by luck.
+
+    **A two-element tie is not sufficient on its own, and that was measured rather than
+    assumed.** Rust's `sort_unstable_by` is pattern-defeating quicksort: it falls back to
+    insertion sort on short slices and detects an all-equal partition outright, so
+    substituting it for `sort_by` reorders NOTHING for a 2-mark tie, nor for a single tie
+    group of up to 64 marks. Catching it takes ties scattered through a list long enough to
+    reach the quicksort proper. 60 marks at 30 distinct distances, each distance used twice,
+    is the smallest fixture measured to do it, and the second half of this test is exactly
+    that -- without it the whole test passes against an unstable sort.
     """
     centre = SpherePoint.from_latlon(0.0, 0.0)
     north, south = MARKS_FIXTURE[0], MARKS_FIXTURE[1]
@@ -4340,6 +4349,23 @@ def test_features_marks_near_keeps_construction_order_on_a_tie():
             "the engine reordered two tied marks; sort_by has become sort_unstable_by",
             got, expected,
         )
+
+    # 60 marks over 30 distances, each used twice: marks i and i+30 tie, and the pairs sit
+    # far enough apart in the input that an unstable partition genuinely swaps them.
+    paired = [_mark(f"k{i}", 0.01 * (1 + (i % 30)), 0.0) for i in range(60)]
+    distances = [centre.distance_to(f.at, EARTH_RADIUS_M) for f in paired]
+    assert len(set(bits(d) for d in distances)) == 30, (
+        "the 60-mark fixture no longer resolves to 30 bit-identical pairs, so it is no "
+        "longer a tie fixture at all"
+    )
+    expected = [f"k{i}" for j in range(30) for i in (j, j + 30)]
+    want = [f.kind for _, f in PyFeatures(paired, EARTH_RADIUS_M).marks_near(centre, 1e9)]
+    got = [kind for _, kind in _engine_marks_near(paired, centre, 1e9)]
+    assert want == expected, ("python's sort stopped being stable", want, expected)
+    assert got == expected, (
+        "the engine reordered tied marks in a 60-mark list; sort_by has become "
+        "sort_unstable_by", got, expected,
+    )
 
 
 def _marks_corpus(count=400, probes=300):
