@@ -3668,9 +3668,12 @@ without noticing, and this quantity's whole range is [0, 1].
 feature's support the weight is a smoothstep evaluated on a quantity going to zero, and the
 result cancels down to 1e-30 and below. There, one ULP of `along` (which is bounded, coming
 through `sphere_to_local`'s `atan2`) is the entire value. Measured worst ULP divergence,
-bucketed by how big the weight actually is: 145 ULP where the weight is >= 1e-3, 6,239 where
-it is >= 1e-6, 725,675 where it is >= 1e-12, and 1.8e16 -- i.e. no bound at all -- taking
-every point. A ULP bound wide enough to hold everywhere would assert precisely nothing;
+bucketed by how big the weight actually is: 2,517 ULP where the weight is >= 1e-3, 76,326
+where it is >= 1e-6, 32,642,720 where it is >= 1e-12, and 4.19e18 -- i.e. no bound at all --
+taking every point. (These are the 250:1 corpus's figures. The buckets first written here
+were measured on the earlier 7-shape corpus capped at 4:1 and were not re-measured when the
+corpus widened; they read 145 / 6,239 / 725,675 / 1.8e16. The bound is unaffected -- the
+collapse is worse than first recorded, so the argument for an absolute bound is stronger.) A ULP bound wide enough to hold everywhere would assert precisely nothing;
 this absolute bound holds everywhere AND is tight. See
 `test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collapses` for the
 two-sided version of that claim.
