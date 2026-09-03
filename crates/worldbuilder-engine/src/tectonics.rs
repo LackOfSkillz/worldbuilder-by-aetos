@@ -28,7 +28,8 @@
 
 use crate::continentality::Continentality;
 use crate::detmath as m;
-use crate::plates::PlateSet;
+use crate::kinematics::{motion_between, ACROSS_ENOUGH};
+use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::tangent::TangentFrame;
 use crate::vectors::Vec3;
@@ -207,6 +208,123 @@ impl Tectonics {
                 .at(&frame.local_to_sphere(east * to_outboard, north * to_outboard)),
         }
     }
+
+    /// One margin's contribution to the ground here.
+    ///
+    /// Args:
+    ///     point: Where.
+    ///     near: The plate the point is on.
+    ///     far: The plate across this margin.
+    ///     distance_m: How far the margin is.
+    ///     normal: Across it, tangent to the surface, pointing towards `near`.
+    ///
+    /// Returns metres, which may be zero, and usually is.
+    fn from_margin(
+        &self,
+        point: &SpherePoint,
+        near: &Plate,
+        far: &Plate,
+        distance_m: f64,
+        normal: &Vec3,
+    ) -> f64 {
+        let motion = motion_between(near, far, point, normal, self.radius_m);
+
+        // How much of the relative motion is across the margin rather than along it, from
+        // -1 (pulling apart) through 0 (pure sliding) to +1 (head on).
+        //
+        // **Weighed, not classified.** `motion.kind` is a name given by a threshold, and
+        // using the name to pick a profile meant a margin drifting from convergent to
+        // transform went from a full mountain belt to nothing in one step. The name
+        // survives for diagnostics; the terrain uses the number.
+        let speed = m::hypot(motion.closing_m_per_myr, motion.sliding_m_per_myr);
+        // Safe regardless of `hypot`'s algorithm: Task 1 measured that `math.hypot` and
+        // `libm::hypot` differ by at most 1 ULP but both are exactly zero only when both
+        // arguments are exactly zero. So this comparison decides identically either way.
+        if speed <= 0.0 {
+            return 0.0;
+        }
+        let across = motion.closing_m_per_myr / speed;
+
+        // A transform margin still leaves no mark. It arrives at no mark smoothly.
+        let mut engagement = (across.abs() - ACROSS_ENOUGH) / (1.0 - ACROSS_ENOUGH);
+        // This is the one branch that genuinely depends on `hypot`'s precision: `across`
+        // is built from `speed`, and a 1-ULP disagreement between `math.hypot` and
+        // `libm::hypot` propagates into it. Task 1 measured the margin here at 1.19e-4 --
+        // about 1.07e12 ULP -- twelve orders of magnitude clear of where a 1-ULP `hypot`
+        // disagreement could flip this comparison.
+        if engagement <= 0.0 {
+            return 0.0;
+        }
+        // Python writes `min(1.0, engagement)`; house form keeps the first operand unless
+        // the second is strictly less than it.
+        engagement = if engagement < 1.0 { engagement } else { 1.0 };
+        engagement = engagement * engagement * (3.0 - 2.0 * engagement);
+
+        // Python writes `min(1.0, speed / FULL_RATE_M_PER_MYR)`.
+        let rate_fraction = speed / FULL_RATE_M_PER_MYR;
+        let capped_rate = if rate_fraction < 1.0 { rate_fraction } else { 1.0 };
+        let strength = capped_rate * engagement;
+        // Nearly unreachable, not dead: this can only fire if `engagement`'s smoothstep
+        // above has underflowed to exactly zero, which needs the pre-smoothstep
+        // `engagement` below roughly 1e-162. Ported and kept rather than deleted as
+        // unreachable.
+        if strength <= 0.0 {
+            return 0.0;
+        }
+
+        if across < 0.0 {
+            // Pulling apart. Symmetric about the axis, so it needs no sense of side.
+            //
+            // Safe regardless of `hypot`'s precision, even though it looks like the most
+            // dangerous of these branches: `hypot` is never negative, and the zero case
+            // already returned above, so `speed` is strictly positive here and dividing
+            // by it cannot change the sign of `motion.closing_m_per_myr`. This branch is
+            // decided by that sign, which is algebraic, not measured through `hypot`.
+            return strength
+                * (RIDGE_M * bump(distance_m, RIDGE_WIDTH_M)
+                    + RIFT_M * bump(distance_m, RIFT_WIDTH_M));
+        }
+
+        let setting = self.setting_at(point, distance_m, normal);
+        let inboard = setting.inboard_continental();
+        let outboard = setting.outboard_continental();
+        let collision = inboard * outboard;
+        let oceanic = (1.0 - inboard) * (1.0 - outboard);
+        // Python writes `max(0.0, 1.0 - collision - oceanic)`; house form keeps the first
+        // operand unless the second is strictly greater than it.
+        let remainder = 1.0 - collision - oceanic;
+        let subduction = if remainder > 0.0 { remainder } else { 0.0 };
+
+        // The convergent response at a signed distance across the margin. A closure
+        // rather than a free function: it exists only to capture `collision`, `oceanic`
+        // and `subduction`, which are local to this call, and a free function would need
+        // all three threaded through as extra parameters for no benefit.
+        let profile = |across_m: f64| -> f64 {
+            let collided = CONTINENT_COLLISION_M * bump(across_m, CONTINENT_COLLISION_WIDTH_M);
+            let trench = TRENCH_M * bump(across_m + TRENCH_OFFSET_M, TRENCH_WIDTH_M);
+            let arc = ISLAND_ARC_M * bump(across_m - ISLAND_ARC_OFFSET_M, ISLAND_ARC_WIDTH_M);
+            // The literal below is deliberately bare: it coincidentally equals
+            // `RIFT_WIDTH_M`, but the two are unrelated quantities and binding this one
+            // to that constant would couple two profiles that must be free to vary
+            // independently.
+            let uplift = COASTAL_UPLIFT_M * bump(across_m - 70_000.0, COASTAL_UPLIFT_WIDTH_M);
+            collision * collided + oceanic * (arc + trench) + subduction * (uplift + trench)
+        };
+
+        // Which side of the margin this point is on, weighed rather than decided.
+        //
+        // The obvious form is `signed = distance * lean`, and it is wrong in a way that
+        // took a diagnostic to see: scaling the axis *compresses* distance, so with a
+        // lean of -0.22 a point four hundred and nineteen kilometres out mapped to -90
+        // km, which is exactly where the trench sits. The trench fired at four hundred
+        // kilometres and the range gate then cut it off mid-profile.
+        //
+        // The distance stays true. The profile is evaluated on both sides and blended by
+        // the lean, which keeps every feature at its intended range and reaches zero by
+        // the gate because each profile does.
+        let toward = (1.0 + setting.lean()) * 0.5;
+        strength * (toward * profile(distance_m) + (1.0 - toward) * profile(-distance_m))
+    }
 }
 
 #[cfg(test)]
@@ -341,5 +459,96 @@ mod tests {
             setting_a.outboard,
             setting_b.inboard
         );
+    }
+
+    /// A fixed point, margin geometry and pair of plates for exercising `from_margin`
+    /// directly, bypassing `offset_m`'s margin lookup.
+    ///
+    /// Both Euler poles sit at the north pole, so both plates' angular velocities are
+    /// `(0, 0, rate)` and the point is on the equator -- the same construction
+    /// `kinematics.rs`'s `two_plates_driving_into_each_other_are_convergent` uses. The
+    /// relative velocity is then due east-west and the normal `(0, 1, 0)` points due
+    /// east, straight along it, so the margin is fully engaged (no sliding component at
+    /// all) regardless of distance -- `from_margin`'s `strength` does not depend on
+    /// `distance_m`, only on `near`, `far`, `point` and `normal`, which this struct holds
+    /// fixed.
+    struct LopsidedWorld {
+        tectonics: Tectonics,
+        point: SpherePoint,
+        near: Plate,
+        far: Plate,
+        normal: Vec3,
+    }
+
+    impl LopsidedWorld {
+        fn from_margin_for_test(&self, distance_m: f64) -> f64 {
+            self.tectonics.from_margin(&self.point, &self.near, &self.far, distance_m, &self.normal)
+        }
+    }
+
+    fn lopsided_world() -> LopsidedWorld {
+        let near = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(0.0, 0.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.01,
+        };
+        let far = Plate {
+            index: 1,
+            seed: SpherePoint::from_latlon(0.0, 10.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.02,
+        };
+        let point = SpherePoint::from_latlon(0.0, 0.0);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+
+        // A world seed chosen only because it happens to give the two probe points --
+        // 300 km either side of the margin, per `PROBE_M` -- genuinely different
+        // continentality. Confirmed by the `lean_is_genuinely_non_zero` test below,
+        // which is what makes the 419 km test meaningful rather than vacuous.
+        let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
+        let plates = PlateSet::new(vec![near, far]);
+        let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M);
+
+        LopsidedWorld { tectonics, point, near, far, normal }
+    }
+
+    #[test]
+    fn lopsided_world_has_a_genuinely_non_zero_lean() {
+        // Guards against the exact failure mode that made an earlier fade test in this
+        // port vacuous: a symmetric margin would make the 419 km test below pass for the
+        // wrong reason, by making `toward` exactly 0.5 rather than by making both sides
+        // of the blend genuinely zero.
+        let world = lopsided_world();
+        let setting = world.tectonics.setting_at(&world.point, 419_000.0, &world.normal);
+        let lean = setting.lean();
+        // Measured: 0.679.
+        assert!(lean.abs() > 1e-6, "expected a genuinely non-zero lean, got {lean}");
+    }
+
+    #[test]
+    fn a_close_convergent_margin_contributes_something_non_zero() {
+        // Confirms the 419 km test below cannot pass merely because `from_margin`
+        // returns zero everywhere -- close in, at least one profile term must be within
+        // its width on the near side of the blend.
+        let world = lopsided_world();
+        let contribution = world.from_margin_for_test(10_000.0);
+        assert_ne!(contribution, 0.0, "a margin 10 km away must contribute something");
+    }
+
+    #[test]
+    fn every_profile_reaches_zero_before_the_range_gate() {
+        // MAX_TECTONIC_RANGE_M's own docstring: "Every profile below must reach exactly
+        // zero by here, or the gate itself becomes a cliff." At 419 km every bump
+        // argument is outside its width, on both sides of the blend, so the sum is
+        // exactly zero -- not merely small.
+        //
+        // This is the regression test for the 419 km mismapping. The obvious form,
+        // `signed = distance * lean`, compresses the axis: with a lean of -0.22 this
+        // same point maps to about -92 km, which is the trench centre, and returns
+        // roughly -2597 m instead of zero.
+        let world = lopsided_world();
+        let contribution = world.from_margin_for_test(419_000.0);
+        assert_eq!(contribution, 0.0, "a margin 419 km away must contribute exactly nothing");
     }
 }
