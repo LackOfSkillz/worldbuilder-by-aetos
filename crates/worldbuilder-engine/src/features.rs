@@ -182,17 +182,22 @@ impl Placed {
     /// `Features::apply`'s `authority`, which starts at a hard `0.0` where
     /// `max(0.0, tiny)` is `tiny`.
     ///
-    /// **That smallness does not generalise.** The disagreement band the leak lives in
-    /// is a fixed sliver of arc regardless of feature size, so the leaked weight scales
-    /// roughly as `1 / (length_m^2 * width_m^2)`: measured worst leaked weight was
-    /// ~4.09e-26 at a 150x90 m feature, and ~1.13e-12 at a 3x2 m feature - at which point
-    /// it is no longer negligible against `result` itself (an ungated `result` of
-    /// `-29.999999999970655` against an exact `-30.0` has been measured at that shape,
-    /// and a one-ULP nudge to the threshold moved a real `apply` result by ~3.75e-10 m,
-    /// about 105,470 ULP). So for a small feature this gate protects `result`, not only
-    /// `authority`. The gate is transcribed exactly regardless of shape: same
-    /// `dot(...) < cos_reach` comparison, same early `return 0.0`, for every size of
-    /// feature this module is ever asked to place.
+    /// **That smallness does not generalise, and it falls away far faster than a first
+    /// reading suggested.** The band the leak lives in is where `dot` and `cos_reach`,
+    /// both within an ULP of 1.0, stop resolving distance at all, so its width in metres
+    /// runs as `ULP(1.0) * radius_m^2 / reach_m` - it *shrinks* as the feature grows
+    /// rather than staying a fixed sliver of arc. Scanned in absolute insets, the worst
+    /// leaked weight measured **1.2047e-12 at 3x2**, **1.1055e-26 at 150x90** and
+    /// **8.4188e-32 at 1200x300**: a fall-off of roughly a fourth power in each of
+    /// `length_m` and `width_m`, not the `1 / (length_m^2 * width_m^2)` recorded earlier
+    /// in this slice from a relative-span grid that never reached the band's widest part.
+    /// At 3x2 the leak is no longer negligible against `result` itself (an ungated
+    /// `result` of `-29.999999999970655` against an exact `-30.0` has been measured at
+    /// that shape, and a one-ULP nudge to the threshold moved a real `apply` result by
+    /// ~3.75e-10 m, about 105,470 ULP). So for a small feature this gate protects
+    /// `result`, not only `authority`. The gate is transcribed exactly regardless of
+    /// shape: same `dot(...) < cos_reach` comparison, same early `return 0.0`, for every
+    /// size of feature this module is ever asked to place.
     ///
     /// `cos_reach` is itself `cos(hypot(length_m, width_m) / radius_m)` bounded by PI -
     /// two bounded transcendental calls, not a strict quantity - and moving it by a
@@ -570,28 +575,44 @@ mod tests {
         );
     }
 
-    /// **The reach-gate corner, not the ring - and the leak is shape-dependent, not a
-    /// module-wide constant.** Task 1 measured that a ring scan around `reach_m` (2,000
-    /// azimuths x 16 shapes, 30,240 gate-rejected points) finds zero leaks, and that the
-    /// false "both branches are ~zero" claim almost certainly came from exactly that
-    /// scan. The actual leak lives in the corner: a point where `along` sits a hair
-    /// inside `length_m` **and** `across` sits a hair inside `width_m` at the same time,
-    /// so both `bump` factors are individually non-zero even though the point's true
-    /// distance already exceeds `reach_m`.
+    /// **The reach-gate corner, not the ring.** A ring scan around `reach_m` finds
+    /// nothing at all - Task 1 probed 30,240 gate-rejected points over 16 shapes and got
+    /// zero leaks, and the false "both branches are ~zero, the gate is a no-op" claim
+    /// almost certainly came from exactly that scan. Reproduced here while this test was
+    /// last revised: 2,000 azimuths x 8 radial offsets at each of 3x2, 150x90 and
+    /// 1200x300 gives 29,712 gate-rejected ring points and **0** leaks. The leak lives in
+    /// the *corner*: a point where `along` sits a hair inside `length_m` **and** `across`
+    /// sits a hair inside `width_m` at the same time, so both `bump` factors are
+    /// individually non-zero even though `dot` has already fallen below `cos_reach`.
     ///
-    /// A later review reproducing Task 1's numbers found the leak magnitude scales
-    /// roughly as `1 / (length_m^2 * width_m^2)`, because the disagreement band is a
-    /// fixed ~micron of arc regardless of feature size: measured worst leaked weight was
-    /// ~1.7e-32 at 1200x300 (the shape Task 1 profiled), ~4.09e-26 at 150x90, and
-    /// ~1.13e-12 at 3x2 - at which point it is no longer negligible against `result`
-    /// (the review found an ungated `result` of -29.999999999970655 against an exact
-    /// -30.0 at that shape, and a worst `|delta result|` of ~3.75e-10 m, ~105,470 ULP,
-    /// from a one-ULP nudge to the threshold). **So this is not "moves authority off
-    /// zero and nothing else" in general - that was only true at the one shape Task 1
-    /// measured.** The gate is transcribed exactly regardless of shape; this test uses a
-    /// small feature (3x2) specifically because that is where the leak is large enough
-    /// for a test tolerance to mean anything - at 1200x300 the effect (~1e-32 to ~1e-44)
-    /// hides under any plausible float comparison and the test would prove nothing.
+    /// **What the grid below actually scans, and why that is the right band.** The grid
+    /// is *relative*: spans of 1e-13 to 1e-8 of each extent, five steps either way. At
+    /// 3x2 that reaches insets from ~3e-13 m to 1.5e-7 m along and 1e-7 m across - 720
+    /// probes, of which **189 are gate-rejected and 40 carry a non-zero ungated weight**.
+    /// The loop breaks on the first of those, at span 1e-10, `(i, j) = (2, 5)`, ungated
+    /// weight **7.525633814669704e-38**; the worst anywhere on this grid is
+    /// **5.523881881698213e-29**. Those are tiny, and it does not matter in the least,
+    /// because **the assertion is `assert_eq!(gated, 0.0)` - raw bits, not a tolerance.**
+    /// What the band has to supply is a point that is genuinely gate-rejected while both
+    /// `bump` factors are non-zero, and it supplies forty of them. Delete the gate and
+    /// `gated` becomes `ungated`, which the test has just asserted is strictly positive,
+    /// and it fails. A magnitude is only needed by a test that compares against a
+    /// threshold, and this one never does.
+    ///
+    /// **Why 3x2 rather than a large feature.** Not because the leak here is big enough
+    /// to see - at this grid it is not. The band exists because near the origin `dot` and
+    /// `cos_reach` are both within an ULP of 1.0, so the comparison stops resolving
+    /// distance at all; its width in metres runs as `ULP(1.0) * radius_m^2 / reach_m`,
+    /// which is ~2.5 mm at 3x2 against ~7 um at 1200x300. The small shape therefore leaks
+    /// far more densely on the same relative grid (40 leaks of 189 rejected, against 19 of
+    /// 154 at 1200x300), so the search terminates quickly and is not sensitive to where
+    /// the grid happens to land. And it is the shape where the leak *matters*: scanned in
+    /// absolute insets rather than relative spans, the worst leaked weight measured
+    /// **1.2047e-12 at 3x2** (at ~1.2 mm along, ~1.8 mm across), against **1.1055e-26 at
+    /// 150x90** and **8.4188e-32 at 1200x300** - so on a small feature the gate is
+    /// protecting `apply`'s `result`, not only its `authority`, while on a large one it is
+    /// only ever protecting `authority`, which starts at a hard `0.0` where
+    /// `max(0.0, tiny)` is `tiny`.
     ///
     /// This reproduces the leak directly against this crate's own implementation, rather
     /// than importing a Python-computed coordinate, which the reach gate's own 1-ULP

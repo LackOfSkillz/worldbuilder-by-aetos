@@ -1144,3 +1144,262 @@ going in and this task added no new ones. The full Python suite drops from 344 t
 (the 6 tests deleted with `tests/test_shelf_gates.py`), and `test_conformance.py` stays at
 **98** -- those 6 tests never lived there. `cargo test -p worldbuilder-engine`, run
 unfiltered, exits 0.
+
+## `features.rs`: the module with two consumers, and bounds that belong to a shape corpus
+
+`worldbuilder/bathymetry/features.py` is the second channel. Everything before it decides
+what ordinary ground looks like; this is where somebody says a channel goes *here* and a
+bar goes across *that* harbour mouth. It runs **after the shelf and before the detail**:
+`terrain/surface.py` computes `shelf.evaluate(point)`, hands `reading.elevation_m` to
+`features.apply`, and only then asks `detail` for its offset -- with `apply`'s second
+return value, `authority`, telling the detail how far to get out of the way.
+
+**`Placed` has two independent consumers, which is why `weight_at` is `pub`.** The obvious
+one is `Features::apply`. The other is `substrate.py`, which is not ported yet and which
+bypasses `apply` entirely: it walks `surface.features.placed`, reads
+`placed.feature.substrate` off each one, and calls `placed.weight_at(point)` itself to
+blend a stated composition in. So `weight_at` is not a private helper that happens to be
+visible -- it is a first-class entry point with a caller that never touches `apply`, and
+narrowing it would break a module that has not arrived yet.
+
+### The transcendental map, and two calls that do not have the same profile
+
+`bump`, `smooth`, and every constant in the module are plain arithmetic -- `abs`, a divide,
+a two-argument `min`, a smoothstep -- and are transcribed **strictly**, raw bits. Exactly
+three things reach `detmath`:
+
+- **`Feature::reach_m` -> `hypot`.** Bounded at **1 ULP**, and the reason is not rounding
+  but algorithm: since 3.8 CPython does not call the platform `hypot` at all, it computes
+  its own Neumaier-compensated norm, while the engine calls `libm::hypot`. Two different
+  algorithms, so bit-equality is not something either side ever promised.
+- **`Placed::weight_at` -> `sphere_to_local` -> `atan2` + `sqrt`.**
+- **`marks_near` -> `SpherePoint::distance_to` -> `angle_to` -> `atan2` (+ `sqrt`).**
+
+**`sphere_to_local` and `local_to_sphere` do not have the same profile, and an assumption
+earlier in this slice that they did was wrong.** `sphere_to_local` reaches `atan2` and a
+`sqrt` (through `Vec3::length`) and nothing else. `local_to_sphere` reaches `hypot`, `cos`,
+`sin` **and** `sqrt`. They are inverses of each other and they are tested as one, but they
+are not interchangeable when the question is what a value costs in tolerance: `weight_at`
+goes through the cheaper direction only, and a bound argued from `local_to_sphere`'s
+`hypot` would be an inherited bound, not a measured one.
+
+`sqrt` costs nothing anywhere above. It is the one operation IEEE-754 requires to be
+correctly rounded, so both languages produce the same bits from the same input by
+specification. `hypot` is the exact opposite case, for the CPython reason given above --
+the two facts sit next to each other because reading "both are square-root-ish" as "both
+are free" is precisely the mistake to avoid.
+
+### The reach gate is load-bearing, and a ring scan proves nothing about it
+
+`weight_at` opens with `if point.vector.dot(&self.feature.at.vector) < self.cos_reach {
+return 0.0; }`. An earlier extraction claimed both branches -- gated and ungated -- give
+approximately zero everywhere, and treated the gate as an optimisation to simplify away.
+That claim came out of a **ring scan**: 30,240 gate-rejected points sampled around
+`reach_m` across 16 shapes, **zero leaks**. Reproduced independently while this section was
+written -- 2,000 azimuths x 8 radial offsets at 3x2, 150x90 and 1200x300, giving 29,712
+gate-rejected ring points and **zero leaks** again. A ring cannot find it, because the leak
+is not on the ring.
+
+**The leak lives in the corner**, where `along` lands a hair inside `length_m` and `across`
+lands a hair inside `width_m` *at the same time*, so both `bump` factors are individually
+non-zero even though the true arc distance has already passed `reach_m`. The band exists
+because near the origin `dot` and `cos_reach` are both within an ULP of `1.0` and the
+comparison stops resolving distance at all; the band's width in metres runs as
+`ULP(1.0) * radius_m^2 / reach_m`, so it *narrows* as the feature grows.
+
+**Numbers, each with the shape that produced it -- there is no module-wide figure here.**
+Scanned in absolute insets at the corner, worst leaked ungated weight:
+
+    3x2         1.2047e-12   (at ~1.2 mm along, ~1.8 mm across)
+    150x90      1.1055e-26
+    1200x300    8.4188e-32
+
+That is a fall-off of roughly a **fourth** power in each of `length_m` and `width_m`. An
+earlier `1 / (length_m^2 * width_m^2)` in this slice came from a *relative*-span grid that
+never reached the widest part of the band, and understates how fast the leak dies. Either
+way the point is the same, and it is the point that matters: **quote a shape beside the
+number.** At 1200x300 a leak of 1e-32 is invisible to `shaped_metres` and shows up only in
+`authority`, which starts at a hard `0.0` where `max(0.0, tiny)` is `tiny`. At 3x2 a leak
+of 1e-12 reaches `shaped_metres` itself -- an ungated `result` of `-29.999999999970655`
+against an exact `-30.0` has been measured there. The gate is transcribed exactly at every
+size, and `features.rs`'s own corner test scans the small shape for that reason. Its
+assertion is exact `0.0`, not a tolerance, so deleting the gate kills it outright.
+
+**The gate is pinned in both directions, and the floor that makes the second direction
+work is derived rather than fitted.** Direction A -- Python rejects, so the engine must
+return exactly `0.0` -- catches a more permissive engine gate; direction B -- Python accepts
+with a weight clear of zero, so the engine must also return non-zero -- catches a stricter
+one. Both were mutation-verified: `cos_reach + 1 ULP` and `cos_reach - 1 ULP` are each
+caught by the test named for the gate, at 39 of 41,104 and 23 of 29,269 probes respectively.
+Direction B needs a "clear of zero" floor and it sits at `1e-24`, mid-window: the
+support-edge contamination is gone by `1e-28`, and the mutant signal is detectable anywhere
+from `1e-28` to `1e-20`.
+
+### `apply` has two bit-observable zero-weight paths, not one
+
+Both can turn a `-0.0` elevation into `+0.0`, and neither may be algebraically simplified:
+
+- **`if weight <= 0.0 { continue; }`.** Written `<=`, not `<`. With `weight == -0.0` this
+  skips, `result` is untouched, and an `elevation_m` of `-0.0` comes back as `-0.0`.
+  Rewritten to `<`, the loop falls through to `result += weight * lift`, computing
+  `-0.0 + (-0.0 * lift)` -- value-equal, bit-different. The mutation was run and caught.
+- **The RAISE/CARVE pair**, `compose == RAISE && lift <= 0.0` and `compose == CARVE &&
+  lift >= 0.0`, transcribed as two separate `if`s rather than folded into one. Both
+  converge at `lift == 0.0`, but that is a fact about where each one's effect is zero,
+  discovered independently -- not a shared reason to merge them. With `result == -0.0` and
+  `target_m == 0.0`, the guard skips and `result` stays `-0.0`; a "simplified" version that
+  let `lift == 0.0` fall through would compute `-0.0 + weight * 0.0`, which is `+0.0`.
+
+Two paths, not one, and a conformance suite that only exercised the weight guard would
+leave the other free to be tidied away.
+
+`authority = max(authority, candidate)` is CPython's two-argument `max`, which returns its
+**first** argument unless the second compares strictly greater -- so it is written
+`if candidate > authority { candidate } else { authority }`, in that operand order, not
+`f64::max`.
+
+### Iteration order is semantic, not merely float-non-associative
+
+`features.py` says it plainly, and the Rust carries the same words: *"Order is meaning
+here. A bar listed after the channel it lies across sits on the carved bottom, which is the
+right story; listed before, the channel would cut straight through it."* Each iteration's
+`result` feeds the **next** feature's `lift`, not the original `elevation_m`. So
+`self.placed` is walked in construction order in a plain `for` loop -- never sorted, never
+accumulated in parallel and combined afterwards. Both of those would still be
+deterministic; neither would tell the same story. The conformance suite asserts the two
+orders of the same feature list differ by more than 10 m *in both languages*, so this is
+pinned rather than trusted.
+
+### The four bounds, and the corpus that owns them
+
+Every figure below was measured over `test_conformance.py`'s own corpus: **10 shapes x 5
+origins x 5 bearings x 196 fraction pairs x both signs = 98,000 probes**, with the shapes
+spanning **1.5:1 to 250:1 aspect ratio in both orientations**.
+
+| Constant | Value | Worst measured | Shape | Origin | Bearing | Headroom |
+|---|---|---|---|---|---|---|
+| `FEATURES_REACH_MAX_ULPS` | 1 ULP | exactly 1 ULP, at `(24628.73974506011, 42633.3696821233)` | -- | -- | -- | none, deliberately |
+| `FEATURES_WEIGHT_MAX_ABS` | 2.2e-14 | 1.082467e-14 | 10000x40 | (-89.9, -170.0) | 143.5 deg | 2.03x |
+| `FEATURES_AUTHORITY_MAX_ABS` | 2.2e-14 | 1.082467e-14 | 10000x40 | (-89.9, -170.0) | 143.5 deg | 2.03x |
+| `FEATURES_RESULT_MAX_ULPS` | 32768 | 14,080 ULP | 10000x40 | (-89.9, -170.0) | 143.5 deg | 2.33x |
+| `FEATURES_RESULT_MAX_ABS` | 1.8e-10 m | 8.776624e-11 m | 10000x40 | (-89.9, -170.0) | 143.5 deg | 2.05x |
+| `FEATURES_MARK_DISTANCE_MAX_ULPS` | 2 ULP | exactly 2 ULP, over 120,000 mark distances | -- | -- | -- | none, deliberately |
+
+`shaped_metres` is asserted as `close_enough(..., 32768) or abs(...) <= 1.8e-10` because
+neither half covers the range alone: where the result cancels to zero the ULP measure is
+meaningless, and where the elevation is kilometres an absolute bound is weak.
+`FEATURES_AUTHORITY_MAX_ABS` equals `FEATURES_WEIGHT_MAX_ABS` and is deliberately **not**
+the same constant -- at every worst case the `smooth(|lift| / SETTLE_M)` factor had
+saturated to exactly 1.0, so authority was carrying the weight's error and nothing else. If
+`smooth` were ever dominant they would part company, which is only visible because they are
+asserted apart.
+
+**These bounds have a measured envelope, and this is what the next slice most needs. They
+are validated over a corpus spanning 1.5:1 to 250:1 in both orientations, they hold
+empirically to about 500:1, and beyond that they fail on the unmutated engine.** Measured
+by extending only `FEATURE_SHAPES`:
+
+    30x12000    (400:1)   weight 2.847722e-14, result abs 2.314664e-10   -- over two bounds
+    40000x40   (1000:1)   weight 4.252154e-14, 55,296 ULP, abs 3.453806e-10
+                                                             -- over all three
+
+**A feature beyond that envelope needs these bounds RE-MEASURED, never scaled.** The
+mechanism is catastrophic cancellation in `across = east * across_e + north * across_n`,
+amplified by `along_m / width_m` -- and that amplification grows without limit as the aspect
+ratio grows, so **no finite corpus makes these bounds universal.** Extending the corpus to
+500:1 would relocate the same cliff to 800:1 and buy nothing. A bound that implied
+universality would be the real defect; a bound with a stated envelope is honest, which is
+why the envelope is stated here rather than the corpus enlarged again.
+
+The mechanism is confirmed by bearing rather than argued: at 0, 90 and 270 degrees one of
+the two terms of `across` is exactly zero and there is nothing to cancel, and the worst
+weight divergence is 4.440892e-16 at each; off-axis it is 1.082467e-14 at 143.5 degrees,
+twenty-four times worse. It is confirmed by shape too -- 40000x12000 (3.3:1) sits at
+4.44e-16 while 10000x40 (250:1) sets the bound. **Aspect ratio is the axis; size is not.**
+An earlier version of these constants capped the corpus at 4:1, landed on `1e-15` and
+`1024`, and an ordinary 5 km x 30 m dredged approach channel -- one shape substituted,
+engine unmutated -- failed two of the sixteen tests outright. The current bounds were
+genuinely re-measured rather than scaled off those: the ratios are 22x, 22x, 32x and 40x,
+and the headroom moved independently per bound.
+
+### A known divergence: `marks_near` membership can reclassify across languages
+
+`distance_m` is bounded at 2 ULP and feeds `distance <= within_m`, which is a **discrete**
+output. No bound fixes a discrete output, so this is recorded rather than tolerated away.
+
+**The condition matters more than the rate.** It happens only when `within_m` is derived
+*from* a computed distance -- "everything at least as close as that rock" -- so the caller
+is standing exactly on the comparison's edge. Measured over the conformance corpus (400
+marked features, 300 probe points):
+
+- **174 of 1,800 (9.67%)** boundary cases -- 300 points x the six nearest marks to each --
+  return a different set from the engine than from the Python, in every observed case one
+  fewer, because the engine's distance for the boundary mark came out fractionally larger
+  than the Python value being used as the threshold.
+- **0 of 3,900** round radii and **0 of 3,900** random radii reclassify. A caller passing a
+  radius it chose is unaffected.
+
+Ordering never diverges: the smallest gap between two adjacent mark distances measured
+**20,709,884 ULP (0.0386 m)**, ten million times the 2-ULP bound, and the nearest a mark
+came to a round `within_m` was **3.17 m**. Both are asserted, so the margin is measured
+rather than believed. The rule for callers is one line: **do not compute `within_m` from a
+`distance_m` obtained from the other language.**
+
+### A warning for `substrate.py`: these bounds are not yours to borrow
+
+`substrate.py` calls `weight_at` directly, and it will be tempting to reuse
+`FEATURES_WEIGHT_MAX_ABS` when it is ported. **Do not.** `weight_at` and `authority` are
+bounded **absolutely** rather than in ULP, and that is a measurement, not a preference: at
+`bump`'s support edge the weight is a smoothstep evaluated on a quantity going to zero, so
+it cancels to 1e-31 and below, and there a single ULP of `along` is the entire value. Worst
+ULP divergence over the same 98,000 probes, bucketed by how large the weight actually is:
+
+    weight >= 1e-3              2,517 ULP
+    weight >= 1e-6             76,326 ULP
+    weight >= 1e-12        32,642,720 ULP
+    every point               4.19e18 ULP  -- i.e. no bound at all
+
+(Those are this corpus's numbers, re-measured for this section. The smaller figures of
+145 / 6,239 / 725,675 / 1.8e16 in `FEATURES_WEIGHT_MAX_ABS`'s docstring were measured on
+the earlier 4:1-capped corpus and were not re-measured when it was widened to 250:1; the
+conclusion they support is unchanged and only strengthened.) The same edge produces **312**
+points where one language returns exactly `0.0` and the other returns up to
+**8.617674e-29** -- infinitely many ULP apart and physically indistinguishable from
+agreement. That census is pinned to 312, so a real divergence could not hide among them,
+and none of the 312 are gate-rejected: this is `bump`'s support edge, not the reach gate.
+
+A borrowed bound is exactly how a real defect survived in a previous slice. `shelf.rs`'s
+first pass took `TECTONICS_BOUNDED_MAX_ULPS` (8192) wholesale; an algebraically-equal
+rewrite of the blend diverged `elevation_m` by **203 ULP** and sat comfortably inside it,
+green. **A borrowed bound admits whatever the lending module admits.** Measure
+`substrate.py`'s own quantity, over its own corpus, with a high-aspect-ratio feature in it.
+
+### `substrate` is still unread inside the crate
+
+Nothing in `crates/worldbuilder-engine/src/` reads `Feature::substrate`: the struct field,
+the binding's `substrate: substrate.clone()`, and some `None` initialisers are all of it.
+So no engine behaviour can observe a flattened sentinel, and `features_round_trip` --
+which hands each feature's `kind` and `substrate` back to Python -- is its **only**
+observer. It exists for that reason alone. Without it, a binding writing
+`substrate.clone().unwrap_or_default()` would compile, pass every test, and turn `None`
+("derive the bottom from the shape of the ground") into `""` at the exact moment
+`substrate.py` arrived to depend on the difference. Both mutations -- flattening the
+sentinel, and dropping the field -- were confirmed caught.
+
+### The throwaway is gone
+
+Task 1's `tests/test_features_gates.py`, which measured the gate behaviour against the live
+Python before anything in the port depended on the answer, is deleted as of this section.
+Its 14 tests are gone; what they found lives here and in `test_conformance.py`'s permanent
+measurements instead.
+
+Every count in this section was verified by running the suites and checking exit status, not
+copied from a report. `cargo test --release` exits 0 at **187** tests (177 lib, 4
+`blake2_bytes.rs`, 6 `no_std_math` guard), unchanged by this task, which added no Rust test.
+`pytest tests/test_conformance.py` exits 0 at **114**, also unchanged -- the deleted spike
+never lived there. The full Python suite drops from 368 to **354** (346 outside
+`tests/test_performance.py`, plus that file's 8), the fall being exactly the 14 tests deleted
+with the spike. `tests/test_performance.py` is separately known to be unreliable: it compares
+two wall-clock chart timings on about a 3% margin, it has been observed to fail at parent
+commits and in isolation, and it is out of scope here. It happened to pass on the runs above;
+a failure there is pre-existing and is not this section going red.
