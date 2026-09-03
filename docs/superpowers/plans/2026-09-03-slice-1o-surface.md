@@ -4,7 +4,7 @@
 
 **Goal:** Port `worldbuilder/terrain/surface.py` to `crates/worldbuilder-engine/src/surface.rs` — the capstone that composes every field already ported. **This closes the engine core.**
 
-**Architecture:** One class, four methods, a nine-field constructor, and a single multiply. Its content is not arithmetic but *ordering*: continentality, tectonics, shelf, features, detail — with substrate hanging off the side and re-entering at `structural_m`.
+**Architecture:** One class, four methods, an eight-field constructor, and a single multiply. Its content is not arithmetic but *ordering*: continentality, tectonics, shelf, features, detail — with substrate hanging off the side and re-entering at `structural_m`.
 
 **Tech Stack:** Rust (engine), PyO3 bindings, pytest differential harness against the Python reference.
 
@@ -175,7 +175,9 @@ No engine code.
 
 **Files:** Create `crates/worldbuilder-engine/src/surface.rs`; modify `src/lib.rs`
 
-**Interfaces:** the constructor and its nine fields.
+**Interfaces:** the constructor and its eight fields.
+
+**EIGHT, not nine.** Python's ninth attribute is `self.substrate = Substrate(self)`, and `substrate.rs` deliberately has no `Substrate` type. `bottom_at` calls the free `substrate::at` with `&self` callbacks instead.
 
 **The seed cast lands here**, with the `// cast-ok:` marker Task 1 worded. **Keep the `i64` signature.**
 
