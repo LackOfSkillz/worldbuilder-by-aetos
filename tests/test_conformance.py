@@ -1724,15 +1724,6 @@ def test_plate_surface_velocity_agrees_at_a_plates_own_euler_pole():
     assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
 
 
-def _spinning_pair_poles_and_rates():
-    """Both plates' Euler poles at the north pole -- mirrors `spinning_pair` in the Rust
-    unit tests, so both angular velocities are `(0, 0, rate)` and the relative velocity on
-    the equator is purely eastward, making the classification arithmetic easy to reason
-    about by hand while still going through the real bindings."""
-    north = Vec3(0.0, 0.0, 1.0)
-    return north, north
-
-
 def test_plates_motion_between_agrees_over_a_corpus_of_points_and_normals():
     """Two named plates (real, distinct poles and rates, not fabricated), a corpus of
     points, and a corpus of normals -- `closing`, `sliding` and `kind` bit/string-exact."""
@@ -1764,7 +1755,9 @@ def test_plates_motion_between_agrees_over_a_corpus_of_points_and_normals():
         )
         assert want.kind == got_kind, ("kind", point.vector, normal, want.kind, got_kind)
         checked += 1
-    assert checked > 0
+    # `corpus()` itself never yields the zero vector (it skips that combination), so the
+    # `except ValueError` above can never fire here: every consecutive pair is checked.
+    assert checked == len(points) - 1
 
 
 def test_plates_motion_between_agrees_for_a_stationary_pair():
@@ -1772,7 +1765,11 @@ def test_plates_motion_between_agrees_for_a_stationary_pair():
     `or` short-circuit prevents it, on both sides. Compared with exact equality: these are
     products of an exactly-zero relative-velocity vector, not the residue of cancelling
     unequal quantities."""
-    pole, _ = _spinning_pair_poles_and_rates()
+    # Both plates' Euler poles at the north pole -- mirrors `spinning_pair` in the Rust
+    # unit tests, so both angular velocities are `(0, 0, rate)` and the relative velocity
+    # on the equator is purely eastward, making the classification arithmetic easy to
+    # reason about by hand while still going through the real bindings.
+    pole = Vec3(0.0, 0.0, 1.0)
     near = _kinematics_plate(0, pole, 0.01)
     far = _kinematics_plate(1, pole, 0.01)
     point = SpherePoint.from_latlon(0.0, 0.0)
@@ -1803,7 +1800,11 @@ def test_plates_motion_between_agrees_either_side_of_the_across_enough_threshold
     be transform on either side; at `a = 0.4` it must be. Exercised through the real
     bindings, not just the Rust unit test, so a divergence in how the two languages wire
     the comparison would show here too."""
-    pole, _ = _spinning_pair_poles_and_rates()
+    # Both plates' Euler poles at the north pole -- mirrors `spinning_pair` in the Rust
+    # unit tests, so both angular velocities are `(0, 0, rate)` and the relative velocity
+    # on the equator is purely eastward, making the classification arithmetic easy to
+    # reason about by hand while still going through the real bindings.
+    pole = Vec3(0.0, 0.0, 1.0)
     near = _kinematics_plate(0, pole, 0.02)
     far = _kinematics_plate(1, pole, 0.01)
     point = SpherePoint.from_latlon(0.0, 0.0)

@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn two_plates_driving_into_each_other_are_convergent() {
-        // Relative velocity is due east; the normal points due west, into `near`. The
+        // Relative velocity is due west; the normal points due east, into `near`. The
         // nearest plate is moving against it, so they are closing.
         let (near, far) = spinning_pair(0.01, 0.02);
         let motion = motion_between(
