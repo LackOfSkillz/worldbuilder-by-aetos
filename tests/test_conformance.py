@@ -2964,17 +2964,36 @@ def test_detail_offset_m_returns_exactly_zero_for_non_positive_amplitude():
 #   `test_shelf_target_depth_m_and_weight_are_strict_given_identical_inputs` below measures
 #   directly, isolated from the `coastal()` hazard.
 # - `evaluate`/`elevation_m` additionally compose with `Tectonics.offset_m` and
-#   `Continentality.base_elevation` (the macro layer), which the Tectonics section above
-#   already found to diverge far past `MAX_TRANSCENDENTAL_ULPS` -- up to
-#   `TECTONICS_BOUNDED_MAX_ULPS` (8192) -- because of the same "near-zero denominator turns
-#   a few-ULP absolute difference into a large relative one" mechanism, at the `authority`
-#   smoothstep and at `engagement` inside `offset_m` itself. That composed bound is reused
-#   here, not re-derived, and is NOT part of the shelf-specific hypot contract -- it is
-#   inherited from a hazard this file already measured and named. Measured over this
-#   section's own corpus (see `test_shelf_evaluate_agrees_within_the_tectonics_composed_
-#   bound`): worst 36 ULP for `elevation_m`, 1024 ULP for `weight`, 230 ULP for
-#   `tectonic_m` -- all comfortably inside `TECTONICS_BOUNDED_MAX_ULPS`, none inside the
-#   ordinary 4-ULP bound.
+#   `Continentality.base_elevation` (the macro layer). A first pass borrowed
+#   `TECTONICS_BOUNDED_MAX_ULPS` (8192) wholesale for all three fields, on the theory that
+#   the divergence was inherited from the Tectonics section's already-measured
+#   `engagement`/`authority` cancellation hazard. That theory is wrong, and the bound was
+#   dangerously loose besides -- both corrected below.
+#
+#   The wrongness: at the corpus point where `weight` diverges most (1024 ULP), `tectonic_m`
+#   is bit-identical on both sides (0 ULP). The divergence is reproducible by varying only
+#   `coastal()`'s `distance_m` (itself bounded at `MAX_TRANSCENDENTAL_ULPS` via `hypot`)
+#   while holding `tectonic_m` fixed, so it cannot be coming from `Tectonics.offset_m`. The
+#   real mechanism is local to this module: `weight`'s `seaward = 1.0 - smooth(x)` term, at
+#   this point, evaluates `smooth` at `x` ~= 0.982 -- close enough to 1.0 that subtracting it
+#   from 1.0 loses most of the input's precision to catastrophic cancellation. That is a
+#   shelf-specific hazard in `weight`'s own formula, not something inherited from tectonics.
+#
+#   The looseness: an 8192-ULP shared bound is wide enough that an algebraically-equal but
+#   numerically-different rearrangement of `evaluate`'s blend (`macro * (1.0 - weight) +
+#   target * weight` in place of `macro + weight * (target - macro)`) diverges `elevation_m`
+#   by 203 ULP and the suite would still pass. A per-field bound sized to what each field
+#   actually needs closes that gap for `elevation_m` while still accommodating `weight`'s
+#   genuine cancellation hazard.
+#
+#   So each field gets its own bound below (`SHELF_ELEVATION_MAX_ULPS`,
+#   `SHELF_WEIGHT_MAX_ULPS`, `SHELF_TECTONIC_MAX_ULPS`), each measured against this
+#   section's own corpus rather than borrowed: worst observed 36 ULP for `elevation_m`
+#   (legitimate -- the composition with `Tectonics.offset_m`/`base_elevation` genuinely
+#   moves it a little), 1024 ULP for `weight` (the `1.0 - smooth(x)` cancellation described
+#   above), 230 ULP for `tectonic_m` (a plain read-through of `Tectonics.offset_m`'s own
+#   already-documented hazard). All three exceed the ordinary 4-ULP transcendental bound and
+#   none of them share a single number by coincidence -- see each constant's own docstring.
 #
 # Nothing here needed a tolerance the brief did not already predict: `coastal()`'s own
 # `distance_m`/`breadth` measured at a worst of 2 and 4 ULP respectively (right at, not
@@ -3052,14 +3071,40 @@ SHELF_GRADIENT_MARGIN_FLOOR = 2.371402e-09
 coastal window, over this exact corpus and seed. Same regression-guard role as the window
 margin above, for gate 2 -- the one gate actually downstream of `hypot`."""
 
-TECTONICS_COMPOSED_MAX_ULPS = TECTONICS_BOUNDED_MAX_ULPS
-"""`evaluate`/`elevation_m` compose `coastal()`'s bounded `distance_m`/`breadth` with
-`Tectonics.offset_m` and `Continentality.base_elevation`, whose own contract (see the
-Tectonics section above) already permits divergence up to `TECTONICS_BOUNDED_MAX_ULPS`
-(8192) -- far past the ordinary 4-ULP transcendental bound, for the same near-zero-
-denominator reason documented there. Reusing that constant under this name states plainly
-that the shelf's `evaluate` inherits an already-measured hazard rather than introducing a
-new, unexplained one of its own."""
+SHELF_ELEVATION_MAX_ULPS = 96
+"""Measured worst over `SHELF_POINTS`: 36 ULP (see `test_shelf_evaluate_agrees_within_the_
+shelf_composed_bounds` below). `elevation_m` composes `coastal()`'s hypot-bounded
+`distance_m`/`breadth` with `Tectonics.offset_m` and `Continentality.base_elevation`
+through the blend in `evaluate`, which is legitimately enough to clear the ordinary 4-ULP
+transcendental bound but nowhere near what `TECTONICS_BOUNDED_MAX_ULPS` (8192, borrowed by
+a since-corrected first pass) would tolerate.
+
+96 sits with real headroom above the measured 36 and a clear margin below 203 -- the worst
+`elevation_m` divergence this same corpus produces when `evaluate`'s blend is rewritten to
+the algebraically-equal `macro * (1.0 - weight) + target * weight`. That rearrangement
+changes the floating-point rounding path without changing the value it computes in real
+arithmetic, so a bound that could not tell it apart from the legitimate port would be
+worthless as a conformance check. 96 discriminates: it passes the real port (36) and fails
+the mutation (203)."""
+
+SHELF_WEIGHT_MAX_ULPS = 2048
+"""Measured worst over `SHELF_POINTS`: 1024 ULP (see the same test below). NOT inherited
+from `Tectonics.offset_m` -- at the corpus point producing this worst divergence,
+`tectonic_m` is bit-identical on both sides (0 ULP; confirmed by `dt` in that test), so the
+composition-with-tectonics theory a first pass gave for this number is wrong. The actual
+mechanism is `weight`'s own `seaward = 1.0 - smooth(x)` term: at that point `x` ~= 0.982, and
+subtracting a smoothstep that close to 1.0 destroys most of the input's precision to
+catastrophic cancellation -- a hazard specific to this formula in this module, not
+something the shelf picked up from tectonics. 2048 leaves 2x headroom over the measured
+1024 without being sized to hide anything else; see the note below the corpus test for
+whether this field could instead be compared more tightly by decomposing the product."""
+
+SHELF_TECTONIC_MAX_ULPS = 512
+"""Measured worst over `SHELF_POINTS`: 230 ULP (see the same test below). This one *is*
+what a first pass called "inherited from tectonics" -- `tectonic_m` is `Tectonics.offset_m`
+passed straight through `evaluate`, so its divergence is exactly that section's own
+`engagement`-cancellation hazard, not a new one. 512 leaves a little over 2x headroom over
+the measured 230."""
 
 
 def test_shelf_gate_margins_match_task_1s_measurement():
@@ -3356,9 +3401,10 @@ def test_shelf_weight_treats_some_zero_as_a_supplied_zero_not_as_absent():
 
     # Some(0.0) never touches tectonics.offset_m, so this side is strict.
     assert same(want_some_zero, got_some_zero), (want_some_zero, got_some_zero)
-    # None recomputes via offset_m, which composes with the Tectonics section's own
-    # already-measured bound -- not strict, but still bounded.
-    assert close_enough(want_none, got_none, TECTONICS_COMPOSED_MAX_ULPS), (
+    # None recomputes via offset_m and then runs through weight's own seaward/authority
+    # product -- not strict, bounded at SHELF_WEIGHT_MAX_ULPS (see that constant's
+    # docstring for the cancellation this accommodates).
+    assert close_enough(want_none, got_none, SHELF_WEIGHT_MAX_ULPS), (
         want_none, got_none, ulps_apart(want_none, got_none)
     )
     assert same(got_none, got_omitted), (
@@ -3380,21 +3426,32 @@ def test_shelf_evaluate_none_is_positional_and_agrees_deep_in_the_interior():
     want = PY_SHELF.evaluate(point)
     got = _engine_evaluate(0.0, 0.0, 1.0)
     assert want.weight == 0.0 and got[1] == 0.0
-    assert close_enough(want.elevation_m, got[0], TECTONICS_COMPOSED_MAX_ULPS), (
+    assert close_enough(want.elevation_m, got[0], SHELF_ELEVATION_MAX_ULPS), (
         want.elevation_m, got[0], ulps_apart(want.elevation_m, got[0])
     )
-    assert close_enough(want.tectonic_m, got[2], TECTONICS_COMPOSED_MAX_ULPS), (
+    assert close_enough(want.tectonic_m, got[2], SHELF_TECTONIC_MAX_ULPS), (
         want.tectonic_m, got[2], ulps_apart(want.tectonic_m, got[2])
     )
 
 
-def test_shelf_evaluate_agrees_within_the_tectonics_composed_bound():
+def test_shelf_evaluate_agrees_within_the_shelf_composed_bounds():
     """
-    `evaluate`'s three fields, over the whole corpus, bounded at
-    `TECTONICS_COMPOSED_MAX_ULPS` -- not the ordinary `MAX_TRANSCENDENTAL_ULPS` -- because
-    `elevation_m` and `tectonic_m` compose with `Tectonics.offset_m`'s own already-measured
-    hazard (see the section header). Tracks the worst divergence for each field
-    separately, per the brief's "report the worst ULP distance on the bounded paths."
+    `evaluate`'s three fields, over the whole corpus, each bounded at its own measured
+    constant (`SHELF_ELEVATION_MAX_ULPS`, `SHELF_WEIGHT_MAX_ULPS`,
+    `SHELF_TECTONIC_MAX_ULPS`) rather than one shared, borrowed number -- see the section
+    header and each constant's docstring for why a single `TECTONICS_BOUNDED_MAX_ULPS`
+    both mischaracterised `weight`'s hazard and was loose enough to hide a real defect in
+    `elevation_m`'s blend. Tracks the worst divergence for each field separately, per the
+    brief's "report the worst ULP distance on the bounded paths."
+
+    Whether `weight`'s 2048-ULP bound could be tightened by comparing its three factors
+    (`seaward`, `breadth`, `authority`) separately instead of the product: `breadth` is
+    exact here (fed straight through from `coastal()`, not recomputed) and `authority` is
+    only as bad as `tectonic_m`'s own 230-ULP hazard, so the real payoff would be isolating
+    `seaward`'s `1.0 - smooth(x)` cancellation on its own -- worth doing if `weight`'s
+    current bound (a factor of ~2 over its measured worst, on a value in [0, 1]) ever proves
+    too weak an assertion in practice, but not attempted here since the brief only asks that
+    it be named.
     """
     worst_elevation = 0
     worst_weight = 0
@@ -3405,14 +3462,14 @@ def test_shelf_evaluate_agrees_within_the_tectonics_composed_bound():
         want = PY_SHELF.evaluate(point)
         got = _engine_evaluate(v.x, v.y, v.z)
 
-        assert close_enough(want.elevation_m, got[0], TECTONICS_COMPOSED_MAX_ULPS), (
+        assert close_enough(want.elevation_m, got[0], SHELF_ELEVATION_MAX_ULPS), (
             "elevation_m", v.x, v.y, v.z, want.elevation_m, got[0],
             ulps_apart(want.elevation_m, got[0]),
         )
-        assert close_enough(want.weight, got[1], TECTONICS_COMPOSED_MAX_ULPS), (
+        assert close_enough(want.weight, got[1], SHELF_WEIGHT_MAX_ULPS), (
             "weight", v.x, v.y, v.z, want.weight, got[1], ulps_apart(want.weight, got[1]),
         )
-        assert close_enough(want.tectonic_m, got[2], TECTONICS_COMPOSED_MAX_ULPS), (
+        assert close_enough(want.tectonic_m, got[2], SHELF_TECTONIC_MAX_ULPS), (
             "tectonic_m", v.x, v.y, v.z, want.tectonic_m, got[2],
             ulps_apart(want.tectonic_m, got[2]),
         )
@@ -3432,7 +3489,7 @@ def test_shelf_evaluate_agrees_within_the_tectonics_composed_bound():
 
     # The measurement this section's header claims, made concrete -- two-sided, per the
     # brief and the Tectonics section's own precedent: the ordinary bound genuinely does
-    # not hold here (this is the finding), but the wider, measured one does.
+    # not hold here (this is the finding), but each field's own wider, measured bound does.
     assert worst_elevation > MAX_TRANSCENDENTAL_ULPS, (
         f"expected elevation_m's worst divergence to exceed the ordinary "
         f"{MAX_TRANSCENDENTAL_ULPS}-ULP bound (composition with Tectonics.offset_m is the "
@@ -3442,15 +3499,15 @@ def test_shelf_evaluate_agrees_within_the_tectonics_composed_bound():
         f"expected tectonic_m's worst divergence to exceed the ordinary "
         f"{MAX_TRANSCENDENTAL_ULPS}-ULP bound; observed worst was only {worst_tectonic} ULP"
     )
-    assert worst_elevation <= TECTONICS_COMPOSED_MAX_ULPS, (
+    assert worst_elevation <= SHELF_ELEVATION_MAX_ULPS, (
         f"elevation_m's worst observed divergence grew to {worst_elevation} ULP, beyond "
-        f"the measured TECTONICS_COMPOSED_MAX_ULPS ({TECTONICS_COMPOSED_MAX_ULPS})"
+        f"the measured SHELF_ELEVATION_MAX_ULPS ({SHELF_ELEVATION_MAX_ULPS})"
     )
-    assert worst_weight <= TECTONICS_COMPOSED_MAX_ULPS, (
+    assert worst_weight <= SHELF_WEIGHT_MAX_ULPS, (
         f"weight's worst observed divergence grew to {worst_weight} ULP, beyond the "
-        f"measured TECTONICS_COMPOSED_MAX_ULPS ({TECTONICS_COMPOSED_MAX_ULPS})"
+        f"measured SHELF_WEIGHT_MAX_ULPS ({SHELF_WEIGHT_MAX_ULPS})"
     )
-    assert worst_tectonic <= TECTONICS_COMPOSED_MAX_ULPS, (
+    assert worst_tectonic <= SHELF_TECTONIC_MAX_ULPS, (
         f"tectonic_m's worst observed divergence grew to {worst_tectonic} ULP, beyond the "
-        f"measured TECTONICS_COMPOSED_MAX_ULPS ({TECTONICS_COMPOSED_MAX_ULPS})"
+        f"measured SHELF_TECTONIC_MAX_ULPS ({SHELF_TECTONIC_MAX_ULPS})"
     )
