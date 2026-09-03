@@ -2515,6 +2515,24 @@ range if `GENERATION_COUNTS` is ever widened.
 """
 
 
+def _assert_generation_spread_bound_still_measured():
+    """
+    Guards `GENERATION_SPREAD_BOUNDED_MAX_ULPS` itself, not any one caller: every
+    consumer of that bound must call this first, so widening `GENERATION_COUNTS` past
+    `GENERATION_SPREAD_MEASURED_MAX_COUNT` fails here, with an explanation, instead of
+    surfacing downstream as a puzzling raw-ULP `close_enough()` failure.
+    """
+    assert max(GENERATION_COUNTS) <= GENERATION_SPREAD_MEASURED_MAX_COUNT, (
+        f"GENERATION_COUNTS now reaches {max(GENERATION_COUNTS)}, past the "
+        f"{GENERATION_SPREAD_MEASURED_MAX_COUNT} this bound was measured up to. "
+        "GENERATION_SPREAD_BOUNDED_MAX_ULPS does not hold outside the range it was "
+        "measured over -- divergence grows with count (up to 131 ULP was observed at "
+        "count 5000 in the Task 6 review's broader sweep). Re-measure the worst-case ULP "
+        "at the new count and pick a new bound from that measurement; do not just raise "
+        "this constant to make the assertion below pass."
+    )
+
+
 def test_generation_fraction_agrees_bit_for_bit_across_seeds_indices_and_labels():
     """
     Strict: `same()`, not `close_enough()`. No transcendental sits between the BLAKE2
@@ -2563,15 +2581,7 @@ def test_generation_spread_agrees_within_the_measured_bound():
     is recorded in the Task 6 report rather than printed here (pytest swallows stdout on
     a passing run) -- this test only has to prove the bound holds, not narrate it.
     """
-    assert max(GENERATION_COUNTS) <= GENERATION_SPREAD_MEASURED_MAX_COUNT, (
-        f"GENERATION_COUNTS now reaches {max(GENERATION_COUNTS)}, past the "
-        f"{GENERATION_SPREAD_MEASURED_MAX_COUNT} this bound was measured up to. "
-        "GENERATION_SPREAD_BOUNDED_MAX_ULPS does not hold outside the range it was "
-        "measured over -- divergence grows with count (up to 131 ULP was observed at "
-        "count 5000 in the Task 6 review's broader sweep). Re-measure the worst-case ULP "
-        "at the new count and pick a new bound from that measurement; do not just raise "
-        "this constant to make the assertion below pass."
-    )
+    _assert_generation_spread_bound_still_measured()
     worst = 0
     skipped = 0
     for seed in GENERATION_WORLD_SEEDS:
@@ -2625,6 +2635,7 @@ def test_generation_plates_for_agrees_across_seeds_and_counts():
     `plates_for` is the whole pipeline in one call: exact plate indices, bounded seed and
     pole vectors, and a strict rate, all in one pass over every count this file tests.
     """
+    _assert_generation_spread_bound_still_measured()
     for seed in GENERATION_WORLD_SEEDS:
         for count in GENERATION_COUNTS:
             want = py_generation.plates_for(seed, count)

@@ -854,12 +854,16 @@ measurement.
 `tests/test_blake2_bytes.py`, is deleted as of this section -- its job was proving the
 `blake2` crate matched CPython before anything in the port depended on the answer, and
 `test_conformance.py` now covers `_fraction` and friends directly against the built engine.
-`crates/worldbuilder-engine/tests/blake2_bytes.rs` **stays**, permanently: its expected
-bytes were computed independently against the live Python rather than copied from this
-crate's own output, which makes it the only guard in the repository that would catch a
-future `blake2` version bump silently changing every generated world -- `test_conformance.py`
-only checks that Rust and Python agree with *each other*, not that either one still matches
-the reference vectors an upgrade could quietly move both away from.
+`crates/worldbuilder-engine/tests/blake2_bytes.rs` **stays**, permanently, even though
+`test_conformance.py`'s `_fraction` comparison would itself catch a future `blake2` crate
+version bump: the Python side of that comparison is `hashlib`, not the Rust `blake2`
+crate, so the two are already independent, and a digest change on the Rust side would
+break the 960-case bit-for-bit `same()` assertion loudly. `blake2_bytes.rs` earns its
+keep for other reasons -- it is Rust-only, so it fails without the Python extension
+needing to be built at all; it pins specific vectors sourced independently against CPython
+rather than comparing two live computations; and it localises a failure to the dependency
+itself, instead of surfacing as a whole-generation-chain mismatch that someone would have
+to diagnose back to its root.
 
 Every count in this section was verified by running the suites, not copied from an earlier
 report: 133 Rust tests (123 lib plus the 4-test `blake2_bytes.rs` plus the 6-test
