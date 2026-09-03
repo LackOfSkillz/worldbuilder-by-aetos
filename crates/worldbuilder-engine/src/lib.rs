@@ -82,6 +82,6 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::features_weight_at, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::features_apply, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::features_marks_near, m)?)?;
-    m.add_function(wrap_pyfunction!(bindings::features_kinds, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::features_round_trip, m)?)?;
     Ok(())
 }

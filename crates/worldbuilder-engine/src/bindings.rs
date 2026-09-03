@@ -900,10 +900,26 @@ pub fn features_marks_near(
         .collect()
 }
 
-/// `len(Features(...))` and the `kind` of each feature in `__iter__` order, so the Python
-/// side can check that construction order survives -- order is semantic in this module.
+/// `len(Features(...))`, and the `kind` and `substrate` of each feature in `__iter__`
+/// order.
+///
+/// Two things are observable here that are observable nowhere else in this surface.
+/// Construction order, because order is semantic in this module -- and `substrate`,
+/// because **nothing inside the crate reads that field yet**: `substrate.py` is not
+/// ported, so `Features::apply` and `marks_near` are both indifferent to it. Without this
+/// round trip, a binding that flattened the sentinel (`substrate.clone().unwrap_or_default()`,
+/// turning Python's `None` into `""`) would be undetectable by any test in the conformance
+/// suite, and the field would silently stop meaning "derive the bottom from the shape of
+/// the ground" at the moment `substrate.py` arrived to depend on it.
 #[pyfunction]
-pub fn features_kinds(features: Vec<FeatureTuple>, radius_m: f64) -> (usize, Vec<String>) {
+pub fn features_round_trip(
+    features: Vec<FeatureTuple>,
+    radius_m: f64,
+) -> (usize, Vec<String>, Vec<Option<String>>) {
     let built = features_from_tuples(&features, radius_m);
-    (built.len(), built.iter().map(|feature| feature.kind.clone()).collect())
+    (
+        built.len(),
+        built.iter().map(|feature| feature.kind.clone()).collect(),
+        built.iter().map(|feature| feature.substrate.clone()).collect(),
+    )
 }

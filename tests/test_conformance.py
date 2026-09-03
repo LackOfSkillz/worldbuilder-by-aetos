@@ -3557,17 +3557,32 @@ from worldbuilder.bathymetry.features import Features as PyFeatures
 from worldbuilder.bathymetry.features import Placed as PyPlaced
 
 FEATURE_SHAPES = [
-    (3.0, 2.0), (20.0, 20.0), (150.0, 90.0), (500.0, 500.0),
-    (1200.0, 300.0), (20000.0, 7000.0), (40000.0, 12000.0),
+    (3.0, 2.0), (20.0, 20.0), (150.0, 90.0), (500.0, 500.0), (1200.0, 300.0),
+    (5000.0, 30.0), (10000.0, 40.0), (40.0, 10000.0),
+    (20000.0, 7000.0), (40000.0, 12000.0),
 ]
 """
-Spans four orders of magnitude in `length_m`, and 3x2 is in it deliberately.
+Spans four orders of magnitude in `length_m` AND two in aspect ratio, and both of those
+are load-bearing.
 
-The reach gate's corner leak -- points the gate rejects whose ungated `bump` product is
-still non-zero -- scales roughly as `1 / (length_m^2 * width_m^2)`. At 1200x300 the leaked
-weight is ~1e-32 and no plausible tolerance would ever notice it, so a matrix built only on
-large features proves nothing about the gate; at 3x2 it is ~2e-13, which is a real number.
-Anything asserted about small features here has to be asserted at a small feature.
+**Size.** The reach gate's corner leak -- points the gate rejects whose ungated `bump`
+product is still non-zero -- scales roughly as `1 / (length_m^2 * width_m^2)`. At 1200x300
+the leaked weight is ~1e-32 and no plausible tolerance would ever notice it, so a matrix
+built only on large features proves nothing about the gate; at 3x2 it is ~2e-13, which is a
+real number.
+
+**Aspect ratio, which an earlier version of this list got wrong and which every bound below
+was resized for.** That version topped out at 4:1 (1200x300), and every absolute bound came
+out near 5e-16 as a result. Substituting a 5000x30 dredged channel for it -- nothing else
+changed, unmutated engine -- failed two of these tests outright, and at 10000x40 the true
+worsts are twenty times the 4:1 figures: 1.08e-14 absolute on the weight and 14,080 ULP on
+`shaped_metres`. The mechanism is cancellation in
+`across = east * across_e + north * across_n`, amplified by `along_m / width_m`; at bearings
+0, 90 and 270 degrees, where one of those two terms is exactly zero, it collapses back to
+4.44e-16, which is what confirms it. A long narrow feature is not exotic -- a dredged
+channel, a breakwater, a sandbar and a levee are all high aspect ratio, and placing exactly
+those is what this module is for. `40x10000` is the same ratio with the extents swapped,
+included because `along` and `across` are not quite interchangeable under a bearing change.
 """
 
 FEATURE_ORIGINS = [(12.34, 56.78), (0.0, 0.0), (-33.0, 151.0), (89.5, 10.0), (-89.9, -170.0)]
@@ -3608,23 +3623,46 @@ platform `hypot` at all -- it computes its own Neumaier-compensated norm -- whil
 calls `libm::hypot`. Those are two different algorithms, not two roundings of one algorithm,
 so bit-equality is not something either side promises.
 
-Measured worst over 20,007 `(length_m, width_m)` pairs (this section's seven shapes plus
+Measured worst over 20,010 `(length_m, width_m)` pairs (this section's ten shapes plus
 20,000 drawn from [0.5, 50000]): exactly 1 ULP, at
 `(24628.73974506011, 42633.3696821233)`. The bound is that 1, with no headroom, because a
 `hypot` that started disagreeing by 2 would be worth being told about.
 """
 
-FEATURES_WEIGHT_MAX_ABS = 1e-15
+FEATURES_WEIGHT_MAX_ABS = 2.2e-14
 """
 `Placed.weight_at()` is bounded ABSOLUTELY rather than in ULP, and that is the measurement
 talking, not a preference.
 
-Measured worst absolute divergence over 68,600 probe points (seven shapes x five origins x
-five bearings x 196 fraction pairs x both signs): **4.996004e-16**, at a 20x20 m feature
-from (-33.0, 151.0) on bearing 37 deg, probing (0.2, 0.6) of its extents, where the weight
-is ~0.3153920000014546. The same 4.996004e-16 recurs at 20000x7000; the worst at 3x2 is
-3.330669e-16 and at 1200x300 is 4.440892e-16. So 1e-15 is roughly twice the legitimate
-maximum, on a quantity whose whole range is [0, 1].
+Measured worst absolute divergence over 98,000 probe points (ten shapes x five origins x
+five bearings x 196 fraction pairs x both signs): **1.082467e-14**, at a **10000x40 m**
+feature from **(-89.9, -170.0)** on **bearing 143.5 deg**, probing (-0.4, -0.4) of its
+extents, where the weight is ~0.41990400000001615 against ~0.41990400000000533.
+
+Per shape, worst absolute:
+
+    3x2           3.330669e-16   (12.34, 56.78)   bearing 0
+    20x20         4.996004e-16   (-33.0, 151.0)   bearing 37
+    150x90        4.440892e-16   (-33.0, 151.0)   bearing 0
+    500x500       4.302114e-16   (12.34, 56.78)   bearing 143.5
+    1200x300      4.440892e-16   (12.34, 56.78)   bearing 37
+    5000x30       7.771561e-15   (-89.9, -170.0)  bearing 37
+    10000x40      1.082467e-14   (-89.9, -170.0)  bearing 143.5   <- the bound
+    40x10000      1.060263e-14   (0.0, 0.0)       bearing 143.5
+    20000x7000    4.996004e-16   (-89.9, -170.0)  bearing 37
+    40000x12000   4.440892e-16   (12.34, 56.78)   bearing 0
+
+**The bound is driven by aspect ratio, not by size** -- 40000x12000 (3.3:1) sits at
+4.44e-16 while 10000x40 (250:1) is twenty-four times worse. And it is driven by bearing:
+the worst at bearing 0, at 90 and at 270 is 4.440892e-16 in each case, against 1.082467e-14
+at 143.5 and 1.063039e-14 at 37. At the axis-aligned bearings one of the two terms of
+`across = east * across_e + north * across_n` is exactly zero and there is nothing to
+cancel; off-axis both terms are large and opposite, and `along_m / width_m` amplifies what
+is left.
+
+**Headroom: 2.03x** (2.2e-14 over a legitimate maximum of 1.082467e-14). Deliberately about
+two, not about a hundred -- a bound with 100x headroom would accommodate a real defect
+without noticing, and this quantity's whole range is [0, 1].
 
 **Why not a ULP bound.** `bump` is `smooth(1.0 - min(1.0, d / half))`, so at the edge of a
 feature's support the weight is a smoothstep evaluated on a quantity going to zero, and the
@@ -3638,19 +3676,26 @@ this absolute bound holds everywhere AND is tight. See
 two-sided version of that claim.
 """
 
-FEATURES_AUTHORITY_MAX_ABS = 1e-15
+FEATURES_AUTHORITY_MAX_ABS = 2.2e-14
 """
 `apply`'s second return value, measured SEPARATELY from `shaped_metres` -- they are
 different quantities in different units and a shared bound would be a borrowed one.
 
-Measured worst absolute divergence over the same 68,600 points x six `FEATURE_APPLY_CASES`:
-**4.996004e-16**, at 20x20 from (-33.0, 151.0) bearing 37 deg, fractions (0.2, 0.6),
-authority ~0.3153920000014546. Per shape: 3.330669e-16 at 3x2, 4.440892e-16 at 1200x300,
-4.996004e-16 at 20000x7000 and 40000x12000.
+Measured worst absolute divergence over the same 98,000 points x six `FEATURE_APPLY_CASES`:
+**1.082467e-14**, at **10000x40** from **(-89.9, -170.0)**, **bearing 143.5 deg**,
+fractions (-0.4, -0.4), a RAISE to -5 m over -30 m, authority ~0.41990400000001615.
 
-It matches `FEATURES_WEIGHT_MAX_ABS` in magnitude and that is not an accident to be tidied
-away by sharing one constant: `authority` is `weight * smooth(|lift| / SETTLE_M)`, and at
-every worst case measured the `smooth` factor had saturated to exactly 1.0, so authority was
+Per shape, worst absolute: 3.330669e-16 at 3x2, 4.996004e-16 at 20x20, 4.440892e-16 at
+150x90, 4.302114e-16 at 500x500, 4.440892e-16 at 1200x300, 7.771561e-15 at 5000x30,
+1.082467e-14 at 10000x40, 1.060263e-14 at 40x10000, 4.996004e-16 at 20000x7000 and
+4.440892e-16 at 40000x12000 -- the same aspect-ratio story as the weight, for the reason
+below.
+
+**Headroom: 2.03x** (2.2e-14 over 1.082467e-14), matching the weight's on purpose.
+
+It equals `FEATURES_WEIGHT_MAX_ABS` and that is not an accident to be tidied away by
+sharing one constant: `authority` is `weight * smooth(|lift| / SETTLE_M)`, and at every
+worst case measured the `smooth` factor had saturated to exactly 1.0, so authority was
 carrying the weight's error and nothing else. If `smooth` were ever the dominant term the
 two would part company, which is why they are measured and asserted apart.
 
@@ -3661,33 +3706,53 @@ comparison is not this bound at all but raw bits -- see
 `test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero`.
 """
 
-FEATURES_RESULT_MAX_ULPS = 1024
+FEATURES_RESULT_MAX_ULPS = 32768
 """
 `apply`'s first return value, `shaped_metres`: an absolute elevation in metres.
 
 Measured worst over the same sweep, counted only where `|shaped_metres| > 1e-6` (below that
 the quantity is cancelling to zero and ULP stops meaning anything -- see
-`FEATURES_RESULT_MAX_ABS`): **768 ULP**, reached at BOTH ends of the shape range -- 3x2 from
-(12.34, 56.78) bearing 0 and 40000x12000 from (12.34, 56.78) bearing 0, in both cases a
-RAISE to `target_m=1000.0` over `elevation_m=-4000.0` giving ~14.080000431 m. Per shape:
-768 at 3x2, 208 at 20x20, 160 at 150x90, 256 at 500x500, 192 at 1200x300, 224 at 20000x7000,
-768 at 40000x12000. 1024 is the next power of two above the measured 768.
+`FEATURES_RESULT_MAX_ABS`): **14,080 ULP**, at **10000x40** from **(-89.9, -170.0)**,
+**bearing 143.5 deg**, fractions (0.2, 0.2), a RAISE to `target_m=1000.0` over
+`elevation_m=-4000.0` giving 14.079999999988104 against 14.080000000013115.
 
-**Why it is not wider.** The task brief warned not to assume a tight bound here, on the
-strength of a one-ULP nudge to the reach threshold moving `shaped_metres` by ~105,470 ULP at
-3x2. That sensitivity is real but it is NOT what happens between these two implementations,
-and the reason is measured rather than assumed: the reach gate does not move between them at
-all. Over 68,600 cross-language probes there were ZERO points where one language's gate
-accepted and the other's rejected (see
+Per shape:
+
+    3x2             768    (12.34, 56.78)   bearing 0
+    20x20           208    (-33.0, 151.0)   bearing 37
+    150x90          160    (89.5, 10.0)     bearing 37
+    500x500         256    (12.34, 56.78)   bearing 37
+    1200x300        192    (89.5, 10.0)     bearing 37
+    5000x30       4,352    (-89.9, -170.0)  bearing 143.5
+    10000x40     14,080    (-89.9, -170.0)  bearing 143.5   <- the bound
+    40x10000      6,912    (12.34, 56.78)   bearing 143.5
+    20000x7000      224    (-89.9, -170.0)  bearing 37
+    40000x12000     768    (12.34, 56.78)   bearing 0
+
+**Headroom: 2.33x** (32768 over 14,080), in line with this file's own precedent for a
+measured bound on a bounded path -- `SHELF_ELEVATION_MAX_ULPS` is 96 over a measured 36
+(2.67x) and `SHELF_WEIGHT_MAX_ULPS` is 2048 over a measured 1024 (2.0x).
+
+**What drives it, and what does not.** The brief warned not to assume a tight bound here, on
+the strength of a one-ULP nudge to the reach threshold moving `shaped_metres` by ~105,470
+ULP at 3x2. That sensitivity is real but it is NOT what happens between these two
+implementations, and the reason is measured rather than assumed: the reach gate does not
+move between them at all. Over 98,000 cross-language probes there were ZERO points where one
+language's gate accepted and the other's rejected (see
 `test_features_reach_gate_classifies_identically_in_both_languages`), because `reach_m`
-agrees to 1 ULP and `cos` of it lands on the same bit. So the 105,470-ULP sensitivity never
-gets excited, and what is left is the ordinary `atan2` drift in `along`/`across` -- which is
-why 3x2 comes out at 768 rather than at 100,000-odd. Sizing this bound to the sensitivity
-instead of to the measurement would have made it 137x looser than the field needs, which is
-the exact mistake the previous slice made.
+agrees to within 1 ULP and `cos` of it lands on the same bit. So the 105,470-ULP sensitivity
+never gets excited.
+
+What DOES drive it is aspect ratio, which an earlier version of this constant missed
+entirely by capping the shape matrix at 4:1 and landing on 1024. The 14,080 worst is
+eighteen times that, and it comes from a 250:1 feature at an oblique bearing -- the same
+cancellation in `across` that sets the weight bound. Sizing to the threshold sensitivity
+would have been 137x looser than the field needs; sizing to a 4:1 matrix was 13x too tight.
+Both are the same mistake in opposite directions: a bound taken from something other than a
+measurement over the inputs the module will actually see.
 """
 
-FEATURES_RESULT_MAX_ABS = 4.5e-12
+FEATURES_RESULT_MAX_ABS = 1.8e-10
 """
 The companion to `FEATURES_RESULT_MAX_ULPS`, and the reason the assertion is
 `close_enough(...) or abs(...) <= this` rather than either one alone.
@@ -3698,11 +3763,17 @@ which is unbounded in ULP and utterly meaningless in metres. Conversely a purely
 bound would be a weak assertion where the elevation is kilometres. Each half covers the
 other's blind spot.
 
-Measured worst absolute divergence over the sweep: **4.092726e-12 m**, at 20x20 from
-(-33.0, 151.0) bearing 37 deg, fractions (0.2, 0.6), a CARVE to -8000 m over +120 m giving
-~-2440.98304 m. Per shape the worst runs from 2.728484e-12 (3x2) to 4.092726e-12
-(20x20 and 20000x7000). 4.5e-12 is that maximum with about 10% of headroom -- four
-picometres of elevation, which no chart, sounding or hull has an opinion about.
+Measured worst absolute divergence over the sweep: **8.776624e-11 m**, at **10000x40** from
+**(-89.9, -170.0)**, **bearing 143.5 deg**, fractions (-0.4, -0.4), a CARVE to -8000 m over
++120 m giving -3289.620480000131 against -3289.6204800000432.
+
+Per shape: 2.728484e-12 at 3x2, 4.092726e-12 at 20x20, 3.637979e-12 at 150x90, 3.524292e-12
+at 500x500, 3.637979e-12 at 1200x300, 6.298251e-11 at 5000x30, 8.776624e-11 at 10000x40,
+8.617462e-11 at 40x10000, 4.092726e-12 at 20000x7000, 3.637979e-12 at 40000x12000.
+
+**Headroom: 2.05x** (1.8e-10 over 8.776624e-11). That is 180 picometres of elevation, which
+no chart, sounding or hull has an opinion about, and it is still tight enough that a real
+defect in the blend could not hide under it.
 """
 
 FEATURES_MARK_DISTANCE_MAX_ULPS = 2
@@ -3836,7 +3907,7 @@ def test_features_reach_m_agrees_within_its_own_measured_hypot_bound():
             worst = max(worst, abs(d))
         if bits(want) != bits(got):
             differed += 1
-    assert len(pairs) == 20007
+    assert len(pairs) == 20010
     assert differed > 0, (
         "reach_m came out bit-identical on every pair, so this bound asserts nothing; "
         "CPython's Neumaier hypot and libm's are supposed to be distinguishable"
@@ -3875,13 +3946,16 @@ def test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collap
 
     Three-sided, because the choice of measure is itself the claim being made:
 
-    1. the absolute bound holds on all 68,600 probes;
+    1. the absolute bound holds on all 98,000 probes;
     2. it is not vacuous -- some probe genuinely approaches it;
-    3. the ULP measure really does collapse. The same sweep contains points where one
-       language returns exactly 0.0 and the other returns ~1e-31, which is infinitely many
-       ULP apart and physically indistinguishable from agreement. That is `bump`'s support
-       edge, NOT the reach gate (the gate is measured separately and never disagrees), and
-       it is the finding that makes an absolute bound the only honest one here.
+    3. the ULP measure really does collapse. The same sweep contains 312 points where one
+       language returns exactly 0.0 and the other returns as much as 8.617674e-29, which is
+       infinitely many ULP apart and physically indistinguishable from agreement. That is
+       `bump`'s support edge, NOT the reach gate -- 0 of the 312 are gate-rejected, and the
+       flips run in both directions -- and it is the finding that makes an absolute bound
+       the only honest one here. Per shape: 22 at 3x2, 8 at 20x20, 13 at 150x90, 25 at
+       500x500, 39 at 1200x300, 30 at 5000x30, 40 at 10000x40, 39 at 40x10000, 39 at
+       20000x7000, 57 at 40000x12000 -- worst magnitude 8.617674e-29, at 10000x40.
     """
     worst_abs = 0.0
     worst_case = None
@@ -3900,7 +3974,7 @@ def test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collap
             worst_flip_magnitude = max(worst_flip_magnitude, abs(want), abs(got))
         checked += 1
 
-    assert checked == 68600, checked
+    assert checked == 98000, checked
     assert worst_abs > FEATURES_WEIGHT_MAX_ABS / 10.0, (
         f"worst observed weight divergence was only {worst_abs:e}, an order of magnitude "
         f"inside the bound -- either the corpus stopped reaching the hard cases or the "
@@ -3911,10 +3985,14 @@ def test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collap
         "other's is not; that flip is the reason this bound is absolute rather than in "
         "ULP, and a sweep that cannot find it is not testing the claim"
     )
+    assert zero_flips == 312, (
+        f"the support-edge zero/non-zero flip census measured {zero_flips}, not the 312 "
+        f"this corpus was measured to produce; the mechanism has changed"
+    )
     assert worst_flip_magnitude < 1e-24, (
         f"a zero/non-zero weight flip carried {worst_flip_magnitude:e}, far more than the "
-        f"~1e-31 support-edge cancellation this test tolerates -- that would be a real "
-        f"divergence, not a last-bit one"
+        f"8.617674e-29 support-edge cancellation measured on this corpus -- that would be a "
+        f"real divergence, not a last-bit one"
     )
 
 
@@ -3927,27 +4005,63 @@ def test_features_reach_gate_classifies_identically_in_both_languages():
     bounded calls, so it *could* move, but `hypot` agrees to within 1 ULP and `cos` of that
     lands on the same bit, so in practice it does not.
 
-    Counts gate-attributable flips across the same 68,600 probes: any point Python's gate
-    rejected (dot < its own `_cos_reach`) for which the engine still returned a non-zero
-    weight. Measured: zero.
+    **Checked in BOTH directions**, because a gate can part company either way and a
+    one-directional test names the gate while only catching half of it:
+
+    A. Python rejects, engine must return exactly `0.0`. Catches a threshold that has moved
+       so as to make the ENGINE's gate more permissive.
+    B. Python accepts with a weight comfortably clear of zero, engine must also return
+       non-zero. Catches a threshold that has moved so as to make the engine's gate
+       STRICTER -- which direction A cannot see at all.
+
+    Direction B needs the "comfortably clear of zero" qualifier and it is measured, not
+    arbitrary. At `bump`'s support edge there are 312 points in this sweep where one
+    language returns exactly `0.0` and the other returns ~1e-29 (see
+    `test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collapses` --
+    that is a different mechanism, and 0 of those 312 are gate-rejected). Their largest
+    magnitude measured 8.617674e-29, so a `GATE_CLEAR_OF_ZERO` floor of 1e-24 sits five
+    orders of magnitude above the contamination and still far below any weight that means
+    anything. Measured on the unmutated engine: zero violations in either direction.
+
+    The decisive test of direction B is the millimetre-band scan in
+    `test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero`, which puts
+    3,061 probes on the accepting side of the gate boundary itself with weights up to
+    2.3e-13; this sweep's direction B is the broader, weaker version over all ten shapes.
     """
-    gate_flips = 0
+    GATE_CLEAR_OF_ZERO = 1e-24
+    permissive_flips = 0
+    strict_flips = 0
     gate_rejected = 0
+    gate_accepted_clear = 0
     checked = 0
     for feature, placed, point, ctx in _weight_sweep():
         rejected = point.vector.dot(feature.at.vector) < placed._cos_reach
+        got = _engine_weight_at(feature, point)
         if rejected:
             gate_rejected += 1
-            got = _engine_weight_at(feature, point)
             if bits(got) != bits(0.0):
-                gate_flips += 1
+                permissive_flips += 1
+        elif placed.weight_at(point) > GATE_CLEAR_OF_ZERO:
+            gate_accepted_clear += 1
+            if got == 0.0:
+                strict_flips += 1
         checked += 1
-    assert checked == 68600
+    assert checked == 98000
     assert gate_rejected > 0, "the sweep never once reached past the gate; it proves nothing"
-    assert gate_flips == 0, (
-        f"{gate_flips} of {gate_rejected} gate-rejected points got a non-zero weight from "
-        f"the engine -- the two languages' reach gates have parted company, which would "
-        f"invalidate FEATURES_RESULT_MAX_ULPS's justification as well as this test"
+    assert gate_accepted_clear > 0, (
+        "no probe landed inside the gate with a weight clear of zero, so direction B "
+        "asserted nothing"
+    )
+    assert permissive_flips == 0, (
+        f"{permissive_flips} of {gate_rejected} gate-rejected points got a non-zero weight "
+        f"from the engine -- the engine's reach gate has become more permissive than "
+        f"Python's, which would invalidate FEATURES_RESULT_MAX_ULPS's justification as "
+        f"well as this test"
+    )
+    assert strict_flips == 0, (
+        f"{strict_flips} of {gate_accepted_clear} points that Python accepts with a "
+        f"meaningful weight got exactly 0.0 from the engine -- the engine's reach gate has "
+        f"become stricter than Python's"
     )
 
 
@@ -3964,7 +4078,17 @@ def test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero():
     3e-8 m) lands far inside it and finds only ~1e-38, which would prove nothing.
 
     Scanned here at millimetre scale: 939 of 4,000 corner probes are gate-rejected while
-    carrying a non-zero ungated `bump` product, worst 2.277550e-13 at 1.438 mm of inset.
+    carrying a non-zero ungated `bump` product, worst 2.277550e-13 at 1.438 mm of inset. The
+    other 3,061 sit on the ACCEPTING side of the same boundary with weights from 5.62e-25 up
+    to 2.30e-13, and they are checked too -- this is the scan where the gate's threshold
+    actually lives, so it is where a threshold nudged in the strict direction (`cos_reach`
+    plus one ULP, which direction A cannot see) shows up.
+
+    Note what is NOT asserted on the accepting side: raw-bit equality. 486 of the 4,000
+    probes have bit-different weights across the two languages, because on the accepting
+    side the weight is a real (if tiny) number computed through `sphere_to_local`'s bounded
+    `atan2`. The assertion there is that the engine agrees the feature APPLIES -- non-zero
+    against non-zero -- which is the gate's decision, not the weight's value.
 
     The assertion is raw bits, not a tolerance, and it is on `authority` as well as on the
     weight. 2.28e-13 of weight is invisible in `shaped_metres` -- an elevation tolerance in
@@ -3980,7 +4104,9 @@ def test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero():
     length_m, width_m = feature.length_m, feature.width_m
 
     leaks = 0
+    accepted = 0
     worst_leak = 0.0
+    worst_accepted = 0.0
     worst_inset_mm = 0.0
     for step in range(1, 4001):
         inset = step * 1e-7
@@ -3991,7 +4117,20 @@ def test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero():
         point = placed.frame.local_to_sphere(east_m, north_m)
 
         if point.vector.dot(feature.at.vector) >= placed._cos_reach:
-            continue  # the gate let this one through; not what this test is about
+            # Direction B: the gate let this one through, so if Python finds any weight
+            # here the engine must find some too. A `cos_reach` nudged one ULP in the
+            # strict direction rejects exactly these points and is caught right here.
+            want_inside = placed.weight_at(point)
+            if want_inside > 0.0:
+                accepted += 1
+                worst_accepted = max(worst_accepted, want_inside)
+                got_inside = _engine_weight_at(feature, point)
+                assert got_inside != 0.0, (
+                    "the engine's reach gate rejected a point Python's gate accepted with "
+                    "a real weight; cos_reach has moved in the strict direction",
+                    step, want_inside, got_inside,
+                )
+            continue
 
         east_back, north_back = placed.frame.sphere_to_local(point)
         along_back = east_back * placed._along_e + north_back * placed._along_n
@@ -4033,6 +4172,15 @@ def test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero():
         f"the gate/geometry disagreement band at 3x2 measured {worst_inset_mm:.4f} mm, not "
         f"the ~1.4 mm this test was sized against"
     )
+    assert accepted >= 3000, (
+        f"only {accepted} probes landed on the accepting side of the gate boundary, so "
+        f"direction B had almost nothing to assert over"
+    )
+    assert worst_accepted > 1e-14, (
+        f"the largest weight on the accepting side was only {worst_accepted:e}; the scan is "
+        f"no longer straddling the boundary and direction B proves nothing"
+    )
+    assert leaks + accepted == 4000, (leaks, accepted)
 
 
 def test_features_apply_agrees_within_its_own_per_field_measured_bounds():
@@ -4088,7 +4236,7 @@ def test_features_apply_agrees_within_its_own_per_field_measured_bounds():
                 worst_result_ulps = max(worst_result_ulps, abs(d))
             checked += 1
 
-    assert checked == 68600 * len(FEATURE_APPLY_CASES)
+    assert checked == 98000 * len(FEATURE_APPLY_CASES)
     assert worst_result_ulps > MAX_TRANSCENDENTAL_ULPS, (
         f"shaped_metres's worst divergence was only {worst_result_ulps} ULP, inside the "
         f"ordinary {MAX_TRANSCENDENTAL_ULPS}-ULP bound -- if that is genuinely true this "
@@ -4123,7 +4271,7 @@ def test_features_apply_is_empty_single_and_order_sensitive():
     got_empty = _engine_apply([], far, -12.5)
     assert bits(want_empty[0]) == bits(got_empty[0]) == bits(-12.5)
     assert bits(want_empty[1]) == bits(got_empty[1]) == bits(0.0)
-    assert engine.features_kinds([], EARTH_RADIUS_M) == (0, [])
+    assert engine.features_round_trip([], EARTH_RADIUS_M) == (0, [], [])
 
     channel = _feature(
         kind="channel", lat=5.0, lon=5.0, target_m=-60.0, length_m=4000.0, width_m=400.0,
@@ -4148,9 +4296,9 @@ def test_features_apply_is_empty_single_and_order_sensitive():
         got = _engine_apply(order, point, -30.0)
         assert abs(want[0] - got[0]) <= FEATURES_RESULT_MAX_ABS, (kinds, want, got)
         assert abs(want[1] - got[1]) <= FEATURES_AUTHORITY_MAX_ABS, (kinds, want, got)
-        assert engine.features_kinds(
+        assert engine.features_round_trip(
             [_feature_tuple(f) for f in order], EARTH_RADIUS_M
-        ) == (2, list(kinds))
+        ) == (2, list(kinds), [None, None])
         results[kinds] = (want, got)
 
     forwards = results[("channel", "bar")]
@@ -4423,15 +4571,15 @@ def test_features_marks_near_membership_can_flip_when_within_m_is_taken_from_a_d
 
     `distance_m` is bounded at 2 ULP but it feeds `distance <= within_m`, which is a yes or
     a no. Ordinarily the margin is enormous: over this corpus the smallest gap between any
-    two adjacent mark distances measured 418,575,254 ULP (0.39 m), so nothing within 2 ULP
+    two adjacent mark distances measured 20,709,884 ULP (0.0386 m), so nothing within 2 ULP
     could reorder two marks; and the nearest a mark distance came to a round `within_m`
-    (1e5 ... 1e7) was 37.3 m, so nothing within 2 ULP could reclassify one either. Both are
+    (1e5 ... 1e7) was 3.17 m, so nothing within 2 ULP could reclassify one either. Both are
     asserted below, so the claim is measured rather than believed.
 
     But a caller who derives `within_m` FROM a distance -- "everything at least as close as
     that rock" -- lands exactly on the boundary, and there the 2 ULP decides. Measured: of
-    1,800 such boundary cases (300 probe points x the six nearest marks to each), **181 --
-    10.1% -- return a different set of marks from the engine than from the Python**, in
+    1,800 such boundary cases (300 probe points x the six nearest marks to each), **174 --
+    9.67% -- return a different set of marks from the engine than from the Python**, in
     every observed case one fewer, because the engine's distance for the boundary mark came
     out fractionally larger than the Python value being used as the threshold.
 
@@ -4490,8 +4638,8 @@ def test_features_marks_near_membership_can_flip_when_within_m_is_taken_from_a_d
         "is still a hard comparison, so re-measure before deleting this test"
     )
     assert 100 <= flips <= 300, (
-        f"{flips} of {boundary_cases} boundary cases flipped; the measured figure was 181 "
-        f"(10.1%) and a large move in either direction means distance_m's agreement has "
+        f"{flips} of {boundary_cases} boundary cases flipped; the measured figure was 174 "
+        f"(9.67%) and a large move in either direction means distance_m's agreement has "
         f"changed"
     )
 
@@ -4546,20 +4694,44 @@ def test_features_honour_a_non_earth_radius():
     )
 
 
-def test_features_substrate_none_is_not_an_empty_string_across_the_binding():
+def test_features_substrate_none_survives_the_crossing_as_none_not_as_empty():
     """
     `substrate` is an `is None` sentinel, not a falsy check: `None` means "derive the bottom
-    from the shape of the ground", and an empty string does not mean the same thing. The
-    binding must carry that distinction across rather than flattening it, so this pins that
-    a feature built with `substrate=None` and one built with `substrate=""` both survive the
-    crossing -- via `features_kinds`, which round-trips the list through `Features::new`.
+    from the shape of the ground", and an empty string does not mean the same thing.
+
+    **Nothing inside the crate reads this field.** `substrate.py` is not ported, so
+    `Features::apply` and `marks_near` are both indifferent to it, and an earlier version of
+    this test -- which only round-tripped `kind` -- therefore could not fail on what it was
+    named for: a binding doing `substrate.clone().unwrap_or_default()` survived the entire
+    conformance file at exit 0. A test that cannot fail is worse than no test, because it
+    reads as coverage.
+
+    So the field is round-tripped explicitly through `features_round_trip`, which is the only
+    place in the binding surface that observes it. That makes the sentinel's survival an
+    assertion rather than an assumption, and it will keep being one when `substrate.py`
+    arrives to depend on it. `None` and `""` must come back distinct, and `None` must come
+    back as `None`.
     """
     derived = _feature(kind="derived", substrate=None)
     stated = _feature(kind="stated", substrate="")
-    assert derived.substrate is None and stated.substrate == ""
-    count, kinds = engine.features_kinds(
-        [_feature_tuple(derived), _feature_tuple(stated)], EARTH_RADIUS_M,
+    named = _feature(kind="named", substrate="rock")
+    features = [derived, stated, named]
+    assert derived.substrate is None and stated.substrate == "" and named.substrate == "rock"
+
+    count, kinds, substrates = engine.features_round_trip(
+        [_feature_tuple(f) for f in features], EARTH_RADIUS_M,
     )
-    assert (count, kinds) == (2, ["derived", "stated"])
-    assert len(PyFeatures([derived, stated], EARTH_RADIUS_M)) == count
-    assert [f.kind for f in PyFeatures([derived, stated], EARTH_RADIUS_M)] == kinds
+    assert (count, kinds) == (3, ["derived", "stated", "named"])
+    assert substrates == [None, "", "rock"], (
+        "the substrate sentinel did not survive the crossing intact; a binding that "
+        "flattens Option<String> (unwrap_or_default) turns None into the empty string, "
+        "which means something different",
+        substrates,
+    )
+    assert substrates[0] is None, "None came back as something falsy but not None"
+    assert substrates[1] is not None, "the empty string came back as None"
+
+    python_side = list(PyFeatures(features, EARTH_RADIUS_M))
+    assert len(PyFeatures(features, EARTH_RADIUS_M)) == count
+    assert [f.kind for f in python_side] == kinds
+    assert [f.substrate for f in python_side] == substrates
