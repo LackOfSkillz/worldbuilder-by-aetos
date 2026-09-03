@@ -109,9 +109,16 @@ impl Composition {
     /// Python's exact directions: rock wins outright when it is at least sand *and* at
     /// least mud (`>=` both ways, so a three-way tie is rock); otherwise sand wins when
     /// it is at least mud (`>=` again, so a sand/mud tie is sand), and mud is what is
-    /// left. This is a genuine cliff — the smallest measured tie margin between two
-    /// words is `2.109424e-15` — and no tolerance in a comparison could ever absorb a
-    /// flip across it, since the output is a word rather than a number.
+    /// left. This is a genuine cliff, and no tolerance in a comparison could ever absorb
+    /// a flip across it, since the output is a word rather than a number.
+    ///
+    /// The smallest tie margin measured between two words is `2.109424e-15`, found by
+    /// BISECTION onto the crossover contour in gentle open water (sand to mud between
+    /// 25,760 m and 25,850 m, bracketing sides `3.637979e-12 m` apart). The search
+    /// matters as much as the corpus: a GRID over that same water finds only
+    /// `7.485921e-04`, eleven orders coarser, because a grid samples where its nodes
+    /// fall rather than where the boundary is. Both figures are correct. Quote neither
+    /// without naming the search that produced it.
     pub fn dominant(&self) -> &'static str {
         if self.rock >= self.sand && self.rock >= self.mud {
             ROCK
@@ -1094,7 +1101,8 @@ mod tests {
         assert_eq!(c.dominant(), MUD);
     }
 
-    // The smallest measured tie margin (2.109424e-15) proves a genuine word-flip is
+    // The smallest tie margin found by bisection (2.109424e-15 — see `dominant`, and note
+    // a grid over the same water finds only 7.485921e-04) proves a genuine word-flip is
     // reachable from a one-ULP-scale nudge; these two pin the direction each way.
     // python: Composition(0.5 + 1e-15, 0.5 - 1e-15, 0.0) -> dominant "sand",
     //   sand=0x3fe0000000000009 mud=0x3fdfffffffffffee
