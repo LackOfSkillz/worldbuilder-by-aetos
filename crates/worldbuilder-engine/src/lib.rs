@@ -26,6 +26,9 @@ fn version() -> &'static str {
 #[pymodule]
 fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    // TEMPORARY (slice 1i, Task 1): remove together with tests/test_hypot_ulps.py in Task 7.
+    m.add_function(wrap_pyfunction!(bindings::detmath_hypot_temp, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::detmath_tanh_temp, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::vec3_length, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::vec3_cross, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::vec3_normalised, m)?)?;

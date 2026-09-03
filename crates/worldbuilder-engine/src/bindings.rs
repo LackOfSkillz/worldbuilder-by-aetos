@@ -37,6 +37,21 @@ fn cached_continentality(seed: u64, radius_m: f64, land_fraction: f64) -> Contin
         .or_insert_with(|| Continentality::new(seed, radius_m, land_fraction))
 }
 
+// TEMPORARY (slice 1i, Task 1): direct access to two detmath primitives with no other
+// binding, added only so `tests/test_hypot_ulps.py` can measure `detmath::hypot` and
+// `detmath::tanh` against CPython's `math.hypot`/`math.tanh` before anything in the port
+// depends on the answer. Remove both functions (and their `wrap_pyfunction!` lines in
+// lib.rs) together with that test file in Task 7 -- see task-1-report.md.
+#[pyfunction]
+pub fn detmath_hypot_temp(x: f64, y: f64) -> f64 {
+    crate::detmath::hypot(x, y)
+}
+
+#[pyfunction]
+pub fn detmath_tanh_temp(x: f64) -> f64 {
+    crate::detmath::tanh(x)
+}
+
 #[pyfunction]
 pub fn vec3_length(x: f64, y: f64, z: f64) -> f64 {
     Vec3::new(x, y, z).length()
