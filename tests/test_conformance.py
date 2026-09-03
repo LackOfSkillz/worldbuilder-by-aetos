@@ -5079,9 +5079,13 @@ this section's own corpora rather than taken on trust from the crate.
 **It is a bound on `slope_at` ALONE, and the comparison that produces it drives both sides
 from the SAME `structural_m`** -- the Python surface's, handed to the engine as a callable.
 That is not a convenience. Driving the engine's `slope_at` with the PORT'S own elevation
-field instead moves the answer by up to 7.968304e-11 relative, a factor of 3.46e5 over this
-bound -- five orders of magnitude, because the ported elevation itself differs by up to
-3.07e-12 m. That drift belongs to `shelf.rs` and `features.rs`. Measuring both ports at
+field instead moves the answer by up to 2.217618e-12 relative, a factor of 9,642 over
+this bound -- four orders of magnitude, because the ported elevation itself differs by up
+to 1.847411e-13 m. (Re-derived over the pinnacle and open-water grids with the port's field
+reconstructed as `features_apply(..., shelf_evaluate(...)[0])[0]`, agreeing with the
+Python's to the bit at the first point; the open-water grid gives 1.175566e-12 relative and
+is where the larger elevation difference sits.) That drift belongs to `shelf.rs` and
+`features.rs`. Measuring both ports at
 once measures their sum and can attribute it to neither, so this bound is never quoted for
 a comparison that crosses the elevation-field boundary, and no test below does.
 
@@ -5132,10 +5136,18 @@ SUBSTRATE_GUARD_WORST_ABS = 2.220446049250313e-16
 How far `blended_towards(..., 0.0)` moves a composition -- what the `weight > 0.0` guard in
 `at` exists to prevent. **ABSOLUTE, not relative**, which matters because it sits a hair
 above SUBSTRATE_SLOPE_DRIFT_REL's measured 2.212201e-16 and reads like the same kind of
-quantity. It is not. The worst RELATIVE shift is 1.249555e-15, 5.63x larger, and the worst
-distance is 11 ULP, not 1. (The absolute figure is exactly one machine epsilon,
-2.220446049250313e-16, which is why it is written out in full rather than rounded -- the
-assertion below is on bits.)
+quantity. It is not. Under the convention pinned below the worst RELATIVE shift is
+1.249555e-15, 5.63x larger, and the worst distance is 11 ULP rather than 1. (The absolute
+figure is exactly one machine epsilon, 2.220446049250313e-16, which is why it is written
+out in full rather than rounded -- the assertion below is on bits.)
+
+**The ULP distance is convention-dependent in exactly the way the relative shift is, and is
+not a property of the module.** 11 ULP on the pinned convention, 13 on a +-1,500 m span, 9
+on a +-45,750 m span at 1,525 m per step. Only the ABSOLUTE figure survives all of them --
+and it survives as a CEILING rather than as a constant: over twelve conventions measured
+here nothing exceeds one machine epsilon, while a +-5,000 m span at 41x41 bottoms out at
+half an epsilon (1.110223e-16) and the pinnacle grid observes no shift at all (0 of its
+3,721 points).
 
 Blending at weight exactly zero is not the identity because `blended_towards` re-enters
 `Composition.__init__`, and the renormalising division there moves fractions whose total is
@@ -5330,9 +5342,19 @@ _COMPOSITION_TRIPLES = [
     (0.0, 0.0, 0.0), (5e-324, 0.0, 0.0), (0.0, 5e-324, 0.0), (0.0, 0.0, 5e-324),
     (-1.0, 0.5, 0.5), (-1.0, -1.0, -1.0), (1.0, -1.0, 0.0), (-0.0, -0.0, -0.0),
     (0.7, -0.7, 0.4),
+    (3.0, 2.0, 1.0),
 ]
 """Pure corners, ties, three-way ties, wildly unequal magnitudes, and the whole
-neighbourhood of the `total <= 0.0` boundary from both sides."""
+neighbourhood of the `total <= 0.0` boundary from both sides.
+
+**`(3.0, 2.0, 1.0)` is here for a different reason from all the others, and it is the only
+entry that carries it.** Every other triple normalises to fractions that sum to EXACTLY
+1.0 -- they are hand-written halves, quarters and pure corners -- so passing a constructed
+composition back through the normalising constructor a second time is a no-op on all of
+them. Censused: 0 of the other 20 are sensitive to a second normalisation. `(3.0, 2.0,
+1.0)` normalises to a total of `0.9999999999999999`, so it is, and it is what gives
+`test_substrate_blended_towards_agrees_bit_for_bit_including_weight_zero` any purchase on
+the re-normalisation defect that test describes."""
 
 
 def test_substrate_composition_normalises_and_answers_bit_for_bit():
@@ -5454,7 +5476,10 @@ def test_substrate_dominant_at_and_near_ties_in_all_three_precedence_orders():
     assert engine.substrate_composition(*down_both)[3] == PY_MUD, down_both
     just_above = list(down_both)
     just_above[0] = nudge(just_above[0], True)
-    assert PyComposition(*just_above).dominant == engine.substrate_composition(*just_above)[3]
+    # Pinned as the WORD, not merely as agreement: two sides agreeing on the wrong word
+    # would be a silent precedence regression. Measured, it is SAND.
+    assert PyComposition(*just_above).dominant == PY_SAND, just_above
+    assert engine.substrate_composition(*just_above)[3] == PY_SAND, just_above
 
 
 def test_substrate_pure_table_agrees_and_misses_the_same_words():
@@ -5484,8 +5509,19 @@ def test_substrate_blended_towards_agrees_bit_for_bit_including_weight_zero():
     what they are in Python -- two constructed instances, each divided by its own total
     once. A binding that rebuilt them from the raw triple would normalise a second time,
     and since a real composition's fractions do not sum to exactly 1.0 the second division
-    moves them. The first version of this binding did exactly that and this test caught it,
-    at `0.2781153660496104` against `0.27811536604961046`.
+    moves them. The first version of this binding did exactly that, and the defect was
+    found on the demonstration coast's own grid, at `0.2781153660496104` against
+    `0.27811536604961046`.
+
+    **This test could not have found it, and now can.** The corpus it sweeps is
+    `_COMPOSITION_TRIPLES`, and 20 of the 21 entries normalise to fractions summing to
+    exactly 1.0, on which a second normalisation is the identity: rebuilding both triples
+    through the normalising constructor left every one of them green. `(3.0, 2.0, 1.0)`
+    was added for exactly this -- its normalised total is `0.9999999999999999` -- and with
+    it in the list that same mutation moves 42 of the 45 target-and-weight combinations it
+    is swept against off the bit. The credit for catching the original defect belongs to
+    `test_the_weight_zero_guard_is_bit_observable_and_its_rate_needs_a_named_convention`,
+    whose population is that coast grid; the coverage that would catch it AGAIN is here.
     """
     weights = [
         -0.5, -5e-324, -0.0, 0.0, 5e-324, 1e-16, 1e-8, 0.25, 0.5, 0.75,
@@ -5513,7 +5549,12 @@ def test_the_weight_zero_guard_is_bit_observable_and_its_rate_needs_a_named_conv
     **The figure to quote carefully.** The worst shift is ABSOLUTE, 2.220446e-16, and it
     sits a hair above SUBSTRATE_SLOPE_DRIFT_REL's measured 2.212201e-16 -- close enough to
     read as the same kind of quantity, which it is not. The worst RELATIVE shift is
-    1.249555e-15, 5.63x larger, and the worst distance is 11 ULP, not 1.
+    1.249555e-15, 5.63x larger, and the worst distance is 11 ULP rather than 1 -- both of
+    those under the convention this test pins, and both of them move under others (13 ULP
+    on a +-1,500 m span, 9 on +-45,750 m at 1,525 m per step). Only the ABSOLUTE figure
+    survives every convention tried, and it survives as a ceiling: nothing measured exceeds
+    one machine epsilon, and some conventions come in under it. The assertions below are
+    scoped to the pinned convention; this prose must not promote them to properties.
 
     **And the RATE is a property of the sampling convention, not of the module**, so the
     frame, the step and the span are all three named here and in
@@ -5582,7 +5623,11 @@ def test_the_weight_zero_guard_is_bit_observable_and_its_rate_needs_a_named_conv
         "the relative shift is no longer several times the absolute one, which was the "
         "whole reason the two figures must not be quoted for each other", worst_abs, worst_rel,
     )
-    assert worst_ulp == 11, ("worst distance is 11 ULP, not 1", worst_ulp)
+    assert worst_ulp == 11, (
+        "the worst distance under THIS convention (Coast.at frame, 61x61, 1,500 m per "
+        "step, span +-45,000 m) is 11 ULP rather than 1; the figure is a property of the "
+        "convention, not of the module", worst_ulp,
+    )
     assert flips == 0, ("a guard-sized shift moved the one-word answer", flips)
 
 
@@ -5726,16 +5771,37 @@ def test_substrate_at_is_strict_when_every_optional_is_supplied():
     With `elevation_m`, `slope` and `tectonic_m` all handed in, `at` reaches no
     transcendental of its own -- only `natural`, `Placed.weight_at` and `blended_towards`.
 
-    **And it comes out bit-identical over both corpora, which is a finding rather than an
-    assumption.** `weight_at` IS bounded (`atan2` and `hypot` inside `sphere_to_local`), so
-    a tolerance would have been defensible here; over 4,682 points across the pinnacle and
-    the open water, against all 25 placed features of the demo coast, the measured
-    divergence is exactly zero in every one of the three fractions. So this asserts raw
-    bits. `features.rs`'s own FEATURES_WEIGHT_MAX_ABS is 2.2e-14 and is NOT borrowed here:
-    it is sized for a 250:1 dredged channel probed at its own support edge, which is
-    nothing this corpus reaches, and importing it would let a real defect sit green.
+    **And it comes out bit-identical OVER THIS CORPUS, which is a finding rather than an
+    assumption -- and the corpus is part of the claim.** `weight_at` IS bounded (`atan2`
+    and `hypot` inside `sphere_to_local`), so a tolerance would have been defensible here;
+    over 4,682 points across the pinnacle and the open water, against all 25 placed
+    features of the demo coast, the measured divergence is exactly zero in every one of the
+    three fractions. So this asserts raw bits.
 
-    If this ever needs a tolerance, that is a finding to report, not a bound to add.
+    **STRICT is a property of the demo coast's 25 mild features, NOT of `at`.** Measured,
+    not supposed. Against high-aspect features -- 10000x40, 40x10000, 5000x30 and 30x5000
+    m, each from the five `FEATURE_ORIGINS` on the five `FEATURE_BEARINGS`, every optional
+    still supplied -- the same comparison diverges:
+
+        39,200 probes, the 14 FEATURE_FRACTIONS as ordered pairs at both signs
+            worst 1.0824674490095276e-14 at 10000x40 m, (-89.9, -170.0), bearing 143.5,
+            fractions (-0.4, -0.4)
+        372,100 probes, a 61x61 fraction grid over [-1.3, 1.3], same shapes and frames
+            worst 2.020605904817785e-14 at 10000x40 m, (-33.0, 151.0), bearing 143.5,
+            fractions (0.4333333333333334, 0.4766666666666667)
+
+    Both by exhaustive grid, no bisection -- and the two disagree by 1.9x on the same
+    population of shapes, which is why the search is named beside each figure. Zero
+    `dominant` flips in either sweep, and all of it is `weight_at`'s: the coarse figure is
+    the very probe that sized `FEATURES_WEIGHT_MAX_ABS` (1.082467e-14), and the fine one is
+    0.918x that bound.
+
+    **The right response to that is a separate bounded case, never a tolerance here.** The
+    `weight > 0.0` guard's shift is ~2e-19 absolute, which sails inside
+    SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS and inside FEATURES_WEIGHT_MAX_ABS alike, and this
+    strict test is the only corpus-scale detector that catches a mutation of that guard.
+    Widening it here to admit a dredged channel would cost the guard its only detector, so
+    the channel belongs in a bounded test of its own and this one stays on mild ground.
     """
     region, world = _demo_world()
     coast = region.coast
@@ -5970,24 +6036,40 @@ def test_substrate_at_skips_a_feature_that_omits_a_substrate():
     feature that declared a word `PURE` has no entry for.
 
     **All 25 features on the demo coast declare a substrate**, so a corpus built from that
-    world alone never takes this branch and never exercises either side of the guard. This
-    fixture puts an omitting feature exactly where a declaring one also reaches, so the
-    skip is load-bearing: with it skipped the answer is the ground's own composition
-    blended once, and if it were not skipped there would be no `PURE[None]` to blend
-    towards at all.
+    world alone never takes this branch, which is why this fixture exists at all.
+
+    **A fixture for a skip has to make the skipped feature's PRESENCE observable, and a
+    shared centre does not.** Probed at the common centre of two co-located 4,000 x 4,000 m
+    features, both weights are exactly 1.0; the last blend then saturates and erases
+    everything before it, so the answer is pure MUD whether the omitter is skipped or
+    blended towards SAND, MUD or ROCK. A test standing there passes with the skip abolished
+    and proves nothing. So the probe is offset from the centre, where both weights are
+    `0.7643257402512329` -- strictly inside (0, 1), nothing saturating -- and that is
+    ASSERTED below rather than assumed, because it is the whole load-bearing property of
+    the fixture.
+
+    Observability is then checked head-on: giving the silent feature each of the three
+    words in turn moves the answer every time, so "unchanged" here is the skip and not a
+    world in which the omitter could not have mattered anyway.
     """
-    at = SpherePoint.from_latlon(-6.0, 88.0)
-    silent = _feature(kind="silent", lat=-6.0, lon=88.0, length_m=4000.0, width_m=4000.0,
-                      substrate=None)
-    stated = _feature(kind="stated", lat=-6.0, lon=88.0, length_m=4000.0, width_m=4000.0,
-                      substrate=PY_MUD)
+    shape = dict(lat=-6.0, lon=88.0, length_m=4000.0, width_m=4000.0)
+    silent = _feature(kind="silent", substrate=None, **shape)
+    stated = _feature(kind="stated", substrate=PY_MUD, **shape)
+    probe = SpherePoint.from_latlon(-6.008, 88.008)
+
     host_both = _RecordingHost([silent, stated])
     host_stated = _RecordingHost([stated])
 
-    probe = at
-    v = probe.vector
-    assert host_both.features.placed[0].weight_at(probe) > 0.0, (
-        "the omitting feature does not reach this probe, so its skip is never taken here"
+    weight_silent = host_both.features.placed[0].weight_at(probe)
+    weight_stated = host_both.features.placed[1].weight_at(probe)
+    assert 0.0 < weight_silent < 1.0, (
+        "the omitting feature must REACH this probe (or its skip is never taken here) and "
+        "must not saturate", weight_silent,
+    )
+    assert 0.0 < weight_stated < 1.0, (
+        "the declaring feature blends at weight exactly 1.0, so its blend erases every "
+        "earlier one and this probe cannot see whether the omitter was skipped",
+        weight_stated,
     )
 
     want_both = PySubstrate(host_both).at(probe)
@@ -6002,6 +6084,18 @@ def test_substrate_at_skips_a_feature_that_omits_a_substrate():
     assert same(want_both.sand, got_both[0]) and same(want_both.mud, got_both[1]) \
         and same(want_both.rock, got_both[2])
     assert got_both == got_stated, (got_both, got_stated)
+
+    # The skip is OBSERVABLE: had the omitter declared any word at all, this probe would
+    # have read differently. Without this the test cannot tell a skip from a feature whose
+    # contribution happens to be invisible here -- which is exactly how an earlier version
+    # of this fixture passed with the skip abolished.
+    for word in (PY_SAND, PY_MUD, PY_ROCK):
+        voiced = _feature(kind="silent", substrate=word, **shape)
+        spoken = _engine_at(_RecordingHost([voiced, stated]), probe)
+        assert spoken != got_both, (
+            "declaring this word on the omitting feature does not change the answer, so "
+            "the skip is unobservable at this probe and the test is vacuous", word, spoken,
+        )
 
     # And it is not merely that the answer is unchanged: the declaring feature really is
     # doing something here, so "unchanged" is a skip rather than a no-op world.

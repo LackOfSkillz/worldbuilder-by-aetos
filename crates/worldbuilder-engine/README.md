@@ -1471,7 +1471,7 @@ stand between this module and them), and `dominant_at`'s `**known` becomes three
 its own Neumaier-compensated norm -- so bit-equality was never something either side
 promised. It carries the module's one bound.
 
-### A strict test caught a real defect, which is the argument for the no-tolerance rule
+### A strict test caught a real defect -- and it was not the test that got the credit
 
 The first `substrate_blended_towards` binding passed its receiver and its target through
 `Composition::new` before blending. Python does not: both are **already-constructed
@@ -1482,7 +1482,25 @@ one ULP, in a comparison with nothing in it to absorb one.
 
 **Any tolerance at all on `blended_towards` would have left that green.** The fix is that
 both triples now cross the FFI verbatim as fields; `substrate_composition` is the one
-binding that exposes the normalising constructor.
+binding that exposes the normalising constructor. Those are the only two `Composition`
+construction sites in `bindings.rs`, and each uses the form it needs.
+
+**The credit was misattributed in three docstrings, and re-mutation is what found it.**
+The catching test was
+`test_the_weight_zero_guard_is_bit_observable_and_its_rate_needs_a_named_convention`,
+whose population is the demonstration coast's own grid -- which is where those two
+quoted values come from.
+`test_substrate_blended_towards_agrees_bit_for_bit_including_weight_zero`, which claimed
+the catch, **could not have made it**: restoring the defect left it green, because 20 of
+its 21 corpus triples normalised to fractions summing to exactly 1.0, on which a second
+normalisation is the identity. A census put the sensitive fraction of that corpus at
+**0 of 20**.
+
+The corpus now carries `(3.0, 2.0, 1.0)`, whose normalised total is `0.9999999999999999`,
+added for exactly this reason. With it in the list the same mutation moves **42 of the 45**
+target-and-weight combinations that triple is swept against, and the test goes red. **A
+strict comparison is only as strong as a corpus that can express the defect** -- strictness
+without a sensitive input is a tolerance by another name.
 
 ### The bounds, both asserted two-sided
 
@@ -1505,11 +1523,25 @@ exists to detect.
 **Do not carry `SUBSTRATE_SLOPE_DRIFT_REL` across the elevation-field boundary.** Every
 comparison that produces it drives *both* sides from the same `structural_m` -- the Python
 surface's, handed to the engine as a callable. Driving the engine's `slope_at` with the
-port's own elevation field instead moves the answer by up to **7.968304e-11** relative,
-about **346,000x** the bound (346,448x exactly), because the ported elevation itself differs
-by up to 3.07e-12 m. That drift belongs to `shelf.rs` and `features.rs`. Measuring both ports
-at once measures their sum and can attribute it to neither. It is the wrong bound for that
+port's own elevation field instead moves the answer by up to **2.217618e-12** relative,
+**9,642x** the bound, because the ported elevation itself differs by up to **1.847411e-13
+m**. That drift belongs to `shelf.rs` and `features.rs`. Measuring both ports at once
+measures their sum and can attribute it to neither. It is the wrong bound for that
 comparison, not a defect in either.
+
+**Those two numbers have now been wrong twice, and these are re-derived rather than
+copied.** Method, so the next reader can check rather than trust: the port's field
+reconstructed exactly as `Surface.structural_m` defines it --
+`features_apply(tuples, x, y, z, shelf_evaluate(...)[0], radius_m)[0]` on the demo world,
+22 plates, `WORLD_SEED`, `land_fraction` 0.29 -- confirmed against the Python's to the bit
+at the first grid point (`-23.087591258514475`), then swept over both this section's
+corpora. Pinnacle grid: 2.217618e-12 relative. Open water: 1.175566e-12 relative, and the
+larger elevation difference, 1.847411e-13 m. The earlier record of 7.968304e-11 and
+3.07e-12 m is 36x and 17x too large and does not reproduce by any method recoverable from
+what was written down. **The conclusion is untouched** -- four orders of magnitude is still
+emphatically the wrong bound for a comparison crossing the elevation-field boundary --
+which is why the figure survived two wrong values without anyone noticing, and why a figure
+that no test asserts still has to name its method.
 
 And for the same reason `features.rs`'s `FEATURES_WEIGHT_MAX_ABS` is **not** borrowed here,
 even though `at` calls `weight_at` -- see that module's own warning, which this section
@@ -1524,10 +1556,33 @@ of the pinnacle grid plus the 961 of the open water -- against all **25** placed
 the demo coast, the divergence is **exactly zero in every one of the three fractions**. So
 that test asserts raw bits, and the strictness is a finding rather than an assumption.
 
-**The caveat, recorded honestly: it is fragile in one direction.** The demo coast has no
-250:1 dredged channel probed at its own support edge -- the shape that sized
-`FEATURES_WEIGHT_MAX_ABS` in the previous slice. A corpus containing one would very likely
-need a tolerance. If it does, that is a finding to measure, not a bound to borrow.
+**The caveat is no longer a caveat: it was measured, and STRICT is a property of THIS
+CORPUS rather than of `at`.** The demo coast has no 250:1 dredged channel probed at its own
+support edge -- the shape that sized `FEATURES_WEIGHT_MAX_ABS` in the previous slice -- and
+against one the strict assertion does not hold. Four high-aspect shapes (10000x40, 40x10000,
+5000x30, 30x5000 m), each from the five `FEATURE_ORIGINS` on the five `FEATURE_BEARINGS`,
+every optional still supplied:
+
+    39,200 probes   14 FEATURE_FRACTIONS as ordered pairs, both signs
+        1.0824674490095276e-14   10000x40 m, (-89.9, -170.0), bearing 143.5, (-0.4, -0.4)
+    372,100 probes  61x61 fraction grid over [-1.3, 1.3], same shapes and frames
+        2.020605904817785e-14    10000x40 m, (-33.0, 151.0), bearing 143.5,
+                                 (0.4333333333333334, 0.4766666666666667)
+
+Both exhaustive grids, no bisection, and **the figure moves 1.9x with the grid alone** over
+the same shapes -- which is why the search is named beside each one. Zero `dominant` flips
+in either sweep. All of it is `weight_at`'s: the coarse figure is the very probe that sized
+`FEATURES_WEIGHT_MAX_ABS` (1.082467e-14), and the fine one is 0.918x that bound. The port
+is not wrong; the *claim* was too wide.
+
+**The right response is a bounded case of its own, never a tolerance on this test, and the
+reason is specific.** Mutating `at`'s `weight > 0.0` guard to `weight >= 0.0` shifts the
+answer by ~2e-19 absolute -- inside `SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS` (6.6e-16) and
+inside `FEATURES_WEIGHT_MAX_ABS` (2.2e-14) alike. The strict test is the **only**
+corpus-scale detector that catches it; the bounded derived-slope test passes under that
+mutation. Widening this assertion to admit a dredged channel would buy coverage of the
+channel at the price of the guard's only detector. So the section header's claim is scoped
+to the corpus it holds over, and the channel keeps its own bound.
 
 ### `dominant` returns a WORD, so nothing can absorb a flip
 

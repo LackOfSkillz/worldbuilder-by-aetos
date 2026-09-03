@@ -944,9 +944,10 @@ pub fn features_round_trip(
 // Substituting the port's own elevation field here would measure `shelf.rs` and
 // `features.rs` at the same time as `slope_at`, and the sum of the three cannot be
 // attributed to any one of them. It is not a small effect: `slope_at` driven by the
-// port's own `structural_m` moves by up to 7.968304e-11 relative, against a
-// `SLOPE_DRIFT_REL` of 2.3e-16 -- a factor of 3.46e5, five orders of magnitude, not a
-// widened tolerance. Driven by the SAME field on both sides it is one ULP. So the field
+// port's own `structural_m` moves by up to 2.217618e-12 relative, against a
+// `SLOPE_DRIFT_REL` of 2.3e-16 -- a factor of 9,642, four orders of magnitude, not a
+// widened tolerance. (Re-derived; the 7.968304e-11 this note used to quote does not
+// reproduce.) Driven by the SAME field on both sides it is one ULP. So the field
 // crosses the boundary as a callable, and the comparison isolates the function under test.
 //
 // The callables take three floats (a unit vector's components) rather than a
@@ -1083,6 +1084,13 @@ pub fn substrate_composition(
 /// ULP below one), so the second division moves them. Measured on the demonstration
 /// coast's own grid: `0.2781153660496104` against `0.27811536604961046`, in a comparison
 /// that has no business needing a tolerance at all.
+///
+/// **That measurement belongs to the weight-zero guard test, not to
+/// `test_substrate_blended_towards_agrees_bit_for_bit_including_weight_zero`**, which was
+/// credited with it here and could not have made it: 20 of the 21 triples that test sweeps
+/// normalise to fractions summing to exactly 1.0, and a second normalisation is the
+/// identity on all of them. `(3.0, 2.0, 1.0)` (normalised total `0.9999999999999999`) was
+/// added to that corpus so it can now catch this, and restoring the defect turns it red.
 ///
 /// So the caller hands in the fields of two constructed compositions and this assembles
 /// them verbatim. `substrate_composition` is where the normalising constructor is exposed.

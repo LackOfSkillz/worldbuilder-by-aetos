@@ -232,10 +232,12 @@ pub fn natural(elevation_m: f64, slope: f64, tectonic_m: f64) -> Composition {
 /// re-measured, not assumed, on any host where `local_to_sphere` stops agreeing.
 ///
 /// **Not a bound on the whole stack.** Driving `slope_at` with the *Rust port's* own
-/// `structural_m` (shelf + features, on a pinnacle-only demo world) instead of the
-/// Python's moves the answer by up to `7.968304e-11` relative, because the port's
-/// elevation itself differs by up to 3.07e-12 m. That drift belongs to `shelf.rs` and
-/// `features.rs`, not here, and this constant must never be quoted for it.
+/// `structural_m` (shelf + features, on the demo world) instead of the Python's moves
+/// the answer by up to `2.217618e-12` relative -- 9,642x this constant -- because the
+/// port's elevation itself differs by up to `1.847411e-13` m. Both re-derived over the
+/// pinnacle and open-water grids; the `7.968304e-11` / 3.07e-12 m this note used to quote
+/// does not reproduce. That drift belongs to `shelf.rs` and `features.rs`, not here, and
+/// this constant must never be quoted for it.
 pub const SLOPE_DRIFT_REL: f64 = 2.3e-16;
 
 /// How steep the ground is, as a rise over a run.
