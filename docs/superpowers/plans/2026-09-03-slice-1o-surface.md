@@ -26,12 +26,17 @@
 
 **Nothing in this file reorders into a last-bits difference.** Every physically possible reordering was measured on a 625-point demo-coast grid (±45 km, 3,750 m/step, 25 features, seed 20260831, CPython 3.11.0 MSC v.1933 on K2SO, identical under both system and venv interpreters):
 
-| Mutation | Moves the answer by |
-|---|---|
-| Features before shelf | **30.91 m** |
-| Detail before features | **5.46 m** |
-| Dropping the authority multiply | **11.74 m** |
-| Sizing detail off pre-feature ground | **4.5 cm** |
+| Mutation | Moves the answer by | Reading |
+|---|---|---|
+| Features before shelf | **30.89228988262422 m** | full pipeline |
+| Detail before features | **5.463671791248579 m** | full pipeline |
+| Dropping the authority multiply | **11.744069415078535 m** | full pipeline |
+| Sizing detail off pre-feature ground | **0.04541089914697238 m** | full pipeline |
+
+**The extraction's table was two experiments read as one.** Its features-before-shelf figure,
+`30.913586988571197`, is reproduced exactly by a **structure-only** reading — `abs(swapped - shaped)`,
+with no detail stage — while its other three rows are full-pipeline. **The conformance target is the
+full-pipeline reading**, because that is what a wrongly-ordered `surface.rs` would actually compute.
 
 So a conformance suite built only on ULP bounds would be aiming at the wrong target. **Get the order right and the numbers follow; get it wrong and no tolerance hides it.** Test the structure.
 
@@ -59,11 +64,28 @@ All three public methods reach exactly `{asin, atan2, cos, hypot, sin, sqrt, tan
 
 `surface.py:57-61` hands a single `world_seed` to `plates_for(i64)`, `Continentality::new(u64)` and `Detail::new(u64)`. **Every existing binding dodges this by taking two seed parameters. `Surface::new` cannot.**
 
-The faithful transcription is `world_seed as u64`, and it is *derivable* rather than assumed: Python's `_lattice` masks **after** mixing, so a negative seed's masked result is exactly the wrapping `u64` result.
+**The cast is faithful for TWO of the three consumers and WRONG for the third.** Measured over 2,049
+negative seeds — 1,000 dense, 25 structured extremes, 1,024 random draws — `s & (2^64-1)` is bit-identical
+to `s` through `_lattice` (18,441 pairs), the mixed `Noise.seed` (6,147) and `Noise.at` (30,735), with
+zero mismatches, and matches the Rust crate across the FFI boundary too. Not a tautology: all 2,049 give a
+negative, unbounded `Noise.seed` *before* the mask.
 
-But `tests/no_std_math.rs` bans the literal token `" as u64"`. So **`surface.rs` will carry the crate's first substantive `// cast-ok:` marker**, and it must state that derivation as its reason.
+**But `plates_for` keys a decimal string via `_fraction`, so masking changes the plates — in 64 of 64
+seeds tested.** Worst distance Rust-`i64` against Python on the negative seed is `2.2e-16`, ordinary libm
+noise; on the *masked* seed it is `0.387`.
 
-**Do NOT take the alternative of a `u64` signature.** It silently drops the negative-seed domain that `generation.rs` is already conformance-tested over — a narrowing that would look like a simplification and would remove tested behaviour.
+**So `Surface::new` holds `i64` and casts once, at the two `Noise`-backed sites ONLY.** Casting at
+`plates_for` would produce a different world while looking like consistency. `tests/no_std_math.rs` bans
+the literal token `" as u64"`, so this is the crate's first substantive `// cast-ok:` marker, and its two
+load-bearing words are **"AFTER"** (the mask follows the mixing) and **"reinterpretation, not a float
+truncation"**.
+
+**Do NOT take the alternative of a `u64` signature.** It silently drops the negative-seed domain that
+`generation.rs` is already conformance-tested over.
+
+**An unstated domain narrowing, recorded rather than hidden:** an `i64` signature limits Python's
+unbounded `int` seed to `[-2^63, 2^63)`, and **no 64-bit type can do better** — `plates_for(2**64+7)`,
+`plates_for(10**30)` and `plates_for(-(2^63)-1)` all differ from their masked forms.
 
 ---
 
@@ -105,7 +127,22 @@ The previous slice's blind corpora were **steep versus gentle**. This slice's ar
 
 So a corpus must include feature centres *explicitly*, not by sampling more finely.
 
-**And one case is open, not safe.** Neither corpus produced a single `shaped == -0.0`, which is the one input where that guard would change `elevation_m`'s own bits. **Task 1 must construct it deliberately or record it as unreachable with a measurement, not an argument.** Two slices running, the largest errors were guards asserted to be no-ops that were not.
+**The open case is now CLOSED, by measurement rather than argument.** `amplitude_m` has a strictly
+positive floor — minimum `4.500000000000001` over 71,190 evaluations — so the guard fires only when
+`authority` is exactly `1.0`, which needs `abs(lift) >= 2.999999999999112`. Meanwhile `shaped == -0.0`
+requires every applying feature to contribute exactly `-0.0`. Both legs were constructed separately —
+`-0.0` in 95 of 4,335, the guard fired in 348, and 867 of 867 in a two-feature co-occurrence hunt — and
+**the intersection is empty in both sweeps**. A further 400,000 draws never *arrived* at `-0.0` from a
+non-`-0.0` input, and the shelf never returns an exact signed zero.
+
+**So `surface.rs` needs no guard of its own, and `detail.rs` must keep its.** The closure has two named
+dependencies, and either change reopens it: every roughness constant in `detail.py` staying strictly
+positive, and `Features.apply` initialising `result = elevation_m` and `continue`-ing before the authority
+update.
+
+**Neither population is a superset of the other.** The grid shows 0 of 625 guard fires; the centres show
+24 of 25 — and the centres collapse the budget's smallest row, sizing detail off pre-feature ground, from
+`4.5 cm` to `6.5e-4 m`. **The conformance corpus needs both.**
 
 ---
 
