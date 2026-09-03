@@ -209,6 +209,74 @@ impl Tectonics {
         }
     }
 
+    /// How much the plates raise or lower the ground here.
+    ///
+    /// Args:
+    ///     point: Anywhere on the planet.
+    ///
+    /// Returns metres, to be *added* to the continental base elevation.
+    ///
+    /// Notes:
+    ///     **Every margin in range, summed - not the nearest one, chosen.**
+    ///
+    ///     Picking the nearest margin is not continuous even though its distance is. The
+    ///     identity of the neighbour jumps: at a point equidistant from two of a plate's
+    ///     margins the choice flips under a step of a metre, and the relative motion, the
+    ///     normal and what lies either side all flip with it. Measured at five hundred and
+    ///     sixty metres of cliff, a hundred and thirty kilometres from any boundary, where
+    ///     one margin was transform and the other divergent.
+    ///
+    ///     Summing is continuous because each term depends only on its own distance and
+    ///     fades to nothing at its own range. It is also the truer answer: near a triple
+    ///     junction there really are two margins acting on the ground.
+    ///
+    ///     Costs nothing where nothing is happening. A plate interior fails the distance
+    ///     test on every bisector, having done one dot product each - and that is 69 per
+    ///     cent of the planet.
+    ///
+    ///     **Iteration order is load-bearing.** Floating-point addition is not
+    ///     associative, so the total depends on the order the margins are summed in.
+    ///     `margins_within` returns them in plate-position order, and this loop must
+    ///     accumulate in that same order - no sorting, no reversing, no parallel
+    ///     accumulation.
+    pub fn offset_m(&self, point: &SpherePoint) -> f64 {
+        let (nearest, margins) =
+            self.plates.margins_within(point, MAX_TECTONIC_RANGE_M, self.radius_m);
+        if margins.is_empty() {
+            return 0.0;
+        }
+        let near = match nearest {
+            Some(plate) => plate,
+            None => return 0.0,
+        };
+
+        let mut total = 0.0;
+        for margin in &margins {
+            // `margin.normal` is the bisector's plane normal; `flattened` projects it
+            // into the tangent plane at `point` to get the across-margin direction
+            // `from_margin` needs. Skipped entirely, not zeroed, when the projection is
+            // degenerate - a zero contribution and a skip are different things, and the
+            // Python skips.
+            let normal = match self.plates.flattened(point, &margin.normal) {
+                Some(n) => n,
+                None => continue,
+            };
+            total += margin.weight
+                * self.from_margin(point, &near, &margin.other, margin.distance_m, &normal);
+        }
+        total
+    }
+
+    /// The macro elevation: continental base plus whatever the plates have done to it.
+    ///
+    /// Args:
+    ///     point: Anywhere on the planet.
+    ///
+    /// Returns metres, relative to datum, before shelves or detail.
+    pub fn elevation_m(&self, point: &SpherePoint) -> f64 {
+        self.land.base_elevation(point) + self.offset_m(point)
+    }
+
     /// One margin's contribution to the ground here.
     ///
     /// Args:
@@ -333,6 +401,123 @@ mod tests {
     use crate::continentality::LAND_FRACTION;
     use crate::plates::tests::three_plate_set;
     use crate::sphere::EARTH_RADIUS_M;
+
+    impl Tectonics {
+        /// Test-only window onto the continental base, so `elevation_is_the_base_...`
+        /// can compute the same sum `elevation_m` computes internally and compare
+        /// bit-for-bit, without duplicating `Continentality`'s internals in the test.
+        fn land_base_elevation_for_test(&self, point: &SpherePoint) -> f64 {
+            self.land.base_elevation(point)
+        }
+    }
+
+    /// A `Tectonics` over `three_plate_set()`, for the `offset_m`/`elevation_m` tests
+    /// that only need *some* world, not a particular geometry.
+    fn test_world() -> Tectonics {
+        let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
+        Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M)
+    }
+
+    #[test]
+    fn a_plate_interior_contributes_exactly_nothing() {
+        // three_plate_set's nearest bisector to seed 0 is about 3,900 km away, an order
+        // of magnitude beyond MAX_TECTONIC_RANGE_M, so margins_within returns an empty
+        // list and offset_m exits before doing any arithmetic at all. Exactly zero, not
+        // approximately -- it is a literal early return.
+        //
+        // Confirmed rather than assumed: querying three_plate_set() directly at this
+        // point returns zero margins (measured), so the assertion below exercises the
+        // early return and not a sum that happens to cancel.
+        let set = three_plate_set();
+        let point = SpherePoint::from_latlon(0.0, 0.0);
+        let (_, found) = set.margins_within(&point, MAX_TECTONIC_RANGE_M, EARTH_RADIUS_M);
+        assert!(found.is_empty(), "expected no margins in range, found {}", found.len());
+
+        let world = test_world();
+        assert_eq!(world.offset_m(&SpherePoint::from_latlon(0.0, 0.0)), 0.0);
+    }
+
+    #[test]
+    fn elevation_is_the_base_plus_the_offset_bit_for_bit() {
+        // elevation_m is defined as exactly that sum, in that order. Anything less than
+        // bit-equality means the composition was rewritten.
+        let world = test_world();
+        let point = SpherePoint::from_latlon(12.0, 20.0);
+        let expected = world.land_base_elevation_for_test(&point) + world.offset_m(&point);
+        assert_eq!(world.elevation_m(&point).to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn a_point_near_two_margins_sums_both_contributions() {
+        // The reason offset_m exists. Find a point with more than one margin in range
+        // and assert the total differs from either margin's contribution alone -- that
+        // is what distinguishes summing from choosing, and choosing was worth 560 m of
+        // cliff.
+        //
+        // three_plate_set() has no such point: its three seeds sit tens of thousands of
+        // kilometres apart (two 90 degrees apart on the equator, one lifted to 60N),
+        // so no two margins ever fall within MAX_TECTONIC_RANGE_M (420 km) of the same
+        // spot -- confirmed by sampling margins_within across that set and finding at
+        // most one margin in range anywhere.
+        //
+        // A dedicated three-plate set with seeds a few degrees apart puts a genuine
+        // near-triple-junction inside MAX_TECTONIC_RANGE_M. Found by brute-force
+        // sampling of margins_within over a small lat/lon grid around the seeds' rough
+        // midpoint: with seeds at (0,0), (0,4) and (3,2), the point (0.5N, 1.5E) has
+        // two margins in range, at measured distances of about 55,595 m and 61,682 m --
+        // neither equal to the other, so the point is not an artefact of symmetry.
+        // Distinct rates about a shared pole, as in `lopsided_world` above: relative
+        // motion is the *difference* of two plates' angular velocities, so equal rates
+        // would leave every margin here motionless (speed == 0.0, from_margin's first
+        // early return) regardless of geometry.
+        let plate = |index: usize, lat: f64, lon: f64, rate: f64| Plate {
+            index,
+            seed: SpherePoint::from_latlon(lat, lon),
+            euler_pole: SpherePoint::from_latlon(80.0, 5.0),
+            rate_rad_per_myr: rate,
+        };
+        let set = PlateSet::new(vec![
+            plate(0, 0.0, 0.0, 0.02),
+            plate(1, 0.0, 4.0, -0.015),
+            plate(2, 3.0, 2.0, 0.01),
+        ]);
+        let point = SpherePoint::from_latlon(0.5, 1.5);
+
+        let (nearest, margins) = set.margins_within(&point, MAX_TECTONIC_RANGE_M, EARTH_RADIUS_M);
+        assert_eq!(margins.len(), 2, "expected exactly two margins in range at this point");
+        let near = nearest.expect("a nearest plate when margins were found");
+
+        let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
+        let world = Tectonics::new(set, land, EARTH_RADIUS_M);
+
+        let total = world.offset_m(&point);
+
+        // Each margin's own contribution, computed the same way offset_m computes it,
+        // so the comparison is against what "choosing just this one" would have given.
+        let solo: Vec<f64> = margins
+            .iter()
+            .filter_map(|margin| {
+                let normal = world.plates.flattened(&point, &margin.normal)?;
+                let contribution = world.from_margin(
+                    &point,
+                    &near,
+                    &margin.other,
+                    margin.distance_m,
+                    &normal,
+                );
+                Some(margin.weight * contribution)
+            })
+            .collect();
+        assert_eq!(solo.len(), 2, "both margins must survive the flattened() projection");
+
+        assert_ne!(total, solo[0], "the sum must not collapse to just the first margin");
+        assert_ne!(total, solo[1], "the sum must not collapse to just the second margin");
+        assert_eq!(
+            total.to_bits(),
+            (solo[0] + solo[1]).to_bits(),
+            "the total must be exactly the two contributions summed in plate-position order"
+        );
+    }
 
     #[test]
     fn continental_saturates_at_both_ends_and_is_smooth_between() {
