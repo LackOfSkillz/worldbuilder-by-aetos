@@ -2449,6 +2449,16 @@ GENERATION_LABELS = ["jitter-a", "jitter-b", "pole-z", "pole-angle", "rate", "se
 """Every label `_fraction` is ever called with by `_spread`, `_pole` and `_rate` -- the
 whole vocabulary, not a sample of it."""
 
+GENERATION_SPREAD_MEASURED_MAX_COUNT = 137
+"""
+The largest plate count `GENERATION_SPREAD_BOUNDED_MAX_ULPS` below was actually measured
+against. Deliberately a fixed literal, not `max(GENERATION_COUNTS)` -- it must not move if
+`GENERATION_COUNTS` does, or it could never catch that change. If `GENERATION_COUNTS` ever
+grows past this, the bound needs to be re-measured, not assumed -- see the assertion at
+the top of `test_generation_spread_agrees_within_the_measured_bound` that enforces exactly
+that.
+"""
+
 GENERATION_SPREAD_BOUNDED_MAX_ULPS = 32
 """
 Measured, not guessed, over exactly the sweep `test_generation_spread_agrees_within_the_
@@ -2456,21 +2466,52 @@ measured_bound` runs (every index of every count in GENERATION_COUNTS, for every
 GENERATION_WORLD_SEEDS): the worst observed divergence was 6 ULP (seed i64::MAX, count
 137, index 85, the y component).
 
+**This bound is scoped to the counts actually tested here (max 137) -- it is not a
+property of `_spread` itself.** A broader sweep run for the Task 6 review, at counts this
+suite does not exercise, measured divergence that grows with count: 3 ULP at count 22, 6
+ULP at 137 (the figure above), 8 ULP at 500, 16 ULP at 1000, and up to 131 ULP at 5000
+(all four seeds exceeded 32 there). Extrapolating 32 to a generator that ever uses a
+plate count larger than what `GENERATION_COUNTS` covers would be wrong; that generator
+needs its own measurement at its own count, the same way this one was measured at 137.
+
+The reassuring half of that same sweep: at `DEFAULT_PLATE_COUNT` (22, the only count any
+world this project actually builds uses), the divergence is **3 ULP** -- inside the
+ordinary `MAX_TRANSCENDENTAL_ULPS` (4) with no special bound needed at all. This dedicated
+bound exists only because the conformance sweep deliberately reaches count 137, well past
+any real world; realistic-sized worlds never need it.
+
 `_spread` chains far more floating-point operations than a bare `cos`/`sin` call: the
 golden angle itself needs a `sqrt`, then `cos`/`sin` place the un-jittered point, then two
 more `_fraction` calls (strict, contribute no error of their own) scale two tangent
 vectors built from two `cross` products and a `normalised` (a `length`, itself a `sqrt`,
 and a division), which are then added onto the point. Each step is correctly rounded on
 its own, exactly like `sphere_from_latlon`'s single `cos`/`sin` pair, but here there are
-several of them in series, plus a normalisation that divides by a length landing within a
-ULP or two of 1.0 rather than exactly 1.0 -- the same "near a zero crossing amplifies
-relative error" mechanism the tectonics section above documents at much larger scale, just
-milder here because `_spread` never divides by a quantity that legitimately reaches zero.
+several of them in series, so the per-step rounding compounds instead of standing alone.
+That growing chain is the primary driver -- `_pole`'s angle is bounded to a single turn
+(0 to 2*pi) and stays at 2 ULP by contrast, while `_spread`'s angle is `golden * index`,
+unbounded in `index`, so the trig range reduction it needs grows more demanding as index
+(and therefore count) grows, and CPython's range reduction does not agree bit-for-bit with
+`libm`'s.
 
-32 is generous headroom over the measured 6, in the same spirit as the tectonics section's
-own bound: what this catches is a structural defect (a dropped cross product, a jitter
-wired to the wrong sign, a missing normalisation), which would move a component by far
-more than a few tens of ULP, not a legitimate accumulation of correctly-rounded steps.
+A second mechanism compounds the first, and it is the same one the Tectonics section of
+`crates/worldbuilder-engine/README.md` documents at much larger scale: ULP is a *relative*
+measure, and it gets very fine near zero, so an ordinary small absolute rounding
+difference in a near-zero vector component reads as a large ULP count -- not because the
+arithmetic got worse, but because of how close to zero the component happens to land. The
+worst cases measured in the broader sweep above bear this out: the count-1000 and
+count-5000 worst components were both small in magnitude (order 1e-3), where a fixed
+absolute difference reads as tens of times more ULP than the same difference would at a
+component nearer 1.0. `_spread` never divides by a quantity that legitimately reaches
+zero the way `Continentality::at` does, so this effect is milder here, but it is the same
+mechanism, not a different one.
+
+32 is generous headroom over the measured 6 for the counts this suite actually sweeps
+(max 137), in the same spirit as the tectonics section's own bound: what this catches is a
+structural defect (a dropped cross product, a jitter wired to the wrong sign, a missing
+normalisation), which would move a component by far more than a few tens of ULP, not a
+legitimate accumulation of correctly-rounded steps. It is not headroom against a larger
+plate count -- the growth measured above shows 32 is exceeded well within a plausible
+range if `GENERATION_COUNTS` is ever widened.
 """
 
 
@@ -2522,6 +2563,15 @@ def test_generation_spread_agrees_within_the_measured_bound():
     is recorded in the Task 6 report rather than printed here (pytest swallows stdout on
     a passing run) -- this test only has to prove the bound holds, not narrate it.
     """
+    assert max(GENERATION_COUNTS) <= GENERATION_SPREAD_MEASURED_MAX_COUNT, (
+        f"GENERATION_COUNTS now reaches {max(GENERATION_COUNTS)}, past the "
+        f"{GENERATION_SPREAD_MEASURED_MAX_COUNT} this bound was measured up to. "
+        "GENERATION_SPREAD_BOUNDED_MAX_ULPS does not hold outside the range it was "
+        "measured over -- divergence grows with count (up to 131 ULP was observed at "
+        "count 5000 in the Task 6 review's broader sweep). Re-measure the worst-case ULP "
+        "at the new count and pick a new bound from that measurement; do not just raise "
+        "this constant to make the assertion below pass."
+    )
     worst = 0
     skipped = 0
     for seed in GENERATION_WORLD_SEEDS:
