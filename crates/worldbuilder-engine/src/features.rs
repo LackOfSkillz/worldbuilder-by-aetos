@@ -212,6 +212,176 @@ impl Placed {
     }
 }
 
+/// Every placed feature on a world.
+///
+/// Notes:
+/// A list, iterated. There are a dozen of these, not a million: they are the things
+/// somebody deliberately put somewhere, and a world wanting thousands has wanted a
+/// generator rather than a stamp.
+pub struct Features {
+    /// Matches Python's `self.placed` by name: a tuple of `Placed`, one per feature
+    /// given to `new`, built once and kept in the order given.
+    pub placed: Vec<Placed>,
+    pub radius_m: f64,
+}
+
+impl Features {
+    pub fn new(features: impl IntoIterator<Item = Feature>, radius_m: f64) -> Self {
+        let placed = features.into_iter().map(|feature| Placed::new(feature, radius_m)).collect();
+        Self { placed, radius_m }
+    }
+
+    pub fn len(&self) -> usize {
+        self.placed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.placed.is_empty()
+    }
+
+    /// `__iter__` in the Python: the features themselves, not the `Placed` wrappers,
+    /// in the same order they were given to `new`.
+    pub fn iter(&self) -> impl Iterator<Item = &Feature> {
+        self.placed.iter().map(|placed| &placed.feature)
+    }
+
+    /// The ground after everything placed here has had its say, and how much say it had.
+    ///
+    /// Args:
+    /// point: Where.
+    /// elevation_m: The ground before features.
+    ///
+    /// Returns:
+    /// `(shaped_metres, authority)`. `shaped_metres` is an **absolute elevation**, the
+    /// same quantity as `elevation_m`, not a delta. `authority` runs nothing to one and
+    /// is what detail uses to get out of the way. The two are not interchangeable and a
+    /// later task binding this must not confuse them.
+    ///
+    /// Notes:
+    /// **`RAISE` and `CARVE` are one-way, and that is not a hard decision in disguise.**
+    /// A raise whose target is already below the ground contributes nothing, and at the
+    /// moment the two are equal it contributes nothing either - so the switch happens
+    /// exactly where the effect is zero and the ground stays continuous. The same
+    /// argument every tectonic gate had to survive.
+    ///
+    /// Authority needs that argument made a second time and differently. It is not zero
+    /// at the switch merely because the contribution is: it would jump from nothing to
+    /// the full weight the instant a feature began to apply. So it ramps over
+    /// `SETTLE_M` of relief - which is also the behaviour worth having, since a feature
+    /// reshaping the bed by centimetres should not take its texture away.
+    ///
+    /// **Order is meaning here, not merely float non-associativity.** A bar listed
+    /// after the channel it lies across sits on the carved bottom, which is the right
+    /// story; listed before, the channel would cut straight through it. `self.placed`
+    /// is therefore iterated in the order it was built, in a plain `for` loop over the
+    /// slice - never sorted, never accumulated in parallel and combined afterwards. Both
+    /// of those would still be deterministic; neither would tell the same story, because
+    /// each iteration's `result` feeds the *next* feature's `lift`, not the original
+    /// `elevation_m`.
+    ///
+    /// **The RAISE/CARVE guards are transcribed as two separate `if`s, not folded into
+    /// one, because they are not one rule wearing two hats.** Both converge at
+    /// `lift == 0.0` - a raise skips there and a carve skips there too - but that is a
+    /// fact about where each one's effect is zero, discovered independently, not a
+    /// shared reason to merge them. With `result == -0.0` and `target_m == 0.0`
+    /// (`lift == 0.0`), the guard skips and `result` stays `-0.0`; a "simplified" rewrite
+    /// that instead let the `lift == 0.0` case fall through to `result += weight * lift`
+    /// would compute `-0.0 + weight * 0.0`, which is `+0.0` - value-equal, bit-different.
+    /// Transcribing the guards exactly, rather than reasoning about them and writing
+    /// something "equivalent", is what keeps the sign.
+    ///
+    /// **`authority = max(authority, ...)` is CPython's two-argument `max`**, which
+    /// returns its FIRST argument whenever the comparison against the second is not
+    /// true - so this is `if candidate > authority { candidate } else { authority }` in
+    /// that operand order, the same house form as `plates.rs::margin_at`, not
+    /// `f64::max`.
+    pub fn apply(&self, point: &SpherePoint, elevation_m: f64) -> (f64, f64) {
+        let mut result = elevation_m;
+        let mut authority = 0.0;
+        // Order is meaning here (see doc comment above) - a plain for loop over
+        // `self.placed` in construction order, each iteration reading and writing
+        // `result` in place. No sorting, no reordering, no parallel accumulation.
+        for placed in &self.placed {
+            let weight = placed.weight_at(point);
+            if weight <= 0.0 {
+                continue;
+            }
+            let lift = placed.feature.target_m - result;
+            if placed.feature.compose == RAISE && lift <= 0.0 {
+                continue;
+            }
+            if placed.feature.compose == CARVE && lift >= 0.0 {
+                continue;
+            }
+            result += weight * lift;
+            let candidate = weight * smooth(lift.abs() / SETTLE_M);
+            // Python: authority = max(authority, candidate). Two-argument max returns
+            // the FIRST argument (authority) unless candidate is strictly greater.
+            authority = if candidate > authority { candidate } else { authority };
+        }
+        (result, authority)
+    }
+
+    /// Placed features close enough to belong on a chart as symbols.
+    ///
+    /// Args:
+    /// point: Where the chart is centred.
+    /// within_m: How much sea it covers.
+    ///
+    /// Returns:
+    /// `(distance_m, feature)` pairs, nearest first.
+    ///
+    /// Notes:
+    /// **The second channel, and the reason it has to exist.** A pinnacle a hundred
+    /// metres across cannot survive a chart sampled every four hundred: it is not
+    /// smoothed away, it is *missed* - and worse, whether it is missed depends on where
+    /// the sample grid happens to fall, so it would blink in and out as a ship moved.
+    /// Real charts answer this by giving isolated dangers a symbol instead of a contour,
+    /// and so does this.
+    ///
+    /// The comparison is `distance <= within_m`, inclusive, exactly as the Python
+    /// writes it - a feature sitting precisely on the chart's edge still gets a mark.
+    /// The sort key is the distance alone, `pair[0]` in the Python; Rust's `sort_by` is
+    /// a stable sort exactly as CPython's `list.sort` is, so two features at the same
+    /// distance keep the order they were found in (construction order over `self.placed`),
+    /// matching the Python's behaviour without either language having to say so.
+    ///
+    /// `distance_m` is a bounded quantity (through `SpherePoint::distance_to`, which
+    /// reaches `atan2`/`sqrt`/`cos`/`sin` via `angle_to`) feeding a **discrete** output:
+    /// chart membership (in or out at the `within_m` edge) and chart ordering (which
+    /// mark is listed first). A drift of even one ULP in `distance_m` could, at a point
+    /// sitting exactly on the `within_m` boundary or at a tie between two marks'
+    /// distances, flip which side of `<=` it falls on or swap two entries' order -
+    /// Task 5's conformance sweep is where that gets measured, not here.
+    pub fn marks_near(&self, point: &SpherePoint, within_m: f64) -> Vec<(f64, &Feature)> {
+        let mut found: Vec<(f64, &Feature)> = Vec::new();
+        for placed in &self.placed {
+            if !placed.feature.marked {
+                continue;
+            }
+            let distance = point.distance_to(&placed.feature.at, self.radius_m);
+            if distance <= within_m {
+                found.push((distance, &placed.feature));
+            }
+        }
+        // Python: found.sort(key=lambda pair: pair[0]) - stable, ascending, by distance
+        // alone. `partial_cmp` is used rather than a total-order comparator because a
+        // NaN distance is not expected to occur here (see `continentality.rs` for the
+        // same house convention on a sortable f64 field).
+        found.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("distance_to produces no NaN"));
+        found
+    }
+}
+
+impl<'a> IntoIterator for &'a Features {
+    type Item = &'a Feature;
+    type IntoIter = std::iter::Map<std::slice::Iter<'a, Placed>, fn(&'a Placed) -> &'a Feature>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.placed.iter().map(|placed| &placed.feature)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,5 +652,237 @@ mod tests {
             "expected a strictly positive ungated weight at the corner, got {ungated}"
         );
         assert!(dot < cos_reach, "the point must genuinely be gate-rejected");
+    }
+
+    fn at12_3456_78() -> SpherePoint {
+        SpherePoint::from_latlon(12.34, 56.78)
+    }
+
+    fn named_feature(
+        kind: &str,
+        at: SpherePoint,
+        target_m: f64,
+        length_m: f64,
+        width_m: f64,
+        bearing_deg: f64,
+        compose: &str,
+    ) -> Feature {
+        Feature {
+            kind: kind.to_string(),
+            at,
+            target_m,
+            length_m,
+            width_m,
+            bearing_deg,
+            compose: compose.to_string(),
+            marked: false,
+            substrate: None,
+        }
+    }
+
+    #[test]
+    fn features_len_and_iter_match_construction_order() {
+        let at = at12_3456_78();
+        let a = named_feature("bank", at, -2.0, 50.0, 30.0, 0.0, RAISE);
+        let b = named_feature("channel", at, -20.0, 50.0, 30.0, 90.0, CARVE);
+        let features = Features::new(vec![a.clone(), b.clone()], EARTH_RADIUS_M);
+        assert_eq!(features.len(), 2);
+        assert!(!features.is_empty());
+        let kinds: Vec<&str> = features.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["bank", "channel"]);
+        let kinds_via_into_iter: Vec<&str> = (&features).into_iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds_via_into_iter, vec!["bank", "channel"]);
+    }
+
+    #[test]
+    fn apply_with_no_features_returns_elevation_unchanged_and_zero_authority() {
+        let features = Features::new(Vec::<Feature>::new(), EARTH_RADIUS_M);
+        let (result, authority) = features.apply(&at12_3456_78(), -5.0);
+        assert_eq!(result, -5.0);
+        assert_eq!(authority, 0.0);
+    }
+
+    #[test]
+    fn apply_a_single_raise_at_its_own_centre() {
+        // python: Features([Feature(kind="bank", at=at, target_m=-2.0, length_m=50.0,
+        // width_m=30.0, bearing_deg=0.0, compose=RAISE)]).apply(at, -5.0)
+        // == (-2.0, 1.0). weight=1.0 exactly at centre; lift = -2.0 - (-5.0) = 3.0 > 0,
+        // RAISE applies: result = -5.0 + 1.0*3.0 = -2.0; authority =
+        // max(0.0, 1.0*smooth(3.0/3.0)) = smooth(1.0) = 1.0.
+        let at = at12_3456_78();
+        let f = named_feature("bank", at, -2.0, 50.0, 30.0, 0.0, RAISE);
+        let features = Features::new(vec![f], EARTH_RADIUS_M);
+        let (result, authority) = features.apply(&at, -5.0);
+        assert_eq!(result, -2.0);
+        assert_eq!(authority, 1.0);
+    }
+
+    #[test]
+    fn apply_a_single_carve_at_its_own_centre() {
+        // python: Features([Feature(kind="channel", at=at, target_m=-20.0, length_m=50.0,
+        // width_m=30.0, bearing_deg=0.0, compose=CARVE)]).apply(at, -5.0) == (-20.0, 1.0).
+        // lift = -20.0 - (-5.0) = -15.0 < 0, CARVE applies: result = -5.0 + 1.0*-15.0 =
+        // -20.0; authority = max(0.0, smooth(15.0/3.0)) = smooth(5.0) = 1.0 (clamped).
+        let at = at12_3456_78();
+        let f = named_feature("channel", at, -20.0, 50.0, 30.0, 0.0, CARVE);
+        let features = Features::new(vec![f], EARTH_RADIUS_M);
+        let (result, authority) = features.apply(&at, -5.0);
+        assert_eq!(result, -20.0);
+        assert_eq!(authority, 1.0);
+    }
+
+    #[test]
+    fn apply_a_raise_whose_lift_is_not_positive_contributes_nothing() {
+        // A RAISE feature whose target is already below the incoming elevation: lift <=
+        // 0.0, guard skips, result and authority are untouched.
+        let at = at12_3456_78();
+        let f = named_feature("bank", at, -10.0, 50.0, 30.0, 0.0, RAISE);
+        let features = Features::new(vec![f], EARTH_RADIUS_M);
+        let (result, authority) = features.apply(&at, -5.0);
+        assert_eq!(result, -5.0);
+        assert_eq!(authority, 0.0);
+    }
+
+    #[test]
+    fn apply_raise_carve_guards_converge_at_lift_zero_and_keep_negative_zero() {
+        // python: elevation_m=-0.0, target_m=0.0 (lift == 0.0 exactly).
+        // Features([Feature(..., target_m=0.0, compose=RAISE)]).apply(at, -0.0)
+        // == (-0.0, 0.0), and the same for compose=CARVE. The guard (`lift <= 0.0` for
+        // RAISE, `lift >= 0.0` for CARVE) is true at lift == 0.0 either way, so both
+        // skip and `result` keeps the elevation's own sign bit rather than becoming
+        // `-0.0 + weight * 0.0` (== +0.0). Transcribed as two separate `if`s, not folded,
+        // per the module doc comment.
+        let at = at12_3456_78();
+        let raise_f = named_feature("bank", at, 0.0, 50.0, 30.0, 0.0, RAISE);
+        let (raise_result, raise_authority) =
+            Features::new(vec![raise_f], EARTH_RADIUS_M).apply(&at, -0.0);
+        assert!(raise_result.is_sign_negative(), "expected -0.0, got {raise_result}");
+        assert_eq!(raise_result, 0.0);
+        assert_eq!(raise_authority, 0.0);
+
+        let carve_f = named_feature("channel", at, 0.0, 50.0, 30.0, 0.0, CARVE);
+        let (carve_result, carve_authority) =
+            Features::new(vec![carve_f], EARTH_RADIUS_M).apply(&at, -0.0);
+        assert!(carve_result.is_sign_negative(), "expected -0.0, got {carve_result}");
+        assert_eq!(carve_result, 0.0);
+        assert_eq!(carve_authority, 0.0);
+    }
+
+    #[test]
+    fn apply_a_partial_weight_matches_the_formula_and_the_python() {
+        // python: Features([Feature(kind="bank", at=at, target_m=-1.0, length_m=1200.0,
+        // width_m=300.0, bearing_deg=37.0, compose=RAISE)]).apply(
+        //     SpherePoint.from_latlon(12.3405, 56.7795), -5.0)
+        // == (-1.6537078328604258, 0.8365730417848936). weight at that probe point was
+        // independently pinned at 0.8365730417848936 in
+        // `weight_at_a_nearby_probe_point_is_bounded_against_python` above; lift =
+        // -1.0 - (-5.0) = 4.0; result = -5.0 + weight*4.0; authority =
+        // max(0.0, weight*smooth(4.0/3.0)) = weight*1.0 = weight (smooth saturates past
+        // 1.0), so authority == weight exactly here.
+        let at = at12_3456_78();
+        let probe = SpherePoint::from_latlon(12.3405, 56.7795);
+        let f = named_feature("bank", at, -1.0, 1200.0, 300.0, 37.0, RAISE);
+        let weight = Placed::new(f.clone(), EARTH_RADIUS_M).weight_at(&probe);
+        assert_eq!(weight, 0.8365730417848936_f64);
+
+        let features = Features::new(vec![f], EARTH_RADIUS_M);
+        let (result, authority) = features.apply(&probe, -5.0);
+        assert_eq!(result, -5.0 + weight * 4.0);
+        assert_eq!(authority, weight);
+        assert_eq!(result, -1.6537078328604258_f64);
+        assert_eq!(authority, 0.8365730417848936_f64);
+    }
+
+    /// **Order is meaning, proved rather than asserted.** Same two features - a bar
+    /// (RAISE, target -2.0) and a channel (CARVE, target -20.0) crossing at the same
+    /// point, so both have weight exactly 1.0 there regardless of bearing - applied in
+    /// opposite orders. Starting from `elevation_m = -5.0`:
+    ///
+    /// `[channel, bar]` (bar listed after, sits on the carved bottom - the docstring's
+    /// story): channel first, lift = -20.0 - (-5.0) = -15.0 < 0, CARVE applies:
+    /// result = -20.0. Then bar, lift = -2.0 - (-20.0) = 18.0 > 0, RAISE applies:
+    /// result = -20.0 + 18.0 = -2.0. Final: `(-2.0, 1.0)`.
+    ///
+    /// `[bar, channel]` (bar listed first, channel cuts straight through it): bar
+    /// first, lift = -2.0 - (-5.0) = 3.0 > 0, RAISE applies: result = -2.0. Then
+    /// channel, lift = -20.0 - (-2.0) = -18.0 < 0, CARVE applies: result =
+    /// -2.0 + -18.0 = -20.0. Final: `(-20.0, 1.0)`.
+    ///
+    /// Both orders reach authority 1.0 (smooth saturates well past `SETTLE_M` of
+    /// relief either way), so the 18 metre gap between `-2.0` and `-20.0` in `result` is
+    /// the whole of the story, not a rounding artefact of the last few bits - matching
+    /// a live run of `worldbuilder/bathymetry/features.py`'s `Features.apply` at this
+    /// exact input.
+    #[test]
+    fn apply_order_of_placed_features_changes_the_result_not_just_its_bits() {
+        let at = at12_3456_78();
+        let bar = named_feature("bar", at, -2.0, 50.0, 30.0, 0.0, RAISE);
+        let channel = named_feature("channel", at, -20.0, 50.0, 30.0, 90.0, CARVE);
+
+        let channel_then_bar = Features::new(vec![channel.clone(), bar.clone()], EARTH_RADIUS_M);
+        let bar_then_channel = Features::new(vec![bar, channel], EARTH_RADIUS_M);
+
+        let (result_a, authority_a) = channel_then_bar.apply(&at, -5.0);
+        let (result_b, authority_b) = bar_then_channel.apply(&at, -5.0);
+
+        assert_eq!(result_a, -2.0);
+        assert_eq!(result_b, -20.0);
+        assert_ne!(result_a, result_b, "swapping order must change the shaped elevation");
+        assert_eq!(authority_a, 1.0);
+        assert_eq!(authority_b, 1.0);
+    }
+
+    #[test]
+    fn marks_near_finds_only_marked_features_within_reach_nearest_first() {
+        // python (live run): rock at the centre (distance 0.0), wreck 1111.9492664455072 m
+        // away, both marked=True; an unmarked bank in between is excluded regardless of
+        // distance. within_m=2000.0 includes both marked features.
+        let centre = at12_3456_78();
+        let rock_at = centre;
+        let wreck_at = SpherePoint::from_latlon(12.35, 56.78);
+        let unmarked_at = SpherePoint::from_latlon(12.341, 56.78);
+
+        let mut rock = named_feature("rock", rock_at, -0.5, 10.0, 10.0, 0.0, RAISE);
+        rock.marked = true;
+        let mut wreck = named_feature("wreck", wreck_at, -3.0, 5.0, 5.0, 0.0, RAISE);
+        wreck.marked = true;
+        let unmarked = named_feature("bank", unmarked_at, -2.0, 5.0, 5.0, 0.0, RAISE);
+
+        // Construction order deliberately puts wreck before rock, so a passing test
+        // proves the sort (not construction order) puts rock first.
+        let features = Features::new(vec![wreck, rock, unmarked], EARTH_RADIUS_M);
+        let marks = features.marks_near(&centre, 2000.0);
+
+        assert_eq!(marks.len(), 2);
+        assert_eq!(marks[0].1.kind, "rock");
+        assert_eq!(marks[0].0, 0.0);
+        assert_eq!(marks[1].1.kind, "wreck");
+        assert_eq!(marks[1].0, 1111.9492664455072_f64);
+    }
+
+    #[test]
+    fn marks_near_boundary_is_inclusive_of_within_m_exactly() {
+        // python (live run): distance from centre to the rock's own `at` is exactly
+        // 0.0, and marks_near(centre, 0.0) with within_m == distance included it
+        // (`distance <= within_m`), count 1. This pins the `<=`, not `<`.
+        let centre = at12_3456_78();
+        let mut rock = named_feature("rock", centre, -0.5, 10.0, 10.0, 0.0, RAISE);
+        rock.marked = true;
+        let exact_distance = centre.distance_to(&rock.at, EARTH_RADIUS_M);
+        assert_eq!(exact_distance, 0.0);
+
+        let features = Features::new(vec![rock], EARTH_RADIUS_M);
+        let marks = features.marks_near(&centre, exact_distance);
+        assert_eq!(marks.len(), 1);
+    }
+
+    #[test]
+    fn marks_near_excludes_a_feature_just_beyond_within_m() {
+        let centre = at12_3456_78();
+        let mut wreck = named_feature("wreck", SpherePoint::from_latlon(12.35, 56.78), -3.0, 5.0, 5.0, 0.0, RAISE);
+        wreck.marked = true;
+        let features = Features::new(vec![wreck], EARTH_RADIUS_M);
+        let marks = features.marks_near(&centre, 1111.9492664455072_f64 - 1.0);
+        assert_eq!(marks.len(), 0);
     }
 }
