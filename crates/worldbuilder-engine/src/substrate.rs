@@ -596,8 +596,12 @@ mod tests {
     // SWEPT_M] and slope in [0, ROCK_SLOPE], 1,201 x 1,201 = 1,442,401 pairs at
     // 0.0667 m and 3.33e-5 per step. Minimum pre-normalisation total
     // 0.9999999999999998 - two ULP below one - at elevation -119.8 m, slope
-    // 0.0025666666666666667. The exhaustive (rock, swept) domain sweep of 1,002,001
-    // pairs reaches the same minimum.
+    // 0.0025666666666666667. A 1,001 x 1,001 grid sample of the (rock, swept) domain
+    // reaches the same minimum - it is a sample, not the domain, but the bound it
+    // illustrates is algebraic and unconditional: every term of
+    // `loose*swept + loose*(1-swept) + rock` is non-negative and
+    // `swept + (1-swept) >= 1` in reals, so the pre-normalisation total is bounded below
+    // by ~0.5 for any `(rock, swept)` in `[0,1]^2`, independent of any grid's resolution.
     //
     // The consequence is observable: all three fractions differ from the undivided
     // triple, so the normalising division in `Composition::new` is NOT a no-op and must
@@ -956,11 +960,14 @@ mod tests {
 
     #[test]
     fn constants_match_the_python_verbatim() {
-        assert_eq!(ROCK_SLOPE, 0.04);
-        assert_eq!(ROCK_TECTONIC_M, 1200.0);
-        assert_eq!(SWEPT_M, -40.0);
-        assert_eq!(SETTLED_M, -120.0);
-        assert_eq!(SLOPE_BASELINE_M, 60.0);
+        // Raw bits, per this module's own claim to assert that way with no tolerance -
+        // see F4 in the task-1-2 review. `SAND`/`MUD`/`ROCK` have no bit representation
+        // to compare, so those three stay plain `&str` equality.
+        assert_eq!(ROCK_SLOPE.to_bits(), 0x3fa47ae147ae147b);
+        assert_eq!(ROCK_TECTONIC_M.to_bits(), 0x4092c00000000000);
+        assert_eq!(SWEPT_M.to_bits(), 0xc044000000000000);
+        assert_eq!(SETTLED_M.to_bits(), 0xc05e000000000000);
+        assert_eq!(SLOPE_BASELINE_M.to_bits(), 0x404e000000000000);
         assert_eq!(SAND, "sand");
         assert_eq!(MUD, "mud");
         assert_eq!(ROCK, "rock");
@@ -970,10 +977,34 @@ mod tests {
     fn smooth_saturates_at_both_ends() {
         // Verified against detail::smooth's own suite; repeated here so this module's
         // test file stands alone as evidence that the reused function behaves as this
-        // module needs, not only as detail.rs needs.
-        assert_eq!(smooth(-10.0), 0.0);
-        assert_eq!(smooth(10.0), 1.0);
-        assert_eq!(smooth(0.5), 0.5);
+        // module needs, not only as detail.rs needs. Raw bits per F4 above.
+        assert_eq!(smooth(-10.0).to_bits(), 0x0);
+        assert_eq!(smooth(10.0).to_bits(), 0x3ff0000000000000);
+        assert_eq!(smooth(0.5).to_bits(), 0x3fe0000000000000);
+        // The three probes above agree with EITHER `c*c*(3.0-2.0*c)` (this module's
+        // form) or the re-associated `3.0*c*c - 2.0*c*c*c` - they only disagree on the
+        // 59.7% of `c` in [0,1) where rounding lands differently, and 0.5 is not one of
+        // them. `c = 0.3` is: python `0.3*0.3*(3.0-2.0*0.3)` bit-exact
+        // `0x3fcba5e353f7ced9`; the re-associated form gives `...ced8`, one ULP low.
+        // This one value is what tells the two formulas apart; the saturation probes
+        // above do not.
+        assert_eq!(smooth(0.3).to_bits(), 0x3fcba5e353f7ced9);
+    }
+
+    // The domain-sweep argument above (and `natural`'s own doc comment) rests on a
+    // premise this module never pinned: that `smooth`, reused from `detail`, clamps
+    // UNCONDITIONALLY, so its output is in `[0,1]` for every `f64` - not just for the
+    // in-range fractions `natural` happens to pass it. Population: three domain
+    // extremes chosen to trip each clamp on its own - `NaN` and `+inf` bypass the low
+    // clamp (`fraction < 1.0` is false for both, so `upper` is forced to `1.0` before
+    // the high clamp ever runs) while `-1e308` bypasses the high clamp (`fraction < 1.0`
+    // is true, so `upper` carries the huge negative value into the low clamp). Values
+    // measured directly from `detail::smooth`'s own arithmetic, not asserted around.
+    #[test]
+    fn smooth_clamps_unconditionally_even_at_the_extremes_the_domain_sweep_never_visits() {
+        assert_eq!(smooth(f64::NAN).to_bits(), 0x3ff0000000000000);
+        assert_eq!(smooth(f64::INFINITY).to_bits(), 0x3ff0000000000000);
+        assert_eq!(smooth(-1e308).to_bits(), 0x0);
     }
 
     // python: Composition(0.0, 0.0, 0.0) -> dominant "rock",
@@ -1173,6 +1204,34 @@ mod tests {
         assert_eq!(blended.sand.to_bits(), 0x3fe6666666666666);
         assert_eq!(blended.mud.to_bits(), 0x3fb999999999999a);
         assert_eq!(blended.rock.to_bits(), 0x3fc999999999999a);
+    }
+
+    // `blended_towards` calls `Composition::new`, not a raw struct literal, and this is
+    // the test that notices if that stops being true. The three tests above cannot: `a`
+    // and `b` are each built from operands that happen to sum to exactly 1.0, `keep` is
+    // exactly `1.0 - weight` for every weight tried, and `keep + weight` rounds back to
+    // exactly 1.0 for all of them - so the pre-normalisation total is exactly 1.0 and
+    // `Composition::new`'s division is a no-op that a raw struct literal would not be
+    // missed by.
+    //
+    // Population: one concrete pair, not a scan - `a = natural(-119.8,
+    // 0.0025666666666666667, 0.0)` (the same argument pair the sum-to-one test above
+    // measures a 2-ULP-low pre-normalisation total for) blended towards
+    // `b = Composition::new(0.7, 0.1, 0.2)` at `weight = 0.1`. At this weight the raw,
+    // un-normalised total is `1.0000000000000002` - one ULP high - so the normalising
+    // division moves every one of the three fields by exactly one bit. Measured
+    // directly from this arithmetic (Python, IEEE-754 double, bit-identical to Rust's
+    // `+`/`*`/`/` here): dropping the division would give
+    // `sand=0x3fb1ec9c6bf920f8 mud=0x3fecc768f133b0fe rock=0x3f9f607029a55c8e` instead of
+    // the normalised values asserted below.
+    #[test]
+    fn blended_towards_cannot_skip_compositions_normalising_division() {
+        let a = natural(-119.8, 0.0025666666666666667, 0.0);
+        let b = Composition::new(0.7, 0.1, 0.2);
+        let blended = a.blended_towards(&b, 0.1);
+        assert_eq!(blended.sand.to_bits(), 0x3fb1ec9c6bf920f7);
+        assert_eq!(blended.mud.to_bits(), 0x3fecc768f133b0fc);
+        assert_eq!(blended.rock.to_bits(), 0x3f9f607029a55c8c);
     }
 
     // -- at -----------------------------------------------------------------------
