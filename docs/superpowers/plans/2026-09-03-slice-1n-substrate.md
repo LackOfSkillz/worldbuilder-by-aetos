@@ -59,11 +59,36 @@ Worst shift 2.22e-16, zero `dominant` flips. **The conclusion holds and the guar
 
 ---
 
-## A trap sitting in plain sight, and the reason to distrust a clean scan
+## Two corpora, opposite shapes — and my first statement of this rule was backwards
 
-A 3,000-point planetary scatter reports `natural`'s slope clamp as **never reached** — it reads as dead code. Rescanned through the 140 m pinnacle it saturates **8.14x over**. Any corpus without a small steep feature will report a hot branch as dead.
+**For the clamps and any saturation question: a small steep feature, scanned in 2-D.** A 3,000-point
+planetary scatter reports `natural`'s slope clamp as never reached — it reads as dead code. Through a
+pinnacle it saturates well over. But **a line through the pinnacle is not enough**: the steepest ground is
+off-axis, because `weight_at` is a product of two `bump` factors. A line at 0.35 m/step peaks at 7.6275
+where a 2-D grid at 0.933 m/step reaches 8.1410; for drying rock, line 4.6182 against grid 5.5970.
+**Resolution does not rescue a line** — a radial found the same 6.646e-3 at 0.75 and at 0.19 m/step, while
+a 2-D grid closed to 1.7e-4.
 
-**So: no bound, no coverage claim, and no "this branch is unreachable" may rest on a planetary scatter alone.** Every scan in this slice must include a small steep feature, and must state its resolution.
+**For `dominant`'s tie margins: gentle open water, and the pinnacle is the wrong corpus.** The smallest
+margin measured is **2.109424e-15**, from a gentle open-water `sand`-to-`mud` crossing. The pinnacle
+bisection bottoms out four orders *higher*, at 1.29e-11, because the residual at exhaustion is the local
+composition gradient — steep ground makes the crossing easier to resolve, not harder.
+
+**So there is no single "good corpus".** Each question needs the corpus that can express its answer:
+saturation wants steep and two-dimensional, tie margins want gentle and flat. Say which corpus answered
+which question, and state its resolution — a figure without both is not yet a measurement.
+
+---
+
+## Do not bank "the composition sums to one"
+
+The extraction argued `natural`'s pre-normalisation total is exactly `1.0`. It is not: an exhaustive sweep
+of the argument domain — both `rock` and `swept` are `smooth` outputs, so `[0,1]` unconditionally,
+1,002,001 pairs — gives a minimum of `0.9999999999999998`, 2 ULP low.
+
+The answer to "can `natural` trip the `total <= 0.0` guard" is still a firm **no**. But the invariant that
+justified it is false by 2 ULP, and **the port must not encode "sums to one" anywhere** — not as an
+assertion, not as a simplification, not as a reason to skip the normalising division.
 
 ---
 
@@ -85,10 +110,11 @@ A 3,000-point planetary scatter reports `natural`'s slope clamp as **never reach
 No engine code. This task decides the module's shape.
 
 - [ ] **Step 1: Enumerate the host surface from evidence.** `Substrate` reaches `surface.radius_m`, `surface.structural_m(point)`, `surface.tectonics.offset_m(point)` and `surface.features.placed`. **Search the whole file, not just `at()`**, and confirm `shelf`, `detail`, `land`, `plates`, `elevation_m` and `bottom_at` are genuinely unreached. Give each reached member's exact signature and return type.
-- [ ] **Step 2: Settle the construction shape.** Python builds `Surface` then hands `self` to `Substrate` at the end of `__init__`. A Rust `Substrate` that borrows its host cannot be a field of it. `Substrate` holds no state, so a free function or an on-demand view costs nothing. **Recommend one and say what it costs the eventual `surface.rs`**, which is the next slice and will have to live with this.
-- [ ] **Step 3: Settle whether `natural` can trip `total <= 0.0`.** The extraction argued it cannot. **Measure it** — including through a small steep feature, per the trap above.
-- [ ] **Step 4: Measure `dominant`'s tie margins** over a corpus that includes small steep features, not a planetary scatter alone. Report the smallest margin found and the scan resolution that found it.
-- [ ] **Step 5: Record all four answers in the ledger with their numbers and populations.**
+- [x] **Steps 2-5 are settled. Task 1 is complete; its answers are below and bind the later tasks.**
+
+**The construction shape: free functions plus an on-demand borrow — no trait, and no stored `Substrate` field.** `slope_at` takes a `structural_m` callback; `at` takes `&Features` concretely, which is already ported and keeps the pinned reach gate; the `**known` optionals become three `Option<f64>` in `at`'s **resolution order — elevation, tectonic, slope**, which is observable because each `None` triggers a different host call. Cost to `surface.rs`: no new field, three forwarding methods, and one indirect call per structural probe in `bottom_at` — a cost that method's own docstring already prices, and removable later by making `slope_at` generic over `F: Fn`.
+
+**The host surface is four members**, confirmed by a runtime attribute-recording proxy — stronger than grep, being immune to `getattr`, helpers and comprehensions — cross-checked against `grep` and both `git grep` forms, which agreed: `radius_m` (`float`), `structural_m(point) -> float`, `tectonics.offset_m(point) -> float`, `features.placed -> tuple[Placed, ...]`. `shelf`, `detail`, `land`, `plates`, `elevation_m` and `bottom_at` are genuinely unreached; their nonzero grep counts are docstring prose and a local parameter name.
 
 ---
 
@@ -149,6 +175,8 @@ Implement the trait and construction shape Task 1 settled.
 **Most of this module is STRICT — assert raw bits.** Only `slope_at` and anything downstream of it takes a bound, sized to its own measurement with the producing case named. **Do not borrow the features bounds**; they are aspect-ratio-driven and absolutely-bounded for reasons specific to `bump`'s support edge.
 
 **Every corpus must include a small steep feature.** A planetary scatter reports the slope clamp as dead code.
+
+**A feature that omits `substrate` must be in the corpus.** All 25 demo features declare one, so `if declared is None: continue` is never taken on the demo world — a corpus built from it exercises neither branch of that guard.
 
 **Cover:** each optional supplied and omitted, including a supplied `0.0`; `total <= 0.0` through the public constructor; `dominant` at and near ties in all three precedence orders; `blended_towards` at weight exactly `0.0` and just above; an empty-string substrate failing on both sides; and `at()` with no features, one, and several.
 
