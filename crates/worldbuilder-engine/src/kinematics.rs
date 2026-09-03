@@ -89,13 +89,23 @@ mod tests {
     fn a_plate_is_motionless_at_its_own_euler_pole() {
         // Not a special case in the code -- it falls out of the cross product, because
         // the position vector is parallel to the rotation axis there.
+        //
+        // This vanishes EXACTLY, and the reason is worth pinning because two plausible
+        // explanations are both wrong. It is not that `from_latlon(90, 0)` is exactly
+        // (0, 0, 1) -- cos(90 deg) is about 6.1e-17, not zero. Nor is it that parallel
+        // vectors cross to zero in floating point: `cross` computes (s*y)*z - (s*z)*y,
+        // and those groupings do not agree bit for bit in general.
+        //
+        // It is exact because sin(90 deg) is exactly 1.0, so z is exactly 1.0, and both
+        // components that could disagree collapse to s*y - s*y and s*x - s*x. Measured
+        // at longitude 0 and 45: exactly zero at both.
         let plate = test_plate_with_pole(0, 0.0, 0.0, 90.0, 0.0, 0.01);
         let at_pole = SpherePoint::from_latlon(90.0, 0.0);
         let v = surface_velocity(&plate, &at_pole, EARTH_RADIUS_M);
-        assert!(
-            v.length() < 1e-9,
-            "velocity at the plate's own Euler pole should vanish, got {}",
+        assert_eq!(
             v.length(),
+            0.0,
+            "this vanishes exactly, not merely to within a tolerance",
         );
     }
 
