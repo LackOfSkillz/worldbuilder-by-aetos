@@ -229,8 +229,14 @@ mod tests {
     #[test]
     fn coastal_is_none_deep_in_the_interior_on_the_value_gate_alone() {
         // The north pole on this world: above_shore is far outside COASTAL_WINDOW, so the
-        // gate must return None having never touched the gradient (that ordering is
-        // checked by the earlier `value_gate_never_takes_the_gradient` test below).
+        // gate returns None having never touched the gradient.
+        //
+        // That ordering is the file's whole performance strategy -- the gradient costs six
+        // times what the value does, and most of a planet is deep interior or deep basin --
+        // but NO TEST HERE CHECKS IT. Taking the gradient eagerly would leave every value
+        // identical and every test green, and only cost time. It is verified by reading
+        // `coastal`, not by an assertion; observing it would need a call counter on
+        // Continentality, which is a concrete type. Do not read this test as covering it.
         let shelf = build();
         let p = point(0.0, 0.0, 1.0);
         assert!(shelf.coastal(&p).is_none());
