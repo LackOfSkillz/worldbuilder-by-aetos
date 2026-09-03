@@ -1647,3 +1647,309 @@ def test_the_smallest_shadow_gap_is_measured_not_assumed():
         f"smallest observed |shadow| collapsed to {minimum!r} at {minimum_context} -- "
         "the shadow/genuine decision may be fragile here"
     )
+
+
+# --- Kinematics: surface_velocity, motion_between, motion_at ----------------------------
+#
+# The split contract from the brief, applied without blurring it: nothing in this module
+# is transcendental except the `asin` inside `margin_at`, which only rides along in the
+# returned `Motion.margin.distance_m` -- `motion_at` itself never reads it. Every velocity
+# component, `closing_m_per_myr`, `sliding_m_per_myr` and plate index is compared with
+# `same()`, bit-for-bit; `kind` is compared as an exact string; the one `close_enough`
+# comparison anywhere in this section is that trailing `distance_m`. `None` is compared
+# positionally throughout: `motion_at` returns `None`, not a `Motion` full of zeros,
+# whenever there is no neighbour or no normal, and a binding that fabricated a value where
+# Python has `None` (or vice versa) must fail here rather than being skipped.
+#
+# `plateset_motion_at` is the first binding in this crate that both goes through
+# `plateset_from_parts` AND reads `euler_pole`/`rate_rad_per_myr` -- every earlier binding
+# onto that constructor (`plateset_bisector`, `plateset_nearest_two`, `plateset_margin_at`,
+# `plateset_margin_normal`, `plateset_flattened`, `plateset_margins_within`) feeds functions
+# that only read `seed`, so a fabricated pole or a zeroed rate was inert there. See the
+# fabrication-mutation record in this slice's task-4 report for the guard this finally
+# exercises.
+
+from worldbuilder.plates.kinematics import ACROSS_ENOUGH as PY_ACROSS_ENOUGH
+from worldbuilder.plates.kinematics import TRANSFORM as PY_TRANSFORM
+from worldbuilder.plates.kinematics import motion_at as py_motion_at
+from worldbuilder.plates.kinematics import motion_between as py_motion_between
+from worldbuilder.plates.kinematics import surface_velocity as py_surface_velocity
+
+
+def _kinematics_plate(index, pole, rate):
+    """A `Plate` whose seed is the pole itself -- irrelevant to every function in this
+    module, exactly as `bindings::plate_angular_velocity` and the new
+    `plate_surface_velocity`/`plates_motion_between` bindings assume when they build a
+    `Plate` inline rather than going through `plateset_from_parts`."""
+    point = SpherePoint(pole)
+    return PyPlate(index=index, seed=point, euler_pole=point, rate_rad_per_myr=rate)
+
+
+def test_plate_surface_velocity_agrees_over_a_spread_of_poles_rates_and_points():
+    """Cross product and a scale, nothing transcendental: bit-for-bit over a spread of
+    poles (including the pinned poles/meridian), rates (including negative), and points."""
+    poles = PLATE_SEED_VECTORS
+    points = list(corpus(300))
+    checked = 0
+    for index, pole in enumerate(poles):
+        rate = _rate_for_index(index)
+        plate = _kinematics_plate(index, pole, rate)
+        for x, y, z in points:
+            point = SpherePoint(Vec3(x, y, z).normalised())
+            want = py_surface_velocity(plate, point, EARTH_RADIUS_M)
+            got = engine.plate_surface_velocity(
+                pole.x, pole.y, pole.z, rate,
+                point.vector.x, point.vector.y, point.vector.z, EARTH_RADIUS_M,
+            )
+            assert (
+                same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
+            ), (pole, rate, point.vector.x, point.vector.y, point.vector.z, want, got)
+            checked += 1
+    assert checked == len(poles) * len(points)
+
+
+def test_plate_surface_velocity_agrees_at_a_plates_own_euler_pole():
+    """Vanishes on both sides -- the position vector is parallel to the rotation axis
+    there, so the cross product is exactly zero, not merely close to it."""
+    pole = Vec3(0.0, 0.0, 1.0)
+    plate = _kinematics_plate(0, pole, 0.01)
+    at_pole = SpherePoint(pole)
+    want = py_surface_velocity(plate, at_pole, EARTH_RADIUS_M)
+    got = engine.plate_surface_velocity(
+        pole.x, pole.y, pole.z, 0.01, pole.x, pole.y, pole.z, EARTH_RADIUS_M
+    )
+    assert want.x == 0.0 and want.y == 0.0 and want.z == 0.0, (
+        "fixture sanity: python itself must vanish exactly here"
+    )
+    assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
+
+
+def _spinning_pair_poles_and_rates():
+    """Both plates' Euler poles at the north pole -- mirrors `spinning_pair` in the Rust
+    unit tests, so both angular velocities are `(0, 0, rate)` and the relative velocity on
+    the equator is purely eastward, making the classification arithmetic easy to reason
+    about by hand while still going through the real bindings."""
+    north = Vec3(0.0, 0.0, 1.0)
+    return north, north
+
+
+def test_plates_motion_between_agrees_over_a_corpus_of_points_and_normals():
+    """Two named plates (real, distinct poles and rates, not fabricated), a corpus of
+    points, and a corpus of normals -- `closing`, `sliding` and `kind` bit/string-exact."""
+    near_pole, far_pole = PLATE_SEED_VECTORS[0], PLATE_SEED_VECTORS[1]
+    near_rate, far_rate = _rate_for_index(0), _rate_for_index(1)
+    near = _kinematics_plate(0, near_pole, near_rate)
+    far = _kinematics_plate(1, far_pole, far_rate)
+
+    points = list(corpus(1500))
+    checked = 0
+    for (px, py_, pz), (nx, ny, nz) in zip(points, points[1:]):
+        try:
+            normal = Vec3(nx, ny, nz).normalised()
+        except ValueError:
+            continue
+        point = SpherePoint(Vec3(px, py_, pz).normalised())
+        want = py_motion_between(near, far, point, normal, EARTH_RADIUS_M)
+        got_closing, got_sliding, got_kind = engine.plates_motion_between(
+            near_pole.x, near_pole.y, near_pole.z, near_rate,
+            far_pole.x, far_pole.y, far_pole.z, far_rate,
+            point.vector.x, point.vector.y, point.vector.z,
+            normal.x, normal.y, normal.z, EARTH_RADIUS_M,
+        )
+        assert same(want.closing_m_per_myr, got_closing), (
+            "closing", point.vector, normal, want.closing_m_per_myr, got_closing
+        )
+        assert same(want.sliding_m_per_myr, got_sliding), (
+            "sliding", point.vector, normal, want.sliding_m_per_myr, got_sliding
+        )
+        assert want.kind == got_kind, ("kind", point.vector, normal, want.kind, got_kind)
+        checked += 1
+    assert checked > 0
+
+
+def test_plates_motion_between_agrees_for_a_stationary_pair():
+    """speed is exactly 0.0, so `abs(closing) / speed` would be 0.0 / 0.0 -- only the
+    `or` short-circuit prevents it, on both sides. Compared with exact equality: these are
+    products of an exactly-zero relative-velocity vector, not the residue of cancelling
+    unequal quantities."""
+    pole, _ = _spinning_pair_poles_and_rates()
+    near = _kinematics_plate(0, pole, 0.01)
+    far = _kinematics_plate(1, pole, 0.01)
+    point = SpherePoint.from_latlon(0.0, 0.0)
+    normal = Vec3(0.0, 1.0, 0.0)
+
+    want = py_motion_between(near, far, point, normal, EARTH_RADIUS_M)
+    assert want.kind == PY_TRANSFORM
+    # +0.0 or -0.0, but exactly zero-magnitude either way -- products of an identically
+    # zero relative-velocity vector, not the residue of cancelling unequal quantities.
+    assert want.closing_m_per_myr == 0.0 and want.sliding_m_per_myr == 0.0
+
+    got_closing, got_sliding, got_kind = engine.plates_motion_between(
+        pole.x, pole.y, pole.z, 0.01, pole.x, pole.y, pole.z, 0.01,
+        point.vector.x, point.vector.y, point.vector.z,
+        normal.x, normal.y, normal.z, EARTH_RADIUS_M,
+    )
+    assert got_kind == PY_TRANSFORM
+    assert got_closing == 0.0 and got_sliding == 0.0
+    # The sign of zero is part of what "bit-for-bit" means: Rust and Python must agree on
+    # it, not merely on magnitude.
+    assert same(want.closing_m_per_myr, got_closing), (want.closing_m_per_myr, got_closing)
+    assert same(want.sliding_m_per_myr, got_sliding), (want.sliding_m_per_myr, got_sliding)
+
+
+def test_plates_motion_between_agrees_either_side_of_the_across_enough_threshold():
+    """`|closing| / speed` equals `a` exactly for a normal of `(0, a, b)`. At `a = 0.5` the
+    ratio is exactly `ACROSS_ENOUGH` and the comparison is a strict `<`, so this must NOT
+    be transform on either side; at `a = 0.4` it must be. Exercised through the real
+    bindings, not just the Rust unit test, so a divergence in how the two languages wire
+    the comparison would show here too."""
+    pole, _ = _spinning_pair_poles_and_rates()
+    near = _kinematics_plate(0, pole, 0.02)
+    far = _kinematics_plate(1, pole, 0.01)
+    point = SpherePoint.from_latlon(0.0, 0.0)
+
+    root_three_over_two = math.sqrt(0.75)
+    exactly_at_normal = Vec3(0.0, PY_ACROSS_ENOUGH, root_three_over_two)
+    just_below_normal = Vec3(0.0, 0.4, math.sqrt(1.0 - 0.16))
+
+    for normal, expect_transform in ((exactly_at_normal, False), (just_below_normal, True)):
+        want = py_motion_between(near, far, point, normal, EARTH_RADIUS_M)
+        assert (want.kind == PY_TRANSFORM) == expect_transform, (
+            "python fixture sanity", normal, want.kind
+        )
+        got_closing, got_sliding, got_kind = engine.plates_motion_between(
+            pole.x, pole.y, pole.z, 0.02, pole.x, pole.y, pole.z, 0.01,
+            point.vector.x, point.vector.y, point.vector.z,
+            normal.x, normal.y, normal.z, EARTH_RADIUS_M,
+        )
+        assert (got_kind == PY_TRANSFORM) == expect_transform, (normal, got_kind)
+        assert want.kind == got_kind
+        assert same(want.closing_m_per_myr, got_closing)
+        assert same(want.sliding_m_per_myr, got_sliding)
+
+
+def _motion_at_agrees(point, radius_m=EARTH_RADIUS_M):
+    """One `motion_at` comparison, positional on `None` first: nearest/neighbour indices
+    as exact integers, `closing`/`sliding` with `same()`, `kind` as an exact string, and
+    the margin's `distance_m` -- the one `close_enough` comparison in this whole section,
+    because it rode in through `asin` inside `margin_at` -- last."""
+    want = py_motion_at(point, PY_PLATE_SET, radius_m)
+    got = engine.plateset_motion_at(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+        point.vector.x, point.vector.y, point.vector.z, radius_m,
+    )
+    assert (want is None) == (got is None), (point.vector, want, got)
+    if want is None:
+        return
+    got_nearest, got_neighbour, got_distance, got_closing, got_sliding, got_kind = got
+    assert want.margin.nearest.index == got_nearest, (point.vector, "nearest")
+    assert want.margin.neighbour.index == got_neighbour, (point.vector, "neighbour")
+    assert same(want.closing_m_per_myr, got_closing), (point.vector, "closing")
+    assert same(want.sliding_m_per_myr, got_sliding), (point.vector, "sliding")
+    assert want.kind == got_kind, (point.vector, "kind", want.kind, got_kind)
+    assert close_enough(want.margin.distance_m, got_distance), (
+        point.vector, "distance_m", want.margin.distance_m, got_distance,
+        ulps_apart(want.margin.distance_m, got_distance),
+    )
+
+
+def test_plateset_motion_at_agrees_over_a_corpus_of_points():
+    """The standing 12-plate multi-plate set, across the shared margins corpus (the six
+    pinned poles/meridian points plus a slice of the pseudo-random corpus)."""
+    checked = 0
+    for point in _margins_corpus(2000):
+        _motion_at_agrees(point)
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_motion_at_agrees_near_bisectors():
+    """Points deliberately close to a bisector, where neighbour selection -- and so which
+    margin's motion gets reported -- is most likely to differ between implementations."""
+    checked = 0
+    for point in _bisector_points_near_margin(PLATE_SEED_VECTORS, 1000):
+        _motion_at_agrees(point)
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_motion_at_agrees_at_the_poles_and_the_meridian():
+    """The six pinned points, explicitly, rather than trusting they survive inside a
+    loop."""
+    for x, y, z in ((0.0, 0.0, 1.0), (0.0, 0.0, -1.0), (1.0, 0.0, 0.0),
+                    (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
+        _motion_at_agrees(SpherePoint(Vec3(x, y, z)))
+
+
+def test_plateset_motion_at_agrees_with_a_single_plate_set():
+    """No neighbour, so no margin, so `None` on both sides -- positionally, not merely
+    'both sides happen to have nothing to compare'."""
+    seed = Vec3(0.0, 0.0, 1.0)
+    py_set, flat, poles_flat, rates = _build_plateset_pair([seed])
+    for x, y, z in [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)]:
+        point = SpherePoint(Vec3(x, y, z))
+        want = py_motion_at(point, py_set, EARTH_RADIUS_M)
+        got = engine.plateset_motion_at(
+            flat, poles_flat, rates, x, y, z, EARTH_RADIUS_M
+        )
+        assert want is None, "python fixture sanity: a single plate has no margin to report"
+        assert got is None, (x, y, z, got)
+
+
+def test_plateset_motion_at_agrees_at_a_plates_own_euler_pole():
+    """Standing exactly at one plate's own Euler pole: that plate's own contribution to
+    the relative velocity there is exactly zero, which is exercised through the full
+    `motion_at` path (margin lookup, normal, and the classification) rather than in
+    isolation, against whichever neighbour margin_at actually selects there."""
+    own_pole = Vec3(PLATE_POLES_FLAT[0], PLATE_POLES_FLAT[1], PLATE_POLES_FLAT[2])
+    _motion_at_agrees(SpherePoint(own_pole))
+
+
+def test_the_margin_classification_threshold_gap_is_measured_not_assumed():
+    """
+    The hazard this section's whole contract rests on: `motion_at`'s classification is a
+    strict `abs(closing) / speed < ACROSS_ENOUGH` comparison, so a sample landing extremely
+    close to that ratio is one rounding difference away from being classified transform by
+    one implementation and convergent/divergent by the other -- even though every quantity
+    feeding the comparison is algebraic (a cross product, dot products, subtractions and a
+    division; nothing transcendental) and therefore expected to be bit-identical between
+    Python and Rust.
+
+    This recomputes the classification ratio independently from the Python side alone (so
+    it needs no special binding), mirroring `motion_at`'s own arithmetic, over the shared
+    margins corpus and the near-bisector corpus, and asserts a floor on the smallest
+    observed `abs(abs(closing) / speed - ACROSS_ENOUGH)` across every sample where
+    `speed > 0.0` -- not merely printed, per the vacuous-test failure mode (asserting only
+    `>= 0.0`) this project has already had to fix three times.
+    """
+    minimum = math.inf
+    minimum_context = None
+    points = list(_margins_corpus(3000)) + list(_bisector_points_near_margin(PLATE_SEED_VECTORS, 1500))
+    for point in points:
+        margin = PY_PLATE_SET.margin_at(point, EARTH_RADIUS_M)
+        if margin.neighbour is None:
+            continue
+        normal = PY_PLATE_SET.margin_normal(point, margin)
+        if normal is None:
+            continue
+        relative = py_surface_velocity(margin.nearest, point, EARTH_RADIUS_M) - py_surface_velocity(
+            margin.neighbour, point, EARTH_RADIUS_M
+        )
+        closing = -relative.dot(normal)
+        speed = relative.length()
+        if speed <= 0.0:
+            continue
+        gap = abs(abs(closing) / speed - PY_ACROSS_ENOUGH)
+        if gap < minimum:
+            minimum = gap
+            v = point.vector
+            minimum_context = (v.x, v.y, v.z, closing, speed)
+
+    assert minimum_context is not None, "corpus produced no sample with speed > 0.0"
+
+    print(f"\nsmallest observed threshold gap: {minimum!r} at {minimum_context}")
+
+    assert minimum >= 1e-9, (
+        f"smallest observed |abs(closing)/speed - ACROSS_ENOUGH| collapsed to {minimum!r} "
+        f"at {minimum_context} -- margin classification may be fragile here"
+    )
