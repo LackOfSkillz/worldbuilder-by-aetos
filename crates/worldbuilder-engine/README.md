@@ -871,3 +871,118 @@ report: 133 Rust tests (123 lib plus the 4-test `blake2_bytes.rs` plus the 6-tes
 already existed going in), 319 in the full Python suite (324 minus the 5 tests deleted with
 `tests/test_blake2_bytes.py`), and 79 in `test_conformance.py` (unchanged -- those 5 tests
 never lived there). `cargo test -p worldbuilder-engine`, run unfiltered, exits 0.
+
+## `detail.rs`: the first module with no transcendental anywhere, and two traps a value
+## test would have missed
+
+`worldbuilder/terrain/detail.py` contains no transcendental call in any path at all --
+not "none that matters," none. `math.pi` appears in `_plan`'s frequency expression, but a
+module-level constant is not an operation; `Noise`, which `Detail` wires straight through
+for its band sampling, reaches only `floor`, already established strict above. So the
+whole module sits on the strict, bit-for-bit contract, every comparison in its
+conformance section uses `same()`, and there is no `close_enough()` anywhere in it -- a
+claim tested by running the suite with that contract, not assumed because the source
+looked simple. It also settles every discrete decision in the module in one stroke:
+`if resolution_m:`, `if visible <= 0.0: break`, and the two clamps inside `smooth` all
+compare exactly-reproducible values on both sides, so none of them can diverge between
+languages and none needed its own argument the way `ACROSS_ENOUGH` or the shadow gate
+did in earlier sections.
+
+**The frequency expression, stated honestly.** `_plan` writes
+`2.0 * math.pi * radius_m / wavelength / (2.0 * math.pi)`, which is algebraically
+`radius_m / wavelength` -- the `2.0 * math.pi` introduced and then divided back out again.
+At Earth's radius, for all seven configured wavelengths, both forms are bit-identical, so
+simplifying the expression would break nothing in the default world and a reviewer
+skimming the diff would have no reason to object. They diverge at other radii:
+`test_detail_bands_uses_the_transcribed_frequency_formula_not_the_simplified_one` pins
+`DETAIL_NON_EARTH_RADIUS_M = 32450893.20683292` with `wavelength = 10000.0`, where the
+four-operation transcription gives `3245.0893206832916` against `3245.089320683292` from
+the simplified form -- one ULP apart, and the test asserts the reference itself lands on
+the transcribed literal and *not* the simplified one, so it cannot pass merely because
+both languages made the same mistake. Since `radius_m` is a constructor parameter here,
+not a fixed constant, the four-operation form is prophylactic for Earth and load-bearing
+for anything else -- `detail.rs`'s `plan` keeps it in the Python's order for exactly this
+reason.
+
+**The band table.** Seven octaves, halving from `COARSEST_WAVELENGTH_M` (20,000 m) down
+to the last that still qualifies at `CANONICAL_WAVELENGTH_M` (250 m, since 156.25 falls
+below it): 20000, 10000, 5000, 2500, 1250, 625, 312.5. At Earth's radius those map to
+frequencies 318.55 through 20387.2, and the raw shares -- halving from 1.0 alongside the
+wavelength -- are normalised so they sum to exactly 1.0 regardless of how many bands the
+loop happens to produce, "otherwise adding an octave would quietly make every world
+rougher." `the_shares_are_normalised_to_exactly_one` checks the sum lands on `1.0`
+exactly, not merely close to it.
+
+**The falsy-zero trap, and the intuition it defeats.** Python's `if resolution_m:` is
+false for `None`, `0.0`, *and* `-0.0` -- all three take the canonical every-octave path.
+A Rust `Option<f64>` port has to collapse `Some(0.0)` and `Some(-0.0)` to `None` itself;
+`f64` has no truthiness of its own to inherit that from.
+
+The natural next question is which of the two zeros actually needs the guard, and the
+answer runs backwards from intuition. Removing the collapse and rebuilding leaves
+`wavelength / 0.0` as `+inf` inside the loop; `smooth(+inf)` clamps to `1.0`, the same
+value the canonical arm's literal `1.0` gives, bit for bit -- `+0.0` does not diverge even
+with no guard at all. It is `-0.0` that breaks: `wavelength / -0.0` is `-inf`,
+`smooth(-inf)` clamps to `0.0`, and `if visible <= 0.0: break` fires on the very first,
+coarsest band, dropping every octave where Python's falsy `-0.0` gives full detail. So the
+guard is load-bearing, just not for the value one would naturally reach for first. This
+was proven by mutation, not read off the source: with the `r != 0.0` collapse in
+`offset_m` removed and the crate rebuilt, `test_detail_offset_m_agrees_bit_for_bit` and
+`test_detail_offset_m_zero_resolution_matches_omitted_resolution` both failed on the
+`-0.0` case (`want=-41.65428342343554, got=0.0`, at point `(0.0, 0.0, 1.0)`) while every
+`+0.0` case in the same sweep stayed silently green -- exactly the asymmetry the analysis
+predicts. `DETAIL_RESOLUTIONS_M` now carries both `0.0` and `-0.0` so every parametrised
+sweep in the section exercises the distinction, not just the two tests that motivated it.
+
+**`smooth`'s clamp order is observable only under NaN.** `max(0.0, min(1.0, fraction))`
+and the swapped order `min(1.0, max(0.0, fraction))` agree for every finite input and for
+both infinities -- they differ only when `fraction` is NaN, where Python's order gives
+`1.0` (the outer `max` against a NaN inner result) and the swap gives `0.0`. The suite
+reaches that case through a NaN `resolution_m`: Python's `if resolution_m:` is true for
+NaN (NaN is truthy), so it takes the *resolution* branch, not the canonical one, and
+`wavelength / NaN` is NaN going into `smooth`. Swapping the clamp order and rebuilding
+made `test_detail_offset_m_agrees_bit_for_bit` fail on the NaN case
+(`want=-42.98861825522871, got=0.0`, same seed and point as above) -- confirming the
+order matters exactly where the analysis says it should and nowhere else. `float("nan")`
+now sits in `DETAIL_RESOLUTIONS_M` alongside `-0.0` for the same reason: a differential
+suite that never manufactures a NaN cannot tell two clamp orders apart, however carefully
+its comments explain why they'd agree.
+
+**The fade bound, and how the test guarding it was first got wrong.** Octaves fade
+between `BARELY_M` and `CLEARLY_M` multiples of the sample spacing rather than switching
+off, because "dropping one the instant it becomes unrepresentable would be a cliff in
+resolution rather than in position -- the ground would jump as somebody zoomed."
+`the_fade_is_gradual_rather_than_a_step` guards that smoothness, and its first bound was
+derived from an upper bound on a single band's legitimate per-sample swing. That bound was
+real, but an upper bound on the *legitimate* signal necessarily also admits the
+*illegitimate* one -- a hard cutoff's step is smaller than "anything could happen," so it
+passed a test built only to rule out the impossible. The bound now comes from `smooth`'s
+own peak slope instead (1.5, the maximum of the smoothstep's derivative `6x - 6x^2`),
+which gives a ceiling that actually discriminates: a gradual fade measures roughly 3.02
+against a derived ceiling of `0.2 * share * amplitude` ~= 10.08, while a hard step at the
+same crossing measures roughly 25.75 -- 2.55x past the bound -- and the real,
+unmutated fade measures about 0.96, some 10.5x inside it. Mutating `visible`'s computation
+to a hard step and rerunning confirmed the failure; reverting confirmed the pass. The
+general lesson, not just this test's: **a derived bound is not automatically a
+discriminating one** -- deriving it from the size of the thing being measured proves
+nothing about telling it apart from the thing it must reject; the right derivation
+compares the two values the test actually needs to distinguish.
+
+**Why sub-sample frequencies are skipped rather than merely wasted, and why `break` is
+correct.** An octave shorter than the sample spacing does not just cost cycles for no
+visible benefit -- it aliases: it "lands somewhere different in every grid, so a chart
+would shimmer as a ship moved rather than showing generalised ground." The loop walks
+bands coarsest-first, so once one band's `visible` clamps to `0.0` every band after it is
+finer still and equally invisible; `break` throws away no work `continue` would have kept,
+and it says so in the code rather than leaving a reader to wonder why the loop doesn't
+just skip the dead band and keep going.
+
+Every count in this section was verified by running the suites, not copied from an
+earlier report: 146 Rust tests (136 lib plus the 4-test `blake2_bytes.rs` plus the 6-test
+`no_std_math` guard -- unchanged from before this task, since `detail.rs`'s function
+bodies already existed going in and this task's only change was two conformance test
+cases), 327 in the full Python suite, and 87 in `test_conformance.py` (up from 79 -- but
+because `DETAIL_RESOLUTIONS_M` grew from five entries to seven inside existing
+parametrised loops, not because new test *functions* were added; the test-count delta
+here is smaller than the case-count delta the mutations above depended on).
+`cargo test -p worldbuilder-engine`, run unfiltered, exits 0.
