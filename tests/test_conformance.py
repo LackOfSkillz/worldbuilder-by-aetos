@@ -5105,6 +5105,12 @@ records 3.167834e-09 for the equivalent nudge applied to a probe coordinate insi
 
 So a host where `local_to_sphere` stops agreeing needs this bound RE-MEASURED, never
 widened. Widening hides exactly the divergence the bound exists to detect.
+
+**And expect the first symptom to be a red test, not a warning.** The measured worst
+2.212201e-16 sits only **3.8% under** this ceiling, deliberately -- that tightness is what
+makes a widening fail rather than pass quietly. A red here on a different host is therefore
+the bound doing its job: re-measure on that host and record the new figure with its corpus
+and its convention. Never widen it to make the red go away.
 """
 
 SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS = 6.6e-16
@@ -5129,7 +5135,61 @@ more comfortably as the code degrades.
 
 Zero dominant flips over both corpora in both supply modes. The word is what maritime
 consumes, and no tolerance could absorb a flip in it.
+
+**And expect the first symptom to be a red test, not a warning.** The measured worst
+3.3306690738754696e-16 sits only **0.93% above** this bound's LOWER gate (bound/2 =
+3.3e-16), so on a different host it is the two-sided assertion's floor that goes red first,
+and it will read as a failure rather than as a signal unless you know to expect it. That
+tightness is deliberate: it is what makes a widening -- or a quiet improvement that nobody
+records -- fail instead of passing. Re-measure on that host and record the new figure with
+its corpus. Never widen it to make the red go away, because widening hides exactly the
+divergence the bound exists to detect.
 """
+
+SUBSTRATE_AT_HIGH_ASPECT_MAX_ABS = 2.0e-14
+"""
+`Substrate.at` with every optional supplied, over HIGH-ASPECT features -- ABSOLUTE, and a
+different quantity from every other bound in this section because it covers a different
+POPULATION rather than a different span of the stack.
+
+**This bound exists so that the divergence the strict test scopes itself away from is
+asserted somewhere rather than described somewhere.**
+`test_substrate_at_is_strict_when_every_optional_is_supplied` is bit-strict on the demo
+coast's 25 mild features and says in prose that a 250:1 channel breaks that. Prose rots: the
+two figures it carried were measured under a host it never named, and neither reproduced
+when they were re-derived. `test_substrate_at_over_high_aspect_features_is_bounded_and
+_search_dependent` is what holds the claim now.
+
+Measured, both searches on the SAME named host -- `_RecordingHost`, one feature declaring
+`"mud"`, all four of SUBSTRATE_HIGH_ASPECT_SHAPES from all five FEATURE_ORIGINS on all five
+FEATURE_BEARINGS, every optional supplied:
+
+    14 FEATURE_FRACTIONS, ordered pairs, both signs    39,200 probes  1.0630385460785874e-14
+    61x61 signed fraction grid over [-1.3, 1.3]       372,100 probes  1.7763568394002505e-14
+
+**The two searches disagree by 1.67x on one population, which is the whole reason each
+figure is quoted with its search.** A grid samples where its nodes fall.
+
+**Both gates are close, deliberately.** The coarse worst sits 6.3% above the lower gate
+(bound/2 = 1.0e-14) and the fine worst 11.2% under the ceiling, so a host whose `atan2` or
+`sqrt` differs from CPython's will see a red test before it sees anything else. That is the
+bound working. **RE-MEASURE on that host and record the new figures with their searches;
+never widen**, because widening hides exactly the divergence the bound exists to detect.
+
+**Corroborated, not free-floating.** The coarse worst is `weight_at`'s own divergence
+passed through the blend unattenuated: 1.063039e-14 is the figure FEATURES_WEIGHT_MAX_ABS
+records for 10000x40 m at bearing 37 (its own worst, 1.082467e-14, is the same shape at
+bearing 143.5). The composition inherits the weight error one-for-one where the natural
+ground is already pure, so this is FEATURES_WEIGHT_MAX_ABS's envelope seen through `at` --
+measured here over this section's own corpus rather than borrowed, exactly as that
+constant's docstring demands.
+"""
+
+SUBSTRATE_HIGH_ASPECT_SHAPES = [
+    (10000.0, 40.0), (40.0, 10000.0), (5000.0, 30.0), (30.0, 5000.0),
+]
+"""250:1 and 167:1 in both orientations -- a dredged channel, a breakwater, a mole. The
+shapes the strict test's corpus deliberately does not contain."""
 
 SUBSTRATE_GUARD_WORST_ABS = 2.220446049250313e-16
 """
@@ -5790,18 +5850,33 @@ def test_substrate_at_is_strict_when_every_optional_is_supplied():
             worst 2.020605904817785e-14 at 10000x40 m, (-33.0, 151.0), bearing 143.5,
             fractions (0.4333333333333334, 0.4766666666666667)
 
-    Both by exhaustive grid, no bisection -- and the two disagree by 1.9x on the same
-    population of shapes, which is why the search is named beside each figure. Zero
-    `dominant` flips in either sweep, and all of it is `weight_at`'s: the coarse figure is
-    the very probe that sized `FEATURES_WEIGHT_MAX_ABS` (1.082467e-14), and the fine one is
-    0.918x that bound.
+    Both by exhaustive grid, no bisection -- and the two disagree on the same population of
+    shapes, which is why the search is named beside each figure. Zero `dominant` flips in
+    either sweep, and all of it is `weight_at`'s: the coarse figure is the very probe that
+    sized `FEATURES_WEIGHT_MAX_ABS` (1.082467e-14).
+
+    **Neither of those two figures names its HOST, and neither reproduced.** Re-derived over
+    the same shapes, origins, bearings, fractions and signs on this section's own
+    `_RecordingHost` with one feature declaring `"mud"`, the same searches give
+    1.0630385460785874e-14 coarse (which is exactly `FEATURES_WEIGHT_MAX_ABS`'s figure for
+    10000x40 m at bearing *37*, not at 143.5) and 1.7763568394002505e-14 fine -- 1.8% and
+    12% under the figures above, disagreeing by 1.67x rather than 1.9x. The composition
+    divergence is the weight divergence scaled by how far the natural ground already is from
+    the declared pure, so it is a property of the elevation field as well as of the shapes,
+    and the two numbers above belong to a host nobody wrote down. **They are kept here as
+    the record of what was first measured; the figures that are ASSERTED, with their host
+    and their search both named, are in
+    `test_substrate_at_over_high_aspect_features_is_bounded_and_search_dependent` under
+    SUBSTRATE_AT_HIGH_ASPECT_MAX_ABS.**
 
     **The right response to that is a separate bounded case, never a tolerance here.** The
     `weight > 0.0` guard's shift is ~2e-19 absolute, which sails inside
     SUBSTRATE_AT_DERIVED_SLOPE_MAX_ABS and inside FEATURES_WEIGHT_MAX_ABS alike, and this
     strict test is the only corpus-scale detector that catches a mutation of that guard.
     Widening it here to admit a dredged channel would cost the guard its only detector, so
-    the channel belongs in a bounded test of its own and this one stays on mild ground.
+    the channel belongs in a bounded test of its own -- which now exists,
+    `test_substrate_at_over_high_aspect_features_is_bounded_and_search_dependent` -- and
+    this one stays on mild ground.
     """
     region, world = _demo_world()
     coast = region.coast
@@ -5832,6 +5907,105 @@ def test_substrate_at_is_strict_when_every_optional_is_supplied():
             ), (label, v)
             checked += 1
     assert checked == 3721 + 961
+
+
+def _high_aspect_at_sweep(fractions, signs):
+    """Every (shape, origin, bearing, fraction pair, sign) probe of `at`, yielded once.
+
+    One feature per frame, declaring `"mud"` so the blend actually runs, on the analytic
+    `_RecordingHost` -- named here because the figures are a property of it. Every optional
+    is supplied from the host, so `slope_at` is NOT inside this comparison and the only
+    thing that can differ is `weight_at` seen through the blend.
+    """
+    for length_m, width_m in SUBSTRATE_HIGH_ASPECT_SHAPES:
+        for lat, lon in FEATURE_ORIGINS:
+            for bearing_deg in FEATURE_BEARINGS:
+                feature = _feature(
+                    lat=lat, lon=lon, length_m=length_m, width_m=width_m,
+                    bearing_deg=bearing_deg, substrate=PY_MUD,
+                )
+                host = _RecordingHost([feature])
+                substrate = PySubstrate(host)
+                placed = host.features.placed[0]
+                for along_fraction in fractions:
+                    for across_fraction in fractions:
+                        for sign in signs:
+                            point = _probe_point(
+                                placed, sign * along_fraction, sign * across_fraction,
+                            )
+                            known = dict(
+                                elevation_m=host.structural_m(point),
+                                slope=substrate.slope_at(point),
+                                tectonic_m=host.tectonics.offset_m(point),
+                            )
+                            yield host, substrate, point, known, (
+                                length_m, width_m, lat, lon, bearing_deg,
+                                sign * along_fraction, sign * across_fraction,
+                            )
+
+
+def _high_aspect_at_worst(fractions, signs, expected_probes):
+    worst, worst_case, flips, checked = 0.0, None, 0, 0
+    for host, substrate, point, known, ctx in _high_aspect_at_sweep(fractions, signs):
+        want = substrate.at(point, **known)
+        got = _engine_at(host, point, **known)
+        for a, b in zip((want.sand, want.mud, want.rock), got):
+            difference = abs(a - b)
+            assert difference <= SUBSTRATE_AT_HIGH_ASPECT_MAX_ABS, (ctx, a, b, difference)
+            if difference > worst:
+                worst, worst_case = difference, (ctx, a, b)
+        if want.dominant != _engine_dominant_at(host, point, **known):
+            flips += 1
+        checked += 1
+    assert checked == expected_probes, (checked, expected_probes)
+    assert flips == 0, (
+        "the one-word answer flipped on a high-aspect feature, which no tolerance can "
+        "absorb because the output is a word", flips,
+    )
+    return worst, worst_case
+
+
+def test_substrate_at_over_high_aspect_features_is_bounded_and_search_dependent():
+    """
+    **The claim the strict test above scopes itself away from, asserted instead of
+    described.** `at` is bit-strict over the demo coast's 25 mild features and is NOT strict
+    over a 250:1 dredged channel; that second half sat in a docstring with nothing running
+    it, which is how the cross-field figure in this same section came to be wrong three
+    times before anybody noticed.
+
+    Bounded at SUBSTRATE_AT_HIGH_ASPECT_MAX_ABS, and **two-sided: every measured worst must
+    land in [bound/2, bound]**, not merely under it. A test that only checks a ceiling
+    ratchets loose for free and passes more comfortably as the code degrades.
+
+    **Two searches over one population, because the figure is a property of both.** The
+    coarse sweep takes the 14 FEATURE_FRACTIONS as ordered pairs at both signs; the fine one
+    takes a 61x61 signed grid over [-1.3, 1.3] of the same extents, in the same frames. They
+    disagree by 1.67x, and both are held by the same bound -- so a widening cannot be
+    smuggled in by quoting whichever search is kinder.
+
+    Zero `dominant` flips in either sweep, asserted in both: a tolerance can absorb a last
+    bit of a fraction, and nothing can absorb a change in the word maritime consumes.
+    """
+    coarse, coarse_case = _high_aspect_at_worst(FEATURE_FRACTIONS, (1.0, -1.0), 39200)
+    fine_fractions = [-1.3 + i * (2.6 / 60.0) for i in range(61)]
+    fine, fine_case = _high_aspect_at_worst(fine_fractions, (1.0,), 372100)
+
+    for label, worst, case in (("coarse", coarse, coarse_case), ("fine", fine, fine_case)):
+        assert SUBSTRATE_AT_HIGH_ASPECT_MAX_ABS * 0.5 <= worst \
+            <= SUBSTRATE_AT_HIGH_ASPECT_MAX_ABS, (
+            "a measured worst no longer sits in the top half of its own bound; re-measure "
+            "on this host and record the new figure with its search, never widen",
+            label, worst, case,
+        )
+
+    assert fine > coarse, (
+        "the fine grid no longer finds a worse probe than the coarse sweep, so the two "
+        "searches have stopped disagreeing and the reason each figure names its search is "
+        "no longer demonstrated here", coarse, fine,
+    )
+    assert 1.5 < fine / coarse < 1.9, (
+        "the gap between the two searches moved off the measured 1.67x", coarse, fine,
+    )
 
 
 def test_substrate_at_with_a_derived_slope_stays_inside_its_own_bound():

@@ -89,9 +89,13 @@ margin measured is **2.109424e-15**, offshore, with the bracketing sides `3.638e
 figure is a property of the SEARCH METHOD, not just the corpus.** It comes from a bisection onto the
 crossover contour. A *grid* over the same gentle water finds `7.485921e-04`, eleven orders coarser, because
 a grid samples where its nodes fall rather than where the boundary is. The ordering survives either way —
-open water is 3.4x tighter than the pinnacle by grid, and four orders tighter by bisection — but a figure
-like this must name its search, not only its population. The pinnacle
-bisection bottoms out four orders *higher*, at 1.29e-11. **And resolution does not rescue the steep case
+open water is 3.4x tighter than the pinnacle by grid, and three orders tighter by bisection — but a figure
+like this must name its search, not only its population, and must be the floor over that search. The
+pinnacle bisection FLOOR — over all four line directions through the pinnacle (E-W, N-S and both
+diagonals), 601 samples over ±140 m, each of the eight crossings bisected on its own `Coast.at`
+coordinate to that coordinate's ULP of 9.094947e-13 m — is 3.655076e-12, three orders *higher* than the
+open water's, a ratio of 1,733x. (An earlier draft said `1.29e-11` and “four orders”: that is the E-W
+line's first crossing alone, 3.5x above its own line's second.) **And resolution does not rescue the steep case
 either** — a radial found the same `6.646421e-03` at both 0.750 and 0.188 m/step, while a 2-D grid closed
 to `1.7e-4`.
 

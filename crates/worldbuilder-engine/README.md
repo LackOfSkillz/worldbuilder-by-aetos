@@ -1713,10 +1713,27 @@ section:
 A grid samples where its nodes fall; a bisection samples where the boundary is. The 20-200 km
 offshore ray crosses sand -> mud between 25,760 m and 25,850 m and bisects to sides
 `3.637979e-12 m` apart still returning different words. The pinnacle grid's smallest margin is
-2.557239e-03 and its bisection bottoms out four orders *higher* than the open water's, at
-1.29e-11, because exhaustion leaves roughly `gradient x last resolvable step`. **So the rule
+2.557239e-03, and its bisection FLOOR -- over all four line directions through the pinnacle
+(E-W, N-S and both diagonals), 601 samples over +-140 m, every one of the eight crossings
+bisected on its own `Coast.at` coordinate to that coordinate's ULP, 9.094947e-13 m -- is
+3.655076e-12. That is three orders *higher* than the open water's 2.109424e-15, a ratio of
+1,733x, because exhaustion leaves roughly `gradient x last resolvable step`. **So the rule
 "measure through a small steep feature" is right for the clamps and backwards for
-`dominant`.** A figure like this must name its search, not only its population.
+`dominant`.**
+
+A figure like this must name its search, not only its population -- and the figure it names
+must be the FLOOR over that search, because the eight crossings spread over an order of
+magnitude (3.655076e-12 to 3.516387e-11):
+
+    east-west     sand->rock  1.285039e-11    rock->sand  3.655076e-12   <- the floor
+    north-south   sand->rock  1.132805e-11    rock->sand  2.056244e-11
+    diagonal+     sand->rock  2.922662e-11    rock->sand  3.516387e-11
+    diagonal-     sand->rock  2.790879e-11    rock->sand  2.423395e-11
+
+An earlier draft of this section quoted 1.29e-11 and called it four orders. That is the E-W
+line's FIRST crossing -- one crossing of one direction, named as neither -- and the same line
+bottoms out 3.5x lower on its second. The conclusion is unchanged at three orders; the number
+was the sixth narrowing this slice has had to make to a figure quoted without its search.
 
 **2. A rate needs its full sampling convention, and only what survives every convention may
 be quoted bare.** The `weight > 0.0` rate is the worked example above: narrowed four times
@@ -1738,9 +1755,11 @@ Every count in this section was verified by running the suites and checking exit
 copied from a report -- and one report figure did not survive that check. `cargo test
 --release` exits 0 at **232** tests (222 lib, 4 `blake2_bytes.rs`, 6 `no_std_math` guard, 0
 doc-tests), unchanged by this task, which added no Rust test; Task 5's report recorded 236 for
-the same command, and 236 is not what the tree runs. `pytest tests/` exits 0 at **375**, down
-from 386 by exactly the 11 tests deleted with the spike, of which `test_conformance.py` is
-**135** and `test_performance.py` is **8**. That performance file is separately known to be
+the same command, and 236 is not what the tree runs. `pytest tests/` exits 0 at **376**: 386
+less the 11 tests deleted with the spike, plus the one added by the final fix round
+(`test_substrate_at_over_high_aspect_features_is_bounded_and_search_dependent`, which pins
+the high-aspect `at` divergence that until then lived in a docstring). Of those,
+`test_conformance.py` is **136** and `test_performance.py` is **8**. That performance file is separately known to be
 load-sensitive -- it compares two wall-clock chart timings on a narrow margin and has been
 observed to fail on a busy machine and pass on an idle one. It passed on the run above, taken
 on an otherwise idle machine; a failure there is a statement about the machine, not about this

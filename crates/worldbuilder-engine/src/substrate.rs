@@ -182,10 +182,19 @@ pub fn pure(kind: &str) -> Option<Composition> {
 ///
 /// **`max` is CPython's two-argument `max`, not `f64::max`.** It returns its FIRST
 /// argument unless the second is strictly greater, which is the house form in
-/// `plates.rs::margin_at` and `features.rs`. The order is observable rather than
-/// cosmetic: `smooth(NaN)` is `1.0` (Python's `min(1.0, nan)` keeps `1.0`), so a NaN
-/// argument produces a number rather than a NaN and which branch produced it depends
-/// on the operand order.
+/// `plates.rs::margin_at` and `features.rs`. The order here is transcribed for fidelity
+/// to the Python, NOT because anything can see it: `smooth` clamps unconditionally into
+/// `[0, 1]` -- `smooth(NaN)` is `1.0`, pinned by
+/// `smooth_clamps_unconditionally_even_at_the_extremes_the_domain_sweep_never_visits`
+/// below -- so both operands are always ordinary doubles with no `NaN` and no `-0.0`
+/// between them, and the two operand orders return bit-identical values on every input,
+/// ties included. Flipping the order is a provably equivalent mutant, confirmed by
+/// mutation in a scratchpad clone with its own `CARGO_TARGET_DIR`: `cargo test --release`
+/// exits 0 at 232 and `test_conformance.py` exits 0 at 136, while the same harness turns 9
+/// conformance tests red on a control mutation of the line below. **Do
+/// not write a test for it** -- no input distinguishes the two, so any such test would be
+/// vacuous. The house form is kept for consistency with the other modules, which is a
+/// sufficient reason on its own.
 pub fn natural(elevation_m: f64, slope: f64, tectonic_m: f64) -> Composition {
     let by_slope = smooth(slope / ROCK_SLOPE);
     let by_tectonics = smooth(tectonic_m.abs() / ROCK_TECTONIC_M);
