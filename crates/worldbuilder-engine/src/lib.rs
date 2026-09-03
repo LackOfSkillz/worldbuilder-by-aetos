@@ -14,6 +14,7 @@ pub mod tangent;
 pub mod continentality;
 pub mod plates;
 pub mod kinematics;
+pub mod tectonics;
 
 use pyo3::prelude::*;
 
