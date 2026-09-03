@@ -159,6 +159,72 @@ impl Shelf {
             breadth: smooth(REFERENCE_GRADIENT / slope),
         })
     }
+
+    /// What the water ought to be doing at this distance from shore.
+    ///
+    /// Only the shelf itself is described. The continental slope is not modelled at all -
+    /// beyond the break the blend weight fades and the macro ocean depth comes back, and
+    /// the transition between them *is* the slope. One fewer profile to write and one
+    /// fewer place for two descriptions of the same water to disagree.
+    pub fn target_depth_m(&self, coastal: &Coastal) -> f64 {
+        let offshore = -coastal.distance_m;
+        if offshore <= 0.0 {
+            return 0.0;
+        }
+        // offshore = -(distance_m), and distance_m = value / slope with slope strictly
+        // positive (coastal()'s MIN_GRADIENT gate has already returned otherwise).
+        // Dividing by a strictly positive quantity cannot change a sign, so this branch
+        // is decided by the sign of `value`, which never passes through the `hypot` in
+        // `Gradient::magnitude` - it looks exposed to that mixed-sign hazard and is not.
+        let break_at = SHELF_BREAK_M * if 0.15 > coastal.breadth { 0.15 } else { coastal.breadth };
+        SHELF_EDGE_M * smooth(offshore / break_at)
+    }
+
+    /// How much say the shelf has here.
+    ///
+    /// `tectonic_m`: the tectonic offset, if the caller already has it. Worked out again
+    /// if not, which is what makes it worth passing - and "if not" is an identity check
+    /// against absence, not against zero: `Some(0.0)` is a supplied zero and is used as
+    /// given.
+    ///
+    /// Four things fade it, and every one of them replaces a decision that could have
+    /// been a hard test:
+    ///
+    /// *How far from the shore*, so the shelf reaches its own edge at nothing rather than
+    /// being cut off at the window boundary.
+    ///
+    /// *How broad the landmass is*, so a continent gets a wide shelf and an isolated
+    /// island a narrow platform with steep-to water - without either being classified as
+    /// anything.
+    ///
+    /// *How far inland*, quickly, because a shelf shapes the approach and not the country
+    /// behind it.
+    ///
+    /// *What the plates already said*. A trench is deliberate deep structure and outranks
+    /// a general remark about coastal depth. Without this the shelf would cheerfully fill
+    /// a subduction trench in with a hundred metres of water and the most dramatic thing
+    /// on the chart would vanish.
+    pub fn weight(&self, point: &SpherePoint, coastal: &Coastal, tectonic_m: Option<f64>) -> f64 {
+        let offshore = -coastal.distance_m;
+        let break_at = SHELF_BREAK_M * if 0.15 > coastal.breadth { 0.15 } else { coastal.breadth };
+
+        // Same sign argument as target_depth_m: offshore is -(value / slope) with slope
+        // strictly positive, so this comparison is decided by the sign of `value`, never
+        // by the `hypot` inside `Gradient::magnitude`.
+        let seaward = if offshore >= 0.0 {
+            1.0 - smooth((offshore - break_at) / SLOPE_WIDTH_M)
+        } else {
+            1.0 - smooth(-offshore / INLAND_REACH_M)
+        };
+
+        let tectonic_m = match tectonic_m {
+            Some(value) => value,
+            None => self.tectonics.offset_m(point),
+        };
+        let authority = 1.0 - smooth(tectonic_m.abs() / TECTONIC_AUTHORITY_M);
+
+        seaward * coastal.breadth * authority
+    }
 }
 
 // The behaviour methods (`coastal`, `target_depth_m`, `weight`, `evaluate`,
@@ -295,5 +361,174 @@ mod tests {
         assert_eq!(reading.elevation_m.to_bits(), (-12.0f64).to_bits());
         assert_eq!(reading.weight.to_bits(), 0.4f64.to_bits());
         assert_eq!(reading.tectonic_m.to_bits(), 3.0f64.to_bits());
+    }
+
+    // -- target_depth_m and weight ------------------------------------------------
+    //
+    // Expected values below are hand-derived from shelf.py's formulas (lines 167-235),
+    // not read off a run of the Rust code under test. `smooth` is treated as a verified
+    // building block (it has its own pinned tests above and is shared with `detail`),
+    // so using it to compute an oracle here is deriving from the formula, not
+    // rerunning the implementation.
+
+    #[test]
+    fn target_depth_m_is_exactly_zero_at_and_seaward_of_the_shore() {
+        // offshore = -distance_m; offshore <= 0.0 is a hard early return of 0.0.
+        let shelf = build();
+        let at_shore = Coastal { distance_m: 0.0, breadth: 0.5 };
+        assert_eq!(shelf.target_depth_m(&at_shore), 0.0);
+
+        let inland = Coastal { distance_m: 1.0, breadth: 0.5 };
+        assert_eq!(shelf.target_depth_m(&inland), 0.0);
+    }
+
+    #[test]
+    fn target_depth_m_saturates_to_the_shelf_edge_beyond_the_break() {
+        // distance_m = -200_000.0 -> offshore = 200_000.0.
+        // break_at = SHELF_BREAK_M * max(0.15, breadth) = 80_000 * 0.5 = 40_000.
+        // offshore / break_at = 5.0 -> smooth clamps the fraction to 1.0 and returns
+        // 1.0 * 1.0 * (3.0 - 2.0 * 1.0) = 1.0 exactly.
+        // target = SHELF_EDGE_M * 1.0 = -150.0 exactly.
+        let shelf = build();
+        let far_offshore = Coastal { distance_m: -200_000.0, breadth: 0.5 };
+        assert_eq!(shelf.target_depth_m(&far_offshore), -150.0);
+    }
+
+    #[test]
+    fn target_depth_m_uses_the_015_floor_on_a_narrow_platform() {
+        // breadth = 0.05 < 0.15, so break_at must use the floor, not breadth itself:
+        // break_at = 80_000 * 0.15 = 12_000. offshore = 6_000.
+        // fraction = 6_000 / 12_000 = 0.5 -> smooth(0.5) = 0.5*0.5*(3.0-1.0) = 0.5.
+        // target = -150.0 * 0.5 = -75.0 exactly.
+        let shelf = build();
+        let narrow = Coastal { distance_m: -6_000.0, breadth: 0.05 };
+        assert_eq!(shelf.target_depth_m(&narrow), -75.0);
+    }
+
+    #[test]
+    fn weight_fades_to_nothing_well_beyond_the_shelf_break() {
+        // distance_m = -200_000.0 -> offshore = 200_000.0, breadth = 0.5.
+        // break_at = 80_000 * 0.5 = 40_000.
+        // (offshore - break_at) / SLOPE_WIDTH_M = 160_000 / 70_000 = 2.2857... -> smooth
+        // clamps to 1.0, so seaward = 1.0 - 1.0 = 0.0 exactly.
+        // tectonic_m = Some(0.0) supplied directly -> authority = 1.0 - smooth(0.0) = 1.0.
+        // weight = 0.0 * 0.5 * 1.0 = 0.0 exactly.
+        let shelf = build();
+        let far_offshore = Coastal { distance_m: -200_000.0, breadth: 0.5 };
+        let p = point(0.0, 0.0, 1.0);
+        assert_eq!(shelf.weight(&p, &far_offshore, Some(0.0)), 0.0);
+    }
+
+    #[test]
+    fn weight_fades_quickly_inland() {
+        // distance_m = 6_000.0 -> offshore = -6_000.0 (inland), breadth = 0.6.
+        // offshore < 0.0, so seaward = 1.0 - smooth(-offshore / INLAND_REACH_M)
+        //                              = 1.0 - smooth(6_000 / 12_000)
+        //                              = 1.0 - smooth(0.5)
+        //                              = 1.0 - 0.5 = 0.5.
+        // tectonic_m = Some(0.0) -> authority = 1.0.
+        // weight = 0.5 * 0.6 * 1.0 = 0.3.
+        let shelf = build();
+        let inland = Coastal { distance_m: 6_000.0, breadth: 0.6 };
+        let p = point(0.0, 0.0, 1.0);
+        let got = shelf.weight(&p, &inland, Some(0.0));
+        assert!((got - 0.3).abs() < 1e-12, "got {got}");
+    }
+
+    #[test]
+    fn weight_far_inland_saturates_to_zero() {
+        // distance_m = 20_000.0 -> offshore = -20_000.0; -offshore / INLAND_REACH_M =
+        // 20_000 / 12_000 = 1.6667, clamped by smooth to 1.0 -> seaward = 0.0 exactly.
+        let shelf = build();
+        let far_inland = Coastal { distance_m: 20_000.0, breadth: 0.6 };
+        let p = point(0.0, 0.0, 1.0);
+        assert_eq!(shelf.weight(&p, &far_inland, Some(0.0)), 0.0);
+    }
+
+    #[test]
+    fn weight_is_suppressed_by_a_large_tectonic_offset() {
+        // distance_m = -1_000.0 -> offshore = 1_000.0, breadth = 0.8.
+        // break_at = 80_000 * 0.8 = 64_000.
+        // (offshore - break_at) / SLOPE_WIDTH_M = (1_000 - 64_000) / 70_000 = -0.9,
+        // clamped by smooth to 0.0 (fraction < 0.0) -> seaward = 1.0 - 0.0 = 1.0 exactly.
+        //
+        // With tectonic_m = Some(0.0): authority = 1.0 - smooth(0.0) = 1.0, so
+        // weight = 1.0 * 0.8 * 1.0 = 0.8 exactly - the baseline this suppression is
+        // measured against.
+        //
+        // With tectonic_m = Some(10_000.0): abs(10_000) / TECTONIC_AUTHORITY_M =
+        // 10_000 / 250 = 40.0, clamped by smooth to 1.0 -> authority = 0.0 exactly.
+        // weight = 1.0 * 0.8 * 0.0 = 0.0 exactly - the plates' say overrides completely.
+        let shelf = build();
+        let coastal = Coastal { distance_m: -1_000.0, breadth: 0.8 };
+        let p = point(0.0, 0.0, 1.0);
+        assert_eq!(shelf.weight(&p, &coastal, Some(0.0)), 0.8);
+        assert_eq!(shelf.weight(&p, &coastal, Some(10_000.0)), 0.0);
+    }
+
+    #[test]
+    fn weight_treats_some_zero_as_a_supplied_zero_not_as_absent() {
+        // The trap: shelf.py's `if tectonic_m is None:` is an identity check, not a
+        // float-falsy `if tectonic_m:`. Some(0.0) must be used as-is; only real
+        // absence (None) may trigger `self.tectonics.offset_m(point)`.
+        //
+        // Located by scanning the same corpus() the Python conformance suite uses (see
+        // tests/test_conformance.py), the same way the `coastal` fixtures above were
+        // found: the first corpus point that is coastal (Some), within the shelf's live
+        // seaward range (not saturated to a zero seaward term), and has a non-trivial
+        // tectonic offset_m, so that `None` (recomputed) and `Some(0.0)` (supplied) are
+        // guaranteed to produce different weights. Calling `shelf.tectonics().offset_m`
+        // here exercises a dependency already ported and pinned in an earlier task, not
+        // the code under test.
+        let shelf = build();
+        let p = point(-0.5745510503817439, -0.4648012188180899, 0.724135185515465);
+        let coastal = shelf.coastal(&p).expect("fixture point is coastal");
+
+        let actual_tectonic = shelf.tectonics().offset_m(&p);
+        assert!(
+            actual_tectonic.abs() > 1.0,
+            "fixture point must have a non-trivial tectonic offset to distinguish \
+             None from Some(0.0); actual_tectonic={actual_tectonic}"
+        );
+
+        // Hand-derive both expected values from the formula. offshore/break_at/seaward
+        // are identical in both cases; only `authority` (and so the product) differs.
+        let offshore = -coastal.distance_m;
+        let break_at = SHELF_BREAK_M * if 0.15 > coastal.breadth { 0.15 } else { coastal.breadth };
+        let seaward = if offshore >= 0.0 {
+            1.0 - smooth((offshore - break_at) / SLOPE_WIDTH_M)
+        } else {
+            1.0 - smooth(-offshore / INLAND_REACH_M)
+        };
+
+        let authority_zero = 1.0 - smooth(0.0f64.abs() / TECTONIC_AUTHORITY_M);
+        let expected_some_zero = seaward * coastal.breadth * authority_zero;
+
+        let authority_actual = 1.0 - smooth(actual_tectonic.abs() / TECTONIC_AUTHORITY_M);
+        let expected_none = seaward * coastal.breadth * authority_actual;
+
+        // The two oracles must actually differ, or this test cannot detect the trap.
+        assert!(
+            (expected_some_zero - expected_none).abs() > 1e-6,
+            "fixture must produce distinguishable expectations: some_zero={expected_some_zero} \
+             none={expected_none}"
+        );
+
+        let got_some_zero = shelf.weight(&p, &coastal, Some(0.0));
+        let got_none = shelf.weight(&p, &coastal, None);
+
+        assert!(
+            (got_some_zero - expected_some_zero).abs() < 1e-9,
+            "Some(0.0) got {got_some_zero}, expected {expected_some_zero}"
+        );
+        assert!(
+            (got_none - expected_none).abs() < 1e-9,
+            "None got {got_none}, expected {expected_none}"
+        );
+        assert!(
+            (got_some_zero - got_none).abs() > 1e-6,
+            "Some(0.0) must NOT behave like None: got_some_zero={got_some_zero} \
+             got_none={got_none}"
+        );
     }
 }
