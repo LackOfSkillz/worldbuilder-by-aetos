@@ -41,8 +41,14 @@ The claim that `blended_towards(x, 0.0)` is not the identity, and therefore that
 |---|---|
 | Uniform-random triples (what was banked) | 19.09% (3,818/20,000, seed-dependent) |
 | Real `natural()` outputs | **0.15%** |
-| The real `at()` path — 61x61 grid at 1,500 m **per step**, demo coast | **1.80%** (67/3,721) |
+| Coast-local grid, 61x61 at 1,500 m **per step** | **1.80%** (67/3,721) |
 | The same grid read as a +/-1,500 m **span** | 4.49% (167/3,721) |
+| The same two under `TangentFrame.at(region.origin)` instead | 1.67% (62) and 3.82% (142) |
+
+**A rate here needs three fields, not one: the frame, the grid step, and the span.** Seven further
+sampling conventions give counts from 18 to 159. The conclusion is robust — the guard is bit-observable
+under all nine — but the *rate* is a property of the convention. This number has now been narrowed three
+times, and each earlier reading was true without being sufficient.
 
 **Worst shift `2.220446e-16` is ABSOLUTE, not relative** — and that distinction is a trap, because the figure sits a hair under `SLOPE_DRIFT_REL` (`2.212201e-16`) and so reads as if it were the same kind of quantity. It is not. The worst *relative* shift on that population is `1.249555e-15`, and the worst distance is **11 ULP, not 1**. Read as relative, the figure understates the guard by 5.6x. Zero `dominant` flips. **The conclusion holds and the guard must be transcribed.** But the number that justified it was measured over a population the code never produces — the same error that cost the previous slice four of its six overturned figures, this time in a figure I supplied.
 
