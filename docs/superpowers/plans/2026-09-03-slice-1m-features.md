@@ -44,7 +44,7 @@ Task 1 confirms all of this against the ported `tangent.rs` rather than taking i
 
 ---
 
-## The two discrete decisions, and why both are safe
+## The two discrete decisions — one safe, one load-bearing
 
 **The RAISE/CARVE one-way switch is the one the docstring defends, and its continuity is derivable rather than assumed:**
 
@@ -60,7 +60,13 @@ authority = max(authority, weight * _smooth(abs(lift) / SETTLE_M))
 
 At the boundary `lift == 0.0`, **both paths converge on both outputs**: skipping leaves `result` untouched, and taking the branch adds `weight * 0.0`, which is also untouched; the authority term is `weight * _smooth(0.0)`, which is `0.0`, so the `max` is unchanged either way. **A flip at the boundary is unobservable.** Confirm this in Task 1 rather than repeating it.
 
-**The reach gate in `weight_at`** (line 126) has a `cos` upstream, but the extraction reports both branches give approximately zero weight — the same convergent structure. **Task 1 must check whether that convergence is exact or merely approximate.** Slice 1l had a guard whose two branches were claimed identical and were not: a zero-weight blend re-normalised and shifted 19% of cases by a ULP. **"It only skips a no-op" is a claim to test, not to accept.**
+**The reach gate in `weight_at` is LOAD-BEARING. Measured, not argued.** The extraction claimed both branches give approximately zero weight, so the gate only skips a no-op. **That claim is false.** A ring scan around `reach_m` finds nothing — 30,240 rejected points, zero leaks — which is presumably how the claim was made. Probing the real corner, where `along` and `across` land a hair inside `length` and `width` **simultaneously**, 15,417 of 146,359 gate-rejected points return a non-zero ungated weight (10.53%); largest `1.57e-44`, worst over all offset scales `1.74e-32`. It leaves `result` untouched but **moves `authority` off a hard `0.0`**. And `_cos_reach` is `cos(hypot(L, W) / R)` — two bounded calls — so a one-ULP nudge reclassifies 21.6% of probe points.
+
+**Transcribe the gate and its threshold exactly.** No simplification, and no comment claiming it is a no-op.
+
+**A `-0.0` asymmetry in the RAISE/CARVE guards, which the convergence argument above does not cover.** With `elevation_m == target_m == -0.0`, skipping keeps `-0.0` while taking the branch gives `+0.0`, because `-0.0 + weight * 0.0` is `+0.0`. Bit-different, value-equal. **So these guards are transcribed too, not algebraically simplified.** A simplification that "cannot change the value" changes the sign bit — and this project has been bitten by exactly that before.
+
+**The measured transcendental map** (obtained by bombing one `math` name at a time, which catches indirect reaches through `Vec3.length()` that grep cannot): `reach_m` → `hypot` alone. `Placed::new` → `radians, sin, cos, hypot, sqrt`. `weight_at`, `apply` and `marks_near` → `atan2, sqrt` **and nothing more**. A gate-rejected `weight_at` → none at all. `tangent.rs` matches operation for operation; drift at feature scale is 3 ULP through `sphere_to_local`, 1 ULP through `local_to_sphere`.
 
 ---
 
@@ -125,7 +131,7 @@ This task writes no engine code. It answers three questions the rest of the slic
 
 **`weight_at` must be public** — `Substrate` calls it directly, bypassing `Features::apply`.
 
-Transcribe the reach gate exactly, with whatever Task 1 established about its convergence recorded in a comment.
+**Transcribe the reach gate and its threshold exactly** — Task 1 measured it LOAD-BEARING, contradicting the extraction. Record the measured leak rate in a comment (10.53% of gate-rejected corner points carry non-zero ungated weight, largest `1.74e-32`) so nobody later "simplifies" it back. `_cos_reach` is `cos(hypot(L, W) / R)`: two bounded calls, and a one-ULP nudge reclassifies 21.6% of probe points.
 
 - [ ] **Steps:** failing tests, run, implement, run, commit.
 
@@ -143,6 +149,8 @@ Transcribe the reach gate exactly, with whatever Task 1 established about its co
 
 **`authority = max(authority, ...)`** is a two-argument `max` — explicit `if`/`else` in the Python's operand order.
 
+**Transcribe the RAISE/CARVE guards; do not simplify them.** They converge at `lift == 0.0` on both outputs, but with `elevation_m == target_m == -0.0` skipping keeps `-0.0` and taking the branch gives `+0.0`. Value-equal, bit-different.
+
 - [ ] **Step 1: Write the failing tests**, including one that **proves order matters**: the same two features in opposite orders must give different results, matching the docstring's bar-and-channel story. **Derive the expected values from the formula and say how**, and pick features where the difference is genuinely visible rather than a rounding artefact.
 - [ ] **Steps 2-5:** Run, implement, run, commit.
 
@@ -155,6 +163,10 @@ Transcribe the reach gate exactly, with whatever Task 1 established about its co
 **Apply the contract Task 1 established, and state which paths are strict and which bounded** in the test names or comments. **If a comparison you expect to be strict needs a tolerance, that is a finding to report, not a bound to add quietly.**
 
 **Do not borrow a bound from another module.** Slice 1l did that and it went wrong twice over: the borrowed ceiling was 227× looser than the field needed and hid a real defect, and the justification for borrowing it was factually wrong. **Measure this module's own worst case per field and size each bound to it**, with the legitimate maximum stated in the comment.
+
+**`authority` gets its own bound, measured separately from `result`, and its reach-gate test compares RAW BITS rather than a tolerance.** `result` absorbs sub-ULP contributions; `authority` amplifies them off zero, so a tolerance would make Task 1's reach-gate finding untestable. Measure before asserting: if the bounded path cannot support a strict bit comparison, report that rather than widening it quietly.
+
+**`marks_near` is a bounded quantity feeding a DISCRETE output** — chart membership via `distance <= within_m`, and the sort order. Task 1 did not measure it. **Measure the margin between the nearest included and the nearest excluded feature, and report whether a bounded drift could reorder or reclassify.** A discrete flip is the one thing no tolerance absorbs.
 
 **Cover:** an empty `Features`; a single feature; several in both orders; features whose `lift` sits at and near zero for both RAISE and CARVE; points inside, at and beyond the reach; and `marks_near` at several radii.
 
