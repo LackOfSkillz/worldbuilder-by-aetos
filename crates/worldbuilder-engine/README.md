@@ -958,11 +958,13 @@ real, but an upper bound on the *legitimate* signal necessarily also admits the
 *illegitimate* one -- a hard cutoff's step is smaller than "anything could happen," so it
 passed a test built only to rule out the impossible. The bound now comes from `smooth`'s
 own peak slope instead (1.5, the maximum of the smoothstep's derivative `6x - 6x^2`),
-which gives a ceiling that actually discriminates: a gradual fade measures roughly 3.02
-against a derived ceiling of `0.2 * share * amplitude` ~= 10.08, while a hard step at the
-same crossing measures roughly 25.75 -- 2.55x past the bound -- and the real,
-unmutated fade measures about 0.96, some 10.5x inside it. Mutating `visible`'s computation
-to a hard step and rerunning confirmed the failure; reverting confirmed the pass. The
+which gives a ceiling that actually discriminates. The analytic gradual ceiling that falls
+out of that peak slope is roughly 3.02; the test bound is set with headroom above it, at
+`0.2 * share * amplitude` ~= 10.08, so a real fade never trips it while a hard cutoff still
+does. Measured against the real implementation, the actual, unmutated fade comes in at
+about 0.956 -- comfortably under both the analytic ceiling and the test bound -- while a
+hard step at the same crossing measures roughly 25.75, well past the bound. Mutating
+`visible`'s computation to a hard step and rerunning confirmed the failure; reverting confirmed the pass. The
 general lesson, not just this test's: **a derived bound is not automatically a
 discriminating one** -- deriving it from the size of the thing being measured proves
 nothing about telling it apart from the thing it must reject; the right derivation
@@ -981,8 +983,11 @@ Every count in this section was verified by running the suites, not copied from 
 earlier report: 146 Rust tests (136 lib plus the 4-test `blake2_bytes.rs` plus the 6-test
 `no_std_math` guard -- unchanged from before this task, since `detail.rs`'s function
 bodies already existed going in and this task's only change was two conformance test
-cases), 327 in the full Python suite, and 87 in `test_conformance.py` (up from 79 -- but
-because `DETAIL_RESOLUTIONS_M` grew from five entries to seven inside existing
-parametrised loops, not because new test *functions* were added; the test-count delta
-here is smaller than the case-count delta the mutations above depended on).
+cases), 327 in the full Python suite, and 87 in `test_conformance.py` (up from 79). The
+eight new test *functions* added when this task bound `Detail` account for that whole
+delta. The later fix that grew `DETAIL_RESOLUTIONS_M` from five entries to seven, guarding
+the `-0.0` and NaN traps described above, added no new test functions -- it deepened the
+parametrised sweeps inside tests that already existed, so the case-count delta the
+mutations above depended on shows up inside the existing 87, not as a further rise in
+the count.
 `cargo test -p worldbuilder-engine`, run unfiltered, exits 0.

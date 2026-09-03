@@ -54,7 +54,6 @@ pub struct Band {
 pub struct Detail {
     #[allow(dead_code)]
     radius_m: f64,
-    #[allow(dead_code)]
     noise: Noise,
     bands: Vec<Band>,
 }
@@ -144,8 +143,8 @@ impl Detail {
     /// down to `CANONICAL_WAVELENGTH_M`. Python's `if resolution_m:` is false for both
     /// `None` and `0.0` (and `-0.0`, also falsy), so a caller passing zero gets every
     /// octave at full strength, exactly as if nothing had been passed -- it must not
-    /// divide by zero. `is_none_or_falsy_zero` below makes `Some(0.0)` and `Some(-0.0)`
-    /// take the same canonical path as `None`.
+    /// divide by zero. The `match Some(r) if r != 0.0 => Some(r), _ => None` below makes
+    /// `Some(0.0)` and `Some(-0.0)` take the same canonical path as `None`.
     ///
     /// **Octaves fade rather than switch off.** Dropping one the instant it becomes
     /// unrepresentable would be a cliff in *resolution* rather than in position -- the
