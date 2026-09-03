@@ -61,6 +61,48 @@ pub fn surface_velocity(plate: &Plate, point: &SpherePoint, radius_m: f64) -> Ve
         .scaled(radius_m)
 }
 
+/// What two named plates are doing to each other at a point.
+///
+/// `normal` points across the margin, tangent to the surface, towards `near`. That is
+/// why `closing` is the *negative* of the relative velocity's component along it: the
+/// nearest plate moving along the normal is moving *away* from the neighbour.
+///
+/// Split out from `motion_at` so a caller can ask about a margin it has chosen rather
+/// than the one that happens to be nearest -- which is what lets several margins be
+/// summed instead of one being picked.
+pub fn motion_between(
+    near: &Plate,
+    far: &Plate,
+    point: &SpherePoint,
+    normal: &Vec3,
+    radius_m: f64,
+) -> Motion {
+    let relative =
+        surface_velocity(near, point, radius_m).sub(&surface_velocity(far, point, radius_m));
+    let closing = -relative.dot(normal);
+    let along = relative.sub(&normal.scaled(relative.dot(normal)));
+    let sliding = along.length();
+
+    let speed = relative.length();
+    // Python writes `if speed <= 0.0 or abs(closing) / speed < ACROSS_ENOUGH`. The `or`
+    // short-circuits, which is the only thing preventing a division by zero when the two
+    // plates are moving identically. Do not precompute this condition.
+    let kind = if speed <= 0.0 || closing.abs() / speed < ACROSS_ENOUGH {
+        MarginKind::Transform
+    } else if closing > 0.0 {
+        MarginKind::Convergent
+    } else {
+        MarginKind::Divergent
+    };
+
+    Motion {
+        margin: None,
+        closing_m_per_myr: closing,
+        sliding_m_per_myr: sliding,
+        kind,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +182,113 @@ mod tests {
             "expected exact doubling, got {b} vs {}",
             2.0 * a
         );
+    }
+
+    /// Both plates' Euler poles at the north pole, so both angular velocities are
+    /// `(0, 0, rate)`.
+    fn spinning_pair(near_rate: f64, far_rate: f64) -> (Plate, Plate) {
+        (
+            test_plate_with_pole(0, 0.0, 0.0, 90.0, 0.0, near_rate),
+            test_plate_with_pole(1, 0.0, 10.0, 90.0, 0.0, far_rate),
+        )
+    }
+
+    fn on_the_equator() -> SpherePoint {
+        SpherePoint::from_latlon(0.0, 0.0)
+    }
+
+    #[test]
+    fn two_plates_driving_into_each_other_are_convergent() {
+        // Relative velocity is due east; the normal points due west, into `near`. The
+        // nearest plate is moving against it, so they are closing.
+        let (near, far) = spinning_pair(0.01, 0.02);
+        let motion = motion_between(
+            &near,
+            &far,
+            &on_the_equator(),
+            &Vec3::new(0.0, 1.0, 0.0),
+            EARTH_RADIUS_M,
+        );
+        assert_eq!(motion.kind, MarginKind::Convergent);
+        assert!(motion.closing_m_per_myr > 0.0);
+    }
+
+    #[test]
+    fn two_plates_pulling_apart_are_divergent() {
+        let (near, far) = spinning_pair(0.02, 0.01);
+        let motion = motion_between(
+            &near,
+            &far,
+            &on_the_equator(),
+            &Vec3::new(0.0, 1.0, 0.0),
+            EARTH_RADIUS_M,
+        );
+        assert_eq!(motion.kind, MarginKind::Divergent);
+        assert!(motion.closing_m_per_myr < 0.0);
+    }
+
+    #[test]
+    fn plates_sliding_past_one_another_are_transform() {
+        // The normal points due north, perpendicular to the eastward relative motion,
+        // so nothing is crossing the margin at all.
+        let (near, far) = spinning_pair(0.02, 0.01);
+        let motion = motion_between(
+            &near,
+            &far,
+            &on_the_equator(),
+            &Vec3::new(0.0, 0.0, 1.0),
+            EARTH_RADIUS_M,
+        );
+        assert_eq!(motion.kind, MarginKind::Transform);
+    }
+
+    #[test]
+    fn the_across_enough_threshold_is_hit_exactly_and_is_not_inclusive() {
+        // |closing| / speed equals `a` exactly for a normal of (0, a, b). At a = 0.5 the
+        // ratio is exactly ACROSS_ENOUGH, and the Python's test is a strict `<`, so this
+        // must NOT be transform. At 0.4 it must be. This fails if ACROSS_ENOUGH is
+        // mistyped, and it fails if the comparison is loosened to `<=`.
+        let (near, far) = spinning_pair(0.02, 0.01);
+        let root_three_over_two = crate::detmath::sqrt(0.75);
+        let exactly_at = motion_between(
+            &near,
+            &far,
+            &on_the_equator(),
+            &Vec3::new(0.0, 0.5, root_three_over_two),
+            EARTH_RADIUS_M,
+        );
+        assert_ne!(
+            exactly_at.kind,
+            MarginKind::Transform,
+            "a ratio of exactly ACROSS_ENOUGH is not below it, so the strict `<` must not fire",
+        );
+        let just_below = motion_between(
+            &near,
+            &far,
+            &on_the_equator(),
+            &Vec3::new(0.0, 0.4, crate::detmath::sqrt(1.0 - 0.16)),
+            EARTH_RADIUS_M,
+        );
+        assert_eq!(just_below.kind, MarginKind::Transform);
+    }
+
+    #[test]
+    fn a_stationary_pair_is_transform_rather_than_dividing_by_zero() {
+        // speed is exactly 0.0, so `abs(closing) / speed` would be 0.0 / 0.0. Only the
+        // short-circuit prevents it.
+        let (near, far) = spinning_pair(0.01, 0.01);
+        let motion = motion_between(
+            &near,
+            &far,
+            &on_the_equator(),
+            &Vec3::new(0.0, 1.0, 0.0),
+            EARTH_RADIUS_M,
+        );
+        assert_eq!(motion.kind, MarginKind::Transform);
+        // Exact equality is legitimate here, and the reason is worth stating: these are
+        // products of an exactly-zero vector, not the residue of cancellation between
+        // unequal quantities.
+        assert_eq!(motion.closing_m_per_myr, 0.0);
+        assert_eq!(motion.sliding_m_per_myr, 0.0);
     }
 }
