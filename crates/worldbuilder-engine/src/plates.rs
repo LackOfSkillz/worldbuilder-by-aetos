@@ -248,8 +248,9 @@ impl PlateSet {
     /// is continuous, because each contribution depends on its own distance and each fades
     /// out at its own range.
     ///
-    /// Ported from `worldbuilder/plates/lookup.py:212-231` (the early exit, the range
-    /// threshold, and the candidate loop; the shadow-and-weight logic follows in Task 3).
+    /// Ported from `worldbuilder/plates/lookup.py:212-283`: the early exit, the range
+    /// threshold, the candidate loop, the phantom-bisector guard, and the shadow-and-weight
+    /// fade that keeps a shadowed margin from switching on and off in one step.
     pub fn margins_within(
         &self,
         point: &SpherePoint,

@@ -378,16 +378,16 @@ back bit-identical between CPython and this engine across every value tested -- 
 ULPs. That is a real result, but it is a measurement against one platform's C library
 (Windows' UCRT); another libm backing CPython's `sin` could disagree, and nothing here
 would catch it if it did. The fact that actually makes membership safe is the **geometric
-margin**: across the combined margin-conformance corpus -- pinned poles and meridian
-points, ~3,000 pseudo-random points, and 1,500 points deliberately built near a bisector
-midpoint and nudged off it -- the closest any candidate's `offset` comes to `limit` is
-`7.307968641692697e-08`, about nine orders of magnitude above a ULP at that scale (~1e-16
-to ~1e-18). That gap absorbs any plausible divergence in `limit`, whichever libm produced
-it. It is pinned by an asserted floor of `1e-9` in the permanent conformance suite, with
-the observed value carried in the failure message rather than merely printed. A second
-hard decision in this function, the shadow sign at the third-plate exclusion, gets the
-same treatment: smallest observed `|shadow|` is `5.962450345231574e-06`, floored the same
-way at `1e-9`.
+margin**: across the corpus this measurement actually runs over -- `_margins_corpus(2000)`
+(2,000 pseudo-random points, no pinned poles or meridian points) plus 1,000 points
+deliberately built near a bisector midpoint and nudged off it -- the closest any
+candidate's `offset` comes to `limit` is `7.307968641692697e-08`, about nine orders of
+magnitude above a ULP at that scale (~1e-16 to ~1e-18). That gap absorbs any plausible
+divergence in `limit`, whichever libm produced it. It is pinned by an asserted floor of
+`1e-9` in the permanent conformance suite, with the observed value carried in the failure
+message rather than merely printed. A second hard decision in this function, the shadow
+sign at the third-plate exclusion, gets the same treatment over the same corpus: smallest
+observed `|shadow|` is `5.962450345231574e-06`, floored the same way at `1e-9`.
 
 **Three bugs, three ways of encoding the same lesson.** `lookup.py`'s own comments record
 that all three trace back to one root cause: a hard decision taken on a quantity that is
@@ -427,11 +427,24 @@ mutation independently and saw the same failure. The measured crossing along the
 sample path sits at 12.25 degrees latitude, with 9 of its 200 samples landing inside the
 fade band.
 
-**This function had no test coverage of any kind before this slice.** Zero references
-anywhere under `tests/`, in either the Rust suite or the Python one, despite
-`test_plates.py` carrying 39 tests over its neighbours (`nearest_two`, `margin_at`,
-`margin_normal`, `flattened`). The conformance harness added here is the first test
-`margins_within` has ever had, in either language.
+**This function had no dedicated test before this slice.** It was not untouched --
+`tests/test_performance.py:215` and `tests/test_tectonics.py:201` both call it -- but
+neither exercises it directly; both are aimed at other things and happen to invoke it
+along the way. `test_plates.py`, which does target its neighbours directly (`nearest_two`,
+`margin_at`, `margin_normal`, `flattened`), carries 27 tests and none of them are
+`margins_within`'s. The conformance harness added here is the first test written to
+exercise `margins_within` itself, in either language.
+
+**The main corpus exercises the fade and skip paths on its own, not only through the two
+hand-built three-plate tests above.** Instrumenting `margins_within` over
+`test_plateset_margins_within_agrees_over_a_corpus_of_points`'s own corpus and range
+spread (the 806-point `_margins_corpus(800)` against every non-saturating range in
+`_range_values_for_margins`, i.e. excluding the range that selects every margin
+unconditionally) produces 6,344 margin entries, of which 489 carry a weight strictly
+between 0 and 1 -- the fade band, not merely on or off -- and 11,566 candidates that pass
+the range test but are shadow-skipped (`genuine <= 0.0`) before ever reaching the returned
+list. The corpus already exercises both paths at scale; the triple-junction and
+none/some/all tests above pin specific, checkable points within it.
 
 **The deliberate deviation, consistent with slices 1e and 1f.** The Rust addresses the
 bisector table, the seed table, and the third-plate exclusion by a plate's **position** in
