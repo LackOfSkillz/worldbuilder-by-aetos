@@ -93,6 +93,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_negative_world_seed_formats_and_hashes_like_the_python() {
+        // The seed is an i64 and may be negative. Python's str(-20260831) is
+        // "-20260831"; Rust's Display for i64 agrees, but the two only have to
+        // agree here for the digest to match, so pin it rather than assume it.
+        // Vector measured from the live Python, not derived from this code.
+        assert_eq!(
+            joined_key(-20260831, &[Part::Str("plate"), Part::Int(3), Part::Str("sense")]),
+            "-20260831|plate|3|sense",
+        );
+        let f = fraction(-20260831, &[Part::Str("plate"), Part::Int(3), Part::Str("sense")]);
+        assert_eq!(f.to_bits(), 0.6028567705813382_f64.to_bits());
+    }
+
+    #[test]
     fn the_joined_key_is_byte_identical_to_the_python() {
         // "20260831|plate|7|pole-z" -- pipes between every part, none trailing.
         assert_eq!(
