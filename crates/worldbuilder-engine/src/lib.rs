@@ -6,6 +6,7 @@
 //! to be looking at the same world.
 
 pub mod detmath;
+pub mod generation;
 pub mod vectors;
 pub mod sphere;
 pub mod bindings;
