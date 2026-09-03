@@ -17,6 +17,10 @@
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 
+use crate::detmath as m;
+use crate::sphere::SpherePoint;
+use crate::vectors::{Vec3, DEGENERATE};
+
 /// How many plates, unless a world asks otherwise. Earth has seven or eight major ones
 /// and a good many minor; a couple of dozen gives enough boundary to make varied
 /// geography without cells so small that every coast is a margin.
@@ -88,6 +92,62 @@ pub fn fraction(world_seed: i64, parts: &[Part]) -> f64 {
     (bits as f64) / 18_446_744_073_709_551_616.0_f64
 }
 
+/// `_spread`, split so the tests can compare against the un-jittered spiral point
+/// directly rather than re-deriving it by hand. `spread` below is `spread_impl(..., 1.0)`;
+/// a test calls this with `jitter_scale: 0.0` and asserts the two differ, which a jitter
+/// wired to nothing would fail.
+fn spread_impl(world_seed: i64, index: usize, count: usize, jitter_scale: f64) -> SpherePoint {
+    // `golden = math.pi * (3.0 - math.sqrt(5.0))` computed, not written as a decimal
+    // literal: sqrt(5.0) is correctly rounded, `3.0 - sqrt(5.0)` is exact, and one
+    // multiplication by PI follows. A decimal literal would introduce a rounding this
+    // code does not have.
+    let golden = std::f64::consts::PI * (3.0 - m::sqrt(5.0));
+    // cast-ok: plate index and count to f64, matching Python's true division.
+    let z = 1.0 - 2.0 * (index as f64 + 0.5) / (count as f64);
+    let inner = 1.0 - z * z;
+    // Python writes `max(0.0, 1.0 - z * z)`; two-argument max returns the second argument
+    // when the comparison is false, so a NaN `inner` yields 0.0. Explicit if/else in the
+    // Python's operand order reproduces that rather than `f64::max`, which propagates NaN.
+    let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+    let angle = golden * (index as f64); // cast-ok: plate index to f64
+
+    let point = Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z);
+
+    // Nudge along two arbitrary but deterministic tangent directions.
+    let index_i64 = index as i64; // cast-ok: plate index to i64 for the hash key
+    let key_a = [Part::Str("plate"), Part::Int(index_i64), Part::Str("jitter-a")];
+    let key_b = [Part::Str("plate"), Part::Int(index_i64), Part::Str("jitter-b")];
+    let nudge_a = (2.0 * fraction(world_seed, &key_a) - 1.0) * JITTER_RAD * jitter_scale;
+    let nudge_b = (2.0 * fraction(world_seed, &key_b) - 1.0) * JITTER_RAD * jitter_scale;
+
+    let mut sideways = Vec3::new(0.0, 0.0, 1.0).cross(&point);
+    // The Python guard: `if sideways.length() < 1e-9: sideways = Vec3(1, 0, 0).cross(point)`.
+    // Unreachable for any usable count: `sideways` here is `(0,0,1).cross(point)`, which
+    // is `(-point.y, point.x, 0)`, so its length is exactly the spiral's ring radius. With
+    // `z = 1 - 2u` for `u = (index + 0.5) / count`, `1 - z^2 = 4u(1-u)`, so
+    // `ring = 2*sqrt(u(1-u))`, smallest at index 0 where it is about `sqrt(2/count)`.
+    // Task 1 measured the minimum across counts up to 100,000 at 0.004472, about 4.5
+    // million times this guard; reaching it would need `count > 2e18`. Ported anyway --
+    // removing it would change behaviour for an absurd count, and a future reader should
+    // not have to re-derive why it never fires.
+    if sideways.length() < DEGENERATE {
+        sideways = Vec3::new(1.0, 0.0, 0.0).cross(&point);
+    }
+    let east = sideways
+        .normalised()
+        .expect("point is a unit vector, so sideways cannot be the zero vector here");
+    let north = point.cross(&east);
+    let nudged = point.add(&east.scaled(nudge_a)).add(&north.scaled(nudge_b));
+    SpherePoint::from_vector(&nudged).expect("point plus a bounded nudge is never the zero vector")
+}
+
+/// One seed position on the Fibonacci spiral, nudged.
+///
+/// Ported from `_spread` in `worldbuilder/plates/generation.py`.
+pub fn spread(world_seed: i64, index: usize, count: usize) -> SpherePoint {
+    spread_impl(world_seed, index, count, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +206,57 @@ mod tests {
     fn measured_vector_from_the_brief() {
         let f = fraction(20260831, &[Part::Str("plate"), Part::Int(7), Part::Str("pole-z")]);
         assert_eq!(f.to_bits(), 0.3128267815678692_f64.to_bits());
+    }
+
+    #[test]
+    fn rust_pi_matches_cpython_math_pi() {
+        // Slice 1h confirmed FRAC_PI_2 matched CPython's; `golden`'s correctness leans on
+        // the full PI matching too. CPython's math.pi is 3.141592653589793.
+        assert_eq!(std::f64::consts::PI.to_bits(), 3.141592653589793_f64.to_bits());
+    }
+
+    #[test]
+    fn the_degeneracy_guard_never_fires_for_a_usable_count() {
+        // ring = 2*sqrt(u(1-u)) with u = (i + 0.5)/count, smallest at i = 0 where it is
+        // about sqrt(2/count). Reaching the 1e-9 guard needs count > 2e18. Assert it
+        // rather than believing the algebra: this pins the claim the port's comment makes.
+        for &count in &[1usize, 2, 3, 22, 1000, 100_000] {
+            let u = 0.5 / (count as f64); // cast-ok: plate count to f64 for the bound
+            let ring = 2.0 * m::sqrt(u * (1.0 - u));
+            assert!(ring > 1e-6, "ring {ring} at count {count} approaches the guard");
+        }
+    }
+
+    #[test]
+    fn every_seed_is_a_unit_vector() {
+        // from_vector normalises, so this holds by construction -- it is here to catch
+        // the direct constructor being substituted for it.
+        for index in 0..22 {
+            let p = spread(20260831, index, 22);
+            assert!((p.vector.length() - 1.0).abs() < 1e-12, "seed {index} is not unit");
+        }
+    }
+
+    #[test]
+    fn distinct_indices_give_distinct_seeds() {
+        let seeds: Vec<_> = (0..22).map(|i| spread(20260831, i, 22)).collect();
+        for i in 0..seeds.len() {
+            for j in (i + 1)..seeds.len() {
+                let d = seeds[i].vector.sub(&seeds[j].vector).length();
+                assert!(d > 1e-6, "seeds {i} and {j} collide");
+            }
+        }
+    }
+
+    #[test]
+    fn the_jitter_actually_moves_the_point() {
+        // spread_impl exposes a jitter_scale so the test can compare the jittered point
+        // against the same computation with the nudges forced to zero. A jitter wired to
+        // nothing would make this fail, while every other test in this file would still
+        // pass.
+        let jittered = spread_impl(20260831, 5, 22, 1.0);
+        let unjittered = spread_impl(20260831, 5, 22, 0.0);
+        let moved = jittered.vector.sub(&unjittered.vector).length();
+        assert!(moved > 1e-6, "jitter moved the point by only {moved}");
     }
 }
