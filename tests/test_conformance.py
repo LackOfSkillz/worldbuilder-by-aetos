@@ -1977,16 +1977,16 @@ def test_the_margin_classification_threshold_gap_is_measured_not_assumed():
 # section; it is not a general loosening of the file's contract.
 #
 # The set of margins that actually contribute (survive `engagement <= 0.0`) is a separate,
-# discrete question from the *size* of their contribution, and Task 1 measured that one
-# strictly: the smallest observed `abs(abs(across) - ACROSS_ENOUGH)` was 1.19069e-04, about
-# 1.07e12 ULP of `across` -- twelve orders of magnitude clear of the 1-ULP `hypot`
+# discrete question from the *size* of their contribution, and this slice's own
+# ~22,000-point `TECTONICS_POINTS` corpus measured that one strictly: the smallest observed
+# `abs(abs(across) - ACROSS_ENOUGH)` was 2.4349e-05, about 2.19e11 ULP of `across` --
+# roughly eleven orders of magnitude clear of the 1-ULP `hypot`
 # divergence that could ever move `across` at all. So which margins engage is reproducible
 # and is exercised here through real geometry (a genuine two-margin point, and points
 # deliberately close to the gate that this section finds on the standing 12-plate fixture),
 # not hedged with a tolerance.
 
 from worldbuilder.terrain.tectonics import Tectonics as PyTectonics
-from worldbuilder.terrain.tectonics import Setting as PySetting
 from worldbuilder.terrain.tectonics import _bump as py_bump
 from worldbuilder.terrain.tectonics import _continental as py_continental
 from worldbuilder.terrain.tectonics import CONTINENTAL_ENOUGH as PY_CONTINENTAL_ENOUGH
@@ -2043,8 +2043,8 @@ def _engine_elevation_m(x, y, z, radius_m=EARTH_RADIUS_M):
 def _engine_setting_at(x, y, z, distance_m, normal, radius_m=EARTH_RADIUS_M):
     return engine.tectonics_setting_at(
         PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
-        CONTINENTALITY_SEED_FOR_TECTONICS, PY_LAND_FRACTION, radius_m,
-        x, y, z, distance_m, normal.x, normal.y, normal.z,
+        CONTINENTALITY_SEED_FOR_TECTONICS, PY_LAND_FRACTION,
+        x, y, z, distance_m, normal.x, normal.y, normal.z, radius_m,
     )
 
 

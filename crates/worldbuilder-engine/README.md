@@ -627,7 +627,11 @@ not a genuine metre-scale relative divergence; `offset_m` sums margin contributi
 are built to reach exactly zero at the range gate and at `engagement`'s own gate, so the
 corpus finds points where the total sits a few centimetres from that zero, and the ULP
 count there is dominated by how close to zero the corpus happens to land, not by anything
-wrong in the arithmetic.
+wrong in the arithmetic. The honest scale to measure that absolute difference against is
+not the near-zero result but the profile amplitudes the arithmetic actually runs at --
+`TRENCH_M` alone reaches 2,600 m -- and `ULP(2600.0)` is `4.547e-13`, so
+`2.130240428499519e-15` there is about `0.005` ULP: consistent with a single rounding at
+the scale the arithmetic was performed, not with error growing anywhere in the sum.
 
 **8,192 is an empirical ceiling over this corpus, not a derived guarantee.** Because the
 quantity passes through zero, the ULP count is a function of how close the corpus happens
@@ -668,9 +672,10 @@ a contribution, and only one of them actually depends on `hypot`'s precision:
   subtraction), not by anything `hypot` contributes.
 - `if engagement <= 0.0 { return 0.0 }` is the one branch that genuinely depends on
   `hypot`'s precision, because `across` is built directly from `speed`. The measured
-  margin here is `abs(abs(across) - ACROSS_ENOUGH)` = 1.19069e-04 at its smallest observed
-  point -- about 1.07e12 ULP of `across` at that magnitude, roughly twelve orders of
-  magnitude clear of where a 1-ULP `hypot` disagreement could ever flip the comparison.
+  margin here is `abs(abs(across) - ACROSS_ENOUGH)` = 2.4349e-05 at its smallest observed
+  point, over this slice's own ~22,000-point `TECTONICS_POINTS` corpus -- about 2.19e11
+  ULP of `across` at that magnitude, roughly eleven orders of magnitude clear of where a
+  1-ULP `hypot` disagreement could ever flip the comparison.
 
 **The two bugs this port must preserve, and how each is encoded.** `lookup.py`'s and
 `tectonics.py`'s own comments record two: a 550-metre cliff, and a 419-kilometre

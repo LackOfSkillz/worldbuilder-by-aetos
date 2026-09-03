@@ -457,8 +457,9 @@ fn tectonics_from_parts(
 /// `Setting.inboard`/`Setting.outboard` at a point, given a margin distance and normal.
 /// `setting_at` itself only reads `self.land` and `self.radius_m`, never `self.plates`,
 /// but building the `Tectonics` it hangs off still needs a `PlateSet` -- so this binding
-/// takes the same full parameter set as `tectonics_offset_m`/`tectonics_elevation_m`
-/// rather than inventing a narrower convention just for this one call.
+/// takes the same full parameter set, in the same order, as
+/// `tectonics_offset_m`/`tectonics_elevation_m` rather than inventing a narrower
+/// convention just for this one call.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 pub fn tectonics_setting_at(
@@ -467,7 +468,6 @@ pub fn tectonics_setting_at(
     rates: Vec<f64>,
     continentality_seed: u64,
     land_fraction: f64,
-    radius_m: f64,
     x: f64,
     y: f64,
     z: f64,
@@ -475,6 +475,7 @@ pub fn tectonics_setting_at(
     nx: f64,
     ny: f64,
     nz: f64,
+    radius_m: f64,
 ) -> (f64, f64) {
     let tectonics =
         tectonics_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);

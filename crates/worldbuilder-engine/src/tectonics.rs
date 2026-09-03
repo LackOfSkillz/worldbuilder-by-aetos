@@ -729,9 +729,14 @@ mod tests {
         // exactly zero -- not merely small.
         //
         // This is the regression test for the 419 km mismapping. The obvious form,
-        // `signed = distance * lean`, compresses the axis: with a lean of -0.22 this
-        // same point maps to about -92 km, which is the trench centre, and returns
-        // roughly -2597 m instead of zero.
+        // `signed = distance * lean`, compresses the axis: that is the documented bug --
+        // with the historical lean of -0.22, a point 419 km out maps to about -92 km,
+        // which is the trench centre, and returns roughly -2597 m instead of zero. It is
+        // the reason the code below is shaped the way it is, not this test's own numbers.
+        //
+        // This fixture's lean is +0.679 (see `lopsided_world_has_a_genuinely_non_zero_lean`
+        // above), so the buggy form maps 419 km to about +284,649 m instead and returns
+        // about +220.234 m instead of zero -- still wrong, just a different wrong answer.
         let world = lopsided_world();
         let contribution = world.from_margin_for_test(419_000.0);
         assert_eq!(contribution, 0.0, "a margin 419 km away must contribute exactly nothing");
