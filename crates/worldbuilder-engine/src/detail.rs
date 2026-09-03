@@ -161,11 +161,20 @@ impl Detail {
             return 0.0;
         }
 
-        // Python's `if resolution_m:` is false for None, 0.0 and -0.0. `== 0.0` matches
-        // both zeros (since -0.0 == 0.0 in IEEE 754) and a NaN resolution would compare
-        // false here too, taking the canonical branch below -- same as Python, where NaN
-        // is truthy but nothing here depends on that distinction because the loop always
-        // takes the `else` (canonical) arm for a falsy resolution_m.
+        // Python's `if resolution_m:` is false for None, 0.0 and -0.0. `r != 0.0`
+        // matches both zeros (since -0.0 == 0.0 in IEEE 754), collapsing them to `None`
+        // here.
+        //
+        // A NaN resolution is different: `NaN != 0.0` is true, so `Some(NaN)` takes the
+        // *resolution* branch below, not this canonical one -- Python's `if resolution_m`
+        // is also true for NaN (NaN is truthy), so both languages agree on which branch
+        // runs. They still produce the same total, but not because NaN reaches this arm:
+        // inside the loop, `wavelength / NaN` is NaN, and `smooth(NaN)` clamps to `1.0`
+        // in both languages (the comparisons `fraction < 1.0` / `min(1.0, fraction)` and
+        // `upper > 0.0` / `max(0.0, ...)` are false against NaN, so the upper-clamp value
+        // wins on both sides), giving `visible = 1.0` for every band -- identical to the
+        // canonical arm's literal `1.0`. The equivalence comes from `smooth`'s clamp
+        // order, not from `Some(NaN)` reaching the `None` path.
         let resolution = match resolution_m {
             Some(r) if r != 0.0 => Some(r),
             _ => None,
@@ -343,6 +352,21 @@ mod tests {
     }
 
     #[test]
+    fn a_nan_resolution_behaves_exactly_like_canonical() {
+        // Some(NaN) takes the *resolution* branch (NaN != 0.0), not the canonical one --
+        // unlike the zero cases above. But every band's `visible` still comes out to
+        // exactly 1.0: `wavelength / NaN` is NaN, and `smooth(NaN)` clamps to 1.0 in both
+        // languages because the comparisons that drive the clamp are false against NaN.
+        // So the result matches canonical bit-for-bit, for a different reason than the
+        // zero cases -- guarded here rather than merely asserted in a comment.
+        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let p = SpherePoint::from_latlon(17.0, 43.0);
+        let canonical = d.offset_m(&p, 100.0, None);
+        let nan_res = d.offset_m(&p, 100.0, Some(f64::NAN));
+        assert_eq!(nan_res.to_bits(), canonical.to_bits(), "Some(f64::NAN) must equal None");
+    }
+
+    #[test]
     fn zero_amplitude_returns_exactly_zero() {
         let d = Detail::new(20260831, EARTH_RADIUS_M);
         let p = SpherePoint::from_latlon(17.0, 43.0);
@@ -377,28 +401,46 @@ mod tests {
         // entirely above or below the window, which would report a max step of 0.0 and
         // pass without testing anything -- that vacuity has hit this port three times).
         //
-        // Deriving the bound: `visible` is a smoothstep of a fraction that changes by
-        // `step / (CLEARLY_M - BARELY_M) / resolution_m_scale`... concretely, over one
-        // sample step `d_res`, the smoothstep input changes by at most
-        // `wavelength * d_res / (resolution_m^2 * (CLEARLY_M - BARELY_M))` in the worst
-        // case (largest slope of smoothstep is 1.5, at its midpoint), and the term this
-        // multiplies is bounded by `share` (since the noise term is in [-1, 1] and the
-        // per-band contribution is `(noise-0.5)*2*share*visible`, magnitude at most
-        // `share`). Rather than derive a tight analytic bound on the derivative of
-        // 1/resolution_m across the whole sampled range (which is largest at the small
-        // end, resolution_m = 4000.0), take the loosest correct bound directly from the
-        // model: each band can move by at most `2.0 * share` per sample (the noise term
-        // swings across its full [-1, 1] range, doubled by the `* 2.0`), and only one
-        // band (the coarsest, 20000 m) is inside its fade window for any resolution_m in
-        // this range -- the next-finest band (10000 m) fades between 2500.0 and 5000.0,
-        // which barely overlaps the bottom of this range, so budget for two bands moving
-        // at once. Bound: 2 bands * 2.0 * share_of_coarsest_band, with
-        // share_of_coarsest_band = 1.0 / 127.0 (7 bands, geometric halving, see the band
-        // table test above) as the loosest (largest) per-band share in this table.
+        // Deriving the bound, from the actual shape of `visible`, not a round number:
+        //
+        // `visible = smooth(x)` where `x = (wavelength / r - BARELY_M) / (CLEARLY_M -
+        // BARELY_M)`, so `dx/dr = -wavelength / (2 * r^2)` (the 2 is `CLEARLY_M -
+        // BARELY_M`), and `smooth`'s derivative peaks at 1.5 (at x = 0.5). Over one
+        // sample step `d_res` the largest possible change in `visible` is therefore
+        // `1.5 * wavelength * d_res / (2 * r_min^2)`, evaluated at the smallest `r` in
+        // the sampled range that still lies in the fade window -- the slope is steepest
+        // there. For the coarsest band (wavelength 20000.0) with d_res = 100.0 and
+        // r_min = 5000.0 (the low edge of its fade window, also the low edge of the
+        // sampled range):
+        //   1.5 * 20000.0 * 100.0 / (2 * 5000.0^2) = 1.5 * 2_000_000.0 / 50_000_000.0
+        //     = 0.06
+        // A single band's contribution to `total` is `noise_factor * share * visible`
+        // with `noise_factor` (`(noise - 0.5) * 2.0`) in [-1, 1], so one step can move
+        // that band's term by at most `0.06 * share_of_coarsest_band`, times
+        // `amplitude_m` once the final multiply is applied: a genuine fade cannot move
+        // the total by more than `0.06 * share_of_coarsest_band * amplitude_m` per
+        // sample -- call this bound `gradual_ceiling`, about 3.02 for this table
+        // (share_of_coarsest_band ~= 0.504, amplitude_m = 100.0). Measured empirically
+        // against the real implementation below, the actual max step is ~0.96, comfortably
+        // under that analytic ceiling, which confirms the derivation rather than just
+        // asserting it.
+        //
+        // An abrupt cutoff (`visible` jumping 1 -> 0 instead of fading) moves the total
+        // by up to `share_of_coarsest_band * amplitude_m` in one step (`noise_factor`'s
+        // full swing) -- about 50.4 here, and measured empirically at ~25.7 for the
+        // actual noise value at this crossing. That is over 8x `gradual_ceiling`, so a
+        // test bound placed between the two discriminates: pick a factor of 0.2 rather
+        // than 0.06, i.e. `0.2 * share_of_coarsest_band * amplitude_m` (~10.1 here) --
+        // above `gradual_ceiling` by more than 3x so a real fade never trips it, and
+        // below the measured abrupt-step magnitude by more than 2x so a hard cutoff
+        // does. This was proven, not assumed: mutating `visible`'s computation to a hard
+        // step (`if frac > 0.0 { 1.0 } else { 0.0 }`) and rerunning this test failed it
+        // (max_step ~25.7 against this bound of ~10.1); reverting the mutation passed it
+        // again (max_step ~0.96) -- see task-3-report.md for the numbers from that run.
         let d = Detail::new(20260831, EARTH_RADIUS_M);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         let share_of_coarsest_band = d.bands()[0].share;
-        let bound = 2.0 * 2.0 * share_of_coarsest_band * 100.0; // amplitude_m = 100.0
+        let bound = 0.2 * share_of_coarsest_band * 100.0; // amplitude_m = 100.0
 
         let mut resolution_m = 4000.0_f64;
         let mut previous = d.offset_m(&p, 100.0, Some(resolution_m));
