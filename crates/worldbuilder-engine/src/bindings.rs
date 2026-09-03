@@ -578,3 +578,62 @@ pub fn generation_plates_for(
         })
         .collect()
 }
+
+#[pyfunction]
+pub fn detail_smooth(fraction: f64) -> f64 {
+    crate::detail::smooth(fraction)
+}
+
+/// The band table for a world/radius, as `(wavelength_m, frequency, share)` tuples,
+/// coarsest first. Conversion only: `Detail::plan` (run inside `Detail::new`) does all the
+/// arithmetic; this just unwraps each `Band` into a triple. `Detail::new` is cheap -- no
+/// calibration, unlike `Continentality` -- so there is no cache here, unlike
+/// `cached_continentality` above.
+#[pyfunction]
+pub fn detail_bands(world_seed: u64, radius_m: f64) -> Vec<(f64, f64, f64)> {
+    crate::detail::Detail::new(world_seed, radius_m)
+        .bands()
+        .iter()
+        .map(|b| (b.wavelength_m, b.frequency, b.share))
+        .collect()
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn detail_amplitude_m(
+    world_seed: u64,
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    elevation_m: f64,
+    shelf_weight: f64,
+    tectonic_m: f64,
+) -> f64 {
+    let detail = crate::detail::Detail::new(world_seed, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    detail.amplitude_m(&point, elevation_m, shelf_weight, tectonic_m)
+}
+
+/// `resolution_m` defaults to `None` so a caller can omit it entirely, exactly as the
+/// Python's `resolution_m=None` default allows -- and `Some(0.0)` is passed straight
+/// through to `Detail::offset_m`, which is itself responsible for collapsing `0.0` (and
+/// `-0.0`) onto the same canonical path as `None`, matching Python's `if resolution_m:`
+/// falsiness. No special-casing belongs here: that would duplicate logic the maths module
+/// already owns.
+#[pyfunction]
+#[pyo3(signature = (world_seed, radius_m, x, y, z, amplitude_m, resolution_m=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn detail_offset_m(
+    world_seed: u64,
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    amplitude_m: f64,
+    resolution_m: Option<f64>,
+) -> f64 {
+    let detail = crate::detail::Detail::new(world_seed, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    detail.offset_m(&point, amplitude_m, resolution_m)
+}
