@@ -91,7 +91,7 @@ pub const RIFT_WIDTH_M: f64 = 70_000.0;
 ///
 /// Args:
 ///     value: Continentality on one side of a margin.
-fn continental(value: f64) -> f64 {
+pub(crate) fn continental(value: f64) -> f64 {
     let fraction = (value - CONTINENTAL_ENOUGH) / CONTINENTAL_BLEND * 0.5 + 0.5;
     // Python writes `max(0.0, min(1.0, fraction))`; the two-argument forms are asymmetric
     // under NaN, keeping the first operand unless the second is strictly beyond it. So
@@ -115,7 +115,7 @@ fn continental(value: f64) -> f64 {
 ///     ends: the derivative is zero at the centre *and* at the edge. A profile that
 ///     merely reached zero would still leave a crease where it met the untouched ground,
 ///     and a crease in terrain is a cliff somebody sails into.
-fn bump(distance_m: f64, width_m: f64) -> f64 {
+pub(crate) fn bump(distance_m: f64, width_m: f64) -> f64 {
     if width_m <= 0.0 {
         return 0.0;
     }

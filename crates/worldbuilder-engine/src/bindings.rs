@@ -10,6 +10,7 @@ use crate::continentality::Continentality;
 use crate::kinematics::{motion_at, motion_between, surface_velocity};
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
+use crate::tectonics::Tectonics;
 use crate::vectors::Vec3;
 
 /// Cache of calibrated `Continentality` instances, keyed on `(seed, land_fraction bits,
@@ -433,4 +434,109 @@ pub fn continentality_gradient(
     let c = cached_continentality(seed, radius_m, land_fraction);
     let g = c.gradient(&SpherePoint { vector: Vec3::new(x, y, z) });
     (g.east, g.north)
+}
+
+/// The pure algebraic helper behind every profile in `tectonics.rs`. No `PlateSet`, no
+/// `Continentality`, no arithmetic beyond what `tectonics::bump` itself does -- conversion
+/// only.
+#[pyfunction]
+pub fn tectonics_bump(distance_m: f64, width_m: f64) -> f64 {
+    crate::tectonics::bump(distance_m, width_m)
+}
+
+/// The other pure algebraic helper: nothing transcendental, a smoothstep on a clamped
+/// fraction.
+#[pyfunction]
+pub fn tectonics_continental(value: f64) -> f64 {
+    crate::tectonics::continental(value)
+}
+
+/// Builds the `Tectonics` a binding needs: a `PlateSet` from the same flat seeds/poles/
+/// rates convention as every other `plateset_*` binding, and a `Continentality` from the
+/// cache keyed the same way `continentality_*` bindings key it. Conversion only -- shared
+/// by every `tectonics_*` binding below so each one only has to supply the arguments that
+/// are actually its own.
+fn tectonics_from_parts(
+    seeds_flat: &[f64],
+    poles_flat: &[f64],
+    rates: &[f64],
+    continentality_seed: u64,
+    land_fraction: f64,
+    radius_m: f64,
+) -> Tectonics {
+    let plates = plateset_from_parts(seeds_flat, poles_flat, rates);
+    let land = cached_continentality(continentality_seed, radius_m, land_fraction);
+    Tectonics::new(plates, land, radius_m)
+}
+
+/// `Setting.inboard`/`Setting.outboard` at a point, given a margin distance and normal.
+/// `setting_at` itself only reads `self.land` and `self.radius_m`, never `self.plates`,
+/// but building the `Tectonics` it hangs off still needs a `PlateSet` -- so this binding
+/// takes the same full parameter set as `tectonics_offset_m`/`tectonics_elevation_m`
+/// rather than inventing a narrower convention just for this one call.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn tectonics_setting_at(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    continentality_seed: u64,
+    land_fraction: f64,
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    distance_m: f64,
+    nx: f64,
+    ny: f64,
+    nz: f64,
+) -> (f64, f64) {
+    let tectonics =
+        tectonics_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let normal = Vec3::new(nx, ny, nz);
+    let setting = tectonics.setting_at(&point, distance_m, &normal);
+    (setting.inboard, setting.outboard)
+}
+
+/// How much the plates raise or lower the ground at a point -- every margin in range,
+/// summed. Conversion only: `Tectonics::offset_m` does all the arithmetic.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn tectonics_offset_m(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    continentality_seed: u64,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> f64 {
+    let tectonics =
+        tectonics_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    tectonics.offset_m(&point)
+}
+
+/// The macro elevation: continental base plus `offset_m`. Conversion only:
+/// `Tectonics::elevation_m` does all the arithmetic.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn tectonics_elevation_m(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    continentality_seed: u64,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> f64 {
+    let tectonics =
+        tectonics_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    tectonics.elevation_m(&point)
 }
