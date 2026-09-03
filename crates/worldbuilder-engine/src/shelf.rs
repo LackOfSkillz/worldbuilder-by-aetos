@@ -225,6 +225,51 @@ impl Shelf {
 
         seaward * coastal.breadth * authority
     }
+
+    /// The ground here, and the working that produced it.
+    ///
+    /// The intermediates come back because the layer above wants them and they are
+    /// expensive. Asking separately cost the gradient twice and the tectonics three
+    /// times over, which took a whole-pipeline chart from three hundred milliseconds to
+    /// twelve hundred - a comment claiming the values were "recovered rather than
+    /// recomputed where it is free" while they were being recomputed. `tectonic` is
+    /// computed exactly once here, then threaded through as `Some(tectonic)` so `weight`
+    /// never has to ask `self.tectonics.offset_m` again.
+    pub fn evaluate(&self, point: &SpherePoint) -> Reading {
+        let tectonic = self.tectonics.offset_m(point);
+        let macro_elevation = self.land.base_elevation(point) + tectonic;
+
+        let coastal = match self.coastal(point) {
+            Some(coastal) => coastal,
+            None => {
+                // Deep interior or deep basin: no coast nearby, so the shelf has no say.
+                // Identical to the weight-gate return below - both leave elevation_m at
+                // the macro value, weight at zero and tectonic_m at what was already
+                // computed, which is what makes either gate safe to trip: neither one is
+                // observable unless the branch not taken would have produced a positive
+                // weight.
+                return Reading { elevation_m: macro_elevation, weight: 0.0, tectonic_m: tectonic };
+            }
+        };
+
+        let weight = self.weight(point, &coastal, Some(tectonic));
+        if weight <= 0.0 {
+            // Same Reading as the coastal-gate return above, and for the same reason:
+            // the shelf has no say, so the macro elevation stands unchanged.
+            return Reading { elevation_m: macro_elevation, weight: 0.0, tectonic_m: tectonic };
+        }
+
+        // A blend towards the target, not an offset added on - transcribed in the
+        // Python's exact form so a trench crossing a continental margin is not quietly
+        // flattened by a shelf announcing the water here is about a hundred metres.
+        let shaped = macro_elevation + weight * (self.target_depth_m(&coastal) - macro_elevation);
+        Reading { elevation_m: shaped, weight, tectonic_m: tectonic }
+    }
+
+    /// The ground, with coastal shaping applied.
+    pub fn elevation_m(&self, point: &SpherePoint) -> f64 {
+        self.evaluate(point).elevation_m
+    }
 }
 
 // The behaviour methods (`coastal`, `target_depth_m`, `weight`, `evaluate`,
@@ -530,5 +575,108 @@ mod tests {
             "Some(0.0) must NOT behave like None: got_some_zero={got_some_zero} \
              got_none={got_none}"
         );
+    }
+
+    // -- evaluate and elevation_m --------------------------------------------------
+    //
+    // Expected values below are hand-derived from shelf.py's `evaluate` (lines 237-267),
+    // not read off a run of the Rust code under test.
+
+    #[test]
+    fn evaluate_returns_macro_with_zero_weight_deep_in_the_interior() {
+        // The north pole on this world: coastal() is None (the value gate alone), so
+        // evaluate must take the early return: elevation_m = macro = base_elevation +
+        // tectonic, weight = 0.0, tectonic_m = tectonic. Values hand-derived by calling
+        // Continentality::base_elevation and Tectonics::offset_m directly (dependencies
+        // already ported and pinned in earlier tasks, not the code under test) and
+        // summing them, exactly as the Python does.
+        let shelf = build();
+        let p = point(0.0, 0.0, 1.0);
+
+        let tectonic = shelf.tectonics().offset_m(&p);
+        let macro_elevation = shelf.land().base_elevation(&p) + tectonic;
+
+        let reading = shelf.evaluate(&p);
+        assert_eq!(reading.elevation_m.to_bits(), macro_elevation.to_bits());
+        assert_eq!(reading.weight, 0.0);
+        assert_eq!(reading.tectonic_m.to_bits(), tectonic.to_bits());
+    }
+
+    #[test]
+    fn evaluate_blends_towards_the_target_at_a_shelf_point_with_weight_strictly_between() {
+        // Same point as `coastal_returns_some_at_a_genuine_coastal_point`: the first
+        // corpus point where shelf.coastal() is not None. Chosen for this test (rather
+        // than an arbitrary coastal point) by additionally checking, via a scan of the
+        // same corpus() the Python conformance suite uses, that its shelf.evaluate(p)
+        // .weight is strictly between 0 and 1 (measured: ~0.7794) - not saturated to
+        // either end - so the blend in `shaped = macro + weight * (target - macro)` is
+        // actually exercised rather than degenerating to `macro` or `target`.
+        //
+        // tectonic_m at this point happens to be exactly 0.0 (Some(0.0), a supplied
+        // zero, not absence - see the dedicated trap test above for that distinction;
+        // here it just means macro == land.base_elevation(p)).
+        let shelf = build();
+        let p = point(
+            -0.05860692729347337,
+            -0.5960915358050722,
+            0.8007746930409125,
+        );
+
+        let tectonic = shelf.tectonics().offset_m(&p);
+        let macro_elevation = shelf.land().base_elevation(&p) + tectonic;
+        let coastal = shelf.coastal(&p).expect("fixture point is coastal");
+        let weight = shelf.weight(&p, &coastal, Some(tectonic));
+        let target = shelf.target_depth_m(&coastal);
+        let expected_shaped = macro_elevation + weight * (target - macro_elevation);
+
+        assert!(
+            weight > 0.0 && weight < 1.0,
+            "fixture point must have a weight strictly between 0 and 1; weight={weight}"
+        );
+        assert!(
+            (expected_shaped - macro_elevation).abs() > 1e-6
+                && (expected_shaped - target).abs() > 1e-6,
+            "fixture must land strictly between macro and target, or the blend is not \
+             actually observed; expected_shaped={expected_shaped} macro={macro_elevation} \
+             target={target}"
+        );
+
+        let reading = shelf.evaluate(&p);
+        assert_eq!(reading.elevation_m.to_bits(), expected_shaped.to_bits());
+        assert_eq!(reading.weight.to_bits(), weight.to_bits());
+        assert_eq!(reading.tectonic_m.to_bits(), tectonic.to_bits());
+
+        assert!(reading.elevation_m > macro_elevation.min(target));
+        assert!(reading.elevation_m < macro_elevation.max(target));
+    }
+
+    #[test]
+    fn evaluate_tectonic_m_matches_tectonics_offset_m_for_the_same_point() {
+        let shelf = build();
+        let p = point(
+            -0.05860692729347337,
+            -0.5960915358050722,
+            0.8007746930409125,
+        );
+        let expected = shelf.tectonics().offset_m(&p);
+        let reading = shelf.evaluate(&p);
+        assert_eq!(reading.tectonic_m.to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn elevation_m_agrees_with_evaluate_bit_for_bit() {
+        for p in [
+            point(0.0, 0.0, 1.0),
+            point(
+                -0.05860692729347337,
+                -0.5960915358050722,
+                0.8007746930409125,
+            ),
+            point(0.5338502410791132, 0.8419619369120575, 0.07812820803697702),
+        ] {
+            let shelf = build();
+            let expected = shelf.evaluate(&p).elevation_m;
+            assert_eq!(shelf.elevation_m(&p).to_bits(), expected.to_bits());
+        }
     }
 }
