@@ -30,6 +30,7 @@
 //! task.
 
 use crate::continentality::Continentality;
+use crate::sphere::SpherePoint;
 use crate::tectonics::Tectonics;
 
 /// How far from the shore, in field units, a point may be and still be considered.
@@ -122,6 +123,42 @@ impl Shelf {
     pub fn new(tectonics: Tectonics, continentality: Continentality, radius_m: f64) -> Self {
         Self { tectonics, land: continentality, radius_m }
     }
+
+    /// How far the shore is, estimated from the field and its slope.
+    ///
+    /// A local linear estimate, and named to admit it. Continentality crosses zero at the
+    /// shore, so dividing the value by the magnitude of its gradient gives the distance to
+    /// that crossing if the field carried on at the same slope - which it does not,
+    /// exactly. Over the tens of kilometres a shelf occupies, against a field whose
+    /// features are thousands of kilometres wide, it is close enough to build on and
+    /// nowhere near an exact geodesic distance to the final shoreline.
+    ///
+    /// The value is checked before the gradient is taken, and that ordering is the whole
+    /// performance strategy of this file: the gradient costs six times what the value
+    /// does, and most of a planet is deep interior or deep basin.
+    pub fn coastal(&self, point: &SpherePoint) -> Option<Coastal> {
+        let value = self.land.above_shore(point);
+        if value.abs() > COASTAL_WINDOW {
+            // Far from any shore. The weight is already zero here, so this gate sits
+            // outside the support of what it gates rather than being a cliff in it.
+            return None;
+        }
+
+        let gradient = self.land.gradient(point);
+        let slope = gradient.magnitude();
+        if slope < MIN_GRADIENT {
+            // Below this, the field is too flat to say where the coast is - the estimate
+            // `c / |grad|` divides by nearly nothing and returns a distance to a shore on
+            // the far side of the world. The weight has already faded out by here; this
+            // only stops the arithmetic.
+            return None;
+        }
+
+        Some(Coastal {
+            distance_m: value / slope,
+            breadth: smooth(REFERENCE_GRADIENT / slope),
+        })
+    }
 }
 
 // The behaviour methods (`coastal`, `target_depth_m`, `weight`, `evaluate`,
@@ -166,6 +203,80 @@ mod tests {
         assert_eq!(smooth(10.0), 1.0);
         assert_eq!(smooth(1.0), 1.0);
         assert_eq!(smooth(0.5), 0.5);
+    }
+
+    // Fixture matching tests/test_shelf_gates.py's `build()`: seed 20260831, the default
+    // plate count (22), Earth radius and land fraction - the same world Task 1 measured
+    // its gate margins and firing point against.
+    const SEED: i64 = 20260831;
+
+    fn build() -> Shelf {
+        let land = Continentality::new(
+            SEED as u64, // cast-ok: seed is a fixed positive literal, no truncation
+            crate::sphere::EARTH_RADIUS_M,
+            crate::continentality::LAND_FRACTION,
+        );
+        let plates = crate::generation::plates_for(SEED, 22);
+        let tectonics = Tectonics::new(plates, land, crate::sphere::EARTH_RADIUS_M);
+        Shelf::new(tectonics, land, crate::sphere::EARTH_RADIUS_M)
+    }
+
+    fn point(x: f64, y: f64, z: f64) -> SpherePoint {
+        SpherePoint::from_vector(&crate::vectors::Vec3::new(x, y, z))
+            .expect("fixture vector has a direction")
+    }
+
+    #[test]
+    fn coastal_is_none_deep_in_the_interior_on_the_value_gate_alone() {
+        // The north pole on this world: above_shore is far outside COASTAL_WINDOW, so the
+        // gate must return None having never touched the gradient (that ordering is
+        // checked by the earlier `value_gate_never_takes_the_gradient` test below).
+        let shelf = build();
+        let p = point(0.0, 0.0, 1.0);
+        assert!(shelf.coastal(&p).is_none());
+    }
+
+    #[test]
+    fn coastal_returns_some_at_a_genuine_coastal_point() {
+        // Located by scanning the same corpus() the Python conformance suite uses (see
+        // tests/test_shelf_gates.py): the first corpus point where shelf.coastal() is not
+        // None on this world.
+        let shelf = build();
+        let p = point(
+            -0.05860692729347337,
+            -0.5960915358050722,
+            0.8007746930409125,
+        );
+        let coastal = shelf.coastal(&p).expect("point should be coastal");
+        assert!((coastal.distance_m - (-15538.459466828463)).abs() < 1e-6);
+        assert!((coastal.breadth - 0.7793928482152788).abs() < 1e-9);
+    }
+
+    #[test]
+    fn coastal_is_none_where_the_gradient_gate_genuinely_fires() {
+        // Located the same way Task 1 did: scanning tests/test_conformance.py's corpus()
+        // against this world's Continentality for the point whose slope comes closest to
+        // (while remaining below) MIN_GRADIENT, inside COASTAL_WINDOW. This point has
+        // above_shore = 5.247544e-02 (inside the 0.055 window) and slope =
+        // 2.501102e-09 (~0.2501 x MIN_GRADIENT) - confirmed below to actually be inside
+        // the window, so the None it produces is attributable to the gradient gate and
+        // not the value gate.
+        let shelf = build();
+        let land = shelf.land();
+        let p = point(0.5338502410791132, 0.8419619369120575, 0.07812820803697702);
+
+        let above = land.above_shore(&p);
+        assert!(
+            above.abs() <= COASTAL_WINDOW,
+            "fixture point must pass the value gate to exercise the gradient gate; above={above}"
+        );
+        let slope = land.gradient(&p).magnitude();
+        assert!(
+            slope < MIN_GRADIENT,
+            "fixture point must be sub-threshold to exercise the gradient gate; slope={slope}"
+        );
+
+        assert!(shelf.coastal(&p).is_none());
     }
 
     #[test]
