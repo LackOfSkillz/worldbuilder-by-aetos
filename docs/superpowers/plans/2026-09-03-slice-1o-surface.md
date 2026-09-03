@@ -126,11 +126,11 @@ So a corpus must include feature centres *explicitly*, not by sampling more fine
 
 No engine code.
 
-- [ ] **Step 1: Prove the seed cast.** Establish by measurement that Python's `_lattice` masks after mixing, so a negative `world_seed`'s masked result equals the wrapping `u64` result. Give the exact wording for the `// cast-ok:` marker.
-- [ ] **Step 2: Construct the open `-0.0` case or close it.** Find an input where `shaped == -0.0` reaches `Detail::offset_m`'s guard, or **measure** that none exists. An argument is not acceptable here.
-- [ ] **Step 3: Re-derive the four reordering figures** on a named population, method and host. They are the budget the conformance suite is aiming at, and they are the reason this slice tests structure.
-- [ ] **Step 4: Confirm both exact invariants** — no-features `structural_m` against `shelf.elevation_m`, and `elevation_m == structural_m + detail.offset_m` — bit-for-bit, and say over what population.
-- [ ] **Step 5: Record all four answers in the ledger with their populations, methods and host.**
+- [x] **Step 1: Prove the seed cast.** Establish by measurement that Python's `_lattice` masks after mixing, so a negative `world_seed`'s masked result equals the wrapping `u64` result. Give the exact wording for the `// cast-ok:` marker.
+- [x] **Step 2: Construct the open `-0.0` case or close it.** Find an input where `shaped == -0.0` reaches `Detail::offset_m`'s guard, or **measure** that none exists. An argument is not acceptable here.
+- [x] **Step 3: Re-derive the four reordering figures** on a named population, method and host. They are the budget the conformance suite is aiming at, and they are the reason this slice tests structure.
+- [x] **Step 4: Confirm both exact invariants** — no-features `structural_m` against `shelf.elevation_m`, and `elevation_m == structural_m + detail.offset_m` — bit-for-bit, and say over what population.
+- [x] **Step 5: Record all four answers in the ledger with their populations, methods and host.**
 
 ---
 
