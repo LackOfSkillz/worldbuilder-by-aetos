@@ -44,6 +44,11 @@ The claim that `blended_towards(x, 0.0)` is not the identity, and therefore that
 | Coast-local grid, 61x61 at 1,500 m **per step** | **1.80%** (67/3,721) |
 | The same grid read as a +/-1,500 m **span** | 4.49% (167/3,721) |
 | The same two under `TangentFrame.at(region.origin)` instead | 1.67% (62) and 3.82% (142) |
+| The span reading re-measured under the frame that reproduces reading A exactly | 4.97% (185/3,721) |
+
+**Only the ABSOLUTE worst shift is a property of the module.** The relative figure `1.249555e-15` and the
+distance of 11 ULP are properties of *reading A specifically* — under reading B the worst relative shift is
+`1.887498e-15`. The absolute `2.220446e-16` survives every convention tried; nothing else does.
 
 **A rate here needs three fields, not one: the frame, the grid step, and the span.** Seven further
 sampling conventions give counts from 18 to 159. The conclusion is robust — the guard is bit-observable
@@ -80,7 +85,12 @@ grid still hits 8.1417, at an offset of (31.73, 15.40) m. Nor does density help:
 lines both give 7.6275, unchanged at 4x resolution.
 
 **For `dominant`'s tie margins: gentle open water, and the pinnacle is the wrong corpus.** The smallest
-margin measured is **2.109424e-15**, offshore, with the bracketing sides `3.638e-12 m` apart. The pinnacle
+margin measured is **2.109424e-15**, offshore, with the bracketing sides `3.638e-12 m` apart — **and that
+figure is a property of the SEARCH METHOD, not just the corpus.** It comes from a bisection onto the
+crossover contour. A *grid* over the same gentle water finds `7.485921e-04`, eleven orders coarser, because
+a grid samples where its nodes fall rather than where the boundary is. The ordering survives either way —
+open water is 3.4x tighter than the pinnacle by grid, and four orders tighter by bisection — but a figure
+like this must name its search, not only its population. The pinnacle
 bisection bottoms out four orders *higher*, at 1.29e-11. **And resolution does not rescue the steep case
 either** — a radial found the same `6.646421e-03` at both 0.750 and 0.188 m/step, while a 2-D grid closed
 to `1.7e-4`.
