@@ -41,9 +41,10 @@ The claim that `blended_towards(x, 0.0)` is not the identity, and therefore that
 |---|---|
 | Uniform-random triples (what was banked) | 19.09% (3,818/20,000, seed-dependent) |
 | Real `natural()` outputs | **0.15%** |
-| The real `at()` path — 61x61 grid at 1,500 m, demo coast | **1.80%** (67/3,721) |
+| The real `at()` path — 61x61 grid at 1,500 m **per step**, demo coast | **1.80%** (67/3,721) |
+| The same grid read as a +/-1,500 m **span** | 4.49% (167/3,721) |
 
-Worst shift 2.22e-16, zero `dominant` flips. **The conclusion holds and the guard must be transcribed.** But the number that justified it was measured over a population the code never produces — the same error that cost the previous slice four of its six overturned figures, this time in a figure I supplied.
+**Worst shift `2.220446e-16` is ABSOLUTE, not relative** — and that distinction is a trap, because the figure sits a hair under `SLOPE_DRIFT_REL` (`2.212201e-16`) and so reads as if it were the same kind of quantity. It is not. The worst *relative* shift on that population is `1.249555e-15`, and the worst distance is **11 ULP, not 1**. Read as relative, the figure understates the guard by 5.6x. Zero `dominant` flips. **The conclusion holds and the guard must be transcribed.** But the number that justified it was measured over a population the code never produces — the same error that cost the previous slice four of its six overturned figures, this time in a figure I supplied.
 
 ---
 
@@ -165,6 +166,8 @@ No engine code. This task decides the module's shape.
 **Files:** Modify `crates/worldbuilder-engine/src/substrate.rs`
 
 Implement the trait and construction shape Task 1 settled.
+
+**The parameter order is RESOLUTION order — elevation, tectonic, slope — not Python's keyword order (elevation, slope, tectonic).** All three are `Option<f64>`, so **a binding that maps keyword order positionally will compile and be silently wrong.**
 
 **The three optionals use `is None` sentinels**, so a supplied `0.0` is a value and must not be treated as absent. This codebase contains three non-interchangeable idioms — an `is None` sentinel, plain default substitution, and a falsy check where `0.0` counts as absent. Match each exactly.
 
