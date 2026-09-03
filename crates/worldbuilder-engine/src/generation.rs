@@ -148,6 +148,58 @@ pub fn spread(world_seed: i64, index: usize, count: usize) -> SpherePoint {
     spread_impl(world_seed, index, count, 1.0)
 }
 
+/// An evenly distributed axis of rotation.
+///
+/// Ported from `_pole` in `worldbuilder/plates/generation.py`.
+///
+/// Even over the sphere, which needs the z component to be uniform rather than the
+/// latitude -- sampling latitude uniformly would crowd the poles, and a set of plates
+/// all turning about nearly the same axis would drift as one sheet.
+pub fn pole(world_seed: i64, index: usize) -> SpherePoint {
+    let index_i64 = index as i64; // cast-ok: plate index to i64 for the hash key
+    let z_key = [Part::Str("plate"), Part::Int(index_i64), Part::Str("pole-z")];
+    let angle_key = [Part::Str("plate"), Part::Int(index_i64), Part::Str("pole-angle")];
+    let z = 2.0 * fraction(world_seed, &z_key) - 1.0;
+    let angle = 2.0 * std::f64::consts::PI * fraction(world_seed, &angle_key);
+    let inner = 1.0 - z * z;
+    // Python writes `max(0.0, 1.0 - z * z)`; explicit if/else in the Python's operand
+    // order, as in spread_impl above, rather than f64::max, which would propagate a NaN
+    // inner instead of flooring it at 0.0.
+    let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+    // `SpherePoint(Vec3(...))` -- the direct, NON-normalising constructor, deliberately
+    // not `from_vector`. The vector here is already unit by construction (ring is
+    // sqrt(1 - z^2), so (cos*ring)^2 + (sin*ring)^2 + z^2 sums to 1), and normalising it
+    // would look like a tidy-up but would change every pole's bits.
+    SpherePoint { vector: Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z) }
+}
+
+/// Radians per million years, signed.
+///
+/// Ported from `_rate` in `worldbuilder/plates/generation.py`.
+///
+/// The sign is what makes a rotation clockwise or otherwise, so it lives here rather
+/// than in a separate flag that could disagree with the pole.
+pub fn rate(world_seed: i64, index: usize) -> f64 {
+    let index_i64 = index as i64; // cast-ok: plate index to i64 for the hash key
+    let rate_key = [Part::Str("plate"), Part::Int(index_i64), Part::Str("rate")];
+    let sense_key = [Part::Str("plate"), Part::Int(index_i64), Part::Str("sense")];
+    let speed = SLOWEST_RAD_PER_MYR
+        + fraction(world_seed, &rate_key) * (FASTEST_RAD_PER_MYR - SLOWEST_RAD_PER_MYR);
+    // `turning = fraction < 0.5` is a discrete decision on a continuous quantity -- the
+    // shape that has caused trouble throughout this port -- but it is safe here for a
+    // better reason than usual: the quantity is *exactly* reproducible. It comes from a
+    // byte-identical BLAKE2 digest through an integer-to-float conversion and a division
+    // by an exact power of two, with no transcendental anywhere in the path, so Rust and
+    // Python compare bit-identical values rather than two independently-rounded
+    // approximations that could land on opposite sides of 0.5.
+    let turning = fraction(world_seed, &sense_key) < 0.5;
+    if turning {
+        -speed
+    } else {
+        speed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +298,93 @@ mod tests {
                 assert!(d > 1e-6, "seeds {i} and {j} collide");
             }
         }
+    }
+
+    #[test]
+    fn poles_are_unit_vectors() {
+        // pole() uses the direct, non-normalising SpherePoint constructor, so this is
+        // not true by construction the way it is for spread() -- it is a genuine check
+        // that the trig identity holds in floating point.
+        for index in 0..22 {
+            let p = pole(20260831, index);
+            assert!((p.vector.length() - 1.0).abs() < 1e-9, "pole {index} is not unit");
+        }
+    }
+
+    #[test]
+    fn z_is_uniform_rather_than_latitude_uniform() {
+        // Derivation of the sample size, so it isn't a round number picked by feel:
+        //
+        // If z came from sampling latitude uniformly instead (the bug the docstring
+        // warns against), z = sin(latitude) would follow the arcsine distribution, whose
+        // density 1/(pi * sqrt(1 - z^2)) diverges at the poles and dips at the equator.
+        // Integrating that density over the outer bin [0.8, 1.0] gives about 20.5% of
+        // samples (vs 10% expected if z were flat); over the centre bin [-0.1, 0.1] it
+        // gives about 6.4% (vs 10%). A tolerance band of +/-30% around the flat 10%-per-
+        // bin expectation -- i.e. counts within [7%, 13%] of N -- sits strictly between
+        // "flat" and either of those bugged figures, so it distinguishes the two in
+        // either direction: under the bug, the outer bins would overshoot the band and
+        // the centre bins would undershoot it.
+        //
+        // For that band to almost never trip under the true, flat distribution, the
+        // binomial standard deviation per bin (sqrt(N * 0.1 * 0.9)) must be small next
+        // to the band's half-width (0.03 * N):
+        //   5 * sqrt(0.09 * N) < 0.03 * N  =>  sqrt(N) > 50  =>  N > 2500.
+        // N = 5000 clears that with room (5 sigma is ~106 samples against a 150-sample
+        // half-width) while staying fast to run.
+        const N: usize = 5000;
+        const BINS: usize = 10;
+        let bins_f = BINS as f64; // cast-ok: bin count to f64 for bucketing
+        let mut counts = [0usize; BINS];
+        for index in 0..N {
+            let p = pole(20260831, index);
+            let z = p.vector.z;
+            let mut bin = ((z + 1.0) / 2.0 * bins_f) as usize; // cast-ok: fractional position to a bin index
+            if bin >= BINS {
+                bin = BINS - 1; // z == 1.0 exactly falls in the last bin
+            }
+            counts[bin] += 1;
+        }
+        let expected = N / BINS;
+        let expected_f = expected as f64; // cast-ok: expected bin count to f64 for tolerance math
+        let tolerance = (0.3 * expected_f) as usize; // cast-ok: a fraction back to a sample count
+        for (bin, &count) in counts.iter().enumerate() {
+            let low = expected - tolerance;
+            let high = expected + tolerance;
+            assert!(
+                count >= low && count <= high,
+                "bin {bin} has {count} samples, expected {expected} +/- {tolerance} \
+                 (a bug sampling latitude uniformly would crowd z near the poles \
+                 and thin it near the equator, pushing counts far outside this band)"
+            );
+        }
+    }
+
+    #[test]
+    fn rates_are_within_the_configured_speed_range() {
+        for index in 0..64 {
+            let r = rate(20260831, index);
+            assert!(
+                r.abs() >= SLOWEST_RAD_PER_MYR && r.abs() <= FASTEST_RAD_PER_MYR,
+                "rate {r} at index {index} out of [{SLOWEST_RAD_PER_MYR}, {FASTEST_RAD_PER_MYR}]"
+            );
+        }
+    }
+
+    #[test]
+    fn both_signs_of_rate_occur_across_a_run_of_indices() {
+        let mut saw_negative = false;
+        let mut saw_positive = false;
+        for index in 0..64 {
+            let r = rate(20260831, index);
+            if r < 0.0 {
+                saw_negative = true;
+            }
+            if r > 0.0 {
+                saw_positive = true;
+            }
+        }
+        assert!(saw_negative && saw_positive, "expected both signs across 64 indices");
     }
 
     #[test]
