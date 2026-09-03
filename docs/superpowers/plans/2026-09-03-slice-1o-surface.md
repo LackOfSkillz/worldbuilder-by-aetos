@@ -134,16 +134,17 @@ So a corpus must include feature centres *explicitly*, not by sampling more fine
 
 **The open case is now CLOSED, by measurement rather than argument.** `amplitude_m` has a strictly
 positive floor — minimum `4.500000000000001` over 71,190 evaluations — so the guard fires only when
-`authority` is exactly `1.0`, which needs `abs(lift) >= 2.999999999999112`. Meanwhile `shaped == -0.0`
+`authority` is exactly `1.0`, which needs `abs(lift) >= 2.999999988824129`. Meanwhile `shaped == -0.0`
 requires every applying feature to contribute exactly `-0.0`. Both legs were constructed separately —
 `-0.0` in 95 of 4,335, the guard fired in 348, and 867 of 867 in a two-feature co-occurrence hunt — and
 **the intersection is empty in both sweeps**. A further 400,000 draws never *arrived* at `-0.0` from a
 non-`-0.0` input, and the shelf never returns an exact signed zero.
 
-**So `surface.rs` needs no guard of its own, and `detail.rs` must keep its.** The closure has two named
-dependencies, and either change reopens it: every roughness constant in `detail.py` staying strictly
-positive, and `Features.apply` initialising `result = elevation_m` and `continue`-ing before the authority
-update.
+**So `surface.rs` needs no guard of its own, and `detail.rs` must keep its.** The closure has **three**
+named dependencies, and any change reopens it: every roughness constant in `detail.py` staying strictly
+positive; `Features.apply` initialising `result = elevation_m` and `continue`-ing before the authority
+update; and **`shelf_weight` staying within `[0,1]`** — outside that range `amplitude_m` goes non-positive
+in 66,594 of 200,000 draws. The third was found by review, not by the closure's author.
 
 **Neither population is a superset of the other.** The grid shows 0 of 625 guard fires; the centres show
 24 of 25 — and the centres collapse the budget's smallest row, sizing detail off pre-feature ground, from
