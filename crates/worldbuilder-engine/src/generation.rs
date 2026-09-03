@@ -205,6 +205,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pole_uses_the_non_normalising_constructor() {
+        // The distinction is otherwise unguarded. `pole`'s vector is unit by
+        // construction, so swapping the direct constructor for `from_vector` changes
+        // no test's expectations and no conformance bound either -- pole goes through
+        // cos/sin, so its differential comparison is bounded at 4 ULP and a
+        // normalisation difference of about one ULP hides inside that.
+        //
+        // This pins it: rebuild the vector exactly as `pole` does, without
+        // normalising, and require bit equality. `from_vector` divides by a length
+        // that is 1.0 only to within a ULP or two, so it would move some component
+        // for at least one of these indices.
+        let mut checked = 0;
+        for index in 0..16usize {
+            let i = index as i64; // cast-ok: plate index to i64 for the hash key
+            let z = 2.0 * fraction(20260831, &[Part::Str("plate"), Part::Int(i), Part::Str("pole-z")]) - 1.0;
+            let angle = 2.0 * std::f64::consts::PI
+                * fraction(20260831, &[Part::Str("plate"), Part::Int(i), Part::Str("pole-angle")]);
+            let inner = 1.0 - z * z;
+            let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+            let want = Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z);
+            let got = pole(20260831, index).vector;
+            assert_eq!(got.x.to_bits(), want.x.to_bits(), "pole {index} x was normalised");
+            assert_eq!(got.y.to_bits(), want.y.to_bits(), "pole {index} y was normalised");
+            assert_eq!(got.z.to_bits(), want.z.to_bits(), "pole {index} z was normalised");
+            checked += 1;
+        }
+        assert_eq!(checked, 16, "every index must have been compared");
+    }
+
+    #[test]
     fn a_negative_world_seed_formats_and_hashes_like_the_python() {
         // The seed is an i64 and may be negative. Python's str(-20260831) is
         // "-20260831"; Rust's Display for i64 agrees, but the two only have to
