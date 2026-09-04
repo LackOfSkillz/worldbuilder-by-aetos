@@ -22,6 +22,7 @@ pub mod tectonics;
 pub mod shelf;
 pub mod substrate;
 pub mod surface;
+pub mod stream;
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
