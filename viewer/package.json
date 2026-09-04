@@ -1,0 +1,13 @@
+{
+  "name": "worldbuilder-viewer",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Offline CesiumJS viewer shell for worldbuilder_by_aetos (slice 2b).",
+  "scripts": {
+    "vendor": "node scripts/vendor-cesium.mjs",
+    "serve": "node scripts/serve.mjs"
+  },
+  "dependencies": {
+    "cesium": "1.145.0"
+  }
+}

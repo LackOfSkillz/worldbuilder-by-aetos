@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>worldbuilder viewer — offline shell</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="/vendor/cesium/Widgets/widgets.css" />
+<style>
+  html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+  #status { position: absolute; z-index: 10; top: 8px; left: 8px; font: 12px/1.4 monospace;
+            background: rgba(0,0,0,.65); color: #eee; padding: 6px 8px; border-radius: 3px; }
+</style>
+
+<div id="cesiumContainer"></div>
+<div id="status">booting…</div>
+
+<script>
+  // Cesium resolves every worker, asset and widget image relative to this.
+  // It must be set BEFORE Cesium.js is evaluated. There is no remote fallback:
+  // buildModuleUrl() only ever joins against this base.
+  window.CESIUM_BASE_URL = "/vendor/cesium/";
+</script>
+<script src="/vendor/cesium/Cesium.js"></script>
+<script>
+  // NET PROBE — deliberately off by default.
+  //   /            -> offline: baseLayer disabled, no imagery provider at all.
+  //   /?net-probe=1 -> restores Cesium's own default, ImageryLayer.fromWorldImagery(),
+  //                    which is the single network-live Viewer default. This exists so the
+  //                    network trace can be shown to be capable of catching a phone-home.
+  //                    A trace that shows nothing proves nothing unless it can show something.
+  const netProbe = new URLSearchParams(location.search).has("net-probe");
+
+  // Ion is a separate, paid Cesium product with its own terms. Nothing here uses it,
+  // and blanking the bundled demo token makes any accidental ion call fail loudly
+  // rather than quietly succeed against Cesium's servers.
+  if (!netProbe) {
+    Cesium.Ion.defaultAccessToken = undefined;
+  }
+
+  const viewer = new Cesium.Viewer("cesiumContainer", {
+    // The one network-live default. `false` means: no base imagery layer at all.
+    baseLayer: netProbe ? Cesium.ImageryLayer.fromWorldImagery() : false,
+    // Ion-backed or ion-listing widgets. Each would reach api.cesium.com when used.
+    baseLayerPicker: false,
+    geocoder: false,
+    // Default terrain is EllipsoidTerrainProvider, which is computed, not fetched.
+    // Slice 2b Task 4 replaces it with a CustomHeightmapTerrainProvider over the
+    // generator; it stays local either way.
+    animation: false,
+    timeline: false,
+    fullscreenButton: false,
+    navigationHelpButton: false,
+    homeButton: false,
+    sceneModePicker: false,
+    infoBox: false,
+    selectionIndicator: false,
+  });
+  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#10243a");
+
+  document.getElementById("status").textContent =
+    `Cesium ${Cesium.VERSION} | base=${window.CESIUM_BASE_URL} | ` +
+    `imageryLayers=${viewer.imageryLayers.length} | ` +
+    `terrain=${viewer.terrainProvider.constructor.name} | ` +
+    `net-probe=${netProbe ? "ON (expect an outbound request)" : "off"}`;
+
+  // Machine-readable handles for the trace harness and for later slice-2b tasks.
+  window.viewer = viewer;
+  window.__viewerReady = {
+    version: Cesium.VERSION,
+    netProbe,
+    imageryLayers: viewer.imageryLayers.length,
+    terrain: viewer.terrainProvider.constructor.name,
+  };
+</script>

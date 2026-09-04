@@ -1,0 +1,9 @@
+node_modules/
+.server.log
+
+# The root .gitignore's diagnostic-render patterns (land-*.png, look-*.png, patch.*,
+# grid-*.png, fine-*.png, chart-*.png, bottom*.png ...) are UNANCHORED, so they match at
+# any depth and silently swallowed one vendored Cesium asset:
+# public/vendor/cesium/Assets/Textures/maki/land-use.png. Re-include the whole vendored
+# tree so a partial vendor can never be committed and pass unnoticed.
+!public/vendor/**

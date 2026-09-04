@@ -1,0 +1,6 @@
+# core.autocrlf is on in this repo. Without this, git would check the vendored Cesium tree
+# out with CRLF line endings, so a fresh clone would NOT be byte-identical to the npm
+# package: `npm run vendor` would report every text file as modified and every sha256 in
+# cesium-manifest.txt would be wrong. Store and check out the vendored bytes verbatim.
+/public/vendor/** -text
+/cesium-manifest.txt -text
