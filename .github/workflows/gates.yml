@@ -38,7 +38,7 @@
 #     would be a green run. A clean checkout every time is the only cache policy that cannot
 #     lie. The cost is recompiling two pinned dependencies (blake2, libm) and one small crate
 #     per job. If build time ever becomes the binding constraint, the cache key must include
-#     the same 24-input source fingerprint MANIFEST.txt records, not `Cargo.lock` alone.
+#     the same 28-input source fingerprint MANIFEST.txt records, not `Cargo.lock` alone.
 #
 #   * NO ARTIFACT IS REBUILT BEFORE IT IS CHECKED. The provenance job checks the COMMITTED
 #     `.wasm` against the source in the same commit. Building it first would make the gate
@@ -134,9 +134,19 @@ jobs:
           rustc -vV
           cargo --version
 
+      # `--no-fail-fast` is load-bearing, not tidiness. Cargo runs the lib's unit tests
+      # first and, by default, STOPS at the first test binary that fails -- so a single
+      # failing unit test means `tests/no_std_math.rs` never executes and THE DETERMINISM
+      # GUARD IS NEVER EVALUATED. Task 2 hit exactly that: a branch that changed a constant
+      # went red on `--lib` and the log shows no_std_math was never reached, so the job was
+      # red for a reason nobody had checked. One gate silently hiding another is the same
+      # shape as every other failure this workflow exists to catch.
+      #
+      # This changes WHAT RUNS, not what is asserted: every test still has to pass, and the
+      # step's exit status is still the gate. It only stops cargo from concealing the rest.
       - name: cargo test ${{ matrix.features }}
         shell: bash
-        run: cargo test -p worldbuilder-engine ${{ matrix.features }}
+        run: cargo test -p worldbuilder-engine ${{ matrix.features }} --no-fail-fast
 
       # THE COUNT GATE. The step above asks "did anything fail". It cannot ask "did anything
       # RUN": a suite whose tests are deleted, or whose `#[cfg]` stops matching, exits 0.
@@ -231,6 +241,18 @@ jobs:
           maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
           python -c "import worldbuilder_engine; print('engine imported from', worldbuilder_engine.__file__)"
 
+      # Collected BEFORE the run, and kept, because it is one of the two independent
+      # statements the count gate cross-checks. `-q` prints one node id per test and a
+      # `<N> tests collected in <T>s` trailer; the run below prints `<N> passed in <T>s`.
+      # Two formats, two productions, one number.
+      - name: Collect the suite (one of the two counts)
+        shell: bash
+        env:
+          WORLDBUILDER_REQUIRE_ENGINE: "1"
+        run: |
+          set -euo pipefail
+          python -m pytest tests/ --collect-only -q 2>&1 | tee collect.out
+
       - name: pytest with the engine REQUIRED
         shell: bash
         env:
@@ -238,7 +260,29 @@ jobs:
         run: |
           set -euo pipefail
           python -c "import worldbuilder; print('reference imported from', worldbuilder.__file__)"
-          python -m pytest tests/
+          python -m pytest tests/ 2>&1 | tee pytest.out
+
+      # THE COUNT GATE, python half. The step above asks "did anything fail". It cannot ask
+      # "did anything RUN", and on THIS suite that distinction has already cost a slice:
+      # with WORLDBUILDER_REQUIRE_ENGINE unset and no engine built, tests/test_conformance.py
+      # skips AT IMPORT, all 150 of its comparisons collapse into one `1 skipped`, and pytest
+      # exits 0 reporting `240 passed, 1 skipped`. Green, having compared nothing. Nobody
+      # scanning that log finds a suspicious number, because there isn't one.
+      #
+      # So the size is asserted, per file and in total, from two independently-produced
+      # statements that must agree -- and the script fails hard if either is absent, rather
+      # than matching nothing and calling it clean.
+      #
+      # 390 = 150 in test_conformance.py + 240 across the other thirteen files. NOTE: the
+      # Task 2 report reads "390 conformance, 240 elsewhere"; that is a misreading of its own
+      # run -- 390 is the WHOLE suite. Re-derived here from `--collect-only -q`.
+      - name: Assert the suite -- 390 tests, 150 of them conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/assert_counts.py pytest \
+            --collect collect.out --run pytest.out \
+            --expect-total 390 --expect-file tests/test_conformance.py=150
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
@@ -338,10 +382,13 @@ jobs:
           node parity.mjs native.txt 2>&1 | tee parity.out
 
       # THE COUNT GATE, parity half. `0 divergent` is only as strong as the number of values
-      # it is zero out of, and `examples/parity_dump.rs` is NOT one of the fingerprinted
-      # inputs -- the corpus can shrink without provenance noticing. 53,251 is the recorded
-      # population; the script also checks the nine per-group tallies sum to it, so a format
-      # change fails loudly instead of matching nothing.
+      # it is zero out of. `examples/parity_dump.rs` was NOT a fingerprinted input until
+      # 2026-09-04 -- run 33916847441 shrank the corpus by a sixth with provenance, parity
+      # and `cargo test` all green, and this gate was the only thing that noticed. It is a
+      # fingerprint input now, so provenance refuses too; the two are independent and both
+      # are kept. 53,251 is the recorded population; the script also checks the nine
+      # per-group tallies sum to it, so a format change fails loudly instead of matching
+      # nothing.
       - name: Assert the corpus -- 53,251 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
