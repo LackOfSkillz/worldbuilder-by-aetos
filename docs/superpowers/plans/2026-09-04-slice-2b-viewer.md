@@ -154,7 +154,7 @@ So the cap of 12 is correct for generated ground and **four levels short for fea
 
 ---
 
-### Task 6: A content-security policy — turn "did not" into "cannot"
+### Task 6: Harden the served surface — a policy, and provenance
 
 **Files:** `viewer/` server config and page head
 
@@ -172,6 +172,17 @@ the net probe and confirm the policy now BLOCKS it** — a CSP that has never re
 to be doing its job.
 
 - [ ] **Steps:** add the policy, verify the viewer, verify the probe is blocked, commit.
+
+**And close a gap that only exists as a composition.** The parity harness proves the **shipped bytes**
+match native source. Nothing proves they were **built from current source** — there is no staleness guard
+on the committed `.wasm`. Neither is a defect alone; together, **a stale artifact can pass parity green
+forever while the source moves underneath it.**
+
+Add the guard to `viewer/scripts/build-wasm.mjs` so the two close together — and, as everywhere else in
+this slice, **prove it by making it fail**: mutate the source without rebuilding and confirm the guard
+notices.
+
+- [ ] **Steps:** add the staleness guard, prove it rejects a stale artifact, commit.
 
 ---
 
