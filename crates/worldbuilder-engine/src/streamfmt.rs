@@ -58,16 +58,26 @@
 //! # What is not in the format
 //!
 //! Positions are not stored: the header carries Task 3's `position_checksum` and a reader
-//! regenerates them (8 bytes rather than 24 per node). Deferred deliberately, all of it
+//! regenerates them (8 bytes rather than 24 per node). `GraphReader::verify_sampling`
+//! is that regeneration, and `positions_match` is the comparison for a caller who already
+//! has the nodes; both call `stream::position_checksum`, which is public **so that this
+//! module never grows a second copy of the hash**. A second copy would agree until one was
+//! touched, and then every existing worldfile would fail its own checksum. That also makes
+//! `sampling_kind` a *verifiable* field rather than a recorded claim: the sampler named in
+//! the header, run on the seed and count in the header, must hash to the checksum in the
+//! header, so a file that lies about any of the three is refused. `SamplingKind::Supplied`
+//! declines to verify rather than passing, because this crate cannot reproduce a node set
+//! it was handed. Deferred deliberately, all of it
 //! recomputable or slice 5's: the lake super-graph beyond the root, thermal-correction
 //! state, uplift, erodibility, anything derived from receivers, reach geometry, further
 //! flag bits. `pond_max_drainage_area_m2` is a *build parameter with no default* (Task 4
 //! refused to invent one) and is deliberately absent — it produced `LakeKind`, and
 //! `LakeKind` is what is stored.
 
+use crate::sphere::SpherePoint;
 use crate::stream::{
-    flag, GraphHeader, Lake, LakeKind, Reach, SamplingKind, StreamGraph, MAX_NODES, NO_DOWNHILL,
-    NO_LAKE,
+    flag, node_positions, position_checksum, GraphHeader, Lake, LakeKind, Reach, SamplingKind,
+    StreamGraph, MAX_NODES, NO_DOWNHILL, NO_LAKE,
 };
 use core::ops::Range;
 
@@ -265,6 +275,14 @@ pub enum FormatError {
     LakeFlagRecordMismatch { node: u32, flagged: bool, record: bool },
     MouthAtNonRoot { node: u32 },
     ReachEndpointOutOfRange { index: u64, node: u32 },
+    /// A regenerated node set does not hash to the checksum the header declares. The
+    /// positions are not in the file, so this is the only thing standing between a reader
+    /// and a graph whose edges refer to somewhere else entirely.
+    PositionChecksumMismatch { found: u64, expected: u64 },
+    /// The header's `SamplingKind` names no sampler this crate can run, so the positions
+    /// cannot be regenerated and the checksum cannot be checked. `Supplied` is the case:
+    /// the caller had the nodes, and only the caller can produce them again.
+    PositionsNotRegenerable { kind: SamplingKind },
 }
 
 /// A contiguous run of nodes, decoded. `downhill` holds **global** node indices, not
@@ -791,8 +809,18 @@ impl GraphReader {
         )
     }
 
-    /// The lake table. Small by measurement — 5,647 roots at 20,000,000 nodes — so it is
-    /// read whole or not at all.
+    /// The lake table, read whole or not at all.
+    ///
+    /// **The figure that justified "whole" was wrong for this crate, and the conclusion
+    /// survives anyway.** It was the extraction's §8.3 5,647 roots at 20,000,000 nodes,
+    /// which would be a 135,528-byte section. Task 6 measured this crate's own `Surface` at
+    /// that size: 597,687 roots, of which 225,821 are lakes, so the section is **5,419,704
+    /// bytes** -- forty times larger. It is still 0.93% of a 585,419,992-byte file, so
+    /// reading it whole is still right, and a client that wants only a region still never
+    /// touches it. But 5.4 MB is a fetch a browser notices, and slice 5 -- which populates
+    /// `outflow_lake` and turns this table into a graph -- should expect to make it
+    /// region-sliceable too. Recorded rather than fixed: changing it now would be a
+    /// format-version bump for a cost nothing yet pays.
     pub fn read_lakes(&self, whole: &[u8]) -> Result<Vec<Lake>, FormatError> {
         let section = self.section(SectionKind::Lakes);
         let bytes = self.slice_of(whole, section.range())?;
@@ -834,6 +862,55 @@ impl GraphReader {
             out.push(Reach { from_node, to_node, gradient });
         }
         Ok(out)
+    }
+
+    /// True when `positions` are exactly the node set this file was written from.
+    ///
+    /// **Restored.** Task 5 dropped this rather than copy `stream.rs`'s FNV, which was the
+    /// right call and the wrong end state: without it the header's `position_checksum` was
+    /// eight bytes nothing could read, and `SamplingKind` was a claim with nothing behind
+    /// it. `stream::position_checksum` is public now, so this is the one hash, called
+    /// twice.
+    ///
+    /// The length is part of the answer: a hash over the wrong number of points is not a
+    /// near miss, it is a different graph.
+    pub fn positions_match(&self, positions: &[SpherePoint]) -> bool {
+        u64_of(positions.len()) == u64::from(self.header.node_count)
+            && position_checksum(positions) == self.header.position_checksum
+    }
+
+    /// Regenerate the node set the header claims and check it against the checksum.
+    ///
+    /// **This is what makes `SamplingKind` verifiable rather than merely recorded.** The
+    /// header names a sampler, a seed and a node count; every one of the three is an input
+    /// to `stream::node_positions`, so a file that lies about any of them fails here. A
+    /// file that lies about being `Spiral` when its nodes were supplied fails here too,
+    /// which was the last unverifiable field in the header.
+    ///
+    /// `Supplied` is refused rather than passed: this crate does not know where those
+    /// nodes came from, and answering "verified" for a set nobody can reproduce would be
+    /// the opposite of failing closed. Such a caller has the positions and calls
+    /// `positions_match`.
+    ///
+    /// **Costs what the node set costs** — 20,000,000 nodes is 480 MB of `SpherePoint` and
+    /// the sampler's own runtime — so it is a separate call and never folded into `open`,
+    /// which must stay a 288-byte operation.
+    pub fn verify_sampling(&self) -> Result<Vec<SpherePoint>, FormatError> {
+        match self.header.sampling_kind {
+            SamplingKind::Supplied => {
+                Err(FormatError::PositionsNotRegenerable { kind: SamplingKind::Supplied }) // MUT-40
+            }
+            SamplingKind::Spiral => {
+                // `node_positions` returns exactly `count` points by construction, so
+                // there is no length check here and no unreachable error arm for one --
+                // the same call Task 5 made on `MissingSection`. `positions_match` does
+                // check a length, because there the points come from a caller.
+                let positions = node_positions(self.header.world_seed, self.header.node_count);
+                let found = position_checksum(&positions);
+                ensure(found == self.header.position_checksum, || FormatError::PositionChecksumMismatch { found, expected: self.header.position_checksum })?; // MUT-41
+                Ok(positions)
+            }
+        }
     }
 
     /// Everything, plus the cross-section invariant a region read cannot see: **every root
@@ -1340,6 +1417,155 @@ mod tests {
             assert_eq!(read.kind, built.kind);
             assert_eq!(read.outflow_lake, built.outflow_lake);
         }
+    }
+
+    // ---- the position checksum, and what it makes verifiable -------------------------
+
+    fn sampled_graph(count: u32) -> StreamGraph {
+        let sampling = sample_nodes(FIXTURE_SEED, count, FIXTURE_RADIUS_M).expect("sampled");
+        let heights = sampled_heights(&sampling.positions);
+        let params = BuildParams {
+            world_seed: FIXTURE_SEED,
+            radius_m: FIXTURE_RADIUS_M,
+            sea_level_m: SAMPLED_DATUM_M,
+            sampling_kind: SamplingKind::Spiral,
+            pond_max_drainage_area_m2: 5.0e9,
+        };
+        StreamGraph::build(
+            &params,
+            &sampling.positions,
+            &heights,
+            &sampling.area_m2,
+            &sampling.neighbours,
+        )
+        .expect("the sampled graph builds")
+    }
+
+    /// Task 5's dropped check, restored: a reader can now tell whether a node set is the
+    /// one the file was written from, using `stream.rs`'s own hash rather than a copy.
+    #[test]
+    fn a_regenerated_node_set_is_checkable_against_the_header() {
+        let graph = sampled_graph(4_000);
+        let file = write_graph(&graph);
+        let reader = GraphReader::open_whole(&file).expect("opens");
+
+        let right = crate::stream::node_positions(FIXTURE_SEED, 4_000);
+        assert!(reader.positions_match(&right));
+
+        // A different seed is a different planet, and the checksum says so.
+        let wrong_seed = crate::stream::node_positions(FIXTURE_SEED + 1, 4_000);
+        assert!(!reader.positions_match(&wrong_seed));
+
+        // A different node count is not a near miss either -- and the length check catches
+        // it before the hash does, which is why the length is part of the answer.
+        let wrong_count = crate::stream::node_positions(FIXTURE_SEED, 3_999);
+        assert!(!reader.positions_match(&wrong_count));
+
+        // One node moved by one bit.
+        let mut nudged = right.clone();
+        nudged[2_000].vector.x = f64::from_bits(nudged[2_000].vector.x.to_bits() ^ 1);
+        assert!(!reader.positions_match(&nudged));
+    }
+
+    /// `SamplingKind` was "recorded but unverifiable" after Task 5. It is verifiable now:
+    /// the header names the sampler, the seed and the count, and all three are inputs to
+    /// the sampler the claim names.
+    #[test]
+    fn the_sampling_kind_is_verifiable_and_not_merely_recorded() {
+        let graph = sampled_graph(4_000);
+        let file = write_graph(&graph);
+        let reader = GraphReader::open_whole(&file).expect("opens");
+        let regenerated = reader.verify_sampling().expect("a Spiral header regenerates");
+        assert_eq!(regenerated.len(), 4_000);
+        assert!(reader.positions_match(&regenerated));
+    }
+
+    /// A file that claims `Spiral` over nodes the spiral did not produce. This is the case
+    /// Task 5 reported as reading clean, and it does not any more.
+    #[test]
+    fn a_file_that_lies_about_its_sampler_is_refused() {
+        // The four-node fixture's positions are hand-placed lat/lons, nothing to do with
+        // the spiral -- but its header is rewritten to claim the spiral produced them.
+        let graph = fixture_graph();
+        let mut file = write_graph(&graph);
+        assert_eq!(file[OFF_SAMPLING_KIND], 0, "the fixture is built as Supplied");
+        file[OFF_SAMPLING_KIND] = 1;
+        let reader = GraphReader::open_whole(&file).expect("the lie is structurally legal");
+        assert_eq!(reader.header().sampling_kind, SamplingKind::Spiral);
+        let err = reader.verify_sampling().expect_err("the spiral does not produce those nodes");
+        assert!(matches!(err, FormatError::PositionChecksumMismatch { .. }), "{err:?}");
+        // And the mismatch names both sides, so a reader can log what it saw.
+        if let FormatError::PositionChecksumMismatch { found, expected } = err {
+            assert_eq!(expected, FIXTURE_CHECKSUM);
+            assert_ne!(found, FIXTURE_CHECKSUM);
+        }
+    }
+
+    /// A corrupted checksum over a genuine spiral file: the other direction of the same
+    /// guard, so neither side of the comparison is the only one exercised.
+    #[test]
+    fn a_corrupted_checksum_is_refused_against_a_genuine_node_set() {
+        let graph = sampled_graph(4_000);
+        let mut file = write_graph(&graph);
+        let real = graph.header().position_checksum;
+        file[OFF_POSITION_CHECKSUM..OFF_POSITION_CHECKSUM + 8]
+            .copy_from_slice(&(real ^ 1).to_le_bytes());
+        let reader = GraphReader::open_whole(&file).expect("a wrong checksum is not malformed");
+        let err = reader.verify_sampling().expect_err("the regenerated nodes do not match");
+        assert_eq!(
+            err,
+            FormatError::PositionChecksumMismatch { found: real, expected: real ^ 1 }
+        );
+        assert!(!reader.positions_match(&crate::stream::node_positions(FIXTURE_SEED, 4_000)));
+    }
+
+    /// `Supplied` is refused rather than passed. Answering "verified" for a node set this
+    /// crate cannot reproduce would be the exact opposite of failing closed.
+    #[test]
+    fn a_supplied_sampling_declines_to_verify_rather_than_passing() {
+        let file = write_graph(&fixture_graph());
+        let reader = GraphReader::open_whole(&file).expect("opens");
+        assert_eq!(reader.header().sampling_kind, SamplingKind::Supplied);
+        assert_eq!(
+            reader.verify_sampling(),
+            Err(FormatError::PositionsNotRegenerable { kind: SamplingKind::Supplied })
+        );
+        // The caller who has the positions can still check them.
+        assert!(reader.positions_match(&fixture_positions()));
+        assert!(!reader.positions_match(&crate::stream::node_positions(FIXTURE_SEED, 4)));
+    }
+
+    /// There is exactly one FNV in the crate. A second copy would agree until one of them
+    /// was touched, and then every existing worldfile would fail its own checksum -- which
+    /// is why Task 5 refused to write one and this task made the original public instead.
+    #[test]
+    fn the_checksum_is_the_one_in_stream_rs_and_not_a_copy_of_it() {
+        let source = include_str!("streamfmt.rs");
+        // The offset basis and the prime, in every spelling a copy would plausibly use.
+        // **Assembled at run time from halves**, because a needle written whole would be
+        // found in the needle list itself and the test would fail on its own text.
+        let halves: [(&str, &str); 7] = [
+            ("0xcbf2_9ce4", "_8422_2325"),
+            ("0xcbf29ce4", "84222325"),
+            ("14695981039", "346656037"),
+            ("0x0000_0100", "_0000_01b3"),
+            ("0x00000100", "000001b3"),
+            ("10995116", "28211"),
+            ("const ", "fnv_offset"),
+        ];
+        let lower = source.to_ascii_lowercase();
+        for (head, tail) in halves {
+            let needle = format!("{head}{tail}");
+            assert!(
+                !lower.contains(&needle),
+                "streamfmt must not carry its own copy of the hash: found {needle}"
+            );
+        }
+        // And the one it does call is stream.rs's, over the same bytes.
+        assert_eq!(
+            position_checksum(&fixture_positions()),
+            fixture_graph().header().position_checksum
+        );
     }
 
     // ---- region-sliceability ---------------------------------------------------------

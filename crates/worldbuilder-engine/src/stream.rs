@@ -253,7 +253,18 @@ fn fnv1a_u64(state: u64, value: u64) -> u64 {
     hash
 }
 
-fn position_checksum(positions: &[SpherePoint]) -> u64 {
+/// FNV-1a over the node positions' IEEE-754 bit patterns, in index order.
+///
+/// **Public, and that is the point.** `streamfmt` stores this in the header and stores no
+/// positions; a reader that regenerates a node set has to be able to hash it with *this*
+/// function. Task 5 dropped its `positions_match` rather than copy the hash, and was right
+/// to: a second copy of a hash is a version bump waiting to happen -- the two would agree
+/// until one was touched, and the disagreement would surface as every existing worldfile
+/// failing its own checksum. One definition, exported.
+///
+/// The bit pattern, not the value: `-0.0` and `0.0` are different positions to a
+/// bit-identical rebuild, and NaN is not equal to itself.
+pub fn position_checksum(positions: &[SpherePoint]) -> u64 {
     let mut hash = FNV_OFFSET;
     for point in positions {
         hash = fnv1a_u64(hash, point.vector.x.to_bits());
@@ -420,8 +431,11 @@ impl StreamGraph {
     ///
     /// **This is the forest test.** If any node remains unpeeled it is on a cycle, and a
     /// cycle would make slice 5's root-to-leaf walk non-terminating. Every probe run
-    /// peeled completely — 20,000,000 of 20,000,000 at the largest size tried (§8.3) — and
-    /// this turns that measurement into something the code cannot quietly lose.
+    /// peeled completely -- 20,000,000 of 20,000,000 at the largest size tried (§8.3) --
+    /// and Task 6 reproduced that inside this crate, over a real `Surface` field rather
+    /// than a probe one: 20,000,000 of 20,000,000, and complete peels at 10,000, 100,000,
+    /// 200,000, 1,000,000 and 5,000,000 as well. This turns those measurements into
+    /// something the code cannot quietly lose.
     ///
     /// Safe on a corrupted graph: an out-of-range target is ignored rather than indexed.
     pub fn peel(&self) -> Peel {
@@ -669,10 +683,24 @@ impl StreamGraph {
         &self.lakes
     }
 
-    /// A linear scan, deliberately: roots grow sub-linearly in node count — 300 at 10 k
-    /// nodes and 5,647 at 20 M, a 19x rise for a 2,000x rise in nodes (§8.3) — so the lake
-    /// table is small in absolute terms and a spatial index would be a structure to keep
-    /// consistent for no measured gain.
+    /// A linear scan, and **Task 6 measured that this will not survive slice 5**.
+    ///
+    /// It was chosen on the extraction's §8.3 figures -- 300 roots at 10,000 nodes and
+    /// 5,647 at 20,000,000, "a 19x rise for a 2,000x rise in nodes" -- which make the lake
+    /// table small in absolute terms and a spatial index a structure to keep consistent for
+    /// no gain. **Those figures are a property of the extraction's probe field, not of this
+    /// code, and neither the counts nor the sub-linearity survive contact with a real
+    /// elevation field.** Over this crate's own `Surface`, Task 6's `streambench` measures
+    /// 489 roots at 10,000 nodes (4.89%) and 597,687 at 20,000,000 (2.99%), of which
+    /// **225,821 are lakes**: a **1,222x** rise for that same 2,000x rise in nodes, which
+    /// is very nearly linear. The root *fraction* does still fall as spacing tightens,
+    /// exactly as §8.3 describes and for the reason it gives; what does not hold is that
+    /// the absolute count stays small, because a real field has relief at every scale the
+    /// spacing can resolve and the probe field did not.
+    ///
+    /// So a scan of this table is 225,821 comparisons at planet scale, not 5,647. Slice 5
+    /// calls it per lake while filling basins and will have to index it; the signature does
+    /// not change when it does, which is why this is a note and not a fix.
     pub fn lake_at(&self, node: u32) -> Option<&Lake> {
         self.lakes.iter().find(|lake| lake.root_node == node)
     }
@@ -1402,6 +1430,47 @@ mod tests {
         assert!(low.lakes().len() > high.lakes().len());
     }
 
+    /// **The root count is invariant across SEA LEVELS at a fixed node count. It is not
+    /// invariant across node counts, and quoting it without its population is how a wrong
+    /// number travels.**
+    ///
+    /// The reason is one line of `build`: a root is a node with no strictly-lower
+    /// neighbour, and the datum appears nowhere in that test. The datum only decides how
+    /// the roots are *labelled*, so it moves the mouth/lake split and never the total.
+    ///
+    /// **The population is this module's 40x80 lattice fixture, 3,200 nodes**, where 633
+    /// roots is about 19.8% of the nodes. Roots are a **fraction of the node set, and the
+    /// fraction falls as spacing tightens**: at coarse spacing nearly every node is a local
+    /// extremum, and as nodes come closer together flow organises into chains. Every figure
+    /// in circulation is a different population and none of them contradicts another --
+    /// 19.8% here at 3,200 lattice nodes; the extraction's §8.3 3% at 10,000 and 0.03% at
+    /// 20,000,000 over its probe field; and 4.89% at 10,000 falling to 2.99% at 20,000,000
+    /// over this crate's own `Surface` (Task 6's `streambench`). A root count means nothing
+    /// without the node count and the field it was taken over.
+    #[test]
+    fn the_root_count_is_invariant_across_datums_at_a_fixed_node_count() {
+        let counts: Vec<(f64, usize, usize, usize)> = [-1400.0f64, 0.0, 2900.0]
+            .iter()
+            .map(|&datum| {
+                let graph = built(20_260_904, datum);
+                (datum, graph.roots().len(), graph.mouth_count(), graph.lakes().len())
+            })
+            .collect();
+        for &(datum, roots, mouths, lakes) in &counts {
+            assert_eq!(roots, 633, "the 3,200-node lattice has 633 roots at datum {datum}");
+            assert_eq!(mouths + lakes, roots, "every root is exactly one of the two");
+        }
+        // And the split does move, which is what makes the invariance a statement rather
+        // than a tautology about a classification nothing depends on.
+        assert_eq!(counts[0].2, 64);
+        assert_eq!(counts[1].2, 554);
+        assert_eq!(counts[2].2, 633);
+        // 3,200 nodes, so 633 roots is 19.78% -- an order of magnitude above the fraction
+        // the same code produces at a million nodes. The percentage is the thing that
+        // moves with node count, so the population is quoted with the number, always.
+        assert_eq!(ROWS * COLS, 3_200);
+    }
+
     // ---- property 3: rebuilds are bit-identical --------------------------------------
 
     #[test]
@@ -1602,6 +1671,96 @@ mod tests {
         )
         .expect_err("a zero area must be refused");
         assert!(matches!(err, GraphError::NonPositiveArea { node: 5 }));
+    }
+
+    // ---- the `drop_m > 0.0` filter, on its own ---------------------------------------
+
+    /// The edge rule's strictness is enforced **twice** — the `drop_m > 0.0` filter, and
+    /// `gradient > best_gradient` starting from `0.0` — and Task 3 recorded that relaxing
+    /// the first to `>= 0.0` fails no test, because a zero drop yields a zero gradient
+    /// which the second guard rejects anyway. Defence in depth, not a hole; but a guard
+    /// with no test of its own is a guard nobody can remove *deliberately*.
+    ///
+    /// This is the one behaviour the filter has that the second guard cannot supply:
+    /// **the filter runs before the coincidence check**, so a neighbour that is not
+    /// strictly below is never measured, and therefore never reported as coincident. Two
+    /// nodes at the same place and the same height are skipped by each other and the
+    /// graph builds; the same pair at *different* heights is refused
+    /// (`a_sampler_that_returns_a_duplicate_position_is_refused_by_build` covers that
+    /// arm). Relaxing this filter to `>= 0.0` turns the build below into a
+    /// `CoincidentNodes` refusal, which is what gives the line its own coverage.
+    ///
+    /// The asymmetry is a real property of the type and is recorded rather than fixed:
+    /// coincident nodes are a defect the *sampler* is asserted never to produce
+    /// (`sampled_nodes_keep_their_minimum_separation`), and `build` refuses them wherever
+    /// they could affect an edge.
+    #[test]
+    fn the_drop_filter_runs_before_the_coincidence_check() {
+        let positions = vec![
+            crate::sphere::SpherePoint::from_latlon(10.0, 20.0),
+            // Exactly node 0's position: `angle_to` is 0.0, not merely small.
+            crate::sphere::SpherePoint::from_latlon(10.0, 20.0),
+            crate::sphere::SpherePoint::from_latlon(-40.0, 100.0),
+        ];
+        assert_eq!(positions[0].angle_to(&positions[1]), 0.0);
+        // Nodes 0 and 1 are coincident AND at equal height, so neither is strictly below
+        // the other and the filter skips the pair before the angle is ever taken.
+        let heights = [500.0f64, 500.0, -10.0];
+        let areas = [1_000.0f64, 1_000.0, 1_000.0];
+        let neighbours = vec![vec![1u32, 2], vec![0u32, 2], vec![0u32, 1]];
+        let graph = StreamGraph::build(
+            &params(20_260_904, 0.0),
+            &positions,
+            &heights,
+            &areas,
+            &neighbours,
+        )
+        .expect("a coincident pair at equal height is skipped, not refused");
+        // Both still drain to node 2, which they are strictly above and not coincident
+        // with, so the skip is of that one pair and not of the whole neighbour list.
+        assert_eq!(graph.downhill_of(0), Some(2));
+        assert_eq!(graph.downhill_of(1), Some(2));
+        assert_eq!(graph.downhill_of(2), None);
+
+        // The other arm: the same coincident pair at *different* heights is a refusal,
+        // because now the filter passes and the angle is measured.
+        let heights = [500.0f64, 400.0, -10.0];
+        let err = StreamGraph::build(
+            &params(20_260_904, 0.0),
+            &positions,
+            &heights,
+            &areas,
+            &neighbours,
+        )
+        .expect_err("a coincident pair with a real drop between them must be refused");
+        assert!(matches!(err, GraphError::CoincidentNodes { node: 0, neighbour: 1 }));
+    }
+
+    /// The second half of the same strictness, kept separate so a mutation to either
+    /// guard has a test that names it: a neighbour at *equal* height is never chosen, and
+    /// a neighbour strictly *above* is never chosen, when the two are not coincident.
+    #[test]
+    fn an_equal_or_higher_neighbour_is_never_a_downhill_target() {
+        let positions = vec![
+            crate::sphere::SpherePoint::from_latlon(10.0, 20.0),
+            crate::sphere::SpherePoint::from_latlon(10.5, 20.0),
+            crate::sphere::SpherePoint::from_latlon(11.0, 20.0),
+        ];
+        // Node 0's only neighbours are one at exactly its height and one above it.
+        let heights = [500.0f64, 500.0, 900.0];
+        let areas = [1_000.0f64, 1_000.0, 1_000.0];
+        let neighbours = vec![vec![1u32, 2], vec![0u32], vec![0u32]];
+        let graph = StreamGraph::build(
+            &params(20_260_904, 1_000.0),
+            &positions,
+            &heights,
+            &areas,
+            &neighbours,
+        )
+        .expect("a flat-and-uphill node set builds");
+        assert_eq!(graph.downhill_of(0), None, "equal height is not descent");
+        assert_eq!(graph.downhill_of(1), None, "equal height is not descent");
+        assert_eq!(graph.downhill_of(2), Some(0));
     }
 }
 /// The measurements the sampler's constants were chosen from.
