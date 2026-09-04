@@ -1,8 +1,19 @@
 # viewer — offline CesiumJS shell
 
-Slice 2b Task 1. This directory holds a vendored CesiumJS and a minimal `Viewer` that
-draws nothing but the ellipsoid, plus the harness used to **witness** that the page makes
-no request off its own origin.
+Slice 2b. A vendored CesiumJS and a **read-only** window onto a world built by
+`worldbuilder-engine` in WebAssembly: a custom heightmap terrain provider over the
+generator, a pool of eight workers with an LRU tile cache, feature-aware refinement, twelve
+in-page checks and a `?fault=` switch that makes them fail on demand. No placement, no
+editing, no worldfile — **slice 3 owns those**.
+
+**New here? Read [The record (Task 7)](#the-record-task-7) first.** It is the consolidated
+statement of what this thing guarantees, what it costs, what it deliberately does not claim,
+and what is still open. Everything between here and there is the working notes of the six
+tasks that built it, kept because the reasoning is the expensive part.
+
+The sections below begin where the slice did: with a minimal `Viewer` that drew nothing but
+the ellipsoid, and the harness used to **witness** that the page makes no request off its own
+origin.
 
 The spec forbids live connections outright. A phone-home is disqualifying, and every later
 task in this slice is built on the assumption there is none. Before this task that
@@ -109,6 +120,28 @@ only what the browser reported as a violation. Nothing here is precautionary:
 `connect-src`, `font-src`, `media-src` and `frame-src` are deliberately **absent** so they
 fall back to `default-src 'self'`. `connect-src` is the one that refuses the net probe.
 
+### What this policy does not claim
+
+**It does not claim the page cannot evaluate a string.** `'unsafe-eval'` is in
+`script-src` — not the narrower `'wasm-unsafe-eval'`, which would have been enough for the
+WebAssembly and nothing else. It is there because the vendored bundle's embedded Knockout
+opens with `var t = this || (0,eval)("this")` (`Cesium.js:18266`, and once in each of
+`index.js` and `index.cjs` — verified by grep in Task 7, so no Cesium build avoids it). The
+bundle is strict, so `this` is `undefined` and **the eval always fires**; without the token
+`Cesium.js` throws `EvalError` at load and `Cesium` is never defined. Patching it would
+break `cesium-manifest.txt`, which is the point of the manifest.
+
+So state the guarantee precisely, because the two halves are not the same claim:
+
+* **`script-src` governs execution, not egress.** Every relaxation in it — `'unsafe-eval'`,
+  `blob:` — widens *what code may run*. None of them widens *where a byte may go*. The
+  offline guarantee is carried by `default-src 'self'` and the absent `connect-src`,
+  `img-src`, `font-src`, `media-src` and `frame-src` that fall back to it, and it is
+  untouched by every token in `script-src`.
+* **"This page cannot eval a string" is not a claim this policy makes, and must not be
+  quoted as one.** It can. It does, at every load, from a third-party UMD preamble inside a
+  dependency this project vendored deliberately. What it cannot do is reach another host.
+
 **`index.html` has no inline `<script>` or `<style>` any more**, so `script-src` needs no
 `'unsafe-inline'`. The former inline blocks are `/app/cesium-base-url.js`, `/app/boot.js`
 and `/app/viewer.css`, in the same document order — classic non-deferred `<script src>`
@@ -121,8 +154,21 @@ A policy that has never refused anything is not known to be doing its job. Same 
 
 | | securitypolicyviolation | off-origin resource entries | hosts reached |
 |---|---|---|---|
-| policy **on** | **1** — `connect-src`, `api.cesium.com` | 1, `transferSize 0`, request never completes | **0** |
+| policy **on** | **1** — `connect-src`, `api.cesium.com` | 1, and the chain stops there | **0** |
 | policy **off** | 0 | **34** | 6: `api.cesium.com`, `dev.virtualearth.net`, `ecn.t{0,1,2,3}.tiles.virtualearth.net` over plaintext `http://` |
+
+Both arms were re-run in Task 7, on the same page one header apart, and both reproduced
+exactly: 1 violation naming `api.cesium.com` and one host in the entry list under the policy;
+**34 entries across those six hosts, and both `https:` and plaintext `http:`, without it.**
+
+**One correction to how the ON arm is read.** An earlier version of this table offered
+`transferSize 0` as the evidence that the blocked request never completed. It is not
+evidence: a cross-origin entry with no `Timing-Allow-Origin` reports `transferSize 0`
+whether it was refused or fully served, and in Task 7's OFF arm **all 34 entries report 0
+as well** while the tiles plainly arrive. The sound discriminator is the pair either side of
+it — a `securitypolicyviolation` event naming `connect-src`, and a host set that **stops at
+one name instead of growing to six**. The policy breaks the chain at its first link: no ion
+endpoint, therefore no Bing key, therefore none of the 30-odd plaintext tile requests.
 
 The policy stops the chain at its first link: without the ion endpoint there is no Bing
 key, and the 30-odd plaintext tile requests never happen.
@@ -145,6 +191,22 @@ Chrome DevTools network log plus `performance.getEntriesByType("resource")`, cro
 against the server's own request log. Cesium 1.145.0, Chrome, `http://127.0.0.1:8137`.
 
 ### Offline (default) — `http://127.0.0.1:8137/`
+
+**This is the Task 1 page, and the page has grown four times since.** The request *list*
+below is a historical trace of the bare ellipsoid viewer; the only line in it that is a
+standing guarantee is the second number. Re-measured in Task 7 against the page as it ships
+today: **52 requests — 48 same-origin plus 4 `blob:` — 39 resource-timing entries, and 0
+off-origin.**
+
+The additions over Task 1 are all this slice's own, and all same-origin: the same 13 Cesium
+files, plus ten `/app/*` scripts and the one `/wasm/worldbuilder_engine.wasm` the page loads,
+plus **`tile-worker.js`, `engine.js` and the `.wasm` once per worker** — 24 requests, because
+the pool has eight workers, none of them shares a module instance with any other, and
+`cache-control: no-store` means none of them shares a fetch either. Nine copies of an 84,856-
+byte artifact over loopback is the price of eight independent linear memories, and it is the
+right trade.
+
+The Task 1 trace, for the record:
 
 **19 requests, 0 off-origin.** All of them `http://127.0.0.1:8137/…` or `blob:` URLs minted
 from that origin (Cesium's workers). Then the camera was flown to five widely separated
@@ -211,8 +273,29 @@ viewer/
   public/app/cesium-base-url.js      CESIUM_BASE_URL, before Cesium.js
   public/app/boot.js                 the Viewer + the net probe
   public/app/viewer.css              the page's own style
+  public/app/engine.js               the wasm loader and the ten extern "C" entry points
+  public/app/terrain.js              CustomHeightmapTerrainProvider, the cap, the faults
+  public/app/availability.js         getTileDataAvailable, feature-aware
+  public/app/pool.js                 the eight-worker pool and the LRU tile cache
+  public/app/tile-worker.js          one module worker: its own engine, its own world
+  public/app/main.js                 wiring, the hypsometric ramp, the URL parameters
+  public/app/verify.js               the twelve checks -- window.__wb.check()
+  public/app/bench.js                the frame budget -- window.__wb.bench()
   public/vendor/cesium/              the vendored build (committed)
-  public/wasm/                       the built engine artifact (committed)
+  public/wasm/                       the built engine artifact + MANIFEST.txt (committed)
+```
+
+Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
+
+```
+?seed= ?radius= ?plates= ?land= ?harbour=1     the world
+?maxLevel= ?size= ?featureCeiling=             the tiling and the caps
+?workers= ?cache=0 ?cacheTiles=                the pool and the cache
+?exaggeration= ?paint=0 ?atmosphere=1 ?rampMin= ?rampMax=   what it looks like
+?fly=lat,lon,height                            where to look
+?trace=N                                       record N frame deltas from boot
+?fault=<one of seven>                          a deliberate wrong implementation
+?net-probe=1                                   the CSP's proof of refusal (boot.js)
 ```
 
 `window.viewer` and `window.__viewerReady` are exposed for the trace harness and for the
@@ -398,7 +481,11 @@ and processed, so the traversal overshoots a little before settling.
 
 **Why 12.** A `GeographicTilingScheme` tile spans `180 / 2^level` degrees and a 65-post
 heightmap samples it every `180 / (2^level · 64)` degrees; on this project's 6,371,000 m
-radius that is `312,735.98 m / 2^level`:
+radius that is **`312,735.73 m / 2^level`** — `postSpacingM(0, 65, 6371000)`, evaluated in
+Task 7. This line read **312,735.98 m** from `24e4216` until now, six commits. The error is
+25 cm at level 0 and vanishes by level 3; the four levels tabulated below were right all
+along. It is recorded anyway, because the way it survived is the point: the *derivation* was
+checked and the *arithmetic* was not, by anybody, for six commits.
 
 ```
 level 10 -> 305.4 m    level 12 -> 76.35 m
@@ -486,7 +573,9 @@ range**: at 6,000 km it disagreed with the same pixel's shaded height by ~1 km, 
 coastline flips the sign.
 
 No network: 8 resources on the default page, **0 off-origin**. `wb_world_count()` is 1 after
-a full check run — no leaked worlds.
+a full check run — no leaked worlds. (The resource count is Task 4's page; on the shipped
+page it is 39. **`0 off-origin` is the number that has never moved**, across every
+measurement in every task of this slice.)
 
 
 ## Workers, the cache, and feature-aware availability (Task 5)
@@ -526,6 +615,14 @@ hand out a detached, length-0 buffer the second time: no error, a flat tile.
 coastal population is nominated by bisecting to the zero crossing — a plain 3° grid step is
 330 km and produced a coastal population of 4 tiles out of 480, which is not a population.
 
+**Reproduce it with `window.__wb.bench({ perClass: 160 })`.** `runBench`'s default is
+`perClass = 96` over three hints, so a bare `__wb.bench()` returns **288** tiles and the
+table below cannot be matched against it at all. The parameter was never recorded beside the
+measurement; Task 7 recovered it by arithmetic (480 = 3 × 160) and confirmed it — a second
+session at `perClass: 160` reproduced **every population exactly**: 480 tiles, coastal 137,
+land 173, shelf 39, deep ocean 131. A measurement whose invocation is not written down is
+one edit away from being unrepeatable.
+
 | population | n | median | p90 | max | mean |
 |---|---|---|---|---|---|
 | coastal | 137 | 14.46 | 27.93 | 49.77 | 17.41 |
@@ -536,6 +633,22 @@ coastal population is nominated by bisecting to the zero crossing — a plain 3�
 
 Milliseconds per tile, serial, on the main thread. Coastal against deep ocean is **3.6× on
 medians, 2.6× on means**, and 14.3× between the extremes (49.77 against 3.47).
+
+**Say which statistic, every time.** "A coastal tile costs 9× a deep-ocean one" is a claim
+this table does not make at any percentile, and `src/wasm.rs`'s module docs still carry it
+(*"up to 9x a deep-ocean one"*) — it cannot be corrected in that file without invalidating
+the shipped `.wasm`, so it is corrected here instead. The defensible sentence is
+**~3.6× on medians**, with the extremes an order of magnitude apart.
+
+**The populations are stable; the milliseconds are a host.** Task 7 re-ran the identical
+measurement in a second session and got the same 137 / 173 / 39 / 131 split and a *different*
+cost table — coastal median 13.65 ms, deep ocean 2.30 ms, all-tiles median 7.63 ms, which is
+a coastal penalty of **5.9×** on medians rather than 3.6×. That session rendered through a
+software rasteriser competing for the same cores, so its absolute milliseconds are not
+comparable and are not being substituted here. What survives both sessions, and is the
+finding: **a coastal tile costs several times a deep-ocean one, the multiple is a property of
+the run, and a viewer looks at coasts.** Quote the ratio with the table it came from or not
+at all.
 
 Frame deltas from `requestAnimationFrame`, traced from boot at the same viewpoint
 (20 N 110 W, 60 km), 400 frames, 39 tiles streamed in each case:
@@ -556,6 +669,11 @@ Wall clock for the 480-tile list, each pool warmed once and the warm pass discar
 
 Per-tile cost *rises* with concurrency — eight workers share memory bandwidth and a turbo
 budget — which is why the curve is 5.29× and not 8×.
+
+Task 7's second session reproduced the *shape* and not the number: 1.00× / 1.94× / 3.57× /
+**5.83×** over the same 480 tiles, with the same rising per-tile median (14.47 → 17.93 ms).
+So "eight workers buy between five and six times, never eight, and per-tile cost rises as
+you add them" is the durable claim; 5.29 is one host's instance of it.
 
 ### Feature-aware availability
 
@@ -602,13 +720,33 @@ and **feature-resolves**.
 | `flip-latitude` | row 0 at the south edge | tile-posts 36,258/38,025; interpolate 1.87e3 m; land-and-sea 80.16% |
 | `shift-tile` | filled one post east | tile-posts 35,271/38,025; interpolate 228 m |
 | `wrong-world` | seed + 1 everywhere | tile-posts **37,189/38,025 (97.8%)**; interpolate 5,050 m; land-and-sea 57.38% |
-| `stale-worker` | **one worker of eight** on seed + 1 | tile-posts **8,050/38,025 (21.2%)** — two of nine tiles; interpolate 530 m; land-and-sea 97.14% |
-| `cache-key` | key drops the tile x | **cache-identity** (right tile 4,225/4,225); tile-posts 3,333/38,025; land-and-sea 60.08% |
+| `stale-worker` | **one worker of eight** on seed + 1 | tile-posts **8,050–8,064/38,025 (21.2%)** — two of nine tiles; interpolate 530 m or 5,050 m; land-and-sea 95.32–97.14%. **Session-dependent — see below** |
+| `cache-key` | key drops the tile x | **cache-identity** (right tile 4,225/4,225); tile-posts **3,333/38,025**; land-and-sea 57.78–60.08% |
 | `feature-blind` | availability ignores features (the Task 4 behaviour) | **feature-availability**: 2 features requested, 0 known |
 | `feature-everywhere` | refine to the feature depth globally | **feature-availability**: available 20° from every feature; zoom-cap |
 
 No fault diverges on 100% of posts; the project's standing warning is that 100% has always
 meant a broken harness.
+
+**Five of the seven rows reproduce to the digit. Two do not, and the reason is worth more
+than the digits were.** Re-run in Task 7 in a second browser session, three runs each:
+`flip-latitude` (36,258 posts / 1.87e3 m / 80.16%), `shift-tile` (35,271 / 228 m),
+`wrong-world` (37,189 / 5,050 m / 57.38%), `feature-blind` and `feature-everywhere` all came
+back identical. `stale-worker` came back **8,064** rather than 8,050, with interpolate
+5,050 m rather than 530 m and land-and-sea 95.32% rather than 97.14% — stable across three
+runs *within* a session, different *between* sessions. `cache-key` moved the same way on
+land-and-sea (57.78%), while its two headline figures, 3,333 and 4,225 of 4,225, held exactly.
+
+Neither is a defect, and neither weakens the fault. Both are **positional**: `stale-worker`
+poisons worker index 0, and which of the nine probe tiles that worker is handed depends on
+how far the pool's round-robin cursor had advanced — which is moved by whatever the globe
+streamed before `check()` was called. `cache-key` serves a row-neighbour, so which neighbour
+depends on what is in the cache.
+
+So the counts that are properties **of the fault** — 3,333; 4,225 of 4,225; "two of nine
+tiles"; the 21.2% band — are exact and should be held to. The counts that are properties of
+**dispatch order** are not, and quoting the two kinds in the same voice is how a measurement
+becomes folklore. A future run that reports 8,064 has found nothing wrong.
 
 **Two bugs the fault runs found in the checks themselves**, which is the fourth and fifth
 time this has paid in this slice:
@@ -648,3 +786,247 @@ which is the quantity the availability function actually controls, and reports t
 alongside it. Under the prototype's `undefined` the requested level climbs without bound,
 so the new assertion still catches the failure Task 4 was guarding against — and catches it
 by the tiles that get built rather than by the nodes that get walked.
+
+
+## The record (Task 7)
+
+Everything above is the working notes of six tasks, written as each one landed. This section
+is the part that has to survive them: what this viewer guarantees, what it refuses to
+guarantee, what it costs, and what is still open. **Every figure in it was re-derived from
+the current source or from a run made while writing it, and where a re-run disagreed with
+what was written the disagreement is recorded rather than smoothed over.** Four figures
+moved.
+
+### What it is, and what it is not
+
+A **read-only window onto a generated world.** Give it parameters, it builds a world in the
+engine and draws it. It has no way to change one: no placement, no editing, no anchor tree,
+no worldfile, no persistence of any kind. There is nothing to save because there is nothing
+a user can alter — the only inputs are the URL parameters, and reloading is the only undo
+anyone needs.
+
+**Slice 3 owns placement**, and that boundary is why several things here are shaped the way
+they are. `Surface::new` is milliseconds rather than a background job precisely so that a
+parameter change can rebuild a world inside one animation frame once there are controls to
+change it with. The handle table never reuses a slot precisely so that a worker holding a
+handle from before such a change gets an error rather than a different planet. This slice
+exercises neither property. It makes sure they are there.
+
+### The offline guarantee, stated exactly
+
+**Nothing leaves the origin.** Three independent lines of evidence, in increasing strength:
+
+1. **Witnessed.** A browser network trace plus `performance.getEntriesByType("resource")`,
+   cross-checked against the server's own request log, on a server that proxies nothing and
+   has no upstream. 0 off-origin, and still 0 after flying the camera to five widely
+   separated points. Re-measured in Task 7 against the page as it ships: **52 requests, 39
+   resource-timing entries, 0 off-origin.**
+2. **Confirmed independently.** Several hundred rendered frames across the checks, the
+   bench and the fault runs, in three separate sessions, on both worlds and under all seven
+   faults. The off-origin count has been 0 in every one.
+3. **Enforced.** `default-src 'self'`, proved able to refuse **one header apart on the same
+   probe**: with the policy, 1 `securitypolicyviolation` and **zero hosts reached**; without
+   it, **34 off-origin entries across six hosts**, including plaintext `http://` tile
+   requests to Bing. A trace shows a browser *did not* phone home. The policy is why it
+   *cannot*.
+
+Witnessing is the weakest of the three and is the one people quote. Quote the third.
+
+**Ion is only the broker.** This is worth being blunt about, because "turn the default
+imagery back on" sounds like a rendering decision and is not: `ImageryLayer.fromWorldImagery()`
+resolves *through* Cesium ion to **Bing Maps / virtualearth.net** — Microsoft, with its own
+terms, and with the key shipped in the bundle. Enabling default imagery here would be a
+Microsoft licensing conversation, not a Cesium one. The bundled ion demo JWT is time-limited
+besides: its `aud` claim reads `1.145 Release - Delete on November 1, 2026`.
+
+And the limit, restated because it is the easiest sentence in this file to over-claim:
+**`script-src 'unsafe-eval'` is required, and "this page cannot eval a string" is not
+something this policy says.** See *What this policy does not claim*, above.
+
+### Provenance: what parity proves, and what it does not
+
+Parity proves the **shipped bytes** — the ones a browser loads — reproduce native source
+exactly: **53,251 values, 0 divergent**, through the shipped exports on both sides, with a
+control (`--mutate seed`) moving **50,778** of them and every group carrying a continuous
+height moving entirely. Both were re-run for this task.
+
+**That was green on a stale artifact for several commits.** The committed `.wasm` differed
+from its source by five bytes — all of them panic-location line numbers, which never execute
+— and parity passed anyway, because the corpus it replayed had been recorded from the same
+stale build. Two things that are stale *together* agree with each other and with nothing
+else, and no number in the parity output can tell you so.
+
+So parity now refuses to report at all on an artifact that does not match current source,
+by importing the freshness check rather than reimplementing it. The lesson generalises past
+this file: **a verification and a provenance check are different questions, and a suite that
+answers only the first will hold the wrong answer indefinitely without ever going red.**
+
+### What the viewer draws, and what it caps
+
+**Level 12 for generated ground.** A 65-post tile at level 12 has 76.35 m posts, and the
+generated field's measured resolution floor is 78.125 m — below it the field is a tilted
+plane and further levels add nothing. Level 12 is the first level at or below that floor, so
+it is the last level at which zooming reveals ground that was not already there. Above it
+`getTileDataAvailable` returns `false` rather than the prototype's `undefined`, which
+refines until the tab dies.
+
+**Feature-aware refinement past it**, because authored features do not obey that argument.
+`Features::apply` is analytic, so it is resolution-independent *point-wise* and still
+**grid-sampling-limited**: the harbour's mole reads exactly +4.00 m at every `resolution_m`
+tried, while the level-12 *tile* containing it tops out at **−819 m against a +4 m target**,
+because a 60 m mole is narrower than one level-12 post. It needs about level 16. So
+availability refines inside a feature's own footprint — the engine's `reach_m` circle, not a
+guess — to `post spacing ≤ min(length_m, width_m) / 8`, bounded at 18.
+
+What that buys, measured with the camera 120 m above the harbour, one flag apart:
+
+| | maxDepthVisited | tilesVisited | `globe.getHeight` at the mole |
+|---|---|---|---|
+| ground cap only (`?fault=feature-blind`) | 13 | 23 | **≈ −1,770 m** |
+| feature-aware | **16** | 45 | **+0.35 m** |
+
+against an engine truth of **+4.00 m**, for **16 extra tiles** — enumerated by descending
+from the cap, not estimated. Heap ~30 MB either way. (The feature-blind height is read from
+whichever coarse tile is loaded at that instant, and moved between −1,762.60 m and
+−1,773.59 m across Task 7's runs. The two-orders-of-magnitude gap is the finding, not the
+digits.)
+
+**What zoom actually reveals, by scale:**
+
+| from | to | what appears |
+|---|---|---|
+| whole disc | ~L5 | continents, shelves, the abyssal clamp at −4,600 m |
+| ~L5 | L10 (305 m posts) | coastline shape, relief, the shelf break |
+| L10 | **L12 (76.35 m)** | the last generated detail — the octave schedule's floor is 78.125 m |
+| L12 | L16 (4.77 m) | **only where a feature reaches.** Elsewhere the tile is upsampled, and says so |
+| past L16 / L18 | — | nothing. `FEATURE_CEILING` bounds the rule |
+
+### The frame budget, with its populations
+
+The most misusable number in this slice would be "a tile costs N ms", so it is not recorded
+as one. Four populations, measured separately, because a coastal tile costs several times a
+deep-ocean one **and coasts are what the viewer looks at** — a mean over a uniform sample of
+the globe is a mean over mostly ocean and describes nothing anyone will ever see.
+
+**State the statistic.** The coastal penalty is **~3.6× on medians** in the recorded run,
+and 5.9× in Task 7's second one (see the table's own notes). The **9×** that appears in
+`src/wasm.rs`'s module docs is not any percentile of that table — it lives only between
+extremes, and it is wrong as written.
+
+Eight workers buy **5.29×**, not 6.08× and not 8×, because per-tile cost *rises* with
+concurrency: eight of them share memory bandwidth and a turbo budget. Task 7's re-run gave
+5.83× with the same rising curve. *Five to six times, never eight* is the durable claim.
+
+Reproduce any of it with `window.__wb.bench({ perClass: 160 })`. The default `perClass` is
+96 and gives a different, smaller population.
+
+### The `?fault=` mechanism
+
+**Seven faults**, each a plausible wrong implementation rather than a corruption — chosen so
+that a check which cannot see it would not have caught the real mistake either.
+
+| fault | caught at |
+|---|---|
+| `flip-latitude` | 36,258 / 38,025 posts |
+| `shift-tile` | 35,271 / 38,025 |
+| `wrong-world` | **37,189 / 38,025 — 97.8%** |
+| `stale-worker` | **8,050–8,064 / 38,025 — 21.2%**, two of nine tiles |
+| `cache-key` | 3,333 / 38,025, and cache-identity at 4,225 / 4,225 |
+| `feature-blind` | feature-availability: 2 features requested, 0 known |
+| `feature-everywhere` | feature-availability, and zoom-cap |
+
+**97.8% is the healthy signature, not a shortfall.** `wrong-world` is a different planet and
+still agrees on 836 posts, almost all of them the abyssal clamp at −4,600 m: two different
+worlds have the same floor. **No fault in this slice diverges on 100% of posts, and in this
+project 100% has always meant a broken harness rather than a thorough one.** A fault
+reporting 38,025 / 38,025 would be the thing to investigate.
+
+### The lesson that outlives this slice
+
+**Breaking things on purpose found a broken *verifier* seven times here** — more often than
+it found a broken implementation, which it never did. In order:
+
+1. A network trace that could not have shown traffic even if there had been some. Fixed by
+   `?net-probe=1`, which is what made the empty trace mean anything.
+2. A pixel check on a canvas whose `clientWidth` and framebuffer disagreed, misregistering
+   every ray — 50% agreement, before it was a real finding about anything.
+3. `quadtree-depth` passing on a page that had **never rendered**: `maxDepthVisited` 0, and
+   0 ≤ anything.
+4. `quadtree-depth` again, bounding the *traversal* when the cap governs what is
+   **requested** — right answer, wrong quantity, and it failed the first time a camera sat
+   somewhere new.
+5. `feature-availability` comparing the availability function against **its own** footprint
+   list, so `feature-blind` passed by agreeing with itself.
+6. `feature-resolves` iterating `availability.footprints`, which `feature-blind` empties —
+   a check with nothing to do, reporting success.
+7. `quadtree-depth` a third time, reporting 12/0 while the CSP blocked Cesium's blob workers
+   and the globe rendered an empty ellipsoid.
+
+Three of those — 3, 6 and 7 — are the same bug: **a check counted zero work as success.** So
+it is now structural rather than remembered. `ok(name, pass, detail, work)` takes a **work**
+count, and where one is supplied **zero is never a pass**; it returns NOT EXERCISED instead.
+**Eight of the twelve checks declare one** — `zoom-cap`, `tile-posts-exact`,
+`interpolate-height`, `land-and-sea`, `quadtree-depth`, `cache-identity`,
+`feature-availability`, `feature-resolves`. The other four are self-guarding: three assert on
+a single named value that must exist, and `worker-path` already refuses `poolFills === 0`
+and any idle worker, by name.
+
+The rule to carry forward is not "add a work count". It is: **a check that cannot say what
+it examined cannot say it passed**, and the fault switch is what reveals which checks those
+are. `?fault=` costs a few dozen lines and has now paid seven times.
+
+### Three things that are open, not solved
+
+- **`zoom-cap`'s zero-work guard is not demonstrated end to end.** The other guards have
+  been driven to zero and seen to refuse. This one cannot be: `zoom-cap`'s work is the number
+  of levels it interrogates, and driving that to zero means an undefined or NaN `maxLevel`,
+  which kills the page during boot long before the check runs. The guard is **defensive and
+  unproved**. It is written down here rather than quietly counted among the ones that were
+  demonstrated.
+- **No human has watched this viewer run.** Across three earlier sessions the browser pane
+  never composited and every frame was hand-driven through `viewer.render()` — which is
+  exactly the condition that produced broken-verifier #3 above. Task 7 closed half of this:
+  the page was driven under a browser that **did** composite, and a full-disc frame shows a
+  continent, shelves and ocean where the engine puts them, with a coastline resolving at
+  60 km. But it was a headless software rasteriser with no display attached, which is why the
+  millisecond tables above are annotated the way they are, and **nobody has yet sat in front
+  of this thing and moved the camera.** The measurements are strong. The gap is that no one
+  has *looked*.
+- **There is no CI.** Nothing runs the parity harness, the freshness guard, the build-shape
+  self-tests or the twelve checks automatically. Every figure in this file is defended by a
+  command someone has to remember to type, and the stale-artifact incident above is precisely
+  what that costs. This is the same standing gap recorded in slice 1p, unchanged.
+
+### Everything that must be re-run when this changes
+
+```
+# engine, FIVE configurations -- the two feature flags are independent
+cargo test -p worldbuilder-engine                        # 409
+cargo test -p worldbuilder-engine --no-default-features  # 409
+cargo test -p worldbuilder-engine --features python      # 409
+cargo test -p worldbuilder-engine --features wasm        # 439
+cargo test -p worldbuilder-engine --features python,wasm # 439
+
+# the artifact
+cd viewer
+npm run check:wasm                  # is the shipped .wasm built from current source?
+npm run build:wasm:self-test        # can the shape check fail?      (327-byte artifact)
+npm run build:wasm:stale-self-test  # can the fingerprint fail?
+
+# parity, through the shipped exports, with its control
+cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
+node crates/worldbuilder-engine/parity/parity.mjs native.txt               # 53,251 / 0
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed # 50,778 divergent
+
+# the page: both worlds, then every fault
+npm run serve
+#   /                  -> 11 checks, 11 passed
+#   /?harbour=1        -> 12 checks, 12 passed
+#   /?harbour=1&fault=flip-latitude | shift-tile | wrong-world | stale-worker |
+#                        cache-key | feature-blind | feature-everywhere
+#                     -> each must FAIL, at its own count above
+```
+
+All of it was run for this task on Windows 11 (10.0.26200), x86_64-pc-windows-msvc,
+cargo 1.98.0 / rustc 1.98.0, Node v22.17.0, Chrome 151 (headless). Every command exited 0
+except the fault runs, which are supposed to report failures, and did.
