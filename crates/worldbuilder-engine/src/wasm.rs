@@ -29,8 +29,10 @@
 //! | Chrome 151, wasm32 | 2.2-3.2 ms/world | ~0.9 us/sample | 2,400x-3,600x |
 //!
 //! The two native rows are 15% apart, and **the scatter of the 20,000 points is the
-//! dominant term**: this module's own tile measurement puts a coastal sample at up to 9x a
-//! deep-ocean one, so a ratio quoted without its corpus is not reproducible. A 65x65 tile
+//! dominant term**: this module's own tile measurement puts a coastal sample around 3.6x a
+//! deep-ocean one on medians (14.46 ms against 4.05, n = 137 and 131 of 480 level-12 tiles,
+//! Chrome 151); the 9x once quoted here compares extremes, not typical tiles. So a ratio
+//! quoted without its corpus and its statistic is not reproducible. A 65x65 tile
 //! is 4,225 samples on every row.
 //!
 //! So the model here is a **world handle**: build one world from its parameters, sample it
@@ -608,8 +610,11 @@ pub extern "C" fn wb_bottom_at(
 ///
 /// Measured in Chrome 151 over 128 tile origins spread across the globe, 65x65 samples,
 /// `resolution_m = 250`, each the mean of 8 fills: median 3.86 ms, p90 18.20 ms. **A coastal
-/// tile costs up to 9x a deep-ocean one**, and coasts are what a viewer looks at, so no tile
-/// can be filled on the main thread inside a frame. Fill in workers, and cache.
+/// tile costs about 3.6x a deep-ocean one on medians** -- 14.46 ms against 4.05, over 137
+/// and 131 of 480 level-12 tiles classified from their filled heights. (An earlier "up to
+/// 9x" here compared the extremes of that table rather than its typical tiles.) Coasts are
+/// what a viewer looks at, so no tile can be filled on the main thread inside a frame. Fill
+/// in workers, and cache.
 ///
 /// # Safety
 /// `out` must be null, or a live 4-aligned allocation of at least `out_len` f32.
