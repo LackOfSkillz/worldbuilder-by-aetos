@@ -2357,8 +2357,41 @@ and refuses rather than returning a graph that fails it.
 |---|---|---|---|
 | 1 | The downhill relation is a **forest** -- no cycles | `peel` removes leaves until nothing is ready; `peeled != node_count` is `Cycle` | complete peels at 3,200 (lattice), and at 10,000 / 100,000 / 200,000 / 1,000,000 / 5,000,000 / 20,000,000 / **50,000,000** over a real `Surface` |
 | 2 | Every root is **exactly one** of MOUTH or LAKE | `validate` reports both the "neither" and the "both" arm; `streamfmt` re-checks it across sections | 633 roots at 3,200; 597,687 at 20,000,000; 1,203,699 at 50,000,000 |
-| 3 | A rebuild is **bit-identical** | `bit_identical_to` compares `to_bits()`, never `==` | a negative control proves it notices one last bit |
+| 3 | A rebuild is **bit-identical** | `bit_identical_to` compares `to_bits()`, never `==` | a negative control per **column**, plus a signed-zero and a NaN pair per **float** column (see below) |
 | 4 | The sentinel is **never a valid index** | `MAX_NODES = u32::MAX - 1`, and `sentinel_is_a_valid_index` is exercised *with a sentinel that is in range* | a guard only ever called with the good value proves nothing about itself |
+
+**Property 3's negative control is per column, because one bit-flip is not a control for
+eleven comparisons.** The first version of this slice proved bit identity with a single test
+that flipped one bit of `drainage_area_m2[3]`. The final review mutated `bit_identical_to`
+column by column and found **six surviving mutants**: deleting the `area_m2`, `height_m`,
+`flags` or `header.world_seed` comparison, or downgrading `height_m` or `drainage_area_m2`
+from `to_bits()` to `==`, left the whole suite green. Only `drainage_area_m2`'s bits were
+actually pinned -- and `area_m2` is the field §3.2 argues hardest to carry, on the grounds
+that adding it later silently changes what every stored `drainage_area_m2` means. A property
+test that cannot fail is worse than no test, because it is counted.
+
+Three tests now carry it:
+
+- `bit_identity_notices_a_change_in_every_column` walks **all 22 perturbations** -- every
+  header field, `downhill`, `flags`, all three float columns and their lengths, every `Lake`
+  field, every `Reach` field -- and asserts the comparison is symmetric in each.
+- `bit_identity_notices_a_changed_reach_endpoint` plants a `Reach` by hand, because slice 1p
+  ships `reaches` reserved empty, so no built graph can witness those columns otherwise.
+- `bit_identity_compares_bits_and_not_values_in_every_float_column` applies the two
+  perturbations that separate `to_bits()` from `==` to **each of the seven float columns**:
+  `0.0` against `-0.0` (equal by `==`, different bits, so the graphs must differ) and two
+  identical NaNs (unequal by `==`, identical bits, so the graphs must match).
+
+All six mutants were re-run after the fix and all six die. `bit_identical_to` also now
+length-checks all three float columns rather than only `height_m`, which it indexed all three
+by; a legal graph can never be ragged, but the function is public and the check was one line.
+
+**VERSION-001 recognises no ordering, for both version fields.** The generator version was
+swept at 0, 2, 7 and `u32::MAX`; the format version was tested only at 2, so rewriting its
+guard as `format_version != 2` or `format_version <= FORMAT_VERSION` survived the whole
+suite -- a regressed reader would have accepted a file declaring 0, 7 or `u32::MAX`.
+`refuses_every_format_version_that_is_not_this_one` now mirrors the generator-version sweep,
+and both mutants die.
 
 **The root count is invariant across SEA LEVELS at a fixed node count. It is not invariant
 across node counts, and it is not a small number.** This is the figure that has already been
@@ -2499,11 +2532,14 @@ better but summed to 1.03 spheres would be worse where it matters most.
 | | RMS relative error | worst single node | correlation with truth |
 |---|---|---|---|
 | the shipped estimator | **2.46%** | **13.7%** | **0.9479** |
-| the shared constant it replaces | **7.5%** | -- | **zero, by construction** |
+| the shared constant it replaces | **7.5%** | -- | **undefined** (see below) |
 
 The constant's 7.5% is not a separate measurement: it is *by definition* the true spread's
 own CV, because a constant is the mean and its error is the deviation. Its correlation with
-the truth is zero for the same reason. So this is roughly a **threefold reduction in area
+the truth is **undefined**, not zero: Pearson's r divides by the predictor's standard
+deviation, and a constant's is exactly 0. "Zero correlation" is the right *intuition* -- it
+tracks nothing -- but the statistic does not exist, and this file does not round an
+undefined quantity to a number. So this is roughly a **threefold reduction in area
 error, for one extra pass over a neighbour list that had to be built anyway** -- and, more
 importantly, it *tracks* the variation rather than flattening it: it recovers 0.756x to
 1.270x (CV 0.0731) against a true 0.737x to 1.260x (CV 0.0753). (The extraction's §8.4
@@ -2524,8 +2560,11 @@ way to tell which method produced it.
 - **`area_m2`, per node, never a shared constant.** If it were added later, every already
   stored `drainage_area_m2` would silently change meaning from "cell count x a constant" to
   "sum of areas" -- **same bytes, different semantics, undetectable from the file**. And the
-  constant is not even approximately right: the true cell area runs 0.735x to 1.285x the
-  ideal at the recommended jitter.
+  constant is not even approximately right: the true cell area runs **0.737x to 1.260x**
+  the ideal at the recommended jitter, measured over **this crate's own sampler** by
+  `measure_cell_area_spread` (n = 5,000 nodes at seed 20260904, jitter 0.15, 4,000,000
+  Monte-Carlo probes, CV 0.0754). The extraction's §8.4 figure of 0.735x to 1.285x is a
+  different population -- its probe field -- as §"Its error, stated" above already says.
 - **`flags`, a bitset.** Adding a boundary tag later as a *value* is fine; adding the
   *field* later means every existing graph has no boundary tag, so mouths cannot be
   identified, so a water manifest cannot be produced from an old graph at all. Four of the
@@ -2601,7 +2640,7 @@ format or generator version bump**, so the format stores the flags and enforces 
 `the_format_never_applies_the_datum_classifier` scans the module's own source to keep it that
 way, and has its own positive control.
 
-**Thirty-nine guards, thirty-nine mutants, thirty-nine catches.** Every fail-closed check is
+**Forty-one guards, forty-one mutants, forty-one catches.** Every fail-closed check is
 a single `ensure(...)` line carrying a `// MUT-nn` marker so that a mutation campaign can
 disable exactly one at a time. Task 5 ran that campaign at 39 guards and reported **39 of 39
 caught by a named test**, including three that survived its *first* pass and were reported as
@@ -2673,9 +2712,37 @@ byte columns leave out.
 
 **A whole planet is four and a half minutes and 3.26 GiB, and 91% of the time is one
 function.** `node_neighbours` is 241.3 of the 265.1 seconds at 20,000,000 and 660.6 of the
-718.4 at 50,000,000 -- 91% and 92% -- and it is superlinear throughout: 13.4x for the first
-10x of nodes, then 6.3x for the next 5x, then 5.0x for the next 4x, then 2.7x for the last
-2.5x. `Surface::elevation_m` -- the entire existing engine, run once per node -- is 14.8
+718.4 at 50,000,000 -- 91% and 92% -- and it is superlinear, at a **local exponent alpha of
+about 1.15**, where `time_ratio = size_ratio ^ alpha`.
+
+**A growth ratio means nothing without the step it is over**, and this table's four steps are
+10x, 5x, 4x and 2.5x, so the raw ratios cannot be compared to each other at all:
+
+| step | size ratio | `node_neighbours` ratio | alpha |
+|---|---|---|---|
+| 100,000 -> 1,000,000 | 10x | 14.49x | **1.161** |
+| 1,000,000 -> 5,000,000 | 5x | 6.35x | **1.148** |
+| 5,000,000 -> 20,000,000 | 4x | 4.97x | **1.157** |
+| 20,000,000 -> 50,000,000 | 2.5x | 2.74x | **1.099** |
+
+(Population and method: the host named above, seed 20260904, `--release
+--no-default-features`, `streambench <n>`, wall clock around the `node_neighbours` stage,
+**one run per size**. Ratios are the times in the table divided, so 7.652 / 0.528 = 14.49.)
+
+An earlier revision of this section quoted "13.4x, then 6.3x, then 5.0x, then 2.7x" and read
+the falling sequence as a *weakening* exponent. The first figure was simply wrong -- the
+table gives 14.49x -- and the reading was a category error, because those are ratios over
+shrinking steps. Normalised, the exponent is **flat**: 1.161 / 1.148 / 1.157 / 1.099 over a
+500x range of sizes. The one real feature is the mild dip at the last step, and **with a
+single unreplicated run per size this data cannot distinguish a genuine asymptotic softening
+from run-to-run noise**: an independent sweep at clean 2x steps from 125,000 to 4,000,000 on
+the same host class gave alphas of 1.055 / 1.122 / 1.118 / 1.184 / 1.100, scatter of the same
+size at node counts where nothing special is happening. Read it as a stable n^1.15 until
+somebody replicates. Nothing downstream turns on the difference -- at alpha 1.15, 20 M -> 100 M
+is about 6.2x rather than 5x -- and the conclusions below (a flat `Vec<u32>`, and wasm32 as
+the wall) are unaffected either way.
+
+`Surface::elevation_m` -- the entire existing engine, run once per node -- is 14.8
 seconds at 20 M and 33.6 at 50 M, 0.67 to 0.74 us a call, and is **not** the bottleneck.
 `StreamGraph::build` itself, which includes the peel and the whole drainage accumulation, is
 3.65 seconds at 20 M and 9.02 at 50 M -- **linear in node count, to within a few percent**,

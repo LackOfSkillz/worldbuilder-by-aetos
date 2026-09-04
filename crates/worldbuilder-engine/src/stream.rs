@@ -18,8 +18,12 @@
 //! - **`area_m2`**, per node, never a shared constant. If it were added later, every
 //!   already-stored `drainage_area_m2` would silently change meaning from "cell count x a
 //!   constant" to "sum of areas" — same bytes, different semantics, undetectable from the
-//!   file. §8.4 measures the discrepancy at 0.735x to 1.285x the ideal cell at the
-//!   recommended jitter, so the constant is not even approximately right.
+//!   file. **This crate measures the discrepancy at 0.737x to 1.260x the ideal cell**
+//!   at the recommended jitter — `measure_cell_area_spread`, this crate's own spiral
+//!   sampler, n = 5,000 nodes at seed 20260904, jitter 0.15, against 4,000,000
+//!   Monte-Carlo probes, CV 0.0754 — so the constant is not even approximately right.
+//!   (The extraction's §8.4 quotes 0.735x to 1.285x. That is *its* probe field, a
+//!   different population, and it is quoted separately rather than blended with this one.)
 //! - **`flags`**, a bitset. Adding a boundary tag later as a *value* is fine; adding the
 //!   *field* later means every existing graph has no boundary tag, so mouths cannot be
 //!   identified, so a water manifest cannot be produced from an old graph at all.
@@ -580,7 +584,18 @@ impl StreamGraph {
         if self.downhill != other.downhill || self.flags != other.flags {
             return false;
         }
-        if self.height_m.len() != other.height_m.len() {
+        // All three columns, not just `height_m`: a legal graph has them all at
+        // `node_count`, but the loop below indexes all three off `height_m`'s length, so
+        // checking one and indexing three is a panic waiting for the first caller that
+        // builds a `StreamGraph` some other way.
+        if self.height_m.len() != other.height_m.len()
+            || self.area_m2.len() != other.area_m2.len()
+            || self.drainage_area_m2.len() != other.drainage_area_m2.len()
+            || self.area_m2.len() != self.height_m.len()
+            || other.area_m2.len() != other.height_m.len()
+            || self.drainage_area_m2.len() != self.height_m.len()
+            || other.drainage_area_m2.len() != other.height_m.len()
+        {
             return false;
         }
         for i in 0..self.height_m.len() {
@@ -1062,9 +1077,12 @@ pub fn node_neighbours(positions: &[SpherePoint], k: usize) -> Vec<Vec<u32>> {
 ///   drift away from the geography. A per-cell estimate that was locally better but summed
 ///   to 1.03 spheres would be worse where it matters most.
 /// - **It varies where the geometry varies**, which is the entire reason §3.2 refuses to
-///   let this be a shared constant: the true cell area ranges 0.735x to 1.285x the ideal at
-///   this jitter, and stream power goes as area^0.5, so a constant is a systematic erosion
-///   error at headwaters.
+///   let this be a shared constant: the true cell area ranges **0.737x to 1.260x** the
+///   ideal at this jitter — measured on this crate's own sampler by
+///   `measure_cell_area_spread` (n = 5,000 nodes at seed 20260904, jitter 0.15, 4,000,000
+///   Monte-Carlo probes, CV 0.0754), *not* the extraction's §8.4 figure of 0.735x to
+///   1.285x, which is its probe field — and stream power goes as area^0.5, so a constant
+///   is a systematic erosion error at headwaters.
 ///
 /// # Its error, stated
 ///
@@ -1214,6 +1232,22 @@ mod tests {
             sampling_kind: SamplingKind::Supplied,
             pond_max_drainage_area_m2: 1.0e10,
         }
+    }
+
+    /// `reaches` is reserved empty in slice 1p (`reaches_are_reserved_and_empty_in_this_
+    /// slice`), so a graph off `built` can never witness the reach comparisons. This plants
+    /// one record by hand -- the comparison has to be pinned now, or slice 5 inherits a
+    /// column that `bit_identical_to` names and no test exercises.
+    fn built_with_a_planted_reach(seed: u64, sea_level_m: f64) -> StreamGraph {
+        let mut graph = built(seed, sea_level_m);
+        assert!(graph.reaches.is_empty(), "slice 1p ships no reaches; this plants the first");
+        graph.reaches.push(Reach { from_node: 5, to_node: 6, gradient: 0.25 });
+        graph
+    }
+
+    /// One ULP up, by bits, so a perturbation is the smallest change that still is one.
+    fn flip_last_bit(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() ^ 1)
     }
 
     fn built(seed: u64, sea_level_m: f64) -> StreamGraph {
@@ -1496,6 +1530,138 @@ mod tests {
         let bits = b.drainage_area_m2[3].to_bits() ^ 1;
         b.drainage_area_m2[3] = f64::from_bits(bits);
         assert!(!a.bit_identical_to(&b), "bit identity must compare bits, not values");
+    }
+
+    /// One flipped bit in `drainage_area_m2` is not a negative control for eleven
+    /// comparisons. The review found that deleting the `area_m2`, `height_m`, `flags` or
+    /// `header.world_seed` compare from `bit_identical_to` left all tests green -- only
+    /// `drainage_area_m2` was actually pinned, and `area_m2` is the field §3.2 argues
+    /// hardest to carry from slice 1. This walks **every column the comparison names**, so
+    /// deleting any one of them turns this test red.
+    #[test]
+    fn bit_identity_notices_a_change_in_every_column() {
+        let a = built_with_a_planted_reach(20_260_904, 0.0);
+        assert!(!a.lakes.is_empty(), "the fixture must have a lake for the lake columns");
+
+        let perturbations: [(&str, fn(&mut StreamGraph)); 22] = [
+            ("header.generator_version", |g| g.header.generator_version ^= 1),
+            ("header.world_seed", |g| g.header.world_seed ^= 1),
+            ("header.node_count", |g| g.header.node_count -= 1),
+            ("header.sampling_kind", |g| g.header.sampling_kind = SamplingKind::Spiral),
+            ("header.position_checksum", |g| g.header.position_checksum ^= 1),
+            ("header.radius_m", |g| g.header.radius_m = flip_last_bit(g.header.radius_m)),
+            ("header.sea_level_m", |g| g.header.sea_level_m = flip_last_bit(g.header.sea_level_m)),
+            ("downhill", |g| g.downhill[7] ^= 1),
+            ("flags", |g| g.flags[7] ^= flag::MOUTH),
+            ("height_m", |g| g.height_m[3] = flip_last_bit(g.height_m[3])),
+            ("area_m2", |g| g.area_m2[3] = flip_last_bit(g.area_m2[3])),
+            ("drainage_area_m2", |g| {
+                g.drainage_area_m2[3] = flip_last_bit(g.drainage_area_m2[3]);
+            }),
+            ("height_m.len", |g| {
+                g.height_m.pop();
+            }),
+            ("area_m2.len", |g| {
+                g.area_m2.pop();
+            }),
+            ("drainage_area_m2.len", |g| {
+                g.drainage_area_m2.pop();
+            }),
+            ("lakes.len", |g| {
+                g.lakes.pop();
+            }),
+            ("lakes[0].root_node", |g| g.lakes[0].root_node ^= 1),
+            ("lakes[0].kind", |g| {
+                g.lakes[0].kind =
+                    if g.lakes[0].kind == LakeKind::Pond { LakeKind::Lake } else { LakeKind::Pond };
+            }),
+            ("lakes[0].outflow_lake", |g| g.lakes[0].outflow_lake ^= 1),
+            ("lakes[0].level_m", |g| g.lakes[0].level_m = flip_last_bit(g.lakes[0].level_m)),
+            ("reaches.len", |g| {
+                g.reaches.pop();
+            }),
+            ("reaches[0].gradient", |g| {
+                g.reaches[0].gradient = flip_last_bit(g.reaches[0].gradient);
+            }),
+        ];
+
+        for (column, perturb) in perturbations {
+            let mut b = built_with_a_planted_reach(20_260_904, 0.0);
+            perturb(&mut b);
+            assert!(
+                !a.bit_identical_to(&b),
+                "a change to {column} must not be reported bit-identical"
+            );
+            assert!(!b.bit_identical_to(&a), "and the comparison must be symmetric in {column}");
+        }
+    }
+
+    /// The reach endpoints, split out because they take the planted-reach fixture and
+    /// because `reaches.len()` is witnessed separately (a graph with no reach against one
+    /// with a reach).
+    #[test]
+    fn bit_identity_notices_a_changed_reach_endpoint() {
+        let bare = built(20_260_904, 0.0);
+        let planted = built_with_a_planted_reach(20_260_904, 0.0);
+        assert!(!bare.bit_identical_to(&planted), "a graph that grew a reach is a different graph");
+
+        for (column, perturb) in [
+            (
+                "from_node",
+                (|g: &mut StreamGraph| g.reaches[0].from_node ^= 1) as fn(&mut StreamGraph),
+            ),
+            ("to_node", |g: &mut StreamGraph| g.reaches[0].to_node ^= 1),
+        ] {
+            let mut b = built_with_a_planted_reach(20_260_904, 0.0);
+            perturb(&mut b);
+            assert!(
+                !planted.bit_identical_to(&b),
+                "a change to reaches[0].{column} must be noticed"
+            );
+        }
+    }
+
+    /// The doc comment on `bit_identical_to` claims bits and never `==`. These are the two
+    /// perturbations that tell the two predicates apart, applied to **every float column**:
+    ///
+    /// - `0.0 == -0.0` is true and the bit patterns differ, so a `to_bits()` comparison must
+    ///   call the pair *different* and a `==` comparison would call it the same;
+    /// - `NaN == NaN` is false and two identical NaNs have identical bits, so `to_bits()`
+    ///   must call the pair *identical* and `==` would call it different.
+    ///
+    /// Downgrading any float comparison in `bit_identical_to` from `to_bits()` to `==` turns
+    /// one half or the other red. Before this test, `height_m` and `drainage_area_m2` could
+    /// both be downgraded with the whole suite still green.
+    #[test]
+    fn bit_identity_compares_bits_and_not_values_in_every_float_column() {
+        let columns: [(&str, fn(&mut StreamGraph, f64)); 7] = [
+            ("header.radius_m", |g, v| g.header.radius_m = v),
+            ("header.sea_level_m", |g, v| g.header.sea_level_m = v),
+            ("height_m[3]", |g, v| g.height_m[3] = v),
+            ("area_m2[3]", |g, v| g.area_m2[3] = v),
+            ("drainage_area_m2[3]", |g, v| g.drainage_area_m2[3] = v),
+            ("lakes[0].level_m", |g, v| g.lakes[0].level_m = v),
+            ("reaches[0].gradient", |g, v| g.reaches[0].gradient = v),
+        ];
+        for (column, set) in columns {
+            let mut a = built_with_a_planted_reach(20_260_904, 0.0);
+            let mut b = built_with_a_planted_reach(20_260_904, 0.0);
+            set(&mut a, 0.0);
+            set(&mut b, -0.0);
+            assert!(
+                !a.bit_identical_to(&b),
+                "{column}: +0.0 and -0.0 are `==` and are not the same bits"
+            );
+
+            let mut a = built_with_a_planted_reach(20_260_904, 0.0);
+            let mut b = built_with_a_planted_reach(20_260_904, 0.0);
+            set(&mut a, f64::NAN);
+            set(&mut b, f64::NAN);
+            assert!(
+                a.bit_identical_to(&b),
+                "{column}: two NaNs with the same bits are the same graph; `==` would disagree"
+            );
+        }
     }
 
     // ---- the fields that look optional and are not -----------------------------------

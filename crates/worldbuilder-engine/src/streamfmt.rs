@@ -1747,6 +1747,14 @@ mod tests {
 
     /// Scans this module's own source. The rule is not "we did not write the datum test
     /// today", it is "this file may never contain it".
+    ///
+    /// **What this is and is not.** It is **line-based**: an offence needs `sea_level`, a
+    /// comparison and an elevation word on *one* line. A two-line spelling evades it --
+    /// `let datum = header.sea_level_m;` and then `if h > datum { flags |= MOUTH; }` scans
+    /// clean. So this is an honest tripwire against the obvious regression, and it does fire
+    /// on real planted code (verified by injecting a classifier into the non-test source),
+    /// but it is **not** a proof of the property the test name asserts. The property itself
+    /// is carried by review and by `validate` never mentioning the datum at all.
     fn datum_offences(text: &str) -> Vec<String> {
         let comparisons = [" < ", " > ", " <= ", " >= ", "<=", ">=", ".min(", ".max("];
         let elevations = ["height", "elevation", "level_m"];
@@ -1845,6 +1853,27 @@ mod tests {
             err(&file),
             FormatError::UnsupportedFormatVersion { found: 2, supported: FORMAT_VERSION }
         );
+    }
+
+    /// The same sweep the generator version gets, for the same reason: VERSION-001
+    /// recognises **no ordering** between format versions either. Testing the guard only at
+    /// 2 left `format_version != FORMAT_VERSION` and `format_version <= FORMAT_VERSION` both
+    /// alive -- a regressed reader would have accepted a file declaring 0, 7 or `u32::MAX`
+    /// and no test would have said so.
+    #[test]
+    fn refuses_every_format_version_that_is_not_this_one() {
+        for found in [0u32, 2, 7, u32::MAX] {
+            if found == FORMAT_VERSION {
+                continue;
+            }
+            let mut file = write_graph(&fixture_graph());
+            put_u32(&mut file, OFF_FORMAT_VERSION, found);
+            assert_eq!(
+                err(&file),
+                FormatError::UnsupportedFormatVersion { found, supported: FORMAT_VERSION },
+                "format version {found} must be refused"
+            );
+        }
     }
 
     #[test]
