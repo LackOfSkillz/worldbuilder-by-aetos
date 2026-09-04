@@ -7187,3 +7187,100 @@ def test_surface_the_worlds_and_populations_catch_different_reorderings():
         "the centres no longer collapse the smallest reordering, which is the measured "
         "reason both populations are carried", demo_centres[3],
     )
+
+
+SURFACE_SCATTER_MAX_ABS_M = 8.0e-13
+"""
+`structural_m` and `elevation_m` on a 120-point GLOBAL scatter -- `corpus(114)` normalised,
+so the six axis points and 114 hashed directions -- rather than on the demo coast. A third
+population, and the only one that leaves the demonstration region at all.
+
+It exists because of a mutation that survived everything else. Substituting the module's
+own `LAND_FRACTION` for the caller's `land_fraction` inside the constructor was **invisible
+to every other test in this section**, since all five demo worlds pass exactly that
+constant. The same hole covers `radius_m`. So this corpus varies both, and the figures are
+what a defaulted argument would have to hide:
+
+    world (bare, seed 20260831)      cross-language worst   gap to the default world
+    default                          2.2737367544323206e-13  --
+    land_fraction 0.41               1.1368683772161603e-13  1580.563522850889 m, 104/120
+    radius_m 3,000,000               4.547473508864641e-13    482.09015395480674 m, 59/120
+
+Worst **4.547473508864641e-13 m**, gate [4.0e-13, 8.0e-13], **13.7% above the lower gate**.
+Wider than SURFACE_GRID_MAX_ABS_M because the scatter reaches ground the demo coast does
+not -- deep ocean and high interior, where the elevations themselves are an order larger.
+
+Host **K2SO**, CPython 3.11.0 MSC v.1933.
+"""
+
+
+def _surface_scatter():
+    """120 global directions, unit vectors, from this file's own `corpus`."""
+    if "scatter" not in _SURFACE_POINTS:
+        _surface_setup()
+        _SURFACE_POINTS["scatter"] = [
+            SpherePoint(Vec3(x, y, z).normalised()) for x, y, z in corpus(114)
+        ]
+    return _SURFACE_POINTS["scatter"]
+
+
+def test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults():
+    """
+    `land_fraction` and `radius_m` reach the constructor as the caller wrote them.
+
+    **This test exists because a mutation survived.** Every other world in this section
+    passes `LAND_FRACTION` and `EARTH_RADIUS_M`, so a constructor that ignored either
+    argument and substituted the module's own constant agreed with the reference at all
+    3,250 of their points -- the insensitive-argument trap, met head on: the corpus was
+    sensitive to the CONSTRUCTOR and blind to two of its ARGUMENTS.
+
+    So both are varied here, and both the agreement and the GAP are asserted: a defaulted
+    `land_fraction` is worth 1580.56 m at 104 of 120 points, and a defaulted `radius_m`
+    482.09 m at 59 of 120.
+    """
+    scatter = _surface_scatter()
+    default = PySurface(PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
+                        PY_LAND_FRACTION, None)
+    worst = 0.0
+    for label, radius_m, land_fraction, floor, expected_differing in (
+        ("land_fraction 0.41", EARTH_RADIUS_M, 0.41, 1000.0, 104),
+        ("radius 3,000,000 m", 3000000.0, PY_LAND_FRACTION, 400.0, 59),
+    ):
+        reference = PySurface(PY_WORLD_SEED, radius_m, PY_DEFAULT_PLATE_COUNT,
+                              land_fraction, None)
+        gap = 0.0
+        differing = 0
+        for point in scatter:
+            v = point.vector
+            want = reference.structural_m(point)
+            got = engine.surface_structural_m(
+                PY_WORLD_SEED, radius_m, PY_DEFAULT_PLATE_COUNT, land_fraction, v.x, v.y, v.z)
+            assert abs(want - got) <= SURFACE_SCATTER_MAX_ABS_M, (label, v, want, got)
+            worst = max(worst, abs(want - got))
+            want_elevation = reference.elevation_m(point)
+            got_elevation = engine.surface_elevation_m(
+                PY_WORLD_SEED, radius_m, PY_DEFAULT_PLATE_COUNT, land_fraction, v.x, v.y, v.z)
+            assert abs(want_elevation - got_elevation) <= SURFACE_SCATTER_MAX_ABS_M, (
+                label, v, want_elevation, got_elevation)
+            worst = max(worst, abs(want_elevation - got_elevation))
+            apart = abs(want - default.structural_m(point))
+            if apart != 0.0:
+                differing += 1
+            gap = max(gap, apart)
+        assert gap > floor, (
+            "this scalar no longer changes the world enough for the corpus to tell a "
+            "defaulted argument from an honoured one", label, gap,
+        )
+        assert differing == expected_differing, (label, differing, expected_differing)
+    # And the default world itself, so the scatter's own bound is exercised where nothing
+    # is varied at all.
+    for point in scatter:
+        v = point.vector
+        want = default.structural_m(point)
+        got = engine.surface_structural_m(
+            PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+            v.x, v.y, v.z)
+        assert abs(want - got) <= SURFACE_SCATTER_MAX_ABS_M, (v, want, got)
+        worst = max(worst, abs(want - got))
+    assert worst >= SURFACE_SCATTER_MAX_ABS_M / 2.0, (
+        "the scatter no longer reaches half its own bound; re-measure", worst)
