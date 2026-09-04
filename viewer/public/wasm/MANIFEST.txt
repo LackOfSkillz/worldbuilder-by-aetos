@@ -1,0 +1,5 @@
+worldbuilder_engine.wasm
+bytes: 84856
+exports (11): memory, wb_alloc, wb_bottom_at, wb_dealloc, wb_elevation_m, wb_fill_tile_f32, wb_generator_version, wb_structural_m, wb_world_count, wb_world_free, wb_world_new
+imports: 0
+built: 2026-09-04T15:44:10.914Z

@@ -138,9 +138,45 @@ viewer/
   cesium-manifest.txt                sha256 of every vendored file
   scripts/vendor-cesium.mjs          node_modules -> public/vendor/cesium
   scripts/serve.mjs                  loopback static server, logs every request
+  scripts/build-wasm.mjs             builds + verifies + copies the engine .wasm
   public/index.html                  the minimal Viewer + the net probe
   public/vendor/cesium/              the vendored build (committed)
+  public/wasm/                       the built engine artifact (committed)
 ```
 
 `window.viewer` and `window.__viewerReady` are exposed for the trace harness and for the
 later tasks in this slice.
+
+## Building the engine .wasm
+
+```
+cd viewer
+npm run build:wasm             # builds, verifies, copies into public/wasm/
+npm run build:wasm:self-test   # proves the verification can actually fail
+```
+
+`scripts/build-wasm.mjs` runs
+`cargo build -p worldbuilder-engine --release --target wasm32-unknown-unknown
+--no-default-features --features wasm`, deletes any existing artifact first so the run
+cannot be a stale no-op, then refuses to trust the exit code. It hand-parses the built
+module's import section (id 2) and export section (id 7), cross-checks that against
+Node's own `WebAssembly.Module.exports`/`imports`, and cross-checks the export *names*
+against the `pub extern "C" fn` declarations in `crates/worldbuilder-engine/src/wasm.rs`
+itself — not a hardcoded list that could drift from the source. A module under 20 KB, or
+with any imports, or whose export names don't match the source, fails the script.
+
+This exists because the first artifact in this project was 327 bytes exporting only
+`memory`: a `cdylib` discards every module when nothing is `#[no_mangle] extern "C"`, and
+a green `cargo build` cannot tell you that. The current real artifact is 84,856 bytes, 11
+exports (`memory` + 10 functions), 0 imports.
+
+`npm run build:wasm:self-test` proves the check itself works, rather than assuming it
+does: it builds the crate **without** `--features wasm`, which reproduces the 327-byte
+memory-only failure mode exactly, confirms the strict assertion rejects it, then rebuilds
+the real artifact so the tree is left in a good state.
+
+No `wasm-bindgen`, no `wasm-opt`, no bundler — the module has zero imports by design, so
+`WebAssembly.instantiate(bytes, {})` is the entire loader. `public/wasm/` is committed
+(the same choice as the vendored Cesium tree) so a fresh checkout can serve the viewer
+without a Rust toolchain; re-run `npm run build:wasm` after any change to
+`crates/worldbuilder-engine`.
