@@ -141,7 +141,28 @@ Eight workers measured at 6.08×. Cache by tile key. **Measure the frame budget 
 
 ---
 
-### Task 6: Record it
+### Task 6: A content-security policy — turn "did not" into "cannot"
+
+**Files:** `viewer/` server config and page head
+
+Task 1 witnessed that nothing leaves the origin, and then proved the trace can show something by
+re-enabling the default imagery and watching tens of off-origin requests appear. **But absence of traffic
+is not absence of capability** — the trace shows Chrome on Windows *did not* phone home, not that it
+*cannot*.
+
+**`default-src 'self'` converts the guarantee.** It lands here rather than in Task 1 because it interacts
+with the WASM module and the workers, and retrofitting a policy around them is harder than writing it once
+they exist.
+
+**Verify it the same way Task 1 did**: confirm the viewer still works under the policy, then **re-enable
+the net probe and confirm the policy now BLOCKS it** — a CSP that has never refused anything is not known
+to be doing its job.
+
+- [ ] **Steps:** add the policy, verify the viewer, verify the probe is blocked, commit.
+
+---
+
+### Task 7: Record it
 
 **Files:** `viewer/README.md`, `crates/worldbuilder-engine/README.md`
 
