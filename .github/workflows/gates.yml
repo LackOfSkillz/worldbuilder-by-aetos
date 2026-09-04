@@ -81,8 +81,9 @@ jobs:
   # other; that costs nothing, and the alternative is a sixth job that could drift out of step
   # with the suite it lives in.
   #
-  # Baselines: 409 passed / 0 failed / 5 ignored under no-default-features, default and
-  # python; 439/0/5 under wasm and python+wasm. These ARE asserted, by a second step that
+  # Baselines: 418 passed / 0 failed / 5 ignored under no-default-features and default;
+  # 419/0/5 under python; 448/0/5 under wasm; 449/0/5 under python+wasm. These ARE asserted,
+  # by a second step that
   # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
   # ran nothing gets called green. See the step's own comment.
   # ---------------------------------------------------------------------------------------
@@ -96,25 +97,32 @@ jobs:
           # `expect` is the number of tests that must RUN in that configuration, and
           # `expect_ignored` the number that must be marked ignored. The wasm configurations
           # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
+          #
+          # 2026-09-04, slice identity: these moved 409/439 -> 418/448 when build.rs and
+          # tests/build_fingerprint.rs landed. The `python` rows are ONE HIGHER than their
+          # non-python neighbours (419 and 449) because source_fingerprint() is a PyO3 export
+          # and its binding test only compiles with that feature. Re-derived on this host by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines and
+          # subtracting the 5 ignored: 423/423/424/453/454 listed.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 409
+            expect: 418
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 409
+            expect: 418
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 409
+            expect: 419
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 439
+            expect: 448
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 439
+            expect: 449
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
