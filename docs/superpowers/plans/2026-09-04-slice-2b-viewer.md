@@ -140,11 +140,15 @@ Produce the `.wasm`, inspect it, serve it. **Assert the artifact is not the empt
 
 ---
 
-### Task 5: Workers and the tile cache
+### Task 5: Workers, the tile cache, and feature-aware availability
 
 **Files:** `viewer/` worker and cache
 
 Eight workers measured at 6.08×. Cache by tile key. **Measure the frame budget in a browser and state it** — median, p90, and the coastal-versus-ocean split, since a coastal tile costs up to 9×.
+
+**And close the gap Task 4 found, which is why this task grew.** Authored features are resolution-independent *point-wise* — the harbour centre reads exactly +4.00 m at every resolution tried — **but they are grid-sampling-limited**. The level-12 tile containing that harbour **tops out at −819 m against a +4 m target** and needs about **level 16** to resolve.
+
+So the cap of 12 is correct for generated ground and **four levels short for features**. A viewer that caps below its own authored relief cannot show the one thing "a field viewer shows the bottom of the harbour" was ever about. **Make availability feature-aware**: refine further where a feature is present, and nowhere else. It needs the cache to be affordable, which is why it lands here rather than as a follow-up.
 
 - [ ] **Steps:** implement, measure, commit.
 
