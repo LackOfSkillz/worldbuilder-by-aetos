@@ -23,6 +23,7 @@ pub mod shelf;
 pub mod substrate;
 pub mod surface;
 pub mod stream;
+pub mod streamfmt;
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
