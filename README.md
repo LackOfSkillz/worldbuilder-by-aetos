@@ -255,6 +255,13 @@ e.g. `assert 0.06100853039628548 <= 2.2e-14`.
    impossible, and it is why the count gate below asserts the per-file total, not just exit
    status.
 
+   **The guard closes the *missing* engine, not the *stale* one.** `WORLDBUILDER_REQUIRE_ENGINE=1`
+   asserts only that `worldbuilder_engine` imports. An engine that is present but built from
+   older source imports fine, so the suite reports `390 passed` and every gate here goes green
+   while 150 comparisons measure an artifact nobody can place in history. The `.wasm` has a
+   28-input fingerprint and a manifest for exactly this reason; the Python extension has
+   neither. See "What CI does NOT cover" below - it is deferred, not solved.
+
 **4. Provenance**, `npm run check:wasm` in `viewer/`. Source edited without a rebuild:
 `STALE ARTIFACT: - the shipped .wasm was NOT built from the source that is here now: source
 now: <hash> / artifact built from: <hash> (28 inputs fingerprinted.)`. Re-run locally against

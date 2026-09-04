@@ -1,8 +1,9 @@
 # Line endings are part of this repository's provenance guarantee, not a matter of taste.
 #
-# `viewer/scripts/build-wasm.mjs` fingerprints 24 source files -- everything under
-# `crates/worldbuilder-engine/src`, that crate's `Cargo.toml`, the workspace `Cargo.toml`
-# and `Cargo.lock` -- by hashing their **working-tree bytes**, and records the digest in
+# `viewer/scripts/build-wasm.mjs` fingerprints 28 source files -- everything under
+# `crates/worldbuilder-engine/src`, `examples` and `tests`, that crate's `Cargo.toml`, the
+# workspace `Cargo.toml` and `Cargo.lock` -- by hashing their **working-tree bytes**, and
+# records the digest in
 # `viewer/public/wasm/MANIFEST.txt`. With no attributes, those bytes are a property of the
 # machine that checked the tree out rather than of the commit:
 #
