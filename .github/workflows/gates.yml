@@ -226,9 +226,16 @@ jobs:
       #
       # The fix: crates/worldbuilder-engine/pyproject.toml gives the extension its own
       # distribution name (`worldbuilder-engine`, maturin backend), so the two installs no
-      # longer share a dist-info. Order matters below -- `pip install -e .` first, so the
-      # reference package's dist-info exists before maturin adds the engine's alongside it,
-      # not on top of it.
+      # longer share a dist-info.
+      #
+      # The order below -- `pip install -e .` first, then maturin -- is the order that was
+      # NECESSARY BEFORE THE SPLIT and is retained deliberately, not because it is still
+      # load-bearing. Once the names differ it should not matter: pip's uninstall-then-install
+      # keys on the project name, the two RECORDs are name-isolated, and the engine's
+      # pyproject.toml declares no `python-source`, so maturin structurally cannot see
+      # `worldbuilder/`. That reasoning is unverified -- reversing the order empirically needs
+      # a `pip uninstall` nobody has run. Keep the order until someone does; do not cite it as
+      # a settled dependency.
       - name: Install the reference package (editable)
         shell: bash
         run: |
