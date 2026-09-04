@@ -7,7 +7,9 @@
     "vendor": "node scripts/vendor-cesium.mjs",
     "serve": "node scripts/serve.mjs",
     "build:wasm": "node scripts/build-wasm.mjs",
-    "build:wasm:self-test": "node scripts/build-wasm.mjs self-test"
+    "build:wasm:self-test": "node scripts/build-wasm.mjs self-test",
+    "check:wasm": "node scripts/build-wasm.mjs check",
+    "build:wasm:stale-self-test": "node scripts/build-wasm.mjs stale-self-test"
   },
   "dependencies": {
     "cesium": "1.145.0"

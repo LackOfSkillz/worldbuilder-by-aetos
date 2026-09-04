@@ -56,8 +56,76 @@ npm run serve     # http://127.0.0.1:8137/   (PORT= to change)
 `scripts/serve.mjs` is a static file server over `public/` on loopback only. It proxies
 nothing and has no upstream, so it is a second, server-side witness: whatever the page
 fetches from this origin appears in its stdout log, and whatever is **not** in that log went
-somewhere else. It also sets COOP/COEP `require-corp`, so the page is cross-origin isolated
-ready for the SharedArrayBuffer worker pool in Task 5.
+somewhere else. It also sets a **Content-Security-Policy** (below) and COOP/COEP.
+
+### COOP/COEP earn their place by 5 microseconds, not by SharedArrayBuffer
+
+They were added in Task 5 "for the SharedArrayBuffer worker pool", and that reason was
+never true: Task 5 shipped eight **module** workers, the engine wasm has zero imports and
+no shared memory, and nothing in this tree references `SharedArrayBuffer`. Task 6 measured
+what removing them changes, on the same page one header apart:
+
+| | COOP/COEP on | off |
+|---|---|---|
+| `crossOriginIsolated` | true | false |
+| `SharedArrayBuffer` | `function` | `undefined` |
+| `performance.now()` step | **5 us** | **100 us** (Chrome's non-isolated clamp) |
+| 16,900-byte `slice()`, n=1,920 | median **0.010 ms** | median **0.000 ms**, 1,731 samples exactly zero |
+| `__wb.check()` | 12/0 | 12/0 |
+| `maxDepthVisited` / tiles | 16 / 39 | 16 / 39 |
+
+That copy is `bench.js`'s `timeHandouts`, and "**a measured 0.02 ms median over n=1,920**"
+below is the whole evidence for *the copy on the way out of the cache is not optional*.
+Under the 100 us clamp that measurement does not get worse, it **stops existing**. So the
+headers stay, for the measured reason rather than the invented one. They cost nothing here
+— every response is same-origin and already carries CORP — but they are not free forever:
+under COEP `require-corp` any subresource that loses that header fails. If `timeHandouts`
+is ever changed to time a *batch* of copies, they stop earning their place.
+
+## The Content-Security-Policy
+
+Task 1 **witnessed** that nothing leaves the origin. But absence of traffic is not absence
+of capability: that trace shows Chrome on Windows *did not* phone home, not that the page
+*cannot*. `default-src 'self'` is what converts the observation into a guarantee.
+
+```
+default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:;
+style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none';
+base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+```
+
+Every relaxation was arrived at by starting from `default-src 'self'` **alone** and adding
+only what the browser reported as a violation. Nothing here is precautionary:
+
+| token | what forced it |
+|---|---|
+| `script-src 'unsafe-eval'` | **the vendored bundle, not us.** Cesium 1.145.0 embeds Knockout, whose UMD preamble at `Cesium.js:18266` is `var t = this \|\| (0,eval)("this")`. The bundle is strict, so `this` is undefined and the eval always runs; without the token `Cesium.js` throws `EvalError` at load and `Cesium` is never defined. Present in `index.js` and `index.cjs` too, so no Cesium build avoids it, and patching the vendored tree would break `cesium-manifest.txt`. |
+| (`'wasm-unsafe-eval'`) | subsumed by the above, but otherwise required: a bare `default-src 'self'` blocked `WebAssembly.instantiate` **five times from Cesium's own KTX2/Draco modules** and twice from `/app/engine.js`. |
+| `script-src blob:` | Cesium's workers are `blob:` URLs and `importScripts()` further `blob:` URLs from inside them; a worker inherits the page's policy. |
+| `worker-src 'self' blob:` | `'self'` for `/app/tile-worker.js` (the eight Task 5 module workers), `blob:` for Cesium's own pool. |
+| `style-src 'unsafe-inline'` | Cesium both sets style attributes (`Cesium.js:79`, `:6070`, `:6071`) and injects `<style>` elements (`:13394`). |
+| `img-src data:` | the `<link rel="icon" href="data:,">` that stops the browser asking for `/favicon.ico`. |
+
+`connect-src`, `font-src`, `media-src` and `frame-src` are deliberately **absent** so they
+fall back to `default-src 'self'`. `connect-src` is the one that refuses the net probe.
+
+**`index.html` has no inline `<script>` or `<style>` any more**, so `script-src` needs no
+`'unsafe-inline'`. The former inline blocks are `/app/cesium-base-url.js`, `/app/boot.js`
+and `/app/viewer.css`, in the same document order — classic non-deferred `<script src>`
+still blocks and still runs in order, so `CESIUM_BASE_URL` is still set before `Cesium.js`.
+
+### Proved able to refuse
+
+A policy that has never refused anything is not known to be doing its job. Same page,
+`?net-probe=1`, one header apart:
+
+| | securitypolicyviolation | off-origin resource entries | hosts reached |
+|---|---|---|---|
+| policy **on** | **1** — `connect-src`, `api.cesium.com` | 1, `transferSize 0`, request never completes | **0** |
+| policy **off** | 0 | **34** | 6: `api.cesium.com`, `dev.virtualearth.net`, `ecn.t{0,1,2,3}.tiles.virtualearth.net` over plaintext `http://` |
+
+The policy stops the chain at its first link: without the ion endpoint there is no Bing
+key, and the 30-odd plaintext tile requests never happen.
 
 ## What must be set
 
@@ -137,9 +205,12 @@ viewer/
   package.json / package-lock.json   cesium@1.145.0, pinned
   cesium-manifest.txt                sha256 of every vendored file
   scripts/vendor-cesium.mjs          node_modules -> public/vendor/cesium
-  scripts/serve.mjs                  loopback static server, logs every request
-  scripts/build-wasm.mjs             builds + verifies + copies the engine .wasm
-  public/index.html                  the minimal Viewer + the net probe
+  scripts/serve.mjs                  loopback static server, CSP + COOP/COEP, logs every request
+  scripts/build-wasm.mjs             builds + verifies + fingerprints + copies the engine .wasm
+  public/index.html                  the page. No inline script or style: the CSP forbids it
+  public/app/cesium-base-url.js      CESIUM_BASE_URL, before Cesium.js
+  public/app/boot.js                 the Viewer + the net probe
+  public/app/viewer.css              the page's own style
   public/vendor/cesium/              the vendored build (committed)
   public/wasm/                       the built engine artifact (committed)
 ```
@@ -151,8 +222,10 @@ later tasks in this slice.
 
 ```
 cd viewer
-npm run build:wasm             # builds, verifies, copies into public/wasm/
-npm run build:wasm:self-test   # proves the verification can actually fail
+npm run build:wasm                   # builds, verifies, fingerprints, copies into public/wasm/
+npm run build:wasm:self-test         # proves the shape verification can actually fail
+npm run check:wasm                   # is the SHIPPED artifact built from current source?
+npm run build:wasm:stale-self-test   # proves the staleness fingerprint can actually fail
 ```
 
 `scripts/build-wasm.mjs` runs
@@ -180,6 +253,70 @@ No `wasm-bindgen`, no `wasm-opt`, no bundler — the module has zero imports by 
 (the same choice as the vendored Cesium tree) so a fresh checkout can serve the viewer
 without a Rust toolchain; re-run `npm run build:wasm` after any change to
 `crates/worldbuilder-engine`.
+
+### The staleness guard, and the gap that only existed as a composition
+
+Everything above proves things about the artifact's **shape**. The parity harness
+(`crates/worldbuilder-engine/parity`) proves the **shipped bytes** agree with native source
+to the bit — 53,251 values, 0 divergent. Neither asks the remaining question: *were these
+bytes built from the source that is here now?*
+
+Neither silence is a defect alone. Together they are: **a stale `.wasm` passes parity green
+forever while the source moves underneath it**, because the corpus it is replayed against
+was recorded from the same stale build.
+
+**This was not hypothetical when the guard was written — the committed artifact was
+already stale.** A rebuild from unchanged source produced a *different* artifact of
+identical size, differing in exactly five bytes. All five are `panic!` location records
+pointing into `crates\worldbuilder-engine\src\wasm.rs`, and all five are line numbers,
+shifted by +11 and +28:
+
+```
+offset 69815  198 -> 209      offset 69907  477 -> 505
+offset 69875  188 -> 199      offset 69923  643 -> 671
+offset 69891  456 -> 484
+```
+
+Commit `d0c2eff` changed `wasm.rs` by +34/-6 — net **+28** lines — and it landed *after*
+`0562500`, the commit that added the artifact. The artifact was never rebuilt. It had been
+shipping and passing parity, several commits behind its own source, ever since. Line
+numbers in panic metadata never execute, which is exactly why nothing noticed.
+
+The guard is a content hash over every input that can change the artifact, written into
+`public/wasm/MANIFEST.txt` at build time:
+
+* every file under `crates/worldbuilder-engine/src`, recursively;
+* `crates/worldbuilder-engine/Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`;
+* the compiler version (`rustc -vV` release, commit hash and host);
+* the literal cargo argument list.
+
+24 inputs. Deliberately over-inclusive: `bindings.rs` and `src/bin/` cannot affect a
+`--no-default-features --features wasm` build and will still trip it. A false *rebuild it*
+is a cheap failure; a false *it is current* is the one that costs. The artifact's own
+sha256 is recorded too, so a hand-edited or swapped `.wasm` is caught by the same command.
+
+**A hash over inputs is only sound if the artifact is a function of those inputs**, so that
+was checked rather than assumed: two consecutive rebuilds of identical source produced
+byte-identical artifacts (`1395f246…`), while the committed one differed (`f2a42266…`) for
+the reason above — older source, not a nondeterministic build.
+
+**Proved able to refuse**, three ways, one arm each:
+
+| what was done | `npm run check:wasm` |
+|---|---|
+| nothing — current tree | `Current: … matches its manifest and the source that is here now`, exit 0 |
+| one comment line appended to `wasm.rs`, artifact **not** rebuilt | `STALE ARTIFACT: the shipped .wasm was NOT built from the source that is here now`, exit **1** |
+| the previously-committed `.wasm` swapped back in | `STALE ARTIFACT: the shipped .wasm is not the one this manifest describes`, exit **1** |
+| a `MANIFEST.txt` from before the guard | `predates the staleness guard`, exit **1** |
+
+And the composition, demonstrated end to end: with that one comment line added and the
+artifact not rebuilt, **the parity harness reported `OK: zero divergent` and exited 0**
+while `check:wasm` exited 1. That is the whole point of the guard in one run.
+
+`npm run build:wasm:stale-self-test` is the unattended half: it copies the fingerprint
+inputs to a temp tree, confirms an *unmodified* copy fingerprints identically (so the
+digest depends on content and not on path), appends one line to the copy's `wasm.rs`, and
+fails loudly if the digest does not move. It never writes inside `crates/`.
 
 ## The terrain provider (Task 4)
 
