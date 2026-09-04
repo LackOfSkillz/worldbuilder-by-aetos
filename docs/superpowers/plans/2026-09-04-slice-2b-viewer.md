@@ -42,7 +42,16 @@
 
 **2. `bindings.rs` is not a template.** `surface_elevation_m(...)` **rebuilds the `Surface` on every call** and would pay ~3 ms per sample. The export layer needs a **world-handle model**: construct once, sample many times.
 
-**3. A 100% divergence rate is almost never a divergence.** A feature-local run once reported 200,000 of 200,000 divergent; it was a stale cached `common.js` running the wrong corpus. **Suspect the harness before the engine.**
+**3. A panic behind `extern "C"` is an ABORT, not a catchable error.** Task 2 found a latent panic — a
+negative `land_fraction` indexing past the continentality calibration — and deleting the guard did not
+produce a failing test. It produced `thread caused non-unwinding panic. aborting`, taking 27 other tests
+with it, **because `extern "C"` is nounwind**. Nothing above that layer can catch anything, and a JS host
+gets a dead module with no diagnostic.
+
+**So every `extern "C"` entry point validates its inputs and returns a status.** The ordinary Rust posture
+— let it panic, the caller sees a backtrace — is not available here, because there is no caller to see it.
+
+**4. A 100% divergence rate is almost never a divergence.** A feature-local run once reported 200,000 of 200,000 divergent; it was a stale cached `common.js` running the wrong corpus. **Suspect the harness before the engine.**
 
 ---
 
