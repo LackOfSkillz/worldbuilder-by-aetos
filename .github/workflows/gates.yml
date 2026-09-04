@@ -161,23 +161,35 @@ jobs:
           echo "$PWD/.venv/Scripts" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
-      - name: Install the harness and the reference package
+      - name: Install the test harness
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install "maturin==1.15.0" pytest
-          # setuptools backend, per the root pyproject.toml. This installs the pure-Python
-          # reference (`worldbuilder/`) that the conformance suite compares the engine
-          # against. It does NOT build the extension -- see the note on the next step.
-          python -m pip install -e .
 
-      # The standing gap, stated rather than papered over: pyproject.toml declares setuptools
-      # as its build backend while the extension is built by maturin, so `pip install .` does
-      # not produce a working engine and the build is not reproducible from project metadata.
-      # This workflow does what a developer does -- runs maturin explicitly against the
-      # crate's own Cargo.toml -- and leaves the backend alone. Changing a build backend under
-      # a working conformance suite is its own slice.
+      # The standing gap, made visible by CI rather than papered over.
+      #
+      # pyproject.toml declares setuptools as its build backend while the extension is built
+      # by maturin. That is already recorded as "the build is not reproducible from project
+      # metadata". CI found it is worse than that: BOTH BACKENDS PRODUCE THE SAME
+      # DISTRIBUTION NAME. maturin walks up to the root pyproject.toml, reads
+      # `[project] name = "worldbuilder-by-aetos"`, and builds
+      # `worldbuilder_by_aetos-0.1.0-cp311-...whl` containing only `worldbuilder_engine` --
+      # so installing it UNINSTALLS a prior `pip install -e .` and takes the pure-Python
+      # `worldbuilder/` package with it. The first CI run did exactly that and collected 14
+      # `ModuleNotFoundError: No module named 'worldbuilder'` errors.
+      #
+      # This is not a CI artefact. The same clobber has already happened in the local .venv:
+      # its only worldbuilder_by_aetos-0.1.0.dist-info says `Generator: maturin (1.15.0)`, and
+      # `import worldbuilder` there succeeds ONLY when the interpreter starts in the repo
+      # root. Nobody noticed because pytest is always run from the repo root.
+      #
+      # So this job does not install the reference package at all -- it imports it from the
+      # working tree, which is what has actually been happening all along. `python -m pytest`
+      # rather than `pytest` is load-bearing: `-m` puts the current directory on sys.path.
+      # Fixing the collision properly means giving the extension its own distribution name or
+      # moving the project to maturin outright, and that is its own slice.
       - name: Build the engine wheel (maturin, not the declared backend)
         shell: bash
         run: |
@@ -189,7 +201,10 @@ jobs:
         shell: bash
         env:
           WORLDBUILDER_REQUIRE_ENGINE: "1"
-        run: pytest tests/
+        run: |
+          set -euo pipefail
+          python -c "import worldbuilder; print('reference imported from', worldbuilder.__file__)"
+          python -m pytest tests/
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
@@ -220,6 +235,8 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
+          # For `npm run build:wasm:self-test`, which really builds.
+          rustup target add wasm32-unknown-unknown
           # Printed because this exact string -- release, commit hash and host triple -- is
           # folded into the source fingerprint. When provenance goes red, this is the first
           # line to read.
@@ -241,6 +258,31 @@ jobs:
         shell: bash
         working-directory: viewer
         run: npm run check:wasm
+
+      # Two gates the plan's table does not list but the project's own "everything that must
+      # be re-run" block in viewer/README.md does. They are the provenance chain's proofs that
+      # it can refuse, and they need no browser and no person, so leaving them out would have
+      # meant shipping a CI slice that omits the cheapest fail-proofs in the repository.
+      #
+      # `stale-self-test` copies the fingerprint inputs to a temp tree, edits one line there,
+      # and confirms the real fingerprint function reports a different digest -- seconds, no
+      # build, and it never touches crates/.
+      #
+      # `self-test` builds WITHOUT `--features wasm`, reproducing the historical 327-byte
+      # memory-only artifact, and confirms the strict shape assertion rejects it; then it
+      # rebuilds the real one. It works entirely in `target/` and never writes
+      # viewer/public/wasm, so it cannot disturb the artifact the step above just vouched for.
+      # It is placed AFTER the provenance check so nothing has compiled before that question
+      # is asked.
+      - name: Can the staleness fingerprint refuse a tree that moved?
+        shell: bash
+        working-directory: viewer
+        run: npm run build:wasm:stale-self-test
+
+      - name: Can the build-shape assertion reject an empty artifact?
+        shell: bash
+        working-directory: viewer
+        run: npm run build:wasm:self-test
 
       - name: Parity -- native dump
         shell: bash
