@@ -85,6 +85,15 @@ fn version() -> &'static str {
 /// (worldfile schema) this project also keeps distinct from both.
 pub const GENERATOR_VERSION: u32 = 1;
 
+/// DELIBERATE BREAKAGE (slice CI, task 2). A fully-qualified `f64::` form the determinism
+/// guard must reject. Nothing calls it; the guard is a text scan of src/, not a call graph.
+/// It is ALONE on this branch: on the batched branch the changed constant failed the lib
+/// target first, and `cargo test` never reached tests/no_std_math.rs.
+#[allow(dead_code)]
+fn ci_proof_of_a_red_gate(x: f64) -> f64 {
+    f64::sqrt(x)
+}
+
 use crate::stream::StreamGraph;
 use crate::surface::Surface;
 
