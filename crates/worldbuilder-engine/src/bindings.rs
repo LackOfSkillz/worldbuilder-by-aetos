@@ -1397,11 +1397,29 @@ fn cached_surface(
 /// What the constructor kept, as `(world_seed, radius_m, plate_count, feature_count,
 /// features_radius_m)`.
 ///
-/// `world_seed` comes back so the `i64` domain is visible from Python -- a seed outside it
-/// raises `OverflowError` at the boundary rather than being silently masked into a
-/// different world -- and `features_radius_m` comes back because the adopted-`Features`
-/// branch is otherwise observable only through metres of elevation. Both are the kind of
-/// thing a constructor gets wrong by dropping, and a dropped one has no other witness.
+/// **This is an API DECISION, not a transcription.** `surface.py` exposes three methods --
+/// `structural_m`, `elevation_m`, `bottom_at` -- and this is a FOURTH entry point with no
+/// counterpart there. It is here deliberately, and the reason is that three of the things
+/// the constructor is handed have no other cheap witness:
+///
+/// - `world_seed` comes back so the `i64` domain is visible from Python -- a seed outside
+///   it raises `OverflowError` at the boundary rather than being silently masked into a
+///   different world.
+/// - `features_radius_m` comes back because the adopted-`Features` branch is otherwise
+///   observable only through metres of elevation.
+/// - `plate_count` comes back, and it is the STRONGEST of the three. A constructor that
+///   ignored `plate_count` and substituted `generation::DEFAULT_PLATE_COUNT` was invisible
+///   to every value comparison in the conformance suite's surface section, because every
+///   demo world there is built at 22 plates -- the third instance of the
+///   insensitive-argument trap, after `land_fraction` and `radius_m`. The suite now varies
+///   it (`test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults`, a
+///   seven-plate world), but this echo of `surface.plates.len()` is still the only
+///   *structural* observation that the argument arrived at all.
+///
+/// All three are the kind of thing a constructor gets wrong by dropping, and a dropped one
+/// has no other witness. An unlabelled fourth method on a type whose reference class has
+/// three reads later as a transcription error, which is why the label lives here rather
+/// than only in a report.
 #[pyfunction]
 #[pyo3(signature = (
     world_seed, radius_m, plate_count, land_fraction, features=None, features_radius_m=None,

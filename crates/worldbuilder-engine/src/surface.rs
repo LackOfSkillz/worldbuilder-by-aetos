@@ -180,11 +180,34 @@ impl Surface {
     /// The shelf runs first and its answer is the argument, not a sibling term: the
     /// shelf has already folded continentality and tectonics into one elevation, so
     /// `shelf.elevation_m` *is* the structural ground, and features argue with that
-    /// rather than with the macro elevation the shelf was built from. Handing
-    /// `land.base_elevation + tectonics.offset_m` here instead compiles, type-checks
-    /// and looks like the same physics; at the probe this module tests it moves the
-    /// answer by 11.4 m, and over a demo-coast grid by 30.89 m. A harbour is cut into
-    /// real bathymetry, not instead of it.
+    /// rather than with the macro elevation the shelf was built from. A harbour is cut
+    /// into real bathymetry, not instead of it.
+    ///
+    /// **Two different mutations hide in that sentence, and naming only one of them
+    /// cost four agents four different numbers.** Both compile, type-check and look
+    /// like the same physics, but they are not the same experiment, so a figure that
+    /// does not say which one it measured means nothing.
+    ///
+    /// - **DROP** - hand `land.base_elevation + tectonics.offset_m` here instead, so
+    ///   the shelf's lerp is *deleted* rather than moved. At the base-sensitive probe
+    ///   below it moves the answer by **11.43 m**, which
+    ///   `the_base_is_the_shelf_not_the_macro_elevation` pins.
+    /// - **SWAP** - the two stages *exchange places*, both still present: the features
+    ///   run over the macro elevation and the shelf's lerp then runs over THAT result
+    ///   (`pre = features.apply(p, macro).0`, then
+    ///   `pre + weight * (target_depth - pre)`). Over a demo-coast grid this is
+    ///   **30.89228988262422 m**.
+    ///
+    /// That figure's method, in full, because every term in it changes the answer:
+    /// the **maximum** of `abs(truth - mutant)` over the **625-point `Coast.at` demo
+    /// grid** (+-45,000 m, 3,750 m step, world seed 20260831, the demo region's 25
+    /// features), taken on the **full-pipeline `elevation_m`** and of **the SWAP**.
+    /// Change any one of those three and the number changes: structure-only on the same
+    /// grid and the same SWAP is 30.913586988571197 m; the same SWAP full-pipeline on
+    /// the *unrotated* `TangentFrame` grid of the same span and step is
+    /// 15.968867104622605 m; and the DROP over this grid is 60.53077243225693 m
+    /// full-pipeline and 59.70936673990978 m structure-only. All six re-derived on
+    /// host K2SO, CPython 3.11.0, against the live Python.
     ///
     /// `Features::apply` then walks its list in construction order, each feature
     /// reading and writing the running result, so the list order is part of the answer

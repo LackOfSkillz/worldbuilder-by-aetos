@@ -37,10 +37,17 @@ reproducing to the last digit with the reduction and the orientation named:
 
 | Mutation | Moves the answer by | Reading |
 |---|---|---|
-| Features before shelf | **30.89228988262422 m** | full pipeline, max over the `Coast.at` grid |
+| Features before shelf (**SWAP**) | **30.89228988262422 m** | full pipeline, max over the `Coast.at` grid |
 | Detail before features | **5.463671791248579 m** | full pipeline, max over the `Coast.at` grid |
 | Dropping the authority multiply | **11.744069415078535 m** | full pipeline, max over the `Coast.at` grid |
 | Sizing detail off pre-feature ground | **0.04541089914697238 m** | full pipeline, max over the `Coast.at` grid |
+
+**"Features before shelf" names TWO mutations, and this row is the SWAP.** *SWAP*: both stages present,
+order exchanged — the features run over the macro elevation and the shelf's lerp then runs over that
+result. *DROP*: the shelf deleted, the features composing onto `land.base_elevation + tectonics.offset_m`
+and that being the answer. This row is the SWAP, which is what `surface.py` describes; the DROP over the
+same grid is **60.53077243225693 m** full-pipeline and **59.70936673990978 m** structure-only. Four agents
+measured this correctly and reported four different numbers because that phrase was left to carry both.
 
 **The extraction's table was two experiments read as one.** Its features-before-shelf figure,
 `30.913586988571197`, is reproduced exactly by a **structure-only** reading — `abs(swapped - shaped)`,
@@ -90,9 +97,18 @@ noise; on the *masked* seed it is `0.387`.
 
 **So `Surface::new` holds `i64` and casts once, at the two `Noise`-backed sites ONLY.** Casting at
 `plates_for` would produce a different world while looking like consistency. `tests/no_std_math.rs` bans
-the literal token `" as u64"`, so this is the crate's first substantive `// cast-ok:` marker, and its two
+the literal token `" as u64"`, so this needs a `// cast-ok:` marker, and its two
 load-bearing words are **"AFTER"** (the mask follows the mixing) and **"reinterpretation, not a float
 truncation"**.
+
+**Correction, measured against source: this is NOT "the crate's first substantive `// cast-ok:` marker",
+as an earlier draft of this plan claimed.** There are **31** `cast-ok:` marker lines in
+`crates/worldbuilder-engine/src/`, and `noise.rs` already performs the same signed-to-unsigned
+reinterpretation for the same hash. What is actually distinctive about this one is narrower and more
+useful: it is the only marker in the crate whose justification rests on a **measured population** (2,049
+negative seeds) rather than on the shape of the expression, and the only one where the identical cast one
+function further along — `plates_for` — would have been **wrong**. "Signed to unsigned is safe here" is a
+claim about a call site, not about a cast.
 
 **Do NOT take the alternative of a `u64` signature.** It silently drops the negative-seed domain that
 `generation.rs` is already conformance-tested over.

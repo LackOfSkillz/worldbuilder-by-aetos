@@ -6498,7 +6498,8 @@ RE-MEASURE on that host and record the new figure with its population; never wid
 than assumed.** At a feature centre with no feature applying, the answer is the shelf's
 alone and the divergence is the grid's kind, not the centres' -- so those two are asserted
 against SURFACE_GRID_MAX_ABS_M, whose population they belong to. Folding them in here would
-have widened this bound 21x and hidden exactly what it exists to catch.
+have widened this bound 20.25x (2.025047e-13 / 1.0e-14) and hidden exactly what
+it exists to catch.
 """
 
 SURFACE_BOTTOM_GRID_MAX_ABS = 1.2e-13
@@ -7132,6 +7133,14 @@ def test_surface_the_worlds_and_populations_catch_different_reorderings():
     So neither world is redundant, and dropping either silently halves what this section can
     see. The same holds of the two populations: the centres are the only place the guard
     fires, and they collapse the smallest reordering by seventy times.
+
+    **ACCOUNTING: this test makes ZERO engine calls and is therefore NOT a conformance
+    test.** It asserts properties of the Python reference alone -- what the corpus can and
+    cannot see -- so no defect in the port can make it fail. That is deliberate: a claim
+    about a corpus's blindness is a claim about the reference, and pinning it here stops a
+    later round from deleting a world that looks redundant. But it must not be counted as
+    conformance surface. The section holds **13** `test_surface_*` functions, of which
+    **12** compare the crate against the Python; this is the thirteenth.
     """
     def reorderings(surface, point):
         """`(macro_base, no_authority, detail_first, pre_feature_amplitude)` distances."""
@@ -7226,27 +7235,43 @@ def _surface_scatter():
 
 def test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults():
     """
-    `land_fraction` and `radius_m` reach the constructor as the caller wrote them.
+    `land_fraction`, `radius_m` and `plate_count` reach the constructor as the caller
+    wrote them.
 
-    **This test exists because a mutation survived.** Every other world in this section
-    passes `LAND_FRACTION` and `EARTH_RADIUS_M`, so a constructor that ignored either
-    argument and substituted the module's own constant agreed with the reference at all
-    3,250 of their points -- the insensitive-argument trap, met head on: the corpus was
-    sensitive to the CONSTRUCTOR and blind to two of its ARGUMENTS.
+    **This test exists because a mutation survived, three times.** Every other world in
+    this section passes `LAND_FRACTION`, `EARTH_RADIUS_M` and `DEFAULT_PLATE_COUNT`, so a
+    constructor that ignored any one of those arguments and substituted the module's own
+    constant agreed with the reference at all 3,250 of their points -- the
+    insensitive-argument trap, met head on: the corpus was sensitive to the CONSTRUCTOR
+    and blind to three of its ARGUMENTS.
 
-    So both are varied here, and both the agreement and the GAP are asserted: a defaulted
-    `land_fraction` is worth 1580.56 m at 104 of 120 points, and a defaulted `radius_m`
-    482.09 m at 59 of 120.
+    `plate_count` was the last of the three to close, and it is instructive: with it
+    defaulted, the only test that went red was
+    `test_surface_fields_round_trip_including_the_adopted_radius`, whose witness is a
+    STRUCTURAL echo of `surface.plates.len()` rather than a cross-language value
+    comparison. Deselect that one test and the mutant survived every other surface test
+    in the file. No value corpus varied it, because all five demo worlds are built at 22
+    plates.
+
+    So all three are varied here, and both the agreement and the GAP are asserted: a
+    defaulted `land_fraction` is worth 1580.56 m at 104 of 120 points, a defaulted
+    `radius_m` 482.09 m at 59 of 120, and a defaulted `plate_count` 905.67 m at 37 of
+    120. The seven-plate world's own cross-language worst is 1.136868e-13 m, comfortably
+    inside SURFACE_SCATTER_MAX_ABS_M; plate counts of 17 and 29 were measured too and
+    reach 2.27e-12 and 7.96e-13, so they would need their own bound and are not used
+    here.
     """
     scatter = _surface_scatter()
     default = PySurface(PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
                         PY_LAND_FRACTION, None)
     worst = 0.0
-    for label, radius_m, land_fraction, floor, expected_differing in (
-        ("land_fraction 0.41", EARTH_RADIUS_M, 0.41, 1000.0, 104),
-        ("radius 3,000,000 m", 3000000.0, PY_LAND_FRACTION, 400.0, 59),
+    for label, radius_m, land_fraction, plate_count, floor, expected_differing in (
+        ("land_fraction 0.41", EARTH_RADIUS_M, 0.41, PY_DEFAULT_PLATE_COUNT, 1000.0, 104),
+        ("radius 3,000,000 m", 3000000.0, PY_LAND_FRACTION, PY_DEFAULT_PLATE_COUNT,
+         400.0, 59),
+        ("plate_count 7", EARTH_RADIUS_M, PY_LAND_FRACTION, 7, 400.0, 37),
     ):
-        reference = PySurface(PY_WORLD_SEED, radius_m, PY_DEFAULT_PLATE_COUNT,
+        reference = PySurface(PY_WORLD_SEED, radius_m, plate_count,
                               land_fraction, None)
         gap = 0.0
         differing = 0
@@ -7254,12 +7279,12 @@ def test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults():
             v = point.vector
             want = reference.structural_m(point)
             got = engine.surface_structural_m(
-                PY_WORLD_SEED, radius_m, PY_DEFAULT_PLATE_COUNT, land_fraction, v.x, v.y, v.z)
+                PY_WORLD_SEED, radius_m, plate_count, land_fraction, v.x, v.y, v.z)
             assert abs(want - got) <= SURFACE_SCATTER_MAX_ABS_M, (label, v, want, got)
             worst = max(worst, abs(want - got))
             want_elevation = reference.elevation_m(point)
             got_elevation = engine.surface_elevation_m(
-                PY_WORLD_SEED, radius_m, PY_DEFAULT_PLATE_COUNT, land_fraction, v.x, v.y, v.z)
+                PY_WORLD_SEED, radius_m, plate_count, land_fraction, v.x, v.y, v.z)
             assert abs(want_elevation - got_elevation) <= SURFACE_SCATTER_MAX_ABS_M, (
                 label, v, want_elevation, got_elevation)
             worst = max(worst, abs(want_elevation - got_elevation))

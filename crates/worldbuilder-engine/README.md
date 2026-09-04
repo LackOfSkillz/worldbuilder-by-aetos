@@ -9,6 +9,10 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
 
 ## What is here so far
 
+Counted from `src/`, not from memory: **sixteen modules plus the crate root**, every one of
+them ported from a named Python module and held to that module by `tests/test_conformance.py`.
+
+    src/lib.rs       the crate root: the module tree and the PyO3 module registration
     src/detmath.rs   the only place a transcendental is called
     src/vectors.rs   Vec3
     src/sphere.rs    SpherePoint
@@ -16,7 +20,19 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
     src/tangent.rs   TangentFrame: at, local_to_sphere, sphere_to_local
     src/continentality.rs  Continentality: at, calibration, above_shore, base_elevation, gradient
     src/plates.rs    Plate, PlateSet: the bisector table and the nearest-two Voronoi lookup
+    src/generation.rs  plates_for: every pole, rate and centre hashed, never drawn
+    src/kinematics.rs  surface_velocity, motion_at, motion_between: the boundary regimes
+    src/tectonics.rs   Tectonics.offset_m: what plate motion does to the ground
+    src/detail.rs      Detail: amplitude_m and offset_m -- texture, and only texture
+    src/shelf.rs       Shelf, Coastal: the water a ship actually sails in
+    src/features.rs    Feature, Features, Placed: RAISE / CARVE / SHAPE, in list order
+    src/substrate.rs   what the bottom is made of, and the Composition it returns
+    src/surface.rs     the whole world assembled: structural_m, elevation_m, bottom_at
     src/bindings.rs  the PyO3 surface, conversion only
+
+That list is the engine core, and it is closed -- see **This closes the engine core** below.
+Keep it in step with `src/` when a module lands: it went seven modules stale across the
+slices that added them, on the same page that claims the core is complete.
 
 The Python in `worldbuilder/` is still the reference implementation and is unchanged.
 Nothing has been deleted, and the engine is additive until conformance is established for
@@ -1788,6 +1804,17 @@ shelf's lerp over the featured macro instead of the features over the shelf's ou
 K2SO, CPython 3.11.0. Re-derived here; `surface.rs`'s `structural_m` doc comment carries it
 and is correct.
 
+**The number was never the defect -- the sentence around it was, and that sentence is now
+fixed.** The doc comment used to read "Handing `land.base_elevation + tectonics.offset_m`
+here instead ... moves the answer by 11.4 m, and over a demo-coast grid by 30.89 m", with
+nothing after it. That phrase describes a DROP, and it carried a DROP figure (11.43 m at the
+probe) and a SWAP figure (30.892 m over the grid) in the *same clause*. Two independent
+readers measured the DROP, found no statistic matching 30.892, and each concluded the doc
+comment was wrong; it was not. `structural_m`'s doc comment now names both mutations
+separately, attaches each figure to the one it measures, and states the SWAP figure's frame,
+stage and mutation next to it. **This is the root cause of the whole four-way episode: one
+English phrase naming two experiments.**
+
 **The disagreement is the lesson, and it is sharper than the number.** Four agents measured
 this independently, every one of them correctly, and reported four different values between
 15.9 and 60.6 m. Nothing failed to reproduce -- all seven readings below re-derive to the last
@@ -1835,8 +1862,10 @@ Two consequences worth keeping:
 - The earlier note calling the grid-orientation recovery premature is **half-withdrawn**: that
   recovery was right about the frame and incomplete about the mutation, rather than wrong.
 
-The `11.4 m` in the same doc comment is a *different* corpus -- the seed -5 world's
-`base_sensitive_probe` with this module's own two test features -- and reproduces: the test
+The `11.4 m` in the same doc comment is a *different* corpus **and a different mutation** --
+it is the **DROP**, at `base_sensitive_probe` with this module's own two test features, not
+the SWAP the 30.892 measures. That mismatch inside one sentence is exactly what broke, and
+both halves are now labelled at the source. It reproduces: the test
 `the_base_is_the_shelf_not_the_macro_elevation` pins the wrong base at `-88.90851322503084`
 against a shaped answer 11.43 m away, and the macro elevation there (`-54.97828011320581`) is
 32.7 m from the shelf's, which the feature weights damp to 11.43 m in the answer.
@@ -1927,8 +1956,11 @@ The marker reads:
     // a float truncation -- the mask comes AFTER the mixing, so nothing is rounded and
     // nothing is lost
 
-It is **not** the crate's first `// cast-ok:` -- there are 29 in `src/`, and `noise.rs`
-already reinterprets a signed lattice coordinate as unsigned for the same hash. What is new
+It is **not** the crate's first `// cast-ok:` -- counted from source, there are **31**
+marker lines in `src/` (12 in `generation.rs`, 6 in `noise.rs`, 5 in `continentality.rs`, 2
+each in `features.rs`, `substrate.rs` and `surface.rs`, 1 each in `plates.rs` and
+`shelf.rs`), and `noise.rs` already reinterprets a signed lattice coordinate as unsigned for
+the same hash. What is new
 is the derivation. It is the only marker in the crate whose reason rests on a *measured
 population* rather than on an argument from the shape of the expression, and the only one
 where the same cast applied one function further along would have been wrong. That is the
@@ -1994,8 +2026,19 @@ argument: over 4,335 constructed single-feature evaluations, 95 produce a `-0.0`
 348 fire the guard, and the intersection is **empty**; over 867 paired evaluations the guard
 fires 867 times and `-0.0` never appears at all. On the real demo world the guard fires at
 **0 of 625** grid points and **24 of 25** centres, and `-0.0` appears at neither. A
-1,000-point bisection hunt along `shelf.elevation_m`'s sign change never reached an exact
-zero (closest 1.7763568394002505e-14).
+bisection hunt along `shelf.elevation_m`'s sign change never reached an exact zero.
+
+**That third leg died with the spike and is re-derived here, with its method, because a
+number without one is not a record.** Host K2SO, CPython 3.11.0, against the live Python at
+this commit: over the demo world's 625-point `Coast.at` grid, `shelf.elevation_m` is exactly
+zero at **0** points; then, from **25** alongshore lines at `Coast.at(offshore, along)` with
+`along = -45,000 + line * 3,750` m, the sign of `shelf.elevation_m` is bracketed on the
+offshore interval `[-4,000, +4,000]` m -- **19** of the 25 lines actually bracket it -- and
+each bracketing line is bisected **60** times, for **1,140** probes. **No probe returned an
+exact zero.** The closest approach is `-1.7763568394002505e-14` m, and its sign is negative,
+which is the relevant detail: the hunt got within 1.8e-14 m of zero from *below* and still
+never landed on `-0.0`. (Earlier prose called this a "1,000-point" hunt; 1,140 is the
+measured probe count, and the 1,000 was a round number rather than a measurement.)
 
 **Three things hold it shut, and any one of them reopens it.** This is the part worth
 carrying forward: a closure is only as good as the list of things that would undo it.
@@ -2061,14 +2104,26 @@ found and fixed inside the slice, one still open.
    **482.09015395480674 m at 59 of 120**. That corpus exists because the mutation survived
    everything else, and `test_conformance.py`'s surface section now carries 13
    `test_surface_*` tests rather than 12.
-5. **`plate_count` is a THIRD argument the corpus is insensitive to, and it is still open.**
-   Reported by the settling review, **recorded here and deliberately not fixed** -- a separate
-   round owns it. Defaulting `plate_count` to `DEFAULT_PLATE_COUNT` inside the constructor and
-   deselecting one test leaves every remaining surface test green, because no value corpus
-   varies it: every world in the section is built at 22 plates. It is a straight repeat of
-   instance 4 on the one constructor argument that instance 4's scatter did not vary, and it
-   strengthens the case for `surface_fields` existing at all -- `plate_count` comes back from
-   that binding, which is the only cheap witness a caller has that the argument arrived.
+5. **`plate_count` was a THIRD argument the corpus could not see. It is now closed the same
+   way.** Defaulting `plate_count` to `DEFAULT_PLATE_COUNT` inside `cached_surface` and
+   deselecting one test -- `test_surface_fields_round_trip_including_the_adopted_radius`,
+   whose witness is a *structural* echo of `surface.plates.len()`, not a value comparison --
+   left every remaining surface test green, because no value corpus varied it: all five demo
+   worlds are built at 22 plates. It was a straight repeat of instance 4 on the one
+   constructor argument that instance 4's scatter did not vary.
+
+   The fix is the same fix: a third row in
+   `test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults`, a **seven-plate
+   world** over the same 120-point global scatter. A defaulted `plate_count` is worth
+   **905.6679021350784 m at 37 of 120** points, and the seven-plate world's own
+   cross-language worst is **1.136868e-13 m**, comfortably inside `SURFACE_SCATTER_MAX_ABS_M`
+   (8.0e-13). Seven was chosen by measurement rather than taste: plate counts of 17 and 29
+   reach **2.2737e-12** and **7.9581e-13** against the Python and would each need their own
+   bound; 7, 11 and 23 all sit at 1.1369e-13. Proved by mutation -- with the defaulting
+   applied, this test goes red on its own.
+
+   It also settles the case for `surface_fields`: `plate_count` comes back from that binding,
+   which is the only *structural* witness a caller has that the argument arrived at all.
 
 **The answer is to mutate each ARGUMENT, not each stage.** Sixteen mutations were written
 into the source on purpose and run. Fifteen fail, each named in the test that catches it.
@@ -2107,11 +2162,18 @@ visible. So the blindnesses are asserted alongside the catches.
 ### `surface_fields` and the three forwarders are API DECISIONS, not transcriptions
 
 **`surface_fields` is a fourth entry point with no counterpart in `surface.py`.** It returns
-`(world_seed, radius_m, plate_count, feature_count, features_radius_m)` and exists because two
-of those are otherwise unwitnessed: `world_seed` makes the `i64` domain visible from Python,
-and `features_radius_m` is the only cheap observation of the adopted-`Features` branch, which
-is otherwise visible only through metres of elevation. Both are the kind of thing a
-constructor gets wrong by dropping, and a dropped one has no other witness.
+`(world_seed, radius_m, plate_count, feature_count, features_radius_m)` and exists because
+THREE of those are otherwise unwitnessed: `world_seed` makes the `i64` domain visible from
+Python; `features_radius_m` is the only cheap observation of the adopted-`Features` branch,
+which is otherwise visible only through metres of elevation; and `plate_count` -- the
+strongest of the three -- is the one argument that survived a defaulting mutation against
+every value comparison in the section (instance 5 of the trap, above). All three are the kind
+of thing a constructor gets wrong by dropping, and a dropped one has no other witness.
+
+That reasoning now lives in `bindings.rs`'s own doc comment on `surface_fields`, not only
+here. A report is not a record: the label has to sit next to the code that will outlive it,
+or the next reader sees an unexplained fourth method on a type whose reference class has
+three.
 
 Likewise `substrate_at`, `substrate_dominant_at` and `substrate_slope_at`. `surface.py`
 exposes exactly ONE substrate-facing method; Python callers reach through the `substrate`
@@ -2155,6 +2217,22 @@ guard; 0 doc-tests), and `--release` gives the same 259. `pytest tests/` exits 0
 `WORLDBUILDER_REQUIRE_ENGINE=1` rather than skipped, since a skipped conformance suite reports
 green while comparing nothing at all. Of those, `test_conformance.py` is **149** (13 of them
 `test_surface_*`) and `test_performance.py` is **8**.
+
+**A TEST COUNT MUST NAME ITS ENVIRONMENT, the same way a figure must name its population,
+its method's parameters, its host and -- as this slice learned the hard way -- which mutation
+it measured.** Every pytest count quoted during this slice was given without saying whether
+`WORLDBUILDER_REQUIRE_ENGINE` was set, which makes those counts ambiguous in exactly the way
+the reordering figure was: "389 passed" with the guard set and "389 passed" without it are
+different claims, and only one of them is evidence that anything was compared. The skip
+mechanism itself is correct and says so in its own comment; what was missing was the habit of
+naming it. Quote counts as *"389 passed, `WORLDBUILDER_REQUIRE_ENGINE=1`"* or do not quote
+them.
+
+**And 13 `test_surface_*` is not 13 conformance tests.** One of them --
+`test_surface_the_worlds_and_populations_catch_different_reorderings` -- makes **zero engine
+calls**: it asserts what the Python reference's own corpus can and cannot see, so no defect
+in the port can make it fail. That is deliberate and it earns its place, but the conformance
+surface of this section is **12**, not 13. The test says so in its own docstring now.
 
 `test_performance.py` was repaired earlier in this slice and is **no longer load-sensitive**:
 it counts noise evaluations instead of timing them, because the two timing distributions
