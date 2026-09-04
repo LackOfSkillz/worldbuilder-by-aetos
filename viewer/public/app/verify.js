@@ -46,30 +46,54 @@ export const NAMED_POINTS = [
   { name: "dateline 5N 179E", latitudeDeg: 5, longitudeDeg: 179 },
 ];
 
-/// A check result. `work` is **how many things this check actually looked at**, and when
-/// it is supplied, zero is never a pass.
+/// A check result. `witnesses` is an object of **named quantities whose being zero would
+/// make this check's pass vacuous**; every one of them must be positive or the check is
+/// reported as not exercised, whatever `pass` says.
 ///
-/// This exists because the same bug has now been found four times in this slice, in four
-/// different checks: a check that reports success when it did nothing. Task 5 found one
-/// comparing against its own footprint list (passing by agreeing with itself) and another
-/// iterating an empty list (passing with no work to do). Task 6 found `quadtree-depth`
-/// reporting 12/0 while Cesium's blob workers were blocked, the globe rendered nothing and
-/// `tilesVisited` sat at 0 -- an empty ellipsoid, called correct.
+/// ## Why this is a set of named quantities and not one number
 ///
-/// The specific guards are still written out below, because "the camera never rendered"
-/// and "the globe traversed nothing" are different problems with the same symptom and the
-/// operator needs to be told which. This is the backstop under all of them: a check that
-/// can name the quantity it consumed cannot report a pass while that quantity is zero.
-function ok(name, pass, detail, work) {
-  if (work !== undefined && !(Number.isFinite(work) && work > 0)) {
+/// It used to be one number called `work`: **how many things the check looked at**. That
+/// was written because the same bug had been found three times -- a check reporting success
+/// when it did nothing. Task 5 found one comparing against its own footprint list (passing
+/// by agreeing with itself) and another iterating an empty list. Task 6 found
+/// `quadtree-depth` reporting 12/0 while Cesium's blob workers were blocked, the globe
+/// rendered nothing and `tilesVisited` sat at 0 -- an empty ellipsoid, called correct.
+///
+/// **A fourth walked straight through it, because `work` measured the wrong quantity.**
+/// `feature-resolves` counted the heightmap posts it scanned, and scanned plenty -- but its
+/// assertions were gated on `compose === "raise"`, so a `carve` feature contributed
+/// thousands to the counter and nothing that could fail. On a world whose features are all
+/// carves the check reported a confident pass having asserted nothing at all, with a work
+/// count in the tens of thousands. Volume examined and assertions made are different
+/// numbers, and it was the second one that was zero.
+///
+/// **The obvious repair -- count assertions instead -- is not a repair, because neither
+/// quantity contains the other.** `quadtree-depth` makes exactly one assertion
+/// (`maxLevelRequested <= ceiling`) and always makes it; counting assertions there would
+/// report a healthy 1 on the very globe that drew nothing, which is the case that produced
+/// the backstop in the first place. Its zero is a *volume* zero: the quadtree walked no
+/// tiles. `feature-resolves`'s zero is an *assertion* zero: the loop ran and asserted
+/// nothing. One counter cannot see both.
+///
+/// So the check names every quantity that has to be non-zero for its pass to mean anything,
+/// and any of them being zero refuses. `feature-resolves` names both.
+///
+/// The specific guards are still written out at their call sites, because "the camera never
+/// rendered" and "the globe traversed nothing" are different problems with the same symptom
+/// and the operator needs to be told which. This is the backstop under all of them.
+function ok(name, pass, detail, witnesses) {
+  const empty = Object.entries(witnesses ?? {})
+    .filter(([, count]) => !(Number.isFinite(count) && count > 0));
+  if (empty.length > 0) {
     return {
       name,
       ok: false,
       // A check that already diagnosed its own idleness says it better than this can, so
       // do not shout over it -- just refuse.
       detail: detail.startsWith("NOT EXERCISED") ? detail :
-        `NOT EXERCISED: this check examined ${work} things, so a pass would say only that ` +
-        `it never had a chance to fail.\n    ${detail}`,
+        `NOT EXERCISED: ` +
+        empty.map(([label, count]) => `${count} ${label}`).join(", ") +
+        `, so a pass would say only that it never had a chance to fail.\n    ${detail}`,
     };
   }
   return { name, ok: pass, detail };
@@ -205,7 +229,9 @@ export async function runChecks({
     const correct = answers.every(([level, a]) => a === (level <= maxLevel));
     // `every` on an empty array is `true`. Were `maxLevel` ever undefined or NaN this
     // loop would not run once, and the check would report a confident pass having asked
-    // the provider nothing -- so the number of levels interrogated is its work.
+    // the provider nothing -- so the number of levels interrogated is its witness. Every
+    // one of them is also an assertion (`a === (level <= maxLevel)`), so the two counts
+    // the backstop distinguishes are the same number here.
     checks.push(ok(
       "zoom-cap",
       correct && !anyUndefined,
@@ -215,7 +241,7 @@ export async function runChecks({
           `${wb.postSpacingM(maxLevel).toFixed(2)} m, resolution floor 78.125 m), ` +
           `false from ${maxLevel + 1} (${wb.postSpacingM(maxLevel + 1).toFixed(2)} m); ` +
           `${answers.length} levels interrogated`,
-      answers.length,
+      { "levels interrogated": answers.length },
     ));
   }
 
@@ -271,7 +297,8 @@ export async function runChecks({
       );
     }
     // "0 divergent" is also what an empty tile list, or a zero-sized heightmap, reports.
-    // The sample count is the work: 0 posts compared is 0 divergent.
+    // The sample count is the witness: 0 posts compared is 0 divergent. Each post compared
+    // is itself an assertion, so this one number is both quantities.
     checks.push(ok(
       "tile-posts-exact",
       totalDivergent === 0,
@@ -282,7 +309,7 @@ export async function runChecks({
           `(${first.latitudeDeg.toFixed(6)}, ${first.longitudeDeg.toFixed(6)}) ` +
           `expected ${first.expected} got ${first.actual}`
         : ""),
-      totalSamples,
+      { "posts compared": totalSamples },
     ));
   }
 
@@ -328,7 +355,7 @@ export async function runChecks({
       worst < 1e-3,
       `worst |delta| ${worst.toExponential(2)} m over ${lines.length} points through ` +
       `HeightmapTerrainData.interpolateHeight\n    ` + lines.join("\n    "),
-      lines.length,
+      { "points measured": lines.length },
     ));
   }
 
@@ -394,7 +421,7 @@ export async function runChecks({
       `land_fraction of ` +
       `${spec ? spec.landFraction : "?"}` +
       (disagreements.length ? `\n    e.g. ${disagreements.join("; ")}` : ""),
-      compared,
+      { "points compared": compared },
     ));
   }
 
@@ -467,7 +494,12 @@ export async function runChecks({
           `(traversal overshoots the cap and costs nothing -- it requests no tiles there)`,
       // The backstop, saying the same thing a second way: a traversal of zero tiles is
       // zero work, whatever the branch above decided.
-      tilesVisited,
+      //
+      // **This check's witness is a volume and not an assertion count, deliberately.** It
+      // makes exactly one assertion, `maxLevelRequested <= ceiling`, and always makes it;
+      // counting assertions here would report a healthy 1 on the globe that drew nothing,
+      // which is the case that produced the backstop. See `ok()`.
+      { "tiles visited by the quadtree": tilesVisited },
     ));
   }
 
@@ -496,7 +528,26 @@ export async function runChecks({
       if (stats.poolFills === 0) problems.push("no tile was filled by a worker");
       const idle = pool.dispatched.filter((d) => d === 0).length;
       if (idle > 0) problems.push(`${idle} of ${pool.workers.length} workers were never used`);
+      // **Computed, printed, and -- until now -- never failed on.** A worker announces in
+      // its `ready` message which world it built; `stale-worker` puts exactly one of eight
+      // on seed + 1, and the one check named for the worker path reported PASS on it. That
+      // is not a false record -- the README's fault table credits tile-posts, interpolate
+      // and land-and-sea with catching it, and they do -- but it is a number this check
+      // went to the trouble of collecting and then declined to use.
+      //
+      // **It is corroboration, not detection, and the difference matters.** This is the
+      // worker's own confession: a real version-skew bug does not set a `stale` flag, it
+      // just builds a different world, and only the bit-exact checks above can see that.
+      // What this catches is the pool having accepted a worker whose world is not the one
+      // the page asked for -- a defect in the pool whether or not any tile happens to
+      // diverge, and one that can never be true on a healthy run.
       const stale = pool.stats().staleWorkers;
+      if (stale.length > 0) {
+        problems.push(
+          `${stale.length} of ${pool.workers.length} workers reported building a world ` +
+          `other than the one requested (indices ${stale.join(",")})`,
+        );
+      }
       checks.push(ok(
         "worker-path",
         problems.length === 0,
@@ -573,7 +624,7 @@ export async function runChecks({
         `\n    cache ${cache.size}/${cache.capacity} tiles, ${cache.hits} hits, ` +
         `${cache.misses} misses, ${cache.evictions} evictions ` +
         `(was ${before.hits}/${before.misses}); ${posts} posts compared`,
-        posts,
+        { "posts compared": posts },
       ));
     }
   }
@@ -679,7 +730,7 @@ export async function runChecks({
     lines.push(`${probes} availability interrogations made`);
     checks.push(ok("feature-availability", problems.length === 0,
       (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    "),
-      probes));
+      { "availability interrogations": probes }));
   }
 
   // ------------------------------------ 12. and the deeper tile actually resolves it
@@ -690,15 +741,37 @@ export async function runChecks({
     // over `availability.footprints`; this counts the posts too, so a zero-length
     // heightmap cannot leave `extreme` at its sentinel and pass by not looking.
     let scanned = 0;
+    // Assertions actually attempted, which is not the same number as posts read. See the
+    // note on compose modes below, and `ok()`.
+    let asserted = 0;
     // **Driven from the spec, through `featureLevel` directly.** An earlier cut of this
     // iterated `availability.footprints`, and under `?fault=feature-blind` that list is
     // empty, so the check reported nothing and passed -- a check that cannot fail because
     // it has no work to do. Same trap as Task 4's depth check on a page that never
     // rendered, one task later.
-    // Only `raise` features are asserted on. The extreme height over a tile is the right
-    // statistic for a mole standing proud of the seabed; for a carve it is not, because the
-    // tile also holds thousands of posts of ordinary abyssal floor whose minimum has
-    // nothing to do with the feature. Carves are reported, not asserted.
+    // **Both compose modes are asserted on, and not with the same statistic.**
+    //
+    // An earlier cut asserted only on `raise`, reasoning that the extreme height over a
+    // tile is the right statistic for a mole standing proud of the seabed but not for a
+    // carve, whose tile also holds thousands of posts of ordinary abyssal floor. The
+    // reasoning was right and the consequence was not: a carve still added its posts to
+    // `scanned`, so on a world whose features are all carves this check passed green having
+    // asserted nothing, with a work count in the tens of thousands. That is the fourth
+    // check in this slice to pass having done nothing, and the first the `work` backstop
+    // could not see -- see `ok()` for why counting assertions instead is not the answer
+    // either. Both are counted now, and both must be positive.
+    //
+    // The carve's assertion is one-sided, because that is what is actually guaranteed.
+    // `CARVE` is one-way (`features.rs`: it applies only where `lift < 0`), so over the
+    // feature's own tile the minimum either comes down to the target -- if the ambient
+    // ground was above it -- or stays where it was, if the ambient ground was already
+    // deeper. It can never end up *above* the target. `min <= targetM` therefore holds on
+    // every world, and fails exactly when a carve fills instead of cutting.
+    //
+    // This slice's harbour is the second case and now says so out loud: its -12 m basin
+    // sits over abyssal floor near -4,600 m, so the carve is **inert** -- it has nothing to
+    // cut -- and the old detail line reported that as a carve "4,604 m off target", which
+    // reads like a failure and is not one. Effective and inert are distinguished by name.
     for (const feature of spec.features) {
       const { latitudeDeg, longitudeDeg, targetM, compose } = feature;
       const wants = featureLevel(feature, radiusM, size);
@@ -715,12 +788,14 @@ export async function runChecks({
         readings.push({ level, extreme, error: Math.abs(extreme - targetM) });
       }
       const [atCap, atFeature] = readings;
-      lines.push(
-        `${compose} target ${targetM} m: L${atCap.level} reads ${atCap.extreme.toFixed(1)} m ` +
-        `(|err| ${atCap.error.toFixed(1)}), L${atFeature.level} reads ` +
-        `${atFeature.extreme.toFixed(1)} m (|err| ${atFeature.error.toFixed(1)})`,
-      );
+      const statistic = compose === "carve" ? "min" : "max";
       if (compose === "raise") {
+        lines.push(
+          `raise to ${targetM} m: L${atCap.level} ${statistic} ${atCap.extreme.toFixed(1)} m ` +
+          `(|err| ${atCap.error.toFixed(1)}), L${atFeature.level} ${statistic} ` +
+          `${atFeature.extreme.toFixed(1)} m (|err| ${atFeature.error.toFixed(1)})`,
+        );
+        asserted += 2;
         if (!(atFeature.error <= 2)) {
           problems.push(
             `raise to ${targetM} m still off by ${atFeature.error.toFixed(1)} m at ` +
@@ -733,12 +808,50 @@ export async function runChecks({
             `of ${targetM} m, so refining past it proves nothing here`,
           );
         }
+      } else if (compose === "carve") {
+        // 2 m, the same tolerance the raise arm uses and for the same reason: the tile
+        // holds f32 posts on a finite grid, so a met target is met to within a post.
+        const effective = atFeature.error <= 2;
+        const inert = atFeature.extreme < targetM - 2;
+        lines.push(
+          `carve to ${targetM} m: L${atFeature.level} ${statistic} ` +
+          `${atFeature.extreme.toFixed(1)} m -- ` +
+          (effective
+            ? `cut to target (|err| ${atFeature.error.toFixed(1)})`
+            : inert
+              ? `INERT: the ambient ground here is already ` +
+                `${(targetM - atFeature.extreme).toFixed(1)} m below the target, so a ` +
+                `one-way carve has nothing to cut and correctly does nothing`
+              : `neither at its target nor below it`),
+        );
+        asserted += 1;
+        if (!(atFeature.extreme <= targetM + 2)) {
+          problems.push(
+            `carve to ${targetM} m left the L${atFeature.level} minimum at ` +
+            `${atFeature.extreme.toFixed(1)} m, above its own target: a one-way carve ` +
+            `filled instead of cutting`,
+          );
+        }
+      } else {
+        // A compose mode nobody wrote an assertion for must not slip through as work done.
+        asserted += 1;
+        problems.push(
+          `feature at ${latitudeDeg},${longitudeDeg} composes as "${compose}", which this ` +
+          `check has no assertion for`,
+        );
       }
     }
-    lines.push(`${scanned} heights scanned`);
+    lines.push(
+      `${scanned} heights scanned, ${asserted} assertion${asserted === 1 ? "" : "s"} ` +
+      `made over ${spec.features.length} ` +
+      `feature${spec.features.length === 1 ? "" : "s"}`,
+    );
     checks.push(ok("feature-resolves", problems.length === 0,
       (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    "),
-      scanned));
+      // Both, because neither contains the other: a spec whose loop reads nothing has
+      // `scanned` 0, and a spec every one of whose features falls past every assertion
+      // branch has `asserted` 0 while `scanned` runs into the tens of thousands.
+      { "heights scanned": scanned, "assertions made": asserted }));
   }
 
   const passed = checks.filter((c) => c.ok).length;

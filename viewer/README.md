@@ -396,6 +396,72 @@ And the composition, demonstrated end to end: with that one comment line added a
 artifact not rebuilt, **the parity harness reported `OK: zero divergent` and exited 0**
 while `check:wasm` exited 1. That is the whole point of the guard in one run.
 
+### The guard could not pass on anyone else's machine, and that took a clean clone to find
+
+Every arm above was run in the tree the artifact was built in. **A reviewer cloned the branch
+and `npm run check:wasm` reported STALE ARTIFACT on the first try**, with no edit to
+anything.
+
+`sourceFingerprint` hashes the **working-tree bytes** of its 24 inputs. The repository had no
+root `.gitattributes`, so those bytes were a property of the machine that checked the tree
+out rather than of the commit: at `core.autocrlf=true` — the Git-for-Windows default — the
+inputs arrive CRLF; at `core.autocrlf=false`, and on every Linux CI runner, LF. The tree this
+was authored in held a *mix* of the two (14 LF, 9 CRLF and one file with both, measured with
+`git ls-files --eol`) and so matched neither. Three trees, one commit `4595f5e`, three
+digests:
+
+| tree | `source-fingerprint` | `npm run check:wasm` |
+|---|---|---|
+| the author's working tree | `02744c04…` — the recorded one | exit 0 |
+| clone, `core.autocrlf=true` | `a87614ad…` | **STALE ARTIFACT**, exit 1 |
+| clone, `core.autocrlf=false` | `cf3a437d…` | **STALE ARTIFACT**, exit 1 |
+
+**And the parity harness refuses on a stale artifact — by design, added one section above —
+so the 53,251 / 0 parity result was unreproducible from git by anybody.** The strongest claim
+in this slice existed on exactly one machine. A gate whose first act on a reviewer's machine
+is a false alarm is a gate that gets switched off, which is worse than not having one.
+
+`viewer/.gitattributes` had already met this exact hazard and fixed it for the vendored
+Cesium tree, for the same reason in a different currency: a clone that checked the vendored
+bytes out with CRLF would not match the npm package and every sha256 in the manifest would be
+wrong. **The lesson was learned in one directory and not generalised**, and the fingerprinted
+inputs live in `crates/`, which that file does not cover.
+
+The fix is a root `.gitattributes` with `* text=auto eol=lf`: every text file stored LF and
+checked out LF, on every platform, whatever `core.autocrlf` says. It changes checkouts and
+not history — every tracked text blob was already LF in the index (`git ls-files --eol` over
+537 files: 291 `i/lf`, 210 `i/-text` binary, 36 `i/none` empty; **zero `i/crlf`, zero
+`i/mixed`**), so `git add --renormalize` stages nothing. The working tree was renormalised
+and the artifact rebuilt once: `source-fingerprint` `02744c04…` → `cf3a437d…`, which is
+exactly the digest the all-LF clone had been computing all along. **The `.wasm` bytes did not
+change** — `artifact-sha256` `60244aec…` before and after — because line endings never
+reached `rustc`, only the hash of the files handed to it.
+
+**Proved on two fresh clones rather than on the machine that produced it**, which is the
+whole point:
+
+| clone of the fixed commit | `git ls-files --eol` on the inputs | `check:wasm` |
+|---|---|---|
+| `git config core.autocrlf true`, then checkout | `i/lf w/lf` | **exit 0** |
+| `git config core.autocrlf false`, then checkout | `i/lf w/lf` | **exit 0** |
+
+and the same two clones at the parent commit `4595f5e` still report `a87614ad…` and
+`cf3a437d…`, exit 1 — so the two-clone test can tell the two states apart and is not
+vacuously green. **`core.autocrlf` has to be set on the clone and not passed as `git -c` to
+`git clone`**: the first attempt did the latter, both clones inherited the global `true`, and
+both arms silently measured the same thing. It read as a pass.
+
+Then, in the `autocrlf=true` clone, from a cold `CARGO_TARGET_DIR`:
+
+```
+provenance: the shipped .wasm matches its manifest and current source.
+parity: 53251 values compared through the shipped exports, 0 divergent
+CONTROL (--mutate seed): 53251 values compared, 50778 divergent
+```
+
+**53,251 / 0 and the 50,778 control now reproduce from a pristine clone**, which is the
+claim this whole mechanism exists to support and which nothing had previously demonstrated.
+
 ### The guard is now wired into the parity harness
 
 That gap — *green parity on a stale artifact* — is closed. `checkFreshness()` and
@@ -481,11 +547,21 @@ and processed, so the traversal overshoots a little before settling.
 
 **Why 12.** A `GeographicTilingScheme` tile spans `180 / 2^level` degrees and a 65-post
 heightmap samples it every `180 / (2^level · 64)` degrees; on this project's 6,371,000 m
-radius that is **`312,735.73 m / 2^level`** — `postSpacingM(0, 65, 6371000)`, evaluated in
-Task 7. This line read **312,735.98 m** from `24e4216` until now, six commits. The error is
-25 cm at level 0 and vanishes by level 3; the four levels tabulated below were right all
-along. It is recorded anyway, because the way it survived is the point: the *derivation* was
-checked and the *arithmetic* was not, by anybody, for six commits.
+radius that is **`312,735.73 m / 2^level`** — `postSpacingM(0, 65, 6371000)`, and
+`π · 6,371,000 / 64` by hand. The error is 25 cm at level 0 and vanishes by level 3; the
+four levels tabulated below were right all along, and `postSpacingM` computes the figure
+rather than reading any comment. It is recorded anyway, because the way it survived is the
+point: the *derivation* was checked and the *arithmetic* was not, by anybody, for six
+commits.
+
+**And then the correction reached the record and not the source.** Task 7 fixed this
+paragraph, wrote that the line "read 312,735.98 m until now", and left
+`public/app/terrain.js:52` — *the file the number came from* — still reading
+**312,735.98**, where it stayed for a seventh commit until a reviewer ran
+`git grep 312735` and got three hits, two of them right and one of them shipped. Both sites
+now read 312,735.73. A correction that lands in the write-up and not in the code leaves the
+wrong number in the place the next reader will actually look, and makes the write-up's
+account of it false into the bargain.
 
 ```
 level 10 -> 305.4 m    level 12 -> 76.35 m
@@ -635,10 +711,14 @@ Milliseconds per tile, serial, on the main thread. Coastal against deep ocean is
 medians, 2.6× on means**, and 14.3× between the extremes (49.77 against 3.47).
 
 **Say which statistic, every time.** "A coastal tile costs 9× a deep-ocean one" is a claim
-this table does not make at any percentile, and `src/wasm.rs`'s module docs still carry it
-(*"up to 9x a deep-ocean one"*) — it cannot be corrected in that file without invalidating
-the shipped `.wasm`, so it is corrected here instead. The defensible sentence is
-**~3.6× on medians**, with the extremes an order of magnitude apart.
+this table does not make at any percentile. It was written into `src/wasm.rs`'s module docs
+and corrected here first, on the reasoning that editing that file would invalidate the
+shipped `.wasm`. That reasoning was wrong twice over: the file *was* edited and the artifact
+*was* rebuilt in `4595f5e`, both sites now read historically (*"the 9x once quoted here
+compares extremes"*), and a rebuild is a few seconds anyway — "it would invalidate the
+artifact" is a reason to rebuild, never a reason to leave a wrong number in shipped source.
+This paragraph claimed the opposite for one commit after it had stopped being true. The
+defensible sentence is **~3.6× on medians**, with the extremes an order of magnitude apart.
 
 **The populations are stable; the milliseconds are a host.** Task 7 re-ran the identical
 measurement in a second session and got the same 137 / 173 / 39 / 131 split and a *different*
@@ -698,10 +778,22 @@ Measured in the quadtree, camera 120 m above the harbour, same world, one flag a
 
 | | maxDepthVisited | tilesVisited | fills | `globe.getHeight` at the mole centre |
 |---|---|---|---|---|
-| ground cap only (`?fault=feature-blind`) | 13 | 23 | 17 | **−1,773.59 m** |
+| ground cap only (`?fault=feature-blind`) | 13 | 23 | 17 | **−1,770 m** (see below) |
 | feature-aware | **16** | 45 | 30 | **+0.35 m** |
 
 The engine's canonical elevation at that point is **+4.00 m**. JS heap ~30 MB in both cases.
+
+**The feature-blind height is a between-sessions figure and is written as one.** It was
+recorded here as a bare −**1,773.59 m**, which reads as exact and is not: it is
+`globe.getHeight` over whichever coarse tile is resident, so it is a property of what the
+globe had streamed. Three sessions, headless Chromium, camera set to 120 m above
+121.5°E 18.25°S: Task 7 read −1,773.59 m, and two later sessions each read
+−1,762.60 m. It does **not** drift with settling — 30 samples at 2 s intervals over 60 s
+and 693 frames in the third session gave −1,762.60 m every time, with `maxDepthVisited` 13
+and `tilesVisited` 23 flat throughout. So the spread is between sessions, not within one, and
+the honest quantity is **≈ −1,770 m, n = 3 sessions, range 11 m**. The two-orders-of-
+magnitude gap against +0.35 m is the finding; the digits are not. `maxDepthVisited`,
+`tilesVisited` and the feature-aware +0.35 m reproduced exactly in all three.
 
 ### What was verified, and how it was made to fail
 
@@ -719,14 +811,26 @@ and **feature-resolves**.
 |---|---|---|
 | `flip-latitude` | row 0 at the south edge | tile-posts 36,258/38,025; interpolate 1.87e3 m; land-and-sea 80.16% |
 | `shift-tile` | filled one post east | tile-posts 35,271/38,025; interpolate 228 m |
-| `wrong-world` | seed + 1 everywhere | tile-posts **37,189/38,025 (97.8%)**; interpolate 5,050 m; land-and-sea 57.38% |
-| `stale-worker` | **one worker of eight** on seed + 1 | tile-posts **8,050–8,064/38,025 (21.2%)** — two of nine tiles; interpolate 530 m or 5,050 m; land-and-sea 95.32–97.14%. **Session-dependent — see below** |
+| `wrong-world` | seed + 1 everywhere | tile-posts **37,189/38,025 (97.8%)**; interpolate 5,050 m; land-and-sea 57.38%; **worker-path** (8 of 8 workers on the wrong world) |
+| `stale-worker` | **one worker of eight** on seed + 1 | tile-posts **8,050–8,064/38,025 (21.2%)** — two of nine tiles; interpolate 530 m or 5,050 m; land-and-sea 95.32–97.14%; **worker-path** (1 of 8). **Session-dependent — see below** |
 | `cache-key` | key drops the tile x | **cache-identity** (right tile 4,225/4,225); tile-posts **3,333/38,025**; land-and-sea 57.78–60.08% |
 | `feature-blind` | availability ignores features (the Task 4 behaviour) | **feature-availability**: 2 features requested, 0 known |
 | `feature-everywhere` | refine to the feature depth globally | **feature-availability**: available 20° from every feature; zoom-cap |
 
 No fault diverges on 100% of posts; the project's standing warning is that 100% has always
 meant a broken harness.
+
+**`worker-path` is on those two rows as of this fix round, and was not before.** It computed
+`pool.stats().staleWorkers`, printed it in its detail line, and never pushed it into
+`problems` — so the one check named for the worker path reported PASS under the fault whose
+entire definition is a worker on the wrong world. Nothing in the record claimed otherwise, so
+this was a gap rather than a false figure, but it is exactly the shape of a check that looks
+thorough in its output and asserts less than it prints. Counts with it: `stale-worker` and
+`wrong-world` now fail **5** checks each rather than 4; the other five faults are unchanged.
+**It is corroboration, not detection.** The flag is the worker's own confession, set at init
+because the fault told it to; a real version-skew bug sets no flag and is caught by
+tile-posts-exact, which is why that check and not this one carries those rows' headline
+numbers.
 
 **Five of the seven rows reproduce to the digit. Two do not, and the reason is worth more
 than the digits were.** Re-run in Task 7 in a second browser session, three runs each:
@@ -929,8 +1033,8 @@ that a check which cannot see it would not have caught the real mistake either.
 |---|---|
 | `flip-latitude` | 36,258 / 38,025 posts |
 | `shift-tile` | 35,271 / 38,025 |
-| `wrong-world` | **37,189 / 38,025 — 97.8%** |
-| `stale-worker` | **8,050–8,064 / 38,025 — 21.2%**, two of nine tiles |
+| `wrong-world` | **37,189 / 38,025 — 97.8%**, and worker-path: 8 of 8 |
+| `stale-worker` | **8,050–8,064 / 38,025 — 21.2%**, two of nine tiles, and worker-path: 1 of 8 |
 | `cache-key` | 3,333 / 38,025, and cache-identity at 4,225 / 4,225 |
 | `feature-blind` | feature-availability: 2 features requested, 0 known |
 | `feature-everywhere` | feature-availability, and zoom-cap |
@@ -943,8 +1047,11 @@ reporting 38,025 / 38,025 would be the thing to investigate.
 
 ### The lesson that outlives this slice
 
-**Breaking things on purpose found a broken *verifier* seven times here** — more often than
-it found a broken implementation, which it never did. In order:
+**Breaking things on purpose found a broken *verifier* nine times here** — more often than
+it found a broken implementation, which it never did. And a tenth was found by handing the
+branch to a reviewer with a clean clone rather than by breaking anything: the freshness guard
+itself (below), whose first act on any machine but the author's was a false alarm. In
+order:
 
 1. A network trace that could not have shown traffic even if there had been some. Fixed by
    `?net-probe=1`, which is what made the empty trace mean anything.
@@ -961,19 +1068,57 @@ it found a broken implementation, which it never did. In order:
    a check with nothing to do, reporting success.
 7. `quadtree-depth` a third time, reporting 12/0 while the CSP blocked Cesium's blob workers
    and the globe rendered an empty ellipsoid.
+8. `feature-resolves` a second time — assertions gated on `compose === "raise"` while a
+   carve's posts still counted as work, so an all-carve world passed having asserted nothing.
+   The countermeasure built for 3, 6 and 7 could not see it, because it counted heights read
+   rather than assertions made.
+9. `worker-path` computing `staleWorkers`, printing it, and never failing on it — so it
+   passed under `?fault=stale-worker`, the fault named after it.
 
 Three of those — 3, 6 and 7 — are the same bug: **a check counted zero work as success.** So
-it is now structural rather than remembered. `ok(name, pass, detail, work)` takes a **work**
-count, and where one is supplied **zero is never a pass**; it returns NOT EXERCISED instead.
-**Eight of the twelve checks declare one** — `zoom-cap`, `tile-posts-exact`,
-`interpolate-height`, `land-and-sea`, `quadtree-depth`, `cache-identity`,
-`feature-availability`, `feature-resolves`. The other four are self-guarding: three assert on
-a single named value that must exist, and `worker-path` already refuses `poolFills === 0`
-and any idle worker, by name.
+it was made structural rather than remembered: `ok(name, pass, detail, work)` took a **work**
+count, and where one was supplied zero was never a pass.
 
-The rule to carry forward is not "add a work count". It is: **a check that cannot say what
-it examined cannot say it passed**, and the fault switch is what reveals which checks those
-are. `?fault=` costs a few dozen lines and has now paid seven times.
+**Then a fourth walked straight through it, because `work` measured the wrong quantity.**
+`feature-resolves` gated its assertions on `compose === "raise"` and counted a `carve`
+feature's heightmap posts as work. On a world whose features are all carves it reported a
+confident pass having asserted nothing at all — with a work count in the tens of thousands.
+Run against the pre-fix code on a carve-only harbour: **PASS, "8,450 heights scanned", zero
+assertions**, and a detail line calling the carve "4,604.5 m off target" while passing.
+Volume examined and assertions made are different numbers, and it was the second one that
+was zero.
+
+**The obvious repair — count assertions instead — is not a repair, and this is the part
+worth carrying forward.** `quadtree-depth` makes exactly one assertion and always makes it;
+counting assertions there would report a healthy 1 on the very globe that drew nothing, which
+is broken-verifier 7 above. Its zero is a *volume* zero (the quadtree walked no tiles);
+`feature-resolves`'s zero is an *assertion* zero (the loop ran and asserted nothing).
+**Neither quantity contains the other**, so one counter can never see both.
+
+So the fourth argument is now a set of **named witnesses** — `ok(name, pass, detail,
+{ "posts compared": n })` — every one of which must be positive or the check reports NOT
+EXERCISED, and each check names every quantity whose being zero would make its pass vacuous.
+`feature-resolves` names two: `heights scanned` **and** `assertions made`. Eight of the
+twelve declare witnesses; the other four are self-guarding, and `worker-path` refuses
+`poolFills === 0`, any idle worker, and — now — any worker on the wrong world, by name.
+
+Driven to zero and seen to refuse, on the live page: with the carve arm's counter forced to
+zero, `feature-resolves` reports `NOT EXERCISED: 0 assertions made` while still scanning
+8,450 heights — the exact case the old counter passed. With the carve assertion inverted, it
+fails with "a one-way carve filled instead of cutting". Unmodified, the baselines are
+unchanged: **11/0** featureless, **12/0** harbour.
+
+`feature-resolves` also **asserts on carves now**, one-sidedly and for a stated reason:
+`CARVE` is one-way (`features.rs` applies it only where `lift < 0`), so the minimum over the
+feature's tile either comes down to the target or was already below it, and can never end up
+above it. This world is the second case — the −12 m basin sits over abyssal floor near
+−4,616 m — so the check now says **INERT** and explains it, instead of printing a 4,604 m
+"error" that was never an error.
+
+The rule to carry forward is not "add a work count", and it is not "add an assertion count".
+It is: **a check must name every quantity whose being zero would make its pass vacuous**, and
+the fault switch is what reveals which checks those are. `?fault=` costs a few dozen lines
+and has now paid nine times.
 
 ### Three things that are open, not solved
 
@@ -1012,6 +1157,17 @@ cd viewer
 npm run check:wasm                  # is the shipped .wasm built from current source?
 npm run build:wasm:self-test        # can the shape check fail?      (327-byte artifact)
 npm run build:wasm:stale-self-test  # can the fingerprint fail?
+
+# ...and the same question asked from OUTSIDE this working tree, which is the one the
+# guard failed for six commits. `core.autocrlf` must be set ON THE CLONE: passing it to
+# `git clone` as `-c` leaves the global value in place and both arms measure the same
+# thing. Both must exit 0.
+for mode in true false; do
+  git clone -n -b slice-2b-viewer . /tmp/clone-$mode
+  git -C /tmp/clone-$mode config core.autocrlf $mode
+  git -C /tmp/clone-$mode checkout slice-2b-viewer
+  ( cd /tmp/clone-$mode/viewer && node scripts/build-wasm.mjs check )   # exit 0, both
+done
 
 # parity, through the shipped exports, with its control
 cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt

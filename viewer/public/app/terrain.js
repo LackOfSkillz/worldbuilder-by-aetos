@@ -49,10 +49,18 @@
 // degrees and a 65-post heightmap samples it every `180 / (2^level * 64)` degrees. On this
 // project's world radius (6,371,000 m) one degree is `pi * R / 180` = 111,194.93 m, so
 //
-//     post spacing = 312,735.98 m / 2^level
+//     post spacing = 312,735.73 m / 2^level        (= pi * 6,371,000 / 64)
 //
 //     level 10 -> 305.4 m     level 12 -> 76.35 m
-//     level 11 -> 152.7 m     level 13 -> 38.2 m
+//     level 11 -> 152.7 m     level 13 -> 38.18 m
+//
+// This line read **312,735.98 m** from `24e4216` through `4595f5e`, seven commits. The
+// error is 25 cm at level 0 and vanishes by level 3, so the tabulated levels were right all
+// along; `postSpacingM` computes the figure and never read this comment. It is corrected
+// here rather than only in the README because this is the file it originated in: the README
+// was fixed first and claimed the line had read that way "until now", which was true of the
+// record and not of the source. A correction that reaches the write-up and not the code
+// leaves the next reader to find the wrong number in the place they will actually look.
 //
 // The generated field has a **measured resolution floor of 78.125 m**: octaves fade in by
 // `smooth((lambda/r - 2) / 2)` and reach full strength at `r <= lambda/4`, and on a 2 km
