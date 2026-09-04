@@ -1764,3 +1764,399 @@ load-sensitive -- it compares two wall-clock chart timings on a narrow margin an
 observed to fail on a busy machine and pass on an idle one. It passed on the run above, taken
 on an otherwise idle machine; a failure there is a statement about the machine, not about this
 branch.
+
+## `surface.rs`: the module whose content is an ORDER, and the figure that took four agents to name
+
+`surface.py` has no constants, no free functions and no arithmetic of its own. Every number
+it uses is imported from the layer that owns it, and what it contributes is the sequence:
+shelf, then features, then detail, with the detail amplitude sized off the shaped ground and
+damped by the authority the features claimed. **So this slice tested structure rather than
+tolerances.** Nothing here reorders into a last-bits difference; every physically possible
+reordering moves the answer by METRES, and the two things worth asserting are exact.
+
+Every figure below was re-derived on this host for this section, from the current Python and
+the current crate, by running the code rather than by reading a report. Host **K2SO |
+Windows-10-10.0.26200 | CPython 3.11.0 MSC v.1933**.
+
+### The settled figure, and the four-way disagreement that produced it
+
+**Applying the features before the shelf is worth `30.89228988262422 m`.** Method, in full,
+because the figure is meaningless without it: the maximum over the **625-point `Coast.at`
+demo grid** (+-45,000 m, 3,750 m step, seed 20260831, 22 plates, land fraction 0.29, the 25
+demo features), of the **full-pipeline `elevation_m`** difference produced by running **the
+shelf's lerp over the featured macro instead of the features over the shelf's output**. Host
+K2SO, CPython 3.11.0. Re-derived here; `surface.rs`'s `structural_m` doc comment carries it
+and is correct.
+
+**The disagreement is the lesson, and it is sharper than the number.** Four agents measured
+this independently, every one of them correctly, and reported four different values between
+15.9 and 60.6 m. Nothing failed to reproduce -- all seven readings below re-derive to the last
+digit. The reports differed because **two axes were unnamed**, and the second one had gone
+unnoticed entirely:
+
+- **The frame.** The grid is `Coast.at(offshore, along)`, so the square is **rotated by the
+  demo coast's `SEAWARD_DEG = 296.49`** about the anchor.
+  `TangentFrame.at(region.origin).local_to_sphere(east, north)` is the same span and the same
+  step over a **different** 625 points, and a different 625 points is a different set of
+  extrema.
+- **Which mutation "features before shelf" names.** This is the half nobody had noticed, and
+  it is worth twice as much as the frame:
+  - **SWAP** -- the shelf lerps the *featured macro*. The two stages exchange places, both
+    still run, and the same `weight` is used (`Shelf.weight` never reads the ground). **This
+    is the mutation `surface.py` actually describes.**
+  - **DROP** -- the shelf is *deleted*. The features compose onto
+    `land.base_elevation + tectonics.offset_m` and that is the answer. A different
+    experiment: a deletion wearing a reordering's name.
+
+With both variables named, every measurement is correct and they stop disagreeing:
+
+    30.89228988262422   Coast.at frame,  SWAP, full-pipeline   <- doc comment, plan, Task 1
+    30.913586988571197  Coast.at frame,  SWAP, structure-only  <- the extraction
+    15.968867104622605  TangentFrame,    SWAP, full-pipeline   <- the fix round
+    59.87820565940812   TangentFrame,    DROP, full-pipeline   <- the Tasks 3-4 review
+    59.70936673990978   Coast.at frame,  DROP, structure-only  <- Task 5
+    60.53077243225693   Coast.at frame,  DROP, full-pipeline   <- Task 5
+    29.4588 / 29.4619   Coast.at frame,  additive splice       <- a fifth reading
+
+(The first six were re-derived for this section. The additive-splice pair is carried from the
+settling review and is *not* re-derived here, so it is quoted to the digits that review gave.)
+
+**So the rule this project already had is not enough.** A figure needs its population, its
+method's parameters and its host -- **and which mutation it measures**. Four correct
+measurements produced four different numbers because one English phrase named two
+experiments. Naming the corpus would not have caught it; naming the mutation does.
+
+Two consequences worth keeping:
+
+- **Task 5's concern that `30.892` should be corrected was a false alarm.** It had measured
+  DROP. Acting on it would have replaced a correct figure with one for a mutation `surface.py`
+  does not describe -- the exact failure mode the "re-derive, never transcribe" rule exists to
+  prevent, arriving from the direction the rule does not cover.
+- The earlier note calling the grid-orientation recovery premature is **half-withdrawn**: that
+  recovery was right about the frame and incomplete about the mutation, rather than wrong.
+
+The `11.4 m` in the same doc comment is a *different* corpus -- the seed -5 world's
+`base_sensitive_probe` with this module's own two test features -- and reproduces: the test
+`the_base_is_the_shelf_not_the_macro_elevation` pins the wrong base at `-88.90851322503084`
+against a shaped answer 11.43 m away, and the macro elevation there (`-54.97828011320581`) is
+32.7 m from the shelf's, which the feature weights damp to 11.43 m in the answer.
+
+The centres are a fourth population and reverse the ranking again: at the 25 feature centres
+SWAP is 45.39640578663347 m while DROP is 16.352444190481663 m structure-only and
+9.340489258888558 m full-pipeline. A figure quoted without its mutation, its frame, its
+reading *and* its population is a figure about nothing.
+
+### The other three reorderings reproduce exactly
+
+Same world, same rotated 625-point grid, canonical resolution, worst `abs` against the
+shipped `Surface.elevation_m`. Re-derived rather than transcribed, and unchanged to the last
+digit:
+
+    dropping the authority multiply             11.744069415078535 m
+    detail added under the features              5.463671791248579 m
+    the amplitude sized off pre-feature ground   0.04541089914697238 m
+
+- *The authority multiply.* `amplitude` is damped by `1 - authority` **after** `amplitude_m`
+  sized it and **before** `offset_m` spends it. A harbour dredged flat that still carries
+  thirty metres of texture is not dredged.
+- *Detail under the features.* Detail is added to `shaped`, so features compose against clean
+  structure. Rough first feeds noise into the composition gates and lets a `RAISE` argue with
+  a texture peak.
+- *The amplitude's base.* `amplitude_m` is handed `shaped`, not `reading.elevation_m`. The
+  smallest of the three and the easiest to write by accident, because `reading.elevation_m`
+  is right there in scope.
+
+On the unrotated frame the same three are 12.99419703036759, 9.34686947538938 and
+0.08414582170664175 m; at the 25 centres they are 12.466044684569352, 7.482166393576634 and
+**0.0006499904740300266** m. That last pair is the two-orders disagreement between the
+populations, and it is why both are carried: the centres collapse the smallest reordering by
+seventy times, because `authority` is exactly 1.0 at 24 of 25 of them.
+
+### The two exact invariants, both raw-bit, both checked in both languages
+
+1. **With nothing placed, `structural_m` IS `shelf.elevation_m`** -- re-derived at
+   **650 of 650** points (the 625-point grid plus the 25 centres), bit for bit.
+2. **`elevation_m(p) == structural_m(p) + detail.offset_m(p, amplitude, resolution_m)`**,
+   where `amplitude` is `detail.amplitude_m(p, SHAPED, weight, tectonic)` damped by
+   `1 - authority` -- re-derived at **9,750 of 9,750** checks (5 worlds x 650 points x 3
+   resolutions), bit for bit.
+
+Neither is cosmetic, and neither is a method checked against its own sibling. **Both are
+checked against a pipeline reassembled from the separately bound stages** -- `shelf_evaluate`,
+then `features_apply`, then `detail_amplitude_m`, then `detail_offset_m`, none of which knows
+a `Surface` exists. A `Surface` that ran those stages in a different order, or handed one of
+them a different argument, fails on bits rather than on a tolerance.
+
+They are also the only thing here a perturbation cannot slip past. Multiplying the answer by
+`(1 + 2.220446049250313e-16)` -- one machine epsilon, the smallest change that is not a
+no-op -- is bit-visible at **650 of 650** points for the first invariant and **9,744 of
+9,750** checks for the second (the six survivors are values where the scaled result rounds
+straight back). Its worst absolute size is **2.842170943040401e-14 m** and
+**2.2737367544323206e-13 m** respectively, so it sits *inside* every bounded cross-language
+gate in this section -- `SURFACE_GRID_MAX_ABS_M` 5.0e-13, `SURFACE_SCATTER_MAX_ABS_M`
+8.0e-13, `SURFACE_BOTTOM_GRID_MAX_ABS` 1.2e-13 -- and roughly four orders inside the 1e-9
+relative bound the Rust unit tests use for transcendental-carrying paths. A tolerance test
+would not notice it. The raw-bit invariants kill it, each in the test that owns it, and for
+`elevation_m` in **only** that one.
+
+### The seed: ONE `world_seed`, an `i64`, cast at exactly TWO of three sites
+
+The seed reaches three constructors and they do not agree on what it is.
+
+- `Continentality::new` and `Detail::new` go through `Noise::new`, which **mixes first and
+  masks second** (`noise.py:38`, `h = (h ^ (seed * K)) & MASK`). Only the low 64 bits of the
+  mixed value survive, so a negative seed's masked result is exactly the wrapping `u64`
+  result and `world_seed as u64` is exact. Measured over **2,049 negative seeds** through
+  `_lattice`, `Noise.seed` and `Noise.at` -- 18,441 + 6,147 + 30,735 pairs, **0** bit
+  mismatches -- and not a tautology: all 2,049 give a negative unbounded `Noise.seed` before
+  the mask.
+- `plates_for` does not mask. It keys a **decimal string** through `_fraction`:
+  `generation.py:55` builds `"|".join(str(part) ...)` and `generation.rs`'s `joined_key`
+  builds `world_seed.to_string()` the same way. `-5` and `18446744073709551611` are different
+  keys and a different planet. Masking changed the plates in **64 of 64** sampled seeds; on
+  the demo corpus the masked seed moves the ground by 824.7939561944431 m at worst and
+  **267.7842618613704 m at its closest approach**, at 625 of 625 grid points.
+
+So the signature stays `i64`, `plates_for` receives it unaltered, and the cast is bound once
+to `noise_seed` and used at those two sites only. Casting it in one more place would build a
+different world while looking like consistency.
+
+The marker reads:
+
+    let noise_seed = world_seed as u64; // cast-ok: two's-complement reinterpretation, not
+    // a float truncation -- the mask comes AFTER the mixing, so nothing is rounded and
+    // nothing is lost
+
+It is **not** the crate's first `// cast-ok:` -- there are 29 in `src/`, and `noise.rs`
+already reinterprets a signed lattice coordinate as unsigned for the same hash. What is new
+is the derivation. It is the only marker in the crate whose reason rests on a *measured
+population* rather than on an argument from the shape of the expression, and the only one
+where the same cast applied one function further along would have been wrong. That is the
+transferable part: "signed to unsigned is safe here" is a claim about a call site, not about
+a cast.
+
+**The domain narrows, and no 64-bit type avoids it.** Python `int` is unbounded and
+`Surface(10**30)` is legal today; an `i64` represents exactly `[-2^63, 2^63)`. `u64` does not
+help, because `plates_for` keys the decimal string: `plates_for(2**64 + 7)`,
+`plates_for(10**30)` and `plates_for(-(2**63) - 1)` all differ from their masked forms, so no
+64-bit representation reproduces any of them. A seed outside the range is a world this port
+cannot build, and that is a stated limitation rather than a rounding. The binding raises
+`OverflowError` at the boundary rather than masking silently, and `surface_fields` returns
+`world_seed` so the domain is visible from Python.
+
+### The indirect-call census: six, five of them structural
+
+`bottom_at` costs **6** indirect calls. `structural_m` is called once for the elevation and
+four more times inside `slope_at`'s finite difference; `tectonics.offset_m` is called once.
+The count is pinned by a test with counting closures whose result must return the same bits
+as `bottom_at`'s own, so it is counted rather than read off.
+
+**An earlier census said four, and it was wrong in an instructive way**: it counted from
+`slope_at` alone and forgot that `at` resolves the elevation *before* it asks for the slope.
+Reading one function is not a census of what a function costs.
+
+`slope_at` probes through `local_to_sphere`, the expensive frame direction, so the method
+carries five `hypot` calls in all -- four in the probes and one in the rise-over-run. A
+`weight_at`-shaped assumption about the tangent frame misses every one of them.
+
+### Eight fields, not nine, and no `substrate` to reach through
+
+Python's `__init__` ends with `self.substrate = Substrate(self)` and `bottom_at` is
+`self.substrate.at(point)`. `substrate.rs` deliberately has no `Substrate` type -- a
+`Substrate<'a>` borrowing its host cannot be a field of that host, and the Python's own
+docstring says the thing holds nothing -- so `bottom_at` composes the free `substrate::at`
+with callbacks over `&self`. **Eight fields here answer for Python's nine**, and a reviewer
+counting fields against the reference should expect the gap rather than file it.
+
+Nothing in the type needs `&mut self`. `noise.rs` dropped the Python's per-cell memo
+deliberately, so both lattices are empty at rest and empty forever; the callbacks borrow
+immutably and one `Surface` can be asked from several places at once.
+
+`plates`, `land` and `tectonics` are **clones**, where Python shares one object -- the plate
+table exists three times over. Every one is immutable and never written after construction,
+so the copies cannot drift and no observation can tell them from Python's shared references.
+Tens of kilobytes and a handful of memcpys, once per world, against a constructor that
+already runs a 4,000-sample calibration.
+
+### `bottom_at` returns a `Result`
+
+Python's `bottom_at` returns a bare `Composition` because `PURE[declared]` raises a
+`KeyError` and the raise propagates. Rust has no propagating raise, so the refusal is in the
+type: `Result<Composition, UnknownSubstrate>`. At the binding it is mapped back to
+`UnknownSubstrateError`, which subclasses `KeyError` -- the same refusal at the same place,
+distinguishable from an unrelated dict miss.
+
+### The `-0.0` case is closed by measurement, and it has THREE dependencies
+
+The open question was whether `shaped == -0.0` can ever reach `Detail.offset_m`'s
+`amplitude_m <= 0.0` guard. It cannot, and the closure is a measurement rather than an
+argument: over 4,335 constructed single-feature evaluations, 95 produce a `-0.0` `shaped` and
+348 fire the guard, and the intersection is **empty**; over 867 paired evaluations the guard
+fires 867 times and `-0.0` never appears at all. On the real demo world the guard fires at
+**0 of 625** grid points and **24 of 25** centres, and `-0.0` appears at neither. A
+1,000-point bisection hunt along `shelf.elevation_m`'s sign change never reached an exact
+zero (closest 1.7763568394002505e-14).
+
+**Three things hold it shut, and any one of them reopens it.** This is the part worth
+carrying forward: a closure is only as good as the list of things that would undo it.
+
+1. **Every roughness constant in `detail.py` is strictly positive** -- `BARELY_M` 2.0,
+   `CLEARLY_M` 4.0, `SHELF_M` 15.0, `COAST_M` 35.0, `ABYSSAL_M` 55.0, `INTERIOR_M` 80.0,
+   `MOUNTAIN_M` 150.0. Over 71,190 evaluations spanning elevation, weight and tectonic,
+   `amplitude_m` never returned `<= 0.0`; its minimum was **4.500000000000001**.
+2. **`Features.apply` initialises `result = elevation_m` and `continue`s before the authority
+   update.** The `weight <= 0.0` gate and the one-way `RAISE`/`CARVE` gates all `continue`
+   above `result += weight * lift`, so a feature that contributes nothing writes nothing --
+   and `result` therefore carries the caller's sign rather than a fresh product's.
+3. **`shelf_weight` is confined to `[0, 1]`.** `rough * (1 - w) + SHELF_M * w` is a convex
+   blend only on that interval; outside it the blend extrapolates and the floor is gone --
+   measured, 66,594 of 200,000 draws with `w` in `{1 + 2**-52, 1.0000001, 1.5, 10.0, -1e-18,
+   -0.5}` return `<= 0.0`, worst `-1200.0`. It holds because `Shelf.weight` is
+   `seaward * coastal.breadth * authority` and all three factors are `_smooth` or
+   `1 - _smooth` outputs (`shelf.py:164`, `shelf.py:227-235`).
+
+### `resolution_m = 25.0` returns the same bits as `None`
+
+`None` is not infinite detail: it evaluates every configured octave down to the canonical
+minimum wavelength, `CANONICAL_WAVELENGTH_M = 250.0`. A resolution finer than that floor is
+therefore not finer than canonical, it **is** canonical -- measured, in both languages, over
+both populations, 650 of 650. `25.0` is carried in `SURFACE_RESOLUTIONS_M` for exactly that
+reason, and `7500.0` is carried because it is coarse enough to drop octaves.
+
+### The `isinstance(features, Features)` branch adopts a `Features` verbatim, radius and all
+
+Python's parameter is one name carrying three cases. Rust has no runtime `isinstance`, so
+they become `None` and `FeatureInput::{Loose, Built}`, which puts the branch at the call site
+instead of leaving it to be discovered inside the constructor.
+
+**The branches do not converge, and the difference is visible in the world.** The `elif` arm
+re-places loose features at the *world's* radius; the `isinstance` arm adopts what it is
+given and does not normalise it, so a `Features` built at 1,234,567 m keeps every tangent
+frame and every `_cos_reach` at that radius inside a 6,371,000 m world. Measured: the same 25
+features adopted from a 1,234,567 m `Features` differ from the same 25 placed at 6,371,000 m
+by up to **82.39849253588422 m**, at **179 of 650** points. Making the branches converge
+would be a fix to a bug the reference implementation does not have.
+
+### The insensitive-argument trap, FIVE times, and the rule that answers it
+
+**A probe can be sensitive to a stage and still be flat in one of that stage's own
+arguments.** This is the slice's most transferable lesson, and it turned up five times -- four
+found and fixed inside the slice, one still open.
+
+1. & 2. **Two probes were constants.** At `deep_ocean` the shelf returns exactly `ABYSS_M`
+   (weight 0.0, tectonic 0.0, elevation -4600.0 exactly) and the bottom composition is
+   exactly `(0.0, 1.0, 0.0)`. A `Surface` wired to nothing at all reproduces both by accident.
+   A stage contributing zero cannot show that stage is wired.
+3. **A mutation corrupting `Continentality`'s seed passed the entire suite.** At
+   `shelf_water`, `Tectonics::offset_m` returns `150.3860222420496` whether its
+   `Continentality` was seeded from this world or from `noise_seed ^ 1`. The stage contributes
+   +151 m there and is *constant in that argument*. "Every stage contributes at this probe"
+   was the wrong question.
+4. **A corpus with no variation in an argument.** Substituting the module's own
+   `LAND_FRACTION` for the caller's `land_fraction` inside the constructor was invisible to
+   all 12 surface tests then present and all 3,250 of their points, because every demo world
+   passes exactly that constant. The same hole covered `radius_m`. A 120-point global scatter
+   that *varies* both now closes it: a defaulted `land_fraction` is worth
+   **1580.563522850889 m at 104 of 120** points, a defaulted `radius_m`
+   **482.09015395480674 m at 59 of 120**. That corpus exists because the mutation survived
+   everything else, and `test_conformance.py`'s surface section now carries 13
+   `test_surface_*` tests rather than 12.
+5. **`plate_count` is a THIRD argument the corpus is insensitive to, and it is still open.**
+   Reported by the settling review, **recorded here and deliberately not fixed** -- a separate
+   round owns it. Defaulting `plate_count` to `DEFAULT_PLATE_COUNT` inside the constructor and
+   deselecting one test leaves every remaining surface test green, because no value corpus
+   varies it: every world in the section is built at 22 plates. It is a straight repeat of
+   instance 4 on the one constructor argument that instance 4's scatter did not vary, and it
+   strengthens the case for `surface_fields` existing at all -- `plate_count` comes back from
+   that binding, which is the only cheap witness a caller has that the argument arrived.
+
+**The answer is to mutate each ARGUMENT, not each stage.** Sixteen mutations were written
+into the source on purpose and run. Fifteen fail, each named in the test that catches it.
+**One survives, and it survives by design rather than by a flat probe**: handing
+`detail.amplitude_m` the point of somewhere else changes nothing, because `amplitude_m` never
+reads its `point` -- the parameter is vestigial in the Python too (`detail.py:101`, and
+`detail.rs` carries `#[allow(unused_variables)]` and says so). No probe anywhere on the
+planet catches that one, so it is recorded rather than chased.
+
+### Asserting a blindness makes a probe pairing load-bearing
+
+A corpus that catches three mutations out of one world and nothing out of another has half
+the coverage it appears to, and dropping the redundant-looking half then costs nothing
+visible. So the blindnesses are asserted alongside the catches.
+
+- **`bottom_at` needs both worlds, and neither probe alone suffices.** In the bare world at
+  `base_sensitive_probe` the rock fraction comes from the TECTONIC term
+  (`smooth(151/1200) = 0.0436`, strictly above the slope term), so zeroing the slope changes
+  **zero bits** while zeroing tectonics moves the answer by 0.030. In the shaped world at the
+  same point the slope is 0.0275 and the slope term dominates (0.768 against 0.043) --
+  exactly reversed. The test asserts both catches **and** both blindnesses, and both hold at
+  world granularity rather than at one lucky probe.
+- **`the_tectonics_hold_this_worlds_continentality`** asserts the catch at
+  `land_sensitive_probe` (-980.1204136079549 against the mutant's 767.8614639553075, over
+  1,000 m apart and of opposite sign) **and** the bit-exact blindness at `shelf_water`. The
+  probe was chosen so the sensitivity is a region rather than a knife edge: over the 25 points
+  within +-1 degree at a half-degree step the two fields never come closer than 943.27 m.
+- At the **world** level the same holds. The bare world is exactly blind to all three of
+  `elevation_m`'s orderings, to the bit, at every one of its 650 points -- with nothing
+  placed, `authority` is 0 and `shaped` is the shelf's own elevation, so all three collapse
+  onto the identity. **A no-features corpus proves nothing whatever about the order of that
+  method.** And the negative-seed world is exactly blind to the macro-base splice at every one
+  of its 650 points, because there `land.base_elevation + tectonics.offset_m` IS the shelf's
+  answer. Neither world is redundant; dropping either silently halves what the section sees.
+
+### `surface_fields` and the three forwarders are API DECISIONS, not transcriptions
+
+**`surface_fields` is a fourth entry point with no counterpart in `surface.py`.** It returns
+`(world_seed, radius_m, plate_count, feature_count, features_radius_m)` and exists because two
+of those are otherwise unwitnessed: `world_seed` makes the `i64` domain visible from Python,
+and `features_radius_m` is the only cheap observation of the adopted-`Features` branch, which
+is otherwise visible only through metres of elevation. Both are the kind of thing a
+constructor gets wrong by dropping, and a dropped one has no other witness.
+
+Likewise `substrate_at`, `substrate_dominant_at` and `substrate_slope_at`. `surface.py`
+exposes exactly ONE substrate-facing method; Python callers reach through the `substrate`
+attribute -- `world.substrate.at(point, **known)` -- and `tests/test_conformance.py` does that
+in a dozen places. This port has no object to reach through, so without the forwarders no
+caller could supply known intermediates or choose a baseline. They add no behaviour: each is
+one call to the free function of the same name with the callbacks `bottom_at` builds.
+
+All four are labelled as decisions **in the source**, because an unlabelled fifth and sixth
+method on a type whose reference class has three reads later as a transcription error.
+
+### This closes the engine core
+
+Every module `surface.py` composes is now ported, tested against the live Python, and bound:
+`detmath`, `vectors`, `sphere`, `noise`, `tangent`, `continentality`, `plates`, `generation`,
+`kinematics`, `tectonics`, `detail`, `shelf`, `features`, `substrate`, `surface`, and
+`bindings` over all of them. Nothing in `worldbuilder/` has been deleted; the Python remains
+the reference implementation, and every conformance figure in this file is measured against it.
+
+What is *not* here is stated so the boundary is not mistaken for an omission: no climate or
+land-cover layer (designed but unapproved -- see `docs/design/2026-09-03-roadmap-additions.md`),
+and no viewer and no studio (slices 2 and 3).
+
+### The throwaway is gone
+
+Task 1's `tests/test_surface_gates.py` -- 5 pytest gates over four measured questions (the
+seed cast, the `-0.0` case, the four reordering deltas, the two invariants), all answered
+before anything in the port depended on the answers -- is deleted as of this section. Every
+claim it carried that survives is asserted elsewhere: the seed cast in
+`test_surface_keys_the_plates_on_the_signed_seed_not_the_masked_one` and in `surface.rs`'s own
+two seed tests, the invariants in
+`test_surface_structural_is_the_shelf_bit_for_bit_with_nothing_placed` and
+`test_surface_elevation_is_structure_plus_detail_bit_for_bit`, and the reordering budget in
+`test_surface_the_worlds_and_populations_catch_different_reorderings`.
+
+**Every count here was verified by running the suites and checking exit status, not copied
+from a report -- including the test counts.** `cargo test -p worldbuilder-engine` exits 0 at
+**259** tests (249 lib, of which 27 are `surface::tests`; 4 `blake2_bytes.rs`; 6 `no_std_math`
+guard; 0 doc-tests), and `--release` gives the same 259. `pytest tests/` exits 0 at **389** --
+394 before the spike was removed, less its 5 -- with the engine *required* via
+`WORLDBUILDER_REQUIRE_ENGINE=1` rather than skipped, since a skipped conformance suite reports
+green while comparing nothing at all. Of those, `test_conformance.py` is **149** (13 of them
+`test_surface_*`) and `test_performance.py` is **8**.
+
+`test_performance.py` was repaired earlier in this slice and is **no longer load-sensitive**:
+it counts noise evaluations instead of timing them, because the two timing distributions
+genuinely overlap. It passed here on a machine that was not idle. A failure there is now news
+about the branch rather than a statement about the machine.
