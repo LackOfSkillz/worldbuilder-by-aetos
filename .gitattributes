@@ -1,0 +1,42 @@
+# Line endings are part of this repository's provenance guarantee, not a matter of taste.
+#
+# `viewer/scripts/build-wasm.mjs` fingerprints 24 source files -- everything under
+# `crates/worldbuilder-engine/src`, that crate's `Cargo.toml`, the workspace `Cargo.toml`
+# and `Cargo.lock` -- by hashing their **working-tree bytes**, and records the digest in
+# `viewer/public/wasm/MANIFEST.txt`. With no attributes, those bytes are a property of the
+# machine that checked the tree out rather than of the commit:
+#
+#   * a clone at `core.autocrlf=true` (the Git-for-Windows default) hashes CRLF;
+#   * a clone at `core.autocrlf=false`, and every Linux CI runner, hashes LF;
+#   * the tree this was authored in held a *mix* -- 14 LF, 9 CRLF and one file with both --
+#     and so matched neither.
+#
+# Three trees, one commit, three different `source-fingerprint` values. `npm run check:wasm`
+# reported STALE ARTIFACT on every pristine checkout, and the parity harness -- which
+# refuses to report parity against a stale artifact -- refused with it, so the 53,251/0
+# parity result could not be reproduced from git by anyone. A gate whose first act on a
+# reviewer's machine is a false alarm is a gate that gets switched off.
+#
+# `viewer/.gitattributes` had already met this exact hazard for the vendored Cesium tree and
+# fixed it there. It was not generalised, and the fingerprinted inputs live outside the path
+# it covers. This file generalises it: every text file in the repository is stored LF and
+# checked out LF on every platform, whatever `core.autocrlf` says, so the fingerprint is
+# taken over committed content.
+#
+# This changes checkouts, not history. Every tracked text blob was already LF in the index
+# before this file existed -- `git ls-files --eol` over all 537 tracked files: 291 `i/lf`,
+# 210 `i/-text` (binary, 209 of them vendored Cesium assets plus the `.wasm`), 36 `i/none`
+# (empty). Zero `i/crlf`, zero `i/mixed`. So `git add --renormalize` stages nothing here;
+# what it corrects is the working tree, and the digest that is taken from it.
+* text=auto eol=lf
+
+# The shipped artifact. Never converted, never diffed as text. `text=auto` would classify it
+# as binary anyway; saying so is cheaper than relying on the heuristic for the one file whose
+# bytes the whole provenance chain is about.
+*.wasm binary
+
+# NOTE: `viewer/.gitattributes` marks `/public/vendor/**` and `/cesium-manifest.txt` as
+# `-text`, and attributes in a deeper directory win, so the vendored tree keeps being stored
+# and checked out verbatim. That is deliberate and this file must not be read as overriding
+# it: the vendored bytes have to stay byte-identical to the npm package for the 395-entry
+# sha256 manifest to verify.
