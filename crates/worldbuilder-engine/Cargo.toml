@@ -29,6 +29,18 @@ blake2 = "=0.10.6"
 libm = "=0.2.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 
+# sha2 is a BUILD-time and TEST-time dependency only, never a runtime one: it hashes the 28
+# fingerprint inputs in build.rs (crate root, see there) and is reused, via the same
+# build_fingerprint.rs #[path] include, by tests/build_fingerprint.rs so the code under test
+# is the code that actually ships rather than a hand-copied description of it. It never
+# appears in [dependencies] because no shipped .wasm or .pyd needs to hash anything at
+# runtime; `blake2` above is the one runtime hash algorithm the engine itself uses.
+[build-dependencies]
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+sha2 = "=0.10.9"
+
 # The native side of the native-against-WASM parity harness. It calls the `extern "C"`
 # exports, so it only builds with the feature that defines them; without this line
 # `cargo test`/`cargo build` would try to compile it in the three configurations that have

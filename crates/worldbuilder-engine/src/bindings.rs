@@ -41,6 +41,19 @@ fn cached_continentality(seed: u64, radius_m: f64, land_fraction: f64) -> Contin
         .or_insert_with(|| Continentality::new(seed, radius_m, land_fraction))
 }
 
+/// The digest `build.rs` computed at compile time over the same 28 inputs
+/// `viewer/scripts/build-wasm.mjs`'s `fingerprintInputs` walks -- baked into the binary via
+/// `cargo:rustc-env` rather than recomputed at call time, because the whole point is to say
+/// "what source built THIS artifact", and a call-time recomputation would answer a
+/// different question (what source exists on disk *right now*, which could differ from
+/// what actually produced the loaded `.pyd`/`.so`). Task 3 compares this against
+/// `viewer/public/wasm/MANIFEST.txt`'s `source-fingerprint` field and the Node
+/// implementation that produces it.
+#[pyfunction]
+pub fn source_fingerprint() -> &'static str {
+    env!("WORLDBUILDER_SOURCE_FINGERPRINT")
+}
+
 #[pyfunction]
 pub fn vec3_length(x: f64, y: f64, z: f64) -> f64 {
     Vec3::new(x, y, z).length()
@@ -1546,4 +1559,25 @@ pub fn surface_bottom_at(
         .bottom_at(&SpherePoint { vector: Vec3::new(x, y, z) })
         .map_err(|unknown| UnknownSubstrateError::new_err(unknown.to_string()))?;
     Ok((composition.sand, composition.mud, composition.rock))
+}
+
+#[cfg(test)]
+mod source_fingerprint_tests {
+    use super::source_fingerprint;
+
+    /// Sanity on the shape only -- the actual value moves every time a fingerprinted file's
+    /// content changes (including this crate's own `Cargo.lock`), so pinning the exact
+    /// digest here would make this test go stale on the next unrelated dependency bump.
+    /// `tests/build_fingerprint.rs` exercises the walking/hashing logic itself, including
+    /// the failure paths; this only proves the value `build.rs` baked in reaches the
+    /// Python-visible export intact.
+    #[test]
+    fn is_a_full_length_lowercase_hex_sha256() {
+        let digest = source_fingerprint();
+        assert_eq!(digest.len(), 64, "digest {digest:?} is not 64 hex characters");
+        assert!(
+            digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "digest {digest:?} is not lowercase hex"
+        );
+    }
 }
