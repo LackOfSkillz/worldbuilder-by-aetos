@@ -83,11 +83,14 @@ fn version() -> &'static str {
 /// existing worldfile through a `GENERATOR_VERSION` migration it does not need. See
 /// `.superpowers/sdd/notes/2026-09-04-core-001-extraction.md` §5.1 for the third version
 /// (worldfile schema) this project also keeps distinct from both.
-///
-/// Deliberate breakage, prove/no-fail-fast-unmasks-the-determinism-guard: f64::sqrt( is a
-/// banned form and tests/no_std_math.rs must say so EVEN THOUGH the lib's own unit tests
-/// are also failing on this branch.
 pub const GENERATOR_VERSION: u32 = 1;
+
+// Deliberate breakage, prove/no-fail-fast-unmasks-the-determinism-guard. The guard is a
+// text scan that skips lines beginning `//`, so the offending form has to sit on a real
+// line of code -- which is also the honest test of it. This compiles under every feature
+// set and every `no_std` setting, and the scanner must still call it out.
+#[allow(dead_code)]
+const PROVE_THE_GUARD_RUNS: &str = "f64::sqrt(x)";
 
 use crate::stream::StreamGraph;
 use crate::surface::Surface;
