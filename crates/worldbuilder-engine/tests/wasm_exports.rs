@@ -3,12 +3,18 @@
 //!
 //! **Run natively, deliberately.** These tests are about the *boundary contract* -- what a
 //! handle means, which grid a tile is, what a status code says, which inputs are refused --
-//! and every one of those is host-independent. Slice 0 and the slice 2b extraction already
-//! established that the arithmetic underneath agrees bit-for-bit between native and WASM
-//! (400,000 samples over five entry points, 0 divergent; plus 200,000 inside a placed
-//! harbour, 0 divergent), so a second browser corpus here would re-measure that and not
-//! this. What a native run *cannot* see is the artifact's export section, which is why the
-//! module keeps a declared export list and a test that holds the source to it.
+//! and every one of those is host-independent.
+//!
+//! **Native-against-WASM parity is a separate, committed harness**, not an assertion made
+//! here and not a figure in a task report: `examples/parity_dump.rs` plus
+//! `parity/parity.mjs` compare 53,251 values through the *shipped* exports -- scattered
+//! open water, inside a placed harbour, and two 65x65 tiles -- against the committed
+//! `.wasm`, with a `--mutate seed` control that must turn them red. See
+//! `parity/README.md` for the populations, the invocation and the recorded output. It is
+//! not a `cargo test` because the only two ways to make it one are a WASM runtime
+//! dev-dependency or a test that skips when `node` is absent; that README says so, and
+//! why. What a native run *cannot* see either way is the artifact's export section, which
+//! is why the module keeps a declared export list and a test that holds the source to it.
 //!
 //! **The whole file is off unless `--features wasm`**, so the other three configurations
 //! see an empty test binary rather than a missing symbol.
@@ -356,11 +362,73 @@ fn the_feature_channel_moves_the_ground_under_the_tile() {
         );
     }
     let differing = a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
-    assert!(differing > 100, "the harbour moved only {differing} of 1089 samples");
+    // **Pinned, not floored.** Measured: 261 of the 1,089 samples move (33x33 tile,
+    // +/-0.002 deg about the harbour, `RES_M = 250`, x86_64-pc-windows-msvc). The previous
+    // `> 100` left 61% headroom -- the harbour's reach could more than halve and this test
+    // would still pass -- which is the same shape as an output test that cannot see the
+    // decision it is guarding. An exact count is how
+    // `the_grid_coordinate_is_pinned_to_one_of_the_two_lerp_forms` pins its 10 and 24.
+    assert_eq!(differing, 261, "the harbour moved {differing} of 1089 samples, not 261");
     let deepest = b.iter().copied().fold(f32::INFINITY, f32::min);
     assert!(deepest <= -11.9, "the CARVE to -12 m never took: deepest is {deepest}");
     let highest = b.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     assert!(highest >= 3.9, "the RAISE to +4 m never took: highest is {highest}");
+}
+
+/// **The tile reads the sentinel through `resolution()`, exactly as the scalar export
+/// does.** This is the third instance of one shape: an argument a whole corpus holds
+/// constant. All twelve other `wb_fill_tile_f32` call sites in this file pass `RES_M`, and
+/// `the_resolution_sentinel_selects_canonical_ground_truth_from_anything_nonpositive`
+/// covers only `wb_elevation_m` -- so replacing `resolution(resolution_m)` with
+/// `Some(resolution_m)` inside the tile passed the entire suite.
+///
+/// What that would cost, measured at lat 12.0 lon 34.0 on the plain world
+/// (x86_64-pc-windows-msvc, release): `Some(-1.0)`, `Some(+inf)` and `Some(-inf)` all give
+/// 681.2161549154603 where `None` gives 683.4579940205472 -- the tile and the scalar export
+/// silently disagreeing by **2.24 m at the same point**, which is verbatim the drift
+/// `resolution()`'s own doc says it exists to prevent. `Some(0.0)`, `Some(-0.0)` and
+/// `Some(NaN)` happen to agree with `None`, so a test using only zero would not catch it;
+/// all seven sentinels are here for that reason.
+#[test]
+fn the_tile_reads_the_resolution_sentinel_exactly_as_the_scalar_export_does() {
+    let h = plain_world();
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None);
+    let p = SpherePoint::from_latlon(12.0, 34.0);
+    let canonical = surface.elevation_m(&p, None) as f32;
+    let resolved = surface.elevation_m(&p, Some(RES_M)) as f32;
+    assert_ne!(
+        canonical.to_bits(),
+        resolved.to_bits(),
+        "the two branches must be tellable apart even after narrowing to f32"
+    );
+    for sentinel in [0.0f64, -0.0, -1.0, -250.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut tile = [0.0f32; 1];
+        assert_eq!(
+            wb_fill_tile_f32(h, 12.0, 12.0, 34.0, 34.0, 1, 1, sentinel, tile.as_mut_ptr(), 1),
+            WB_OK,
+            "resolution {sentinel}"
+        );
+        assert_eq!(
+            tile[0].to_bits(),
+            canonical.to_bits(),
+            "the tile passed resolution {sentinel} through instead of reading it as canonical"
+        );
+        assert_eq!(
+            tile[0].to_bits(),
+            (wb_elevation_m(h, 12.0, 34.0, sentinel) as f32).to_bits(),
+            "the tile and the scalar export disagree at resolution {sentinel}"
+        );
+    }
+    let mut tile = [0.0f32; 1];
+    assert_eq!(
+        wb_fill_tile_f32(h, 12.0, 12.0, 34.0, 34.0, 1, 1, RES_M, tile.as_mut_ptr(), 1),
+        WB_OK
+    );
+    assert_eq!(
+        tile[0].to_bits(),
+        resolved.to_bits(),
+        "a positive finite resolution must be passed through, not read as canonical"
+    );
 }
 
 /// The channel builds exactly the features the engine's own types build -- bit for bit,
@@ -556,11 +624,18 @@ fn the_tile_rows_are_where_grid_coordinate_puts_them() {
 
 /// **The design decision, in executable form.** `bindings.rs::surface_elevation_m` rebuilds
 /// the `Surface` on every call; this module must build one exactly once, in `wb_world_new`.
-/// Measured on this host (native `--release`, `x86_64-pc-windows-msvc`, rustc via cargo
-/// 1.98.0): `Surface::new` is 0.657 ms/world over n = 20 worlds, against 0.617 us for one
-/// `elevation_m` over n = 20,000 scattered points at `resolution_m = 250` -- so a
-/// rebuild-per-call surface would cost **1,065x** a sample. A source scan is the only check
-/// of that shape which survives a refactor.
+/// The ratio is **~10^3**, and it is a property of a host, not a constant. Two
+/// measurements, both native `--release`, `x86_64-pc-windows-msvc`, cargo 1.98.0, both
+/// after warm-up, both `Surface::new` over n = 20 worlds against `elevation_m` over
+/// n = 20,000 points at `resolution_m = 250`:
+///
+/// - author's host: 0.657 ms/world vs 0.617 us/sample -> **1,065x**
+/// - reviewer's host: 0.5075 ms/world vs 0.5642 us/sample -> **900x**
+///
+/// Same conclusion, 15% apart, and the scatter of the 20,000 points is the dominant term:
+/// elevation cost varies ~9x between a coastal tile and a deep-ocean one, so a corpus that
+/// is not named is a ratio nobody can reproduce. A 65x65 tile is 4,225 samples either way.
+/// A source scan is the only check of that shape which survives a refactor.
 #[test]
 fn the_surface_is_built_once_per_world_and_never_per_sample() {
     let source = include_str!("../src/wasm.rs");
@@ -572,12 +647,41 @@ fn the_surface_is_built_once_per_world_and_never_per_sample() {
     let builds = code.matches("Surface::new").count();
     assert_eq!(
         builds, 1,
-        "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs 1,065x"
+        "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs ~10^3x"
     );
     let before = &code[..code.find("Surface::new").expect("one build")];
     assert!(
         before.contains("fn wb_world_new"),
         "the one Surface::new is not inside wb_world_new"
+    );
+}
+
+/// **The allocator's alignment, pinned in the source, because no host can see it.**
+///
+/// Dropping `WB_ALIGN` to 1 passes the whole suite: this host's MSVC `HeapAlloc`
+/// guarantees 16 bytes and wasm32's dlmalloc over-aligns too, so every buffer comes back
+/// 8-aligned anyway and no *behavioural* test on either target can tell the difference.
+/// That is not the same as unfixable -- it is the same situation as `Surface::new` and the
+/// export list, and it takes the same answer. Measured: with `WB_ALIGN = 1` this test
+/// fails (437 passed / 1 failed); unmutated it passes (438 / 0).
+///
+/// The count is 3 because the constant is defined once and used at both
+/// `Layout::from_size_align` sites -- `wb_alloc` and `wb_dealloc`. A mismatched pair is
+/// undefined behaviour rather than a leak, so what is held here is "both sites use the same
+/// named constant", not merely the number 8.
+#[test]
+fn the_allocator_alignment_is_pinned_in_the_source_because_no_host_can_see_it() {
+    let source = include_str!("../src/wasm.rs");
+    assert!(
+        source.contains("const WB_ALIGN: usize = 8;"),
+        "wb_alloc's alignment is not 8; an f64 payload would be misaligned on any host that \
+         does not over-align, and no behavioural test here can see it"
+    );
+    assert_eq!(
+        source.matches("WB_ALIGN").count(),
+        3,
+        "WB_ALIGN must appear exactly three times: the definition, and the from_size_align \
+         site in each of wb_alloc and wb_dealloc"
     );
 }
 

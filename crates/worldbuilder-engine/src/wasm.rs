@@ -15,12 +15,23 @@
 //!
 //! `bindings.rs` is a conformance shim for Python: `surface_elevation_m(world_seed,
 //! radius_m, plate_count, land_fraction, x, y, z, resolution_m, features)` **rebuilds the
-//! `Surface` on every call**. Measured on this host (native `--release`,
-//! `x86_64-pc-windows-msvc`, cargo 1.98.0): `Surface::new` is **0.657 ms/world** over
-//! n = 20 worlds, against **0.617 us** for one `elevation_m` over n = 20,000 scattered
-//! points at `resolution_m = 250`. A rebuild-per-call surface would therefore cost
-//! **1,065x** a sample, and a 65x65 tile is 4,225 samples. In Chrome 151 the same two
-//! figures were measured at 2.2-3.2 ms and ~0.9 us, a ratio of roughly 2,400x-3,600x.
+//! `Surface` on every call**. The cost of that is **~10^3x a sample**, and the ratio is a
+//! property of a host and a corpus rather than a constant -- so both are named here, and
+//! the figure is quoted to an order of magnitude because that is what reproduces.
+//!
+//! Method, identical in each row: `Surface::new` timed over n = 20 worlds, `elevation_m`
+//! over n = 20,000 points at `resolution_m = 250`, after warm-up.
+//!
+//! | host | `Surface::new` | `elevation_m` | ratio |
+//! |---|---|---|---|
+//! | author, native `--release`, `x86_64-pc-windows-msvc`, cargo 1.98.0 | 0.657 ms/world | 0.617 us/sample | 1,065x |
+//! | reviewer, same target and toolchain, different machine | 0.5075 ms/world | 0.5642 us/sample | 900x |
+//! | Chrome 151, wasm32 | 2.2-3.2 ms/world | ~0.9 us/sample | 2,400x-3,600x |
+//!
+//! The two native rows are 15% apart, and **the scatter of the 20,000 points is the
+//! dominant term**: this module's own tile measurement puts a coastal sample at up to 9x a
+//! deep-ocean one, so a ratio quoted without its corpus is not reproducible. A 65x65 tile
+//! is 4,225 samples on every row.
 //!
 //! So the model here is a **world handle**: build one world from its parameters, sample it
 //! as many times as you like, free it. That is not a compromise forced by cost -- because
@@ -209,6 +220,15 @@ fn with_world<T>(handle: u32, action: impl FnOnce(&World) -> T) -> Option<T> {
 /// NaN and both infinities. The engine's `resolution_m` is a sampling distance, and a
 /// nonpositive one is not a coarser answer but a nonsense one; forwarding it would let a
 /// host's uninitialised variable choose a different field silently.
+///
+/// **Both call sites are pinned, and independently.** The drift this function exists to
+/// prevent is measurable: at lat 12.0 lon 34.0 on the test world, `Some(-1.0)` and both
+/// infinities give 681.2161549154603 where `None` gives 683.4579940205472 -- 2.24 m, at the
+/// same point, between the tile and the scalar export. `wb_elevation_m` is held to it by
+/// `the_resolution_sentinel_selects_canonical_ground_truth_from_anything_nonpositive` and
+/// `wb_fill_tile_f32` by `the_tile_reads_the_resolution_sentinel_exactly_as_the_scalar_export_does`;
+/// the second exists because the first does not cover the tile, and a whole test corpus
+/// passing `resolution_m = 250` let that mutation survive.
 fn resolution(resolution_m: f64) -> Option<f64> {
     if resolution_m.is_finite() && resolution_m > 0.0 {
         Some(resolution_m)
@@ -275,6 +295,14 @@ fn decode_feature(record: &[f64]) -> Option<Feature> {
     }
     // A feature with no extent has no reach, so it would be a record that looks placed and
     // does nothing -- the silently-dropped-field shape. Refused instead.
+    //
+    // **The line is at zero, not at "negligible", and deliberately.** `5e-324` is accepted,
+    // and it does about as much as `0.0` does. But every candidate floor above zero is an
+    // invented number: the engine's reach falls off continuously, so a metre-scale floor
+    // would refuse a legitimately tiny feature on a small world, and a floor keyed to
+    // `radius_m` would make the same record decode on one planet and not another. Zero is
+    // the one bound that follows from the type rather than from taste, and it is the bound
+    // `the_feature_channel_refuses_what_it_cannot_represent` tests.
     if length_m <= 0.0 || width_m <= 0.0 {
         return None;
     }

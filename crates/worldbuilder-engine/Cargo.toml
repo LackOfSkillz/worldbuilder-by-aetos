@@ -28,3 +28,11 @@ wasm = []
 blake2 = "=0.10.6"
 libm = "=0.2.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+# The native side of the native-against-WASM parity harness. It calls the `extern "C"`
+# exports, so it only builds with the feature that defines them; without this line
+# `cargo test`/`cargo build` would try to compile it in the three configurations that have
+# no export surface and fail. See `parity/README.md`.
+[[example]]
+name = "parity_dump"
+required-features = ["wasm"]
