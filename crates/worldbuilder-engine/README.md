@@ -2355,8 +2355,8 @@ and refuses rather than returning a graph that fails it.
 
 | # | Property | How it is enforced | Measured on |
 |---|---|---|---|
-| 1 | The downhill relation is a **forest** -- no cycles | `peel` removes leaves until nothing is ready; `peeled != node_count` is `Cycle` | complete peels at 3,200 (lattice), and at 10,000 / 100,000 / 200,000 / 1,000,000 / 5,000,000 / **20,000,000** over a real `Surface` |
-| 2 | Every root is **exactly one** of MOUTH or LAKE | `validate` reports both the "neither" and the "both" arm; `streamfmt` re-checks it across sections | 633 roots at 3,200; 597,687 at 20,000,000 |
+| 1 | The downhill relation is a **forest** -- no cycles | `peel` removes leaves until nothing is ready; `peeled != node_count` is `Cycle` | complete peels at 3,200 (lattice), and at 10,000 / 100,000 / 200,000 / 1,000,000 / 5,000,000 / 20,000,000 / **50,000,000** over a real `Surface` |
+| 2 | Every root is **exactly one** of MOUTH or LAKE | `validate` reports both the "neither" and the "both" arm; `streamfmt` re-checks it across sections | 633 roots at 3,200; 597,687 at 20,000,000; 1,203,699 at 50,000,000 |
 | 3 | A rebuild is **bit-identical** | `bit_identical_to` compares `to_bits()`, never `==` | a negative control proves it notices one last bit |
 | 4 | The sentinel is **never a valid index** | `MAX_NODES = u32::MAX - 1`, and `sentinel_is_a_valid_index` is exercised *with a sentinel that is in range* | a guard only ever called with the good value proves nothing about itself |
 
@@ -2378,6 +2378,7 @@ every time it appears:
 | " | 1,000,000 | 56,901 | 5.690% | 37,312 / 19,589 |
 | " | 5,000,000 | 216,850 | 4.337% | 135,038 / 81,812 |
 | " | 20,000,000 | **597,687** | 2.988% | 371,866 / **225,821** |
+| " | 50,000,000 | 1,203,699 | 2.407% | 751,974 / 451,725 |
 
 The invariance across datums has a one-line reason: a root is a node with no strictly-lower
 neighbour, and the datum appears nowhere in that test. The datum decides only how a root is
@@ -2668,23 +2669,33 @@ byte columns leave out.
 | 1,000,000 | 0.097 s | 7.652 s | 0.057 s | 0.562 s | 0.142 s | 0.007 s | **8.52 s** | 151.4 MiB |
 | 5,000,000 | 0.852 s | 48.549 s | 0.340 s | 2.919 s | 0.798 s | 0.054 s | **53.51 s** | 840.4 MiB |
 | 20,000,000 | 3.780 s | 241.291 s | 1.409 s | 14.759 s | 3.651 s | 0.190 s | **265.08 s** | **3,340.0 MiB (3.26 GiB)** |
+| 50,000,000 | 11.453 s | 660.592 s | 3.287 s | 33.598 s | 9.018 s | 0.478 s | **718.43 s** | **8,336.4 MiB (8.14 GiB)** |
 
 **A whole planet is four and a half minutes and 3.26 GiB, and 91% of the time is one
-function.** `node_neighbours` is 241.3 of the 265.1 seconds at 20,000,000, and it is
-superlinear: 13.4x for the first 10x of nodes, then 6.3x for the next 5x, then 5.0x for the
-last 4x. `Surface::elevation_m` -- the entire existing engine, run once per node -- is 14.8
-seconds, 0.738 us a call, and is **not** the bottleneck. `StreamGraph::build` itself, which
-includes the peel and the whole drainage accumulation, is 3.65 seconds, and `write_graph`
-serialises 585 MB in 0.19 s.
+function.** `node_neighbours` is 241.3 of the 265.1 seconds at 20,000,000 and 660.6 of the
+718.4 at 50,000,000 -- 91% and 92% -- and it is superlinear throughout: 13.4x for the first
+10x of nodes, then 6.3x for the next 5x, then 5.0x for the next 4x, then 2.7x for the last
+2.5x. `Surface::elevation_m` -- the entire existing engine, run once per node -- is 14.8
+seconds at 20 M and 33.6 at 50 M, 0.67 to 0.74 us a call, and is **not** the bottleneck.
+`StreamGraph::build` itself, which includes the peel and the whole drainage accumulation, is
+3.65 seconds at 20 M and 9.02 at 50 M -- **linear in node count, to within a few percent**,
+which is the property slice 5 will lean on. `write_graph` serialises 585 MB in 0.19 s and
+1.46 GB in 0.48 s.
+
+Peak resident memory is likewise very nearly linear -- 3.26 GiB at 20 M, 8.14 GiB at 50 M,
+about 175 bytes a node -- so nothing here has a hidden quadratic term in *space*. The
+quadratic-looking cost is `node_neighbours`' time alone, and it is a candidate set that grows
+with node count rather than an algorithmic surprise.
 
 **`node_neighbours`' shape does not survive, and that is a finding for slice 5 rather than a
 fix for this slice.** Its `Vec<Vec<u32>>` is **1,120,000,000 bytes (1.043 GiB) at 20,000,000
-nodes**, and 480,000,000 of that -- 43% -- is `Vec` headers rather than neighbour indices: 24
-bytes of pointer, length and capacity to own 32 bytes of payload, twenty million times over.
-The measurement confirms Task 4's warning exactly. **The alternative is a flat `Vec<u32>` of
-`count * k` at the fixed `NEIGHBOUR_COUNT`**, which is 640,000,000 bytes -- a **1.75x
-saving**, no per-node allocation, and contiguous access instead of twenty million pointer
-chases, which is very likely most of the 241 seconds as well. It is not done here because
+nodes** and 2,800,000,000 bytes (2.607 GiB) at 50,000,000, and 43% of it -- 480,000,000 and
+1,200,000,000 bytes -- is `Vec` headers rather than neighbour indices: 24 bytes of pointer,
+length and capacity to own 32 bytes of payload, once per node. The measurement confirms Task
+4's warning exactly. **The alternative is a flat `Vec<u32>` of `count * k` at the fixed
+`NEIGHBOUR_COUNT`**, which is 640,000,000 bytes at 20 M -- a **1.75x saving at every size**,
+no per-node allocation, and contiguous access instead of twenty million pointer chases,
+which is very likely most of the 241 seconds as well. It is not done here because
 `StreamGraph::build` takes `&[Vec<u32>]` in its signature, and changing that signature is a
 change to the type this slice exists to freeze; a `k`-strided view is an additive change
 slice 5 can make behind the same validation.
@@ -2701,10 +2712,17 @@ which is **forty times low**, because 5,647 is the extraction's probe field and 
 file, so reading it whole is still right; but 5.4 MB is a fetch a browser notices, and
 `read_lakes`' docstring now says so. The **100,000-node region at 2,900,000 bytes (2.77
 MiB)** in five range requests reproduces exactly, and that is the number that decides whether
-the browser can work at all.
+the browser can work at all. The prediction holds at the next size up too: `encoded_len` says
+**1,460,841,688 bytes** for 50,000,000 nodes and 451,725 lakes, and `write_graph` writes
+exactly that. So the layout arithmetic is now confirmed by encode at two planet-scale sizes,
+and a caller can size a file without producing one.
 
-**Where it stops, and why.** Not on this host at 20,000,000: 3.26 GiB against 64 GiB of RAM is
-comfortable, and `MAX_NODES` (`u32::MAX - 1`) is 214x further out. **It stops on wasm32, and
+**Where it stops, and why.** Not on this host, at any size tried. 50,000,000 nodes -- two and
+a half times the planet size the design calls for -- completes in twelve minutes at 8.14 GiB,
+and `MAX_NODES` (`u32::MAX - 1`) is another 86x further out. The limit on this machine is
+patience rather than memory: at the measured superlinear rate, the `u32` ceiling would be
+weeks in `node_neighbours` alone, which is the argument for the flat layout restated as a
+clock. **It stops on wasm32, and
 by a wide margin.** A 32-bit heap tops out at 4 GiB; the positions (480 MB), the neighbour
 structure (1.12 GB) and the encoded file (585 MB) already total 2.2 GB before the graph's own
 580 MB of columns, and peak measured RSS is 3.26 GiB with a 64-bit allocator that is not

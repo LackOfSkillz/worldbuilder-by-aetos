@@ -433,9 +433,9 @@ impl StreamGraph {
     /// cycle would make slice 5's root-to-leaf walk non-terminating. Every probe run
     /// peeled completely -- 20,000,000 of 20,000,000 at the largest size tried (§8.3) --
     /// and Task 6 reproduced that inside this crate, over a real `Surface` field rather
-    /// than a probe one: 20,000,000 of 20,000,000, and complete peels at 10,000, 100,000,
-    /// 200,000, 1,000,000 and 5,000,000 as well. This turns those measurements into
-    /// something the code cannot quietly lose.
+    /// than a probe one, and then went past it: **50,000,000 of 50,000,000**, with complete
+    /// peels at 10,000, 100,000, 200,000, 1,000,000, 5,000,000 and 20,000,000 as well. This
+    /// turns those measurements into something the code cannot quietly lose.
     ///
     /// Safe on a corrupted graph: an out-of-range target is ignored rather than indexed.
     pub fn peel(&self) -> Peel {
