@@ -20,7 +20,7 @@ import {
   readdirSync, cpSync, mkdtempSync, appendFileSync,
 } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 
@@ -30,7 +30,7 @@ const crateDir = join(repoRoot, "crates", "worldbuilder-engine");
 const wasmSrc = join(crateDir, "src", "wasm.rs");
 const builtArtifact = join(repoRoot, "target", "wasm32-unknown-unknown", "release", "worldbuilder_engine.wasm");
 const destDir = join(viewerDir, "public", "wasm");
-const destArtifact = join(destDir, "worldbuilder_engine.wasm");
+export const destArtifact = join(destDir, "worldbuilder_engine.wasm");
 
 const MIN_PLAUSIBLE_BYTES = 20_000; // the empty build was 327 bytes; a real one is ~85 KB.
 
@@ -292,7 +292,7 @@ function readManifestField(text, key) {
 
 /// Re-check the SHIPPED artifact against the source that is here now. Returns a list of
 /// problems; empty means current.
-function checkFreshness() {
+export function checkFreshness() {
   if (!existsSync(destArtifact)) return [`no shipped artifact at ${destArtifact}`];
   if (!existsSync(MANIFEST)) return [`no ${MANIFEST}; rebuild with \`npm run build:wasm\``];
 
@@ -493,4 +493,12 @@ function main() {
   }
 }
 
-main();
+// Only run the CLI when this file IS the program. It is also *imported* -- by
+// `crates/worldbuilder-engine/parity/parity.mjs`, which refuses to report parity into an
+// artifact `checkFreshness()` calls stale. Importing the real function rather than
+// re-implementing it is deliberate: two copies of a provenance rule drift, and the copy
+// that drifts is the one that stops refusing.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) main();

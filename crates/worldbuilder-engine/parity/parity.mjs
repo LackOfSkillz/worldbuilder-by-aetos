@@ -6,17 +6,35 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
 // be made to fail has not been shown to be able to notice anything.
+//
+// PROVENANCE. Before a single value is compared, this script asks the one question the
+// comparison itself cannot: *were these bytes built from the source that is here now?*
+// Bit-for-bit agreement between `native.txt` and a `.wasm` says nothing if the corpus and
+// the artifact are both several commits stale -- they agree with each other perfectly, and
+// with current source not at all. That composition was live in this repo: the committed
+// artifact predated commit d0c2eff and still printed `OK: zero divergent` while
+// `npm run check:wasm` exited 1 on the same tree.
+//
+// So the staleness guard runs first, and it is *imported* from
+// `viewer/scripts/build-wasm.mjs` rather than reimplemented here, because two copies of a
+// provenance rule drift and the copy that drifts is the one that stops refusing.
+//
+// `--wasm <path>` points at an artifact no manifest describes, so provenance cannot be
+// established for it; such a run must say so out loud with `--no-provenance`, which
+// labels every line of output UNVERIFIED. There is no flag that silences the guard for
+// the shipped artifact.
 //
 // Exit 0 when divergent === 0 (or, under --mutate, when divergent > 0). Exit 1 otherwise.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { checkFreshness, destArtifact } from '../../../viewer/scripts/build-wasm.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -27,7 +45,7 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
@@ -36,6 +54,52 @@ const mutate = flag('mutate');
 if (mutate !== null && mutate !== 'seed') {
   console.error(`unknown mutation "${mutate}"; the only control is --mutate seed`);
   process.exit(2);
+}
+const noProvenance = args.includes('--no-provenance');
+
+// ---------------------------------------------------------------- the provenance gate
+{
+  const shipped = resolve(wasmPath) === resolve(destArtifact);
+  if (!shipped) {
+    if (!noProvenance) {
+      console.error(`REFUSING: --wasm points at ${wasmPath}, which is not the shipped`);
+      console.error(`  artifact (${destArtifact}). No manifest describes those bytes, so this`);
+      console.error('  script cannot tell whether they were built from the source that is here');
+      console.error('  now. Re-run with --no-provenance if you accept an unverified artifact;');
+      console.error('  the result then says nothing about what a browser loads.');
+      process.exit(1);
+    }
+    console.warn('WARNING: --no-provenance on a non-shipped artifact. Every figure below is');
+    console.warn(`  UNVERIFIED: nothing vouches that ${wasmPath} was built from current source.`);
+  } else if (noProvenance) {
+    // The one case with no escape hatch. The shipped artifact is the thing this harness
+    // exists to make a claim about; a flag that let the claim be made about stale bytes
+    // would put the hole straight back.
+    console.error('REFUSING: --no-provenance cannot be used on the shipped artifact.');
+    console.error('  Provenance is the whole point of running parity against these bytes.');
+    process.exit(2);
+  } else {
+    let problems;
+    try {
+      problems = checkFreshness();
+    } catch (err) {
+      // A guard that cannot run has not passed. `toolchainId` throws rather than guess
+      // when rustc is missing, and that must surface as a refusal, not as a green run.
+      console.error('REFUSING: the staleness guard could not run, so provenance is unknown:');
+      console.error(`  ${err.message}`);
+      process.exit(1);
+    }
+    if (problems.length !== 0) {
+      console.error('REFUSING TO REPORT PARITY -- STALE ARTIFACT:');
+      for (const p of problems) console.error(`  - ${p}`);
+      console.error('');
+      console.error('  Parity against a stale artifact is the failure this gate exists for: the');
+      console.error('  corpus and the .wasm agree with each other and with nothing else. Rebuild');
+      console.error('  with `npm run build:wasm` (in viewer/), regenerate native.txt, re-run.');
+      process.exit(1);
+    }
+    console.log('provenance: the shipped .wasm matches its manifest and current source.');
+  }
 }
 
 const bytes = readFileSync(wasmPath);
@@ -177,7 +241,9 @@ for (const raw of lines) {
 for (const handle of worlds.values()) wb.wb_world_free(handle);
 if (wb.wb_world_count() !== 0) throw new Error('the harness leaked a world');
 
-const label = mutate ? `CONTROL (--mutate ${mutate})` : 'parity';
+const unverified = resolve(wasmPath) !== resolve(destArtifact);
+const label = (unverified ? 'UNVERIFIED ' : '') +
+  (mutate ? `CONTROL (--mutate ${mutate})` : 'parity');
 console.log(`${label}: ${compared} values compared through the shipped exports, ${divergent} divergent`);
 console.log(`artifact: ${wasmPath} (${bytes.length} bytes)`);
 for (const [name, g] of groups) console.log(`  ${name}: ${g.compared} compared, ${g.divergent} divergent`);
@@ -195,4 +261,6 @@ if (divergent !== 0) {
   console.error('FAIL: native and WASM disagree');
   process.exit(1);
 }
-console.log('OK: zero divergent');
+console.log(unverified
+  ? 'zero divergent -- but against an artifact of unverified provenance'
+  : 'OK: zero divergent');

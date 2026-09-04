@@ -43,6 +43,35 @@ node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed   # t
 `--wasm <path>` overrides the artifact; the default is the committed
 `viewer/public/wasm/worldbuilder_engine.wasm`, i.e. the bytes a browser loads.
 
+## The provenance gate: what bit-for-bit agreement does *not* prove
+
+Before a single value is compared, this script asks a question the comparison itself cannot:
+**were these bytes built from the source that is here now?**
+
+They were not, for several commits of this project's life. The committed `.wasm` predated
+`d0c2eff`, which added a net +28 lines to `wasm.rs`; five bytes inside the artifact — all
+panic-location line numbers, which never execute — still named the old lines. It passed
+this harness perfectly, because `native.txt` had been recorded from the same stale build.
+A corpus and an artifact that are stale *together* agree with each other and with nothing
+else, and there is no number in the output above that can tell you so.
+
+So `parity.mjs` now imports `checkFreshness()` from `viewer/scripts/build-wasm.mjs` — the
+same function `npm run check:wasm` runs — and **refuses to report parity at all** when it
+returns problems. It imports rather than reimplements: two copies of a provenance rule
+drift, and the copy that drifts is the one that stops refusing.
+
+| situation | result |
+|---|---|
+| shipped artifact, current source | `provenance: the shipped .wasm matches its manifest and current source.`, then the run |
+| source moved, artifact not rebuilt | `REFUSING TO REPORT PARITY -- STALE ARTIFACT`, exit 1 |
+| shipped `.wasm` edited or swapped | `REFUSING … not the one this manifest describes`, exit 1 |
+| `--wasm <other path>` | `REFUSING … no manifest describes those bytes`, exit 1 |
+| `--wasm <other path> --no-provenance` | runs; every line is labelled `UNVERIFIED` |
+| `--no-provenance` on the shipped artifact | refused, exit 2 — there is no such escape hatch |
+
+A guard that cannot run has not passed: if `rustc` cannot be found, `checkFreshness()`
+throws rather than guess, and this script turns that into a refusal too.
+
 ## Recorded output
 
 Host: Windows 11 (10.0.26200), x86_64-pc-windows-msvc, cargo 1.98.0, Node v22.17.0.
@@ -50,6 +79,7 @@ Artifact: the committed `worldbuilder_engine.wasm`, 84,856 bytes. Dump: 41,805 l
 
 ```
 $ node parity.mjs native.txt
+provenance: the shipped .wasm matches its manifest and current source.
 parity: 53251 values compared through the shipped exports, 0 divergent
 artifact: .../viewer/public/wasm/worldbuilder_engine.wasm (84856 bytes)
   elevation/plain:    10000 compared, 0 divergent
@@ -65,6 +95,7 @@ OK: zero divergent
                                                           exit 0
 
 $ node parity.mjs native.txt --mutate seed
+provenance: the shipped .wasm matches its manifest and current source.
 CONTROL (--mutate seed): 53251 values compared through the shipped exports, 50778 divergent
   elevation/plain:    10000 compared, 10000 divergent
   structural/plain:   10000 compared,  9058 divergent

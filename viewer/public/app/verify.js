@@ -46,7 +46,32 @@ export const NAMED_POINTS = [
   { name: "dateline 5N 179E", latitudeDeg: 5, longitudeDeg: 179 },
 ];
 
-function ok(name, pass, detail) {
+/// A check result. `work` is **how many things this check actually looked at**, and when
+/// it is supplied, zero is never a pass.
+///
+/// This exists because the same bug has now been found four times in this slice, in four
+/// different checks: a check that reports success when it did nothing. Task 5 found one
+/// comparing against its own footprint list (passing by agreeing with itself) and another
+/// iterating an empty list (passing with no work to do). Task 6 found `quadtree-depth`
+/// reporting 12/0 while Cesium's blob workers were blocked, the globe rendered nothing and
+/// `tilesVisited` sat at 0 -- an empty ellipsoid, called correct.
+///
+/// The specific guards are still written out below, because "the camera never rendered"
+/// and "the globe traversed nothing" are different problems with the same symptom and the
+/// operator needs to be told which. This is the backstop under all of them: a check that
+/// can name the quantity it consumed cannot report a pass while that quantity is zero.
+function ok(name, pass, detail, work) {
+  if (work !== undefined && !(Number.isFinite(work) && work > 0)) {
+    return {
+      name,
+      ok: false,
+      // A check that already diagnosed its own idleness says it better than this can, so
+      // do not shout over it -- just refuse.
+      detail: detail.startsWith("NOT EXERCISED") ? detail :
+        `NOT EXERCISED: this check examined ${work} things, so a pass would say only that ` +
+        `it never had a chance to fail.\n    ${detail}`,
+    };
+  }
   return { name, ok: pass, detail };
 }
 
@@ -178,6 +203,9 @@ export async function runChecks({
     }
     const anyUndefined = answers.some(([, a]) => a === undefined);
     const correct = answers.every(([level, a]) => a === (level <= maxLevel));
+    // `every` on an empty array is `true`. Were `maxLevel` ever undefined or NaN this
+    // loop would not run once, and the check would report a confident pass having asked
+    // the provider nothing -- so the number of levels interrogated is its work.
     checks.push(ok(
       "zoom-cap",
       correct && !anyUndefined,
@@ -185,7 +213,9 @@ export async function runChecks({
         ? "getTileDataAvailable answered undefined, which refines until out of memory"
         : `available through level ${maxLevel} (post spacing ` +
           `${wb.postSpacingM(maxLevel).toFixed(2)} m, resolution floor 78.125 m), ` +
-          `false from ${maxLevel + 1} (${wb.postSpacingM(maxLevel + 1).toFixed(2)} m)`,
+          `false from ${maxLevel + 1} (${wb.postSpacingM(maxLevel + 1).toFixed(2)} m); ` +
+          `${answers.length} levels interrogated`,
+      answers.length,
     ));
   }
 
@@ -240,6 +270,8 @@ export async function runChecks({
         `${result.samples} divergent, heights ${result.minM.toFixed(1)}..${result.maxM.toFixed(1)} m`,
       );
     }
+    // "0 divergent" is also what an empty tile list, or a zero-sized heightmap, reports.
+    // The sample count is the work: 0 posts compared is 0 divergent.
     checks.push(ok(
       "tile-posts-exact",
       totalDivergent === 0,
@@ -250,6 +282,7 @@ export async function runChecks({
           `(${first.latitudeDeg.toFixed(6)}, ${first.longitudeDeg.toFixed(6)}) ` +
           `expected ${first.expected} got ${first.actual}`
         : ""),
+      totalSamples,
     ));
   }
 
@@ -288,11 +321,14 @@ export async function runChecks({
     }
     // 1 mm. The only difference that should survive is the f32 narrowing in the tile,
     // which the engine's own note measures at 1.93e-5 m at the witnessed probe.
+    // `worst` starts at 0, and 0 < 1e-3: a run that measured nothing reports the best
+    // possible result. The number of points measured is the work.
     checks.push(ok(
       "interpolate-height",
       worst < 1e-3,
-      `worst |delta| ${worst.toExponential(2)} m through ` +
+      `worst |delta| ${worst.toExponential(2)} m over ${lines.length} points through ` +
       `HeightmapTerrainData.interpolateHeight\n    ` + lines.join("\n    "),
+      lines.length,
     ));
   }
 
@@ -346,6 +382,8 @@ export async function runChecks({
     // Bilinear interpolation across a coastline legitimately crosses zero at a slightly
     // different place than a point sample, so a handful of near-shore disagreements is
     // expected and a wholesale one is not.
+    // 0/0 is NaN and NaN > 0.98 is false, so an empty grid already failed here -- but by
+    // IEEE accident rather than by intent. Stated, so it stays true.
     const rate = agree / compared;
     checks.push(ok(
       "land-and-sea",
@@ -356,6 +394,7 @@ export async function runChecks({
       `land_fraction of ` +
       `${spec ? spec.landFraction : "?"}` +
       (disagreements.length ? `\n    e.g. ${disagreements.join("; ")}` : ""),
+      compared,
     ));
   }
 
@@ -385,13 +424,39 @@ export async function runChecks({
     // A page that has never rendered reports depth 0, and 0 <= anything. Passing on that
     // would be the "green build containing nothing" trap in miniature, so an unrendered
     // scene is reported as *not run* rather than as a pass.
+    //
+    // **`frameNumber > 0` was not enough, and a real page proved it.** While Cesium's blob
+    // workers were blocked by an early cut of the Content-Security-Policy, the page
+    // rendered frames continuously and traversed *nothing*: `tilesVisited` 0,
+    // `maxDepthVisited` 0, an empty ellipsoid on screen -- and this check reported PASS,
+    // because "no tile was requested above the ceiling" is trivially true when no tile was
+    // requested at all. `maxLevelRequested` starts at -1 and every comparison against the
+    // ceiling succeeds from there.
+    //
+    // So the traversal has to have happened before its depth means anything. `tilesVisited`
+    // is the right witness and not `maxLevelRequested`, because the checks above this one
+    // call `requestTileGeometry` themselves: `maxLevelRequested` is non-negative by the
+    // time we get here even on a globe that drew nothing, while `tilesVisited` counts only
+    // what the quadtree itself walked.
+    const tilesVisited = debug.tilesVisited;
     const overCeiling = wb.stats.maxLevelRequested > ceiling;
+    let notExercised = null;
+    if (!(frames > 0)) {
+      notExercised =
+        "the scene has never rendered (frameNumber 0), so maxDepthVisited is trivially 0. " +
+        "Render frames with the camera near the ground before believing this.";
+    } else if (!(tilesVisited > 0)) {
+      notExercised =
+        `the scene rendered ${frames} frames and the quadtree visited 0 tiles, so every ` +
+        "depth statistic here is 0 by default rather than by measurement. This is what a " +
+        "globe that draws an empty ellipsoid looks like from the inside -- it is how a " +
+        "blocked worker pool was found -- and it is not a pass.";
+    }
     checks.push(ok(
       "quadtree-depth",
-      frames > 0 && !overCeiling,
-      frames === 0
-        ? "NOT EXERCISED: the scene has never rendered (frameNumber 0), so maxDepthVisited " +
-          "is trivially 0. Render frames with the camera near the ground before believing this."
+      notExercised === null && !overCeiling,
+      notExercised
+        ? `NOT EXERCISED: ${notExercised}`
         : (overCeiling
             ? `a tile was requested at L${wb.stats.maxLevelRequested}, above the ceiling of ` +
               `${ceiling}: `
@@ -400,6 +465,9 @@ export async function runChecks({
           `cap of ${maxLevel} and a feature cap of ${ceiling}; Cesium's own maxDepthVisited ` +
           `${depth} over ${frames} frames, ${debug.tilesVisited} tiles visited ` +
           `(traversal overshoots the cap and costs nothing -- it requests no tiles there)`,
+      // The backstop, saying the same thing a second way: a traversal of zero tiles is
+      // zero work, whatever the branch above decided.
+      tilesVisited,
     ));
   }
 
@@ -416,6 +484,9 @@ export async function runChecks({
       ));
     } else {
       const problems = [];
+      // This check already refuses zero work explicitly -- `poolFills === 0` is a problem
+      // and an idle worker is a problem -- so it needs no backstop. Left as it is, and
+      // recorded here so the next reader does not have to re-derive that.
       // The one that matters. A pool that quietly fell back to the main thread would
       // render identically and every bit-exact check above would still pass, so "0
       // divergent" would be a statement about the engine and not about the worker path.
@@ -452,6 +523,10 @@ export async function runChecks({
       const { x, y } = tileFor(tilingScheme, 12.0, 34.0, maxLevel);
       const problems = [];
       const details = [];
+      // Every post this check actually compared. A zero-sized heightmap would make each
+      // comparison below vacuous -- `identical` and `repeatEqual` both start true over an
+      // empty buffer -- so the total is carried out as this check's work.
+      let posts = 0;
       const before = cache.stats();
       const first = await tileData(provider, x, y, maxLevel);
       const second = await tileData(provider, x + 1, y, maxLevel);
@@ -461,6 +536,7 @@ export async function runChecks({
           rect: wb.rectangleDegrees(tx, y, maxLevel), size,
           resolutionM: wb.postSpacingM(maxLevel),
         });
+        posts += result.samples;
         details.push(
           `${label} (${tx},${y},L${maxLevel}): ${result.divergent}/${result.samples} divergent`,
         );
@@ -469,6 +545,7 @@ export async function runChecks({
         }
       }
       let identical = true;
+      posts += first._buffer.length;
       for (let i = 0; i < first._buffer.length; i += 1) {
         if (!Object.is(first._buffer[i], second._buffer[i])) { identical = false; break; }
       }
@@ -495,7 +572,8 @@ export async function runChecks({
         details.join("; ") +
         `\n    cache ${cache.size}/${cache.capacity} tiles, ${cache.hits} hits, ` +
         `${cache.misses} misses, ${cache.evictions} evictions ` +
-        `(was ${before.hits}/${before.misses})`,
+        `(was ${before.hits}/${before.misses}); ${posts} posts compared`,
+        posts,
       ));
     }
   }
@@ -507,10 +585,16 @@ export async function runChecks({
     const problems = [];
     const lines = [];
     let undefinedSeen = false;
+    // Task 5 already stopped this one passing by agreeing with itself. What is counted
+    // here is the other half: how many times the availability function was actually
+    // interrogated. Both branches below are loops, and a loop that does not run is a
+    // silent pass.
+    let probes = 0;
 
     // Nothing may answer `undefined` anywhere, at any level, feature or no feature.
     for (const level of [0, maxLevel, maxLevel + 1, availability.featureMaxLevel + 1, 25]) {
       for (const [x, y] of [[0, 0], [1, 0], [5, 3]]) {
+        probes += 1;
         if (availability(x, y, level) === undefined) undefinedSeen = true;
       }
     }
@@ -535,6 +619,7 @@ export async function runChecks({
       }
       for (const level of [maxLevel + 1, maxLevel + 4]) {
         for (const [x, y] of [[0, 0], [1000, 500], [3000, 1200]]) {
+          probes += 1;
           if (availability(x, y, level) !== false) {
             problems.push(`available at (${x},${y},L${level}) on a world with no features`);
           }
@@ -551,6 +636,7 @@ export async function runChecks({
         // the feature.
         for (let level = maxLevel + 1; level <= f.level; level += 1) {
           const { x, y } = tileFor(tilingScheme, latitudeDeg, longitudeDeg, level);
+          probes += 1;
           if (availability(x, y, level) !== true) {
             problems.push(
               `feature at ${latitudeDeg},${longitudeDeg} is not available at L${level}`,
@@ -560,6 +646,7 @@ export async function runChecks({
         // And a tile a long way from any feature must not be, at the first level past the
         // ground cap -- "and nowhere else" is half the requirement.
         const away = tileFor(tilingScheme, latitudeDeg + 20, longitudeDeg + 40, maxLevel + 1);
+        probes += 1;
         if (availability(away.x, away.y, maxLevel + 1) !== false) {
           problems.push(`available 20 deg away from every feature at L${maxLevel + 1}`);
         }
@@ -577,6 +664,7 @@ export async function runChecks({
       const deepest = availability.featureMaxLevel;
       for (const f of footprints) {
         const t = tileFor(tilingScheme, f.feature.latitudeDeg, f.feature.longitudeDeg, deepest + 1);
+        probes += 1;
         if (availability(t.x, t.y, deepest + 1) !== false) {
           problems.push(`still available at L${deepest + 1}, past the deepest feature`);
         }
@@ -588,14 +676,20 @@ export async function runChecks({
         ` = ${extra.reduce((a, r) => a + r.tiles, 0)} extra tiles in total`,
       );
     }
+    lines.push(`${probes} availability interrogations made`);
     checks.push(ok("feature-availability", problems.length === 0,
-      (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    ")));
+      (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    "),
+      probes));
   }
 
   // ------------------------------------ 12. and the deeper tile actually resolves it
   if (spec && spec.features && spec.features.length > 0) {
     const lines = [];
     const problems = [];
+    // Heights actually scanned. Task 5 made this loop spec-driven so it cannot run empty
+    // over `availability.footprints`; this counts the posts too, so a zero-length
+    // heightmap cannot leave `extreme` at its sentinel and pass by not looking.
+    let scanned = 0;
     // **Driven from the spec, through `featureLevel` directly.** An earlier cut of this
     // iterated `availability.footprints`, and under `?fault=feature-blind` that list is
     // empty, so the check reported nothing and passed -- a check that cannot fail because
@@ -613,6 +707,7 @@ export async function runChecks({
         const { x, y } = tileFor(tilingScheme, latitudeDeg, longitudeDeg, level);
         const data = await tileData(provider, x, y, level);
         let extreme = compose === "carve" ? Infinity : -Infinity;
+        scanned += data._buffer.length;
         for (const h of data._buffer) {
           if (compose === "carve") { if (h < extreme) extreme = h; }
           else if (h > extreme) extreme = h;
@@ -640,8 +735,10 @@ export async function runChecks({
         }
       }
     }
+    lines.push(`${scanned} heights scanned`);
     checks.push(ok("feature-resolves", problems.length === 0,
-      (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    ")));
+      (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    "),
+      scanned));
   }
 
   const passed = checks.filter((c) => c.ok).length;

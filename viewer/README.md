@@ -313,6 +313,31 @@ And the composition, demonstrated end to end: with that one comment line added a
 artifact not rebuilt, **the parity harness reported `OK: zero divergent` and exited 0**
 while `check:wasm` exited 1. That is the whole point of the guard in one run.
 
+### The guard is now wired into the parity harness
+
+That gap — *green parity on a stale artifact* — is closed. `checkFreshness()` and
+`destArtifact` are exported from `scripts/build-wasm.mjs`, and
+`crates/worldbuilder-engine/parity/parity.mjs` **imports and runs them before it compares a
+single value**. It imports rather than reimplements on purpose: two copies of a provenance
+rule drift, and the copy that drifts is the one that stops refusing. The CLI still works
+because `main()` only runs when this file is the program (`import.meta.url` against
+`process.argv[1]`), so importing it has no side effects.
+
+Re-run of the identical experiment, with the fix in place:
+
+| what was done | `parity.mjs native.txt` |
+|---|---|
+| nothing — current tree | `provenance: the shipped .wasm matches its manifest and current source.` then `OK: zero divergent`, exit 0 |
+| one comment line appended to `wasm.rs`, artifact **not** rebuilt | `REFUSING TO REPORT PARITY -- STALE ARTIFACT`, exit **1** (it was exit 0 before) |
+| one byte of the shipped `.wasm` flipped, source untouched | `REFUSING … the shipped .wasm is not the one this manifest describes`, exit **1** |
+| `--wasm <some other file>` | `REFUSING: … no manifest describes those bytes`, exit **1** |
+| `--wasm <some other file> --no-provenance` | runs, every line labelled `UNVERIFIED`, exit 0 |
+| `--no-provenance` on the **shipped** artifact | `REFUSING: --no-provenance cannot be used on the shipped artifact`, exit **2** |
+
+There is deliberately **no flag that silences the guard for the shipped artifact**. An
+escape hatch there would put the hole straight back, since the shipped bytes are the only
+thing the harness exists to make a claim about.
+
 `npm run build:wasm:stale-self-test` is the unattended half: it copies the fingerprint
 inputs to a temp tree, confirms an *unmodified* copy fingerprints identically (so the
 digest depends on content and not on path), appends one line to the copy's `wasm.rs`, and
