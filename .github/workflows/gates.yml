@@ -81,10 +81,10 @@ jobs:
   # other; that costs nothing, and the alternative is a sixth job that could drift out of step
   # with the suite it lives in.
   #
-  # Baselines when this workflow was written: 409 passed / 0 failed / 5 ignored under
-  # no-default-features, default and python; 439/0/5 under wasm and python+wasm. Those numbers
-  # are NOT asserted here -- the gate is the exit status. Grepping `test result:` is how a
-  # suite that ran nothing gets called green.
+  # Baselines: 409 passed / 0 failed / 5 ignored under no-default-features, default and
+  # python; 439/0/5 under wasm and python+wasm. These ARE asserted, by a second step that
+  # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
+  # ran nothing gets called green. See the step's own comment.
   # ---------------------------------------------------------------------------------------
   engine:
     name: engine (${{ matrix.name }})
@@ -93,16 +93,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `expect` is the number of tests that must RUN in that configuration, and
+          # `expect_ignored` the number that must be marked ignored. The wasm configurations
+          # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
           - name: no-default-features
             features: "--no-default-features"
+            expect: 409
+            expect_ignored: 5
           - name: default
             features: ""
+            expect: 409
+            expect_ignored: 5
           - name: python
             features: "--features python"
+            expect: 409
+            expect_ignored: 5
           - name: wasm
             features: "--features wasm"
+            expect: 439
+            expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
+            expect: 439
+            expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -124,6 +137,27 @@ jobs:
       - name: cargo test ${{ matrix.features }}
         shell: bash
         run: cargo test -p worldbuilder-engine ${{ matrix.features }}
+
+      # THE COUNT GATE. The step above asks "did anything fail". It cannot ask "did anything
+      # RUN": a suite whose tests are deleted, or whose `#[cfg]` stops matching, exits 0.
+      # That is the same shape as the conformance suite that skipped silently and reported
+      # green for a whole slice, so it is asserted rather than assumed.
+      #
+      # It does NOT grep `test result:`. It reads `cargo test -- --list`, which states the
+      # same number twice in two different formats -- one `<name>: test` line per test, and a
+      # `<N> tests, <M> benchmarks` trailer per binary -- and fails if those two disagree or
+      # if either is absent. A format change turns this red saying so; it cannot go green by
+      # matching nothing. See .github/scripts/assert_counts.py.
+      #
+      # Sound only because it runs AFTER the step above: `--list` says what exists, the exit
+      # status above says none of them failed. Neither alone is the claim.
+      - name: Assert the count -- ${{ matrix.expect }} run, ${{ matrix.expect_ignored }} ignored
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p worldbuilder-engine ${{ matrix.features }} -- --list > list-all.txt
+          cargo test -p worldbuilder-engine ${{ matrix.features }} -- --list --ignored > list-ignored.txt
+          python .github/scripts/assert_counts.py cargo-list             --all list-all.txt --ignored list-ignored.txt             --expect-passed ${{ matrix.expect }} --expect-ignored ${{ matrix.expect_ignored }}
 
   # ---------------------------------------------------------------------------------------
   # Python conformance against the built engine.
@@ -229,6 +263,11 @@ jobs:
         with:
           node-version: "22"
 
+      # Only for .github/scripts/assert_counts.py, which asserts the corpus size.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Pin the Rust toolchain
         shell: bash
         run: |
@@ -289,10 +328,26 @@ jobs:
         working-directory: crates/worldbuilder-engine/parity
         run: cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
 
+      # `tee` under `pipefail` so the harness's own exit status still decides the step while
+      # its output is kept for the count assertion below.
       - name: Parity -- replay through the committed .wasm
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
-        run: node parity.mjs native.txt
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt 2>&1 | tee parity.out
+
+      # THE COUNT GATE, parity half. `0 divergent` is only as strong as the number of values
+      # it is zero out of, and `examples/parity_dump.rs` is NOT one of the fingerprinted
+      # inputs -- the corpus can shrink without provenance noticing. 53,251 is the recorded
+      # population; the script also checks the nine per-group tallies sum to it, so a format
+      # change fails loudly instead of matching nothing.
+      - name: Assert the corpus -- 53,251 values, 0 divergent
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 53251 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
       # `--mutate seed` moves the world seed by one and 50,778 of 53,251 values diverge. A
@@ -301,4 +356,17 @@ jobs:
       - name: Parity -- the control (a harness that cannot fail is not evidence)
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
-        run: node parity.mjs native.txt --mutate seed
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate seed 2>&1 | tee control.out
+
+      # The control's own count. "the harness can be made to fail" is satisfied by ONE
+      # divergent value; the recorded figure is 50,778 of 53,251, and a control that
+      # collapsed to a handful would still exit 0 while proving far less than the record says
+      # it proves.
+      - name: Assert the control -- 50,778 of 53,251 divergent
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 53251 --expect-divergent 50778
