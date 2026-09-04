@@ -21,6 +21,7 @@
 // real mistake either.
 
 import { postLatLonDeg } from "./terrain.js";
+import { extraTiles, featureLevel } from "./availability.js";
 
 /// The witnessed elevation: `Surface::new(20260904, 6_371_000, 12, 0.29, None)` at
 /// latitude 12.0, longitude 34.0, `resolution_m = 250`. Pinned three ways by the
@@ -358,32 +359,289 @@ export async function runChecks({
     ));
   }
 
-  // ----------------------------------------------- 8. the cap, as the quadtree saw it
+  // ------------------------------------- 8. the cap, as the quadtree and the fills saw it
   if (viewer) {
-    const depth = viewer.scene.globe._surface._debug.maxDepthVisited;
-    // Measured, from a camera parked 300 m above the witnessed point and left to settle
-    // for 400 frames: `maxDepthVisited` reaches 15 and stays there, `tilesVisited` stays
-    // at 89 and the JS heap stays at ~40 MB. **Three levels beyond the cap, not one** --
-    // the gate is `allAreUpsampled`, and a tile is only marked upsampled once it has been
-    // visited and processed, so the traversal overshoots by a small fixed amount before
-    // settling. The number that matters is that it settles: with the cap removed (the
-    // prototype's `undefined`) the same camera goes 13 -> 16 -> 18 -> 22 -> 25 with
-    // `tilesVisited` climbing 80 -> 379 and the heap 33 -> 54 MB, still rising when the
-    // run was stopped.
+    const debug = viewer.scene.globe._surface._debug;
+    const depth = debug.maxDepthVisited;
+    const frames = viewer.scene.frameState.frameNumber;
+    const ceiling = (wb.availability && wb.availability.featureMaxLevel) || maxLevel;
+
+    // **What the cap bounds is the work, not the traversal.** This check used to assert
+    // `maxDepthVisited <= maxLevel + 3`, from Task 4's measurement of 15 flat over 400
+    // frames. That figure does not survive a real canvas: with the camera 300 m above
+    // 12 N 34 E in a 1200 x 800 tab, `maxDepthVisited` settles at **26** against a cap of
+    // 12 -- and it does so **identically on Task 4's own synchronous path**
+    // (`?workers=0&cache=0`), so it is not a Task 5 regression, it is Task 4's number
+    // being an artifact of a hand-driven 560 x 560 backing buffer with a much larger
+    // screen-space error. What is flat in both cases is everything that costs anything:
+    // 43 tiles visited, no tile requested above the cap, and a heap oscillating 33-40 MB
+    // on GC with no trend over thousands of frames.
+    //
+    // So the assertion is now on the quantity the availability function actually
+    // controls: **no tile was ever requested above the ceiling.** Under the prototype's
+    // `undefined`, Task 4 measured tilesVisited climbing 80 -> 379 and the heap 33 -> 54 MB
+    // still rising, which this catches directly -- those are requested tiles.
+    //
     // A page that has never rendered reports depth 0, and 0 <= anything. Passing on that
     // would be the "green build containing nothing" trap in miniature, so an unrendered
     // scene is reported as *not run* rather than as a pass.
-    const frames = viewer.scene.frameState.frameNumber;
+    const overCeiling = wb.stats.maxLevelRequested > ceiling;
     checks.push(ok(
       "quadtree-depth",
-      frames > 0 && depth <= maxLevel + 3,
+      frames > 0 && !overCeiling,
       frames === 0
         ? "NOT EXERCISED: the scene has never rendered (frameNumber 0), so maxDepthVisited " +
           "is trivially 0. Render frames with the camera near the ground before believing this."
-        : `Cesium's own maxDepthVisited is ${depth} over ${frames} frames, against a cap of ` +
-          `${maxLevel} (measured steady state is maxLevel + 3, because a tile is marked ` +
-          `upsampled only after it has been visited)`,
+        : (overCeiling
+            ? `a tile was requested at L${wb.stats.maxLevelRequested}, above the ceiling of ` +
+              `${ceiling}: `
+            : "") +
+          `deepest tile actually requested L${wb.stats.maxLevelRequested} against a ground ` +
+          `cap of ${maxLevel} and a feature cap of ${ceiling}; Cesium's own maxDepthVisited ` +
+          `${depth} over ${frames} frames, ${debug.tilesVisited} tiles visited ` +
+          `(traversal overshoots the cap and costs nothing -- it requests no tiles there)`,
     ));
+  }
+
+  // ------------------------------------------------- 9. the tiles came from workers
+  {
+    const pool = wb.pool;
+    const stats = wb.stats;
+    if (!pool) {
+      checks.push(ok(
+        "worker-path",
+        false,
+        "NOT EXERCISED: there is no pool (?workers=0), so every tile above was filled " +
+        "synchronously on the main thread. Nothing here says anything about workers.",
+      ));
+    } else {
+      const problems = [];
+      // The one that matters. A pool that quietly fell back to the main thread would
+      // render identically and every bit-exact check above would still pass, so "0
+      // divergent" would be a statement about the engine and not about the worker path.
+      if (stats.mainThreadFills !== 0) {
+        problems.push(`${stats.mainThreadFills} tiles were filled on the main thread`);
+      }
+      if (stats.poolFills === 0) problems.push("no tile was filled by a worker");
+      const idle = pool.dispatched.filter((d) => d === 0).length;
+      if (idle > 0) problems.push(`${idle} of ${pool.workers.length} workers were never used`);
+      const stale = pool.stats().staleWorkers;
+      checks.push(ok(
+        "worker-path",
+        problems.length === 0,
+        problems.length ? problems.join("; ")
+          : `${stats.poolFills} fills across ${pool.workers.length} workers ` +
+            `(dispatched ${pool.dispatched.join("/")}), ${stats.mainThreadFills} on the ` +
+            `main thread, ${stats.handouts} handouts; worker fill ` +
+            `median ${pool.stats().fillMs.median.toFixed(2)} ms over n=` +
+            `${pool.stats().fillMs.n}` +
+            (stale.length ? `; workers on a stale world: ${stale.join(",")}` : ""),
+      ));
+    }
+  }
+
+  // ------------------------------------ 10. the cache serves the tile it was asked for
+  {
+    const cache = wb.cache;
+    if (!cache) {
+      checks.push(ok("cache-identity", false, "NOT EXERCISED: no cache (?cache=0)"));
+    } else {
+      // Two horizontally adjacent tiles at the ground cap. A key that drops x collides
+      // them, and the second request is answered with the first tile's heights -- a
+      // rendered globe that stays entirely plausible.
+      const { x, y } = tileFor(tilingScheme, 12.0, 34.0, maxLevel);
+      const problems = [];
+      const details = [];
+      const before = cache.stats();
+      const first = await tileData(provider, x, y, maxLevel);
+      const second = await tileData(provider, x + 1, y, maxLevel);
+      for (const [label, tx, data] of [["left", x, first], ["right", x + 1, second]]) {
+        const result = comparePosts({
+          engine, world: reference, data,
+          rect: wb.rectangleDegrees(tx, y, maxLevel), size,
+          resolutionM: wb.postSpacingM(maxLevel),
+        });
+        details.push(
+          `${label} (${tx},${y},L${maxLevel}): ${result.divergent}/${result.samples} divergent`,
+        );
+        if (result.divergent !== 0) {
+          problems.push(`${label} tile diverges from wb_elevation_m at its own rectangle`);
+        }
+      }
+      let identical = true;
+      for (let i = 0; i < first._buffer.length; i += 1) {
+        if (!Object.is(first._buffer[i], second._buffer[i])) { identical = false; break; }
+      }
+      if (identical) problems.push("two different tiles came back bit-identical");
+
+      // A repeat of the same tile must be a hit, must be equal, and must be a *different*
+      // object: `HeightmapTerrainData` transfers its buffer to a Cesium worker when
+      // upsampling, so handing the same array out twice hands out a detached one.
+      const hitsBefore = cache.hits;
+      const repeat = await tileData(provider, x, y, maxLevel);
+      if (cache.hits <= hitsBefore) problems.push("re-requesting a tile did not hit the cache");
+      if (repeat._buffer === first._buffer) {
+        problems.push("the cache handed out the same ArrayBuffer twice (Cesium detaches it)");
+      }
+      let repeatEqual = repeat._buffer.length === first._buffer.length;
+      for (let i = 0; repeatEqual && i < first._buffer.length; i += 1) {
+        if (!Object.is(first._buffer[i], repeat._buffer[i])) repeatEqual = false;
+      }
+      if (!repeatEqual) problems.push("a cache hit returned different heights from the miss");
+      checks.push(ok(
+        "cache-identity",
+        problems.length === 0,
+        (problems.length ? problems.join("; ") + "\n    " : "") +
+        details.join("; ") +
+        `\n    cache ${cache.size}/${cache.capacity} tiles, ${cache.hits} hits, ` +
+        `${cache.misses} misses, ${cache.evictions} evictions ` +
+        `(was ${before.hits}/${before.misses})`,
+      ));
+    }
+  }
+
+  // ------------------------------------------------- 11. availability is feature-aware
+  {
+    const availability = wb.availability;
+    const footprints = availability.footprints ?? [];
+    const problems = [];
+    const lines = [];
+    let undefinedSeen = false;
+
+    // Nothing may answer `undefined` anywhere, at any level, feature or no feature.
+    for (const level of [0, maxLevel, maxLevel + 1, availability.featureMaxLevel + 1, 25]) {
+      for (const [x, y] of [[0, 0], [1, 0], [5, 3]]) {
+        if (availability(x, y, level) === undefined) undefinedSeen = true;
+      }
+    }
+    if (undefinedSeen) problems.push("getTileDataAvailable answered undefined");
+
+    // **Compared against the spec, not against the availability object's own idea of how
+    // many features there are.** An availability function that simply ignored features
+    // would otherwise walk into the "no features on this world" branch below and pass by
+    // agreeing with itself -- which is precisely the Task 4 behaviour this task removes,
+    // and is reachable as `?fault=feature-blind`.
+    const requested = (spec && spec.features) ? spec.features.length : 0;
+    if (footprints.length !== requested) {
+      problems.push(
+        `the world was built with ${requested} features and availability knows about ` +
+        `${footprints.length}`,
+      );
+    }
+
+    if (footprints.length === 0) {
+      if (availability.featureMaxLevel !== maxLevel) {
+        problems.push(`no features but featureMaxLevel is ${availability.featureMaxLevel}`);
+      }
+      for (const level of [maxLevel + 1, maxLevel + 4]) {
+        for (const [x, y] of [[0, 0], [1000, 500], [3000, 1200]]) {
+          if (availability(x, y, level) !== false) {
+            problems.push(`available at (${x},${y},L${level}) on a world with no features`);
+          }
+        }
+      }
+      lines.push(
+        "no features on this world: availability is exactly the Task 4 cap, true through " +
+        `L${maxLevel} and false above it`,
+      );
+    } else {
+      for (const f of footprints) {
+        const { latitudeDeg, longitudeDeg } = f.feature;
+        // Every level from the ground cap to the feature's own level must be available at
+        // the feature.
+        for (let level = maxLevel + 1; level <= f.level; level += 1) {
+          const { x, y } = tileFor(tilingScheme, latitudeDeg, longitudeDeg, level);
+          if (availability(x, y, level) !== true) {
+            problems.push(
+              `feature at ${latitudeDeg},${longitudeDeg} is not available at L${level}`,
+            );
+          }
+        }
+        // And a tile a long way from any feature must not be, at the first level past the
+        // ground cap -- "and nowhere else" is half the requirement.
+        const away = tileFor(tilingScheme, latitudeDeg + 20, longitudeDeg + 40, maxLevel + 1);
+        if (availability(away.x, away.y, maxLevel + 1) !== false) {
+          problems.push(`available 20 deg away from every feature at L${maxLevel + 1}`);
+        }
+        lines.push(
+          `${f.feature.compose} ${f.feature.lengthM}x${f.feature.widthM} m at ` +
+          `${latitudeDeg},${longitudeDeg}: reach ` +
+          `${Math.hypot(f.feature.lengthM, f.feature.widthM).toFixed(1)} m, footprint ` +
+          `${(f.northDeg - f.southDeg).toFixed(5)} deg tall, refines to L${f.level} ` +
+          `(${wb.postSpacingM(f.level).toFixed(2)} m posts)`,
+        );
+      }
+      // Past the deepest feature, nothing is available anywhere -- including at the
+      // features themselves. This is the bound that keeps the answer from being `true`
+      // forever, which is the same out-of-memory failure as `undefined`.
+      const deepest = availability.featureMaxLevel;
+      for (const f of footprints) {
+        const t = tileFor(tilingScheme, f.feature.latitudeDeg, f.feature.longitudeDeg, deepest + 1);
+        if (availability(t.x, t.y, deepest + 1) !== false) {
+          problems.push(`still available at L${deepest + 1}, past the deepest feature`);
+        }
+      }
+      const extra = extraTiles(availability, tilingScheme, maxLevel);
+      lines.push(
+        "cost, enumerated by descending from the ground cap: " +
+        extra.map((r) => `L${r.level} ${r.tiles}`).join(", ") +
+        ` = ${extra.reduce((a, r) => a + r.tiles, 0)} extra tiles in total`,
+      );
+    }
+    checks.push(ok("feature-availability", problems.length === 0,
+      (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    ")));
+  }
+
+  // ------------------------------------ 12. and the deeper tile actually resolves it
+  if (spec && spec.features && spec.features.length > 0) {
+    const lines = [];
+    const problems = [];
+    // **Driven from the spec, through `featureLevel` directly.** An earlier cut of this
+    // iterated `availability.footprints`, and under `?fault=feature-blind` that list is
+    // empty, so the check reported nothing and passed -- a check that cannot fail because
+    // it has no work to do. Same trap as Task 4's depth check on a page that never
+    // rendered, one task later.
+    // Only `raise` features are asserted on. The extreme height over a tile is the right
+    // statistic for a mole standing proud of the seabed; for a carve it is not, because the
+    // tile also holds thousands of posts of ordinary abyssal floor whose minimum has
+    // nothing to do with the feature. Carves are reported, not asserted.
+    for (const feature of spec.features) {
+      const { latitudeDeg, longitudeDeg, targetM, compose } = feature;
+      const wants = featureLevel(feature, radiusM, size);
+      const readings = [];
+      for (const level of [maxLevel, wants]) {
+        const { x, y } = tileFor(tilingScheme, latitudeDeg, longitudeDeg, level);
+        const data = await tileData(provider, x, y, level);
+        let extreme = compose === "carve" ? Infinity : -Infinity;
+        for (const h of data._buffer) {
+          if (compose === "carve") { if (h < extreme) extreme = h; }
+          else if (h > extreme) extreme = h;
+        }
+        readings.push({ level, extreme, error: Math.abs(extreme - targetM) });
+      }
+      const [atCap, atFeature] = readings;
+      lines.push(
+        `${compose} target ${targetM} m: L${atCap.level} reads ${atCap.extreme.toFixed(1)} m ` +
+        `(|err| ${atCap.error.toFixed(1)}), L${atFeature.level} reads ` +
+        `${atFeature.extreme.toFixed(1)} m (|err| ${atFeature.error.toFixed(1)})`,
+      );
+      if (compose === "raise") {
+        if (!(atFeature.error <= 2)) {
+          problems.push(
+            `raise to ${targetM} m still off by ${atFeature.error.toFixed(1)} m at ` +
+            `L${atFeature.level}`,
+          );
+        }
+        if (!(atCap.error > 10)) {
+          problems.push(
+            `the ground cap L${atCap.level} was already within ${atCap.error.toFixed(1)} m ` +
+            `of ${targetM} m, so refining past it proves nothing here`,
+          );
+        }
+      }
+    }
+    checks.push(ok("feature-resolves", problems.length === 0,
+      (problems.length ? problems.join("; ") + "\n    " : "") + lines.join("\n    ")));
   }
 
   const passed = checks.filter((c) => c.ok).length;

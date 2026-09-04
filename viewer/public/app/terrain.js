@@ -64,14 +64,17 @@
 // so it is the last level at which zooming reveals any generated ground that was not
 // already there. Level 13 would quadruple the tile count to draw the same plane.
 //
-// The honest caveat, stated rather than buried: **authored features are different in kind.**
-// `Features::apply` is analytic and outside the octave schedule, so the extraction's harbour
-// -- a 900 x 260 m carve with a 200 x 60 m mole -- puts 152.8 m of relief across a 100 m
-// span, which level 12 samples about twelve posts along and two across. That is enough to
-// *see* the harbour and not enough to survey it. A feature-aware cap (deeper only where a
-// feature reaches) is a real thing to want and is deliberately not built here: it needs the
-// tile cache and the worker pool from Task 5 to be affordable. `maxLevel` is a constructor
-// option and a `?maxLevel=` URL parameter so the claim above stays testable.
+// **This cap is about generated ground only, and Task 5 no longer applies it to anything
+// else.** `Features::apply` is analytic and outside the octave schedule, so an authored
+// feature is resolution-independent point-wise -- the extraction's harbour reads exactly
+// +4.00 m at its centre at every resolution tried -- but a heightmap is a grid, and Task 4
+// measured the level-12 tile containing that harbour topping out at **-819.4 m against a
+// +4 m target**, reaching +3.2 m only at level 16. `MAX_LEVEL` is therefore the *ground*
+// cap; `availability.js` refines past it inside a feature's footprint and nowhere else, and
+// `maxLevel` stays a constructor option and a `?maxLevel=` URL parameter so the claim above
+// stays testable.
+import { POOL_FAULTS } from "./pool.js";
+
 export const MAX_LEVEL = 12;
 
 /// 65 x 65 posts. The standard Cesium heightmap tile size, and the one every cost figure in
@@ -95,6 +98,9 @@ export function postSpacingM(level, size, radiusM) {
 /// These exist because a verification that has never rejected anything is not known to
 /// work. Each one is a plausible bug -- not a random corruption -- chosen so that a check
 /// which cannot see it is a check that would not have caught the real mistake either.
+///
+/// Task 5 extends this set rather than inventing a second mechanism, and its two additions
+/// live in `pool.js` because that is the code they are wrong about.
 export const FAULTS = {
   /// Row 0 at the *south* edge: the upside-down planet. Renders beautifully.
   flipLatitude: "flip-latitude",
@@ -104,6 +110,17 @@ export const FAULTS = {
   /// A world one seed away from the one the checks compare against. A different planet,
   /// rendered without complaint.
   wrongWorld: "wrong-world",
+  /// One worker of eight built its world from a stale seed. A scattered eighth of the
+  /// tiles come from a different planet and the globe still looks like a globe.
+  staleWorker: POOL_FAULTS.staleWorker,
+  /// The cache key drops the tile x, so every tile in a row is served its neighbour.
+  cacheKey: POOL_FAULTS.cacheKey,
+  /// Availability ignores features entirely -- the Task 4 behaviour, which is the bug this
+  /// task exists to remove.
+  featureBlind: "feature-blind",
+  /// Availability refines to the feature depth over the whole globe. The opposite mistake,
+  /// and the more expensive one.
+  featureEverywhere: "feature-everywhere",
 };
 
 /// The rectangle of a tile, in **degrees**, with the north edge named.
@@ -139,9 +156,19 @@ export function postLatLonDeg(rect, size, row, column) {
 
 /// Build the provider.
 ///
-/// The fill is synchronous here, on the main thread. Task 5 replaces it with a worker pool
-/// and a cache; the callback already tolerates a promise, because
-/// `CustomHeightmapTerrainProvider` resolves whatever the callback returns.
+/// # What changed in Task 5
+///
+/// The fill used to be a synchronous `engine.fillTileF32` on the main thread. It is now
+/// `cache.get(...)` over `pool.fill(...)`, and the callback returns a **promise** --
+/// `CustomHeightmapTerrainProvider` resolves whatever the callback returns, which is what
+/// makes the whole change possible without a provider subclass or a fight with Cesium.
+///
+/// `engine` and `world` are still taken, and are still used for two things: the
+/// synchronous fallback (`?workers=0`, which is also the A/B baseline every timing figure
+/// is quoted against) and the main-thread handles the checks compare against.
+///
+/// `availability` is the `getTileDataAvailable` function. It is passed in rather than built
+/// here so `availability.js` can import this module's `postSpacingM` without a cycle.
 export function createTerrainProvider({
   engine,
   world,
@@ -151,6 +178,9 @@ export function createTerrainProvider({
   fault = null,
   credit = "worldbuilder engine",
   onTile = null,
+  pool = null,
+  cache = null,
+  availability = null,
 }) {
   const tilingScheme = new Cesium.GeographicTilingScheme();
 
@@ -180,12 +210,19 @@ export function createTerrainProvider({
       width: size,
       height: size,
       // Sample at the tile's own post spacing, so detail finer than the grid drops out
-      // instead of aliasing. At the cap this is 76.35 m, which is below the 78.125 m
-      // resolution floor and therefore already the canonical field.
+      // instead of aliasing. At the ground cap this is 76.35 m, below the 78.125 m
+      // resolution floor and therefore already the canonical field. Past the ground cap --
+      // inside a feature footprint -- it keeps shrinking, which is the point: an authored
+      // feature is analytic and has no floor.
       resolutionM: postSpacingM(level, size, radiusM),
       rect,
     };
   }
+
+  /// Counters a check reads. `mainThreadFills` is the one that matters: a pool that
+  /// silently fell back to filling on the main thread would render identically, and
+  /// "0 divergent" would say nothing about workers.
+  const stats = { mainThreadFills: 0, poolFills: 0, handouts: 0, maxLevelRequested: -1 };
 
   const provider = new Cesium.CustomHeightmapTerrainProvider({
     tilingScheme,
@@ -193,16 +230,44 @@ export function createTerrainProvider({
     height: size,
     credit,
     callback(x, y, level) {
+      // The deepest level Cesium ever actually asked for a tile at. This, not
+      // `maxDepthVisited`, is what an availability cap bounds -- see the `quadtree-depth`
+      // check for why the distinction turned out to matter.
+      if (level > stats.maxLevelRequested) stats.maxLevelRequested = level;
       const request = tileRequest(x, y, level);
-      const heights = engine.fillTileF32(request);
-      if (onTile) onTile({ x, y, level, request, heights });
-      return heights;
+      if (!pool) {
+        // The Task 4 path, kept as `?workers=0`. Synchronous, on the main thread, and the
+        // baseline every worker figure in the report is measured against.
+        stats.mainThreadFills += 1;
+        const heights = engine.fillTileF32(request);
+        stats.handouts += 1;
+        if (onTile) onTile({ x, y, level, request, heights, source: "main" });
+        return heights;
+      }
+      const produce = () => pool.fill(request).then((result) => {
+        stats.poolFills += 1;
+        return result;
+      });
+      const entry = cache ? cache.get(x, y, level, produce) : produce();
+      return entry.then((result) => {
+        // **The copy is load-bearing.** `HeightmapTerrainData` keeps the buffer it is given
+        // and transfers it to a Cesium worker when upsampling a child, which detaches it.
+        // Handing the cached master out twice would hand out a detached, length-0 buffer
+        // the second time -- no error, a flat tile. 16,900 bytes, microseconds.
+        const heights = result.heights.slice();
+        stats.handouts += 1;
+        if (onTile) {
+          onTile({ x, y, level, request, heights, source: `worker:${result.worker}`, result });
+        }
+        return heights;
+      });
     },
   });
 
   // The cap. Set on the instance because the prototype's answer is `undefined`, which is
-  // the out-of-memory case described at the top of this file.
-  provider.getTileDataAvailable = (x, y, level) => level <= maxLevel;
+  // the out-of-memory case described at the top of this file. Never `undefined` here, and
+  // feature-aware if an availability function was supplied.
+  provider.getTileDataAvailable = availability ?? ((x, y, level) => level <= maxLevel);
 
   // Handles a check needs, and the numbers it should quote rather than recompute.
   provider.worldbuilder = {
@@ -214,6 +279,10 @@ export function createTerrainProvider({
     fault,
     tilingScheme,
     tileRequest,
+    pool,
+    cache,
+    availability: provider.getTileDataAvailable,
+    stats,
     rectangleDegrees: (x, y, level) => tileRectangleDegrees(tilingScheme, x, y, level),
     postSpacingM: (level) => postSpacingM(level, size, radiusM),
   };

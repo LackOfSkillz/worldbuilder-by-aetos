@@ -84,6 +84,11 @@
     ?maxLevel= ?size=                            the tiling
     ?exaggeration= ?paint=0 ?rampMin= ?rampMax=  what it looks like
     ?fly=lat,lon,height                          where to look
+    ?workers= ?cache=0 ?cacheTiles=              the Task 5 pool and cache (workers=0 is
+                                                 Task 4's synchronous main-thread fill,
+                                                 kept as the A/B timing baseline)
+    ?featureCeiling=                             hard ceiling on feature refinement
     ?fault=flip-latitude|shift-tile|wrong-world  a deliberate wrong implementation
+          |stale-worker|cache-key
 -->
 <script type="module" src="/app/main.js"></script>

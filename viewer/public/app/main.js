@@ -11,7 +11,10 @@
 
 import { Engine } from "./engine.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
+import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
+import { createAvailability, FEATURE_CEILING } from "./availability.js";
 import { runChecks, formatChecks } from "./verify.js";
+import { runBench, formatBench, frameTrace } from "./bench.js";
 
 const params = new URLSearchParams(location.search);
 const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
@@ -101,13 +104,44 @@ async function boot() {
     ? engine.newWorld({ ...spec, seed: BigInt(spec.seed) + 1n })
     : reference;
 
+  const size = number("size", HEIGHTMAP_SIZE);
+  const maxLevel = number("maxLevel", MAX_LEVEL);
+
+  // The worker pool. `?workers=0` keeps Task 4's synchronous main-thread fill, which is
+  // both the fallback and the A/B baseline every timing figure in the report is measured
+  // against -- same page, same world, same tiles, one flag apart.
+  const workerCount = number("workers", DEFAULT_WORKERS);
+  const pool = workerCount > 0
+    ? await TilePool.start({ count: workerCount, spec, fault })
+    : null;
+  const cache = params.get("cache") === "0"
+    ? null
+    : new TileCache({ capacity: number("cacheTiles", DEFAULT_CACHE_TILES), fault });
+
+  // Feature-aware availability. With no features this is exactly the Task 4 cap: the
+  // footprint list is empty, `featureMaxLevel` equals the ground cap, and every level past
+  // it answers `false`.
+  const tilingSchemeForAvailability = new Cesium.GeographicTilingScheme();
+  const availability = createAvailability({
+    radiusM: spec.radiusM,
+    size,
+    groundMaxLevel: maxLevel,
+    features: spec.features,
+    ceiling: number("featureCeiling", FEATURE_CEILING),
+    tilingScheme: tilingSchemeForAvailability,
+    fault,
+  });
+
   const provider = createTerrainProvider({
     engine,
     world,
     radiusM: spec.radiusM,
-    size: number("size", HEIGHTMAP_SIZE),
-    maxLevel: number("maxLevel", MAX_LEVEL),
+    size,
+    maxLevel,
     fault,
+    pool,
+    cache,
+    availability,
     credit: `worldbuilder engine, generator v${engine.generatorVersion()}`,
   });
 
@@ -144,25 +178,42 @@ async function boot() {
     `Cesium ${Cesium.VERSION} | generator v${engine.generatorVersion()} | ` +
     `seed=${spec.seed} plates=${spec.plateCount} land=${spec.landFraction} ` +
     `features=${spec.features.length} | terrain=${provider.constructor.name} ` +
-    `${provider.worldbuilder.size}x${provider.worldbuilder.size} maxLevel=` +
-    `${provider.worldbuilder.maxLevel} | fault=${fault ?? "none"}`;
+    `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
+    `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
+    `workers=${pool ? pool.ready.length : 0} cache=${cache ? cache.capacity : "off"} | ` +
+    `fault=${fault ?? "none"}`;
   if (status) status.textContent = line;
 
   window.__wb = {
     engine, provider, viewer, spec, fault,
-    world, reference,
+    world, reference, pool, cache, availability,
     FAULTS,
+    /// The frame-budget measurement. Populations, not a single number.
+    bench: (options = {}) => runBench({ viewer, engine, provider, spec, ...options }),
     /// The whole verification, callable from the console or from a driver.
     check: (options = {}) => runChecks({
       viewer, engine, provider, world: provider.worldbuilder.world, reference, spec, ...options,
     }),
     formatChecks,
+    formatBench,
     /// Deepest tile level the quadtree has actually visited since the page loaded. This is
     /// Cesium's own debug counter, not a number this code maintains.
     maxDepthVisited: () => viewer.scene.globe._surface._debug.maxDepthVisited,
   };
   window.__wbReady = { ok: true, line };
   console.log("[worldbuilder]", line);
+
+  // `?trace=N` records N frame deltas starting the instant the provider is installed --
+  // while tiles are actually being requested, which is the only time the fill can cost a
+  // frame. Compared between `?workers=8` and `?workers=0` this is the whole point of the
+  // task, and it has to be taken from boot: a trace run after everything is cached measures
+  // an idle render loop.
+  if (params.has("trace")) {
+    window.__wbFrames = { running: true };
+    frameTrace({ viewer, frames: number("trace", 300) }).then((result) => {
+      window.__wbFrames = { running: false, ...result };
+    });
+  }
 }
 
 boot().catch((error) => {
