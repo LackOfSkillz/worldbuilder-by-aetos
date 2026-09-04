@@ -49,6 +49,8 @@
 # otherwise: the viewer's browser checks -- eleven checks and seven `?fault=` values -- still
 # need a browser and a person.
 
+# THROWAWAY BRANCH (slice CI, task 2). The matrix is trimmed to ONE configuration
+# because the point here is the failure message, not coverage, and Windows bills at 2x.
 name: gates
 
 # `push` on every branch, and nothing else. `pull_request` is deliberately absent: this is a
@@ -99,22 +101,6 @@ jobs:
           - name: no-default-features
             features: "--no-default-features"
             expect: 409
-            expect_ignored: 5
-          - name: default
-            features: ""
-            expect: 409
-            expect_ignored: 5
-          - name: python
-            features: "--features python"
-            expect: 409
-            expect_ignored: 5
-          - name: wasm
-            features: "--features wasm"
-            expect: 439
-            expect_ignored: 5
-          - name: python+wasm
-            features: "--features python,wasm"
-            expect: 439
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

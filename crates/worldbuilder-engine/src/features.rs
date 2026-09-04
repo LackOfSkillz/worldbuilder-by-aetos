@@ -25,7 +25,7 @@ pub const SHAPE: &str = "shape";
 /// How much relief a feature must be asserting before it takes the ground's texture away
 /// from it. Three metres, because that is below the relief of the shallowest thing worth
 /// placing.
-pub const SETTLE_M: f64 = 3.0;
+pub const SETTLE_M: f64 = 3.5; // DELIBERATE BREAKAGE (slice CI, task 2)
 
 /// `max(0.0, min(1.0, fraction))` then the smoothstep `x * x * (3.0 - 2.0 * x)`.
 ///
