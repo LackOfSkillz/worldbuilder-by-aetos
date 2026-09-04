@@ -218,6 +218,54 @@ break together.
 
 ---
 
+## 4.2 Variation — three decisions, taken 2026-09-04
+
+Owner-approved: **modest planet size variation**, **terrain features varying within a kind**, and
+**biome regions varying** rather than stamping uniformly.
+
+### Planet size is nearly free, and one consequence sets the range
+
+`radius_m` is already threaded through every module, and slice 1o proved it genuinely wired — including
+finding four substrate-facing paths where it was accepted but unwitnessed.
+
+**But two layers scale differently, and that is what bounds "modest".**
+
+- **Continentality** uses `BASE_FREQUENCY = 1.25` in *cycles per sphere*. Continents are always the same
+  **fraction** of the planet, so they shrink with it.
+- **Detail** uses a fixed wavelength table — `COARSEST_WAVELENGTH_M = 20_000.0` down to
+  `CANONICAL_WAVELENGTH_M = 250.0`, in **absolute metres** — with frequency derived from the radius
+  (`detail.py:94`). A 250 m dune is a 250 m dune on any planet.
+
+So **as the planet shrinks, detail grows relative to landform**, and a smaller world reads as rougher.
+That is arguably desirable, and it gives a principled way to choose the range rather than an arbitrary
+one: **the limit is where detail stops being detail relative to the continents it sits on.** Pick the
+range by measuring that ratio, not by taste.
+
+**The second constraint is measured, not theoretical.** Slice 1o's last fix round found a 3,000,000 m
+world **genuinely exceeded** `SURFACE_BOTTOM_GRID_MAX_ABS` — 1.75e-13 against 1.2e-13 — and correctly gave
+it its own bound rather than widening the shared one. **A size range therefore means bounds re-measured
+across it**, which is tractable precisely because the variation is modest. Do not scale a bound to a new
+radius; measure it there.
+
+### Terrain feature variation is already expressible; what is missing is the generator
+
+`Feature` already carries `length_m`, `width_m`, `bearing_deg` and `target_m` independently of `kind`, so
+"a reef" versus "this particular reef" is already just data. **Nothing in the engine changes.**
+
+What is missing is what *produces* varied instances: a kind template with ranges, sampled from the seed.
+
+**Ruling on where the variation lands: the studio samples at placement time and stores concrete
+`Feature`s**, rather than generating from `(kind, seed, index)` at read time. A stored declaration stays
+editable, and a builder must be able to nudge one reef without regenerating the other twenty-four. This is
+the same rule as everywhere else — **edits are declarations, not paint** — applied to generated variation.
+
+### Biome variation is free, because the layer does not exist yet
+
+Two kinds fall out naturally. The **computed** baseline is already varied, being driven by continuous
+fields. **Authored** cover regions get the same extent-and-orientation treatment as features, plus an
+**edge softness** so a rainforest is not a uniform stamp with a hard rim.
+
+
 ## 5. Cartography export — a new subsystem
 
 Artistic maps at every scale: planet, region, down to town and city, exported as images.
