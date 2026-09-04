@@ -175,3 +175,7 @@ fn main() {
 
     println!("version {}", wb_generator_version());
 }
+
+// Deliberate breakage, prove/python-counts-and-widened-fingerprint: one comment line
+// the shipped artifact never saw. Before 2026-09-04 this file was outside the fingerprint
+// and `npm run check:wasm` stayed green with it edited.
