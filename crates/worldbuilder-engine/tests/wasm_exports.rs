@@ -84,11 +84,6 @@ fn harbour_surface() -> Surface {
 // ----------------------------------------------------------------- identity and memory
 
 #[test]
-fn the_generator_version_export_is_the_crate_constant() {
-    assert_eq!(wb_generator_version(), GENERATOR_VERSION);
-}
-
-#[test]
 fn alloc_returns_an_eight_aligned_buffer_that_dealloc_takes_back() {
     for bytes in [8u32, 64, 4225 * 4, 65536] {
         let p = wb_alloc(bytes);

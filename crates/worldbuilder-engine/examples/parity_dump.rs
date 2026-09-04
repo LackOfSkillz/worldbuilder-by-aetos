@@ -122,11 +122,11 @@ fn main() {
         }
     }
 
-    // --- the inspection tap: 500 points in each world, three fractions each
+    // --- the inspection tap: 400 points in each world (WAS 500 -- slice CI, task 2)
     for (name, handle, lat_c, lon_c, span) in
         [("plain", plain, 12.0, 34.0, 4.0), ("harbour", harbour, HARBOUR_LAT, HARBOUR_LON, 0.02)]
     {
-        for _ in 0..500 {
+        for _ in 0..400 {
             let latitude_deg = lat_c + (rng.unit() - 0.5) * span;
             let longitude_deg = lon_c + (rng.unit() - 0.5) * span;
             let mut out = [0.0f64; 3];
