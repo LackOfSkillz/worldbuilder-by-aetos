@@ -1090,12 +1090,18 @@ pub fn node_neighbours(positions: &[SpherePoint], k: usize) -> Vec<Vec<u32>> {
 /// against 8,000,000 probe points drawn from a much denser spiral at seed 777000001 and
 /// jitter 0.30 so the two sets are not aligned — this estimator has an **RMS relative error
 /// of 2.46%, a worst single-node error of 13.7%, and a correlation of 0.9479** with the
-/// true cell area. It recovers a spread of 0.756x to 1.270x (CV 0.0731) against a true
-/// 0.737x to 1.260x (CV 0.0753) — so it tracks the variation rather than flattening it.
+/// true cell area. It recovers a spread of 0.756x to 1.270x against a true 0.737x to
+/// 1.260x, **both at n = 5,000 nodes** — so it tracks the variation rather than flattening
+/// it. The CVs of 0.0731 and 0.0753 sometimes quoted beside those ranges belong to the
+/// estimator-error measurement at **n = 20,000**; they are the same quantity at a different
+/// population and must not be read as this range's own.
 ///
 /// The number to compare that against is **the constant it replaces**, whose RMS relative
 /// error is by definition the true spread's own CV of 7.5% and whose correlation with the
-/// truth is zero. So this is roughly a threefold reduction in area error, for one extra
+/// truth is **undefined** -- a constant has zero standard deviation, so Pearson's r divides
+/// by zero. The intuition "it carries no information about the cell" is right; the number is
+/// not zero, it does not exist. So this is roughly a threefold reduction in area error, for
+/// one extra
 /// pass over a neighbour list that had to be built anyway.
 ///
 /// It is an approximation and is documented as one; what it must not be is an *unstated*

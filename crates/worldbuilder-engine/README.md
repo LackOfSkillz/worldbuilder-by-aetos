@@ -2542,7 +2542,9 @@ tracks nothing -- but the statistic does not exist, and this file does not round
 undefined quantity to a number. So this is roughly a **threefold reduction in area
 error, for one extra pass over a neighbour list that had to be built anyway** -- and, more
 importantly, it *tracks* the variation rather than flattening it: it recovers 0.756x to
-1.270x (CV 0.0731) against a true 0.737x to 1.260x (CV 0.0753). (The extraction's §8.4
+1.270x against a true 0.737x to 1.260x, both at **n = 5,000 nodes**; the CVs of 0.0731 and
+0.0753 are from the estimator-error measurement at **n = 20,000**, and are quoted here only
+as the same quantity at a different population, never as this one's. (The extraction's §8.4
 quotes the true spread as 0.735x to 1.285x; that is its probe field, not this one, and the two
 are quoted separately rather than blended.)
 
