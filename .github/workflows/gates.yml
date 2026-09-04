@@ -1,0 +1,262 @@
+# Every gate this project has built, run on every push.
+#
+# The argument for this file is in docs/superpowers/plans/2026-09-04-slice-ci.md, and it is
+# not "CI is good practice". Three specific things went wrong here and each survived several
+# commits BECAUSE nothing ran the check that would have caught it: a conformance suite that
+# skipped silently and reported green while comparing nothing; a shipped `.wasm` that was
+# several commits stale and passing parity; and a provenance guard that was itself
+# unreproducible from git and failed on every machine but its author's. A gate nobody runs
+# is a gate that can rot without anyone noticing.
+#
+# Design notes that are load-bearing, not decoration:
+#
+#   * EVERYTHING RUNS ON WINDOWS, AND THE TOOLCHAIN IS PINNED TO 1.98.0. This is not a
+#     preference. `viewer/public/wasm/MANIFEST.txt` records
+#         toolchain: rustc 1.98.0 88d9e12ae178... x86_64-pc-windows-msvc
+#     and `checkFreshness()` in viewer/scripts/build-wasm.mjs folds that exact string --
+#     release, commit hash AND HOST TRIPLE -- into the source fingerprint. A Linux runner
+#     computes a different fingerprint from byte-identical source, so `npm run check:wasm`
+#     would report STALE ARTIFACT on every run, and the parity harness -- which refuses to
+#     report parity against a stale artifact -- would refuse with it. The provenance gate is
+#     satisfiable only on the host family that built the artifact. That is a property of the
+#     gate as designed; this slice runs the gates, it does not change them.
+#     Pinning the release matters for the same reason: `rustup default stable` would move off
+#     1.98.0 the day upstream ships 1.99 and turn provenance red for a reason that has
+#     nothing to do with the artifact.
+#
+#     The engine matrix could in principle run on Linux, but `--features python` cannot:
+#     pyo3's `extension-module` deliberately does not link libpython on Unix, so the test
+#     binary that links the rlib fails to resolve `Py_*`. Windows links pythonXX.lib and the
+#     tests build. Two of the five configurations are Windows-only in practice, and the
+#     recorded baselines (409/0/5 and 439/0/5) were taken there, so the whole matrix stays on
+#     the host the baselines came from.
+#
+#   * NOTHING IS CACHED. Deliberately. Every failure this workflow exists to catch is a
+#     stale-artifact failure -- a `target/` or a `.wasm` that no longer matches its source.
+#     A cache keyed on anything less than the full fingerprint would reproduce that exact
+#     class of bug INSIDE the thing built to detect it, and the first time it did the symptom
+#     would be a green run. A clean checkout every time is the only cache policy that cannot
+#     lie. The cost is recompiling two pinned dependencies (blake2, libm) and one small crate
+#     per job. If build time ever becomes the binding constraint, the cache key must include
+#     the same 24-input source fingerprint MANIFEST.txt records, not `Cargo.lock` alone.
+#
+#   * NO ARTIFACT IS REBUILT BEFORE IT IS CHECKED. The provenance job checks the COMMITTED
+#     `.wasm` against the source in the same commit. Building it first would make the gate
+#     tautological -- it would prove the runner can compile, not that what is committed
+#     matches what is committed alongside it.
+#
+# NOT COVERED HERE, and Task 3 must say so out loud rather than let a green badge imply
+# otherwise: the viewer's browser checks -- eleven checks and seven `?fault=` values -- still
+# need a browser and a person.
+
+name: gates
+
+# `push` on every branch, and nothing else. `pull_request` is deliberately absent: this is a
+# private repository, Windows runners bill at 2x, and a branch pushed here and then opened as
+# a PR would run the whole matrix twice for the same commit. Every commit that reaches the
+# remote is still gated. Add `pull_request` if this ever takes contributions from forks, whose
+# commits never reach a branch here.
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The toolchain MANIFEST.txt was fingerprinted with. Changing this without rebuilding the
+  # artifact turns the provenance gate red, which is the gate working.
+  RUST_VERSION: "1.98.0"
+  # The local .venv is Python 3.11.0. The conformance suite's ULP bounds are measured against
+  # a platform libm, so the interpreter is pinned rather than floating.
+  PYTHON_VERSION: "3.11"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # The engine suite in all five feature configurations, which is also where the determinism
+  # guard (tests/no_std_math.rs) runs -- it scans all of src/ and fails on a `f64::` form, a
+  # `mul_add`, or an unmarked numeric cast. It runs five times because it is a test like any
+  # other; that costs nothing, and the alternative is a sixth job that could drift out of step
+  # with the suite it lives in.
+  #
+  # Baselines when this workflow was written: 409 passed / 0 failed / 5 ignored under
+  # no-default-features, default and python; 439/0/5 under wasm and python+wasm. Those numbers
+  # are NOT asserted here -- the gate is the exit status. Grepping `test result:` is how a
+  # suite that ran nothing gets called green.
+  # ---------------------------------------------------------------------------------------
+  engine:
+    name: engine (${{ matrix.name }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-default-features
+            features: "--no-default-features"
+          - name: default
+            features: ""
+          - name: python
+            features: "--features python"
+          - name: wasm
+            features: "--features wasm"
+          - name: python+wasm
+            features: "--features python,wasm"
+    steps:
+      - uses: actions/checkout@v4
+
+      # pyo3's build script needs an interpreter to find headers and pythonXX.lib. Set up
+      # before Rust so it is on PATH when cargo runs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Pin the Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc -vV
+          cargo --version
+
+      - name: cargo test ${{ matrix.features }}
+        shell: bash
+        run: cargo test -p worldbuilder-engine ${{ matrix.features }}
+
+  # ---------------------------------------------------------------------------------------
+  # Python conformance against the built engine.
+  #
+  # WORLDBUILDER_REQUIRE_ENGINE=1 IS THE POINT OF THIS JOB. Without it,
+  # tests/test_conformance.py falls through to `pytest.importorskip`, and a missing or stale
+  # `worldbuilder_engine` produces a green run that compared nothing. That happened here for a
+  # whole slice. With it set the import is unguarded and a missing engine is a hard error.
+  # ---------------------------------------------------------------------------------------
+  python-conformance:
+    name: python conformance
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Pin the Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc -vV
+
+      # A real virtualenv, because `maturin develop` installs into VIRTUAL_ENV and refuses
+      # without one. Putting it on GITHUB_PATH makes every later step use it.
+      - name: Create the virtualenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          echo "$PWD/.venv/Scripts" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+
+      - name: Install the harness and the reference package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "maturin==1.15.0" pytest
+          # setuptools backend, per the root pyproject.toml. This installs the pure-Python
+          # reference (`worldbuilder/`) that the conformance suite compares the engine
+          # against. It does NOT build the extension -- see the note on the next step.
+          python -m pip install -e .
+
+      # The standing gap, stated rather than papered over: pyproject.toml declares setuptools
+      # as its build backend while the extension is built by maturin, so `pip install .` does
+      # not produce a working engine and the build is not reproducible from project metadata.
+      # This workflow does what a developer does -- runs maturin explicitly against the
+      # crate's own Cargo.toml -- and leaves the backend alone. Changing a build backend under
+      # a working conformance suite is its own slice.
+      - name: Build the engine wheel (maturin, not the declared backend)
+        shell: bash
+        run: |
+          set -euo pipefail
+          maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
+          python -c "import worldbuilder_engine; print('engine imported from', worldbuilder_engine.__file__)"
+
+      - name: pytest with the engine REQUIRED
+        shell: bash
+        env:
+          WORLDBUILDER_REQUIRE_ENGINE: "1"
+        run: pytest tests/
+
+  # ---------------------------------------------------------------------------------------
+  # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
+  # build-wasm.mjs and refuses to report parity against an artifact that fails it -- they are
+  # one chain, and splitting them across runners would let the parity half run somewhere the
+  # provenance half was never asked.
+  #
+  # The parity harness shells out to `rustc -vV` from Node, so Rust and Node must be on the
+  # SAME runner. Node alone is not enough.
+  #
+  # No `npm ci`: build-wasm.mjs and parity.mjs import node builtins only, and viewer's single
+  # dependency is CesiumJS, which neither touches. Downloading it would add minutes and a
+  # network dependency to a gate that is a content hash.
+  # ---------------------------------------------------------------------------------------
+  provenance-and-parity:
+    name: provenance + parity
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Pin the Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          # Printed because this exact string -- release, commit hash and host triple -- is
+          # folded into the source fingerprint. When provenance goes red, this is the first
+          # line to read.
+          rustc -vV
+
+      # Diagnostic, not an assertion. `* text=auto eol=lf` was verified to reproduce the
+      # fingerprint on clones at both core.autocrlf settings, but a CI checkout is a third
+      # checkout with its own conventions and this project keeps finding that kind of
+      # assumption wrong. If provenance fails, this output says immediately whether line
+      # endings are why. A hard check here would be adding a gate, which this slice must not
+      # do.
+      - name: Line endings of the fingerprinted inputs (diagnostic)
+        shell: bash
+        run: |
+          git config --get core.autocrlf || echo "core.autocrlf: (unset)"
+          git ls-files --eol -- crates/worldbuilder-engine/src Cargo.toml Cargo.lock crates/worldbuilder-engine/Cargo.toml
+
+      - name: Provenance -- does the shipped .wasm match the source in this commit?
+        shell: bash
+        working-directory: viewer
+        run: npm run check:wasm
+
+      - name: Parity -- native dump
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
+
+      - name: Parity -- replay through the committed .wasm
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: node parity.mjs native.txt
+
+      # The control. The harness's own documented proof that it can notice a wrong answer:
+      # `--mutate seed` moves the world seed by one and 50,778 of 53,251 values diverge. A
+      # parity run whose harness cannot fail is not evidence, and this is the cheapest place
+      # in the project to keep proving that it can.
+      - name: Parity -- the control (a harness that cannot fail is not evidence)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: node parity.mjs native.txt --mutate seed
