@@ -34,9 +34,28 @@ and those cost exactly the frame budget zoom depth needs.
 
 **PlanetMaker is texture-limited and Worldbuilder is not.** Its Scene panel carries a
 `2048x1024` texture dropdown; its zoom bottoms out where the image does. Worldbuilder
-evaluates a continuous field at a point, so zoom is bounded only by what the detail octaves
-resolve and by frame budget. That is the strongest justification for the WASM cost: a
-texture viewer shows a coastline, a field viewer shows the bottom of the harbour.
+evaluates a continuous field at a point, so zoom is bounded by what the detail octaves
+resolve and by frame budget rather than by an image.
+
+**CORRECTED 2026-09-04, twice — this sentence was wrong in both directions before it was
+measured.** The generated field has a floor, and it is **78.125 m**, not the 250 m a first
+correction claimed: `CANONICAL_WAVELENGTH_M = 250` is a *loop bound*, so the finest octave is
+**312.5 m**, and octaves fade by `smooth((lambda/r - 2)/2)`, reaching full strength only at
+`r <= lambda/4`. Measured on a 2 km transect, peak-to-peak rises monotonically 0.19 m to 5.58 m
+as `r` goes 20,000 down to 78.125, then is **bit-identical** for 50, 25 and `None`.
+
+Below about 100 m the generated field is a **tilted plane** — over a 100 m span it departs from
+the straight chord by 4.5 cm, over 25 m by 2.5 mm. So the honest claim is: **zoom reveals
+generated ground down to ~78 m, and below that it reveals authored features.**
+
+And features are genuinely different, measured for the first time on 2026-09-04 — every earlier
+probe passed `features=None`. A 900x260 m carve plus a 200x60 m mole give **152.8 m of relief
+over a 100 m span** and 2.76 m of chord deviation over 25 m, because `Features::apply` is
+analytic, sits outside the octave schedule, and its `authority` term damps texture rather than
+being buried by it. Features cost under 5% in throughput.
+
+**So a field viewer does show the bottom of the harbour — but because somebody placed the
+harbour, not because the noise goes that deep.**
 
 ### 2.1 Zoom is understated in the spec
 
@@ -57,11 +76,33 @@ swims, because a float32 cannot hold a planet-scale position to metre precision.
 fix is relative-to-eye rendering: keep positions double on the CPU, subtract the camera,
 hand the GPU the small offset.
 
-**Recommendation: CesiumJS (Apache 2.0)** rather than three.js, because planet-to-metre
-zoom with correct precision and LOD is precisely what it exists for, and its custom
-`TerrainProvider` interface lets tiles be generated on demand from the WASM field — which
-satisfies the rule that the studio draws from the generator and never from a baked
-approximation.
+**DECIDED 2026-09-04: CesiumJS.** Planet-to-metre zoom with correct precision and LOD is
+precisely what it exists for, and its custom `TerrainProvider` lets tiles be generated on demand
+from the WASM field, satisfying the rule that the studio draws from the generator and never from
+a baked approximation.
+
+**All three verification questions came back clear:**
+
+- **Licence: Apache-2.0**, `cesium@1.145.0`, confirmed against `LICENSE.md` on `main` and npm
+  metadata, with every commit touching that file listed back to 2015-02-20 — no relicensing.
+  Cesium **ion** is a separate product with its own ToS; "CesiumJS is Apache 2.0" and "Cesium is
+  free offline" are two different sentences, and we rely only on the first.
+- **Custom terrain: fully supported.** `TerrainProvider` is duck-typed, not a sealed class, and
+  `CustomHeightmapTerrainProvider` exists *specifically* for procedural terrain — one callback,
+  which may return a promise, so no provider class need be written at all.
+  `HeightmapTerrainData` with a `Float32Array` takes heights as metres above the ellipsoid
+  directly. **Two traps:** `ready`/`readyPromise` were removed in 1.107, so do not implement
+  them; and `getTileDataAvailable` returning `undefined` makes Cesium refine until it runs out
+  of memory — that is where the zoom cap gets enforced.
+- **Ion is fully disablable and NOT disqualifying.** Cesium ships an official offline guide;
+  the bundle contains no telemetry; `Ion.js` performs no I/O. Exactly **one** `Viewer` default is
+  network-live — `baseLayer = ImageryLayer.fromWorldImagery()`. Terrain's default is offline.
+  **Caveat: this is a documentary and source case, not a witnessed one** — a browser network
+  trace was not taken. Five minutes with DevTools converts it, and that is the slice's first task.
+
+**And the float64 precision problem — the reason Cesium was chosen — costs a custom provider
+nothing.** Terrain uses per-tile relative-to-centre encoding, with the camera subtraction done in
+float64 on the CPU. Return standard `TerrainData` and the whole mechanism is downstream.
 
 The alternative worth weighing is **Rust-native**: `bevy` or `wgpu` plus `egui`, all one
 WASM module, no JS boundary to marshal across. Costs implementing precision and LOD.
