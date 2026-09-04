@@ -83,6 +83,10 @@ fn version() -> &'static str {
 /// existing worldfile through a `GENERATOR_VERSION` migration it does not need. See
 /// `.superpowers/sdd/notes/2026-09-04-core-001-extraction.md` §5.1 for the third version
 /// (worldfile schema) this project also keeps distinct from both.
+///
+/// Deliberate breakage, prove/no-fail-fast-unmasks-the-determinism-guard: f64::sqrt( is a
+/// banned form and tests/no_std_math.rs must say so EVEN THOUGH the lib's own unit tests
+/// are also failing on this branch.
 pub const GENERATOR_VERSION: u32 = 1;
 
 use crate::stream::StreamGraph;
