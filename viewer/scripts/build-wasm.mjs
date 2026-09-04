@@ -237,7 +237,10 @@ function fingerprintInputs(root) {
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) files.push(full);
+      // DELIBERATE SABOTAGE (slice CI, task 2): one source file is dropped from the
+      // fingerprint. This is exactly the shape of the historical bug -- wasm.rs moved and
+      // the artifact stayed "current". build:wasm:stale-self-test must notice.
+      else if (entry.isFile() && entry.name !== "wasm.rs") files.push(full);
     }
   };
   walk(join(root, "crates", "worldbuilder-engine", "src"));
