@@ -8,7 +8,15 @@ publish = false
 name = "worldbuilder_engine"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Off by default. The Python extension module (bindings.rs, and the #[pymodule] in
+# lib.rs) only builds with this feature enabled. With it off, the crate is plain Rust:
+# no PyO3, no CPython headers, no PYO3_CROSS_PYTHON_VERSION demand from pyo3-ffi's build
+# script -- which is what was blocking both a `[[bin]]` target and any
+# wasm32-unknown-unknown build. maturin passes --features python at wheel-build time.
+python = ["dep:pyo3"]
+
 [dependencies]
 blake2 = "=0.10.6"
 libm = "=0.2.11"
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }

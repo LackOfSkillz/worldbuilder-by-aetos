@@ -11,6 +11,7 @@ pub mod features;
 pub mod generation;
 pub mod vectors;
 pub mod sphere;
+#[cfg(feature = "python")]
 pub mod bindings;
 pub mod noise;
 pub mod tangent;
@@ -22,14 +23,17 @@ pub mod shelf;
 pub mod substrate;
 pub mod surface;
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 /// The engine's own version, so a caller can tell which core answered.
+#[cfg(feature = "python")]
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+#[cfg(feature = "python")]
 #[pymodule]
 fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
