@@ -180,3 +180,148 @@ No `wasm-bindgen`, no `wasm-opt`, no bundler — the module has zero imports by 
 (the same choice as the vendored Cesium tree) so a fresh checkout can serve the viewer
 without a Rust toolchain; re-run `npm run build:wasm` after any change to
 `crates/worldbuilder-engine`.
+
+## The terrain provider (Task 4)
+
+`public/app/` — four ES modules over the global `Cesium` (the vendored build is the IIFE
+one; there is no bundler and none is needed).
+
+| file | what it is |
+|---|---|
+| `engine.js` | the wasm loader and the marshalling for the ten `extern "C"` entry points. `WebAssembly.instantiate(bytes, {})` is the whole loader — zero imports by design. |
+| `terrain.js` | `CustomHeightmapTerrainProvider` over `wb_fill_tile_f32`, plus the zoom cap and the deliberate wrong implementations. |
+| `main.js` | builds the world, installs the provider, paints a hypsometric ramp, reads URL parameters. |
+| `verify.js` | the checks. `window.__wb.check()` in the console. |
+
+```
+http://127.0.0.1:8137/
+  ?seed= ?radius= ?plates= ?land= ?harbour=1   the world
+  ?maxLevel= ?size=                            the tiling
+  ?exaggeration= ?paint=0 ?atmosphere=1        what it looks like
+  ?fly=lat,lon,height                          where to look
+  ?fault=flip-latitude|shift-tile|wrong-world  a deliberate wrong implementation
+```
+
+**No provider class is written.** `CustomHeightmapTerrainProvider` exists for procedural
+sources: one callback, and it builds the `HeightmapTerrainData` itself. Its constructor
+already calls `getEstimatedLevelZeroGeometricErrorForAHeightmap` — measured at
+**77,067.34 m** for a 65-post tile on a 2-tile level 0 — and
+`getLevelMaximumGeometricError(level)` is that over `1 << level`. There is **no `ready` or
+`readyPromise`**; both were removed in 1.107 and the provider is usable the instant it is
+constructed.
+
+The buffer is a `Float32Array` with the **default structure** (`heightScale` 1,
+`heightOffset` 0, `stride` 1), so the values are metres above the ellipsoid directly. **Row 0
+is the north edge** — that is `HeightmapTerrainData.interpolateHeight`'s own convention
+(`southInteger = height - 1 - southInteger`), and the fill is handed the rectangle's north
+latitude as `lat0Deg`.
+
+### The zoom cap is level 12
+
+`getTileDataAvailable` returning `undefined` is the trap: the prototype's answer is
+`undefined`, `GlobeSurfaceTile.prepareNewTile` then falls through to
+`terrainData.isChildAvailable`, which is always true for the default child tile mask, and
+refinement is bounded only by a screen-space error that halves every level.
+
+**Measured, camera 300 m above 12 N 34 E, 400 frames:**
+
+| | maxDepthVisited | tilesVisited | JS heap |
+|---|---|---|---|
+| capped at 12 | **15, flat** | **89, flat** | ~40 MB, flat |
+| cap removed (`undefined`) | 13 → 16 → 18 → 22 → **25 and climbing** | 80 → **379 and climbing** | 33 → **54 MB and climbing** |
+
+The steady state is **cap + 3, not cap + 1**: the gate is `QuadtreePrimitive.visitTile`'s
+`allAreUpsampled`, and a tile is only marked `upsampledFromParent` once it has been visited
+and processed, so the traversal overshoots a little before settling.
+
+**Why 12.** A `GeographicTilingScheme` tile spans `180 / 2^level` degrees and a 65-post
+heightmap samples it every `180 / (2^level · 64)` degrees; on this project's 6,371,000 m
+radius that is `312,735.98 m / 2^level`:
+
+```
+level 10 -> 305.4 m    level 12 -> 76.35 m
+level 11 -> 152.7 m    level 13 -> 38.18 m
+```
+
+The generated field's **resolution floor is 78.125 m** — peak-to-peak relief on a 2 km
+transect rises monotonically 0.19 → 5.58 m from `r = 20000` down to `r = 78.125` and is then
+bit-identical for 50, 25 and canonical; below ~100 m the field is a tilted plane (4.5 cm of
+chord deviation over 100 m). **Level 12 is the first level at or below that floor**, so it is
+the last level at which zooming reveals generated ground that was not already there.
+
+**Authored features are the exception, and level 12 is not enough for them.**
+`Features::apply` is analytic and outside the octave schedule, so it is
+resolution-independent *point-wise* but still **grid-sampling-limited**. Measured on the
+extraction's harbour (a 900 × 260 m carve to −12 m with a 200 × 60 m mole to +4 m, on
+−4,600 m seabed): the centre reads **exactly +4.00 m at `resolution_m` of −1, 76.35, 152.7
+and 305.4 alike**, and a 100 m transect through it has **2,424.8 m of relief at every one of
+those resolutions**. But the tile that contains it tops out at
+
+```
+L12 (76.4 m posts) -> -819.4 m     L15 (9.5 m) -> -39.6 m
+L13 (38.2 m)       -> -457.7 m     L16 (4.8 m) ->  +3.2 m
+L14 (19.1 m)       ->  -40.8 m     L17 (2.4 m) ->  +3.2 m
+```
+
+against a +4 m target — a 60 m-wide mole is narrower than one level-12 post. **Resolving that
+harbour needs about level 16.** A feature-aware availability function (deeper only where a
+feature reaches) is the right answer and is deliberately not built here: it needs Task 5's
+cache and worker pool to be affordable. `?maxLevel=` exists so the claim stays testable.
+
+### What was verified, and how it was made to fail
+
+`window.__wb.check()`, eight checks, all passing on the default world:
+
+- **witnessed-elevation** — `wb_elevation_m(12, 34, res 250)` is **exactly**
+  `682.3921701573904`, the value the extraction pinned three independent ways (Python wheel,
+  native Rust, browser WASM) and that `crates/worldbuilder-engine/tests/wasm_exports.rs`
+  carries as `WITNESSED_ELEVATION_M`. Nothing in `viewer/` produced that number.
+- **tile-posts-exact** — **0 of 38,025 posts divergent** across nine tiles (one per named
+  point at level 12, both level-0 hemispheres, one at level 5). Each post is compared as
+  `Math.fround(wb_elevation_m(lat, lon, spacing)) === buffer[row·65 + col]` — exact, not a
+  tolerance — at the latitude and longitude **Cesium's** row convention places that post.
+- **interpolate-height** — through `HeightmapTerrainData.interpolateHeight`, worst |delta|
+  **2.12e-4 m** at six named points.
+- **land-and-sea** — **2,519 of 2,520** grid points agree on land-vs-sea between the loaded
+  terrain and the engine (99.96%); cos(lat)-weighted land fraction **29.2%** against a
+  requested `land_fraction` of 0.29.
+- **provider-shape**, **heightmap-structure**, **zoom-cap**, **quadtree-depth**.
+
+**Rendered pixels, checked back against the engine.** `scene.pickPosition` on a 6,828-pixel
+near-nadir grid: the surface Cesium actually draws sits at the engine's heights to
+**max 0.52 m, mean 0.096 m** over a coastline at 60 km, and **max 1.13 m, mean 0.294 m** over
+open ocean at 40 km. Sampled at 70 × 35 over a full-disc view, the rendered land/sea glyphs
+match the engine's land/sea map **447 of 450**, the three misses all on the limb. So the
+picture is a globe with a continent where the engine puts one and ocean where it puts ocean,
+and the surface is the generated field, not a fallback ellipsoid.
+
+`?fault=` installs a plausible wrong implementation, because a check that has never rejected
+anything is not known to work:
+
+| fault | what it does | caught by |
+|---|---|---|
+| `flip-latitude` | row 0 at the south edge — an upside-down planet that renders beautifully | tile-posts (first divergence at row 0 col 0), interpolate-height (14.2 m), land-and-sea (80.16%) |
+| `shift-tile` | the tile filled one post east of where Cesium places it — 1/64 of a tile, invisible by eye | tile-posts (**35,271 / 38,025** divergent), interpolate-height (0.686 m). land-and-sea stays green, correctly: it cannot see 76 m |
+| `wrong-world` | seed + 1 — a different planet, drawn without complaint | tile-posts (**37,189 / 38,025**), interpolate-height (5,050 m), land-and-sea (57.38%) |
+
+`wrong-world` diverging on 97.8% rather than 100% is the healthy signature: the 836 agreeing
+posts are almost all the abyssal-floor clamp at −4,600 m.
+
+Two things the checks caught in themselves, worth recording:
+
+- `provider.constructor.name` is **`xA`**. The vendored Cesium is the minified build, so
+  every class name is mangled; the shape check now uses `instanceof`.
+- `quadtree-depth` reported a **trivial pass on a page that had never rendered**
+  (`maxDepthVisited` 0, and 0 ≤ anything). It now reports NOT EXERCISED when
+  `frameState.frameNumber` is 0.
+
+Two Cesium picking facts that cost time and are worth writing down:
+`camera.pickEllipsoid` converts window coordinates with `canvas.clientWidth/clientHeight`
+while the framebuffer is `canvas.width/height`, so a 1280 × 720 container over a 560 × 560
+buffer misregisters every ray — this wrecked the first pixel check (50% agreement) before it
+was a real finding about anything. And `scene.pickPosition` is **only accurate at short
+range**: at 6,000 km it disagreed with the same pixel's shaded height by ~1 km, which at a
+coastline flips the sign.
+
+No network: 8 resources on the default page, **0 off-origin**. `wb_world_count()` is 1 after
+a full check run — no leaked worlds.

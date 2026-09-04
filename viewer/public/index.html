@@ -70,3 +70,20 @@
     terrain: viewer.terrainProvider.constructor.name,
   };
 </script>
+
+<!--
+  Task 4. The terrain provider, as ES modules over the global `Cesium` above.
+
+  A module script is deferred by definition, so `window.viewer` and `Cesium` both exist by
+  the time it runs. It replaces `viewer.terrainProvider` -- the `EllipsoidTerrainProvider`
+  the status line above reports is the pre-Task-4 default, and `window.__wbReady` is the
+  handle that says the engine-backed one is installed.
+
+  Parameters, all optional:
+    ?seed= ?radius= ?plates= ?land= ?harbour=1   the world
+    ?maxLevel= ?size=                            the tiling
+    ?exaggeration= ?paint=0 ?rampMin= ?rampMax=  what it looks like
+    ?fly=lat,lon,height                          where to look
+    ?fault=flip-latitude|shift-tile|wrong-world  a deliberate wrong implementation
+-->
+<script type="module" src="/app/main.js"></script>
