@@ -166,7 +166,9 @@ function assertArtifact(path, { allowEmpty = false } = {}) {
     problems.push(`hand-parsed import count (${handImports}) disagrees with WebAssembly.Module.imports (${jsImports.length})`);
   }
 
-  if (!allowEmpty) {
+  // DELIBERATE SABOTAGE (slice CI, task 2): the strict block is disabled, so the
+  // 327-byte memory-only artifact passes. build:wasm:self-test must notice.
+  if (false && !allowEmpty) {
     if (size < MIN_PLAUSIBLE_BYTES) {
       problems.push(`artifact is only ${size} bytes -- looks like the empty build (327 bytes, memory-only). Expected >= ${MIN_PLAUSIBLE_BYTES}.`);
     }
