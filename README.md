@@ -178,6 +178,157 @@ water model answers by region, so a position in the pond gets one level and the 
 spot asked about as sea gets another. A world that can only have one water level can only
 have sea.
 
+## CI
+
+`.github/workflows/gates.yml` runs on every push, on `windows-latest`, pinned to
+`rustc 1.98.0`. Seven jobs: the engine suite in five feature configurations
+(`--no-default-features`, default, `python`, `wasm`, `python,wasm`), Python conformance, and
+one provenance-plus-parity job. Nothing is cached, and no artifact is rebuilt before it is
+checked - the provenance job compares the *committed* `.wasm` against the source in the same
+commit.
+
+This exists because three things went wrong here and each survived multiple commits, because
+nothing ran the check that would have caught it:
+
+1. **The conformance suite skipped silently and reported green while comparing nothing.**
+   `tests/test_conformance.py` falls through to `pytest.importorskip` when
+   `worldbuilder_engine` cannot be imported. With no engine built and no guard set,
+   `pytest tests/` prints `240 passed, 1 skipped` and exits 0 - all 150 comparisons in that
+   file vanish into the one `1 skipped` line. Nobody scanning a green log for a suspicious
+   number finds one, because there isn't one. **That is the row this slice exists to make
+   impossible**, and it is the reason the conformance job sets
+   `WORLDBUILDER_REQUIRE_ENGINE=1`: with the guard set, a missing engine is a hard
+   `ModuleNotFoundError` at collection, exit 2, not a skip.
+2. **The shipped `.wasm` was several commits stale and still passed parity.** Nothing
+   compared the artifact's provenance against the source before running comparisons through
+   it, so a coastline change could ship with an engine built from an earlier one and parity
+   would still report zero divergent - correctly, because the corpus and the artifact agreed
+   with each other and with nothing else.
+3. **The provenance guard itself was unreproducible from git and failed on every machine but
+   its author's.** The fingerprint folds the exact toolchain string (release, commit hash,
+   host triple) into the digest, so a check written against one machine's Rust could never
+   pass anywhere else without pinning both the toolchain and the runner OS. Gates now run only
+   on `windows-latest` at `rustc 1.98.0`, for this reason.
+
+### The five gates, and the message each one produces on a real failure
+
+Verbatim messages below are quoted from prior CI runs recorded in
+`.superpowers/sdd/2026-09-04-slice-ci/task-2-report.md`; every count in this section was
+re-derived from the current tree, not copied from those runs.
+
+**1. Engine suite (five feature configurations).** `cargo test -p worldbuilder-engine
+<features> --no-fail-fast`. A broken constant fails with the ordinary libtest message, e.g.
+`assertion left == right failed / left: 3.5 / right: 3.0`. `--no-fail-fast` is load-bearing:
+without it, a failing unit test stops cargo before `tests/no_std_math.rs` (gate 2) ever runs,
+which is exactly the shape of gate 1 silently hiding gate 2 that this slice exists to
+prevent.
+
+**2. The determinism guard**, `crates/worldbuilder-engine/tests/no_std_math.rs`, runs as part
+of the engine suite above. It scans `src/` for `f64::`-style float math, `mul_add`, or an
+unmarked truncating cast, and fails with: `std float maths (or an unmarked float-truncating
+cast) found outside detmath: <file>:<line>: <form> — route it through detmath (or mark with
+` `// cast-ok:` ` if this is a genuine integer cast)`.
+
+   **Known limitation, recorded rather than fixed:** the scanner is comment-blind by design -
+   `scan_text` treats any line whose trimmed text starts with `//` as a comment to skip
+   (`crates/worldbuilder-engine/tests/no_std_math.rs:60`), and `///` and `//!` both start with
+   `//`. A banned form written inside a doc comment compiles to nothing and is invisible to
+   the guard - confirmed on the current tree: `crates/worldbuilder-engine/src/lib.rs` lines
+   91-96 are a `///` doc comment, and a proof-of-failure placed there reported
+   `test result: ok. 6 passed` instead of catching anything. The same form on a line of real
+   code was caught. This is correct behaviour for an actual comment and a trap for anyone
+   trying to prove the guard still works: it must be tested on a code line, not a doc line.
+
+**3. Python conformance**, with `WORLDBUILDER_REQUIRE_ENGINE=1`. Missing engine:
+`ModuleNotFoundError: No module named 'worldbuilder_engine'` at collection, exit 2. A
+divergent engine: per-test `AssertionError`s comparing measured values against tolerance,
+e.g. `assert 0.06100853039628548 <= 2.2e-14`.
+
+   **The row where CI passes is the important one.** With the guard *unset* and no engine
+   built - the historical, buggy configuration - `pytest tests/` still exits 0 and prints
+   `240 passed, 1 skipped`. Re-derived locally on the current tree,
+   `pytest tests/ --collect-only -q` reports **390 tests collected**, of which **150** are in
+   `tests/test_conformance.py` (`tests/ --collect-only -q | grep -c
+   '^tests/test_conformance.py::'` → 150) and the remaining **240** are spread across the
+   other thirteen test files. `240 passed, 1 skipped` is exactly `390 − 150`: the whole
+   conformance file collapsing into one line. This is the bug the slice exists to make
+   impossible, and it is why the count gate below asserts the per-file total, not just exit
+   status.
+
+**4. Provenance**, `npm run check:wasm` in `viewer/`. Source edited without a rebuild:
+`STALE ARTIFACT: - the shipped .wasm was NOT built from the source that is here now: source
+now: <hash> / artifact built from: <hash> (28 inputs fingerprinted.)`. Re-run locally against
+the current tree: `Current: .../viewer/public/wasm/worldbuilder_engine.wasm matches its
+manifest and the source that is here now.` - and `viewer/public/wasm/MANIFEST.txt` itself
+records `fingerprint-inputs: 28`, confirmed by running the check, not read off a report.
+
+   Two cheaper proofs run alongside it, both re-run locally as part of this task:
+   `npm run build:wasm:stale-self-test` (`SELF-TEST PASSED: the fingerprint refuses a source
+   tree that has moved.`) and `npm run build:wasm:self-test` (rejects a stripped 327-byte,
+   memory-only artifact before rebuilding the real one).
+
+**5. Parity**, `parity_dump` (native) replayed through the committed `.wasm` by `parity.mjs`.
+A mutated artifact is refused rather than silently compared: `REFUSING TO REPORT PARITY --
+STALE ARTIFACT:` with the source/artifact hashes, because "the corpus and the .wasm agree
+with each other and with nothing else" is not evidence. A control run
+(`--mutate seed`) proves the harness can fail at all: of 53,251 values compared, 50,778
+diverge.
+
+### The two count gates
+
+`.github/scripts/assert_counts.py` is a sixth kind of check: the four gates above ask "did
+anything fail", which cannot catch a suite whose tests were deleted or whose corpus quietly
+shrank while everything else stayed green. It cross-checks two independently-produced
+statements of the same number (never a `test result:` grep) and fails loudly, naming the
+mismatch, if they disagree or either is missing:
+
+- **Engine suite**, per feature configuration: `cargo test -- --list` gives one `<name>: test`
+  line per test and a `<N> tests, <M> benchmarks` trailer; they must agree. Re-derived
+  locally for `--no-default-features`: **414 listed, 5 ignored → 409 run**, matching the
+  workflow's asserted `--expect-passed 409 --expect-ignored 5` exactly
+  (`python .github/scripts/assert_counts.py cargo-list ...` → `count OK: 409 passed / 0
+  failed / 5 ignored`). The `wasm` and `python,wasm` configurations expect 439/5, thirty more
+  than the other three because they compile `tests/wasm_exports.rs`. On a deleted test, the
+  gate fails with `COUNT GATE FAILED / expected <N> tests to run, found <M>` even though
+  `cargo test` itself exits 0.
+- **Python suite**: `pytest --collect-only -q`'s per-test lines and its `<N> tests collected`
+  trailer, cross-checked against the real run's `<N> passed in <T>s` summary. Asserts
+  **390 tests in total, 150 of them in `tests/test_conformance.py`** - both figures re-derived
+  above, not copied from an earlier report. On the historical unguarded configuration it
+  fails with `the run reports outcomes that are not `passed`: 1 skipped ... expected 390
+  tests in total, found 240 / expected 150 tests in tests/test_conformance.py, found 0`.
+- **Parity corpus**: the total line (`53,251 values compared`) is cross-checked against the
+  nine per-group tallies summing to it, so a shrunk corpus fails with `COUNT GATE FAILED /
+  expected 53251 values compared, found <M>` even when provenance and parity both report
+  green on their own.
+
+### What CI does NOT cover
+
+**The viewer's browser checks.** `viewer/README.md` documents an in-page harness
+(`window.__wb.check()`) exercised through URL parameters and a `?fault=` switch that forces a
+known-wrong implementation: **eleven checks pass on the default world**, and **seven**
+`?fault=` values (`flip-latitude`, `shift-tile`, `wrong-world`, `stale-worker`, `cache-key`,
+`feature-blind`, `feature-everywhere`) each must make specific checks fail. This needs a real
+browser with WebGL compositing and a person reading the result - it is not a test file CI can
+invoke, several checks are explicitly rendering-dependent (one reports NOT EXERCISED when
+`frameState.frameNumber` is 0), and a software-rasterised CI number would be a different
+measurement wearing the same name. **It is out of scope for this slice.** A green badge on
+this workflow says nothing about the viewer having been watched run.
+
+Two further holes are known and deliberately deferred to their own slice, not this one:
+
+- **The Python extension has no fingerprint and no manifest.** The `.wasm` carries a
+  28-input source fingerprint and a manifest that provenance checks on every push; an engine
+  present in a developer's `.venv` but built from older source is undetected by anything.
+  `WORLDBUILDER_REQUIRE_ENGINE=1` only asserts that the import succeeds, never which source
+  built it.
+- **A distribution-name collision.** `pyproject.toml` declares `name = "worldbuilder-by-aetos"`
+  for both the setuptools-built reference package and the maturin-built extension, so
+  `maturin develop` silently uninstalls the pure-Python `worldbuilder/` package that the
+  conformance suite compares the engine against. CI works around it by importing the
+  reference package from the working tree rather than installing it; the underlying collision
+  is untouched.
+
 ## Layout
 
     CHANGELOG.md                             phase by phase, with the measurements
