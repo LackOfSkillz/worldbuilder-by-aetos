@@ -468,6 +468,46 @@ mod tests {
         Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features)
     }
 
+    /// A world radius that is not Earth's, and the reason it had to be added.
+    ///
+    /// **An argument is witnessed on a PATH, not in a codebase.** Every `Surface` in this
+    /// module was built by `plain`, which is to say at `EARTH_RADIUS_M`, so on all of them
+    /// `self.radius_m` and the literal `crate::sphere::EARTH_RADIUS_M` are the SAME NUMBER.
+    /// Six substitutions of one for the other were measured and all six passed both suites
+    /// entire: `Features::new` in each of its two live arms, and `substrate::at`,
+    /// `substrate::dominant_at` and `substrate::slope_at` at each of the four sites that
+    /// call them. Two tests below carry "at the world radius" in their own names and stayed
+    /// green under the mutation that makes those names false.
+    ///
+    /// The hole was never the entry point - `radius_m` is closed at `Continentality::new`,
+    /// at `Tectonics::new`, at `Detail::new` and over a 120-point cross-language scatter.
+    /// It was the CROSS: nothing that varied the radius ever reached the feature placement
+    /// or the substrate stage. Closing an argument at one entry point reads as closing it
+    /// everywhere and does not. What has to be checked is (argument varied x path
+    /// exercised), one cell at a time.
+    ///
+    /// 3,000,000 m, which is the radius `test_conformance.py`'s 120-point scatter already
+    /// varies to, so the two suites disagree about nothing.
+    const SMALL_RADIUS_M: f64 = 3_000_000.0;
+
+    fn small_world(features: Option<FeatureInput>) -> Surface {
+        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features)
+    }
+
+    /// Where the small world's substrate separates the two radii, found by scanning a
+    /// 21x21 grid of three-milli-degree steps about the bank for the largest composition
+    /// gap between `substrate::at(SMALL_RADIUS_M, ..)` and `substrate::at(EARTH_RADIUS_M,
+    /// ..)` over the SAME callbacks. **Not every probe separates them, which is why this
+    /// one was chosen by measurement**: at `base_sensitive_probe` the two radii give
+    /// slopes of 0.0927 and 0.0437 and yet the same composition to the bit, because both
+    /// slopes saturate the rock term. Here the slopes are 0.0342 and 0.0161, the rock
+    /// fraction is 0.9348 against 0.3536, and the dominant word flips from rock to sand -
+    /// so a wrong radius is visible in the fractions AND in the one-word answer. Every
+    /// figure from the live Python.
+    fn small_world_probe() -> SpherePoint {
+        SpherePoint::from_latlon(29.982, -65.0)
+    }
+
     /// Relative closeness, for the paths that reach a transcendental and therefore compare
     /// pure-Rust `libm` against CPython's platform libm. Every use states its own bound.
     fn close(actual: f64, expected: f64, relative: f64) -> bool {
@@ -650,6 +690,30 @@ mod tests {
         assert_eq!(odd.plates.len(), 5);
         assert_eq!(odd.land.land_fraction.to_bits(), 0.5f64.to_bits());
         assert_eq!(odd.land.radius_m.to_bits(), 1234567.0f64.to_bits());
+        // **`features` and `detail` are the two constructor arguments this test used to
+        // leave out, and leaving them out is why `Features::new(.., radius_m)` survived
+        // both suites in both of its live arms.** `Features` stores the radius it placed
+        // at, so it is read straight off. `Detail` does not keep its radius anywhere a
+        // caller can see it - `detail.rs` marks the field `dead_code` - so the witness is
+        // the octave table it plans FROM the radius, which is what the argument is for.
+        assert_eq!(odd.features.radius_m.to_bits(), 1234567.0f64.to_bits());
+        // The band WAVELENGTHS are a fixed table and carry nothing about the radius; the
+        // FREQUENCY each is turned into is `2 pi radius / wavelength / (2 pi)`, so that is
+        // where a defaulted radius shows, and it shows in every band rather than one.
+        let earth_detail = Detail::new(7u64, EARTH_RADIUS_M);
+        assert_eq!(odd.detail.bands().len(), earth_detail.bands().len());
+        assert!(
+            odd.detail
+                .bands()
+                .iter()
+                .zip(earth_detail.bands())
+                .all(|(mine, earths)| {
+                    mine.wavelength_m.to_bits() == earths.wavelength_m.to_bits()
+                        && mine.frequency.to_bits() != earths.frequency.to_bits()
+                }),
+            "the detail bands no longer separate 1,234,567 m from Earth's radius, so this \
+             test cannot see a defaulted radius"
+        );
     }
 
     #[test]
@@ -658,6 +722,18 @@ mod tests {
         assert_eq!(surface.features.len(), 0);
         assert!(surface.features.is_empty());
         assert_eq!(surface.features.radius_m.to_bits(), EARTH_RADIUS_M.to_bits());
+        // **THE WORLD'S radius - which on `plain` is also Earth's, so the line above cannot
+        // fail on this test's own title.** Measured: `None => Features::new(Vec::new(),
+        // EARTH_RADIUS_M)` passed `cargo test` and the whole pytest suite. See
+        // `SMALL_RADIUS_M`.
+        let small = small_world(None);
+        assert_eq!(small.features.len(), 0);
+        assert!(small.features.is_empty());
+        assert_eq!(small.features.radius_m.to_bits(), SMALL_RADIUS_M.to_bits());
+        assert!(
+            SMALL_RADIUS_M != EARTH_RADIUS_M,
+            "the fixture radius stopped being a witness"
+        );
     }
 
     #[test]
@@ -673,6 +749,20 @@ mod tests {
             0.9545181883460445,
             1e-12
         ));
+        // **Same again: on `plain` "the world's radius" and "Earth's radius" are one
+        // number, and `Loose(loose) => Features::new(loose, EARTH_RADIUS_M)` passed both
+        // suites entire.** The loose arm is not inert - the same bar reads 0.9545 at this
+        // probe placed at Earth's radius against 0.9895 placed at 3,000,000 m, both from
+        // the live Python - so the placement is checked here, not only the stored number.
+        let small = small_world(Some(FeatureInput::Loose(vec![bar(), rock()])));
+        assert_eq!(small.features.len(), 2);
+        assert_eq!(small.features.radius_m.to_bits(), SMALL_RADIUS_M.to_bits());
+        let placed_small = small.features.placed[0].weight_at(&probe());
+        assert!(close(placed_small, 0.9894590910048422, 1e-12));
+        assert!(
+            (placed_small - 0.9545181883460445).abs() > 1e-3,
+            "this probe no longer separates the two placements: {placed_small}"
+        );
     }
 
     #[test]
@@ -1383,8 +1473,15 @@ mod tests {
     /// the radius, the callbacks or the resolution order. They exist because Python
     /// callers reach through `world.substrate`, which this port has no object for; see
     /// the label in the source above them.
+    ///
+    /// **"No second opinion about the radius" went unchecked until the small-radius half
+    /// below was added, and it was a claim this test could not fail on for as long as it
+    /// did.** Everything above the divider is a `shaped()` world, which is an Earth-radius
+    /// world, so `substrate::at(surface.radius_m, ..)` and `substrate::at(EARTH_RADIUS_M,
+    /// ..)` are the same call - and all four substrate-facing sites, `bottom_at` plus the
+    /// three forwarders, survived being handed the literal.
     #[test]
-    fn the_forwarders_are_the_free_functions_with_this_surfaces_callbacks() {
+    fn the_forwarders_are_the_free_functions_with_this_surfaces_callbacks_and_radius() {
         let surface = shaped();
         let point = base_sensitive_probe();
         let expected = crate::substrate::at(
@@ -1414,6 +1511,65 @@ mod tests {
         assert!(close(slope, 0.027502258572155713, 1e-9));
         assert!((surface.substrate_slope_at(&point, 600.0) - slope).abs() > 1e-3);
         assert!(close(plain(None).substrate_slope_at(&point, 60.0), 0.002738132207272028, 1e-9));
+
+        // ---- and the same four sites at a radius that is NOT Earth's -----------------
+        //
+        // The comparison is against the free functions driven by THIS world's callbacks at
+        // two different radii, so the only thing varying is the argument under test.
+        // Handing them `EARTH_RADIUS_M` moves the tangent frame the four slope probes are
+        // taken through, which moves the slope, which moves the rock fraction; that the two
+        // answers really are far apart is asserted before either is used as a witness.
+        let small = small_world(Some(FeatureInput::Loose(vec![bank(), channel()])));
+        let odd_point = small_world_probe();
+        let structural = |p: &SpherePoint| small.structural_m(p);
+        let tectonic = |p: &SpherePoint| small.tectonics.offset_m(p);
+        let at_own = crate::substrate::at(
+            small.radius_m, &odd_point, None, None, None, &structural, &tectonic,
+            &small.features,
+        )
+        .unwrap();
+        let at_earth = crate::substrate::at(
+            EARTH_RADIUS_M, &odd_point, None, None, None, &structural, &tectonic,
+            &small.features,
+        )
+        .unwrap();
+        assert!(
+            (at_own.rock - at_earth.rock).abs() > 0.1
+                && at_own.dominant() != at_earth.dominant(),
+            "the two radii answer alike here, so nothing below is a witness: {} {} / {} {}",
+            at_own.rock,
+            at_earth.rock,
+            at_own.dominant(),
+            at_earth.dominant()
+        );
+        for got in [
+            small.bottom_at(&odd_point).unwrap(),
+            small.substrate_at(&odd_point, None, None, None).unwrap(),
+        ] {
+            assert_eq!(got.sand.to_bits(), at_own.sand.to_bits());
+            assert_eq!(got.mud.to_bits(), at_own.mud.to_bits());
+            assert_eq!(got.rock.to_bits(), at_own.rock.to_bits());
+        }
+        assert_eq!(
+            small.substrate_dominant_at(&odd_point, None, None, None).unwrap(),
+            at_own.dominant()
+        );
+        let slope_own = crate::substrate::slope_at(
+            small.radius_m, &odd_point, crate::substrate::SLOPE_BASELINE_M, &structural,
+        );
+        let slope_earth = crate::substrate::slope_at(
+            EARTH_RADIUS_M, &odd_point, crate::substrate::SLOPE_BASELINE_M, &structural,
+        );
+        assert!(
+            (slope_own - slope_earth).abs() > 1e-3,
+            "the two radii give the same slope here: {slope_own} {slope_earth}"
+        );
+        assert_eq!(
+            small
+                .substrate_slope_at(&odd_point, crate::substrate::SLOPE_BASELINE_M)
+                .to_bits(),
+            slope_own.to_bits()
+        );
     }
 
     #[test]

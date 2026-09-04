@@ -1353,6 +1353,16 @@ fn surface_cache() -> &'static SurfaceCache {
 ///
 /// The `FeatureInput` branch is chosen here and nowhere else, so every binding below takes
 /// the same one for the same arguments.
+///
+/// **"Memoised" is the polite half. This LEAKS one `Surface` per distinct key and never
+/// evicts, so the process grows without bound in the number of distinct worlds asked for.**
+/// The leak is what buys the `&'static` the bindings return, and it is affordable for the
+/// use this crate has: a game runs one world and a conformance suite a handful, against a
+/// constructor that costs a 4,000-sample continentality calibration, so the alternative is
+/// paying that on every call. A `Surface` is tens of kilobytes, so a few hundred worlds is
+/// a few megabytes. **The studio is the case that breaks it** - sweeping seeds to preview
+/// worlds is exactly the shape that grows the map for ever - and when that arrives this
+/// wants an `Arc` and an eviction policy rather than a wider comment.
 fn cached_surface(
     world_seed: i64,
     radius_m: f64,

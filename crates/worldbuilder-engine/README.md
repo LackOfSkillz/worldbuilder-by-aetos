@@ -1916,17 +1916,56 @@ then `features_apply`, then `detail_amplitude_m`, then `detail_offset_m`, none o
 a `Surface` exists. A `Surface` that ran those stages in a different order, or handed one of
 them a different argument, fails on bits rather than on a tolerance.
 
-They are also the only thing here a perturbation cannot slip past. Multiplying the answer by
-`(1 + 2.220446049250313e-16)` -- one machine epsilon, the smallest change that is not a
-no-op -- is bit-visible at **650 of 650** points for the first invariant and **9,744 of
-9,750** checks for the second (the six survivors are values where the scaled result rounds
-straight back). Its worst absolute size is **2.842170943040401e-14 m** and
-**2.2737367544323206e-13 m** respectively, so it sits *inside* every bounded cross-language
-gate in this section -- `SURFACE_GRID_MAX_ABS_M` 5.0e-13, `SURFACE_SCATTER_MAX_ABS_M`
-8.0e-13, `SURFACE_BOTTOM_GRID_MAX_ABS` 1.2e-13 -- and roughly four orders inside the 1e-9
-relative bound the Rust unit tests use for transcendental-carrying paths. A tolerance test
-would not notice it. The raw-bit invariants kill it, each in the test that owns it, and for
-`elevation_m` in **only** that one.
+They are also the thing a perturbation has the hardest time slipping past. Multiplying the
+answer by `(1 + 2.220446049250313e-16)` -- one machine epsilon, the smallest change that is
+not a no-op -- is bit-visible at **650 of 650** points for the first invariant and **9,744
+of 9,750** checks for the second (the six survivors are values where the scaled result
+rounds straight back). Its worst absolute size is **2.842170943040401e-14 m** and
+**2.2737367544323206e-13 m** respectively, and roughly four orders inside the 1e-9 relative
+bound the Rust unit tests use for transcendental-carrying paths.
+
+**Which bounded cross-language gates it sits inside, enumerated -- because an earlier version
+of this paragraph claimed *every* one of them, listed three of the seven, and was wrong about
+one of the three.** Each row is the perturbation's own worst on THAT gate's own population,
+re-derived against the live Python at this commit:
+
+    gate                                 value    perturbation there      inside?
+    SURFACE_GRID_MAX_ABS_M               5.0e-13  2.2737367544323206e-13  yes
+    SURFACE_CENTRE_MAX_ABS_M             1.0e-14  2.2737367544323206e-13  NO -- 22.7x over
+    SURFACE_SCATTER_MAX_ABS_M            8.0e-13  9.094947017729282e-13   NO -- 1.14x over
+    SURFACE_BOTTOM_GRID_MAX_ABS          1.2e-13  1.5681900222830336e-15  yes
+    SURFACE_BOTTOM_CENTRE_MAX_ABS        3.0e-16  0.0                     yes
+    SURFACE_BOTTOM_SMALL_GRID_MAX_ABS    3.0e-13  8.104628079763643e-15   yes
+    SURFACE_BOTTOM_SMALL_CENTRE_MAX_ABS  4.0e-16  0.0                     yes
+
+The four `bottom_at` gates sit on **fractions** rather than on metres, and a machine epsilon
+of elevation barely moves a fraction, so the perturbation is comfortably inside them even at
+3.0e-16 -- at both centre populations it does not move a single bit. The two it crosses are
+elevation gates the earlier list omitted or mis-sized: the centres bound is the tightest in
+the section and **22x smaller than the perturbation's own stated worst**, and the scatter
+reaches deep-ocean and high-interior elevations an order larger than the demo coast's, so
+eps x elevation crosses 8.0e-13 there.
+
+**So "a tolerance test would not notice it" was false**, and here is what it should have
+said. Measured by applying the perturbation to `surface.rs`, forcing `maturin develop
+--release`, and running both suites by exit status:
+
+    perturbation             cargo                   pytest
+    structural_m x (1+eps)   101, 4 lib tests        1, 4 red
+    elevation_m x (1+eps)    101, exactly 1 lib test 1, 3 red
+
+The four are `test_surface_structural_is_the_shelf_bit_for_bit_with_nothing_placed`,
+`test_surface_elevation_is_structure_plus_detail_bit_for_bit`,
+`test_surface_structural_and_elevation_agree_at_the_feature_centres` and
+`test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults`; the three are the
+same list without the first. The last two of them are **tolerance tests**, not raw-bit ones.
+
+The raw-bit invariants do localise, and on the RUST side `elevation_m`'s perturbation kills
+exactly one test -- that half of the original claim holds and is worth keeping. What did not
+reproduce was the cross-language half. **The error was in the SAFE direction** -- the suite
+is stronger than the record said it was -- which is exactly why it survived three readings,
+and is the reason to state gates as a table with a measurement in every row rather than as a
+sentence with three examples in it.
 
 ### The seed: ONE `world_seed`, an `i64`, cast at exactly TWO of three sites
 
@@ -2080,11 +2119,13 @@ features adopted from a 1,234,567 m `Features` differ from the same 25 placed at
 by up to **82.39849253588422 m**, at **179 of 650** points. Making the branches converge
 would be a fix to a bug the reference implementation does not have.
 
-### The insensitive-argument trap, FIVE times, and the rule that answers it
+### The insensitive-argument trap, SIX times, and the rule that answers it
 
 **A probe can be sensitive to a stage and still be flat in one of that stage's own
-arguments.** This is the slice's most transferable lesson, and it turned up five times -- four
-found and fixed inside the slice, one still open.
+arguments.** This is the slice's most transferable lesson, and it turned up six times -- five
+inside the slice, and a sixth that the final whole-branch review found and this branch closes
+before the PR. The sixth is the one that generalises the other five, so it is worth reading
+even if the first five look familiar.
 
 1. & 2. **Two probes were constants.** At `deep_ocean` the shelf returns exactly `ABYSS_M`
    (weight 0.0, tectonic 0.0, elevation -4600.0 exactly) and the bottom composition is
@@ -2102,8 +2143,8 @@ found and fixed inside the slice, one still open.
    that *varies* both now closes it: a defaulted `land_fraction` is worth
    **1580.563522850889 m at 104 of 120** points, a defaulted `radius_m`
    **482.09015395480674 m at 59 of 120**. That corpus exists because the mutation survived
-   everything else, and `test_conformance.py`'s surface section now carries 13
-   `test_surface_*` tests rather than 12.
+   everything else, and `test_conformance.py`'s surface section carried 13
+   `test_surface_*` tests from that point rather than 12.
 5. **`plate_count` was a THIRD argument the corpus could not see. It is now closed the same
    way.** Defaulting `plate_count` to `DEFAULT_PLATE_COUNT` inside `cached_surface` and
    deselecting one test -- `test_surface_fields_round_trip_including_the_adopted_radius`,
@@ -2125,7 +2166,43 @@ found and fixed inside the slice, one still open.
    It also settles the case for `surface_fields`: `plate_count` comes back from that binding,
    which is the only *structural* witness a caller has that the argument arrived at all.
 
-**The answer is to mutate each ARGUMENT, not each stage.** Sixteen mutations were written
+6. **The same argument again, on paths nobody had crossed it with: `radius_m` reaching
+   `Features::new` and `substrate::*`.** Instance 4 closed `radius_m` at the constructor with
+   a 120-point global scatter, and the section then read as though the argument were done.
+   It was not. **Six** substitutions of the literal `crate::sphere::EARTH_RADIUS_M` for the
+   surface's own `radius_m` each passed `cargo test` AND the whole pytest suite: both live
+   arms of `Features::new`, and `substrate::at`, `substrate::dominant_at` and
+   `substrate::slope_at` at each of the four sites `surface.rs` calls them from.
+
+   Two `surface::tests` stayed green under the mutation that makes **their own names false**
+   -- `no_features_is_an_empty_features_at_the_world_radius` and
+   `loose_features_are_placed_at_the_world_radius` both asserted
+   `features.radius_m == EARTH_RADIUS_M` on a world built at Earth's radius, where "the
+   world's radius" and "Earth's radius" are the same number and the assertion cannot tell
+   them apart. The loose arm is not inert: the same feature placed at 1,234,567 m instead of
+   6,371,000 m is worth **82.39849253588422 m**.
+
+   **The cause is not an unvaried argument. It is an empty CROSS.** The scatter varies the
+   radius but calls only `surface_structural_m` and `surface_elevation_m`, so nothing that
+   varied it ever reached the feature placement or the substrate stage; and every world that
+   HAS features, in either language, was built at `EARTH_RADIUS_M`. (radius varied) and
+   (substrate path exercised) were each true somewhere and never true together.
+
+   Closed by filling that cell in both languages: `test_conformance.py` gains
+   `test_surface_bottom_at_agrees_at_a_world_radius_that_is_not_earths`, a 3,000,000 m world
+   with loose features over the same 650 points and its own two measured bounds, and
+   `surface.rs` gains a `small_world` fixture that `the_scalars_are_kept_exactly_as_given`,
+   both feature tests and the forwarder test now use. All six mutations were re-applied
+   afterwards: every one goes red, and a control mutation proved the mutant wheel was the one
+   loaded. `Shelf::new`'s radius still survives and is still **inert** rather than
+   unwitnessed -- `Shelf::radius_m` is stored and never read, and `shelf.rs:277` says so.
+
+**The answer is to mutate each ARGUMENT, and to mutate it ON EACH PATH.** Instance 6 is the
+final form of the rule, and it is the half the first five did not state: **an argument is
+witnessed on a PATH, not in a codebase.** Closing it at one entry point reads as closing it
+everywhere and does not. What has to be checked is the CROSS of (argument varied x path
+exercised), one cell at a time; a census that lists arguments down one axis has only done
+half the table. Sixteen mutations were written
 into the source on purpose and run. Fifteen fail, each named in the test that catches it.
 **One survives, and it survives by design rather than by a flat probe**: handing
 `detail.amplitude_m` the point of somewhere else changes nothing, because `amplitude_m` never
@@ -2212,27 +2289,29 @@ two seed tests, the invariants in
 **Every count here was verified by running the suites and checking exit status, not copied
 from a report -- including the test counts.** `cargo test -p worldbuilder-engine` exits 0 at
 **259** tests (249 lib, of which 27 are `surface::tests`; 4 `blake2_bytes.rs`; 6 `no_std_math`
-guard; 0 doc-tests), and `--release` gives the same 259. `pytest tests/` exits 0 at **389** --
-394 before the spike was removed, less its 5 -- with the engine *required* via
-`WORLDBUILDER_REQUIRE_ENGINE=1` rather than skipped, since a skipped conformance suite reports
-green while comparing nothing at all. Of those, `test_conformance.py` is **149** (13 of them
-`test_surface_*`) and `test_performance.py` is **8**.
+guard; 0 doc-tests), and `--release` gives the same 259. `pytest tests/` exits 0 at **390** --
+with the engine *required* via `WORLDBUILDER_REQUIRE_ENGINE=1` rather than skipped, since a
+skipped conformance suite reports green while comparing nothing at all. Of those,
+`test_conformance.py` is **150** (14 of them `test_surface_*`) and `test_performance.py` is
+**8**. The 390th is
+`test_surface_bottom_at_agrees_at_a_world_radius_that_is_not_earths`, added for instance 6 of
+the trap above; the count was 389 for the length of the slice proper.
 
 **A TEST COUNT MUST NAME ITS ENVIRONMENT, the same way a figure must name its population,
 its method's parameters, its host and -- as this slice learned the hard way -- which mutation
 it measured.** Every pytest count quoted during this slice was given without saying whether
 `WORLDBUILDER_REQUIRE_ENGINE` was set, which makes those counts ambiguous in exactly the way
-the reordering figure was: "389 passed" with the guard set and "389 passed" without it are
+the reordering figure was: "390 passed" with the guard set and "390 passed" without it are
 different claims, and only one of them is evidence that anything was compared. The skip
 mechanism itself is correct and says so in its own comment; what was missing was the habit of
-naming it. Quote counts as *"389 passed, `WORLDBUILDER_REQUIRE_ENGINE=1`"* or do not quote
+naming it. Quote counts as *"390 passed, `WORLDBUILDER_REQUIRE_ENGINE=1`"* or do not quote
 them.
 
-**And 13 `test_surface_*` is not 13 conformance tests.** One of them --
+**And 14 `test_surface_*` is not 14 conformance tests.** One of them --
 `test_surface_the_worlds_and_populations_catch_different_reorderings` -- makes **zero engine
 calls**: it asserts what the Python reference's own corpus can and cannot see, so no defect
 in the port can make it fail. That is deliberate and it earns its place, but the conformance
-surface of this section is **12**, not 13. The test says so in its own docstring now.
+surface of this section is **13**, not 14. The test says so in its own docstring now.
 
 `test_performance.py` was repaired earlier in this slice and is **no longer load-sensitive**:
 it counts noise evaluations instead of timing them, because the two timing distributions
