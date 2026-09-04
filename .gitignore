@@ -10,28 +10,32 @@ dist/
 .idea/
 .vscode/
 
-# diagnostic renders
-*.ppm
-plates.png
-margins.png
-motion.png
-land-*.png
-base.png
-tectonic.png
-macro.png
-harbour-*.png
-bottom*.png
-grid-*.png
-grid-*.ppm
-fine-*.png
-fine-*.ppm
-look-*.png
-look-*.ppm
-patch.*
-chartlook.*
-chart-*.png
-relief.png
-safety*.png
+# Diagnostic renders. ANCHORED to the repository root with a leading slash, because the
+# debug tools write them here and nowhere else. Unanchored, these match at any depth: the
+# unanchored `land-*.png` silently swallowed a vendored Cesium asset
+# (viewer/public/vendor/cesium/Assets/Textures/maki/land-use.png), and a 394-of-395 vendor
+# would have committed clean and passed unnoticed. Keep the slashes.
+/*.ppm
+/plates.png
+/margins.png
+/motion.png
+/land-*.png
+/base.png
+/tectonic.png
+/macro.png
+/harbour-*.png
+/bottom*.png
+/grid-*.png
+/grid-*.ppm
+/fine-*.png
+/fine-*.ppm
+/look-*.png
+/look-*.ppm
+/patch.*
+/chartlook.*
+/chart-*.png
+/relief.png
+/safety*.png
 
 /target/
 crates/*/target/
