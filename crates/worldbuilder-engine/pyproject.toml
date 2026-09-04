@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "worldbuilder-engine"
+version = "0.0.1"
+description = "Rust conformance engine for worldbuilder-by-aetos. Not installed standalone."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.maturin]
+# PyO3 (bindings.rs, the #[pymodule] in lib.rs) is behind this optional Cargo feature --
+# see crates/worldbuilder-engine/Cargo.toml. Without it maturin builds a wheel with no
+# Python extension module in it at all.
+features = ["python"]

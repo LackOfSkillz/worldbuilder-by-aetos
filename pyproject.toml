@@ -22,8 +22,14 @@ requires-python = ">=3.10"
 # docs/design/2026-09-02-mark-2-world-studio.md, section 4.3.
 dependencies = []
 
+# Reference package only. The engine crate ships its own distribution now
+# (crates/worldbuilder-engine/pyproject.toml: name "worldbuilder-engine", maturin
+# backend), so `pip install -e .` here and `maturin develop` there no longer target the
+# same dist-info and evict each other's files from it. See tests/test_installation.py,
+# which is the regression test for that collision.
 [tool.setuptools.packages.find]
 include = ["worldbuilder*"]
+exclude = ["worldbuilder_engine*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

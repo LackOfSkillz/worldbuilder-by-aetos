@@ -212,29 +212,31 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "maturin==1.15.0" pytest
 
-      # The standing gap, made visible by CI rather than papered over.
+      # The standing gap this used to be (fixed by the identity slice's Task 1, kept here so
+      # the next person can see what it was): pyproject.toml declared setuptools as its build
+      # backend while the extension was built by maturin, and BOTH BACKENDS PRODUCED THE SAME
+      # DISTRIBUTION NAME. maturin walked up to the root pyproject.toml, read
+      # `[project] name = "worldbuilder-by-aetos"`, and built a wheel of that name containing
+      # only `worldbuilder_engine` -- so installing it UNINSTALLED a prior `pip install -e .`
+      # and took the pure-Python `worldbuilder/` package with it. The first CI run did exactly
+      # that and collected 14 `ModuleNotFoundError: No module named 'worldbuilder'` errors.
+      # tests/test_installation.py is the regression test for this: it imports `worldbuilder`
+      # from a subprocess whose cwd is outside the repo, so the "pytest runs from the repo
+      # root and sys.path papers over a missing install" crutch cannot hide the bug returning.
       #
-      # pyproject.toml declares setuptools as its build backend while the extension is built
-      # by maturin. That is already recorded as "the build is not reproducible from project
-      # metadata". CI found it is worse than that: BOTH BACKENDS PRODUCE THE SAME
-      # DISTRIBUTION NAME. maturin walks up to the root pyproject.toml, reads
-      # `[project] name = "worldbuilder-by-aetos"`, and builds
-      # `worldbuilder_by_aetos-0.1.0-cp311-...whl` containing only `worldbuilder_engine` --
-      # so installing it UNINSTALLS a prior `pip install -e .` and takes the pure-Python
-      # `worldbuilder/` package with it. The first CI run did exactly that and collected 14
-      # `ModuleNotFoundError: No module named 'worldbuilder'` errors.
-      #
-      # This is not a CI artefact. The same clobber has already happened in the local .venv:
-      # its only worldbuilder_by_aetos-0.1.0.dist-info says `Generator: maturin (1.15.0)`, and
-      # `import worldbuilder` there succeeds ONLY when the interpreter starts in the repo
-      # root. Nobody noticed because pytest is always run from the repo root.
-      #
-      # So this job does not install the reference package at all -- it imports it from the
-      # working tree, which is what has actually been happening all along. `python -m pytest`
-      # rather than `pytest` is load-bearing: `-m` puts the current directory on sys.path.
-      # Fixing the collision properly means giving the extension its own distribution name or
-      # moving the project to maturin outright, and that is its own slice.
-      - name: Build the engine wheel (maturin, not the declared backend)
+      # The fix: crates/worldbuilder-engine/pyproject.toml gives the extension its own
+      # distribution name (`worldbuilder-engine`, maturin backend), so the two installs no
+      # longer share a dist-info. Order matters below -- `pip install -e .` first, so the
+      # reference package's dist-info exists before maturin adds the engine's alongside it,
+      # not on top of it.
+      - name: Install the reference package (editable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e . --no-deps
+          python -c "import worldbuilder; print('reference imported from', worldbuilder.__file__)"
+
+      - name: Build the engine wheel (maturin, its own distribution now)
         shell: bash
         run: |
           set -euo pipefail
@@ -273,16 +275,20 @@ jobs:
       # statements that must agree -- and the script fails hard if either is absent, rather
       # than matching nothing and calling it clean.
       #
-      # 390 = 150 in test_conformance.py + 240 across the other thirteen files. NOTE: the
-      # Task 2 report reads "390 conformance, 240 elsewhere"; that is a misreading of its own
-      # run -- 390 is the WHOLE suite. Re-derived here from `--collect-only -q`.
-      - name: Assert the suite -- 390 tests, 150 of them conformance
+      # 391 = 150 in test_conformance.py + 240 across the other thirteen pre-existing files +
+      # 1 in tests/test_installation.py (added by the identity slice's Task 1; it needs a
+      # subprocess with a different cwd, so it could not be an ordinary unit test, and it
+      # joins this suite rather than living elsewhere because this count gate is the thing
+      # that would otherwise let it silently stop running). NOTE: the Task 2 report reads
+      # "390 conformance, 240 elsewhere"; that is a misreading of its own run -- 390 was the
+      # WHOLE suite before this file existed. Re-derived here from `--collect-only -q`.
+      - name: Assert the suite -- 391 tests, 150 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 390 --expect-file tests/test_conformance.py=150
+            --expect-total 391 --expect-file tests/test_conformance.py=150
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
