@@ -33,6 +33,68 @@ pub const COAST_M: f64 = 35.0;
 pub const INTERIOR_M: f64 = 80.0;
 pub const MOUNTAIN_M: f64 = 150.0;
 
+/// The ten values that decide how rough a world is, broken out so a caller who wants a
+/// different world can ask for one without touching what "canonical" means.
+///
+/// `Detail::new` takes `Option<ReliefParams>`, following the house pattern already on
+/// `Surface::new`'s `features: Option<FeatureInput>`: `None` is the canonical path, not an
+/// implicit `Default::default()` -- this codebase deliberately rejects defaults nobody
+/// chose (see `stream.rs::BuildParams`). `ReliefParams::canonical()` is the only way to
+/// get today's nine constants (plus the coarsest wavelength, kept as the other end of the
+/// same schedule) as a value, and every field is commented with the constant or literal it
+/// was measured from.
+///
+/// **This task adds the block. It does not change what it defaults to.** A changed
+/// default here is a change to `worldbuilder/terrain/detail.py`'s constants, which the
+/// conformance suite in `tests/test_conformance.py` treats as ground truth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReliefParams {
+    /// `CANONICAL_WAVELENGTH_M`: the finest octave; the loop bound.
+    pub canonical_wavelength_m: f64,
+    /// `COARSEST_WAVELENGTH_M`: the coarsest detail band.
+    pub coarsest_wavelength_m: f64,
+    /// `ABYSSAL_M`: roughness in deep water.
+    pub abyssal_m: f64,
+    /// `SHELF_M`: roughness over the continental shelf.
+    pub shelf_m: f64,
+    /// `COAST_M`: roughness right at the shoreline.
+    pub coast_m: f64,
+    /// `INTERIOR_M`: roughness on ordinary land.
+    pub interior_m: f64,
+    /// `MOUNTAIN_M`: roughness at the tops.
+    pub mountain_m: f64,
+    /// The `0.7` in `amplitude_m`'s quieting term: how much deliberate deep structure
+    /// can suppress roughness, at its strongest.
+    pub quieting_strength: f64,
+    /// The `1200.0` in `amplitude_m`'s quieting term: the tectonic-offset scale over
+    /// which the quieting ramps in.
+    pub quieting_scale_m: f64,
+    /// The `0.5` in `plan`'s `share *= 0.5`: how much amplitude each octave keeps of the
+    /// one before it.
+    pub octave_persistence: f64,
+}
+
+impl ReliefParams {
+    /// Exactly today's nine values (plus the coarsest wavelength), each traceable to the
+    /// module constant or literal it was measured from. Building a `Detail` with `None`
+    /// and one with `Some(ReliefParams::canonical())` must produce bit-identical output --
+    /// see `surface.rs`'s `relief_none_matches_relief_some_canonical`.
+    pub fn canonical() -> Self {
+        Self {
+            canonical_wavelength_m: CANONICAL_WAVELENGTH_M,
+            coarsest_wavelength_m: COARSEST_WAVELENGTH_M,
+            abyssal_m: ABYSSAL_M,
+            shelf_m: SHELF_M,
+            coast_m: COAST_M,
+            interior_m: INTERIOR_M,
+            mountain_m: MOUNTAIN_M,
+            quieting_strength: 0.7,
+            quieting_scale_m: 1200.0,
+            octave_persistence: 0.5,
+        }
+    }
+}
+
 /// `max(0.0, min(1.0, fraction))` then the smoothstep `x * x * (3.0 - 2.0 * x)`, in the
 /// Python's operand order.
 pub fn smooth(fraction: f64) -> f64 {
@@ -56,13 +118,19 @@ pub struct Detail {
     radius_m: f64,
     noise: Noise,
     bands: Vec<Band>,
+    relief: ReliefParams,
 }
 
 impl Detail {
-    pub fn new(world_seed: u64, radius_m: f64) -> Self {
+    /// `relief`: `None` for canonical -- today's nine values (plus the coarsest
+    /// wavelength), byte-for-byte what `ReliefParams::canonical()` returns. `Some(params)`
+    /// for a caller-chosen block. Resolved once here rather than re-checked on every call,
+    /// so `amplitude_m` and `plan` never see the `Option` at all.
+    pub fn new(world_seed: u64, radius_m: f64, relief: Option<ReliefParams>) -> Self {
+        let relief = relief.unwrap_or_else(ReliefParams::canonical);
         let noise = Noise::new(world_seed, 0x5EABED);
-        let bands = Self::plan(radius_m);
-        Self { radius_m, noise, bands }
+        let bands = Self::plan(radius_m, &relief);
+        Self { radius_m, noise, bands, relief }
     }
 
     pub fn bands(&self) -> &[Band] {
@@ -75,11 +143,11 @@ impl Detail {
     /// one before, and the shares are normalised so that the total amplitude is what the
     /// caller asked for however many bands there happen to be - otherwise adding an octave
     /// would quietly make every world rougher.
-    fn plan(radius_m: f64) -> Vec<Band> {
+    fn plan(radius_m: f64, relief: &ReliefParams) -> Vec<Band> {
         let mut raw: Vec<(f64, f64, f64)> = Vec::new();
-        let mut wavelength = COARSEST_WAVELENGTH_M;
+        let mut wavelength = relief.coarsest_wavelength_m;
         let mut share = 1.0;
-        while wavelength >= CANONICAL_WAVELENGTH_M {
+        while wavelength >= relief.canonical_wavelength_m {
             // Wavelength in metres to cycles per unit of noise space on the unit sphere.
             // Transcribed as the Python's four operations, in order -- not simplified to
             // radius_m / wavelength. The two forms agree at Earth's radius for every
@@ -89,7 +157,7 @@ impl Detail {
                 / (2.0 * std::f64::consts::PI);
             raw.push((wavelength, frequency, share));
             wavelength *= 0.5;
-            share *= 0.5;
+            share *= relief.octave_persistence;
         }
         let sum: f64 = raw.iter().map(|(_, _, s)| *s).sum();
         // `sum(...) or 1.0` in Python: 0.0 and -0.0 are falsy, NaN is truthy. `== 0.0`
@@ -126,14 +194,15 @@ impl Detail {
         let high = smooth((elevation_m - 200.0) / 900.0);
         let near_shore = smooth(1.0 - elevation_m.abs() / 350.0);
 
-        let mut rough = deep * ABYSSAL_M
-            + (1.0 - deep) * (1.0 - high) * INTERIOR_M
-            + high * MOUNTAIN_M;
-        rough = rough * (1.0 - near_shore) + COAST_M * near_shore;
-        rough = rough * (1.0 - shelf_weight) + SHELF_M * shelf_weight;
+        let mut rough = deep * self.relief.abyssal_m
+            + (1.0 - deep) * (1.0 - high) * self.relief.interior_m
+            + high * self.relief.mountain_m;
+        rough = rough * (1.0 - near_shore) + self.relief.coast_m * near_shore;
+        rough = rough * (1.0 - shelf_weight) + self.relief.shelf_m * shelf_weight;
 
         // Deliberate deep structure keeps its shape.
-        let quieted = 1.0 - 0.7 * smooth(tectonic_m.abs() / 1200.0);
+        let quieted = 1.0
+            - self.relief.quieting_strength * smooth(tectonic_m.abs() / self.relief.quieting_scale_m);
         rough * quieted
     }
 
@@ -217,7 +286,7 @@ mod tests {
         // Measured from the Python, not computed here: the loop halves the wavelength
         // from COARSEST_WAVELENGTH_M while it stays at or above CANONICAL_WAVELENGTH_M,
         // and 312.5 is the last that qualifies -- 156.25 is below 250.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let want: [(f64, f64); 7] = [
             (20000.0, 318.55),
             (10000.0, 637.1),
@@ -239,7 +308,7 @@ mod tests {
         // "otherwise adding an octave would quietly make every world rougher". The raw
         // shares halve from 1.0, so they sum to 2 - 0.5^6; dividing through gives 1.0,
         // and it lands exactly on 1.0 for this table -- measured, not assumed.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let total: f64 = d.bands().iter().map(|b| b.share).sum();
         assert_eq!(total, 1.0, "shares must normalise to exactly one, got {total}");
     }
@@ -272,7 +341,7 @@ mod tests {
         //   rough = rough*(1.0-0.0) + SHELF_M*0.0 = rough (shelf_weight is 0.0).
         //   quieted: abs(0.0)/1200 = 0.0, smooth(0.0) = 0.0, quieted = 1.0 - 0.0 = 1.0.
         //   result = ABYSSAL_M * 1.0 = ABYSSAL_M exactly.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let got = d.amplitude_m(&anywhere(), -6000.0, 0.0, 0.0);
         assert_eq!(got, ABYSSAL_M);
     }
@@ -292,7 +361,7 @@ mod tests {
         //   rough = rough*(1.0-0.0) + SHELF_M*0.0 = rough (shelf_weight is 0.0).
         //   quieted = 1.0 - 0.7*smooth(0.0) = 1.0.
         //   result = MOUNTAIN_M * 1.0 = MOUNTAIN_M exactly.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let got = d.amplitude_m(&anywhere(), 2000.0, 0.0, 0.0);
         assert_eq!(got, MOUNTAIN_M);
     }
@@ -306,7 +375,7 @@ mod tests {
         //   independent of what `rough` was going in.
         //   tectonic_m = 0.0, so quieted = 1.0 as before.
         //   result = SHELF_M * 1.0 = SHELF_M exactly.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let got = d.amplitude_m(&anywhere(), -6000.0, 1.0, 0.0);
         assert_eq!(got, SHELF_M);
     }
@@ -320,7 +389,7 @@ mod tests {
         //   In f64, 1.0 - 0.7 does not land on 0.3 -- it rounds to 0.30000000000000004
         //   (0x1.3333333333334p-2). result = 55.0 * (1.0 - 0.7), computed here the same
         //   way the formula computes it, not read back from the implementation.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let got = d.amplitude_m(&anywhere(), -6000.0, 0.0, 5000.0);
         let expected: f64 = ABYSSAL_M * (1.0 - 0.7);
         assert_eq!(got, expected);
@@ -332,7 +401,7 @@ mod tests {
         // passing zero gets every octave, not a division by zero. A Rust Option port
         // diverges here unless Some(0.0) is special-cased -- this is the test that
         // catches it, and it must be bit-exact rather than approximate.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         let canonical = d.offset_m(&p, 100.0, None);
         let zero = d.offset_m(&p, 100.0, Some(0.0));
@@ -343,7 +412,7 @@ mod tests {
     fn a_resolution_of_negative_zero_behaves_exactly_like_canonical() {
         // -0.0 is falsy in Python too, so Some(-0.0) must take the canonical path
         // exactly as Some(0.0) and None do.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         let canonical = d.offset_m(&p, 100.0, None);
         let neg_zero = d.offset_m(&p, 100.0, Some(-0.0));
@@ -358,7 +427,7 @@ mod tests {
         // languages because the comparisons that drive the clamp are false against NaN.
         // So the result matches canonical bit-for-bit, for a different reason than the
         // zero cases -- guarded here rather than merely asserted in a comment.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         let canonical = d.offset_m(&p, 100.0, None);
         let nan_res = d.offset_m(&p, 100.0, Some(f64::NAN));
@@ -367,7 +436,7 @@ mod tests {
 
     #[test]
     fn zero_amplitude_returns_exactly_zero() {
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         assert_eq!(d.offset_m(&p, 0.0, None), 0.0);
         assert_eq!(d.offset_m(&p, -1.0, None), 0.0);
@@ -377,7 +446,7 @@ mod tests {
     fn a_coarse_resolution_drops_the_fine_octaves() {
         // At a sample spacing of 5 km, an octave of 312.5 m is far below Nyquist and
         // must contribute nothing, so the coarse answer differs from the canonical one.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         let canonical = d.offset_m(&p, 100.0, None);
         let coarse = d.offset_m(&p, 100.0, Some(5000.0));
@@ -436,7 +505,7 @@ mod tests {
         // step (`if frac > 0.0 { 1.0 } else { 0.0 }`) and rerunning this test failed it
         // (max_step ~25.7 against this bound of ~10.1); reverting the mutation passed it
         // again (max_step ~0.96) -- see task-3-report.md for the numbers from that run.
-        let d = Detail::new(20260831, EARTH_RADIUS_M);
+        let d = Detail::new(20260831, EARTH_RADIUS_M, None);
         let p = SpherePoint::from_latlon(17.0, 43.0);
         let share_of_coarsest_band = d.bands()[0].share;
         let bound = 0.2 * share_of_coarsest_band * 100.0; // amplitude_m = 100.0

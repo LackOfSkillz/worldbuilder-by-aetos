@@ -29,7 +29,7 @@
 //! `elevation_m` and `bottom_at` arrive in later tasks, as do the bindings.
 
 use crate::continentality::Continentality;
-use crate::detail::Detail;
+use crate::detail::{Detail, ReliefParams};
 use crate::features::{Feature, Features};
 use crate::generation::plates_for;
 use crate::plates::PlateSet;
@@ -114,6 +114,12 @@ impl Surface {
     /// plate_count: Python's `DEFAULT_PLATE_COUNT`.
     /// land_fraction: Python's `LAND_FRACTION`.
     /// features: `None`, loose features, or a `Features` adopted verbatim.
+    /// relief: `None` for canonical roughness -- `Detail`'s nine constants (plus the
+    /// coarsest wavelength) exactly as `worldbuilder/terrain/detail.py` has them -- or
+    /// `Some(params)` for a caller-chosen `ReliefParams`. Follows the same `Option`
+    /// pattern as `features` immediately above: an explicit `None` meaning *canonical* is
+    /// a different thing from an implicit `Default::default()`, and this codebase
+    /// deliberately rejects defaults nobody chose.
     ///
     /// **The seed reaches three constructors and they do not agree on what it is.** This
     /// is the one thing in this file that a reviewer should not skim. `plates_for` keys a
@@ -130,6 +136,7 @@ impl Surface {
         plate_count: usize,
         land_fraction: f64,
         features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
     ) -> Self {
         let plates = plates_for(world_seed, plate_count);
         // `Noise::new` mixes first and masks second (`noise.py:38`, `h = (h ^ (seed * K)) &
@@ -142,7 +149,7 @@ impl Surface {
         let land = Continentality::new(noise_seed, radius_m, land_fraction);
         let tectonics = Tectonics::new(plates.clone(), land, radius_m);
         let shelf = Shelf::new(tectonics.clone(), land, radius_m);
-        let detail = Detail::new(noise_seed, radius_m);
+        let detail = Detail::new(noise_seed, radius_m, relief);
         // Transcribed from `surface.py`'s three-way branch, and the last arm is the one
         // worth reading twice: a pre-built `Features` is adopted **exactly as it stands,
         // including its own `radius_m`**. Python does not re-place it and does not
@@ -465,7 +472,7 @@ mod tests {
     }
 
     fn plain(features: Option<FeatureInput>) -> Surface {
-        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features)
+        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None)
     }
 
     /// A world radius that is not Earth's, and the reason it had to be added.
@@ -491,7 +498,120 @@ mod tests {
     const SMALL_RADIUS_M: f64 = 3_000_000.0;
 
     fn small_world(features: Option<FeatureInput>) -> Surface {
-        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features)
+        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None)
+    }
+
+    /// Task 1's whole claim: a `Surface` built with `relief: None` and one built with
+    /// `relief: Some(ReliefParams::canonical())` must be indistinguishable, not merely
+    /// close. Compared as bit patterns, never values, never a tolerance -- this module's
+    /// claim is exactness, and a tolerance here would be meaningless.
+    ///
+    /// **Population**: a 37 x 73 lat/lon grid (every 5 degrees, poles to poles and around),
+    /// 2,701 points, each read at two resolutions (`None` -- the canonical arm of
+    /// `Detail::offset_m` -- and `Some(5_000.0)` -- the fade arm, so the branch that
+    /// actually walks `resolution_m` is exercised too, not only the one that short-
+    /// circuits it), for 5,402 comparisons. **Method**: `Surface::elevation_m` (the full
+    /// structure-plus-detail pipeline), `f64::to_bits` equality, both `Surface`s built from
+    /// the same `SEED` at `EARTH_RADIUS_M` with no features. **Host**: this port, seed -5.
+    #[test]
+    fn relief_none_matches_relief_some_canonical_bit_for_bit() {
+        let with_none = plain(None);
+        let with_canonical = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            Some(ReliefParams::canonical()),
+        );
+
+        let mut compared = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(5_000.0_f64)] {
+                    let a = with_none.elevation_m(&p, resolution);
+                    let b = with_canonical.elevation_m(&p, resolution);
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "None and Some(canonical()) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {b}"
+                    );
+                    compared += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 37 * 73 * 2, "grid population changed -- update the doc comment");
+    }
+
+    /// **The discrimination half of the test above.** A one-ULP nudge to
+    /// `ReliefParams::canonical()`'s `mountain_m` (the field most probes above will reach
+    /// -- Everest-adjacent elevations are the norm on a real planet) must move
+    /// `elevation_m` measurably, proving `relief_none_matches_relief_some_canonical_bit_
+    /// for_bit` is capable of failing rather than vacuously true. This assertion is its own
+    /// -- it does not share a `Surface` or a probe with any other test in this file, so
+    /// nothing else can fire first and hide a broken assertion behind an unrelated one.
+    ///
+    /// Manually verified the stronger claim too, and did not leave the mutation in the
+    /// tree: temporarily perturbing `ReliefParams::canonical()`'s `mountain_m` field itself
+    /// by one ULP (`f64::from_bits(150.0f64.to_bits() + 1)`) and rerunning
+    /// `relief_none_matches_relief_some_canonical_bit_for_bit` turned it red at the first
+    /// mountainous grid point, with the exact diverging lat/lon/resolution in the failure
+    /// message; reverting the perturbation turned it green again. See task-1-report.md.
+    #[test]
+    fn a_one_ulp_relief_perturbation_moves_the_answer() {
+        let canonical = ReliefParams::canonical();
+        let mut nudged = canonical;
+        nudged.mountain_m = f64::from_bits(canonical.mountain_m.to_bits() + 1);
+        assert_ne!(nudged.mountain_m, canonical.mountain_m, "the nudge must be a real ULP");
+
+        let world_canonical = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            Some(canonical),
+        );
+        let world_nudged = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            Some(nudged),
+        );
+
+        // Scan the same grid the bit-identity test walks, rather than guessing a single
+        // point is mountainous enough for `mountain_m` to matter there -- this asserts
+        // only that at least one of 2,701 points diverges, which any real planet's high
+        // ground guarantees without needing to know in advance where the mountains are.
+        let mut found_divergence = false;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 && !found_divergence {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a = world_canonical.elevation_m(&p, None);
+                let b = world_nudged.elevation_m(&p, None);
+                if a.to_bits() != b.to_bits() {
+                    found_divergence = true;
+                    break;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert!(
+            found_divergence,
+            "a one-ULP relief perturbation must be visible in elevation_m somewhere on the \
+             planet, or the bit-identity test above cannot be trusted to fail"
+        );
     }
 
     /// Where the small world's substrate separates the two radii, found by scanning a
@@ -684,7 +804,7 @@ mod tests {
         assert_eq!(surface.world_seed, SEED);
         assert_eq!(surface.radius_m.to_bits(), EARTH_RADIUS_M.to_bits());
         assert_eq!(surface.plates.len(), DEFAULT_PLATE_COUNT);
-        let odd = Surface::new(7, 1234567.0, 5, 0.5, None);
+        let odd = Surface::new(7, 1234567.0, 5, 0.5, None, None);
         assert_eq!(odd.world_seed, 7);
         assert_eq!(odd.radius_m.to_bits(), 1234567.0f64.to_bits());
         assert_eq!(odd.plates.len(), 5);
@@ -700,7 +820,7 @@ mod tests {
         // The band WAVELENGTHS are a fixed table and carry nothing about the radius; the
         // FREQUENCY each is turned into is `2 pi radius / wavelength / (2 pi)`, so that is
         // where a defaulted radius shows, and it shows in every band rather than one.
-        let earth_detail = Detail::new(7u64, EARTH_RADIUS_M);
+        let earth_detail = Detail::new(7u64, EARTH_RADIUS_M, None);
         assert_eq!(odd.detail.bands().len(), earth_detail.bands().len());
         assert!(
             odd.detail

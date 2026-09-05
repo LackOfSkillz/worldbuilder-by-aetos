@@ -304,25 +304,43 @@ jobs:
           # assertion beside it, so it is not shadowed by a sibling. Re-derived by `cargo test
           # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration,
           # cross-checked through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, Task 1 (relief-amplitude parameter block): 506/506/508/542/544 ->
+          # 508/508/510/544/546. `detail.rs` gained `ReliefParams` and `surface.rs` gained two
+          # unconditionally-compiled tests
+          # (`relief_none_matches_relief_some_canonical_bit_for_bit`,
+          # `a_one_ulp_relief_perturbation_moves_the_answer`) -- no new `#[cfg]` and no
+          # `#[ignore]`, so all five rows move by +2 uniformly and `expect_ignored` stays 5.
+          # `relief_none_matches_relief_some_canonical_bit_for_bit` is the task's whole claim
+          # (a `Surface` built with `relief: None` and one built with
+          # `relief: Some(ReliefParams::canonical())` must be bit-identical over a 2,701-point
+          # lat/lon grid at two resolutions); `a_one_ulp_relief_perturbation_moves_the_answer`
+          # is its own, separate assertion proving that claim is falsifiable, so neither test
+          # shadows the other. The bit-identity test was also verified red: task-1-report.md
+          # records perturbing `Detail::new`'s `None` resolution by one ULP of `mountain_m`
+          # (leaving `ReliefParams::canonical()` itself untouched) and rerunning it, which
+          # failed at the first diverging grid point; reverting turned it green again. Re-
+          # derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
+          # per configuration, cross-checked through `assert_counts.py cargo-list` itself.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 506
+            expect: 508
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 506
+            expect: 508
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 508
+            expect: 510
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 542
+            expect: 544
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 544
+            expect: 546
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

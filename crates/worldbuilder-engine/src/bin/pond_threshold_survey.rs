@@ -70,7 +70,7 @@ const CANDIDATE_THRESHOLDS_M2: &[f64] = &[
 fn build_graph(count: u32) -> StreamGraph {
     let world_seed = SEED as u64; // cast-ok: two's-complement reinterpretation, as Surface::new makes
     let sampling = sample_nodes(world_seed, count, EARTH_RADIUS_M).expect("a node set");
-    let field = Surface::new(SEED, EARTH_RADIUS_M, 22, 0.29, None);
+    let field = Surface::new(SEED, EARTH_RADIUS_M, 22, 0.29, None, None);
     let heights: Vec<f64> =
         sampling.positions.iter().map(|p: &SpherePoint| field.elevation_m(p, None)).collect();
     StreamGraph::build(

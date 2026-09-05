@@ -79,7 +79,7 @@ fn harbour_surface() -> Surface {
             substrate: None,
         });
     }
-    Surface::new(SEED, RADIUS_M, 12, LAND, Some(FeatureInput::Loose(features)))
+    Surface::new(SEED, RADIUS_M, 12, LAND, Some(FeatureInput::Loose(features)), None)
 }
 
 // ----------------------------------------------------------------- identity and memory
@@ -458,7 +458,7 @@ fn wb_erosion_run_succeeds_on_a_valid_call_and_writes_finite_heights() {
 #[test]
 fn elevation_and_structural_are_the_engine_verbatim_bit_for_bit() {
     let h = plain_world();
-    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None);
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None);
     for (lat, lon) in [(12.0, 34.0), (-63.5, -170.25), (0.0, 0.0), (89.9, 179.9), (-89.9, -179.9)] {
         let p = SpherePoint::from_latlon(lat, lon);
         assert_eq!(
@@ -480,7 +480,7 @@ fn elevation_and_structural_are_the_engine_verbatim_bit_for_bit() {
 #[test]
 fn the_resolution_sentinel_selects_canonical_ground_truth_from_anything_nonpositive() {
     let h = plain_world();
-    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None);
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None);
     let p = SpherePoint::from_latlon(12.0, 34.0);
     let canonical = surface.elevation_m(&p, None);
     let resolved = surface.elevation_m(&p, Some(RES_M));
@@ -501,7 +501,7 @@ fn the_resolution_sentinel_selects_canonical_ground_truth_from_anything_nonposit
 #[test]
 fn bottom_at_writes_three_fractions_and_says_ok() {
     let h = plain_world();
-    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None);
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None);
     let mut out = [0.0f64; 3];
     assert_eq!(wb_bottom_at(h, 12.0, 34.0, out.as_mut_ptr()), WB_OK);
     let truth = surface.bottom_at(&SpherePoint::from_latlon(12.0, 34.0)).expect("ok");
@@ -539,6 +539,7 @@ fn bottom_at_forwards_an_unknown_substrate_as_its_own_status() {
         12,
         LAND,
         Some(FeatureInput::Built(Features::new(vec![feature], RADIUS_M))),
+        None,
     );
     let h = insert_world(World::new(surface));
     let mut out = [0.0f64; 3];
@@ -638,7 +639,7 @@ fn the_feature_channel_moves_the_ground_under_the_tile() {
 #[test]
 fn the_tile_reads_the_resolution_sentinel_exactly_as_the_scalar_export_does() {
     let h = plain_world();
-    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None);
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None);
     let p = SpherePoint::from_latlon(12.0, 34.0);
     let canonical = surface.elevation_m(&p, None) as f32;
     let resolved = surface.elevation_m(&p, Some(RES_M)) as f32;

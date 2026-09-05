@@ -302,7 +302,7 @@ mod world_tests {
     const DATUM_M: f64 = 0.0;
 
     fn surface(seed: i64, radius_m: f64) -> Surface {
-        Surface::new(seed, radius_m, 22, 0.29, None)
+        Surface::new(seed, radius_m, 22, 0.29, None, None)
     }
 
     /// Heights straight from the field, which is the only coupling between the two

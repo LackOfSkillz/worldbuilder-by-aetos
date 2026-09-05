@@ -600,7 +600,9 @@ pub extern "C" fn wb_world_new(
         Some(FeatureInput::Loose(decoded))
     };
 
-    let surface = Surface::new(world_seed, radius_m, plates, land_fraction, features);
+    // relief: None -- canonical roughness. This export does not expose ReliefParams; a
+    // later task decides whether and how a wasm caller chooses one (Task 4).
+    let surface = Surface::new(world_seed, radius_m, plates, land_fraction, features, None);
     insert_world(World::new(surface))
 }
 

@@ -618,7 +618,7 @@ pub fn detail_smooth(fraction: f64) -> f64 {
 /// `cached_continentality` above.
 #[pyfunction]
 pub fn detail_bands(world_seed: u64, radius_m: f64) -> Vec<(f64, f64, f64)> {
-    crate::detail::Detail::new(world_seed, radius_m)
+    crate::detail::Detail::new(world_seed, radius_m, None)
         .bands()
         .iter()
         .map(|b| (b.wavelength_m, b.frequency, b.share))
@@ -637,7 +637,7 @@ pub fn detail_amplitude_m(
     shelf_weight: f64,
     tectonic_m: f64,
 ) -> f64 {
-    let detail = crate::detail::Detail::new(world_seed, radius_m);
+    let detail = crate::detail::Detail::new(world_seed, radius_m, None);
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
     detail.amplitude_m(&point, elevation_m, shelf_weight, tectonic_m)
 }
@@ -660,7 +660,7 @@ pub fn detail_offset_m(
     amplitude_m: f64,
     resolution_m: Option<f64>,
 ) -> f64 {
-    let detail = crate::detail::Detail::new(world_seed, radius_m);
+    let detail = crate::detail::Detail::new(world_seed, radius_m, None);
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
     detail.offset_m(&point, amplitude_m, resolution_m)
 }
@@ -1423,8 +1423,10 @@ fn cached_surface(
             crate::surface::FeatureInput::Loose(given.iter().map(feature_from_tuple).collect())
         }
     });
+    // relief: None -- canonical roughness. Not exposed to Python by this binding; a later
+    // task decides whether and how a caller chooses a ReliefParams (Task 4).
     let surface: &'static crate::surface::Surface = Box::leak(Box::new(
-        crate::surface::Surface::new(world_seed, radius_m, plate_count, land_fraction, input),
+        crate::surface::Surface::new(world_seed, radius_m, plate_count, land_fraction, input, None),
     ));
     cache.insert(key, surface);
     surface
