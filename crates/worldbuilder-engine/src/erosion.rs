@@ -424,6 +424,46 @@ pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], par
 /// `slope_cap_tan_is_computed_once_and_matches_tan_30_degrees` test pins the numeric value
 /// this evaluates to, so a future change to `detmath::tan` (or to the 30-degree figure)
 /// fails loudly here rather than silently drifting.
+/// # The cap is INERT at every resolution this crate currently measures, and the reason is
+/// geometric rather than incidental
+///
+/// The full convergence sweep -- both tables, six node counts from 300 to 100,000, four
+/// values of `k` spanning `c` from 1.0e-3 to 1.0, on `Surface`-generated Earth-radius
+/// terrain -- reports `clamped: 0 edges over 0 iterations` on **every single row**. Not
+/// "rarely"; never.
+///
+/// That is not a defect and not a coincidence. A 30-degree slope needs a rise of
+/// `tan(30) * d` between adjacent nodes, and `d` at planetary scale is enormous:
+///
+/// | nodes | spacing `d` | rise needed for 30 degrees |
+/// |---:|---:|---:|
+/// | 300 | 1,303,923 m | 752,820 m |
+/// | 10,000 | 225,846 m | 130,392 m |
+/// | 100,000 | 71,419 m | 41,234 m |
+/// | 20,000,000 | 5,050 m | 2,916 m |
+///
+/// (Earth radius 6,371,000 m, nodes spread over the whole sphere, `d` taken as the square
+/// root of the mean cell area. Earth's entire relief, Everest to Challenger Deep, is about
+/// 19,700 m.)
+///
+/// At 100,000 nodes the cap would need **more than twice the planet's total relief between
+/// two neighbouring nodes** before it fired. It cannot bind, at any `k`, on any terrain this
+/// generator produces at that resolution.
+///
+/// **It becomes live near the planetary target.** At 20,000,000 nodes -- the 5 km spacing
+/// section 14.3 names -- 30 degrees needs 2,916 m over 5,050 m, which is ordinary steep
+/// mountain terrain. So the cap is not decoration; the sweep simply tops out 200x short of
+/// where it starts mattering.
+///
+/// Two consequences worth stating rather than leaving to be discovered:
+///
+/// - **The sweep exercises this function not at all.** The synthetic pathology tests carry
+///   the entire weight of showing the correction works. A zero that looks like agreement is
+///   this repository's recurring defect shape, which is why [`ClampStats`] reports the count
+///   instead of leaving it to be inferred from unchanged iteration numbers.
+/// - **Task 3's convergence figures are unchanged, not superseded.** The slice's pre-flight
+///   scan ruled that a per-iteration cap would invalidate them; it would have, had it fired.
+///   Every count in both tables is identical before and after, because the cap did nothing.
 pub fn slope_cap_tan() -> f64 {
     static SLOPE_CAP_TAN: OnceLock<f64> = OnceLock::new();
     *SLOPE_CAP_TAN.get_or_init(|| detmath::tan(detmath::to_radians(30.0)))
