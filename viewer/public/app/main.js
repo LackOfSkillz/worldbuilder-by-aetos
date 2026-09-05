@@ -10,6 +10,9 @@
 // a code change -- including the deliberately wrong ones.
 
 import { Engine } from "./engine.js";
+import {
+  DEFAULT_EXAGGERATION, DEFAULT_WORLD, HARBOUR, RAMP_STOPS, RAMP_WINDOW, rampStopFraction,
+} from "./panel-fields.js";
 import { reliefFromParams } from "./relief-params.js";
 import {
   createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
@@ -23,31 +26,11 @@ import { runBench, formatBench, frameTrace } from "./bench.js";
 const params = new URLSearchParams(location.search);
 const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
 
-/// The default world is the one this slice's fixtures pin: `Surface::new(20260904,
-/// 6_371_000, 12, 0.29, None)`. The extraction witnessed an elevation on it three
-/// independent ways -- Python wheel, native Rust, browser WASM -- so it is the world with a
-/// known answer at a named point, and that is why it is the default rather than something
-/// prettier.
-export const DEFAULT_WORLD = {
-  seed: 20260904,
-  radiusM: 6371000,
-  plateCount: 12,
-  landFraction: 0.29,
-};
-
-/// The extraction's harbour: a 900 x 260 m carve to -12 m with a 200 x 60 m mole to +4 m
-/// inside it, both on bearing 35 deg, at 18.25 S 121.5 E. Off by default -- a bare world is
-/// what the zoom-cap reasoning is about, and this is what contradicts it.
-export const HARBOUR = [
-  {
-    latitudeDeg: -18.25, longitudeDeg: 121.5, targetM: -12, lengthM: 900, widthM: 260,
-    bearingDeg: 35, compose: "carve", substrate: "derive",
-  },
-  {
-    latitudeDeg: -18.25, longitudeDeg: 121.5, targetM: 4, lengthM: 200, widthM: 60,
-    bearingDeg: 35, compose: "raise", substrate: "derive",
-  },
-];
+/// `DEFAULT_WORLD` and `HARBOUR` moved to `panel-fields.js` and are re-exported here so the
+/// old import path still resolves. They moved because `controls.js` held a second copy of
+/// every one of those numbers and the two drifted twice; there is now one copy, which both
+/// this file and the panel import.
+export { DEFAULT_WORLD, HARBOUR };
 
 function worldSpecFromParams() {
   return {
@@ -65,48 +48,31 @@ function worldSpecFromParams() {
 
 /// A hypsometric ramp, drawn on a canvas at runtime.
 ///
-/// This is the only reason the picture says anything: with `baseLayer: false` there is no
-/// imagery at all, so an unpainted globe is one flat colour and a screenshot of it is
-/// indistinguishable from a screenshot of a smooth ellipsoid. `Material.ElevationRampType`
-/// colours each fragment by `materialInput.height`, which is the terrain height this
-/// provider supplied -- so if the ramp shows a coastline, the coastline came from the
-/// engine. No network: the ramp is a 256 x 1 canvas.
-function elevationRamp() {
+/// This is the only reason the picture says anything when the relief layer is off: with
+/// `baseLayer: false` there is no imagery at all, so an unpainted globe is one flat colour
+/// and a screenshot of it is indistinguishable from a screenshot of a smooth ellipsoid.
+/// `Material.ElevationRampType` colours each fragment by `materialInput.height`, which is the
+/// terrain height this provider supplied -- so if the ramp shows a coastline, the coastline
+/// came from the engine. No network: the ramp is a 256 x 1 canvas.
+///
+/// This is still colour-by-height only: it cannot put rock on a steep face at low altitude,
+/// because a ramp gets height and nothing else. That is what `relief.js` is for, and it is
+/// why the relief layer is the default and this is the `?relief=0` fallback.
+function elevationRamp(minimumHeight, maximumHeight) {
   const canvas = document.createElement("canvas");
   canvas.width = 256;
   canvas.height = 1;
   const ctx = canvas.getContext("2d");
   const gradient = ctx.createLinearGradient(0, 0, 256, 0);
-  // The stops are placed against a -9000..+6000 m ramp, so 0 m -- sea level, the datum --
-  // sits at 0.6 and the colour changes hard across it. A soft transition there would hide
-  // exactly the thing being checked.
-  //
-  // Below sea level the ramp now carries depth rather than one flat blue: an abyssal
-  // near-black, a basin blue, and a bright shelf immediately under the coast. The shelf
-  // stop is what draws the pale rim around every landmass, and it is the engine's
-  // bathymetry doing it, not a halo effect.
-  //
-  // Above it the land is banded by height the way a physical atlas is -- lowland green,
-  // upland ochre, bare rock, then snow -- with the snow band deliberately narrow so it
-  // reads as caps and ridges rather than a white hemisphere. This is still colour-by-height
-  // only: it cannot put rock on a steep face at low altitude, because a ramp gets height
-  // and nothing else. Slope needs a per-fragment normal, which needs the relief-imagery
-  // work that is a slice of its own.
-  gradient.addColorStop(0.00, "#020a14");   // abyssal plain
-  gradient.addColorStop(0.28, "#04182e");
-  gradient.addColorStop(0.47, "#0a3358");   // basin
-  gradient.addColorStop(0.565, "#14548c");
-  gradient.addColorStop(0.592, "#2f86bd");  // shelf, just under the coast
-  gradient.addColorStop(0.5985, "#7ec5df");
-  gradient.addColorStop(0.6, "#ddcfa8");    // the datum: strand
-  gradient.addColorStop(0.615, "#8f9a5e");
-  gradient.addColorStop(0.66, "#4a7a3c");   // lowland
-  gradient.addColorStop(0.74, "#5d7440");
-  gradient.addColorStop(0.82, "#7d7150");   // upland
-  gradient.addColorStop(0.89, "#8e8272");
-  gradient.addColorStop(0.945, "#b9b2a8");  // bare rock
-  gradient.addColorStop(0.975, "#e8e6e2");
-  gradient.addColorStop(1.0, "#ffffff");    // snow
+  // The stop table and the metres-to-fraction map both live in `panel-fields.js`, next to
+  // the window whose two ends the panel drives, so `node --test` can hold the same table
+  // this canvas is drawn from. `rampStopFraction` clamps: a stop outside the window still
+  // anchors its colour at the edge it fell off, so narrowing the window darkens the deep end
+  // instead of deleting it. `addColorStop` accepts repeated offsets and takes the last,
+  // which is the behaviour that makes the clamp safe.
+  for (const [metres, color] of RAMP_STOPS) {
+    gradient.addColorStop(rampStopFraction(metres, minimumHeight, maximumHeight), color);
+  }
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 256, 1);
   return canvas;
@@ -250,7 +216,7 @@ async function boot() {
   // nothing changes without being asked for, and exposed so the cost can be measured rather
   // than guessed at.
   viewer.scene.globe.maximumScreenSpaceError = number("sse", 2);
-  viewer.scene.verticalExaggeration = number("exaggeration", 1);
+  viewer.scene.verticalExaggeration = number("exaggeration", DEFAULT_EXAGGERATION);
 
   // Sun shading, on by default. Without it the globe is coloured purely by height and every
   // slope reads flat -- a heightfield rendered as a paint-by-numbers map rather than a
@@ -289,14 +255,15 @@ async function boot() {
   const paint = params.has("paint") ? params.get("paint") !== "0" : !reliefOn;
   if (paint) {
     const material = Cesium.Material.fromType("ElevationRamp");
-    material.uniforms.image = elevationRamp();
-    // -9000..+6000 spans every height the engine can produce, but this generator's land
-    // tops out far below +6000, so the upper third of the ramp -- rock and snow -- never
-    // got used and every continent rendered in two greens. Narrowing the window to the
-    // range the terrain actually occupies is what puts the bands back on the mountains.
-    // Both ends stay overridable, and `?rampMax=6000` restores the old framing exactly.
-    material.uniforms.minimumHeight = number("rampMin", -7000);
-    material.uniforms.maximumHeight = number("rampMax", 2400);
+    // The window, from `panel-fields.js` -- the same object the panel's two sliders take
+    // their defaults from, rather than a second copy of the pair. Both ends stay
+    // overridable, and `?rampMax=6000` restores the pre-narrowing framing exactly; the
+    // coastline stays at the datum either way now that the stops are in metres.
+    const minimumHeight = number("rampMin", RAMP_WINDOW.minimumHeight);
+    const maximumHeight = number("rampMax", RAMP_WINDOW.maximumHeight);
+    material.uniforms.image = elevationRamp(minimumHeight, maximumHeight);
+    material.uniforms.minimumHeight = minimumHeight;
+    material.uniforms.maximumHeight = maximumHeight;
     viewer.scene.globe.material = material;
   }
 

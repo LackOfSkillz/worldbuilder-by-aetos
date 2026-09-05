@@ -25,36 +25,35 @@
 // Served under `default-src 'self'` with no `'unsafe-inline'`, so this is a module file and
 // its styles live in `viewer.css`. See `index.html`'s comment.
 
+import { PANEL_DEFAULTS, PANEL_RANGES } from "./panel-fields.js";
 import {
   RELIEF_CONTROLS, RELIEF_PARAM_NAMES, HURST_BAND, hurst, sliderTravel, reliefToParams,
 } from "./relief-params.js";
 
 const params = new URLSearchParams(location.search);
 
-/// Defaults, repeated from their defining modules so a field can show what it will be if
-/// left alone. Duplicated rather than imported because importing `main.js` would run it
-/// twice; `terrain.js` and `availability.js` are safe to import but the numbers are worth
-/// having in one visible place. Each cites where it comes from.
-const DEFAULTS = {
-  seed: "20260904",          // main.js DEFAULT_WORLD
-  radius: "6371000",         // main.js DEFAULT_WORLD
-  plates: "12",              // main.js DEFAULT_WORLD
-  land: "0.29",              // main.js DEFAULT_WORLD
-  maxLevel: "12",            // terrain.js MAX_LEVEL -- the ground cap
-  size: "65",                // terrain.js HEIGHTMAP_SIZE
-  featureCeiling: "18",      // availability.js FEATURE_CEILING
-  exaggeration: "1",         // main.js, scene.verticalExaggeration
-  // These must track main.js's own defaults. They did not: the panel offered -9000/6000
-  // while main.js had narrowed to -7000/2400, so simply opening the panel and pressing
-  // generate silently reverted the ramp to a window this generator never fills, and the
-  // rock and snow bands vanished again.
-  rampMin: "-7000",
-  rampMax: "2400",
-};
+/// **This file now writes down no default and no slider travel of its own.**
+///
+/// It used to hold a copy of each, annotated with the module it was copied from, and the
+/// copies drifted: the panel offered a -9000/6000 elevation ramp while `main.js` had
+/// narrowed to -7000/2400, so opening the panel and pressing generate silently reverted the
+/// ramp. That was fixed by making the copy correct again, which is a fix with a half-life.
+/// `panel-fields.js` holds one copy, `main.js` reads the same one, and `node --test` holds
+/// the same table -- including a check that each slider's travel can express its own
+/// default, which is the fault the radius and `rampMax` sliders both had.
+const DEFAULTS = PANEL_DEFAULTS;
 
-/// From `main.js`'s `HARBOUR`: a 900 x 260 m carve to -12 m with a 200 x 60 m mole to +4 m.
-/// Flying here is the only way to watch the zoom cap do its job -- ground detail stops at
-/// level 12 and refinement continues past it *only* inside a feature's footprint.
+/// The travel for one range input, by its query-string name. Throws rather than returning a
+/// silent `undefined`: a mistyped name here would build a slider with no bounds at all.
+function travelFor(query) {
+  const field = PANEL_RANGES.find((f) => f.query === query);
+  if (!field) throw new Error(`controls.js: no panel field named "${query}"`);
+  return { min: field.min, max: field.max, step: field.step, value: current(query) };
+}
+
+/// From `panel-fields.js`'s `HARBOUR`: a 900 x 260 m carve to -12 m with a 200 x 60 m mole
+/// to +4 m. Flying here is the only way to watch the zoom cap do its job -- ground detail
+/// stops at level 12 and refinement continues past it *only* inside a feature's footprint.
 const HARBOUR_VIEW = { lat: -18.25, lon: 121.5, height: 2200 };
 
 /// `terrain.js` FAULTS and `pool.js` POOL_FAULTS: deliberately wrong implementations, kept
@@ -165,12 +164,9 @@ function build() {
   });
   seed.out.replaceWith(dice);
 
-  const plates = row(world, "plates", "wb-plates", "range",
-    { min: 3, max: 40, step: 1, value: current("plates") });
-  const land = row(world, "land", "wb-land", "range",
-    { min: 0.05, max: 0.95, step: 0.01, value: current("land") });
-  const radius = row(world, "radius", "wb-radius", "range",
-    { min: 1e6, max: 2e7, step: 1e5, value: current("radius") });
+  const plates = row(world, "plates", "wb-plates", "range", travelFor("plates"));
+  const land = row(world, "land", "wb-land", "range", travelFor("land"));
+  const radius = row(world, "radius", "wb-radius", "range", travelFor("radius"));
 
   const harbourLine = el("label", "wb-row wb-check");
   const harbour = document.createElement("input");
@@ -183,12 +179,9 @@ function build() {
   // === the tiling — these rebuild =========================================================
 
   const tiling = section(body, "tiling · rebuilds");
-  const zoom = row(tiling, "max zoom", "wb-zoom", "range",
-    { min: 8, max: 16, step: 1, value: current("maxLevel") });
-  const size = row(tiling, "posts", "wb-size", "range",
-    { min: 33, max: 129, step: 32, value: current("size") });
-  const ceiling = row(tiling, "feat. cap", "wb-ceiling", "range",
-    { min: 12, max: 22, step: 1, value: current("featureCeiling") });
+  const zoom = row(tiling, "max zoom", "wb-zoom", "range", travelFor("maxLevel"));
+  const size = row(tiling, "posts", "wb-size", "range", travelFor("size"));
+  const ceiling = row(tiling, "feat. cap", "wb-ceiling", "range", travelFor("featureCeiling"));
 
   // === relief — these rebuild =============================================================
   //
@@ -290,17 +283,14 @@ function build() {
   // === appearance — live, no reload =======================================================
 
   const look = section(body, "appearance · live");
-  const exag = row(look, "vert. exag", "wb-exag", "range",
-    { min: 1, max: 40, step: 1, value: current("exaggeration") });
+  const exag = row(look, "vert. exag", "wb-exag", "range", travelFor("exaggeration"));
   exag.input.addEventListener("input", () => {
     window.viewer.scene.verticalExaggeration = Number(exag.input.value);
     exag.out.textContent = `${exag.input.value}x`;
   });
 
-  const rampLo = row(look, "ramp min", "wb-ramp-lo", "range",
-    { min: -11000, max: 0, step: 250, value: current("rampMin") });
-  const rampHi = row(look, "ramp max", "wb-ramp-hi", "range",
-    { min: 500, max: 12000, step: 250, value: current("rampMax") });
+  const rampLo = row(look, "ramp min", "wb-ramp-lo", "range", travelFor("rampMin"));
+  const rampHi = row(look, "ramp max", "wb-ramp-hi", "range", travelFor("rampMax"));
   const paintRamp = () => {
     const m = window.viewer.scene.globe.material;
     if (m && m.uniforms && "minimumHeight" in m.uniforms) {
@@ -348,7 +338,9 @@ function build() {
   const sync = () => {
     plates.out.textContent = plates.input.value;
     land.out.textContent = Number(land.input.value).toFixed(2);
-    radius.out.textContent = `${(radius.input.value / 1e6).toFixed(1)} Mm`;
+    // Three decimals, not one: at one decimal the snapped 6,400,000 m and the intended
+    // 6,371,000 m both read "6.4 Mm", which is how the snap survived every screenshot.
+    radius.out.textContent = `${(radius.input.value / 1e6).toFixed(3)} Mm`;
     size.out.textContent = `${size.input.value}²`;
     ceiling.out.textContent = `L${ceiling.input.value}`;
     // Post spacing from terrain.js's own derivation: pi * 6,371,000 / 64 m at level 0,
