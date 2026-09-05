@@ -2956,11 +2956,11 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 471 | 4 | 9 | 6 | -- | 490 | 5 | **485** |
-| default (the same set -- the crate declares no default features) | 471 | 4 | 9 | 6 | -- | 490 | 5 | **485** |
-| `--features python` | 473 | 4 | 9 | 6 | -- | 492 | 5 | **487** |
-| `--features wasm` | 471 | 4 | 9 | 6 | 36 | 526 | 5 | **521** |
-| `--features python,wasm` | 473 | 4 | 9 | 6 | 36 | 528 | 5 | **523** |
+| `--no-default-features` | 478 | 4 | 9 | 6 | -- | 497 | 5 | **492** |
+| default (the same set -- the crate declares no default features) | 478 | 4 | 9 | 6 | -- | 497 | 5 | **492** |
+| `--features python` | 480 | 4 | 9 | 6 | -- | 499 | 5 | **494** |
+| `--features wasm` | 478 | 4 | 9 | 6 | 36 | 533 | 5 | **528** |
+| `--features python,wasm` | 480 | 4 | 9 | 6 | 36 | 535 | 5 | **530** |
 
 0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
 and 0 doc-tests in every configuration.
@@ -3040,6 +3040,24 @@ tests (`apply_outflows_writes_outflow_lake_onto_the_graphs_own_lake_table`,
 5 (this task added no `#[ignore]`d test). Re-derived the same way as every entry above and
 cross-checked through `.github/scripts/assert_counts.py cargo-list` itself, which reported
 `count OK` at all five configurations against these figures.
+
+**Task 2's review fix round adds seven more tests, uniformly again**: five in `water.rs`
+(`merge_fixture_has_the_two_tied_roots_this_test_relies_on`,
+`a_tied_plateau_is_merged_into_one_body_at_its_true_level`,
+`merge_leaves_an_untied_lakes_level_untouched`,
+`touching_lakes_fixture_is_a_closed_system_and_merge_refuses_it`,
+`two_candidate_ordering_fixture_has_the_roots_this_test_relies_on` -- net of removing the
+review's Finding 8 "cannot fail" documentation-anchor test,
+`worldbuilder_directory_is_not_touched_by_this_module`, and the two-candidate ordering
+fixture's own two property/mutation tests already counted as replacements for the prior
+round's non-discriminating pair) and two in `streamfmt.rs`
+(`refuses_an_outflow_lake_naming_a_node_that_is_not_a_lake_root`,
+`a_resolved_graph_round_trips_its_outflow_lake_values`, pinning Finding 1's fix). Both files
+compile unconditionally, so `lib` moves 471/471/473/471/473 -> 478/478/480/478/480 and every
+row's `listed`/`run` by +7: **485/485/487/521/523 -> 492/492/494/528/530**. `expect_ignored`
+stays 5. Re-derived the same way as every entry above, and cross-checked through
+`.github/scripts/assert_counts.py cargo-list` itself, which reported `count OK` at all five
+configurations against these figures.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read
