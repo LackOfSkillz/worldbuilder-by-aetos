@@ -19,6 +19,7 @@ pub mod plates;
 pub mod kinematics;
 pub mod tectonics;
 pub mod shelf;
+pub mod substrate;
 
 use pyo3::prelude::*;
 
@@ -83,5 +84,19 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::features_apply, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::features_marks_near, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::features_round_trip, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_constants, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_smooth, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_composition, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_blended_towards, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_pure, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_natural, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_slope_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::substrate_dominant_at, m)?)?;
+    // The refusal has to be reachable as a TYPE from Python, not merely raisable: a test
+    // that catches `KeyError` alone cannot tell the port's refusal from an unrelated dict
+    // miss inside the binding, and the whole point of this one is that both languages
+    // decline to answer at the same input.
+    m.add("UnknownSubstrateError", m.py().get_type_bound::<bindings::UnknownSubstrateError>())?;
     Ok(())
 }

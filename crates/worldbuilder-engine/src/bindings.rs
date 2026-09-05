@@ -933,3 +933,329 @@ pub fn features_round_trip(
         built.iter().map(|feature| feature.substrate.clone()).collect(),
     )
 }
+
+// --- substrate: constants, Composition, natural, slope_at, at, dominant_at ------------
+//
+// Conversion only, as everywhere else in this file, with one shape decision that is not
+// like anything above it: `slope_at` and `at` take the HOST'S `structural_m` (and, for
+// `at`, `tectonics.offset_m`) as PYTHON CALLABLES and call back into Python through them.
+//
+// **That is the whole point of these two bindings and it is not a convenience.**
+// Substituting the port's own elevation field here would measure `shelf.rs` and
+// `features.rs` at the same time as `slope_at`, and the sum of the three cannot be
+// attributed to any one of them. It is not a small effect: `slope_at` driven by the
+// port's own `structural_m` moves by up to 2.217618e-12 relative, against a
+// `SLOPE_DRIFT_REL` of 2.3e-16 -- a factor of 9,642, four orders of magnitude, not a
+// widened tolerance. (Re-derived; the 7.968304e-11 this note used to quote does not
+// reproduce.) Driven by the SAME field on both sides it is one ULP. So the field
+// crosses the boundary as a callable, and the comparison isolates the function under test.
+//
+// The callables take three floats (a unit vector's components) rather than a
+// `SpherePoint`, so no Python type has to be constructed or imported on this side; the
+// test-side wrapper adapts.
+
+/// Carries a `PyErr` out of a `&dyn Fn(&SpherePoint) -> f64` callback, which has nowhere
+/// to put one.
+///
+/// A failing Python callback returns `0.0` into the arithmetic and stashes its error here;
+/// the binding re-raises after the engine call returns, so the value the engine computed
+/// from that `0.0` is discarded and never reaches Python. The FIRST error is kept, not the
+/// last -- a `structural_m` that raises on its first probe would otherwise be reported
+/// through whichever later probe also failed.
+struct CallbackError {
+    error: std::cell::RefCell<Option<PyErr>>,
+}
+
+impl CallbackError {
+    fn new() -> Self {
+        CallbackError { error: std::cell::RefCell::new(None) }
+    }
+
+    fn note(&self, error: PyErr) {
+        let mut slot = self.error.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    fn into_result<T>(self, value: T) -> PyResult<T> {
+        match self.error.into_inner() {
+            Some(error) => Err(error),
+            None => Ok(value),
+        }
+    }
+}
+
+/// Wraps a Python callable as the `&dyn Fn(&SpherePoint) -> f64` the engine wants.
+///
+/// The call is positional and flat -- `f(x, y, z)` -- which keeps every Python type out of
+/// this file. Probe ORDER is preserved by construction, because the engine calls this
+/// closure exactly where the Python calls its own `self.surface.structural_m`, so a
+/// recording callable on the Python side sees the same sequence from both languages. That
+/// is what makes `at`'s elevation/tectonic/slope resolution order observable across the
+/// FFI rather than only from inside the crate.
+fn host_field<'py>(
+    callable: &'py Bound<'py, PyAny>,
+    errors: &'py CallbackError,
+) -> impl Fn(&SpherePoint) -> f64 + 'py {
+    move |point: &SpherePoint| {
+        let v = &point.vector;
+        match callable.call1((v.x, v.y, v.z)).and_then(|value| value.extract::<f64>()) {
+            Ok(value) => value,
+            Err(error) => {
+                errors.note(error);
+                0.0
+            }
+        }
+    }
+}
+
+pyo3::create_exception!(
+    worldbuilder_engine,
+    UnknownSubstrateError,
+    pyo3::exceptions::PyKeyError,
+    "A placed feature declared a substrate `PURE` has no entry for -- where Python's \
+     `PURE[declared]` raises `KeyError`. Subclasses `KeyError` so a caller catching what \
+     the Python raises catches this too, and is its own type so a test can tell the \
+     port's refusal from an unrelated dict miss."
+);
+
+/// The module's three names and its five numeric constants, plus `SLOPE_DRIFT_REL`, so
+/// the Python side asserts against the crate's own literals rather than its own copies.
+///
+/// `SLOPE_DRIFT_REL` is exported here for ONE purpose: so the conformance suite can assert
+/// the bound it uses is the bound the engine documents, and fail if either moves. It is
+/// not a licence to apply it anywhere `slope_at` is not the only thing being measured.
+#[pyfunction]
+pub fn substrate_constants(
+) -> (&'static str, &'static str, &'static str, f64, f64, f64, f64, f64, f64) {
+    (
+        crate::substrate::SAND,
+        crate::substrate::MUD,
+        crate::substrate::ROCK,
+        crate::substrate::ROCK_SLOPE,
+        crate::substrate::ROCK_TECTONIC_M,
+        crate::substrate::SWEPT_M,
+        crate::substrate::SETTLED_M,
+        crate::substrate::SLOPE_BASELINE_M,
+        crate::substrate::SLOPE_DRIFT_REL,
+    )
+}
+
+/// `substrate.py`'s `_smooth`, reached through `substrate`'s own re-export rather than
+/// through `detail`.
+///
+/// Deliberately a second binding onto what is deliberately one function. `detail_smooth`
+/// already exposes `detail::smooth`, and `substrate.rs` reuses that same item by `pub use`
+/// instead of transcribing a fourth copy -- so this binding is the assertion that the
+/// re-export still resolves to a function agreeing with `substrate.py`'s `_smooth`. If
+/// somebody ever gives `substrate` a private copy, the two Python modules' `_smooth`
+/// functions can drift apart and this is where that would show.
+#[pyfunction]
+pub fn substrate_smooth(fraction: f64) -> f64 {
+    crate::substrate::smooth(fraction)
+}
+
+/// `Composition(sand, mud, rock)` -- the normalising constructor, including its
+/// `total <= 0.0` branch -- as the three normalised fractions, plus `dominant` and
+/// `holding` off the same instance.
+///
+/// All three answers come from ONE constructed `Composition`, not from three
+/// reconstructions, because `dominant` reads the fractions AFTER normalisation and a
+/// binding that renormalised per answer could disagree with itself.
+#[pyfunction]
+pub fn substrate_composition(
+    sand: f64,
+    mud: f64,
+    rock: f64,
+) -> (f64, f64, f64, &'static str, f64) {
+    let c = crate::substrate::Composition::new(sand, mud, rock);
+    (c.sand, c.mud, c.rock, c.dominant(), c.holding())
+}
+
+/// `Composition(...).blended_towards(Composition(...), weight)`.
+///
+/// **NEITHER triple is passed through `Composition::new` on the way in, and an earlier
+/// version of this binding that did was wrong by a measurable ULP.** In Python the
+/// receiver and the target are both *existing instances*: their fields have already been
+/// divided by their total once, and `blended_towards` reads them as they stand. Rebuilding
+/// them here would normalise a second time -- and the fractions of a real composition do
+/// NOT sum to exactly 1.0 (an exhaustive sweep of `natural`'s domain puts the total two
+/// ULP below one), so the second division moves them. Measured on the demonstration
+/// coast's own grid: `0.2781153660496104` against `0.27811536604961046`, in a comparison
+/// that has no business needing a tolerance at all.
+///
+/// **That measurement belongs to the weight-zero guard test, not to
+/// `test_substrate_blended_towards_agrees_bit_for_bit_including_weight_zero`**, which was
+/// credited with it here and could not have made it: 20 of the 21 triples that test sweeps
+/// normalise to fractions summing to exactly 1.0, and a second normalisation is the
+/// identity on all of them. `(3.0, 2.0, 1.0)` (normalised total `0.9999999999999999`) was
+/// added to that corpus so it can now catch this, and restoring the defect turns it red.
+///
+/// So the caller hands in the fields of two constructed compositions and this assembles
+/// them verbatim. `substrate_composition` is where the normalising constructor is exposed.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn substrate_blended_towards(
+    sand: f64,
+    mud: f64,
+    rock: f64,
+    other_sand: f64,
+    other_mud: f64,
+    other_rock: f64,
+    weight: f64,
+) -> (f64, f64, f64) {
+    let c = crate::substrate::Composition { sand, mud, rock };
+    let other = crate::substrate::Composition {
+        sand: other_sand,
+        mud: other_mud,
+        rock: other_rock,
+    };
+    let blended = c.blended_towards(&other, weight);
+    (blended.sand, blended.mud, blended.rock)
+}
+
+/// `PURE[kind]`, or `None` where the Python's dict lookup would raise `KeyError`.
+///
+/// Returns the miss rather than raising, because this binding is how the Python side
+/// checks WHICH words the table has; `substrate_at` is where a miss becomes a refusal.
+#[pyfunction]
+pub fn substrate_pure(kind: &str) -> Option<(f64, f64, f64)> {
+    crate::substrate::pure(kind).map(|c| (c.sand, c.mud, c.rock))
+}
+
+/// `Substrate.natural(elevation_m, slope, tectonic_m)`. Conversion only, and STRICT --
+/// zero transcendentals in its path, so the Python side asserts raw bits.
+#[pyfunction]
+pub fn substrate_natural(elevation_m: f64, slope: f64, tectonic_m: f64) -> (f64, f64, f64) {
+    let c = crate::substrate::natural(elevation_m, slope, tectonic_m);
+    (c.sand, c.mud, c.rock)
+}
+
+/// `Substrate.slope_at(point, baseline_m)`, driven by the HOST'S `structural_m`.
+///
+/// `structural_m` is a Python callable taking `(x, y, z)`. The engine's four probes go
+/// straight back through it, so this measures `TangentFrame::at`, `local_to_sphere` and
+/// `hypot` against the Python's -- and nothing else. See the section note above for why
+/// substituting the port's own elevation field would make the number unattributable.
+#[pyfunction]
+pub fn substrate_slope_at(
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    baseline_m: f64,
+    structural_m: &Bound<'_, PyAny>,
+) -> PyResult<f64> {
+    let errors = CallbackError::new();
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let slope = {
+        let field = host_field(structural_m, &errors);
+        crate::substrate::slope_at(radius_m, &point, baseline_m, &field)
+    };
+    errors.into_result(slope)
+}
+
+/// `Substrate.at(point, elevation_m=None, slope=None, tectonic_m=None)`.
+///
+/// **THE KEYWORD ORDER HERE IS PYTHON'S AND THE ENGINE'S IS NOT, AND THAT IS THE LIVE
+/// TRAP IN THIS BINDING.** `substrate.py` declares `elevation_m, slope, tectonic_m`;
+/// `substrate::at` takes `elevation_m, tectonic_m, slope`, in resolution order, because
+/// Task 1 ruled the Rust signature must run in the order the body resolves so the two
+/// cannot drift apart. All three are `Option<f64>`, so forwarding this binding's
+/// arguments POSITIONALLY into the engine call -- `at(.., elevation_m, slope, tectonic_m,
+/// ..)` -- COMPILES CLEANLY, type-checks, and is silently wrong: it feeds the slope in as
+/// the tectonic contribution and the tectonic metres in as a dimensionless slope. Nothing
+/// but a test can catch it. The mapping below is therefore by NAME at the call site, and
+/// `test_substrate_at_maps_its_keywords_by_name_not_by_position` is what holds it there.
+///
+/// The two host members cross as Python callables for the reason given at the head of this
+/// section, and each `None` left here reaches a DIFFERENT one of them, which is what makes
+/// the resolution order observable from Python rather than only from inside the crate.
+///
+/// Raises `UnknownSubstrateError` (a `KeyError`) exactly where Python's `PURE[declared]`
+/// raises -- a feature that declared a word the table has no entry for, at a point where
+/// its weight is above zero.
+#[pyfunction]
+#[pyo3(signature = (
+    features, radius_m, x, y, z, structural_m, tectonic_offset_m,
+    elevation_m=None, slope=None, tectonic_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn substrate_at(
+    features: Vec<FeatureTuple>,
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    structural_m: &Bound<'_, PyAny>,
+    tectonic_offset_m: &Bound<'_, PyAny>,
+    elevation_m: Option<f64>,
+    slope: Option<f64>,
+    tectonic_m: Option<f64>,
+) -> PyResult<(f64, f64, f64)> {
+    let errors = CallbackError::new();
+    let built = features_from_tuples(&features, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let outcome = {
+        let structural = host_field(structural_m, &errors);
+        let tectonic = host_field(tectonic_offset_m, &errors);
+        crate::substrate::at(
+            radius_m,
+            &point,
+            // By name, never by position -- see the note above.
+            elevation_m,
+            tectonic_m,
+            slope,
+            &structural,
+            &tectonic,
+            &built,
+        )
+    };
+    let composition = errors
+        .into_result(outcome)?
+        .map_err(|unknown| UnknownSubstrateError::new_err(unknown.to_string()))?;
+    Ok((composition.sand, composition.mud, composition.rock))
+}
+
+/// `Substrate.dominant_at(point, **known)`. Same keyword shape and the same by-name
+/// mapping as `substrate_at`, and the same refusal.
+#[pyfunction]
+#[pyo3(signature = (
+    features, radius_m, x, y, z, structural_m, tectonic_offset_m,
+    elevation_m=None, slope=None, tectonic_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn substrate_dominant_at(
+    features: Vec<FeatureTuple>,
+    radius_m: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    structural_m: &Bound<'_, PyAny>,
+    tectonic_offset_m: &Bound<'_, PyAny>,
+    elevation_m: Option<f64>,
+    slope: Option<f64>,
+    tectonic_m: Option<f64>,
+) -> PyResult<&'static str> {
+    let errors = CallbackError::new();
+    let built = features_from_tuples(&features, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let outcome = {
+        let structural = host_field(structural_m, &errors);
+        let tectonic = host_field(tectonic_offset_m, &errors);
+        crate::substrate::dominant_at(
+            radius_m,
+            &point,
+            elevation_m,
+            tectonic_m,
+            slope,
+            &structural,
+            &tectonic,
+            &built,
+        )
+    };
+    errors
+        .into_result(outcome)?
+        .map_err(|unknown| UnknownSubstrateError::new_err(unknown.to_string()))
+}
