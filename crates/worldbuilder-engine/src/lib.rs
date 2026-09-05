@@ -14,6 +14,7 @@ pub mod tangent;
 pub mod continentality;
 pub mod plates;
 pub mod kinematics;
+pub mod tectonics;
 
 use pyo3::prelude::*;
 
@@ -53,5 +54,10 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::plate_surface_velocity, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::plates_motion_between, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::plateset_motion_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::tectonics_bump, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::tectonics_continental, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::tectonics_setting_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::tectonics_offset_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::tectonics_elevation_m, m)?)?;
     Ok(())
 }

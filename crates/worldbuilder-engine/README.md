@@ -597,3 +597,141 @@ Every test count above was verified by running the suites, not copied from an ea
 report: 91 Rust lib tests plus the 6-test `no_std_math` guard, 63 in
 `test_conformance.py`, and 303 in the full Python suite -- all unchanged from Task 4's own
 numbers, since this task added no tests of its own.
+
+## `tectonics.rs`: the module that finally breaks the 4-ULP contract
+
+`bump` and `continental` are purely algebraic -- an `abs`, a division, a comparison or two,
+and the same smoothstep already used by `Continentality::calibration`'s shadow weight --
+so they carry no transcendental anywhere in their path and are compared with `same()`,
+bit-for-bit, with zero divergence over the corpus. `setting_at`, `offset_m`, and
+`elevation_m` are different: all three route through `hypot`, `tanh`, a tangent frame, and
+`Continentality::at`, and none of them holds at the file's usual 4-ULP bound
+(`MAX_TRANSCENDENTAL_ULPS`). This module needs its own, wider, and separately justified
+bound: `TECTONICS_BOUNDED_MAX_ULPS = 8192`, for those three functions only.
+
+**The mechanism, measured rather than assumed.** All three of these quantities can
+legitimately pass through, or come arbitrarily close to, zero -- `engagement` at the
+`ACROSS_ENOUGH` gate inside `offset_m`/`elevation_m`, and `Continentality::at`'s own
+zero-crossing inside `setting_at`. ULP is a *relative* measure, and near zero it becomes
+very fine, so an ordinary, small absolute rounding difference reads as an enormous ULP
+count -- this is not amplification of the error itself, just of how the count reports it.
+`setting_at` settles this cleanly: in one call, `inboard` (value −0.0194) came back
+bit-exact while `outboard` (value −0.000635) showed 1,501 ULP. A ULP at that magnitude is
+about 1.084e-19, so 1,501 ULP is an absolute difference of roughly 1.63e-16 -- ordinary
+rounding scale. The same absolute error measured against the inboard value would read as
+only 47 ULP. `offset_m` was checked the same way rather than assumed to match: at the
+point producing its worst observed divergence (614 ULP), the value itself is
+`0.016465184604870464` -- a few centimetres -- with an absolute difference of
+`2.130240428499519e-15`. That is the same near-zero measurement artefact as `setting_at`,
+not a genuine metre-scale relative divergence; `offset_m` sums margin contributions that
+are built to reach exactly zero at the range gate and at `engagement`'s own gate, so the
+corpus finds points where the total sits a few centimetres from that zero, and the ULP
+count there is dominated by how close to zero the corpus happens to land, not by anything
+wrong in the arithmetic. The honest scale to measure that absolute difference against is
+not the near-zero result but the profile amplitudes the arithmetic actually runs at --
+`TRENCH_M` alone reaches 2,600 m -- and `ULP(2600.0)` is `4.547e-13`, so
+`2.130240428499519e-15` there is about `0.005` ULP: consistent with a single rounding at
+the scale the arithmetic was performed, not with error growing anywhere in the sum.
+
+**8,192 is an empirical ceiling over this corpus, not a derived guarantee.** Because the
+quantity passes through zero, the ULP count is a function of how close the corpus happens
+to sample to that zero -- a different corpus, or a larger one, could land closer to a gate
+and see a wider divergence without anything in the port being wrong. So the bound is not a
+proof; it is a number this corpus was observed to stay under, deliberately set well above
+the worst figures actually seen (614 for `offset_m`, 512 for `elevation_m`, 1,501 for
+`setting_at`'s `outboard`), because the brief's own error-propagation estimate for
+`engagement` at the smallest measured engagement-gate gap put the relative error there at
+roughly 4,200 ULP. The suite does not take this on faith either way:
+`test_tectonics_offset_m_and_elevation_m_exceed_the_ordinary_transcendental_bound` asserts
+*both* that the ordinary 4-ULP bound genuinely fails on this corpus (`worst >
+MAX_TRANSCENDENTAL_ULPS`) and that the wider bound holds (`worst <=
+TECTONICS_BOUNDED_MAX_ULPS`) -- so 8,192 was not a blind widening applied to make a test
+pass; it replaces a bound that was measured to fail with one that was measured to hold.
+
+**`math.hypot` is not a libm call in CPython.** Since Python 3.8 it is a Neumaier-summed
+vector norm implemented in `mathmodule.c`, not a call into the platform C library the way
+`sin`, `cos`, and `atan2` are. That makes this the first slice in the crate where the two
+sides of a comparison are *known* to run different algorithms for the same function,
+rather than merely permitted to diverge because they might happen to use different
+libms. Measured divergence: up to 1 ULP, on 44 of the corpus's 4,025 `hypot` pairs; the
+other 3,981 are bit-identical.
+
+**Which of the three downstream branches in `from_margin` are safe, and why -- this is
+the most useful thing in this section.** `from_margin` makes three decisions on the way to
+a contribution, and only one of them actually depends on `hypot`'s precision:
+
+- `if speed <= 0.0 { return 0.0 }` is safe because `hypot` is exactly zero only when both
+  of its arguments are exactly zero, regardless of which algorithm computed it -- a
+  1-ULP disagreement between `math.hypot` and `libm::hypot` cannot manufacture or erase an
+  exact zero.
+- `if across < 0.0` is safe even though it looks like the most dangerous decision in the
+  file, because `hypot` is never negative, and the zero case has already returned by the
+  time this branch runs -- so `speed` here is strictly positive, and dividing
+  `motion.closing_m_per_myr` by a strictly positive number cannot change its sign. The
+  branch is decided by the sign of `closing`, which is algebraic (a dot product and a
+  subtraction), not by anything `hypot` contributes.
+- `if engagement <= 0.0 { return 0.0 }` is the one branch that genuinely depends on
+  `hypot`'s precision, because `across` is built directly from `speed`. The measured
+  margin here is `abs(abs(across) - ACROSS_ENOUGH)` = 2.4349e-05 at its smallest observed
+  point, over this slice's own ~22,000-point `TECTONICS_POINTS` corpus -- about 2.19e11
+  ULP of `across` at that magnitude, roughly eleven orders of magnitude clear of where a
+  1-ULP `hypot` disagreement could ever flip the comparison.
+
+**The two bugs this port must preserve, and how each is encoded.** `lookup.py`'s and
+`tectonics.py`'s own comments record two: a 550-metre cliff, and a 419-kilometre
+mismapping.
+
+- **The 550-metre cliff.** The first version of `continental`'s weighting used a hard
+  test -- continental if above zero, oceanic otherwise -- and the ground jumped five
+  hundred and fifty metres wherever a margin crossed that threshold, because the two sides
+  of the test ran entirely different profiles. `CONTINENTAL_BLEND` (0.45) fixes it by
+  turning the threshold into a width: `continental` is a smoothstep across that width
+  rather than a step at a point, so a margin's classification moves continuously instead
+  of jumping.
+- **The 419-kilometre mismapping.** The obvious way to place a point on one side or the
+  other of a margin is `signed = distance * lean`, and it is wrong in a way that took a
+  diagnostic to find: scaling the axis by `lean` *compresses* distance, so with a lean of
+  −0.22 a point 419 km out mapped to −90 km -- exactly where the trench sits. The trench
+  fired at 400 km out, and the range gate then cut the mismapped profile off mid-feature.
+  The fix keeps distance true and blends the *profile*, evaluating it on both sides of the
+  margin and mixing by `lean`, so every feature stays at its intended range and every
+  profile reaches zero by the gate on its own. The regression test for this is **exactly
+  derivable**, not approximate: at 419 km every bump argument in the profile is outside its
+  own width, on both sides of the blend, so the sum is exactly zero, not merely small --
+  `assert_eq!(contribution, 0.0, ...)` rather than a tolerance. Substituting the buggy
+  `signed = distance * lean` form back in was observed to make this test fail by 220
+  metres, a large, unambiguous miss rather than a rounding-scale one.
+
+**`motion.kind` is deliberately unused.** `motion.kind` names a margin
+convergent/divergent/transform by a threshold on the same continuous quantity `from_margin`
+already has as a number (`across`). Picking a terrain profile by that name, rather than by
+the number, meant a margin drifting continuously from convergent to transform could lose an
+entire mountain belt in a single step at the threshold crossing -- the same hard-decision
+mistake `lookup.py`'s three bugs and the 550-metre cliff above both trace back to. The name
+survives on `Motion` for diagnostics; the terrain only ever reads the number.
+
+**`offset_m` sums every margin in range rather than choosing the nearest one, and the
+summation order is load-bearing.** Choosing a single nearest margin was worth 560 metres of
+cliff at any point where two margins' ranges overlap, for the same reason `margins_within`
+sums rather than picks (recorded above): the *set* of margins in range is discrete and can
+change discontinuously, but a sum of their continuous contributions stays continuous even
+where an arg-min over them would not. Because floating-point addition is not associative,
+`offset_m`'s loop must accumulate margins in the same order `margins_within` returns them
+(plate-position order) -- sorting, reversing, or parallelising that accumulation would
+still be "correct" in the sense of adding up the same numbers, but could round to a
+different bit pattern, which is exactly the kind of divergence this crate's conformance
+suite exists to catch.
+
+**The scaffolding is gone.** Task 1's throwaway `tests/test_hypot_ulps.py`, and the
+`detmath_hypot_temp`/`detmath_tanh_temp` bindings it exercised
+(`crates/worldbuilder-engine/src/bindings.rs`, registered in `src/lib.rs`), are deleted as
+of this section. Their job -- measuring `hypot` and `tanh` bit-identity directly, before
+anything in the port depended on the answer -- is done; the findings live here and in
+`test_conformance.py`'s permanent measurements instead.
+
+Every count in this section was verified by running the suites, not copied from an earlier
+report: 103 Rust lib tests plus the 6-test `no_std_math` guard (both unchanged --
+`detmath_hypot_temp`/`detmath_tanh_temp` had no dedicated Rust unit test), 313 in the full
+Python suite (319 minus the 6 tests deleted with `test_hypot_ulps.py`), and 73 in
+`test_conformance.py` (unchanged -- those 6 tests never lived there). `cargo test -p
+worldbuilder-engine`, run unfiltered, exits 0.
