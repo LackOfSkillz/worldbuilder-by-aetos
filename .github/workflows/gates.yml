@@ -99,11 +99,12 @@ jobs:
           # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
           #
           # 2026-09-04, slice identity: these moved 409/439 -> 418/448 when build.rs and
-          # tests/build_fingerprint.rs landed. The `python` rows are ONE HIGHER than their
-          # non-python neighbours (419 and 449) because source_fingerprint() is a PyO3 export
-          # and its binding test only compiles with that feature. Re-derived on this host by
+          # tests/build_fingerprint.rs landed. The `python` rows are TWO HIGHER than their
+          # non-python neighbours (420 and 450) because source_fingerprint() and Task 3's
+          # source_fingerprint_inputs() are both PyO3 exports whose binding tests only
+          # compile with that feature. Re-derived on this host by
           # `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines and
-          # subtracting the 5 ignored: 423/423/424/453/454 listed.
+          # subtracting the 5 ignored: 423/423/425/453/455 listed.
           - name: no-default-features
             features: "--no-default-features"
             expect: 418
@@ -114,7 +115,7 @@ jobs:
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 419
+            expect: 420
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
@@ -122,7 +123,7 @@ jobs:
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 449
+            expect: 450
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -195,6 +196,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Only for `node scripts/build-wasm.mjs digest` below, which computes the Node half
+      # of Task 3's fingerprint-parity gate. It reads and hashes source files; it builds
+      # nothing and never touches viewer/public/wasm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Pin the Rust toolchain
         shell: bash
         run: |
@@ -257,6 +265,37 @@ jobs:
           set -euo pipefail
           maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
           python -c "import worldbuilder_engine; print('engine imported from', worldbuilder_engine.__file__)"
+
+      # THE FINGERPRINT PARITY GATE. Task 2 gave the Python extension the same source
+      # fingerprint `.wasm` provenance uses, by writing a SECOND implementation of the
+      # digest in Rust (`build.rs` + `bindings.rs::source_fingerprint`), because `maturin
+      # develop` does not run node. The ruling that allowed that duplication was explicit:
+      # "duplication that is checked is not duplication that rots." Nothing asserted the
+      # two implementations agree until this step existed.
+      #
+      # `node scripts/build-wasm.mjs digest` prints ONLY the Node-computed digest and its
+      # input count -- no build, no artifact touched -- as the independent statement this
+      # gate compares against the Rust-embedded `source_fingerprint()` /
+      # `source_fingerprint_inputs()` PyO3 exports the just-built extension carries.
+      - name: Compute the node-side source fingerprint (Task 3's other half)
+        shell: bash
+        working-directory: viewer
+        run: |
+          set -euo pipefail
+          node scripts/build-wasm.mjs digest | tee ../node-fingerprint.out
+
+      # See .github/scripts/assert_fingerprint_parity.py's own docstring for why this does
+      # not simply compare two strings: both sides' digest and input count are validated
+      # on their own terms -- 64-char lowercase hex, positive decimal integer -- before
+      # comparison, and the extension failing to import is treated as the entire Rust side
+      # being absent rather than an unrelated crash. A comparison that could read two
+      # empty/malformed values as "equal" is the exact defect class this project keeps
+      # finding elsewhere.
+      - name: Assert the node and rust source fingerprints agree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/assert_fingerprint_parity.py --node-output node-fingerprint.out
 
       # Collected BEFORE the run, and kept, because it is one of the two independent
       # statements the count gate cross-checks. `-q` prints one node id per test and a

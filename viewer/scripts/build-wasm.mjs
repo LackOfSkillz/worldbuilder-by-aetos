@@ -427,6 +427,21 @@ function main() {
     return;
   }
 
+  if (mode === "digest") {
+    // Print this side's whole statement of the fingerprint -- the digest AND the input
+    // count, as two independent lines -- and nothing else. No build, no artifact touched:
+    // sourceFingerprint() only reads and hashes the inputs that are here now. This is the
+    // Node half of Task 3's gate, which compares this against the Rust-embedded
+    // source_fingerprint()/source_fingerprint_inputs() PyO3 exports; a comparison that
+    // only had a digest on each side could not tell "these agree because both sides hashed
+    // the same real corpus" from "these agree because both sides are empty".
+    const toolchain = toolchainId(findCargo());
+    const { digest, inputs } = sourceFingerprint(repoRoot, toolchain);
+    console.log(`source-fingerprint: ${digest}`);
+    console.log(`fingerprint-inputs: ${inputs.length}`);
+    return;
+  }
+
   if (mode === "stale-self-test") {
     console.log("== self-test: can the staleness fingerprint refuse a source tree that moved? ==");
     staleSelfTest();

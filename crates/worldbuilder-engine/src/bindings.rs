@@ -54,6 +54,19 @@ pub fn source_fingerprint() -> &'static str {
     env!("WORLDBUILDER_SOURCE_FINGERPRINT")
 }
 
+/// The count of files that went into `source_fingerprint()`, exposed alongside it for the
+/// same reason `MANIFEST.txt` records both `source-fingerprint` and `fingerprint-inputs`: a
+/// digest comparison with only one number on each side cannot distinguish "the digests
+/// agree because both sides hashed the same real corpus" from "the digests happen to agree
+/// on a value that is not a real digest at all" (two empty strings, say). Task 3's gate
+/// reads this alongside the Node-computed count as the second, independent statement it
+/// cross-checks -- the same doubling `.github/scripts/assert_counts.py` uses for test and
+/// parity counts, applied here for the first time to the fingerprint itself.
+#[pyfunction]
+pub fn source_fingerprint_inputs() -> &'static str {
+    env!("WORLDBUILDER_SOURCE_FINGERPRINT_INPUTS")
+}
+
 #[pyfunction]
 pub fn vec3_length(x: f64, y: f64, z: f64) -> f64 {
     Vec3::new(x, y, z).length()
@@ -1563,7 +1576,7 @@ pub fn surface_bottom_at(
 
 #[cfg(test)]
 mod source_fingerprint_tests {
-    use super::source_fingerprint;
+    use super::{source_fingerprint, source_fingerprint_inputs};
 
     /// Sanity on the shape only -- the actual value moves every time a fingerprinted file's
     /// content changes (including this crate's own `Cargo.lock`), so pinning the exact
@@ -1579,5 +1592,20 @@ mod source_fingerprint_tests {
             digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "digest {digest:?} is not lowercase hex"
         );
+    }
+
+    /// Same shape check for the input count: a plain, non-empty, non-zero decimal integer.
+    /// Not pinned to 29 for the same reason the digest above isn't pinned to a value --
+    /// adding a fingerprinted file changes it on purpose.
+    #[test]
+    fn input_count_is_a_positive_decimal_integer() {
+        let count = source_fingerprint_inputs();
+        assert!(!count.is_empty(), "input count is empty");
+        assert!(
+            count.chars().all(|c| c.is_ascii_digit()),
+            "input count {count:?} is not a plain decimal integer"
+        );
+        let parsed: u32 = count.parse().expect("input count failed to parse into an integer");
+        assert!(parsed > 0, "input count is 0; a fingerprint over no inputs proves nothing");
     }
 }
