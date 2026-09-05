@@ -22,8 +22,26 @@
 // `postMessage(msg, [buffer])` moves the `ArrayBuffer` instead of copying it. The worker's
 // `Float32Array` is detached by the transfer, which is correct: it was a copy off the wasm
 // heap made by `fillTileF32` and the worker has no further use for it.
+//
+// # Two jobs, one world: heights and relief
+//
+// `fill` answers the terrain mesh (a 65 x 65 `Float32Array` of heights). `relief` answers
+// the imagery layer (a 256 x 256 RGBA raster). They are the same shape of work -- an engine
+// fill against this worker's own world, then a reply that transfers its buffer -- and they
+// deliberately share the world handle, because a relief raster drawn from a different world
+// than the mesh is the `wrong-world` fault arrived at by accident and looks entirely
+// plausible.
+//
+// **`relief` sends BYTES, not an image.** `ImageData` is structured-cloneable and
+// `ImageBitmap` is transferable, so either could cross the wire; the raw
+// `Uint8ClampedArray` is sent instead because it is the only one of the three that also
+// works under `node --test`, where `relief.js` already returns an ImageData-shaped plain
+// object. The main thread wraps the bytes back into an `ImageData` and blits them, which is
+// microseconds against a rasterisation measured in hundreds of milliseconds -- see
+// `relief-provider.js` for the measured split.
 
 import { Engine } from "./engine.js";
+import { reliefTile } from "./relief.js";
 
 /// Faults that live on this side of the wire. Mirrored in `terrain.js`'s `FAULTS`; the
 /// worker is told which one is active at init so a stale world is built *once*, the way a
@@ -72,6 +90,30 @@ function fill(message) {
   return { message: { type: "tile", id: message.id, index, fillMs, heights }, heights };
 }
 
+/// Rasterise one relief tile. `message.request` is `relief.js`'s own argument object minus
+/// the two things only this side has: the engine instance and the world handle.
+///
+/// The world handle is supplied HERE rather than sent, for the same reason `fill` does it:
+/// a handle is an index into a table inside *this* instance's linear memory and means
+/// nothing in another. A request that carried one would be reading someone else's world.
+function relief(message) {
+  const started = performance.now();
+  const imageData = reliefTile({ ...message.request, engine, worldHandle: world });
+  const fillMs = performance.now() - started;
+  return {
+    message: {
+      type: "relief",
+      id: message.id,
+      index,
+      fillMs,
+      data: imageData.data,
+      width: imageData.width,
+      height: imageData.height,
+    },
+    buffer: imageData.data.buffer,
+  };
+}
+
 self.onmessage = async (event) => {
   const message = event.data;
   try {
@@ -82,6 +124,11 @@ self.onmessage = async (event) => {
     if (message.type === "fill") {
       const { message: reply, heights } = fill(message);
       self.postMessage(reply, [heights.buffer]);
+      return;
+    }
+    if (message.type === "relief") {
+      const { message: reply, buffer } = relief(message);
+      self.postMessage(reply, [buffer]);
       return;
     }
     if (message.type === "free") {

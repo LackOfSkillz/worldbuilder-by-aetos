@@ -336,7 +336,13 @@ export function marginedTileRequest({ rectangle, size, worldHandle, radiusM, res
   };
 }
 
-function makeImageData(data, size) {
+/// Wrap a finished RGBA buffer as an `ImageData`, or as an ImageData-shaped plain object
+/// where that global does not exist.
+///
+/// Exported because `relief-provider.js` has to do exactly this to the bytes a worker
+/// transfers back, and a second copy of the `typeof ImageData` test would be a second thing
+/// that can disagree with this one about what a non-browser host looks like.
+export function makeImageData(data, size) {
   if (typeof ImageData !== "undefined") {
     return new ImageData(data, size, size);
   }

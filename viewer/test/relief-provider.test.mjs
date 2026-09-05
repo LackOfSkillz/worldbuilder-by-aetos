@@ -275,3 +275,137 @@ test("reliefLayerEnabled: on by default, off only for the exact string 0", () =>
   assert.equal(on("relief=false"), true, "only the literal 0 is off, matching ?paint=0/?flat=1");
   assert.equal(on("seed=7"), true);
 });
+
+// ---------------------------------------------------------------------------------------
+// TASK 4: the rasterisation moved into the worker pool.
+//
+// The provider is handed a `pool` and stops calling `reliefTile` itself. What is asserted
+// here is the seam: what crosses to the worker, that nothing rasterises on this side any
+// more, that the pixels did not change, and that the two costs are reported as two numbers
+// rather than added together.
+//
+// The fake pool below rasterises in-process, which is what makes the byte-identity
+// comparison possible at all in node. It is NOT a stand-in for the worker's own message
+// handler -- that is exercised against the real wasm in `tile-worker.test.mjs`, which
+// drives `tile-worker.js`'s actual `onmessage`.
+
+const { reliefTile } = await import("../public/app/relief.js");
+
+/// A pool that answers `relief(request)` the way `tile-worker.js` does: by spreading the
+/// request over `reliefTile` and supplying the engine and the world handle from its own
+/// side. Records every request so the wire format can be asserted.
+function fakePool({ fillMs = 190, reject = null } = {}) {
+  return {
+    requests: [],
+    relief(request) {
+      this.requests.push(request);
+      if (reject) return Promise.reject(reject);
+      const imageData = reliefTile({ ...request, engine, worldHandle: world });
+      return Promise.resolve({
+        data: imageData.data,
+        width: imageData.width,
+        height: imageData.height,
+        fillMs,
+        worker: 2,
+      });
+    },
+  };
+}
+
+test("with a pool, NOTHING rasterises on the main thread", async () => {
+  // The counter, not the picture: a provider that ignored the pool would render exactly the
+  // same globe and quote exactly the same `meanMs`, because it would be measuring the path
+  // it should no longer be on.
+  const pool = fakePool();
+  const provider = makeProvider({ pool, tileSize: 32 });
+  await provider.requestImage(mountainTile.x, mountainTile.y, 2);
+  const { stats } = provider.worldbuilder;
+  assert.equal(
+    stats.mainThreadRasters, 0,
+    "a relief tile was rasterised on the main thread despite a pool being present -- this " +
+    "is the whole of Task 4, and it fails silently",
+  );
+  assert.equal(stats.poolRasters, 1);
+  assert.equal(pool.requests.length, 1, "the pool must actually have been asked");
+});
+
+test("the request sent to the pool is structured-cloneable and carries no engine", async () => {
+  // `postMessage` structured-clones its argument. An `Engine` holds a `WebAssembly.Instance`
+  // and functions, which throws `DataCloneError` -- once per tile, from inside the pool,
+  // where it reads as a worker fault rather than as a provider bug. A world HANDLE clones
+  // fine and is worse: it is an index into a table inside one wasm instance's linear
+  // memory, so it would silently name a different world in the worker.
+  const pool = fakePool();
+  const provider = makeProvider({ pool, tileSize: 16 });
+  await provider.requestImage(3, 1, 2);
+  const [request] = pool.requests;
+  assert.equal("engine" in request, false, "an Engine is not structured-cloneable");
+  assert.equal(
+    "worldHandle" in request, false,
+    "a world handle is meaningless outside the instance that issued it; the worker must " +
+    "supply its own",
+  );
+  assert.doesNotThrow(
+    () => structuredClone(request),
+    "the request must survive postMessage; structuredClone is the same algorithm",
+  );
+  assert.equal(request.size, 16, "the tile size must cross, or the worker guesses at 256");
+  assert.equal(request.level, 2);
+  assert.equal(request.radiusM, DEFAULT_WORLD.radiusM);
+  assert.deepEqual(
+    request.rectangle, provider.worldbuilder.rectangleDegrees(3, 1, 2),
+    "the rectangle that crosses must be Cesium's own tile rectangle for that x/y/level",
+  );
+});
+
+test("the pool path and the ?workers=0 path produce byte-identical rasters", async () => {
+  // The claim Task 4 has to earn: the cost moved and the picture did not. Byte comparison,
+  // not a mean -- Task 2's lesson about the plausible mutation is that a statistic can be
+  // preserved by a change that destroys the meaning.
+  const viaPool = makeProvider({ pool: fakePool(), tileSize: 24 });
+  const viaMain = makeProvider({ tileSize: 24 });
+  const a = await viaPool.requestImage(mountainTile.x, mountainTile.y, 2);
+  const b = await viaMain.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.deepEqual(Array.from(a.data), Array.from(b.data));
+  assert.equal(viaMain.worldbuilder.stats.mainThreadRasters, 1, "?workers=0 is still the sync path");
+  assert.equal(viaMain.worldbuilder.stats.poolRasters, 0);
+});
+
+test("totalMs stays MAIN-THREAD time; the worker's cost is reported separately", async () => {
+  // The measurement this task exists to publish. If the worker's 190 ms were folded back
+  // into `totalMs`, the before/after would show no improvement at all -- and if it were
+  // dropped entirely, the report would claim the work vanished instead of moved.
+  const provider = makeProvider({ pool: fakePool({ fillMs: 190 }), tileSize: 16 });
+  await provider.requestImage(mountainTile.x, mountainTile.y, 2);
+  const { stats, meanMs, meanWorkerMs } = provider.worldbuilder;
+  assert.equal(stats.workerMs, 190, "the moved cost must still be counted, on its own line");
+  assert.equal(meanWorkerMs(), 190);
+  assert.ok(
+    stats.totalMs < 190,
+    `main-thread time per tile (${stats.totalMs.toFixed(3)} ms) must not include the ` +
+    "worker's 190 ms; this is the assertion that would catch a before/after that measures " +
+    "the same quantity twice",
+  );
+  assert.equal(meanMs(), stats.totalMs, "one tile, so the mean is the sample");
+});
+
+test("meanWorkerMs and meanWallMs are null on the synchronous path, not zero", async () => {
+  // Zero would read as "the workers cost nothing", which is a claim. Null is the absence of
+  // a measurement, which is the truth under ?workers=0.
+  const provider = makeProvider({ tileSize: 16 });
+  await provider.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.equal(provider.worldbuilder.meanWorkerMs(), null);
+  assert.equal(provider.worldbuilder.meanWallMs(), null);
+  assert.ok(provider.worldbuilder.meanMs() > 0);
+});
+
+test("a rejected pool job REJECTS requestImage rather than throwing into the render loop", async () => {
+  // `ImageryLayer._requestImagery` guards `requestImage` with `.then/.catch`, so a
+  // rejection is Cesium's own retry-or-fall-back-to-the-parent path. An exception thrown
+  // out of `requestImage` synchronously escapes that pair and takes the render loop down.
+  const boom = new Error("worker 2: out of memory");
+  const provider = makeProvider({ pool: fakePool({ reject: boom }), tileSize: 16 });
+  let result;
+  assert.doesNotThrow(() => { result = provider.requestImage(0, 0, 2); });
+  await assert.rejects(result, /out of memory/);
+});

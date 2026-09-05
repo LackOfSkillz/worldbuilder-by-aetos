@@ -122,6 +122,13 @@ export class TilePool {
     /// Main-thread time from `fill()` call to promise settle, per tile. Wall clock, so it
     /// includes queueing behind other tiles -- it is not what the main thread *blocks* for.
     this.wallMs = [];
+    /// The same two, for relief rasters. **Kept separate on purpose.** A relief tile is
+    /// 66,564 engine samples plus 65,536 texels of shading and a heightmap tile is 4,225
+    /// samples; pooling them into one `fillMs` would produce a median that describes
+    /// neither job, and this slice has already been misled once by a statistic quoted
+    /// without its population.
+    this.reliefMs = [];
+    this.reliefWallMs = [];
   }
 
   /// Start `count` workers and wait for every one to have built its world.
@@ -167,7 +174,7 @@ export class TilePool {
   }
 
   receive(message) {
-    if (message.type !== "tile" && message.type !== "error") return;
+    if (message.type !== "tile" && message.type !== "relief" && message.type !== "error") return;
     const entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);
@@ -176,8 +183,21 @@ export class TilePool {
       entry.reject(new Error(`worker ${message.index}: ${message.message}`));
       return;
     }
-    this.fillMs.push(message.fillMs);
-    this.wallMs.push(performance.now() - entry.started);
+    // Which sample the duration belongs in is decided by the entry, not by the reply: the
+    // dispatcher knows what it asked for, and a reply that could choose its own bucket
+    // would let a mislabelled worker reply silently pollute the other job's statistics.
+    entry.workMs.push(message.fillMs);
+    entry.wallMs.push(performance.now() - entry.started);
+    if (message.type === "relief") {
+      entry.resolve({
+        data: message.data,
+        width: message.width,
+        height: message.height,
+        fillMs: message.fillMs,
+        worker: message.index,
+      });
+      return;
+    }
     entry.resolve({ heights: message.heights, fillMs: message.fillMs, worker: message.index });
   }
 
@@ -200,18 +220,43 @@ export class TilePool {
     return best;
   }
 
-  /// Fill one tile. Resolves `{ heights, fillMs, worker }`; `heights` is the master copy
-  /// and must not be handed to Cesium without a `slice()`.
-  fill(request) {
+  /// Send one job to the least-loaded worker and record its two durations.
+  ///
+  /// `type` is the worker's message type; `workMs`/`wallMs` are the samples this job's
+  /// durations belong in. Both jobs share the dispatcher because both are the same
+  /// contention: one engine instance per worker, and the queue depth is what decides
+  /// whether a burst of tiles finishes in parallel or in series.
+  dispatch(type, request, workMs, wallMs) {
     const worker = this.pick();
     const id = this.nextId;
     this.nextId += 1;
     this.outstanding[worker] += 1;
     this.dispatched[worker] += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, worker, started: performance.now() });
-      this.workers[worker].postMessage({ type: "fill", id, request });
+      this.pending.set(id, {
+        resolve, reject, worker, started: performance.now(), workMs, wallMs,
+      });
+      this.workers[worker].postMessage({ type, id, request });
     });
+  }
+
+  /// Fill one tile. Resolves `{ heights, fillMs, worker }`; `heights` is the master copy
+  /// and must not be handed to Cesium without a `slice()`.
+  fill(request) {
+    return this.dispatch("fill", request, this.fillMs, this.wallMs);
+  }
+
+  /// Rasterise one relief tile. Resolves `{ data, width, height, fillMs, worker }`, where
+  /// `data` is a `Uint8ClampedArray` of RGBA texels transferred out of the worker.
+  ///
+  /// **No cache, deliberately, and it is not an omission.** `TileCache` earns its keep for
+  /// heightmaps because Cesium re-asks for a parent tile whenever it upsamples a child, and
+  /// a 65 x 65 master is 16,900 bytes. An imagery tile is asked for once per layer lifetime
+  /// -- `ImageryLayer` caches the uploaded *texture* itself -- and a 256 x 256 master is
+  /// 262,144 bytes, so the same 1,024-tile capacity would be 256 MB of masters bought to
+  /// serve a hit rate near zero.
+  relief(request) {
+    return this.dispatch("relief", request, this.reliefMs, this.reliefWallMs);
   }
 
   terminate() {
@@ -228,6 +273,9 @@ export class TilePool {
       fills: this.fillMs.length,
       fillMs: summarise(this.fillMs),
       wallMs: summarise(this.wallMs),
+      reliefs: this.reliefMs.length,
+      reliefMs: summarise(this.reliefMs),
+      reliefWallMs: summarise(this.reliefWallMs),
     };
   }
 }
