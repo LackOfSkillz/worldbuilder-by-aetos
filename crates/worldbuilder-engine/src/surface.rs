@@ -36,7 +36,7 @@ use crate::plates::PlateSet;
 use crate::shelf::Shelf;
 use crate::sphere::SpherePoint;
 use crate::substrate::{self, Composition, UnknownSubstrate};
-use crate::tectonics::Tectonics;
+use crate::tectonics::{TectonicParams, Tectonics};
 
 /// What the caller brought, where Python writes `features=`.
 ///
@@ -120,6 +120,11 @@ impl Surface {
     /// pattern as `features` immediately above: an explicit `None` meaning *canonical* is
     /// a different thing from an implicit `Default::default()`, and this codebase
     /// deliberately rejects defaults nobody chose.
+    /// tectonics: `None` for canonical uplift -- `Tectonics`' nine profile constants
+    /// exactly as `worldbuilder/terrain/tectonics.py` has them -- or `Some(params)` for a
+    /// caller-chosen `TectonicParams`. The third parameter of the same kind, following
+    /// `features` and `relief` above rather than inventing a second convention. It reaches
+    /// `Shelf` too, because `Shelf` is built from this same `Tectonics`.
     ///
     /// **The seed reaches three constructors and they do not agree on what it is.** This
     /// is the one thing in this file that a reviewer should not skim. `plates_for` keys a
@@ -137,6 +142,7 @@ impl Surface {
         land_fraction: f64,
         features: Option<FeatureInput>,
         relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
     ) -> Self {
         let plates = plates_for(world_seed, plate_count);
         // `Noise::new` mixes first and masks second (`noise.py:38`, `h = (h ^ (seed * K)) &
@@ -147,7 +153,10 @@ impl Surface {
         // See task-1-report.md sections 1a-1c.
         let noise_seed = world_seed as u64; // cast-ok: two's-complement reinterpretation, not a float truncation -- the mask comes AFTER the mixing, so nothing is rounded and nothing is lost
         let land = Continentality::new(noise_seed, radius_m, land_fraction);
-        let tectonics = Tectonics::new(plates.clone(), land, radius_m);
+        // The `tectonics` on the right is still the `Option<TectonicParams>` parameter --
+        // the binding this line introduces is not in scope until after it -- and from here
+        // on the name means the built layer, as it did before this parameter existed.
+        let tectonics = Tectonics::new(plates.clone(), land, radius_m, tectonics);
         let shelf = Shelf::new(tectonics.clone(), land, radius_m);
         let detail = Detail::new(noise_seed, radius_m, relief);
         // Transcribed from `surface.py`'s three-way branch, and the last arm is the one
@@ -472,7 +481,7 @@ mod tests {
     }
 
     fn plain(features: Option<FeatureInput>) -> Surface {
-        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None)
+        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None, None)
     }
 
     /// A world radius that is not Earth's, and the reason it had to be added.
@@ -498,7 +507,7 @@ mod tests {
     const SMALL_RADIUS_M: f64 = 3_000_000.0;
 
     fn small_world(features: Option<FeatureInput>) -> Surface {
-        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None)
+        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None, None)
     }
 
     /// Task 1's whole claim: a `Surface` built with `relief: None` and one built with
@@ -523,6 +532,7 @@ mod tests {
             LAND_FRACTION,
             None,
             Some(ReliefParams::canonical()),
+            None,
         );
 
         let mut compared = 0u32;
@@ -577,6 +587,7 @@ mod tests {
             LAND_FRACTION,
             None,
             Some(canonical),
+            None,
         );
         let world_nudged = Surface::new(
             SEED,
@@ -585,6 +596,7 @@ mod tests {
             LAND_FRACTION,
             None,
             Some(nudged),
+            None,
         );
 
         // Scan the same grid the bit-identity test walks, rather than guessing a single
@@ -612,6 +624,62 @@ mod tests {
             "a one-ULP relief perturbation must be visible in elevation_m somewhere on the \
              planet, or the bit-identity test above cannot be trusted to fail"
         );
+    }
+
+    /// Task 1's mountains-slice claim, the same shape as the relief pair above: a
+    /// `Surface` built with `tectonics: None` and one built with
+    /// `tectonics: Some(TectonicParams::canonical())` must be indistinguishable, not
+    /// merely close. Compared as bit patterns over both `elevation_m` (the full
+    /// structure-plus-detail pipeline) and `structural_m` (structure alone, ahead of
+    /// detail), because the uplift path this task threads a field through is read by
+    /// both.
+    ///
+    /// **Population**: the same 37 x 73 lat/lon grid the relief pair above uses (every 5
+    /// degrees, poles to poles and around), 2,701 points. **Method**: `f64::to_bits`
+    /// equality, never `==` -- the claim is exactness, and `==` would pass on two
+    /// different NaNs while failing on `-0.0` versus `0.0`. **Host**: this port, seed
+    /// `SEED`.
+    #[test]
+    fn tectonics_none_matches_tectonics_some_canonical_bit_for_bit() {
+        let with_none = plain(None);
+        let with_canonical = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            Some(TectonicParams::canonical()),
+        );
+
+        let mut compared = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a_elevation = with_none.elevation_m(&p, None);
+                let b_elevation = with_canonical.elevation_m(&p, None);
+                assert_eq!(
+                    a_elevation.to_bits(),
+                    b_elevation.to_bits(),
+                    "elevation_m: None and Some(canonical()) diverged at lat {lat} lon \
+                     {lon}: {a_elevation} vs {b_elevation}"
+                );
+                let a_structural = with_none.structural_m(&p);
+                let b_structural = with_canonical.structural_m(&p);
+                assert_eq!(
+                    a_structural.to_bits(),
+                    b_structural.to_bits(),
+                    "structural_m: None and Some(canonical()) diverged at lat {lat} lon \
+                     {lon}: {a_structural} vs {b_structural}"
+                );
+                compared += 1;
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 37 * 73, "grid population changed -- update the doc comment");
     }
 
     /// Where the small world's substrate separates the two radii, found by scanning a
@@ -779,6 +847,7 @@ mod tests {
             surface.plates.clone(),
             Continentality::new(noise_seed ^ 1, EARTH_RADIUS_M, LAND_FRACTION),
             EARTH_RADIUS_M,
+            None,
         );
         // Both figures from the live Python, which was handed `Continentality(-5, ...)` and
         // `Continentality(-6, ...)`; `-5 ^ 1 == -6`, and masking commutes with the xor, so
@@ -804,7 +873,7 @@ mod tests {
         assert_eq!(surface.world_seed, SEED);
         assert_eq!(surface.radius_m.to_bits(), EARTH_RADIUS_M.to_bits());
         assert_eq!(surface.plates.len(), DEFAULT_PLATE_COUNT);
-        let odd = Surface::new(7, 1234567.0, 5, 0.5, None, None);
+        let odd = Surface::new(7, 1234567.0, 5, 0.5, None, None, None);
         assert_eq!(odd.world_seed, 7);
         assert_eq!(odd.radius_m.to_bits(), 1234567.0f64.to_bits());
         assert_eq!(odd.plates.len(), 5);

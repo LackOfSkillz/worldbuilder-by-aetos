@@ -422,7 +422,7 @@ fn main() {
     let predicted_flips = {
         let sampling = sample_nodes(SEED as u64, WATER_NODES, RADIUS_M) // cast-ok: two's-complement reinterpretation, the same one wb_world_new makes for Noise
             .expect("the corpus node set must sample");
-        let surface = Surface::new(SEED, RADIUS_M, PLATES as usize, LAND, None, None); // cast-ok: a corpus-fixed plate count widened to usize
+        let surface = Surface::new(SEED, RADIUS_M, PLATES as usize, LAND, None, None, None); // cast-ok: a corpus-fixed plate count widened to usize
         let heights: Vec<f64> =
             sampling.positions.iter().map(|point| surface.elevation_m(point, None)).collect();
         let mut graph = StreamGraph::build(

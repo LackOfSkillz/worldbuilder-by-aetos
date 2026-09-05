@@ -332,7 +332,7 @@ mod tests {
             crate::continentality::LAND_FRACTION,
         );
         let plates = crate::generation::plates_for(SEED, 22);
-        let tectonics = Tectonics::new(plates, land, crate::sphere::EARTH_RADIUS_M);
+        let tectonics = Tectonics::new(plates, land, crate::sphere::EARTH_RADIUS_M, None);
         Shelf::new(tectonics, land, crate::sphere::EARTH_RADIUS_M)
     }
 

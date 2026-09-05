@@ -89,7 +89,7 @@ fn main() {
     }
 
     let t = Instant::now();
-    let surface = Surface::new(SEED, EARTH_RADIUS_M, 22, 0.29, None, None);
+    let surface = Surface::new(SEED, EARTH_RADIUS_M, 22, 0.29, None, None, None);
     println!("  Surface::new                {:>9.3} s", t.elapsed().as_secs_f64());
     let t = Instant::now();
     let mut heights: Vec<f64> = Vec::with_capacity(positions.len());

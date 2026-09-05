@@ -708,7 +708,7 @@ mod tests {
         const LAT_STEPS: i32 = 17; // -80..=80 at 10 deg, poles excluded (TangentFrame degenerates there)
         const LON_STEPS: i32 = 36; // -180..170 at 10 deg
 
-        let reference = Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None);
+        let reference = Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None, None);
 
         let mut best: Option<(f64, f64, f64)> = None; // (structural_m, lat, lon)
         for i in 0..LAT_STEPS {
@@ -742,6 +742,7 @@ mod tests {
             LAND_FRACTION,
             None,
             Some(ReliefParams::canonical()),
+            None,
         );
         let world_hills = Surface::new(
             SEED,
@@ -750,6 +751,7 @@ mod tests {
             LAND_FRACTION,
             None,
             Some(ReliefParams::hills()),
+            None,
         );
 
         let relief_of = |surface: &Surface| -> f64 {

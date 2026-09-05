@@ -1004,7 +1004,10 @@ unsafe fn build_world(
     // `relief` arrives already validated -- `read_relief` refuses at the boundary, so
     // nothing outside the documented domain reaches here. `None` is the canonical path and
     // is what `wb_world_new` always passes.
-    let surface = Surface::new(world_seed, radius_m, plates, land_fraction, features, relief);
+    // tectonics: None -- canonical uplift. Task 4 of the mountains slice decides how a
+    // caller chooses a `TectonicParams` across this boundary.
+    let surface =
+        Surface::new(world_seed, radius_m, plates, land_fraction, features, relief, None);
     insert_world(World::new(surface))
 }
 

@@ -1907,7 +1907,7 @@ mod tests {
     fn real_graph(seed: i64) -> StreamGraph {
         let world_seed = seed as u64; // cast-ok: two's-complement reinterpretation, as Surface::new makes
         let sampling = sample_nodes(world_seed, NODES, EARTH_RADIUS_M).expect("a node set");
-        let field = Surface::new(seed, EARTH_RADIUS_M, 22, 0.29, None, None);
+        let field = Surface::new(seed, EARTH_RADIUS_M, 22, 0.29, None, None, None);
         let heights: Vec<f64> = sampling
             .positions
             .iter()

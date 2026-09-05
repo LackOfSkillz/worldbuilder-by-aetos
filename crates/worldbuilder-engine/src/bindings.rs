@@ -480,7 +480,9 @@ fn tectonics_from_parts(
 ) -> Tectonics {
     let plates = plateset_from_parts(seeds_flat, poles_flat, rates);
     let land = cached_continentality(continentality_seed, radius_m, land_fraction);
-    Tectonics::new(plates, land, radius_m)
+    // tectonics: None -- canonical uplift. This binding exposes the Python reference's
+    // own constants, which is what the conformance oracle compares against.
+    Tectonics::new(plates, land, radius_m, None)
 }
 
 /// `Setting.inboard`/`Setting.outboard` at a point, given a margin distance and normal.
@@ -694,7 +696,7 @@ fn shelf_from_parts(
 /// `LAND_FRACTION`), never varied and never read by the method this binding calls.
 fn dummy_shelf(radius_m: f64) -> Shelf {
     let land = cached_continentality(0, radius_m, crate::continentality::LAND_FRACTION);
-    let tectonics = Tectonics::new(PlateSet::new(Vec::new()), land, radius_m);
+    let tectonics = Tectonics::new(PlateSet::new(Vec::new()), land, radius_m, None);
     Shelf::new(tectonics, land, radius_m)
 }
 
@@ -1426,7 +1428,9 @@ fn cached_surface(
     // relief: None -- canonical roughness. Not exposed to Python by this binding; a later
     // task decides whether and how a caller chooses a ReliefParams (Task 4).
     let surface: &'static crate::surface::Surface = Box::leak(Box::new(
-        crate::surface::Surface::new(world_seed, radius_m, plate_count, land_fraction, input, None),
+        crate::surface::Surface::new(
+            world_seed, radius_m, plate_count, land_fraction, input, None, None,
+        ),
     ));
     cache.insert(key, surface);
     surface

@@ -351,7 +351,8 @@ fn main() {
     println!("relief_survey: seed {SEED}, radius {EARTH_RADIUS_M} m, plates {DEFAULT_PLATE_COUNT}, land_fraction {LAND_FRACTION}");
 
     let candidates = candidate_grid();
-    let reference = Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None);
+    let reference =
+        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None, None);
     let land_sites = sites_above(&reference, &candidates, 0.0);
     let high_ground_sites = sites_above(&reference, &candidates, HIGH_GROUND_STRUCTURAL_M);
     let peak_candidates = peak_search_grid();
@@ -412,7 +413,10 @@ fn main() {
                     ..canonical
                 };
                 let surface =
-                    Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, Some(relief));
+                    Surface::new(
+                        SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None,
+                        Some(relief), None,
+                    );
                 let row = measure(&surface, &land_sites, &high_ground_sites);
                 print_row(relief.mountain_m, quieting_strength, persistence, &row);
             }
@@ -437,7 +441,10 @@ fn main() {
                     ..canonical
                 };
                 let surface =
-                    Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, Some(relief));
+                    Surface::new(
+                        SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None,
+                        Some(relief), None,
+                    );
                 let row = measure(&surface, &peak_sites, &peak_sites);
                 print_row(relief.mountain_m, quieting_strength, persistence, &row);
             }

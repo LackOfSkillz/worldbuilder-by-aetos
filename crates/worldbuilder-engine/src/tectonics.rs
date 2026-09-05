@@ -36,6 +36,13 @@ use crate::vectors::Vec3;
 
 /// Beyond this, a margin does nothing at all and no kinematics are evaluated. Every
 /// profile below must reach exactly zero by here, or the gate itself becomes a cliff.
+///
+/// **`TectonicParams` makes the widths a caller's to choose, and this gate does not
+/// move with them.** At `canonical()` every profile is inside it by construction; a width
+/// chosen beyond it would be truncated here rather than faded, which is the cliff this
+/// constant exists to prevent. Validating a caller-supplied block against this bound
+/// belongs at the boundary that admits one (the WASM export, a later task), not here --
+/// nothing clamps.
 pub const MAX_TECTONIC_RANGE_M: f64 = 420_000.0;
 
 /// How far either side of the margin to ask what kind of ground it is. Far enough to be
@@ -86,13 +93,99 @@ pub const RIDGE_WIDTH_M: f64 = 380_000.0;
 pub const RIFT_M: f64 = -350.0;
 pub const RIFT_WIDTH_M: f64 = 70_000.0;
 
+/// The nine values that decide how high, how wide and how readily the plates build
+/// mountains, broken out so a caller who wants a different world can ask for one without
+/// touching what "canonical" means.
+///
+/// `Tectonics::new` takes `Option<TectonicParams>`, following the house pattern already on
+/// `Detail::new`'s `relief: Option<ReliefParams>` and `Surface::new`'s
+/// `features: Option<FeatureInput>`: **`None` is the canonical path, not an implicit
+/// `Default::default()`** -- this codebase deliberately rejects defaults nobody chose (see
+/// `stream.rs::BuildParams`). `TectonicParams::canonical()` is the only way to get today's
+/// nine constants as a value, and every field names the module constant it was taken from.
+///
+/// **This block adds the knob. It does not change what it defaults to.**
+/// `worldbuilder/terrain/tectonics.py` holds these same constants and is the oracle
+/// `tests/test_conformance.py` treats as ground truth, so a changed default here is a
+/// change to the reference implementation and therefore the owner's decision, not a commit.
+///
+/// **The trench and rift constants are deliberately absent.** `TRENCH_M`,
+/// `TRENCH_WIDTH_M`, `TRENCH_OFFSET_M`, `RIFT_M` and `RIFT_WIDTH_M` are negative-going
+/// sea-floor features; this block exists for the two controls the owner asked for --
+/// mountain height and how many margins become ranges -- and widening it to the sea floor
+/// would add surface with no request behind it. `ISLAND_ARC_OFFSET_M` is absent for the
+/// same reason: it places the arc rather than sizing it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TectonicParams {
+    /// `CONTINENT_COLLISION_M`: how high a continent-continent collision lifts the ground.
+    pub continent_collision_m: f64,
+    /// `CONTINENT_COLLISION_WIDTH_M`: how far from the margin that lift reaches zero.
+    /// **Amplitude over this width is the grade**, and today's pair is 1,500 m over
+    /// 400 km -- 0.375%, against 3-8% for a real range.
+    pub continent_collision_width_m: f64,
+    /// `COASTAL_UPLIFT_M`: the subduction-margin coastal rise.
+    pub coastal_uplift_m: f64,
+    /// `COASTAL_UPLIFT_WIDTH_M`: how far that rise reaches zero.
+    pub coastal_uplift_width_m: f64,
+    /// `ISLAND_ARC_M`: how high an oceanic-oceanic arc stands.
+    pub island_arc_m: f64,
+    /// `ISLAND_ARC_WIDTH_M`: how wide it is. Its *offset* from the margin stays a module
+    /// constant -- that places the arc, it does not size it.
+    pub island_arc_width_m: f64,
+    /// `RIDGE_M`: how high a divergent margin's ridge stands.
+    pub ridge_m: f64,
+    /// `RIDGE_WIDTH_M`: how wide the ridge is.
+    pub ridge_width_m: f64,
+    /// `CONTINENTAL_BLEND`: how readily a margin counts as continental -- the width of the
+    /// oceanic-to-continental transition in `continental_with`, not a threshold. This is
+    /// the "how many mountains" knob: it governs how much of a margin's response is the
+    /// collision profile at all.
+    pub continental_blend: f64,
+}
+
+impl TectonicParams {
+    /// Exactly today's nine values, each traceable to the module constant above it.
+    /// Building a `Tectonics` with `None` and one with `Some(TectonicParams::canonical())`
+    /// must produce bit-identical output -- see `surface.rs`'s
+    /// `tectonics_none_matches_tectonics_some_canonical_bit_for_bit`.
+    pub fn canonical() -> Self {
+        Self {
+            continent_collision_m: CONTINENT_COLLISION_M,
+            continent_collision_width_m: CONTINENT_COLLISION_WIDTH_M,
+            coastal_uplift_m: COASTAL_UPLIFT_M,
+            coastal_uplift_width_m: COASTAL_UPLIFT_WIDTH_M,
+            island_arc_m: ISLAND_ARC_M,
+            island_arc_width_m: ISLAND_ARC_WIDTH_M,
+            ridge_m: RIDGE_M,
+            ridge_width_m: RIDGE_WIDTH_M,
+            continental_blend: CONTINENTAL_BLEND,
+        }
+    }
+}
+
 /// Nothing for thoroughly oceanic, one for thoroughly continental, and a smooth ramp
 /// between.
 ///
 /// Args:
 /// value: Continentality on one side of a margin.
 pub(crate) fn continental(value: f64) -> f64 {
-    let fraction = (value - CONTINENTAL_ENOUGH) / CONTINENTAL_BLEND * 0.5 + 0.5;
+    continental_with(value, CONTINENTAL_BLEND)
+}
+
+/// The same ramp, with the transition width supplied rather than taken from the module
+/// constant.
+///
+/// Split out so `TectonicParams::continental_blend` can reach it without changing
+/// `continental`'s signature -- `bindings.rs::tectonics_continental` is a conformance
+/// binding whose Python counterpart takes one argument, and the oracle does not move.
+/// `continental(v)` is exactly `continental_with(v, CONTINENTAL_BLEND)`, the same four
+/// operations in the same order, so the canonical path is unchanged bit-for-bit.
+///
+/// Args:
+/// value: Continentality on one side of a margin.
+/// blend: How wide the oceanic-to-continental transition is.
+pub(crate) fn continental_with(value: f64, blend: f64) -> f64 {
+    let fraction = (value - CONTINENTAL_ENOUGH) / blend * 0.5 + 0.5;
     // Python writes `max(0.0, min(1.0, fraction))`; the two-argument forms are asymmetric
     // under NaN, keeping the first operand unless the second is strictly beyond it. So
     // `min(1.0, fraction)` keeps 1.0 unless `fraction` is strictly less than it, and
@@ -140,13 +233,25 @@ pub struct Setting {
 }
 
 impl Setting {
-    /// How continental the near side is, from nothing to one, smoothly.
+    /// How continental the near side is, from nothing to one, smoothly, at the canonical
+    /// transition width.
     pub fn inboard_continental(&self) -> f64 {
-        continental(self.inboard)
+        self.inboard_continental_with(CONTINENTAL_BLEND)
     }
 
     pub fn outboard_continental(&self) -> f64 {
-        continental(self.outboard)
+        self.outboard_continental_with(CONTINENTAL_BLEND)
+    }
+
+    /// The same, at a caller-chosen transition width -- what `from_margin` uses so that
+    /// `TectonicParams::continental_blend` reaches the profile mix. The two no-argument
+    /// forms above delegate here with `CONTINENTAL_BLEND`, so there is one ramp, not two.
+    pub fn inboard_continental_with(&self, blend: f64) -> f64 {
+        continental_with(self.inboard, blend)
+    }
+
+    pub fn outboard_continental_with(&self, blend: f64) -> f64 {
+        continental_with(self.outboard, blend)
     }
 
     /// Which side is the more continental, from -1 to +1, and how decidedly.
@@ -173,11 +278,28 @@ pub struct Tectonics {
     plates: PlateSet,
     land: Continentality,
     radius_m: f64,
+    params: TectonicParams,
 }
 
 impl Tectonics {
-    pub fn new(plates: PlateSet, land: Continentality, radius_m: f64) -> Self {
-        Self { plates, land, radius_m }
+    /// `params`: `None` for canonical -- today's nine constants, byte-for-byte what
+    /// `TectonicParams::canonical()` returns -- or `Some(params)` for a caller-chosen
+    /// block. Resolved once here rather than re-checked per sample, so `from_margin` never
+    /// sees the `Option` at all, exactly as `Detail::new` resolves `ReliefParams`.
+    pub fn new(
+        plates: PlateSet,
+        land: Continentality,
+        radius_m: f64,
+        params: Option<TectonicParams>,
+    ) -> Self {
+        let params = params.unwrap_or_else(TectonicParams::canonical);
+        Self { plates, land, radius_m, params }
+    }
+
+    /// What this world's uplift profiles are set to. Read-only: nothing writes these after
+    /// construction, so no caller can make two samples of one world disagree.
+    pub fn params(&self) -> &TectonicParams {
+        &self.params
     }
 
     /// What lies either side of the margin near this point.
@@ -350,13 +472,13 @@ impl Tectonics {
             // by it cannot change the sign of `motion.closing_m_per_myr`. This branch is
             // decided by that sign, which is algebraic, not measured through `hypot`.
             return strength
-                * (RIDGE_M * bump(distance_m, RIDGE_WIDTH_M)
+                * (self.params.ridge_m * bump(distance_m, self.params.ridge_width_m)
                     + RIFT_M * bump(distance_m, RIFT_WIDTH_M));
         }
 
         let setting = self.setting_at(point, distance_m, normal);
-        let inboard = setting.inboard_continental();
-        let outboard = setting.outboard_continental();
+        let inboard = setting.inboard_continental_with(self.params.continental_blend);
+        let outboard = setting.outboard_continental_with(self.params.continental_blend);
         let collision = inboard * outboard;
         let oceanic = (1.0 - inboard) * (1.0 - outboard);
         // Python writes `max(0.0, 1.0 - collision - oceanic)`; house form keeps the first
@@ -368,15 +490,22 @@ impl Tectonics {
         // rather than a free function: it exists only to capture `collision`, `oceanic`
         // and `subduction`, which are local to this call, and a free function would need
         // all three threaded through as extra parameters for no benefit.
+        //
+        // `params` is a copy rather than a borrow of `self.params` so the closure captures
+        // a plain value and never holds a borrow of `self` across the two calls below.
+        let params = self.params;
         let profile = |across_m: f64| -> f64 {
-            let collided = CONTINENT_COLLISION_M * bump(across_m, CONTINENT_COLLISION_WIDTH_M);
+            let collided =
+                params.continent_collision_m * bump(across_m, params.continent_collision_width_m);
             let trench = TRENCH_M * bump(across_m + TRENCH_OFFSET_M, TRENCH_WIDTH_M);
-            let arc = ISLAND_ARC_M * bump(across_m - ISLAND_ARC_OFFSET_M, ISLAND_ARC_WIDTH_M);
+            let arc =
+                params.island_arc_m * bump(across_m - ISLAND_ARC_OFFSET_M, params.island_arc_width_m);
             // The literal below is deliberately bare: it coincidentally equals
             // `RIFT_WIDTH_M`, but the two are unrelated quantities and binding this one
             // to that constant would couple two profiles that must be free to vary
             // independently.
-            let uplift = COASTAL_UPLIFT_M * bump(across_m - 70_000.0, COASTAL_UPLIFT_WIDTH_M);
+            let uplift =
+                params.coastal_uplift_m * bump(across_m - 70_000.0, params.coastal_uplift_width_m);
             collision * collided + oceanic * (arc + trench) + subduction * (uplift + trench)
         };
 
@@ -416,7 +545,7 @@ mod tests {
     /// that only need *some* world, not a particular geometry.
     fn test_world() -> Tectonics {
         let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
-        Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M)
+        Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, None)
     }
 
     #[test]
@@ -489,7 +618,7 @@ mod tests {
         let near = nearest.expect("a nearest plate when margins were found");
 
         let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
-        let world = Tectonics::new(set, land, EARTH_RADIUS_M);
+        let world = Tectonics::new(set, land, EARTH_RADIUS_M, None);
 
         let total = world.offset_m(&point);
 
@@ -527,6 +656,55 @@ mod tests {
         assert_eq!(continental(-10.0), 0.0);
         assert_eq!(continental(10.0), 1.0);
         assert_eq!(continental(CONTINENTAL_ENOUGH), 0.5);
+    }
+
+    #[test]
+    fn canonical_params_are_the_module_constants_bit_for_bit() {
+        // `canonical()` is not "about today's values", it IS today's values. Compared as
+        // bit patterns, because the claim is exactness -- `worldbuilder/terrain/
+        // tectonics.py` holds the same nine numbers and is the conformance oracle.
+        let p = TectonicParams::canonical();
+        assert_eq!(p.continent_collision_m.to_bits(), CONTINENT_COLLISION_M.to_bits());
+        assert_eq!(p.continent_collision_width_m.to_bits(), CONTINENT_COLLISION_WIDTH_M.to_bits());
+        assert_eq!(p.coastal_uplift_m.to_bits(), COASTAL_UPLIFT_M.to_bits());
+        assert_eq!(p.coastal_uplift_width_m.to_bits(), COASTAL_UPLIFT_WIDTH_M.to_bits());
+        assert_eq!(p.island_arc_m.to_bits(), ISLAND_ARC_M.to_bits());
+        assert_eq!(p.island_arc_width_m.to_bits(), ISLAND_ARC_WIDTH_M.to_bits());
+        assert_eq!(p.ridge_m.to_bits(), RIDGE_M.to_bits());
+        assert_eq!(p.ridge_width_m.to_bits(), RIDGE_WIDTH_M.to_bits());
+        assert_eq!(p.continental_blend.to_bits(), CONTINENTAL_BLEND.to_bits());
+    }
+
+    #[test]
+    fn continental_is_exactly_continental_with_at_the_canonical_blend() {
+        // The no-argument form is kept because `bindings.rs::tectonics_continental` is a
+        // conformance binding and its Python counterpart takes one argument. It must
+        // therefore be the SAME ramp as the parameterised one, not a second copy that can
+        // drift: bit-equality, over both sides of the clamp and the interior.
+        for value in [-10.0, -1.0, -0.45, -0.1, 0.0, 0.1, 0.45, 1.0, 10.0] {
+            assert_eq!(
+                continental(value).to_bits(),
+                continental_with(value, CONTINENTAL_BLEND).to_bits(),
+                "the two ramps disagree at {value}"
+            );
+            let setting = Setting { inboard: value, outboard: -value };
+            assert_eq!(
+                setting.inboard_continental().to_bits(),
+                setting.inboard_continental_with(CONTINENTAL_BLEND).to_bits()
+            );
+            assert_eq!(
+                setting.outboard_continental().to_bits(),
+                setting.outboard_continental_with(CONTINENTAL_BLEND).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrower_continental_blend_is_a_different_ramp() {
+        // The discrimination half: if `continental_with` ignored its `blend` argument the
+        // test above would pass vacuously. A blend nobody would choose by accident, at a
+        // value inside the ramp rather than out on either clamped shoulder.
+        assert_ne!(continental_with(0.1, 0.45).to_bits(), continental_with(0.1, 0.9).to_bits());
     }
 
     #[test]
@@ -619,7 +797,7 @@ mod tests {
         let normal_b = set.margin_normal(&point_b, &margin_b).expect("not degenerate");
 
         let land = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
-        let tectonics = Tectonics::new(set, land, EARTH_RADIUS_M);
+        let tectonics = Tectonics::new(set, land, EARTH_RADIUS_M, None);
 
         let setting_a = tectonics.setting_at(&point_a, margin_a.distance_m, &normal_a);
         let setting_b = tectonics.setting_at(&point_b, margin_b.distance_m, &normal_b);
@@ -694,7 +872,7 @@ mod tests {
         // which is what makes the 419 km test meaningful rather than vacuous.
         let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
         let plates = PlateSet::new(vec![near, far]);
-        let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M);
+        let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M, None);
 
         LopsidedWorld { tectonics, point, near, far, normal }
     }

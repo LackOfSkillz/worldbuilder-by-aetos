@@ -388,25 +388,40 @@ jobs:
           # configuration through `assert_counts.py cargo-list` itself against fresh
           # `-- --list` / `-- --list --ignored` output, which reported `count OK` at all five.
           # See task-5-report.md.
+          # 2026-09-05, slice-mountains Task 1 (`TectonicParams`, opt-in, and `None`
+          # bit-identity): 517/517/519/566/568 -> 521/521/523/570/572, +4 uniformly across
+          # all five rows. Three of the four are non-wasm-gated tests added to
+          # `tectonics.rs` alongside the new `TectonicParams` struct and its
+          # `canonical()` (a bit-for-bit-against-the-module-constants check and two
+          # margin-blend checks), and the fourth is `surface.rs`'s
+          # `tectonics_none_matches_tectonics_some_canonical_bit_for_bit`, the task's own
+          # required proof that `tectonics: None` and `tectonics:
+          # Some(TectonicParams::canonical())` agree bit-for-bit. None of the four are
+          # behind `#[cfg(feature = "wasm")]`, which is why the count moves by the same
+          # +4 on every row rather than only the two wasm ones. `expect_ignored` stays 5;
+          # no `#[ignore]`d test was added. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` /
+          # `-- --list --ignored` output, which reported `count OK` at all five. See
+          # task-1-report.md.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 517
+            expect: 521
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 517
+            expect: 521
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 519
+            expect: 523
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 566
+            expect: 570
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 568
+            expect: 572
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
