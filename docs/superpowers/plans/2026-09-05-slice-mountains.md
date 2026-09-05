@@ -75,6 +75,57 @@ and the owner asked for them. They are necessary and they are not sufficient.
    graph and we evaluate a function. **Honest cost: it doubles every elevation query and it does NOT conserve
    land fraction.** Neither reference project solves that; it stays our problem.
 
+### THE LITERATURE SAYS OUR GRADE IS ALREADY RIGHT AND OUR SHAPE IS NOT
+
+Davis, Suppe & Dahlen (1983), *JGR* 88(B2), Table 1, read verbatim and cross-confirmed in body text:
+**Taiwan alpha = 2.9 +- 0.3 deg, Himalaya alpha = 4.0 +- 0.5 deg.** A 4-degree surface slope is a **7.0%
+grade**.
+
+**Our probe measured 7.03% at 6,000 m over 100 km. That is the Himalayan surface slope, to three
+significant figures.** So the steep setting is not too shallow. It is the right slope on the wrong shape,
+which is the sharpest possible confirmation that the missing thing is structure rather than steepness.
+
+### THE SHAPE, WITH PUBLISHED NUMBERS: A DOUBLY-VERGENT ASYMMETRIC WEDGE
+
+Naylor & Sinclair (2008), *Basin Research*, verbatim: **alpha_pro = 1.5 deg, alpha_retro = 2.5 deg**, giving
+at H_max = 3 km a **pro-wedge 115 km wide and a retro-wedge 69 km wide**.
+
+The mechanism is Willett, Beaumont & Fullsack (1993): a wedge grown by accretion at the toe takes the
+**minimum** taper; one grown by material transported across the singularity takes the **maximum**. So a
+collisional range is **asymmetric by construction** -- broad and shallow on the subducting side, short and
+steep on the overriding side.
+
+**One parameter, not two: 2.5/1.5 = 1.67, and 115/69 = 1.67.** The widths are the exact inverse of the
+tangents at equal height, so the asymmetry ratio determines both.
+
+That paper is deliberately non-numerical and says so. **Anyone citing WBF93 for a taper angle is citing it
+wrongly** -- the numbers come from Naylor & Sinclair.
+
+### WIDTH IS A FLUX BALANCE, AND THE OBVIOUS INTUITION IS BACKWARDS
+
+Dahlen (1990), verbatim: **eW = hV**. Taiwan checks at hV/e = 7 x 70 / 5.5 = **89.1 km against 90 km
+observed**.
+
+**Barbados converges 35x slower than Taiwan and is 3.3x WIDER**, because nothing erodes it. A model that
+widens a range when convergence rises has the physics inverted.
+
+### THE HEIGHT CEILING IS CLIMATE, NOT TECTONICS, AND THIS COUPLES TWO SLICES
+
+Egholm et al. (2009), *Nature* 460, verbatim: **"most summit elevations are confined to altitudes <1,500 m
+above the local snowline"**, and differences in range height "mainly reflect variations in local climate
+rather than tectonic forces".
+
+**Convergence sets width and uplift rate. Climate sets height.** The mountains slice and the climate slice
+are not independent, which nothing in either plan had noticed. Implementable as a clamp the day a snowline
+exists.
+
+### Uplift is SPIKY, which is a third argument for stacked sutures
+
+Measured, all verbatim from primary sources: ordinary orogens run **1-3 mm/yr** (Kishtwar ~3, Western Alps
+~2.5, Southern Alps 1-8); the hotspots run **9-13 mm/yr** (Nanga Parbat 9-13, Namche Barwa ~9) **and they
+are narrow.** A range's uplift field is spiky along the belt, not a smooth dome -- arrived at here from
+field measurement, having already been reached from reading shipped code and from terrane accretion.
+
 ### A second finding, possibly as large as the first
 
 `MAX_TECTONIC_RANGE_M = 420_000` against a 400 km collision bump means **the collision profile is
