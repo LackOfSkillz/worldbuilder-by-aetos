@@ -6380,3 +6380,1085 @@ def test_substrate_at_with_no_features_one_and_several():
         "the omitting feature or the out-of-reach one changed the answer",
         answers["several"], answers["several with an omitter and an unreachable"],
     )
+
+
+# --- surface: the constructor's branches, structural_m, elevation_m, bottom_at -----------
+#
+# **AIM AT STRUCTURE, NOT TOLERANCES.** Nothing in `surface.py` reorders into a last-bits
+# difference. Every physically possible reordering of it moves the answer by METRES, and
+# every figure below was re-derived here rather than transcribed:
+#
+#     features composed onto the macro elevation instead of the shelf's   59.709 m
+#     the authority multiply dropped                                      11.744 m
+#     detail added under the features instead of on top of them            5.464 m
+#     the detail amplitude sized off pre-feature ground                    0.045 m
+#
+# So the tests that matter here are the two EXACT invariants, and both are raw-bit
+# comparisons made INSIDE each language rather than across the boundary:
+#
+#   1. with nothing placed, `structural_m` IS `shelf.elevation_m`;
+#   2. `elevation_m(p) == structural_m(p) + detail.offset_m(p, amplitude, resolution_m)`.
+#
+# They are not cosmetic. Both are checked against a pipeline reassembled from the
+# SEPARATELY BOUND STAGES -- `shelf_evaluate`, then `features_apply`, then
+# `detail_amplitude_m`, then `detail_offset_m` -- none of which knows a `Surface` exists.
+# A `Surface` that ran those stages in any other order, or handed one of them a different
+# argument, fails on bits rather than on a tolerance. Each of the four reorderings above is
+# a bit difference in that comparison.
+#
+# **The cross-language comparisons are BOUNDED, and every bound below was measured over the
+# corpus it is applied to.** None is borrowed: `shelf.rs`'s SHELF_ELEVATION_MAX_ULPS in
+# particular is NOT reused, even though the shelf is the first stage of every answer here,
+# because it was measured over a global 20,000-point corpus on a 12-plate world and these
+# corpora are 22-plate and local.
+#
+# **Two populations, and NEITHER IS A SUPERSET OF THE OTHER.**
+#
+#   the demo-coast grid   625 points, `Coast.at`, span +-45,000 m, 3,750 m per step. The
+#                         coastal window is open at 625 of 625 of them and the features
+#                         reach 17. `Detail.offset_m`'s `amplitude_m <= 0.0` guard fires at
+#                         0 of 625.
+#   the feature centres   the 25 demo features' own `at` points. The guard fires at 24 of
+#                         25, because `authority` is exactly 1.0 there. **No grid however
+#                         dense lands on a centre** -- `weight_at == 1.0` needs
+#                         `sphere_to_local(point) == (0.0, 0.0)` exactly -- so the centres
+#                         are enumerated rather than sampled.
+#
+# The two also disagree by two orders of magnitude on one reordering: sizing the detail off
+# pre-feature ground moves the grid by 0.04541089914697238 m and the centres by
+# 0.0006499904740300266 m. A figure quoted without its population is a figure about nothing.
+#
+# **Five worlds, because the constructor's branches do not converge.** Bare (no features);
+# the demo coast's `Features` adopted verbatim; the same features handed over loose; the
+# same features adopted from a `Features` built at 1,234,567 m inside a 6,371,000 m world;
+# and a NEGATIVE `world_seed`. The last two are the ones a port gets wrong quietly, and they
+# are worth 82 m and 824 m respectively.
+
+from worldbuilder.plates.generation import DEFAULT_PLATE_COUNT as PY_DEFAULT_PLATE_COUNT
+
+SURFACE_GRID_MAX_ABS_M = 5.0e-13
+"""
+`structural_m` and `elevation_m` against the Python, on the demo-coast grid. **ABSOLUTE
+METRES, and the choice of measure is not incidental.**
+
+An elevation is a quantity in metres whose zero is the datum, and this corpus crosses that
+datum: the ULP measure diverges there while the metres do not. Measured on this same grid,
+the worst ULP distance is **1792 ULP**, at `structural_m` = 0.25388522355617127 against
+0.25388522355627074 -- which is **9.947598300641403e-14 m**, a third of the worst absolute
+divergence anywhere in the corpus. A ULP bound wide enough to admit that point would be
+wide enough to admit a millimetre at the headland. So this is metres.
+
+Measured, both languages driven from their own full pipelines, host **K2SO**, CPython
+3.11.0 MSC v.1933, `resolution_m` swept over `None`, 500.0, 25.0 and 7500.0:
+
+    world                          structural_m      elevation_m
+    bare (no features)             2.842171e-13 m    2.842171e-13 m
+    demo Features adopted          2.842171e-13 m    2.842171e-13 m
+    the same features loose        2.842171e-13 m    2.842171e-13 m
+    Features built at 1,234,567 m  2.842171e-13 m    2.842171e-13 m
+    world_seed = -20260831         0.0 m             0.0 m
+
+Worst over the union: **2.842171e-13 m**, at `structural_m` = 139.6006479171664 against
+139.60064791716613 -- the same point in four of the five worlds, because no feature reaches
+it and the divergence is the shelf's.
+
+**Headroom 1.76x, and the test asserts the measurement lands in [bound/2, bound]** rather
+than merely under it. A test that only checks a ceiling ratchets loose for free and passes
+more comfortably as the code degrades.
+
+**The negative-seed world contributes 0.0 and that is a measurement, not an omission.** Its
+625 grid points agree to the bit with 444 of 625 coastal windows open, so it is not a
+degenerate corpus -- it simply lands nowhere the two libms disagree. Its divergence appears
+at the feature centres instead (1.136868e-13 m), which is one more reason both populations
+are carried.
+"""
+
+SURFACE_CENTRE_MAX_ABS_M = 1.0e-14
+"""
+`structural_m` and `elevation_m` against the Python, at the 25 FEATURE CENTRES -- a
+different population, and 53x tighter than the grid, so quoting the grid's bound here would
+admit 53x more than this population ever produces.
+
+Measured, same host and the same resolution sweep:
+
+    world                          worst absolute
+    bare (no features)             2.025047e-13 m   -- see below: NOT bounded by this
+    demo Features adopted          2.664535e-15 m
+    the same features loose        2.664535e-15 m
+    Features built at 1,234,567 m  5.329071e-15 m
+    world_seed = -20260831         1.136868e-13 m   -- see below
+
+**The bound covers the three worlds whose features actually apply at these points**, worst
+**5.329071e-15 m**, gate [5.0e-15, 1.0e-14], and the measured worst sits **6.6% above the
+lower gate**. That tightness is deliberate: on a host whose `sin`, `cos` or `atan2` differs
+from CPython's it is the floor that goes red first, and that red is the bound doing its job.
+RE-MEASURE on that host and record the new figure with its population; never widen it.
+
+**The bare and negative-seed worlds are excluded here, and the exclusion is measured rather
+than assumed.** At a feature centre with no feature applying, the answer is the shelf's
+alone and the divergence is the grid's kind, not the centres' -- so those two are asserted
+against SURFACE_GRID_MAX_ABS_M, whose population they belong to. Folding them in here would
+have widened this bound 20.25x (2.025047e-13 / 1.0e-14) and hidden exactly what
+it exists to catch.
+"""
+
+SURFACE_BOTTOM_GRID_MAX_ABS = 1.2e-13
+"""
+`bottom_at`, worst divergence in any one of the three fractions, on the demo-coast grid.
+**ABSOLUTE, on fractions whose whole range is [0, 1].**
+
+A different quantity from SURFACE_GRID_MAX_ABS_M and measured separately: `bottom_at` is
+five `structural_m` probes and one `tectonics.offset_m` through `substrate.at`, so it
+carries a slope's worth of cancellation the elevation comparison never sees, and it lands
+on a fraction rather than on metres.
+
+Measured, host **K2SO**, CPython 3.11.0 MSC v.1933:
+
+    world                          worst absolute   bit-identical
+    bare (no features)             3.463896e-14     492/625
+    demo Features adopted          5.817569e-14     484/625
+    Features built at 1,234,567 m  6.561418e-14     440/625
+    world_seed = -20260831         1.110223e-16     550/625
+
+Worst **6.561418e-14**, gate [6.0e-14, 1.2e-13], **9.4% above the lower gate**.
+
+**Zero dominant flips over every world and both populations.** The word is what maritime
+consumes and no tolerance could absorb a flip in it, so it is asserted exactly rather than
+bounded.
+"""
+
+SURFACE_BOTTOM_CENTRE_MAX_ABS = 3.0e-16
+"""
+`bottom_at` at the 25 feature centres -- again a different population, and 219x tighter than
+the grid.
+
+    world                          worst absolute   bit-identical
+    bare (no features)             9.714451e-17     21/25
+    demo Features adopted          1.110223e-16     24/25
+    Features built at 1,234,567 m  1.665335e-16     19/25
+    world_seed = -20260831         1.110223e-16     24/25
+
+Worst **1.665335e-16**, gate [1.5e-16, 3.0e-16], **11.0% above the lower gate**. Unlike the
+elevation bound above, every world belongs to this population: `bottom_at` reads the slope,
+and a slope at a feature centre is a local quantity in every world.
+"""
+
+SURFACE_SMALL_WORLD_RADIUS_M = 3000000.0
+"""
+A WORLD radius that is not Earth's, which is a different thing from
+SURFACE_ADOPTED_FEATURES_RADIUS_M below: that one is the radius a pre-built `Features` was
+placed at INSIDE a 6,371,000 m world, and every world in this section was a 6,371,000 m
+world until this constant existed.
+
+**Why 3,000,000 m and not something rounder: it is the radius the 120-point scatter in
+`test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults` already varies to,
+so the two corpora do not disagree about what a small world is.**
+"""
+
+SURFACE_BOTTOM_SMALL_GRID_MAX_ABS = 3.0e-13
+"""
+`bottom_at` on the demo-coast grid in a **3,000,000 m** world with loose features, worst
+divergence in any one of the three fractions. **Its own population, so its own bound.**
+
+Two and a half times SURFACE_BOTTOM_GRID_MAX_ABS, and that is a property of the world
+rather than of the port: at less than half Earth's radius a 60 m slope baseline subtends
+more than twice the angle, the four probes land further apart in noise space, and the
+cancellation in the rise-over-run is correspondingly worse. Widening the Earth-radius bound
+to cover this population would have hidden what that bound exists to catch.
+
+Measured, host **K2SO**, CPython 3.11.0 MSC v.1933: worst **1.7510992655900282e-13**,
+172 of 625 bit-identical, gate [1.5e-13, 3.0e-13], **16.7% above the lower gate**.
+Zero dominant flips.
+"""
+
+SURFACE_BOTTOM_SMALL_CENTRE_MAX_ABS = 4.0e-16
+"""
+The same world at the 25 feature centres. Worst **2.220446049250313e-16**, 23 of 25
+bit-identical, gate [2.0e-16, 4.0e-16], **11.0% above the lower gate**. Zero dominant flips.
+"""
+
+SURFACE_ADOPTED_FEATURES_RADIUS_M = 1234567.0
+"""The radius a pre-built `Features` is built at, to be adopted verbatim by a 6,371,000 m
+world. Python's `isinstance(features, Features)` arm does not re-place it and does not
+normalise it, so every tangent frame and every `_cos_reach` stays at this radius. Measured:
+worth up to **82.39849253588422 m**, at 179 of the 650 corpus points."""
+
+SURFACE_GRID_HALF_M = 45000.0
+SURFACE_GRID_SIDE = 25
+SURFACE_GRID_STEP_M = 2.0 * SURFACE_GRID_HALF_M / (SURFACE_GRID_SIDE - 1)
+"""3,750 m. Stated rather than assumed: every figure in this section is a property of it."""
+
+SURFACE_RESOLUTIONS_M = [None, 500.0, 25.0, 7500.0]
+"""Canonical, a middling chart scale, one BELOW the canonical floor, and one coarse enough
+to drop octaves. 25.0 is in the list because it is measured to return the same bits as
+`None` -- see `test_surface_a_resolution_below_the_canonical_floor_is_canonical`."""
+
+_SURFACE_WORLDS = {}
+_SURFACE_POINTS = {}
+_SURFACE_PLATES = {}
+
+
+def _surface_setup():
+    """The five worlds, the grid and the centres, built once for the whole section.
+
+    `Continentality` calibrates on every `Surface` construction -- 4,000 samples and a
+    sort -- and every test here would otherwise pay for it again. All five are read-only
+    to all of them.
+    """
+    if _SURFACE_WORLDS:
+        return
+    region = py_demo_region()
+    features = list(region.features)
+    tuples = [_feature_tuple(feature) for feature in features]
+
+    def world(seed, py_features, ft, fr, radius_m=EARTH_RADIUS_M):
+        return dict(
+            py=PySurface(seed, radius_m, PY_DEFAULT_PLATE_COUNT,
+                         PY_LAND_FRACTION, py_features),
+            seed=seed, ft=ft, fr=fr, radius=radius_m,
+        )
+
+    _SURFACE_WORLDS["region"] = region
+    _SURFACE_WORLDS["features"] = features
+    _SURFACE_WORLDS["bare"] = world(PY_WORLD_SEED, None, None, None)
+    _SURFACE_WORLDS["adopted"] = world(
+        PY_WORLD_SEED, PyFeatures(features, EARTH_RADIUS_M), tuples, EARTH_RADIUS_M)
+    _SURFACE_WORLDS["loose"] = world(PY_WORLD_SEED, features, tuples, None)
+    _SURFACE_WORLDS["small-radius"] = world(
+        PY_WORLD_SEED, PyFeatures(features, SURFACE_ADOPTED_FEATURES_RADIUS_M),
+        tuples, SURFACE_ADOPTED_FEATURES_RADIUS_M)
+    _SURFACE_WORLDS["negative-seed"] = world(
+        -PY_WORLD_SEED, PyFeatures(features, EARTH_RADIUS_M), tuples, EARTH_RADIUS_M)
+
+    half, step = SURFACE_GRID_HALF_M, SURFACE_GRID_STEP_M
+    _SURFACE_POINTS["grid"] = [
+        region.coast.at(-half + column * step, -half + row * step)
+        for row in range(SURFACE_GRID_SIDE)
+        for column in range(SURFACE_GRID_SIDE)
+    ]
+    _SURFACE_POINTS["centres"] = [feature.at for feature in features]
+
+
+def _surface_world(label):
+    _surface_setup()
+    return _SURFACE_WORLDS[label]
+
+
+def _surface_grid():
+    """625 points in the demo coast's own frame, span +-45,000 m, 3,750 m per step."""
+    _surface_setup()
+    return _SURFACE_POINTS["grid"]
+
+
+def _surface_centres():
+    """The 25 features' own `at` points. Enumerated, because no grid lands on one."""
+    _surface_setup()
+    return _SURFACE_POINTS["centres"]
+
+
+# **The three helpers below take the world's radius from the world rather than writing
+# `EARTH_RADIUS_M` in, and that was a defect until a non-Earth-radius world existed to
+# make it one.** See `test_surface_bottom_at_agrees_at_a_world_radius_that_is_not_earths`
+# for what a corpus of Earth-radius worlds could not see.
+def _engine_structural_m(world, point):
+    v = point.vector
+    return engine.surface_structural_m(
+        world["seed"], world["radius"], PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+        v.x, v.y, v.z, features=world["ft"], features_radius_m=world["fr"],
+    )
+
+
+def _engine_surface_elevation_m(world, point, resolution_m=None):
+    v = point.vector
+    return engine.surface_elevation_m(
+        world["seed"], world["radius"], PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+        v.x, v.y, v.z, resolution_m=resolution_m,
+        features=world["ft"], features_radius_m=world["fr"],
+    )
+
+
+def _engine_surface_bottom_at(world, point):
+    v = point.vector
+    return engine.surface_bottom_at(
+        world["seed"], world["radius"], PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+        v.x, v.y, v.z, features=world["ft"], features_radius_m=world["fr"],
+    )
+
+
+def _surface_plate_table(seed):
+    """`generation_plates_for` flattened the way every `shelf_*` binding takes it."""
+    if seed not in _SURFACE_PLATES:
+        plates = engine.generation_plates_for(seed, PY_DEFAULT_PLATE_COUNT)
+        _SURFACE_PLATES[seed] = (
+            [c for _, plate_seed, _, _ in plates for c in plate_seed],
+            [c for _, _, pole, _ in plates for c in pole],
+            [rate for _, _, _, rate in plates],
+        )
+    return _SURFACE_PLATES[seed]
+
+
+def _engine_surface_stages(world, point, resolution_m=None):
+    """
+    The whole pipeline, reassembled from the SEPARATELY BOUND STAGES.
+
+    This is the instrument the two exact invariants are read with, and its independence is
+    the point: the plate table comes back through `generation_plates_for`, the shelf
+    through `shelf_evaluate`, the features through `features_apply`, and the roughness
+    through `detail_amplitude_m` and `detail_offset_m`. None of them knows a `Surface`
+    exists, so a `Surface` running the same stages in another order, or handing one of them
+    another argument, stops matching this ON BITS.
+
+    Returns `(shelf_elevation_m, shaped, authority, damped_amplitude, offset)`.
+    """
+    v = point.vector
+    seeds_flat, poles_flat, rates = _surface_plate_table(world["seed"])
+    # The two `Noise`-backed constructors mask the seed and `plates_for` does not; see
+    # `surface.rs`. `shelf_evaluate` and the two `detail_*` bindings take the masked form,
+    # and `generation_plates_for` above takes the signed one -- which is the whole finding
+    # `test_surface_keys_the_plates_on_the_signed_seed_not_the_masked_one` pins.
+    noise_seed = world["seed"] & ((1 << 64) - 1)
+    radius_m = world["radius"]
+    shelf_elevation_m, weight, tectonic_m = engine.shelf_evaluate(
+        seeds_flat, poles_flat, rates, noise_seed, PY_LAND_FRACTION,
+        v.x, v.y, v.z, radius_m,
+    )
+    # The loose arm places at THE WORLD'S radius, which is only the same thing as Earth's
+    # on an Earth-radius world -- see the non-Earth-radius test below.
+    features_radius_m = radius_m if world["fr"] is None else world["fr"]
+    shaped, authority = engine.features_apply(
+        world["ft"] or [], v.x, v.y, v.z, shelf_elevation_m, features_radius_m,
+    )
+    amplitude = engine.detail_amplitude_m(
+        noise_seed, radius_m, v.x, v.y, v.z, shaped, weight, tectonic_m,
+    )
+    damped = amplitude * (1.0 - authority)
+    offset = engine.detail_offset_m(
+        noise_seed, radius_m, v.x, v.y, v.z, damped, resolution_m,
+    )
+    return shelf_elevation_m, shaped, authority, damped, offset
+
+
+def _python_surface_stages(world, point, resolution_m=None):
+    """The same five values from the Python reference's own layers."""
+    surface = world["py"]
+    reading = surface.shelf.evaluate(point)
+    shaped, authority = surface.features.apply(point, reading.elevation_m)
+    damped = surface.detail.amplitude_m(
+        point, shaped, reading.weight, reading.tectonic_m) * (1.0 - authority)
+    return (reading.elevation_m, shaped, authority, damped,
+            surface.detail.offset_m(point, damped, resolution_m))
+
+
+def test_surface_fields_round_trip_including_the_adopted_radius():
+    """
+    What the constructor kept: the seed, the radius, the plate count, how many features,
+    and -- the one with no other witness -- WHICH RADIUS the features were placed at.
+
+    Python's `features=` is one name carrying three cases, and the third does not converge
+    with the second: a pre-built `Features` is adopted verbatim, so one built at 1,234,567 m
+    keeps every frame at that radius inside a 6,371,000 m world. A binding that re-placed it
+    at the world's radius would return a different number here, and a different world
+    everywhere else.
+    """
+    _surface_setup()
+    features = [_feature_tuple(f) for f in _SURFACE_WORLDS["features"]]
+
+    bare = engine.surface_fields(
+        PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION)
+    assert bare == (PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, 0, EARTH_RADIUS_M)
+
+    loose = engine.surface_fields(
+        PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+        features=features)
+    assert loose == (PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
+                     len(features), EARTH_RADIUS_M)
+
+    adopted = engine.surface_fields(
+        PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+        features=features, features_radius_m=SURFACE_ADOPTED_FEATURES_RADIUS_M)
+    assert adopted == (PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
+                       len(features), SURFACE_ADOPTED_FEATURES_RADIUS_M), (
+        "the adopted Features was re-placed at the world's radius; Python does not "
+        "re-place it", adopted,
+    )
+    # And the Python agrees about all three, so this is a comparison rather than a
+    # restatement of the binding's own arguments.
+    assert _surface_world("bare")["py"].features.radius_m == EARTH_RADIUS_M
+    assert len(_surface_world("bare")["py"].features) == 0
+    assert _surface_world("small-radius")["py"].features.radius_m == \
+        SURFACE_ADOPTED_FEATURES_RADIUS_M
+    assert len(_surface_world("adopted")["py"].features) == len(features)
+
+    # A negative seed survives as a negative seed. `plates_for` keys a DECIMAL STRING, so
+    # masking it is a different planet rather than a different spelling.
+    negative = engine.surface_fields(
+        -PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION)
+    assert negative[0] == -PY_WORLD_SEED
+    # And a plate count that is not the default is honoured rather than defaulted.
+    assert engine.surface_fields(
+        PY_WORLD_SEED, EARTH_RADIUS_M, 7, PY_LAND_FRACTION)[2] == 7
+
+
+def test_surface_refuses_a_seed_outside_the_i64_domain():
+    """
+    Python's `int` is unbounded and the port's `world_seed` is an `i64`. That is a stated
+    limitation, and the boundary REFUSES rather than truncating: a masked seed builds a
+    different planet, so silently accepting one would be the worst available outcome.
+    """
+    masked = (-PY_WORLD_SEED) & ((1 << 64) - 1)
+    with pytest.raises(OverflowError):
+        engine.surface_structural_m(
+            masked, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION, 0.0, 0.0, 1.0)
+    # Python builds it happily, which is what makes the refusal a real limitation of the
+    # port rather than a shared one.
+    assert PySurface(masked).world_seed == masked
+
+
+def test_surface_structural_is_the_shelf_bit_for_bit_with_nothing_placed():
+    """
+    **The first exact invariant.** With no features, `structural_m` IS `shelf.elevation_m`
+    -- raw bits, in each language separately, so the claim is about the ORDER of the stages
+    and not about the two libms.
+
+    The engine's side is checked against `shelf_evaluate`, a binding that knows nothing
+    about `Surface`: it rebuilds the plate table through `generation_plates_for` and the
+    continentality from the masked seed. A `structural_m` that composed features onto the
+    macro elevation instead of the shelf's would break this outright -- measured on this
+    corpus, that reordering is worth **59.70936673990978 m**.
+    """
+    world = _surface_world("bare")
+    points = _surface_grid() + _surface_centres()
+    values = set()
+    for point in points:
+        shelf_elevation_m, shaped, authority, _damped, _offset = \
+            _engine_surface_stages(world, point)
+        got = _engine_structural_m(world, point)
+        assert same(got, shelf_elevation_m), (point.vector, got, shelf_elevation_m)
+        assert same(got, shaped), "an empty Features moved the ground"
+        assert authority == 0.0, "an empty Features claimed authority"
+        want = world["py"].structural_m(point)
+        assert same(want, world["py"].shelf.elevation_m(point)), (
+            "the Python's own invariant no longer holds; the reference moved", point.vector,
+        )
+        values.add(got)
+    # Not a vacuous corpus: 650 points, and the ground genuinely varies over them, so bit
+    # equality here is a claim about a field rather than about a constant.
+    assert len(points) == 650
+    assert len(values) >= 600, ("the corpus is nearly constant, so bit equality would "
+                                "prove almost nothing", len(values))
+    assert max(values) - min(values) > 250.0, (min(values), max(values))
+
+
+def test_surface_elevation_is_structure_plus_detail_bit_for_bit():
+    """
+    **The second exact invariant, and the strongest assertion in this section.**
+
+    `elevation_m(p) == structural_m(p) + detail.offset_m(p, amplitude, resolution_m)` on raw
+    bits, where `amplitude` is `detail.amplitude_m(p, SHAPED, weight, tectonic)` damped by
+    `1 - authority`. Checked in both languages, over all five worlds, both populations and
+    three resolutions.
+
+    **Every one of the three orderings that live in `elevation_m` is a bit failure here**,
+    and all three were re-derived on the demo grid rather than transcribed:
+
+        the authority multiply dropped                      11.744069415078535 m
+        detail added under the features, not on top          5.463671791248579 m
+        the amplitude sized off pre-feature ground           0.04541089914697238 m
+
+    The engine's side is reassembled from bindings that know nothing about `Surface`, so
+    this also pins that `Surface::elevation_m` calls the same stages with the same
+    arguments -- not merely that its own two methods agree with each other.
+    """
+    checked = 0
+    for label in ("bare", "adopted", "loose", "small-radius", "negative-seed"):
+        world = _surface_world(label)
+        for point in _surface_grid() + _surface_centres():
+            engine_structural_m = _engine_structural_m(world, point)
+            python_structural_m = world["py"].structural_m(point)
+            for resolution_m in (None, 500.0, 7500.0):
+                _shelf, shaped, _authority, _damped, offset = \
+                    _engine_surface_stages(world, point, resolution_m)
+                got = _engine_surface_elevation_m(world, point, resolution_m)
+                assert same(shaped, engine_structural_m), (
+                    "the engine's structural_m is not the shaped ground its elevation_m "
+                    "composes from", label, point.vector,
+                )
+                assert same(got, shaped + offset), (
+                    label, resolution_m, point.vector, got, shaped + offset)
+                _pshelf, pshaped, _pauth, _pdamped, poffset = \
+                    _python_surface_stages(world, point, resolution_m)
+                want = world["py"].elevation_m(point, resolution_m)
+                assert same(want, pshaped + poffset), (
+                    "the Python's own invariant no longer holds; the reference moved",
+                    label, resolution_m, point.vector,
+                )
+                assert same(pshaped, python_structural_m)
+                checked += 1
+    assert checked == 5 * 650 * 3
+
+
+def test_surface_structural_and_elevation_agree_over_the_demo_grid():
+    """
+    Bounded, ABSOLUTE METRES, over the 625-point demo-coast grid in all five worlds. See
+    SURFACE_GRID_MAX_ABS_M for why metres rather than ULP, and for the measurement.
+
+    Two-sided: the worst has to land in [bound/2, bound], so a later widening -- or a quiet
+    improvement nobody records -- fails instead of passing.
+    """
+    worst = 0.0
+    for label in ("bare", "adopted", "loose", "small-radius", "negative-seed"):
+        world = _surface_world(label)
+        for point in _surface_grid():
+            want = world["py"].structural_m(point)
+            got = _engine_structural_m(world, point)
+            assert abs(want - got) <= SURFACE_GRID_MAX_ABS_M, (label, point.vector, want, got)
+            worst = max(worst, abs(want - got))
+            for resolution_m in SURFACE_RESOLUTIONS_M:
+                want = world["py"].elevation_m(point, resolution_m)
+                got = _engine_surface_elevation_m(world, point, resolution_m)
+                assert abs(want - got) <= SURFACE_GRID_MAX_ABS_M, (
+                    label, resolution_m, point.vector, want, got)
+                worst = max(worst, abs(want - got))
+    assert worst >= SURFACE_GRID_MAX_ABS_M / 2.0, (
+        "the corpus no longer reaches half its own bound, so the bound is no longer "
+        "measured -- re-measure it and record the new figure with its population",
+        worst, SURFACE_GRID_MAX_ABS_M,
+    )
+
+
+def test_surface_structural_and_elevation_agree_at_the_feature_centres():
+    """
+    The other population, 53x tighter, and the only one that reaches `Detail.offset_m`'s
+    `amplitude_m <= 0.0` guard at all.
+
+    The census is ASSERTED rather than described, because the whole reason the centres are
+    enumerated is that a grid cannot reach them: `authority` is exactly 1.0 at 24 of the 25
+    demo centres and at 0 of the 625 grid points.
+    """
+    worst = 0.0
+    for label in ("adopted", "loose", "small-radius"):
+        world = _surface_world(label)
+        for point in _surface_centres():
+            want = world["py"].structural_m(point)
+            got = _engine_structural_m(world, point)
+            assert abs(want - got) <= SURFACE_CENTRE_MAX_ABS_M, (label, point.vector, want, got)
+            worst = max(worst, abs(want - got))
+            for resolution_m in SURFACE_RESOLUTIONS_M:
+                want = world["py"].elevation_m(point, resolution_m)
+                got = _engine_surface_elevation_m(world, point, resolution_m)
+                assert abs(want - got) <= SURFACE_CENTRE_MAX_ABS_M, (
+                    label, resolution_m, point.vector, want, got)
+                worst = max(worst, abs(want - got))
+    assert worst >= SURFACE_CENTRE_MAX_ABS_M / 2.0, (
+        "the centres no longer reach half their own bound; re-measure", worst)
+
+    world = _surface_world("adopted")
+    fired = 0
+    for point in _surface_centres():
+        _shelf, _shaped, authority, damped, _offset = _engine_surface_stages(world, point)
+        if authority == 1.0:
+            fired += 1
+            assert damped <= 0.0, "authority saturated but the guard did not fire"
+    assert fired == 24, (
+        "the guard census moved; the centres are in this corpus BECAUSE they reach it",
+        fired,
+    )
+    on_the_grid = sum(
+        1 for point in _surface_grid()
+        if _engine_surface_stages(world, point)[2] == 1.0
+    )
+    assert on_the_grid == 0, (
+        "a grid point reached authority 1.0, which the centres were enumerated to cover",
+        on_the_grid,
+    )
+
+
+def test_surface_a_resolution_below_the_canonical_floor_is_canonical():
+    """
+    `resolution_m = 25.0` returns the SAME BITS as `None`, because 25 m is below the
+    canonical minimum wavelength -- a resolution finer than the floor is not finer than
+    canonical, it IS canonical. In both languages, over both populations, 650 of 650.
+
+    And the resolution is not ignored: 7,500 m moves the answer by up to 21.66 m on this
+    corpus, which is what a binding that dropped the argument would have to hide.
+    """
+    world = _surface_world("adopted")
+    coarse_shift = 0.0
+    for point in _surface_grid() + _surface_centres():
+        canonical = _engine_surface_elevation_m(world, point, None)
+        assert same(canonical, _engine_surface_elevation_m(world, point, 25.0)), point.vector
+        py_canonical = world["py"].elevation_m(point, None)
+        assert same(py_canonical, world["py"].elevation_m(point, 25.0)), point.vector
+        coarse = _engine_surface_elevation_m(world, point, 7500.0)
+        coarse_shift = max(coarse_shift, abs(coarse - canonical))
+    assert coarse_shift > 10.0, (
+        "a coarse resolution changed almost nothing, so this corpus cannot tell a binding "
+        "that ignores resolution_m from one that honours it", coarse_shift,
+    )
+
+
+def test_surface_adopts_a_prebuilt_features_at_its_own_radius():
+    """
+    The `isinstance(features, Features)` arm adopts what it is given, radius and all, and
+    the `elif` arm places the same features at the WORLD'S radius. The two do not converge.
+
+    Measured: the same 25 features adopted from a 1,234,567 m `Features` differ from the
+    same 25 placed at 6,371,000 m by up to **82.39849253588422 m**, at 179 of 650 points. So
+    the engine is checked against the world that ADOPTS -- to within the measured bound --
+    and the gap to the world that RE-PLACES is asserted, so a binding flattening the two
+    arms fails by eighty metres rather than by a tolerance.
+    """
+    adopted = _surface_world("small-radius")
+    replaced = _surface_world("loose")
+    worst_gap = 0.0
+    differing = 0
+    for points, bound in ((_surface_grid(), SURFACE_GRID_MAX_ABS_M),
+                          (_surface_centres(), SURFACE_CENTRE_MAX_ABS_M)):
+        for point in points:
+            got = _engine_structural_m(adopted, point)
+            want = adopted["py"].structural_m(point)
+            other = replaced["py"].structural_m(point)
+            assert abs(want - got) <= bound, (point.vector, want, got)
+            gap = abs(want - other)
+            if gap != 0.0:
+                differing += 1
+            worst_gap = max(worst_gap, gap)
+    assert differing == 179, (
+        "the two constructor arms converged somewhere they used not to; the adopted radius "
+        "has stopped mattering at those points", differing,
+    )
+    assert worst_gap > 80.0, (
+        "adopting a Features built at another radius changed almost nothing, so this corpus "
+        "cannot tell the two arms apart", worst_gap,
+    )
+
+
+def test_surface_keys_the_plates_on_the_signed_seed_not_the_masked_one():
+    """
+    `plates_for` keys a DECIMAL STRING, so `-20260831` and `18446744073689290785` are
+    different keys and a different planet. The two `Noise`-backed constructors mask and the
+    plate table does not, which is why `surface.rs` binds the cast once and uses it at
+    exactly two sites.
+
+    Measured on the 625-point grid: the masked seed moves the ground by
+    **824.7939561944431 m** at worst, **764.2350169751137 m** at the median and
+    **267.7842618613704 m** at its CLOSEST approach, at **625 of 625** points. A port that
+    masked before `plates_for` would not be slightly wrong; it would be somewhere else.
+
+    **The floor asserted below is the measured minimum, not a round number chosen above
+    it.** An earlier draft guessed 400 m and went red at 267.78 -- which is the failure mode
+    this project keeps meeting: a threshold that was somebody's starting point rather than a
+    measurement. 250.0 sits 6.7% under the measured minimum.
+    """
+    world = _surface_world("negative-seed")
+    _surface_setup()
+    masked = (-PY_WORLD_SEED) & ((1 << 64) - 1)
+    masked_world = PySurface(
+        masked, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+        PyFeatures(_SURFACE_WORLDS["features"], EARTH_RADIUS_M))
+    gaps = []
+    for point in _surface_grid():
+        want = world["py"].structural_m(point)
+        got = _engine_structural_m(world, point)
+        assert abs(want - got) <= SURFACE_GRID_MAX_ABS_M, (point.vector, want, got)
+        gaps.append(abs(want - masked_world.structural_m(point)))
+    assert min(gaps) > 250.0, (
+        "the masked seed builds nearly the same world over part of this grid, so the corpus "
+        "no longer pins the signed key everywhere", min(gaps),
+    )
+    assert max(gaps) > 800.0, max(gaps)
+
+
+def test_surface_bottom_at_agrees_over_both_populations_with_no_dominant_flips():
+    """
+    `bottom_at` is `substrate.at` driven by the port's OWN `structural_m` and
+    `tectonics.offset_m` -- unlike `substrate_at`, which takes them as Python callables so
+    that `substrate.rs` can be measured alone. So this comparison spans the whole stack on
+    purpose, and its bounds are its own: SURFACE_BOTTOM_GRID_MAX_ABS and
+    SURFACE_BOTTOM_CENTRE_MAX_ABS, both measured here, both two-sided.
+
+    **The dominant word is asserted exactly, never bounded.** It is what maritime consumes,
+    and no tolerance absorbs a flip in it.
+    """
+    worst_grid = worst_centre = 0.0
+    for label in ("bare", "adopted", "small-radius", "negative-seed"):
+        world = _surface_world(label)
+        for population, points, bound in (
+            ("grid", _surface_grid(), SURFACE_BOTTOM_GRID_MAX_ABS),
+            ("centres", _surface_centres(), SURFACE_BOTTOM_CENTRE_MAX_ABS),
+        ):
+            for point in points:
+                want = world["py"].bottom_at(point)
+                got = _engine_surface_bottom_at(world, point)
+                for name, w, g in zip(("sand", "mud", "rock"),
+                                      (want.sand, want.mud, want.rock), got):
+                    assert abs(w - g) <= bound, (label, population, name, point.vector, w, g)
+                    if population == "grid":
+                        worst_grid = max(worst_grid, abs(w - g))
+                    else:
+                        worst_centre = max(worst_centre, abs(w - g))
+                assert PyComposition(*got).dominant == want.dominant, (
+                    label, population, point.vector, got, want,
+                )
+    assert worst_grid >= SURFACE_BOTTOM_GRID_MAX_ABS / 2.0, (
+        "the grid no longer reaches half its own bound; re-measure", worst_grid)
+    assert worst_centre >= SURFACE_BOTTOM_CENTRE_MAX_ABS / 2.0, (
+        "the centres no longer reach half their own bound; re-measure", worst_centre)
+
+
+def test_surface_bottom_at_agrees_at_a_world_radius_that_is_not_earths():
+    """
+    The same comparison as above, in a world whose radius is 3,000,000 m, with loose
+    features. **It exists because AN ARGUMENT IS WITNESSED ON A PATH, NOT IN A CODEBASE.**
+
+    `radius_m` looked closed. It is checked at `Continentality::new`, at `Tectonics::new`,
+    at `Detail::new`, and over the 120-point global scatter in
+    `test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults`, which varies
+    it to this very number. And yet SIX substitutions of `crate::sphere::EARTH_RADIUS_M`
+    for the surface's own `radius_m` each passed both suites entire -- `Features::new` in
+    both of its live arms, and `substrate::at`, `substrate::dominant_at` and
+    `substrate::slope_at` at each of the four sites `surface.rs` calls them from.
+
+    The reason is a CROSS that was empty, not an argument that was unvaried. The scatter
+    varies the radius but calls only `surface_structural_m` and `surface_elevation_m`, so
+    nothing that varied the radius ever reached the feature placement or the substrate
+    stage; and every world that HAS features, here and in `surface.rs`, was built at
+    `EARTH_RADIUS_M`, where "the world's radius" and "Earth's radius" are the same number.
+    (argument varied) and (path exercised) were each true somewhere and never true together.
+
+    This row is that cell. Both gaps are asserted rather than assumed, so the row cannot
+    quietly stop being a witness -- measured against the live Python over the same 650
+    points:
+
+        features placed at Earth's radius instead   0.8828916950882758, 45 of 650 differing,
+                                                    16 dominant flips
+        the slope frame taken at Earth's radius     0.547001132751203, 549 of 650 differing,
+                                                    6 dominant flips
+
+    Bounds are this population's own -- see SURFACE_BOTTOM_SMALL_GRID_MAX_ABS. The dominant
+    word is asserted exactly here too.
+    """
+    _surface_setup()
+    features = _SURFACE_WORLDS["features"]
+    world = dict(
+        py=PySurface(PY_WORLD_SEED, SURFACE_SMALL_WORLD_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
+                     PY_LAND_FRACTION, features),
+        seed=PY_WORLD_SEED, ft=[_feature_tuple(f) for f in features], fr=None,
+        radius=SURFACE_SMALL_WORLD_RADIUS_M,
+    )
+    assert SURFACE_SMALL_WORLD_RADIUS_M != EARTH_RADIUS_M
+    assert world["fr"] is None, "the loose arm is the one that places at the world radius"
+
+    worst_grid = worst_centre = 0.0
+    for population, points, bound in (
+        ("grid", _surface_grid(), SURFACE_BOTTOM_SMALL_GRID_MAX_ABS),
+        ("centres", _surface_centres(), SURFACE_BOTTOM_SMALL_CENTRE_MAX_ABS),
+    ):
+        for point in points:
+            want = world["py"].bottom_at(point)
+            got = _engine_surface_bottom_at(world, point)
+            for name, w, g in zip(("sand", "mud", "rock"),
+                                  (want.sand, want.mud, want.rock), got):
+                assert abs(w - g) <= bound, (population, name, point.vector, w, g)
+                if population == "grid":
+                    worst_grid = max(worst_grid, abs(w - g))
+                else:
+                    worst_centre = max(worst_centre, abs(w - g))
+            assert PyComposition(*got).dominant == want.dominant, (
+                population, point.vector, got, want,
+            )
+    assert worst_grid >= SURFACE_BOTTOM_SMALL_GRID_MAX_ABS / 2.0, (
+        "the small world's grid no longer reaches half its own bound; re-measure",
+        worst_grid)
+    assert worst_centre >= SURFACE_BOTTOM_SMALL_CENTRE_MAX_ABS / 2.0, (
+        "the small world's centres no longer reach half their own bound; re-measure",
+        worst_centre)
+
+    # ---- and the two gaps that make this row a witness rather than a repetition ----
+    #
+    # Both are computed from the PYTHON reference alone, so they say what the corpus can
+    # see rather than what the port happens to do. Neither could be non-zero in any
+    # Earth-radius world, which is exactly why the six mutations survived.
+    points = list(_surface_grid()) + list(_surface_centres())
+    at_earth_features = PySurface(PY_WORLD_SEED, SURFACE_SMALL_WORLD_RADIUS_M,
+                                  PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+                                  PyFeatures(features, EARTH_RADIUS_M))
+    feature_gap, feature_flips = 0.0, 0
+    slope_gap, slope_flips = 0.0, 0
+    for point in points:
+        truth = world["py"].bottom_at(point)
+        moved = at_earth_features.bottom_at(point)
+        feature_gap = max(feature_gap, max(
+            abs(a - b) for a, b in zip((truth.sand, truth.mud, truth.rock),
+                                       (moved.sand, moved.mud, moved.rock))))
+        feature_flips += truth.dominant != moved.dominant
+        earth_frame = _py_slope_at(world["py"], point, EARTH_RADIUS_M)
+        reframed = world["py"].substrate.at(point, slope=earth_frame)
+        slope_gap = max(slope_gap, max(
+            abs(a - b) for a, b in zip((truth.sand, truth.mud, truth.rock),
+                                       (reframed.sand, reframed.mud, reframed.rock))))
+        slope_flips += truth.dominant != reframed.dominant
+    assert feature_gap > 0.5 and feature_flips >= 10, (feature_gap, feature_flips)
+    assert slope_gap > 0.4 and slope_flips >= 4, (slope_gap, slope_flips)
+
+
+def _py_slope_at(surface, point, radius_m, baseline_m=PY_SLOPE_BASELINE_M):
+    """`Substrate.slope_at`, transcribed, with the radius supplied rather than read.
+
+    The reference reads `self.surface.radius_m`, so there is no way to ask it what the
+    same world would answer through another radius's tangent frame -- which is the gap
+    `test_surface_bottom_at_agrees_at_a_world_radius_that_is_not_earths` has to measure.
+    """
+    frame = PyTangentFrame.at(point, radius_m)
+    half = baseline_m * 0.5
+    east = (surface.structural_m(frame.local_to_sphere(half, 0.0))
+            - surface.structural_m(frame.local_to_sphere(-half, 0.0))) / baseline_m
+    north = (surface.structural_m(frame.local_to_sphere(0.0, half))
+             - surface.structural_m(frame.local_to_sphere(0.0, -half))) / baseline_m
+    return math.hypot(east, north)
+
+
+def test_surface_bottom_at_declines_the_word_the_table_has_no_entry_for():
+    """
+    Python's `PURE[declared]` raises `KeyError` out of `bottom_at`; the port's
+    `substrate::at` returns `Err(UnknownSubstrate)`, because Rust has no propagating raise.
+    The binding turns that back into a `KeyError` -- `UnknownSubstrateError`, its own type,
+    so a test can tell the port's refusal from an unrelated dict miss inside the binding.
+
+    **And the refusal is POSITIONAL, not a property of the world.** The same world answers
+    normally 200 km away, where the feature carries no weight -- which is what makes this a
+    test of `PURE[declared]` rather than of a world that simply cannot be asked.
+    """
+    _surface_setup()
+    coast = _SURFACE_WORLDS["region"].coast
+    odd = PyFeature(
+        kind="odd", at=coast.at(0.0, 0.0), target_m=5.0, length_m=1200.0, width_m=800.0,
+        bearing_deg=0.0, compose=PY_RAISE, marked=False, substrate="glass",
+    )
+    assert "glass" not in PY_PURE, "the fixture's word is in the table after all"
+    assert engine.substrate_pure("glass") is None
+    world = dict(
+        py=PySurface(PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
+                     PY_LAND_FRACTION, [odd]),
+        seed=PY_WORLD_SEED, ft=[_feature_tuple(odd)], fr=None, radius=EARTH_RADIUS_M,
+    )
+    at_it = coast.at(0.0, 0.0)
+    with pytest.raises(KeyError):
+        world["py"].bottom_at(at_it)
+    with pytest.raises(engine.UnknownSubstrateError) as caught:
+        _engine_surface_bottom_at(world, at_it)
+    assert issubclass(engine.UnknownSubstrateError, KeyError)
+    assert "glass" in str(caught.value)
+
+    away = coast.at(200000.0, 0.0)
+    want = world["py"].bottom_at(away)
+    got = _engine_surface_bottom_at(world, away)
+    for w, g in zip((want.sand, want.mud, want.rock), got):
+        assert abs(w - g) <= SURFACE_BOTTOM_GRID_MAX_ABS, (w, g)
+    assert PyComposition(*got).dominant == want.dominant
+
+
+def test_surface_the_worlds_and_populations_catch_different_reorderings():
+    """
+    **THE BLINDNESS IS ASSERTED, NOT ONLY THE CATCH.** A corpus that catches three
+    reorderings out of one world and nothing out of another has half the coverage it appears
+    to, and dropping the redundant-looking half would then cost nothing visible.
+
+    Every figure here is re-derived from the Python reference's own layers on this host, so
+    the table is a measurement rather than a story:
+
+        mutation                              bare world   demo grid   demo centres
+        features onto the macro elevation      59.709 m     59.709 m     16.353 m
+        the authority multiply dropped          0.0 m       11.744 m     12.466 m
+        detail under the features               0.0 m        5.464 m      7.482 m
+        amplitude off pre-feature ground        0.0 m        0.045 m      0.00065 m
+
+    Two blindnesses fall out of it, and both are asserted below:
+
+    - **The bare world is EXACTLY blind to all three of `elevation_m`'s orderings**, to the
+      bit, at every one of its 650 points. With nothing placed, `authority` is 0 and
+      `shaped` is the shelf's own elevation, so all three collapse onto the identity. A
+      no-features corpus proves nothing whatever about the order of that method.
+    - **The negative-seed world is EXACTLY blind to composing the features onto the macro
+      elevation**, at every one of its 650 points: there, `land.base_elevation +
+      tectonics.offset_m` IS the shelf's answer. The demo world catches it at 59.709 m.
+
+    So neither world is redundant, and dropping either silently halves what this section can
+    see. The same holds of the two populations: the centres are the only place the guard
+    fires, and they collapse the smallest reordering by seventy times.
+
+    **ACCOUNTING: this test makes ZERO engine calls and is therefore NOT a conformance
+    test.** It asserts properties of the Python reference alone -- what the corpus can and
+    cannot see -- so no defect in the port can make it fail. That is deliberate: a claim
+    about a corpus's blindness is a claim about the reference, and pinning it here stops a
+    later round from deleting a world that looks redundant. But it must not be counted as
+    conformance surface. The section holds **13** `test_surface_*` functions, of which
+    **12** compare the crate against the Python; this is the thirteenth.
+    """
+    def reorderings(surface, point):
+        """`(macro_base, no_authority, detail_first, pre_feature_amplitude)` distances."""
+        reading = surface.shelf.evaluate(point)
+        shaped, authority = surface.features.apply(point, reading.elevation_m)
+        amplitude = surface.detail.amplitude_m(
+            point, shaped, reading.weight, reading.tectonic_m)
+        pre = surface.detail.amplitude_m(
+            point, reading.elevation_m, reading.weight, reading.tectonic_m)
+        truth = shaped + surface.detail.offset_m(point, amplitude * (1.0 - authority), None)
+        macro = surface.land.base_elevation(point) + surface.tectonics.offset_m(point)
+        rough = reading.elevation_m + surface.detail.offset_m(point, pre, None)
+        return (
+            abs(surface.features.apply(point, macro)[0] - shaped),
+            abs(shaped + surface.detail.offset_m(point, amplitude, None) - truth),
+            abs(surface.features.apply(point, rough)[0] - truth),
+            abs(shaped + surface.detail.offset_m(point, pre * (1.0 - authority), None)
+                - truth),
+        )
+
+    def worst(label, points):
+        surface = _surface_world(label)["py"]
+        found = [0.0, 0.0, 0.0, 0.0]
+        for point in points:
+            for index, value in enumerate(reorderings(surface, point)):
+                found[index] = max(found[index], value)
+        return found
+
+    grid, centres = _surface_grid(), _surface_centres()
+
+    bare = worst("bare", grid + centres)
+    assert bare[0] > 50.0, ("the bare world stopped seeing the macro-base reordering", bare)
+    assert bare[1:] == [0.0, 0.0, 0.0], (
+        "a world with nothing placed reacted to one of elevation_m's orderings, which is "
+        "arithmetically impossible unless the reference moved", bare,
+    )
+
+    negative = worst("negative-seed", grid + centres)
+    assert negative[0] == 0.0, (
+        "the negative-seed world has become sensitive to the macro base; the claim that the "
+        "demo world is not redundant needs re-measuring", negative[0],
+    )
+    assert min(negative[1:]) > 0.3, negative
+
+    demo_grid = worst("adopted", grid)
+    assert demo_grid[0] > 50.0 and demo_grid[1] > 11.0 and demo_grid[2] > 5.0, demo_grid
+    assert 0.04 < demo_grid[3] < 0.05, (
+        "the smallest reordering moved off its measured 0.04541089914697238 m", demo_grid[3])
+
+    demo_centres = worst("adopted", centres)
+    assert demo_centres[1] > 12.0 and demo_centres[2] > 7.0, demo_centres
+    assert demo_centres[3] < 0.001, (
+        "the centres no longer collapse the smallest reordering, which is the measured "
+        "reason both populations are carried", demo_centres[3],
+    )
+
+
+SURFACE_SCATTER_MAX_ABS_M = 8.0e-13
+"""
+`structural_m` and `elevation_m` on a 120-point GLOBAL scatter -- `corpus(114)` normalised,
+so the six axis points and 114 hashed directions -- rather than on the demo coast. A third
+population, and the only one that leaves the demonstration region at all.
+
+It exists because of a mutation that survived everything else. Substituting the module's
+own `LAND_FRACTION` for the caller's `land_fraction` inside the constructor was **invisible
+to every other test in this section**, since all five demo worlds pass exactly that
+constant. The same hole covers `radius_m`. So this corpus varies both, and the figures are
+what a defaulted argument would have to hide:
+
+    world (bare, seed 20260831)      cross-language worst   gap to the default world
+    default                          2.2737367544323206e-13  --
+    land_fraction 0.41               1.1368683772161603e-13  1580.563522850889 m, 104/120
+    radius_m 3,000,000               4.547473508864641e-13    482.09015395480674 m, 59/120
+
+Worst **4.547473508864641e-13 m**, gate [4.0e-13, 8.0e-13], **13.7% above the lower gate**.
+Wider than SURFACE_GRID_MAX_ABS_M because the scatter reaches ground the demo coast does
+not -- deep ocean and high interior, where the elevations themselves are an order larger.
+
+Host **K2SO**, CPython 3.11.0 MSC v.1933.
+"""
+
+
+def _surface_scatter():
+    """120 global directions, unit vectors, from this file's own `corpus`."""
+    if "scatter" not in _SURFACE_POINTS:
+        _surface_setup()
+        _SURFACE_POINTS["scatter"] = [
+            SpherePoint(Vec3(x, y, z).normalised()) for x, y, z in corpus(114)
+        ]
+    return _SURFACE_POINTS["scatter"]
+
+
+def test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults():
+    """
+    `land_fraction`, `radius_m` and `plate_count` reach the constructor as the caller
+    wrote them.
+
+    **This test exists because a mutation survived, three times.** Every other world in
+    this section passes `LAND_FRACTION`, `EARTH_RADIUS_M` and `DEFAULT_PLATE_COUNT`, so a
+    constructor that ignored any one of those arguments and substituted the module's own
+    constant agreed with the reference at all 3,250 of their points -- the
+    insensitive-argument trap, met head on: the corpus was sensitive to the CONSTRUCTOR
+    and blind to three of its ARGUMENTS.
+
+    `plate_count` was the last of the three to close, and it is instructive: with it
+    defaulted, the only test that went red was
+    `test_surface_fields_round_trip_including_the_adopted_radius`, whose witness is a
+    STRUCTURAL echo of `surface.plates.len()` rather than a cross-language value
+    comparison. Deselect that one test and the mutant survived every other surface test
+    in the file. No value corpus varied it, because all five demo worlds are built at 22
+    plates.
+
+    So all three are varied here, and both the agreement and the GAP are asserted: a
+    defaulted `land_fraction` is worth 1580.56 m at 104 of 120 points, a defaulted
+    `radius_m` 482.09 m at 59 of 120, and a defaulted `plate_count` 905.67 m at 37 of
+    120. The seven-plate world's own cross-language worst is 1.136868e-13 m, comfortably
+    inside SURFACE_SCATTER_MAX_ABS_M; plate counts of 17 and 29 were measured too and
+    reach 2.27e-12 and 7.96e-13, so they would need their own bound and are not used
+    here.
+    """
+    scatter = _surface_scatter()
+    default = PySurface(PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT,
+                        PY_LAND_FRACTION, None)
+    worst = 0.0
+    for label, radius_m, land_fraction, plate_count, floor, expected_differing in (
+        ("land_fraction 0.41", EARTH_RADIUS_M, 0.41, PY_DEFAULT_PLATE_COUNT, 1000.0, 104),
+        ("radius 3,000,000 m", 3000000.0, PY_LAND_FRACTION, PY_DEFAULT_PLATE_COUNT,
+         400.0, 59),
+        ("plate_count 7", EARTH_RADIUS_M, PY_LAND_FRACTION, 7, 400.0, 37),
+    ):
+        reference = PySurface(PY_WORLD_SEED, radius_m, plate_count,
+                              land_fraction, None)
+        gap = 0.0
+        differing = 0
+        for point in scatter:
+            v = point.vector
+            want = reference.structural_m(point)
+            got = engine.surface_structural_m(
+                PY_WORLD_SEED, radius_m, plate_count, land_fraction, v.x, v.y, v.z)
+            assert abs(want - got) <= SURFACE_SCATTER_MAX_ABS_M, (label, v, want, got)
+            worst = max(worst, abs(want - got))
+            want_elevation = reference.elevation_m(point)
+            got_elevation = engine.surface_elevation_m(
+                PY_WORLD_SEED, radius_m, plate_count, land_fraction, v.x, v.y, v.z)
+            assert abs(want_elevation - got_elevation) <= SURFACE_SCATTER_MAX_ABS_M, (
+                label, v, want_elevation, got_elevation)
+            worst = max(worst, abs(want_elevation - got_elevation))
+            apart = abs(want - default.structural_m(point))
+            if apart != 0.0:
+                differing += 1
+            gap = max(gap, apart)
+        assert gap > floor, (
+            "this scalar no longer changes the world enough for the corpus to tell a "
+            "defaulted argument from an honoured one", label, gap,
+        )
+        assert differing == expected_differing, (label, differing, expected_differing)
+    # And the default world itself, so the scatter's own bound is exercised where nothing
+    # is varied at all.
+    for point in scatter:
+        v = point.vector
+        want = default.structural_m(point)
+        got = engine.surface_structural_m(
+            PY_WORLD_SEED, EARTH_RADIUS_M, PY_DEFAULT_PLATE_COUNT, PY_LAND_FRACTION,
+            v.x, v.y, v.z)
+        assert abs(want - got) <= SURFACE_SCATTER_MAX_ABS_M, (v, want, got)
+        worst = max(worst, abs(want - got))
+    assert worst >= SURFACE_SCATTER_MAX_ABS_M / 2.0, (
+        "the scatter no longer reaches half its own bound; re-measure", worst)

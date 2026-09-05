@@ -8,7 +8,7 @@
 
 use crate::detmath as m;
 use crate::noise::Noise;
-use crate::sphere::{SpherePoint, EARTH_RADIUS_M};
+use crate::sphere::SpherePoint;
 
 /// Cycles per unit of noise space at the first octave. About one and a quarter, which puts
 /// the largest features somewhere near five thousand kilometres across — a continent, or
@@ -191,7 +191,9 @@ impl Continentality {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sphere::SpherePoint;
+    // EARTH_RADIUS_M is a test-only need here, so it is imported in this module rather
+    // than at file scope, where a non-test build reports it unused.
+    use crate::sphere::{SpherePoint, EARTH_RADIUS_M};
 
     #[test]
     fn the_constants_match_the_python() {

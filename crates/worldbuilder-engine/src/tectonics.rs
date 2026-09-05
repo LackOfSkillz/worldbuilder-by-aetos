@@ -168,6 +168,7 @@ impl Setting {
 /// thing in the engine that knows about both, which is deliberate - they were built
 /// in ignorance of each other so that continents would not inherit plate shapes, and
 /// this is the seam where they are allowed to meet.
+#[derive(Clone)]
 pub struct Tectonics {
     plates: PlateSet,
     land: Continentality,

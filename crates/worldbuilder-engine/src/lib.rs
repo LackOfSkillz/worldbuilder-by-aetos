@@ -20,6 +20,7 @@ pub mod kinematics;
 pub mod tectonics;
 pub mod shelf;
 pub mod substrate;
+pub mod surface;
 
 use pyo3::prelude::*;
 
@@ -93,6 +94,10 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::substrate_slope_at, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::substrate_at, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::substrate_dominant_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::surface_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::surface_structural_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::surface_elevation_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::surface_bottom_at, m)?)?;
     // The refusal has to be reachable as a TYPE from Python, not merely raisable: a test
     // that catches `KeyError` alone cannot tell the port's refusal from an unrelated dict
     // miss inside the binding, and the whole point of this one is that both languages

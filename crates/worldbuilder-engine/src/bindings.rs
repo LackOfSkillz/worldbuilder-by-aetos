@@ -1259,3 +1259,291 @@ pub fn substrate_dominant_at(
         .into_result(outcome)?
         .map_err(|unknown| UnknownSubstrateError::new_err(unknown.to_string()))
 }
+
+// --- surface: the constructor's three-way branch, structural_m, elevation_m, bottom_at --
+//
+// Conversion only, as everywhere else in this file, with two shape decisions that are not
+// like anything above.
+//
+// **A `Surface` is expensive and is therefore built once per distinct world, not once per
+// call.** `Surface::new` runs `Continentality::new`, which is a 4,000-sample Fibonacci
+// spiral and a sort; a conformance corpus of a few hundred points would otherwise pay for
+// that a few hundred times over. The other bindings that need a calibrated field take the
+// plate table apart into flat `Vec<f64>`s and lean on `cached_continentality`; that idiom
+// does not fit here, because the whole point of these bindings is that the world is
+// assembled by `Surface::new` itself rather than by this file. Assembling the fields here
+// -- `plates_for`, plus a cached `Continentality`, plus a `Shelf`, in this file's own
+// order -- would be a SECOND constructor, and a second constructor is how a port ends up
+// building a silently different world while every test still points at the first one. So
+// the constructor is called exactly as written and its result is memoised.
+//
+// The cache is keyed on the CONSTRUCTOR ARGUMENTS, losslessly: floats by `to_bits`,
+// strings and the `Option<String>` sentinel by value, so no two distinct worlds can share
+// an entry. A hash of them would be shorter and would admit a collision, and a colliding
+// key here does not fail -- it answers about a different planet.
+//
+// Entries are `Box::leak`ed to `&'static Surface` so the lock is released before any
+// arithmetic runs. The map only ever grows, exactly as `continentality_cache` does and for
+// the same reason: callers pass a small fixed number of worlds per process.
+//
+// **Python's `features=` is one name carrying three cases and this surface keeps all
+// three.** `features=None` (the empty world); a plain sequence, which the world places
+// itself at ITS OWN radius; and a pre-built `Features`, adopted verbatim INCLUDING ITS OWN
+// RADIUS. The third is not the second with a different number in it: a `Features` built at
+// 1,234,567 m keeps every tangent frame and every `_cos_reach` at that radius inside a
+// 6,371,000 m world, so the two branches do not converge and a binding that flattened them
+// would build a different planet from the Python's. The three cases cross as
+// `features=None`, `features=[...]`, and `features=[...]` with `features_radius_m` given --
+// the same three-way distinction, made from the two things that actually differ.
+
+/// One feature's construction arguments, exactly, in a form that is `Eq` and `Hash`.
+///
+/// Floats by their bit pattern, which is the only equality a cache key may use here: two
+/// features differing in the last bit of `target_m` are two different features, and `f64`
+/// is not `Eq` anyway.
+#[derive(PartialEq, Eq, Hash)]
+struct FeatureKey {
+    kind: String,
+    at: (u64, u64, u64),
+    target_m: u64,
+    length_m: u64,
+    width_m: u64,
+    bearing_deg: u64,
+    compose: String,
+    marked: bool,
+    substrate: Option<String>,
+}
+
+fn feature_key(t: &FeatureTuple) -> FeatureKey {
+    let (kind, x, y, z, target_m, length_m, width_m, bearing_deg, compose, marked, substrate) = t;
+    FeatureKey {
+        kind: kind.clone(),
+        at: (x.to_bits(), y.to_bits(), z.to_bits()),
+        target_m: target_m.to_bits(),
+        length_m: length_m.to_bits(),
+        width_m: width_m.to_bits(),
+        bearing_deg: bearing_deg.to_bits(),
+        compose: compose.clone(),
+        marked: *marked,
+        substrate: substrate.clone(),
+    }
+}
+
+/// Everything `Surface::new` is given, losslessly. `features` carries the three-way
+/// branch: `None` is Python's `features=None`, `Some((_, None))` is the loose sequence
+/// placed at the world's own radius, and `Some((_, Some(bits)))` is a pre-built `Features`
+/// adopted at the radius it was built with.
+#[derive(PartialEq, Eq, Hash)]
+struct SurfaceKey {
+    world_seed: i64,
+    radius_m: u64,
+    plate_count: usize,
+    land_fraction: u64,
+    features: Option<(Vec<FeatureKey>, Option<u64>)>,
+}
+
+type SurfaceCache = Mutex<HashMap<SurfaceKey, &'static crate::surface::Surface>>;
+
+fn surface_cache() -> &'static SurfaceCache {
+    static CACHE: OnceLock<SurfaceCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The world these arguments describe, built by `Surface::new` and memoised.
+///
+/// The `FeatureInput` branch is chosen here and nowhere else, so every binding below takes
+/// the same one for the same arguments.
+///
+/// **"Memoised" is the polite half. This LEAKS one `Surface` per distinct key and never
+/// evicts, so the process grows without bound in the number of distinct worlds asked for.**
+/// The leak is what buys the `&'static` the bindings return, and it is affordable for the
+/// use this crate has: a game runs one world and a conformance suite a handful, against a
+/// constructor that costs a 4,000-sample continentality calibration, so the alternative is
+/// paying that on every call. A `Surface` is tens of kilobytes, so a few hundred worlds is
+/// a few megabytes. **The studio is the case that breaks it** - sweeping seeds to preview
+/// worlds is exactly the shape that grows the map for ever - and when that arrives this
+/// wants an `Arc` and an eviction policy rather than a wider comment.
+fn cached_surface(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: usize,
+    land_fraction: f64,
+    features: Option<Vec<FeatureTuple>>,
+    features_radius_m: Option<f64>,
+) -> &'static crate::surface::Surface {
+    let key = SurfaceKey {
+        world_seed,
+        radius_m: radius_m.to_bits(),
+        plate_count,
+        land_fraction: land_fraction.to_bits(),
+        features: features.as_ref().map(|given| {
+            (
+                given.iter().map(feature_key).collect(),
+                features_radius_m.map(|r| r.to_bits()),
+            )
+        }),
+    };
+    let mut cache = surface_cache().lock().expect("surface cache poisoned");
+    if let Some(surface) = cache.get(&key) {
+        return surface;
+    }
+    let input = features.map(|given| match features_radius_m {
+        // Python's `isinstance(features, Features)` arm: already placed, adopted verbatim.
+        Some(built) => {
+            crate::surface::FeatureInput::Built(features_from_tuples(&given, built))
+        }
+        // Python's `elif not isinstance(...)` arm: loose, placed at THIS world's radius.
+        None => {
+            crate::surface::FeatureInput::Loose(given.iter().map(feature_from_tuple).collect())
+        }
+    });
+    let surface: &'static crate::surface::Surface = Box::leak(Box::new(
+        crate::surface::Surface::new(world_seed, radius_m, plate_count, land_fraction, input),
+    ));
+    cache.insert(key, surface);
+    surface
+}
+
+/// What the constructor kept, as `(world_seed, radius_m, plate_count, feature_count,
+/// features_radius_m)`.
+///
+/// **This is an API DECISION, not a transcription.** `surface.py` exposes three methods --
+/// `structural_m`, `elevation_m`, `bottom_at` -- and this is a FOURTH entry point with no
+/// counterpart there. It is here deliberately, and the reason is that three of the things
+/// the constructor is handed have no other cheap witness:
+///
+/// - `world_seed` comes back so the `i64` domain is visible from Python -- a seed outside
+///   it raises `OverflowError` at the boundary rather than being silently masked into a
+///   different world.
+/// - `features_radius_m` comes back because the adopted-`Features` branch is otherwise
+///   observable only through metres of elevation.
+/// - `plate_count` comes back, and it is the STRONGEST of the three. A constructor that
+///   ignored `plate_count` and substituted `generation::DEFAULT_PLATE_COUNT` was invisible
+///   to every value comparison in the conformance suite's surface section, because every
+///   demo world there is built at 22 plates -- the third instance of the
+///   insensitive-argument trap, after `land_fraction` and `radius_m`. The suite now varies
+///   it (`test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults`, a
+///   seven-plate world), but this echo of `surface.plates.len()` is still the only
+///   *structural* observation that the argument arrived at all.
+///
+/// All three are the kind of thing a constructor gets wrong by dropping, and a dropped one
+/// has no other witness. An unlabelled fourth method on a type whose reference class has
+/// three reads later as a transcription error, which is why the label lives here rather
+/// than only in a report.
+#[pyfunction]
+#[pyo3(signature = (
+    world_seed, radius_m, plate_count, land_fraction, features=None, features_radius_m=None,
+))]
+pub fn surface_fields(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: usize,
+    land_fraction: f64,
+    features: Option<Vec<FeatureTuple>>,
+    features_radius_m: Option<f64>,
+) -> (i64, f64, usize, usize, f64) {
+    let surface = cached_surface(
+        world_seed, radius_m, plate_count, land_fraction, features, features_radius_m,
+    );
+    (
+        surface.world_seed,
+        surface.radius_m,
+        surface.plates.len(),
+        surface.features.len(),
+        surface.features.radius_m,
+    )
+}
+
+/// `Surface.structural_m(point)`. Conversion only.
+#[pyfunction]
+#[pyo3(signature = (
+    world_seed, radius_m, plate_count, land_fraction, x, y, z,
+    features=None, features_radius_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn surface_structural_m(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: usize,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    features: Option<Vec<FeatureTuple>>,
+    features_radius_m: Option<f64>,
+) -> f64 {
+    let surface = cached_surface(
+        world_seed, radius_m, plate_count, land_fraction, features, features_radius_m,
+    );
+    surface.structural_m(&SpherePoint { vector: Vec3::new(x, y, z) })
+}
+
+/// `Surface.elevation_m(point, resolution_m=None)`.
+///
+/// `resolution_m` defaults to `None` so a caller can omit it exactly as Python's default
+/// allows, and any number given is passed straight through to `Detail::offset_m`, which
+/// owns the falsiness rule that collapses `0.0` and `-0.0` onto the canonical path. No
+/// special-casing belongs here.
+#[pyfunction]
+#[pyo3(signature = (
+    world_seed, radius_m, plate_count, land_fraction, x, y, z,
+    resolution_m=None, features=None, features_radius_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn surface_elevation_m(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: usize,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    resolution_m: Option<f64>,
+    features: Option<Vec<FeatureTuple>>,
+    features_radius_m: Option<f64>,
+) -> f64 {
+    let surface = cached_surface(
+        world_seed, radius_m, plate_count, land_fraction, features, features_radius_m,
+    );
+    surface.elevation_m(&SpherePoint { vector: Vec3::new(x, y, z) }, resolution_m)
+}
+
+/// `Surface.bottom_at(point)`, as the three fractions.
+///
+/// **The refusal crosses as an exception, not as a `None`.** `Surface::bottom_at` returns
+/// `Result<Composition, UnknownSubstrate>` because `substrate::at` does, and Python's
+/// `bottom_at` has no such return: a feature declaring a substrate `PURE` has no entry for
+/// makes `PURE[declared]` raise `KeyError` straight out of the call. So the `Err` becomes
+/// `UnknownSubstrateError`, which subclasses `KeyError` -- the same refusal, at the same
+/// input, catchable by the same `except`.
+///
+/// Unlike `substrate_at` above, the two host members are NOT Python callables here: this
+/// is the port's own `Surface` answering with its own `structural_m` and
+/// `tectonics.offset_m`, which is what `Surface.bottom_at` is. A comparison against Python
+/// therefore spans the whole stack and cannot be attributed to `substrate.rs` alone --
+/// `substrate_at` is the binding for that question, and it already exists.
+#[pyfunction]
+#[pyo3(signature = (
+    world_seed, radius_m, plate_count, land_fraction, x, y, z,
+    features=None, features_radius_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn surface_bottom_at(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: usize,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    features: Option<Vec<FeatureTuple>>,
+    features_radius_m: Option<f64>,
+) -> PyResult<(f64, f64, f64)> {
+    let surface = cached_surface(
+        world_seed, radius_m, plate_count, land_fraction, features, features_radius_m,
+    );
+    let composition = surface
+        .bottom_at(&SpherePoint { vector: Vec3::new(x, y, z) })
+        .map_err(|unknown| UnknownSubstrateError::new_err(unknown.to_string()))?;
+    Ok((composition.sand, composition.mud, composition.rock))
+}
