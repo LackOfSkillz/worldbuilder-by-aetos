@@ -2956,11 +2956,11 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 455 | 4 | 9 | 6 | -- | 474 | 5 | **469** |
-| default (the same set -- the crate declares no default features) | 455 | 4 | 9 | 6 | -- | 474 | 5 | **469** |
-| `--features python` | 457 | 4 | 9 | 6 | -- | 476 | 5 | **471** |
-| `--features wasm` | 455 | 4 | 9 | 6 | 36 | 510 | 5 | **505** |
-| `--features python,wasm` | 457 | 4 | 9 | 6 | 36 | 512 | 5 | **507** |
+| `--no-default-features` | 471 | 4 | 9 | 6 | -- | 490 | 5 | **485** |
+| default (the same set -- the crate declares no default features) | 471 | 4 | 9 | 6 | -- | 490 | 5 | **485** |
+| `--features python` | 473 | 4 | 9 | 6 | -- | 492 | 5 | **487** |
+| `--features wasm` | 471 | 4 | 9 | 6 | 36 | 526 | 5 | **521** |
+| `--features python,wasm` | 473 | 4 | 9 | 6 | 36 | 528 | 5 | **523** |
 
 0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
 and 0 doc-tests in every configuration.
@@ -3015,6 +3015,31 @@ this section: `cargo test -p worldbuilder-engine <cfg> -- --list` and the same w
 way as every entry above, and cross-checked through `.github/scripts/assert_counts.py
 cargo-list` itself (the same script `gates.yml` runs), which reported `count OK` at all five
 configurations against these figures.
+
+**Slice 5b Task 2 (the lake super-graph and its overflow edges) adds fourteen tests to
+`water.rs` and two to `stream.rs`, sixteen uniformly across every configuration** (both files
+compile unconditionally): `water.rs` gains the ordering-disagreement fixture and its four
+tests (`ordering_disagreement_fixture_has_the_roots_and_mouth_this_test_relies_on`,
+`outflow_follows_level_not_root_height`,
+`outflow_direction_follows_level_not_root_height_regression_guard`,
+`resolve_outflow_edges_is_bit_identical_across_two_runs`), the write-back and terminal-lake
+tests (`apply_outflows_writes_outflow_lake_onto_the_graphs_own_lake_table`,
+`a_terminal_lake_keeps_the_sentinel`), the cycle-handling tests
+(`mutual_overflow_between_two_lakes_is_a_tie_broken_deterministically`,
+`a_three_lake_cycle_is_also_caught`, `a_lake_chain_terminating_at_the_sentinel_peels_cleanly`,
+`an_outflow_lake_naming_no_real_lake_root_is_refused`), the real-graph property suite
+(`resolve_outflows_over_a_real_graph_satisfies_every_property`,
+`resolve_outflows_is_bit_identical_across_two_runs_on_a_real_graph`,
+`lake_count_is_measured_at_a_stated_node_count`) and a documentation-anchor test
+(`worldbuilder_directory_is_not_touched_by_this_module`); `stream.rs` gains
+`set_lake_outflow_lake_moves_only_the_named_lakes_outflow` and
+`set_lake_outflow_lake_reports_false_for_a_node_with_no_lake`, pinning the new
+`StreamGraph::set_lake_outflow_lake` write-back that mirrors Task 1's
+`set_lake_level_m`. `lib` moves 455/455/457/455/457 -> 471/471/473/471/473 and every row's
+`listed`/`run` by +16: **469/469/471/505/507 -> 485/485/487/521/523**. `expect_ignored` stays
+5 (this task added no `#[ignore]`d test). Re-derived the same way as every entry above and
+cross-checked through `.github/scripts/assert_counts.py cargo-list` itself, which reported
+`count OK` at all five configurations against these figures.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read

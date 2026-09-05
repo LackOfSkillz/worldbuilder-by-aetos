@@ -751,6 +751,27 @@ impl StreamGraph {
         false
     }
 
+    /// Write `outflow_lake` onto the lake recorded at `root_node`. Returns whether one was
+    /// found there.
+    ///
+    /// Slice 5 Task 2's write-back, scoped exactly like `set_lake_level_m` above and for the
+    /// same reason (this type's own doc comment: fields are private, `build` is the only
+    /// constructor, and a narrow single-field setter is the deliberate exception) -- it can
+    /// move only `outflow_lake` on an existing lake record, never `level_m` or `kind`, and
+    /// never add a lake or move a root. Does not itself validate that `outflow_lake` names a
+    /// real lake root or the sentinel; `water::resolve_outflows` is responsible for handing
+    /// this only values it has already checked, and `water::apply_outflows` re-asserts
+    /// acyclicity over the whole table after every write lands.
+    pub fn set_lake_outflow_lake(&mut self, root_node: u32, outflow_lake: u32) -> bool {
+        for lake in &mut self.lakes {
+            if lake.root_node == root_node {
+                lake.outflow_lake = outflow_lake;
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn reaches(&self) -> &[Reach] {
         &self.reaches
     }
@@ -1495,6 +1516,45 @@ mod tests {
             .expect("at least one mouth root");
         assert!(!graph.set_lake_level_m(non_lake_root, 123.0));
         assert!(!graph.set_lake_level_m(NO_LAKE, 123.0), "the sentinel index names no lake either");
+    }
+
+    /// Slice 5 Task 2's write-back, tested to the same standard as `set_lake_level_m` above:
+    /// moves only the named lake's `outflow_lake`, touches nothing else on any record.
+    #[test]
+    fn set_lake_outflow_lake_moves_only_the_named_lakes_outflow() {
+        let mut graph = built(20_260_904, 0.0);
+        let mut lake_roots = graph.roots().into_iter().filter(|&r| graph.lake_at(r).is_some());
+        let victim = lake_roots.next().expect("a lake root");
+        let other = lake_roots.next().expect("a second lake root, distinct from victim");
+        let before = graph.lakes().to_vec();
+
+        assert!(graph.set_lake_outflow_lake(victim, other));
+
+        for lake in graph.lakes() {
+            if lake.root_node == victim {
+                assert_eq!(lake.outflow_lake, other);
+            } else {
+                let original = before.iter().find(|l| l.root_node == lake.root_node).expect("unchanged lake still present");
+                assert_eq!(lake.outflow_lake, original.outflow_lake, "an unrelated lake's outflow moved");
+                assert_eq!(lake.level_m.to_bits(), original.level_m.to_bits());
+                assert_eq!(lake.kind, original.kind);
+            }
+        }
+    }
+
+    #[test]
+    fn set_lake_outflow_lake_reports_false_for_a_node_with_no_lake() {
+        let mut graph = built(20_260_904, 0.0);
+        let non_lake_root = *graph
+            .roots()
+            .iter()
+            .find(|&&r| graph.lake_at(r).is_none())
+            .expect("at least one mouth root");
+        assert!(!graph.set_lake_outflow_lake(non_lake_root, NO_LAKE));
+        assert!(
+            !graph.set_lake_outflow_lake(NO_LAKE, NO_LAKE),
+            "the sentinel index names no lake either"
+        );
     }
 
     #[test]
