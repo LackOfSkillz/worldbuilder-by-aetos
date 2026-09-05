@@ -263,8 +263,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
-          python -c "import worldbuilder_engine; print('engine imported from', worldbuilder_engine.__file__)"
+          echo "PROVE: deliberately NOT building worldbuilder_engine, to prove the fingerprint gate rejects an unimportable extension rather than only a wrong digest."
 
       # THE FINGERPRINT PARITY GATE. Task 2 gave the Python extension the same source
       # fingerprint `.wasm` provenance uses, by writing a SECOND implementation of the
