@@ -59,6 +59,15 @@ pub fn floor(x: f64) -> f64 {
     libm::floor(x)
 }
 
+/// Natural log. Added for `relief_survey.rs`'s Hurst-exponent group
+/// `H = ln(1/persistence) / ln(lacunarity)` -- the first transcendental this crate has
+/// needed for a *report*, not a generator path, but the same divergence risk applies
+/// (native vs WASM libm), so it goes through here rather than being a one-off `std`
+/// call in a `src/bin` file the guard would have to special-case.
+pub fn ln(x: f64) -> f64 {
+    libm::log(x)
+}
+
 pub fn to_radians(degrees: f64) -> f64 {
     degrees * RAD_PER_DEG
 }
@@ -83,6 +92,11 @@ mod tests {
         assert!(tanh(0.5).is_finite());
         assert!(powf(2.0, 0.5).is_finite());
         assert!(floor(-2.3).is_finite());
+        // `ln` was added for `relief_survey.rs`'s Hurst-exponent group; checked here
+        // rather than in its own test so this task does not disturb the engine's pinned
+        // test counts beyond what `relief_survey.rs` itself needs (see task-2-report.md).
+        assert!(ln(2.0).is_finite());
+        assert!((ln(std::f64::consts::E) - 1.0).abs() < 1e-12);
     }
 
     #[test]
