@@ -768,21 +768,56 @@ def _plate_seed_vectors(count=12):
     return seeds
 
 
+def _pole_for_seed(seed):
+    """
+    A pole distinct from its seed: a cyclic permutation of the seed's components. That
+    permutation is a rotation (determinant +1), so the result is still a unit vector, and
+    for every seed in this file's corpus (none of which is on the x == y == z line) it
+    differs from the seed itself -- which is what "derived by some rotation" needs to mean
+    for the harness to exercise a genuinely different pole per plate.
+    """
+    return Vec3(seed.z, seed.x, seed.y)
+
+
+def _rate_for_index(index):
+    """A rate that differs for every plate index, including the sign and a zero-adjacent
+    value, so no two plates in a generated set share a rate."""
+    return 0.01 * (index + 1) * (-1.0 if index % 2 else 1.0)
+
+
 def _build_plateset_pair(seed_vectors):
-    """A matching (Python PlateSet, flat seed list) pair, index-aligned with each other."""
+    """
+    A matching (Python PlateSet, flat seeds/poles/rates) tuple, index-aligned with each
+    other. Poles and rates are derived per-plate (see `_pole_for_seed` and
+    `_rate_for_index`) rather than fabricated as the seed and zero, so both sides of the
+    comparison carry real, independently-varying values -- the point of this slice.
+    """
+    poles = [_pole_for_seed(v) for v in seed_vectors]
+    rates = [_rate_for_index(i) for i in range(len(seed_vectors))]
     py_plates = [
-        PyPlate(index=i, seed=SpherePoint(v), euler_pole=SpherePoint(v), rate_rad_per_myr=0.0)
-        for i, v in enumerate(seed_vectors)
+        PyPlate(index=i, seed=SpherePoint(v), euler_pole=SpherePoint(p), rate_rad_per_myr=r)
+        for i, (v, p, r) in enumerate(zip(seed_vectors, poles, rates))
     ]
     py_set = PyPlateSet(py_plates)
-    flat = []
-    for v in seed_vectors:
-        flat.extend((v.x, v.y, v.z))
-    return py_set, flat
+    # The margin tests below, and the index-vs-position comment above them, both depend
+    # on index == position for every plate. Assert it here rather than merely documenting
+    # it, so a future edit to this fixture that broke the premise would fail loudly
+    # instead of silently making Python's own margin_at/margin_normal internally
+    # inconsistent with each other.
+    for position, plate in enumerate(py_plates):
+        assert plate.index == position, (
+            f"fixture invariant violated: plate at position {position} has index "
+            f"{plate.index}"
+        )
+    seeds_flat, poles_flat = [], []
+    for v, p in zip(seed_vectors, poles):
+        seeds_flat.extend((v.x, v.y, v.z))
+        poles_flat.extend((p.x, p.y, p.z))
+    return py_set, seeds_flat, poles_flat, list(rates)
 
 
 PLATE_SEED_VECTORS = _plate_seed_vectors(12)
-PY_PLATE_SET, PLATE_SEEDS_FLAT = _build_plateset_pair(PLATE_SEED_VECTORS)
+PY_PLATE_SET, PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES = _build_plateset_pair(PLATE_SEED_VECTORS)
 
 
 def test_plate_angular_velocity_agrees_over_poles_and_rates():
@@ -823,7 +858,7 @@ def test_plateset_bisector_agrees_on_every_ordered_pair_including_none():
     for a in range(n):
         for b in range(n):
             want = PY_PLATE_SET._bisectors[a][b]
-            got = engine.plateset_bisector(PLATE_SEEDS_FLAT, a, b)
+            got = engine.plateset_bisector(PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, a, b)
             assert (want is None) == (got is None), (a, b, want, got)
             if want is not None:
                 assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2]), (
@@ -835,7 +870,7 @@ def test_plateset_bisector_agrees_on_every_ordered_pair_including_none():
     # it must be None -- a plate has no bisector with itself.
     for i in range(n):
         assert PY_PLATE_SET._bisectors[i][i] is None
-        assert engine.plateset_bisector(PLATE_SEEDS_FLAT, i, i) is None
+        assert engine.plateset_bisector(PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, i, i) is None
 
 
 def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
@@ -847,11 +882,11 @@ def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
     here = Vec3(0.0, 0.0, 1.0)
     elsewhere = Vec3(0.0, 1.0, 0.0)
     seeds = [here, here, elsewhere]
-    py_set, flat = _build_plateset_pair(seeds)
+    py_set, flat, poles_flat, rates = _build_plateset_pair(seeds)
 
     for a, b in ((0, 1), (1, 0)):
         want = py_set._bisectors[a][b]
-        got = engine.plateset_bisector(flat, a, b)
+        got = engine.plateset_bisector(flat, poles_flat, rates, a, b)
         assert want is None, "python fixture sanity: coincident seeds have no bisector"
         assert got is None, (a, b, got)
 
@@ -859,7 +894,7 @@ def test_plateset_bisector_agrees_on_a_coincident_seed_pair():
     # entries are not a symptom of every pair coming back None.
     for a, b in ((0, 2), (2, 0), (1, 2), (2, 1)):
         want = py_set._bisectors[a][b]
-        got = engine.plateset_bisector(flat, a, b)
+        got = engine.plateset_bisector(flat, poles_flat, rates, a, b)
         assert want is not None and got is not None, (a, b, want, got)
         assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
 
@@ -875,7 +910,8 @@ def test_plateset_nearest_two_agrees_over_a_corpus_of_points():
         point = SpherePoint(Vec3(x, y, z).normalised())
         want_best, want_second = PY_PLATE_SET.nearest_two(point)
         got_best, got_second = engine.plateset_nearest_two(
-            PLATE_SEEDS_FLAT, point.vector.x, point.vector.y, point.vector.z
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+            point.vector.x, point.vector.y, point.vector.z
         )
         want_best_index = None if want_best is None else want_best.index
         want_second_index = None if want_second is None else want_second.index
@@ -891,7 +927,9 @@ def test_plateset_nearest_two_agrees_at_the_poles_and_the_meridian():
                     (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
         point = SpherePoint(Vec3(x, y, z))
         want_best, want_second = PY_PLATE_SET.nearest_two(point)
-        got_best, got_second = engine.plateset_nearest_two(PLATE_SEEDS_FLAT, x, y, z)
+        got_best, got_second = engine.plateset_nearest_two(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, x, y, z
+        )
         assert want_best.index == got_best, (x, y, z, want_best.index, got_best)
         assert want_second.index == got_second, (x, y, z, want_second.index, got_second)
 
@@ -906,14 +944,339 @@ def test_plateset_nearest_two_agrees_with_coincident_seeds():
     here = Vec3(0.0, 0.0, 1.0)
     elsewhere = Vec3(0.0, 1.0, 0.0)
     seeds = [here, here, elsewhere]
-    py_set, flat = _build_plateset_pair(seeds)
+    py_set, flat, poles_flat, rates = _build_plateset_pair(seeds)
 
     for x, y, z in list(corpus(500)) + [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0)]:
         point = SpherePoint(Vec3(x, y, z).normalised())
         want_best, want_second = py_set.nearest_two(point)
         got_best, got_second = engine.plateset_nearest_two(
-            flat, point.vector.x, point.vector.y, point.vector.z
+            flat, poles_flat, rates, point.vector.x, point.vector.y, point.vector.z
         )
         assert want_best.index == got_best, (x, y, z, want_best.index, got_best)
         want_second_index = None if want_second is None else want_second.index
         assert want_second_index == got_second, (x, y, z, want_second_index, got_second)
+
+
+# --- PlateSet: margins -------------------------------------------------------------------
+#
+# `Margin` carries whole `Plate` values, not indices, so a binding that fabricated
+# `pole = seed` and `rate = 0.0` (as earlier bindings in this crate did, before this slice)
+# would compare placeholder poles and placeholder rates against identically fabricated
+# placeholders on the Python side and pass trivially -- false conformance, not conformance.
+# `_build_plateset_pair` above already gives every plate a genuinely different pole
+# (`_pole_for_seed`, a cyclic permutation of the seed) and a genuinely different rate
+# (`_rate_for_index`, including sign and magnitude), and `plateset_from_parts` on the Rust
+# side carries them straight through into real `Plate` values -- so a regression back to
+# fabrication would show up here as every margin's neighbour and distance moving, not as a
+# trivial pass.
+#
+# The split contract from the brief, applied without blurring it:
+#   - nearest/neighbour indices: dot products and abs only, no transcendental anywhere.
+#     Compared as exact integers with `==`. A mismatch here is a real defect.
+#   - distance_m: goes through asin. Compared with `close_enough` at MAX_TRANSCENDENTAL_ULPS.
+#   - margin_normal / flattened: sqrt only, no asin. Compared with `same()`, strictly.
+#   - Every `None` is compared positionally (`(want is None) == (got is None)` before ever
+#     touching a value), so a binding that returned `None` early where Python has a value
+#     -- or a value where Python has `None` -- fails here rather than being skipped.
+#
+# On index vs. position: `PlateSet::new` (both languages) builds the bisector table
+# addressed by POSITION in the plate list, but Python's `margin_normal` and `margin_at`
+# read it back two different ways -- `margin_normal` indexes by `.index`
+# (`self._bisectors[margin.nearest.index][margin.neighbour.index]`), while `margin_at`
+# indexes by position in the enumeration. Rust's `margin_normal` and `margin_at` both use
+# position on both axes (see the comment at plates.rs:161), which is a deliberate,
+# reviewed choice (Task 2 of this slice), not an oversight.
+#
+# Those only coincide when a plate's `index` equals its position in the list -- true here
+# because `_build_plateset_pair` assigns `index=i` in enumeration order, mirroring
+# `generation.py`'s `index=index for index in range(count)`. Index-equals-position is the
+# only regime in which the *Python reference itself* is internally self-consistent between
+# its two ways of reading the same table; a set with shuffled indices would make Python's
+# own `margin_normal` and `margin_at` disagree with EACH OTHER, before Rust ever enters the
+# picture. Do not "strengthen" this suite by shuffling indices relative to position -- that
+# would report a divergence that is really just Python's own inconsistency, not a Rust
+# defect.
+
+def _margins_corpus(count=4000):
+    """Sphere points to probe margins at: the six pinned poles/meridian points, then a
+    slice of the shared pseudo-random corpus, normalised onto the sphere."""
+    for x, y, z in list(corpus())[:6]:
+        yield SpherePoint(Vec3(x, y, z))
+    for x, y, z in corpus(count):
+        yield SpherePoint(Vec3(x, y, z).normalised())
+
+
+def _bisector_points_near_margin(seed_vectors, count=1500):
+    """
+    Points deliberately close to a bisector between two plates -- exactly where the
+    "minimum over all bisectors" neighbour selection is most likely to differ, per the
+    brief. Constructed as points near the midpoint of a pair of seeds, nudged off the
+    great circle by a small, varying amount so the sample is not literally sitting on the
+    bisector every time (which would only exercise the exact-zero case).
+    """
+    n = len(seed_vectors)
+    state = 0xABCDEF0123456789
+    mask = (1 << 64) - 1
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    produced = 0
+    while produced < count and pairs:
+        for i, j in pairs:
+            a, b = seed_vectors[i], seed_vectors[j]
+            midpoint = (a + b)
+            if midpoint.length() <= 1e-12:
+                continue
+            midpoint = midpoint.normalised()
+
+            state = (state * 6364136223846793005 + 1442695040888963407) & mask
+            h = state ^ (state >> 33)
+            nudge = (h >> 11) / float(1 << 53) * 2.0 - 1.0  # in [-1, 1)
+
+            # A small perpendicular-ish nudge via a third, unrelated direction, then
+            # renormalise back onto the sphere.
+            other = seed_vectors[(i + j + 1) % n]
+            nudged = Vec3(
+                midpoint.x + other.x * nudge * 1e-4,
+                midpoint.y + other.y * nudge * 1e-4,
+                midpoint.z + other.z * nudge * 1e-4,
+            )
+            if nudged.length() <= 1e-12:
+                continue
+            yield SpherePoint(nudged.normalised())
+            produced += 1
+            if produced >= count:
+                break
+
+
+def test_plateset_margin_at_agrees_over_a_corpus_of_points():
+    """
+    The split contract, point by point: indices as exact integers (a mismatch is a real
+    defect), distance through `close_enough` (it went through asin).
+    """
+    checked = 0
+    for point in _margins_corpus():
+        v = point.vector
+        want = PY_PLATE_SET.margin_at(point, EARTH_RADIUS_M)
+        got_nearest, got_neighbour, got_distance = engine.plateset_margin_at(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, v.x, v.y, v.z, EARTH_RADIUS_M
+        )
+        want_nearest = None if want.nearest is None else want.nearest.index
+        want_neighbour = None if want.neighbour is None else want.neighbour.index
+        assert want_nearest == got_nearest, (v.x, v.y, v.z, "nearest", want_nearest, got_nearest)
+        assert want_neighbour == got_neighbour, (
+            v.x, v.y, v.z, "neighbour", want_neighbour, got_neighbour
+        )
+        assert close_enough(want.distance_m, got_distance), (
+            v.x, v.y, v.z, "distance_m", want.distance_m, got_distance,
+            ulps_apart(want.distance_m, got_distance),
+        )
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_margin_at_agrees_at_the_poles_and_the_meridian():
+    """The six pinned points, explicitly."""
+    for x, y, z in ((0.0, 0.0, 1.0), (0.0, 0.0, -1.0), (1.0, 0.0, 0.0),
+                    (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, -1.0, 0.0)):
+        point = SpherePoint(Vec3(x, y, z))
+        want = PY_PLATE_SET.margin_at(point, EARTH_RADIUS_M)
+        got_nearest, got_neighbour, got_distance = engine.plateset_margin_at(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, x, y, z, EARTH_RADIUS_M
+        )
+        assert want.nearest.index == got_nearest, (x, y, z, want.nearest.index, got_nearest)
+        want_neighbour = None if want.neighbour is None else want.neighbour.index
+        assert want_neighbour == got_neighbour, (x, y, z, want_neighbour, got_neighbour)
+        assert close_enough(want.distance_m, got_distance), (
+            x, y, z, want.distance_m, got_distance, ulps_apart(want.distance_m, got_distance)
+        )
+
+
+def test_plateset_margin_at_agrees_with_a_single_plate():
+    """A single-plate set: infinite distance, no neighbour, and the None must line up
+    positionally rather than merely "both sides happen to have nothing to compare"."""
+    seed = Vec3(0.0, 0.0, 1.0)
+    py_set, flat, poles_flat, rates = _build_plateset_pair([seed])
+    for x, y, z in [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)]:
+        point = SpherePoint(Vec3(x, y, z))
+        want = py_set.margin_at(point, EARTH_RADIUS_M)
+        got_nearest, got_neighbour, got_distance = engine.plateset_margin_at(
+            flat, poles_flat, rates, x, y, z, EARTH_RADIUS_M
+        )
+        assert want.nearest.index == got_nearest == 0
+        assert want.neighbour is None
+        assert got_neighbour is None
+        assert math.isinf(want.distance_m)
+        assert math.isinf(got_distance)
+
+
+def test_plateset_margin_at_agrees_near_bisectors():
+    """
+    Points deliberately close to a bisector between two plates, where the minimum-over-
+    bisector-sines neighbour selection is most likely to differ between implementations.
+    """
+    checked = 0
+    for point in _bisector_points_near_margin(PLATE_SEED_VECTORS):
+        v = point.vector
+        want = PY_PLATE_SET.margin_at(point, EARTH_RADIUS_M)
+        got_nearest, got_neighbour, got_distance = engine.plateset_margin_at(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, v.x, v.y, v.z, EARTH_RADIUS_M
+        )
+        want_nearest = None if want.nearest is None else want.nearest.index
+        want_neighbour = None if want.neighbour is None else want.neighbour.index
+        assert want_nearest == got_nearest, (v.x, v.y, v.z, "nearest", want_nearest, got_nearest)
+        assert want_neighbour == got_neighbour, (
+            v.x, v.y, v.z, "neighbour", want_neighbour, got_neighbour
+        )
+        assert close_enough(want.distance_m, got_distance), (
+            v.x, v.y, v.z, "distance_m", want.distance_m, got_distance,
+            ulps_apart(want.distance_m, got_distance),
+        )
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_margin_normal_agrees():
+    """`margin_normal` runs through sqrt only, no asin, so it is held strictly."""
+    checked = 0
+    for point in _margins_corpus():
+        v = point.vector
+        margin = PY_PLATE_SET.margin_at(point, EARTH_RADIUS_M)
+        want = PY_PLATE_SET.margin_normal(point, margin)
+        got = engine.plateset_margin_normal(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, v.x, v.y, v.z, EARTH_RADIUS_M
+        )
+        assert (want is None) == (got is None), (v.x, v.y, v.z, want, got)
+        if want is not None:
+            assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2]), (
+                v.x, v.y, v.z, want, got
+            )
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_margin_normal_agrees_near_bisectors():
+    checked = 0
+    for point in _bisector_points_near_margin(PLATE_SEED_VECTORS):
+        v = point.vector
+        margin = PY_PLATE_SET.margin_at(point, EARTH_RADIUS_M)
+        want = PY_PLATE_SET.margin_normal(point, margin)
+        got = engine.plateset_margin_normal(
+            PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES, v.x, v.y, v.z, EARTH_RADIUS_M
+        )
+        assert (want is None) == (got is None), (v.x, v.y, v.z, want, got)
+        if want is not None:
+            assert same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2]), (
+                v.x, v.y, v.z, want, got
+            )
+        checked += 1
+    assert checked > 0
+
+
+def test_plateset_margin_normal_agrees_with_a_single_plate():
+    """No neighbour, so no normal -- on both sides, positionally."""
+    seed = Vec3(0.0, 0.0, 1.0)
+    py_set, flat, poles_flat, rates = _build_plateset_pair([seed])
+    point = SpherePoint(Vec3(1.0, 0.0, 0.0))
+    margin = py_set.margin_at(point, EARTH_RADIUS_M)
+    want = py_set.margin_normal(point, margin)
+    got = engine.plateset_margin_normal(
+        flat, poles_flat, rates, point.vector.x, point.vector.y, point.vector.z, EARTH_RADIUS_M
+    )
+    assert want is None
+    assert got is None
+
+
+def test_plateset_flattened_agrees():
+    """`flattened` is sqrt only, no asin, so it is held strictly -- exercised directly
+    against every defined bisector normal in the table, not only the ones `margin_at`
+    happens to select as the nearest plate's closest margin. The point corpus is kept
+    modest (200) because it is crossed against the full n*n bisector table below."""
+    n = len(PLATE_SEED_VECTORS)
+    checked = 0
+    for point in _margins_corpus(200):
+        v = point.vector
+        for a in range(n):
+            for b in range(n):
+                normal = PY_PLATE_SET._bisectors[a][b]
+                if normal is None:
+                    continue
+                want = PY_PLATE_SET.flattened(point, normal)
+                got = engine.plateset_flattened(
+                    PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+                    v.x, v.y, v.z, normal.x, normal.y, normal.z,
+                )
+                assert (want is None) == (got is None), (v.x, v.y, v.z, a, b, want, got)
+                if want is not None:
+                    assert (
+                        same(want.x, got[0]) and same(want.y, got[1]) and same(want.z, got[2])
+                    ), (v.x, v.y, v.z, a, b, want, got)
+                checked += 1
+    assert checked > 0
+
+
+def test_plateset_flattened_agrees_when_the_normal_points_straight_up():
+    """The degenerate case: standing exactly where a bisector's normal points, leaving no
+    component in the tangent plane. Both sides must return None, not almost-None."""
+    normal = PY_PLATE_SET._bisectors[0][1]
+    assert normal is not None, "fixture sanity: plates 0 and 1 have a bisector"
+    point = SpherePoint(normal)
+    want = PY_PLATE_SET.flattened(point, normal)
+    got = engine.plateset_flattened(
+        PLATE_SEEDS_FLAT, PLATE_POLES_FLAT, PLATE_RATES,
+        point.vector.x, point.vector.y, point.vector.z, normal.x, normal.y, normal.z,
+    )
+    assert want is None
+    assert got is None
+
+
+def test_the_minimum_bisector_sine_gap_is_measured_not_assumed():
+    """
+    The hazard the brief calls out: neighbour selection in `margin_at` is a discrete
+    choice -- the minimum over bisector sines -- and two of those sines could be equal or
+    near-equal at a point equidistant from two margins. Slice 1d measured the same shape
+    for the calibration quantile rather than guessing; this does the same here.
+
+    For every point in the corpus, this recomputes every defined bisector sine for the
+    nearest plate (mirroring `margin_at`'s own loop) and records the gap between the two
+    smallest. The minimum such gap observed, over the whole corpus, is the reported
+    number. A gap near the spacing of one ULP at that magnitude (roughly 2**-52, i.e.
+    about 2.2e-16 for a sine near 1.0, smaller still for a sine near 0.0) would mean
+    neighbour selection is genuinely fragile at that point -- a rounding difference alone
+    could flip which plate is "the" neighbour -- and that must be reported, not buried.
+    """
+    minimum_gap = math.inf
+    minimum_gap_point = None
+    for point in list(_margins_corpus(3000)) + list(_bisector_points_near_margin(PLATE_SEED_VECTORS, 1500)):
+        nearest, _ = PY_PLATE_SET.nearest_two(point)
+        v = point.vector
+        px, py, pz = v.x, v.y, v.z
+        sines = []
+        for normal in PY_PLATE_SET._bisector_xyz[nearest.index]:
+            if normal is None:
+                continue
+            sines.append(abs(px * normal[0] + py * normal[1] + pz * normal[2]))
+        if len(sines) < 2:
+            continue
+        sines.sort()
+        gap = sines[1] - sines[0]
+        if gap < minimum_gap:
+            minimum_gap = gap
+            minimum_gap_point = (v.x, v.y, v.z)
+
+    assert minimum_gap_point is not None, "corpus produced no point with two or more margins"
+
+    print(
+        f"\nminimum observed gap between the two smallest bisector sines: {minimum_gap!r} "
+        f"at point {minimum_gap_point}"
+    )
+
+    # Assert a real floor rather than merely printing the value: a passing run swallows
+    # `print`, so without this the 1.369e-5 figure the README cites as evidence of
+    # robustness is pinned nowhere, and an exact tie (gap 0.0 -- precisely the fragility
+    # this test exists to detect) would pass silently. 1e-9 sits four orders below the
+    # observed gap and seven above the ~1e-16 scale where a tie hazard would actually
+    # live, so it has margin on both sides without masking a real regression.
+    assert minimum_gap >= 1e-9, (
+        f"minimum bisector sine gap collapsed to {minimum_gap!r} at {minimum_gap_point} "
+        "-- neighbour selection may be fragile at this point"
+    )
+    assert minimum_gap < math.inf

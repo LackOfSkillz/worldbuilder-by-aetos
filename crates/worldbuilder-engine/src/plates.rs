@@ -6,6 +6,7 @@
 //! construction. Everything else here is arithmetic in service of asking that question
 //! quickly, and of asking how far the point is from the answer changing.
 
+use crate::detmath as m;
 use crate::sphere::SpherePoint;
 use crate::vectors::{Vec3, DEGENERATE};
 
@@ -21,6 +22,17 @@ pub struct Plate {
     /// Radians per million years. **Signed**: the sign and the pole together give the
     /// sense of rotation, so there is no separate clockwise flag to get wrong.
     pub rate_rad_per_myr: f64,
+}
+
+/// Where a point stands relative to the edge of its plate.
+#[derive(Debug, Clone, Copy)]
+pub struct Margin {
+    /// The plate the point is on.
+    pub nearest: Option<Plate>,
+    /// The plate across the nearest stretch of that edge.
+    pub neighbour: Option<Plate>,
+    /// Metres to it, along the surface.
+    pub distance_m: f64,
 }
 
 impl Plate {
@@ -125,11 +137,107 @@ impl PlateSet {
         }
         (best, second)
     }
+
+    /// A bisector normal laid flat on the surface at a point.
+    pub fn flattened(&self, point: &SpherePoint, normal: &Vec3) -> Option<Vec3> {
+        let v = point.vector;
+        let flat = normal.sub(&v.scaled(v.dot(normal)));
+        if flat.length() <= DEGENERATE {
+            return None;
+        }
+        flat.normalised()
+    }
+
+    /// Which way is across the margin, in the tangent plane at this point.
+    ///
+    /// Wanted by the kinematics, which need to know whether two plates approach each other
+    /// *across* their margin or slide *along* it. The bisector's plane normal is already
+    /// perpendicular to the margin; this is its component in the tangent plane, which is
+    /// what "away from the margin" means to somebody standing there.
+    pub fn margin_normal(&self, point: &SpherePoint, margin: &Margin) -> Option<Vec3> {
+        let nearest = margin.nearest?;
+        let neighbour = margin.neighbour?;
+
+        // The Python indexes the bisector table by margin.nearest.index and
+        // margin.neighbour.index unconditionally. The Rust PlateSet::new instead builds
+        // the table by loop position, and nothing enforces index == position, so both
+        // axes here are resolved from the passed `margin` by looking up each plate's
+        // *position* in self.plates rather than trusting its index field. That is a
+        // deliberate deviation from the Python, not a bug: for every set generation.py
+        // can build, index and position coincide, so the two addressing schemes agree.
+        let near_pos = self.plates.iter().position(|p| p.index == nearest.index)?;
+        let neighbour_pos = self.plates.iter().position(|p| p.index == neighbour.index)?;
+
+        let normal = self.bisector(near_pos, neighbour_pos)?;
+        self.flattened(point, &normal)
+    }
+
+    /// How far a point is from the edge of the plate it is on.
+    ///
+    /// **The minimum over every bisector of the nearest plate**, and it has to be. The
+    /// obvious shortcut is to measure only the bisector with the second-nearest seed,
+    /// which is nearly always the right one and is a single arc sine. It is also
+    /// discontinuous, and the walk-across-a-margin test caught it jumping by five hundred
+    /// kilometres: the distance to a bisector is `asin(dot(P, normalise(A - B)))`, and
+    /// when the runner-up changes from B to C the numerator is continuous but the
+    /// normalisation is not, because `|A - B|` and `|A - C|` differ. Terrain built on that
+    /// would have grown a wall wherever a third plate became the runner-up.
+    ///
+    /// The minimum is taken on the sine rather than the angle: arc sine is monotonic over
+    /// the range in question, so the smallest sine is the smallest angle, and one
+    /// transcendental call at the end does for the lot.
+    pub fn margin_at(&self, point: &SpherePoint, radius_m: f64) -> Margin {
+        if self.plates.len() < 2 {
+            let (nearest, _) = self.nearest_two(point);
+            return Margin { nearest, neighbour: None, distance_m: f64::INFINITY };
+        }
+
+        let v = point.vector;
+        let (px, py, pz) = (v.x, v.y, v.z);
+
+        // The nearest plate's *position* in `self.plates`, not `Plate::index`.
+        // `PlateSet::new` builds the bisector table by loop position and never touches
+        // the `index` field it was handed, so the table is only addressable by position.
+        // Nothing in this module enforces `index == position`, so recompute the nearest
+        // plate here (mirroring `nearest_two`'s tie-breaking) rather than trying to
+        // recover a position from `near.index` after the fact.
+        let mut near_pos = 0usize;
+        let mut best_dot = -2.0f64;
+        for (i, plate) in self.plates.iter().enumerate() {
+            let s = plate.seed.vector;
+            let alignment = px * s.x + py * s.y + pz * s.z;
+            if alignment > best_dot {
+                near_pos = i;
+                best_dot = alignment;
+            }
+        }
+        let near = self.plates[near_pos];
+
+        let mut closest_sine = 2.0f64;
+        let mut across: Option<Plate> = None;
+        for (other_index, other) in self.plates.iter().enumerate() {
+            let normal = match self.bisector(near_pos, other_index) {
+                Some(n) => n,
+                None => continue,
+            };
+            let offset = (px * normal.x + py * normal.y + pz * normal.z).abs();
+            if offset < closest_sine {
+                closest_sine = offset;
+                across = Some(*other);
+            }
+        }
+
+        // Python writes `min(1.0, closest_sine)`; two-argument min keeps 1.0 unless the
+        // value is strictly below it, so a NaN would clamp to 1.0 rather than propagate.
+        let clamped = if closest_sine < 1.0 { closest_sine } else { 1.0 };
+        Margin { nearest: Some(near), neighbour: across, distance_m: m::asin(clamped) * radius_m }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sphere::EARTH_RADIUS_M;
 
     fn a_plate(index: usize, rate: f64) -> Plate {
         Plate {
@@ -295,6 +403,103 @@ mod tests {
         let (best, second) = set.nearest_two(&SpherePoint::from_latlon(0.0, 0.0));
         assert_eq!(best.expect("a nearest").index, 0);
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn a_single_plate_has_no_margin() {
+        let only = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(5.0, 5.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.0,
+        };
+        let set = PlateSet::new(vec![only]);
+        let m = set.margin_at(&SpherePoint::from_latlon(0.0, 0.0), EARTH_RADIUS_M);
+        assert_eq!(m.nearest.expect("a nearest").index, 0);
+        assert!(m.neighbour.is_none());
+        assert!(m.distance_m.is_infinite());
+    }
+
+    #[test]
+    fn a_point_on_the_bisector_is_at_zero_distance() {
+        // Equidistant from both seeds, so it stands on their shared edge.
+        let set = two_plates();
+        let a = set.plate(0).seed.vector;
+        let b = set.plate(1).seed.vector;
+        let midpoint = SpherePoint {
+            vector: a.add(&b).normalised().expect("distinct seeds"),
+        };
+        let m = set.margin_at(&midpoint, EARTH_RADIUS_M);
+        assert!(m.distance_m.abs() < 1e-6, "distance was {}", m.distance_m);
+        assert!(m.neighbour.is_some());
+    }
+
+    #[test]
+    fn a_point_at_a_seed_is_a_quarter_turn_from_the_edge() {
+        // With two seeds ninety degrees apart, standing on one puts the shared edge
+        // forty-five degrees away.
+        let set = two_plates();
+        let m = set.margin_at(&set.plate(0).seed, EARTH_RADIUS_M);
+        let expected = (std::f64::consts::PI / 4.0) * EARTH_RADIUS_M;
+        assert!((m.distance_m - expected).abs() < 1.0, "distance was {}", m.distance_m);
+        assert_eq!(m.neighbour.expect("a neighbour").index, 1);
+    }
+
+    #[test]
+    fn the_distance_never_exceeds_a_quarter_turn() {
+        // asin caps at pi/2, and the sine is clamped to 1.0 before it.
+        let set = two_plates();
+        for lat in (-80..81).step_by(20) {
+            for lon in (-180..181).step_by(45) {
+                let m = set.margin_at(&SpherePoint::from_latlon(lat as f64, lon as f64), EARTH_RADIUS_M);
+                assert!(m.distance_m <= (std::f64::consts::PI / 2.0) * EARTH_RADIUS_M + 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_flattened_normal_lies_in_the_tangent_plane() {
+        let set = two_plates();
+        let p = SpherePoint::from_latlon(20.0, 40.0);
+        let normal = set.bisector(0, 1).expect("distinct seeds");
+        let flat = set.flattened(&p, &normal).expect("not degenerate here");
+        // Perpendicular to up, and unit length.
+        assert!(flat.dot(&p.vector).abs() < 1e-12, "dot was {}", flat.dot(&p.vector));
+        assert!((flat.length() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_normal_parallel_to_up_has_no_flat_direction() {
+        // Standing exactly where the bisector's normal points straight up leaves no
+        // component in the tangent plane, so there is no "across" to report.
+        let set = two_plates();
+        let normal = set.bisector(0, 1).expect("distinct seeds");
+        let straight_up = SpherePoint { vector: normal };
+        assert!(set.flattened(&straight_up, &normal).is_none());
+    }
+
+    #[test]
+    fn a_margin_with_no_neighbour_has_no_normal() {
+        let only = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(5.0, 5.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.0,
+        };
+        let set = PlateSet::new(vec![only]);
+        let p = SpherePoint::from_latlon(0.0, 0.0);
+        let margin = set.margin_at(&p, EARTH_RADIUS_M);
+        assert!(set.margin_normal(&p, &margin).is_none());
+    }
+
+    #[test]
+    fn the_margin_normal_points_across_the_margin() {
+        let set = two_plates();
+        let p = SpherePoint::from_latlon(10.0, 30.0);
+        let margin = set.margin_at(&p, EARTH_RADIUS_M);
+        let across = set.margin_normal(&p, &margin).expect("a neighbour exists here");
+        assert!(across.dot(&p.vector).abs() < 1e-12);
+        assert!((across.length() - 1.0).abs() < 1e-12);
     }
 
 }
