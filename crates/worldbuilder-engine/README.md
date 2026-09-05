@@ -9,8 +9,11 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
 
 ## What is here so far
 
-Counted from `src/`, not from memory: **sixteen modules plus the crate root**, every one of
-them ported from a named Python module and held to that module by `tests/test_conformance.py`.
+Counted from `src/`, not from memory: **eighteen modules plus the crate root**, and one
+binary. Sixteen of the modules are ported from a named Python module and held to it by
+`tests/test_conformance.py`; the last two, `stream.rs` and `streamfmt.rs`, are **new in this
+crate and have no Python to be conformant with**, so every claim they make is a property
+test or a measurement instead.
 
     src/lib.rs       the crate root: the module tree and the PyO3 module registration
     src/detmath.rs   the only place a transcendental is called
@@ -28,9 +31,14 @@ them ported from a named Python module and held to that module by `tests/test_co
     src/features.rs    Feature, Features, Placed: RAISE / CARVE / SHAPE, in list order
     src/substrate.rs   what the bottom is made of, and the Composition it returns
     src/surface.rs     the whole world assembled: structural_m, elevation_m, bottom_at
+    src/stream.rs      the node sampler and StreamGraph: the second representation
+    src/streamfmt.rs   the stream graph's on-disk format: fail closed, sliceable by region
     src/bindings.rs  the PyO3 surface, conversion only
+    src/bin/streambench.rs  what a graph costs, at sizes up to a whole planet
 
-That list is the engine core, and it is closed -- see **This closes the engine core** below.
+The first seventeen entries are the engine core, and it is closed -- see **This closes the
+engine core** below. `stream.rs` and `streamfmt.rs` are not part of it: they are the *second*
+representation CORE-001 adds beside it, and they add nothing to `Surface`.
 Keep it in step with `src/` when a module lands: it went seven modules stale across the
 slices that added them, on the same page that claims the core is complete.
 
@@ -2317,3 +2325,497 @@ surface of this section is **13**, not 14. The test says so in its own docstring
 it counts noise evaluations instead of timing them, because the two timing distributions
 genuinely overlap. It passed here on a machine that was not idle. A failure there is now news
 about the branch rather than a statement about the machine.
+
+## `stream.rs` and `streamfmt.rs`: the second representation, and the first thing in this project measured at planet scale
+
+CORE-001's whole claim is that a core holding **two** representations from the start lets
+slice 5 *populate* rather than *restructure*. `Surface` answers "how high is it here" from a
+seed alone, statelessly, for ever. A drainage network cannot be answered that way -- whether
+water leaving a place reaches the sea depends on every other place -- so it has to be built
+over a node set and then held. `World` is the type that holds both, and **`Surface` is not
+modified**: the same eight fields, checked by `the_surface_is_not_modified_by_this_slice`,
+which reads the struct's own source and fails if a ninth appears or a graph word gets in.
+
+Under VERSION-001 that is not a stylistic preference. Retrofitting a graph into an engine
+built only for scalar fields changes what a fixed seed evaluates to, which is a
+`GENERATOR_VERSION` bump, which is every existing worldfile through a migration it did not
+ask for. The field list is therefore fixed **now**, while nothing has declared a version.
+
+**Slice 5 owns the erosion.** No stream power equation, no implicit solver, no thermal
+correction, no lake overflow, no mutation of `height_m` after construction, no spherical
+Voronoi. `Lake::outflow_lake` is reserved at its sentinel and `reaches` is reserved empty --
+the *records* exist so that filling them later is not a schema break, and two tests assert
+that this slice populates neither.
+
+### The four asserted properties, and the population each was measured on
+
+`StreamGraph::validate` returns *every* defect it finds rather than the first, because a
+partition failure and a cycle have different causes and a reader wants both. `build` calls it
+and refuses rather than returning a graph that fails it.
+
+| # | Property | How it is enforced | Measured on |
+|---|---|---|---|
+| 1 | The downhill relation is a **forest** -- no cycles | `peel` removes leaves until nothing is ready; `peeled != node_count` is `Cycle` | complete peels at 3,200 (lattice), and at 10,000 / 100,000 / 200,000 / 1,000,000 / 5,000,000 / 20,000,000 / **50,000,000** over a real `Surface` |
+| 2 | Every root is **exactly one** of MOUTH or LAKE | `validate` reports both the "neither" and the "both" arm; `streamfmt` re-checks it across sections | 633 roots at 3,200; 597,687 at 20,000,000; 1,203,699 at 50,000,000 |
+| 3 | A rebuild is **bit-identical** | `bit_identical_to` compares `to_bits()`, never `==` | a negative control per **column**, plus a signed-zero and a NaN pair per **float** column (see below) |
+| 4 | The sentinel is **never a valid index** | `MAX_NODES = u32::MAX - 1`, and `sentinel_is_a_valid_index` is exercised *with a sentinel that is in range* | a guard only ever called with the good value proves nothing about itself |
+
+**Property 3's negative control is per column, because one bit-flip is not a control for
+eleven comparisons.** The first version of this slice proved bit identity with a single test
+that flipped one bit of `drainage_area_m2[3]`. The final review mutated `bit_identical_to`
+column by column and found **six surviving mutants**: deleting the `area_m2`, `height_m`,
+`flags` or `header.world_seed` comparison, or downgrading `height_m` or `drainage_area_m2`
+from `to_bits()` to `==`, left the whole suite green. Only `drainage_area_m2`'s bits were
+actually pinned -- and `area_m2` is the field §3.2 argues hardest to carry, on the grounds
+that adding it later silently changes what every stored `drainage_area_m2` means. A property
+test that cannot fail is worse than no test, because it is counted.
+
+Three tests now carry it:
+
+- `bit_identity_notices_a_change_in_every_column` walks **all 22 perturbations** -- every
+  header field, `downhill`, `flags`, all three float columns and their lengths, every `Lake`
+  field, every `Reach` field -- and asserts the comparison is symmetric in each.
+- `bit_identity_notices_a_changed_reach_endpoint` plants a `Reach` by hand, because slice 1p
+  ships `reaches` reserved empty, so no built graph can witness those columns otherwise.
+- `bit_identity_compares_bits_and_not_values_in_every_float_column` applies the two
+  perturbations that separate `to_bits()` from `==` to **each of the seven float columns**:
+  `0.0` against `-0.0` (equal by `==`, different bits, so the graphs must differ) and two
+  identical NaNs (unequal by `==`, identical bits, so the graphs must match).
+
+All six mutants were re-run after the fix and all six die. `bit_identical_to` also now
+length-checks all three float columns rather than only `height_m`, which it indexed all three
+by; a legal graph can never be ragged, but the function is public and the check was one line.
+
+**VERSION-001 recognises no ordering, for both version fields.** The generator version was
+swept at 0, 2, 7 and `u32::MAX`; the format version was tested only at 2, so rewriting its
+guard as `format_version != 2` or `format_version <= FORMAT_VERSION` survived the whole
+suite -- a regressed reader would have accepted a file declaring 0, 7 or `u32::MAX`.
+`refuses_every_format_version_that_is_not_this_one` now mirrors the generator-version sweep,
+and both mutants die.
+
+**The root count is invariant across SEA LEVELS at a fixed node count. It is not invariant
+across node counts, and it is not a small number.** This is the figure that has already been
+got wrong twice in this slice, in both directions, so it is stated here with its population
+every time it appears:
+
+| population | nodes | roots | as a fraction | mouths / lakes |
+|---|---|---|---|---|
+| `stream.rs`'s 40x80 lattice fixture, datum -1400 m | 3,200 | **633** | 19.8% | 64 / 569 |
+| the same fixture, datum 0 m | 3,200 | **633** | 19.8% | 554 / 79 |
+| the same fixture, datum +2900 m | 3,200 | **633** | 19.8% | 633 / 0 |
+| the extraction's probe field (§8.3) | 10,000 | 300 | 3% | -- |
+| the extraction's probe field (§8.3) | 20,000,000 | 5,647 | 0.03% | -- |
+| this crate's own `Surface`, seed 20260904, datum 0 m | 10,000 | 489 | 4.890% | 425 / 64 |
+| " | 100,000 | 4,992 | 4.992% | 3,906 / 1,086 |
+| " | 200,000 | 10,247 | 5.123% | 7,671 / 2,576 |
+| " | 1,000,000 | 56,901 | 5.690% | 37,312 / 19,589 |
+| " | 5,000,000 | 216,850 | 4.337% | 135,038 / 81,812 |
+| " | 20,000,000 | **597,687** | 2.988% | 371,866 / **225,821** |
+| " | 50,000,000 | 1,203,699 | 2.407% | 751,974 / 451,725 |
+
+The invariance across datums has a one-line reason: a root is a node with no strictly-lower
+neighbour, and the datum appears nowhere in that test. The datum decides only how a root is
+*labelled*, so it moves the mouth/lake split -- 64 to 554 to 633 across the three rows above
+-- and never the total. `the_root_count_is_invariant_across_datums_at_a_fixed_node_count`
+pins all four numbers.
+
+The variation *across* node counts has a different reason, and §8.3 states it
+correctly: at coarse spacing nearly every node is a local extremum, and as spacing tightens
+flow organises into chains, so the *fraction* falls. What §8.3's figures do not survive
+is the absolute count. **`lake_at`'s docstring said roots "grow sub-linearly -- a 19x rise for
+a 2,000x rise in nodes", which is a property of the extraction's probe field and not of this
+code.** Over a real `Surface` the same 2,000x rise in nodes gives a **1,222x** rise in roots,
+which is very nearly linear, because a real elevation field has relief at every scale the
+spacing can resolve and the probe field did not. That docstring is corrected, and the linear
+scan it justified is flagged for slice 5: 225,821 comparisons per `lake_at`, not 5,647.
+
+### The sampler: why "Poisson-sampled" was read as naming the property, not the algorithm
+
+§14.1 asks for "Poisson-sampled points". **What ships is a Fibonacci spiral with
+hashed jitter, and the substitution is deliberate.** Three reasons, none of them a preference:
+
+1. **Bridson's algorithm is definitionally sequential** -- sample *n* depends on samples
+   `1..n-1`. That is precisely the shape `generation.rs` forbids in terms: "Every value here
+   is hashed, never drawn from a sequence." A sequential sampler inside CORE-001 would be
+   self-defeating: the slice whose entire purpose is that adding a field later costs nothing
+   would introduce the one sampler where adding a *draw* later moves every node.
+2. **The spiral is measurably the more regular point set.** Un-jittered, its minimum
+   neighbour separation is **0.872 x nominal spacing** -- measured at **0.8723 to four
+   figures at every one of 3,200 / 20,000 / 200,000 / 1,000,000 / 20,000,000 nodes**, which
+   is why it can be used as a constant in a bound rather than as an observation. Bridson
+   guarantees only its own radius *r*, and *r* for a given point count sits well below
+   nominal spacing because disc packing is loose.
+3. **§14.1's own stated reason is a property, not an algorithm.** It wants points and
+   areas that "transfer to a sphere directly -- no projection, no grid seam, no pole
+   singularity". Those are properties of the spiral. The property is what matters, and the
+   spiral has it.
+
+Nothing in Bridson needs a banned API. **The blocker is architecture, not the constraint
+list**, and that distinction is recorded in the source so it is not rediscovered as a
+constraint problem and "solved" by relaxing a constraint.
+
+The hash is an integer avalanche, not a BLAKE2b digest, and that is also a measurement:
+`generation::fraction` formats a `String` and digests it at **332.1 ns per call**, so two
+draws per node at 20,000,000 nodes is 40,000,000 digests and roughly **13 seconds of a
+19-second sampling stage**. The avalanche is the one `noise.rs` already uses, is equally
+index-addressed and equally free of any sequence, and costs about a nanosecond. It is a
+*different* hash from `generation::spread`, on purpose: nodes and plates jitter by different
+numbers on the same seed, because they are different point sets and nothing should be able
+to confuse them.
+
+### The jitter is 0.15, and the bound is a proof rather than a sample
+
+The jitter adds `a*east + b*north` with `a` and `b` each uniform on `[-J, +J]`, where
+`J = NODE_JITTER_FRACTION * nominal_spacing_rad(count)`. The largest tangent displacement is
+at the corners of that square, `J*sqrt(2)`, and the arc displacement `atan(J*sqrt(2))` is
+smaller still. **Two nodes can approach each other by at most twice that**, so the box bounds
+the separation from below at a loss of `2*sqrt(2)*J`:
+
+    min_separation >= (0.8723 - 2*sqrt(2)*J) x nominal
+    at J = 0.15:     0.8723 - 0.42426 = 0.448
+
+That inequality is the reason 0.15 is defensible and 0.20 is not, and it does not depend on
+any size having been tried:
+
+| jitter | 3,200 | 20,000 | 200,000 | 1,000,000 | 20,000,000 | **proved floor** |
+|---|---|---|---|---|---|---|
+| 0.00 | 0.8723 | 0.8723 | 0.8723 | 0.8723 | 0.8723 | 0.872 |
+| 0.10 | 0.7215 | 0.7053 | 0.6907 | 0.6694 | -- | 0.589 |
+| **0.15** | 0.5988 | 0.5783 | 0.5618 | 0.5312 | 0.5322 | **0.448** |
+| 0.20 | 0.4768 | 0.4517 | 0.4329 | **0.3930** | -- | 0.307 |
+| 0.30 | 0.2394 | 0.2013 | 0.1754 | 0.1165 | -- | 0.024 |
+| 0.45 | 0.0805 | 0.0332 | 0.0054 | 0.0026 | -- | -0.401 |
+
+`MIN_SEPARATION_FRACTION` is 0.40. At jitter 0.20 the *measured* ratio is already 0.3930 at a
+million nodes -- below the assertion -- and its proved floor of 0.307 is below it too, so it
+fails by sample and by proof. At 0.15 the measurement clears the assertion by a third at
+every size and the *proof* clears it as well. **The measurements are the check on the bound;
+the bound is what licenses sizes nobody measured.** Quoting the 0.15 row without the proved
+floor would leave the constant resting on five samples, which is exactly the argument the
+next paragraph demolishes.
+
+**The failure does not announce itself at small sizes.** At 3,200 nodes even jitter 0.45
+keeps 0.08 x nominal and a graph builds; by a million the ratio has fallen a further factor
+of thirty, and at 0.45 two nodes land **59.6 m apart on a 22,584.6 m lattice**. `build`
+returns `CoincidentNodes` rather than resolving such a pair, so this constant is the
+difference between a graph and a refusal. A jitter validated at a few thousand nodes and
+shipped for twenty million is precisely the shape of this bug, and the reason every figure
+above names its node count.
+
+Smaller jitter is not free: at 0.0 the point set is a visible spiral, its cells are
+near-identical (CV 0.005), and the drainage network inherits its arms. Larger jitter widens
+the cell-area spread -- 0.737x to 1.260x the ideal cell at 0.15 against 0.524x to 1.546x at
+0.30 -- and stream power goes as area^0.5, so that spread is an erosion-rate error at exactly
+the headwater nodes that are hardest to stabilise.
+
+### `area_m2`: the method, and its error against the constant it replaces
+
+**No spherical Voronoi.** An exact spherical Voronoi diagram is a degeneracy-prone
+exact-predicate problem -- cocircular sites, collinear sites, antipodes -- and under
+DETERMINISM-001 a predicate that is *nearly* right is a different planet, not a slightly
+wrong one. It deserves its own slice if it is ever wanted, and slice 5 can add it **without
+changing a single type**, because the field is already here.
+
+What ships is a normalised local-density estimate: with `d_i` the mean great-circle angle
+from node `i` to its nearest `AREA_NEIGHBOUR_COUNT` neighbours,
+
+    area_i = 4*pi*R^2 * d_i^2 / sum_j d_j^2
+
+so the total is the sphere's area by construction -- a drainage area accumulated over a whole
+continent cannot drift away from the geography, and a per-cell estimate that was locally
+better but summed to 1.03 spheres would be worse where it matters most.
+
+**Its error, stated.** Against Monte-Carlo cell areas -- n = 20,000 at seed 20260904, jitter
+0.15, 8,000,000 probe points drawn from a much denser spiral at seed 777000001 and jitter
+0.30 so the two sets are not aligned:
+
+| | RMS relative error | worst single node | correlation with truth |
+|---|---|---|---|
+| the shipped estimator | **2.46%** | **13.7%** | **0.9479** |
+| the shared constant it replaces | **7.5%** | -- | **undefined** (see below) |
+
+The constant's 7.5% is not a separate measurement: it is *by definition* the true spread's
+own CV, because a constant is the mean and its error is the deviation. Its correlation with
+the truth is **undefined**, not zero: Pearson's r divides by the predictor's standard
+deviation, and a constant's is exactly 0. "Zero correlation" is the right *intuition* -- it
+tracks nothing -- but the statistic does not exist, and this file does not round an
+undefined quantity to a number. So this is roughly a **threefold reduction in area
+error, for one extra pass over a neighbour list that had to be built anyway** -- and, more
+importantly, it *tracks* the variation rather than flattening it: it recovers 0.756x to
+1.270x against a true 0.737x to 1.260x, both at **n = 5,000 nodes**; the CVs of 0.0731 and
+0.0753 are from the estimator-error measurement at **n = 20,000**, and are quoted here only
+as the same quantity at a different population, never as this one's. (The extraction's §8.4
+quotes the true spread as 0.735x to 1.285x; that is its probe field, not this one, and the two
+are quoted separately rather than blended.)
+
+**k = 5 was swept, not assumed:** RMS 7.79% at k=2, 2.83% at k=4, **2.46% at k=5**, 3.37% at
+k=6, 4.90% at k=8, with the same ordering at n = 5,000. The far neighbours of a stretched cell
+sit *across* it rather than around it, so including them pulls every estimate back towards
+the mean and throws away the variation the field exists to record.
+
+It is an approximation and is documented as one. What it must not be is an *unstated*
+approximation, because `drainage_area_m2` is a sum of these and a reader of the file has no
+way to tell which method produced it.
+
+### The three fields that look optional and are not
+
+- **`area_m2`, per node, never a shared constant.** If it were added later, every already
+  stored `drainage_area_m2` would silently change meaning from "cell count x a constant" to
+  "sum of areas" -- **same bytes, different semantics, undetectable from the file**. And the
+  constant is not even approximately right: the true cell area runs **0.737x to 1.260x**
+  the ideal at the recommended jitter, measured over **this crate's own sampler** by
+  `measure_cell_area_spread` (n = 5,000 nodes at seed 20260904, jitter 0.15, 4,000,000
+  Monte-Carlo probes, CV 0.0754). The extraction's §8.4 figure of 0.735x to 1.285x is a
+  different population -- its probe field -- as §"Its error, stated" above already says.
+- **`flags`, a bitset.** Adding a boundary tag later as a *value* is fine; adding the
+  *field* later means every existing graph has no boundary tag, so mouths cannot be
+  identified, so a water manifest cannot be produced from an old graph at all. Four of the
+  eight bits are still spare, and `validate` refuses a graph that sets one.
+- **`sea_level_m`, in the header.** Mouth-versus-lake is a function of it, so **a graph built
+  at one datum and read at another is wrong without being malformed** -- the failure mode
+  with no symptom. `sea_level_is_load_bearing_for_the_classification` proves the datum
+  changes the answer, so the field is not decoration.
+
+**`pond_max_drainage_area_m2` is deliberately required-with-no-default, and deliberately
+unmeasured.** It cannot be measured *here*, and the reason is structural rather than a
+shortage of time: §13.2's distinction is between a pond and a lake -- a *water body* --
+and the size of a water body is the area its surface covers at the level it fills to.
+**Slice 1p has no fill algorithm.** `Lake::level_m` is the root's own elevation, an empty
+basin, and `LAKE_MEMBER` is set on the root alone. The only quantity this slice can offer is
+the drainage area *arriving at* a root, which is the catchment feeding the basin and not the
+basin: a small tarn at the head of a large steep catchment and a broad shallow lake at the
+head of a small one sit on opposite sides of §13.2 with the same root drainage area. A
+number derived from the stand-in noise field would be **worse than no number** -- it would be
+a measurement of the stand-in, it would look measured, and that is exactly how an unmeasured
+number becomes a permanent one. The refusal is pinned:
+`build_params_has_no_default_so_the_pond_threshold_must_be_stated` fails if `Default` is ever
+implemented for `BuildParams`, and it carries its own positive control so it cannot pass
+vacuously. **Nobody may supply a plausible default. Slice 5, which owns the fill, calibrates
+it.**
+
+### The format: fail closed, and sliceable by region
+
+Two things force the shape, and everything else follows from them.
+
+**1. Fail closed on an unsupported generator version.** VERSION-001 is strictly binary:
+supported means evaluate, unsupported means refuse. No negotiation, no compatibility matrix,
+no partial read. That is why the version is a bare `u32` and why every refusal is a hard
+`Err`. A *lower* version is refused exactly as hard as a higher one, because the invariant
+recognises no ordering.
+
+**2. Read a region without parsing the whole file.** This is forced, not chosen -- see the
+measurements below, which put a 20,000,000-node build at 3.26 GiB of peak resident memory.
+Nothing of that shape fits a 32-bit wasm32 heap under any field arrangement, so the browser
+must load a *region* and never the planet. Retrofitting that later is exactly the change
+VERSION-001 makes expensive.
+
+The layout: an 8-byte magic `WBSTRMG\0`, a 64-byte header, a seven-entry section table of
+32-byte rows, and a **288-byte prefix** that is all a client needs to compute every byte range
+in the file. `GraphReader::open` takes that prefix and a file length and never requires the
+payload. Five sections are per-node (`height_m`, `area_m2`, `downhill`, `drainage_area_m2`,
+`flags`); two are tables (`lakes` at 24 bytes a record, `reaches` at 16, written empty).
+Element `i` lives at `offset + i * elem_width` and nowhere else.
+
+**What region-sliceability costs, all of it:**
+
+- **29 bytes per node** across the five columns (8 + 8 + 4 + 8 + 1), stored raw. **No
+  compression and no delta coding are possible at all** -- either makes element `i`'s
+  position depend on elements `0..i`, which is exactly what a region read must not need.
+  That is the whole price and it is paid on every byte of the file.
+- **Five range requests per region, not one.** Struct-of-arrays means a reader that wants
+  only heights pays for heights alone; a reader that wants all five columns pays five seeks.
+- **Up to 49 bytes of alignment padding per file** -- seven sections, at most seven bytes
+  each, a fixed cost at any node count. Bought to keep a future zero-copy `&[f64]`/`&[u32]`
+  view possible without a realignment copy.
+- **A fixed 288-byte prefix and a section table that cannot grow within this format
+  version.** Appending a section is a *format*-version bump and **not** a generator-version
+  bump; conflating the two would force every existing worldfile through a generator migration
+  every time a column was added.
+
+**Serialise the flags, never the rule that derived them.** `build` classifies a root by a
+sea-level test, and that test is a *default classifier*, not part of the model: it is
+physically wrong in two named cases -- a submarine local minimum becomes a "mouth", and a
+land depression below the datum (the Dead Sea, Death Valley, the Qattara Depression) is a
+lake the test calls a mouth. Slice 5 must be able to replace the classifier **without a
+format or generator version bump**, so the format stores the flags and enforces only
+§14.2's actual claim: every root is exactly one of MOUTH or LAKE.
+`the_format_never_applies_the_datum_classifier` scans the module's own source to keep it that
+way, and has its own positive control.
+
+**Forty-one guards, forty-one mutants, forty-one catches.** Every fail-closed check is
+a single `ensure(...)` line carrying a `// MUT-nn` marker so that a mutation campaign can
+disable exactly one at a time. Task 5 ran that campaign at 39 guards and reported **39 of 39
+caught by a named test**, including three that survived its *first* pass and were reported as
+corrections to its own work. This task adds two guards, MUT-40 and MUT-41, and mutated each:
+both are caught, and MUT-41 by two independent tests. **41 of 41.**
+
+### The two loose ends Task 5 named honestly, now closed
+
+**The FNV is public, and there is still exactly one of it.** The header carries a
+`position_checksum` -- FNV-1a over the node positions' IEEE-754 bit patterns -- and stores no
+positions, which is 8 bytes instead of 24 per node. Task 5 dropped its `positions_match`
+because `stream.rs`'s hash was private, and **explicitly refused to write a second copy**: two
+copies would agree until one was touched, and the disagreement would surface as every existing
+worldfile failing its own checksum. That was the right call and the wrong end state -- it left
+eight header bytes nothing could read. `stream::position_checksum` is now `pub`,
+`GraphReader::positions_match` is restored, and
+`the_checksum_is_the_one_in_stream_rs_and_not_a_copy_of_it` scans `streamfmt.rs` for the FNV
+offset basis and prime in seven spellings (assembled at run time from halves, or the needle
+list would match itself) and has been observed to fail on a planted constant.
+
+**`SamplingKind` is verifiable now, not merely recorded.** The header names a sampler, a seed
+and a node count; all three are inputs to `stream::node_positions`, so
+`GraphReader::verify_sampling` regenerates the node set the file *claims* and checks it
+against the checksum. A file that lies about any of the three is refused --
+`a_file_that_lies_about_its_sampler_is_refused` takes the four-node fixture, whose positions
+are hand-placed lat/lons, patches the header byte to say `Spiral`, and watches the reader
+decline. `SamplingKind::Supplied` **declines to verify rather than passing**: this crate
+cannot reproduce a node set it was handed, and answering "verified" for one would be the
+opposite of failing closed. There is no length check inside `verify_sampling` and no
+unreachable error arm for one, on the same reasoning that made Task 5 delete `MissingSection`.
+Verification costs what the node set costs -- 480 MB and the sampler's own runtime at
+20,000,000 nodes -- so it is a separate call and is never folded into `open`, which must stay
+a 288-byte operation.
+
+**The `drop_m > 0.0` filter has its own test.** Task 3 found that relaxing it to `>= 0.0`
+fails no test, because strictness is enforced twice -- the filter, and `gradient >
+best_gradient` initialised at `0.0`, which rejects the zero gradient a zero drop produces.
+That is defence in depth and not a hole, but a guard with no test of its own is a guard
+nobody can remove *deliberately*. The filter has exactly one behaviour the second guard
+cannot supply: **it runs before the coincidence check**, so a neighbour that is not strictly
+below is never measured and therefore never reported as coincident. Two nodes at the same
+place and the same height skip each other and the graph builds; the same pair at *different*
+heights is refused with `CoincidentNodes`. `the_drop_filter_runs_before_the_coincidence_check`
+pins both arms, and relaxing the filter to `>= 0.0` now turns exactly that one test red --
+verified by running the mutant.
+
+### What a build actually costs
+
+**This is the first thing in the slice to run at planet scale.** Task 4 measured the
+sampler's geometry but never its clock and never `node_neighbours` at 20,000,000; Task 5's
+file sizes were arithmetic on the layout, honestly labelled as such; the extraction's 1.45 GB
+and 2.16 GB came from a standalone crate, not from this code. `src/bin/streambench.rs` is the
+harness -- a `[[bin]]` rather than an `#[ignore]`d test, because a test binary holds every
+fixture of every test in one process and the question here is peak resident memory for *one*
+node count.
+
+**Host:** 13th Gen Intel Core i9-13900HX, 64 GiB, Windows 11 (10.0.26200), cargo 1.98.0,
+`--release`, `--no-default-features`. Seed 20260904, Earth radius, datum 0 m, one process per
+size; peak working set measured by the parent around the child, so it includes everything the
+byte columns leave out.
+
+| n | positions | neighbours | areas | heights | build | write | **total** | **peak RSS** |
+|---|---|---|---|---|---|---|---|---|
+| 100,000 | 0.004 s | 0.528 s | 0.006 s | 0.055 s | 0.013 s | 0.001 s | **0.61 s** | -- |
+| 1,000,000 | 0.097 s | 7.652 s | 0.057 s | 0.562 s | 0.142 s | 0.007 s | **8.52 s** | 151.4 MiB |
+| 5,000,000 | 0.852 s | 48.549 s | 0.340 s | 2.919 s | 0.798 s | 0.054 s | **53.51 s** | 840.4 MiB |
+| 20,000,000 | 3.780 s | 241.291 s | 1.409 s | 14.759 s | 3.651 s | 0.190 s | **265.08 s** | **3,340.0 MiB (3.26 GiB)** |
+| 50,000,000 | 11.453 s | 660.592 s | 3.287 s | 33.598 s | 9.018 s | 0.478 s | **718.43 s** | **8,336.4 MiB (8.14 GiB)** |
+
+**A whole planet is four and a half minutes and 3.26 GiB, and 91% of the time is one
+function.** `node_neighbours` is 241.3 of the 265.1 seconds at 20,000,000 and 660.6 of the
+718.4 at 50,000,000 -- 91% and 92% -- and it is superlinear, at a **local exponent alpha of
+about 1.15**, where `time_ratio = size_ratio ^ alpha`.
+
+**A growth ratio means nothing without the step it is over**, and this table's four steps are
+10x, 5x, 4x and 2.5x, so the raw ratios cannot be compared to each other at all:
+
+| step | size ratio | `node_neighbours` ratio | alpha |
+|---|---|---|---|
+| 100,000 -> 1,000,000 | 10x | 14.49x | **1.161** |
+| 1,000,000 -> 5,000,000 | 5x | 6.35x | **1.148** |
+| 5,000,000 -> 20,000,000 | 4x | 4.97x | **1.157** |
+| 20,000,000 -> 50,000,000 | 2.5x | 2.74x | **1.099** |
+
+(Population and method: the host named above, seed 20260904, `--release
+--no-default-features`, `streambench <n>`, wall clock around the `node_neighbours` stage,
+**one run per size**. Ratios are the times in the table divided, so 7.652 / 0.528 = 14.49.)
+
+An earlier revision of this section quoted "13.4x, then 6.3x, then 5.0x, then 2.7x" and read
+the falling sequence as a *weakening* exponent. The first figure was simply wrong -- the
+table gives 14.49x -- and the reading was a category error, because those are ratios over
+shrinking steps. Normalised, the exponent is **flat**: 1.161 / 1.148 / 1.157 / 1.099 over a
+500x range of sizes. The one real feature is the mild dip at the last step, and **with a
+single unreplicated run per size this data cannot distinguish a genuine asymptotic softening
+from run-to-run noise**: an independent sweep at clean 2x steps from 125,000 to 4,000,000 on
+the same host class gave alphas of 1.055 / 1.122 / 1.118 / 1.184 / 1.100, scatter of the same
+size at node counts where nothing special is happening. Read it as a stable n^1.15 until
+somebody replicates. Nothing downstream turns on the difference -- at alpha 1.15, 20 M -> 100 M
+is about 6.2x rather than 5x -- and the conclusions below (a flat `Vec<u32>`, and wasm32 as
+the wall) are unaffected either way.
+
+`Surface::elevation_m` -- the entire existing engine, run once per node -- is 14.8
+seconds at 20 M and 33.6 at 50 M, 0.67 to 0.74 us a call, and is **not** the bottleneck.
+`StreamGraph::build` itself, which includes the peel and the whole drainage accumulation, is
+3.65 seconds at 20 M and 9.02 at 50 M -- **linear in node count, to within a few percent**,
+which is the property slice 5 will lean on. `write_graph` serialises 585 MB in 0.19 s and
+1.46 GB in 0.48 s.
+
+Peak resident memory is likewise very nearly linear -- 3.26 GiB at 20 M, 8.14 GiB at 50 M,
+about 175 bytes a node -- so nothing here has a hidden quadratic term in *space*. The
+quadratic-looking cost is `node_neighbours`' time alone, and it is a candidate set that grows
+with node count rather than an algorithmic surprise.
+
+**`node_neighbours`' shape does not survive, and that is a finding for slice 5 rather than a
+fix for this slice.** Its `Vec<Vec<u32>>` is **1,120,000,000 bytes (1.043 GiB) at 20,000,000
+nodes** and 2,800,000,000 bytes (2.607 GiB) at 50,000,000, and 43% of it -- 480,000,000 and
+1,200,000,000 bytes -- is `Vec` headers rather than neighbour indices: 24 bytes of pointer,
+length and capacity to own 32 bytes of payload, once per node. The measurement confirms Task
+4's warning exactly. **The alternative is a flat `Vec<u32>` of `count * k` at the fixed
+`NEIGHBOUR_COUNT`**, which is 640,000,000 bytes at 20 M -- a **1.75x saving at every size**,
+no per-node allocation, and contiguous access instead of twenty million pointer chases,
+which is very likely most of the 241 seconds as well. It is not done here because
+`StreamGraph::build` takes `&[Vec<u32>]` in its signature, and changing that signature is a
+change to the type this slice exists to freeze; a `k`-strided view is an additive change
+slice 5 can make behind the same validation.
+
+**Task 5's arithmetic holds exactly, and one estimate around it does not.** A real encode at
+20,000,000 nodes writes **585,419,992 bytes**, and `encoded_len` predicts the same number
+before writing a byte. Task 5's **580,000,288** is `288 + 480,000,000 + 80,000,000 +
+20,000,000` -- the prefix and the five per-node columns, its stated zero-lake floor -- and the
+difference is precisely the lake table it said to add: 225,821 lakes x 24 bytes =
+**5,419,704**. Both figures are right as stated. What was wrong is the *sizing* Task 5 offered
+for that table: "at most 135,528 bytes if every one of §8.3's 5,647 roots were a lake",
+which is **forty times low**, because 5,647 is the extraction's probe field and this crate's
+`Surface` produces 225,821 lakes at that size. The lake section is still only 0.93% of the
+file, so reading it whole is still right; but 5.4 MB is a fetch a browser notices, and
+`read_lakes`' docstring now says so. The **100,000-node region at 2,900,000 bytes (2.77
+MiB)** in five range requests reproduces exactly, and that is the number that decides whether
+the browser can work at all. The prediction holds at the next size up too: `encoded_len` says
+**1,460,841,688 bytes** for 50,000,000 nodes and 451,725 lakes, and `write_graph` writes
+exactly that. So the layout arithmetic is now confirmed by encode at two planet-scale sizes,
+and a caller can size a file without producing one.
+
+**Where it stops, and why.** Not on this host, at any size tried. 50,000,000 nodes -- two and
+a half times the planet size the design calls for -- completes in twelve minutes at 8.14 GiB,
+and `MAX_NODES` (`u32::MAX - 1`) is another 86x further out. The limit on this machine is
+patience rather than memory: at the measured superlinear rate, the `u32` ceiling would be
+weeks in `node_neighbours` alone, which is the argument for the flat layout restated as a
+clock. **It stops on wasm32, and
+by a wide margin.** A 32-bit heap tops out at 4 GiB; the positions (480 MB), the neighbour
+structure (1.12 GB) and the encoded file (585 MB) already total 2.2 GB before the graph's own
+580 MB of columns, and peak measured RSS is 3.26 GiB with a 64-bit allocator that is not
+paying 32-bit fragmentation. **A whole planet cannot be built or held in the browser under
+any rearrangement of these fields**, which is the premise the format was designed on, now
+measured rather than assumed. A 100,000-node region at 2.77 MiB is three orders of magnitude
+inside that budget, so the region path is not merely the better option -- it is the only one.
+Native builds of a whole planet are fine, and a studio that wants one runs it server-side and
+ships regions.
+
+### Test counts, with their environment
+
+**Read from a run, never from a report.** `cargo test -p worldbuilder-engine` exits 0 at
+**405** tests in each of the three feature configurations -- `--no-default-features`, default
+(which is the same set, since the crate declares no default features), and `--features
+python`. That is 395 lib, 4 `blake2_bytes.rs`, 6 `no_std_math.rs`, 0 from the
+`streambench` bin target and 0 doc-tests, plus 5
+`#[ignore]`d measurement tests that are compiled but not run. The baseline at `d72dbbd` was
+390 in all three, so this task adds 15. The `#[ignore]`d measurements take minutes and
+allocate half a gigabyte; they are tests rather than a throwaway script so they cannot rot
+silently while the constants they justify stay in the source, and they run with
+
+    cargo test --release --lib --no-default-features -- --ignored --nocapture
+
+`streambench` is not a test and is not counted:
+
+    cargo run --release --no-default-features --bin streambench -- 20000000
