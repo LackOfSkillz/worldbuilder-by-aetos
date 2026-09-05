@@ -7,6 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use pyo3::prelude::*;
 
 use crate::continentality::Continentality;
+use crate::kinematics::{motion_at, motion_between, surface_velocity};
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::vectors::Vec3;
@@ -310,6 +311,98 @@ pub fn plateset_flattened(
     let normal = Vec3::new(nx, ny, nz);
     let flat = set.flattened(&point, &normal)?;
     Some((flat.x, flat.y, flat.z))
+}
+
+/// How fast one plate's ground is moving at a point. Conversion only: builds the `Plate`
+/// from its pole and rate directly (the seed is irrelevant to `surface_velocity`, exactly
+/// as in `plate_angular_velocity` above) and hands it to `surface_velocity`.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plate_surface_velocity(
+    pole_x: f64,
+    pole_y: f64,
+    pole_z: f64,
+    rate: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> (f64, f64, f64) {
+    let euler_pole = SpherePoint { vector: Vec3::new(pole_x, pole_y, pole_z) };
+    let plate = Plate { index: 0, seed: euler_pole, euler_pole, rate_rad_per_myr: rate };
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let v = surface_velocity(&plate, &point, radius_m);
+    (v.x, v.y, v.z)
+}
+
+/// What two named plates -- given directly by pole and rate, not looked up in a
+/// `PlateSet` -- are doing to each other at a point. Conversion only: `motion_between`
+/// does all the arithmetic; this just builds the two `Plate` values and the normal, and
+/// unwraps the returned `Motion` into `(closing, sliding, kind)`.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plates_motion_between(
+    near_pole_x: f64,
+    near_pole_y: f64,
+    near_pole_z: f64,
+    near_rate: f64,
+    far_pole_x: f64,
+    far_pole_y: f64,
+    far_pole_z: f64,
+    far_rate: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    nx: f64,
+    ny: f64,
+    nz: f64,
+    radius_m: f64,
+) -> (f64, f64, &'static str) {
+    let near_pole = SpherePoint { vector: Vec3::new(near_pole_x, near_pole_y, near_pole_z) };
+    let near = Plate { index: 0, seed: near_pole, euler_pole: near_pole, rate_rad_per_myr: near_rate };
+    let far_pole = SpherePoint { vector: Vec3::new(far_pole_x, far_pole_y, far_pole_z) };
+    let far = Plate { index: 1, seed: far_pole, euler_pole: far_pole, rate_rad_per_myr: far_rate };
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let normal = Vec3::new(nx, ny, nz);
+    let motion = motion_between(&near, &far, &point, &normal, radius_m);
+    (motion.closing_m_per_myr, motion.sliding_m_per_myr, motion.kind.as_str())
+}
+
+/// What is happening across the nearest plate edge, here -- the first binding that both
+/// goes through `plateset_from_parts` AND reads poles and rates, since `motion_at` calls
+/// `surface_velocity`, which calls `Plate::angular_velocity()`. Every prior binding onto
+/// `plateset_from_parts` fed only functions that ignore `euler_pole` and `rate_rad_per_myr`
+/// (see the comment on `plateset_from_parts` above), so this is the first one a fabricated
+/// pole or zeroed rate would actually break.
+///
+/// `None` is returned, positionally, exactly where `motion_at` returns `None` -- not a
+/// zeroed tuple -- so a caller cannot mistake "no margin here" for "a margin with no
+/// motion".
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn plateset_motion_at(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> Option<(usize, usize, f64, f64, f64, &'static str)> {
+    let set = plateset_from_parts(&seeds_flat, &poles_flat, &rates);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let motion = motion_at(&point, &set, radius_m)?;
+    let margin = motion.margin?;
+    let nearest = margin.nearest?;
+    let neighbour = margin.neighbour?;
+    Some((
+        nearest.index,
+        neighbour.index,
+        margin.distance_m,
+        motion.closing_m_per_myr,
+        motion.sliding_m_per_myr,
+        motion.kind.as_str(),
+    ))
 }
 
 #[pyfunction]

@@ -407,6 +407,8 @@ Cover: the corpus against a multi-plate set; a single-plate set; ranges that sel
 ## What this slice deliberately does not do
 
 - **No kinematics.** `plates/kinematics.py` is the next slice, and it is where the fabrication guard flagged in 1e and 1f must finally be established — `angular_velocity` is the only function that reads `euler_pole` and `rate_rad_per_myr`, so no slice before it can test that the bindings carry them honestly.
+
+  **Superseded during slice 1h.** That was wrong about which function does the work: `angular_velocity` was ported, bound, and conformance-tested via `plate_angular_velocity`, which builds its `Plate` inline at `bindings.rs:189-195` and never calls `plateset_from_parts` — so it never needed the guard. The guard that was actually missing belonged to the `PlateSet` *constructor contract*, not to any one function reading poles and rates; `motion_at` is the first function that both needs a `PlateSet` and reads those fields, which is why it is what ended up carrying it. See the kinematics section of `crates/worldbuilder-engine/README.md` for the corrected account, and the mutation that fails 4 of 63 conformance tests for the evidence.
 - **No tectonics.** `terrain/tectonics.py` imports `ACROSS_ENOUGH` and `motion_between` from kinematics.
 - **No plate generation.** `generation.py` needs `blake2b` over a UTF-8 joined string — a byte-level port feeding a cryptographic hash, and a new engine dependency.
 - **No deletion of the Python.** It stays the reference.

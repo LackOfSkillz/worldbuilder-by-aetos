@@ -393,7 +393,7 @@ pub struct NearbyMargin {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::sphere::EARTH_RADIUS_M;
 
@@ -444,7 +444,7 @@ mod tests {
     /// takes only an index and a rate against a fixed seed). Added to match the brief's
     /// `test_plate(index, lat, lon)` name and signature, with a pole and rate that are
     /// non-degenerate and differ from the seed, per the binding contract fixed in 1f.
-    fn test_plate(index: usize, lat: f64, lon: f64) -> Plate {
+    pub(crate) fn test_plate(index: usize, lat: f64, lon: f64) -> Plate {
         Plate {
             index,
             seed: SpherePoint::from_latlon(lat, lon),
@@ -455,7 +455,7 @@ mod tests {
 
     /// Two seeds on the equator and one lifted off it. The third seed must NOT lie on
     /// the great circle bisecting the other two -- see `a_wide_range_admits_every_candidate_bisector`.
-    fn three_plate_set() -> PlateSet {
+    pub(crate) fn three_plate_set() -> PlateSet {
         PlateSet::new(vec![
             test_plate(0, 0.0, 0.0),
             test_plate(1, 0.0, 90.0),

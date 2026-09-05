@@ -290,9 +290,13 @@ during review: `plateset_from_parts` was edited back to `pole = seed`, `rate = 0
 crate rebuilt, and all 44 conformance tests still passed. The doc comment on
 `plateset_from_parts` in `bindings.rs` says this plainly now, and this section is written to
 match it rather than to repeat the earlier, disproven claim. **The fabrication guard belongs
-to the kinematics slice**, where `angular_velocity` genuinely reads `euler_pole` and
-`rate_rad_per_myr` and a fabricated value would actually be caught -- it must not be assumed
-to exist before then. A claim that carrying real values through a struct field is itself a
+to the kinematics slice, once it reads poles and rates through `plateset_from_parts`
+itself -- not merely once `angular_velocity` exists.** (This section originally said the
+guard would arrive "because `angular_velocity` is the only function that reads those
+fields"; the kinematics section below corrects that -- `angular_velocity` was ported and
+bound before the guard existed, through a binding that never goes near
+`plateset_from_parts`, so what was missing was narrower than this section claimed.) A
+claim that carrying real values through a struct field is itself a
 regression test was believed and repeated across two slices before this mutation disproved
 it; treat "the fields are populated" and "something reads them" as separate facts from now
 on, here and in any future binding.
@@ -512,3 +516,84 @@ Two rules follow from this, for every future module port:
    matters most for the modules still to be ported -- continentality, tectonics, and the
    shelf all carry far more constants than this one, and far more of them sit behind a
    branch.
+
+## `kinematics.rs`: the cleanest module in the port
+
+`worldbuilder/plates/kinematics.py` contains no transcendental call at all. The only
+non-arithmetic operation anywhere in it is the `sqrt` inside `length()`, and `sqrt` is
+algebraic, not transcendental -- IEEE-754 requires it correctly rounded, the same fact
+`plates.rs` already leaned on. So everything this module computes sits on the strict
+bit-for-bit contract, including `ACROSS_ENOUGH`'s convergent/divergent/transform
+classification -- the same shape of decision, a discrete choice on a continuous quantity,
+that has bitten this project repeatedly (`lookup.py`'s three bugs, recorded above). Here it
+does not bite, and that is stated as the reason rather than as a hope: every input the
+comparison sees -- `closing`, `speed`, and their ratio -- is built entirely from dot
+products, cross products, subtraction, and `length()`, so both languages compare identical
+values and the classification cannot diverge between them. The one bounded quantity in the
+neighbourhood is imported rather than computed here: `margin.distance_m`, which rides
+inside the `Margin` a `Motion` carries, came through `asin` back in `margin_at`, and
+`motion_at` never reads it -- it only forwards the `Margin` it was handed.
+
+**The short-circuit is load-bearing.** `if speed <= 0.0 || closing.abs() / speed <
+ACROSS_ENOUGH` -- transcribed operand order and all. The `or` is the only thing standing
+between this line and a division by zero whenever two plates move identically, so it must
+never be precomputed into a bool before the branch runs; doing that would evaluate the
+division unconditionally and turn a defined `Transform` result into a NaN.
+
+**The fabrication guard, and a correction to how this file described it.** The section
+above ("But this slice's tests do not, and cannot, exercise a fabrication regression...")
+said the guard would finally arrive "because `angular_velocity` is the only function that
+reads those fields." That was imprecise, and it is corrected in place above rather than
+merely re-argued here. `Plate::angular_velocity` was already ported, bound, and
+conformance-tested by the time this slice started -- through `plate_angular_velocity`,
+which builds its own `Plate` inline at `bindings.rs:189-195` and never calls
+`plateset_from_parts` at all. So a guard on that function's *arithmetic* already existed.
+What was actually missing, and what this slice supplies, is a guard on the *constructor
+contract*: proof that `plateset_from_parts` carries a caller's poles and rates honestly
+into something downstream that consumes them. `motion_at` is the first function that both
+needs a `PlateSet` (rather than two bare `Plate`s built by hand) and reads poles and rates
+through it, so this is the first slice where that guard becomes possible at all.
+
+Task 4 proved it by mutation, not by argument: with `plateset_from_parts` edited back to
+fabricate `pole = seed`, `rate = 0.0`, the crate rebuilt and `test_conformance.py` run
+again, exactly the four `plateset_motion_at` tests failed -- closing speeds like
+`-294560.96645866026` collapsing to exactly `-0.0`, because a zero rate zeroes
+`angular_velocity()` for every plate -- while the other 59 tests, including every
+`plate_surface_velocity` and `plates_motion_between` test (which build their `Plate`s
+inline and never touch `plateset_from_parts`), kept passing, correctly, since none of them
+read the fabricated fields. This was reproduced independently during review, not merely
+reported once and taken on trust.
+
+**The measured threshold margin.** Across the combined corpus, the smallest observed
+`abs(abs(closing) / speed - ACROSS_ENOUGH)` at any point with `speed > 0.0` is
+`6.4886e-04`. It is pinned by an asserted floor of `1e-9` in
+`test_the_margin_classification_threshold_gap_is_measured_not_assumed` -- six orders of
+magnitude below the observation, deliberately. The floor's job is to fire if this margin
+ever collapses toward tie territory, not to pin today's value; a floor set just under
+`6.4886e-04` would trip on any ordinary corpus change and get relaxed reflexively, which
+would teach nobody anything the next time it fired for a real reason.
+
+**One limit worth recording honestly.** `the_across_enough_threshold_is_hit_exactly_and_is_not_inclusive`
+brackets `ACROSS_ENOUGH` with probes at `0.4` and `0.5` -- one just below the threshold,
+one exactly on it. That catches `ACROSS_ENOUGH` being moved *outside* the bracket, but not
+moved *inside* it: retyping the constant to `0.45` leaves both probes on the same side of
+the (now different) threshold, so the Rust unit test alone stays green. Only the
+conformance suite, comparing against the Python's actual `0.5`, catches that move. The
+combination -- unit test plus conformance -- is sound; the unit test by itself is narrower
+than a reader might assume from its name.
+
+**`motion_at` calls `motion_between`, rather than duplicating the twelve lines Python
+repeats between them.** Task 3 compared both Python bodies line by line and found them
+byte-identical past the first two lines -- same operations, same order, same intermediate
+names -- with the only difference being where the two `Plate`s come from (parameters versus
+`margin.nearest`/`margin.neighbour`, which is exactly what `motion_at` passes as those
+parameters). That is the same byte-identity ruling slice 1f already applied to `flattened`
+and `margin_normal`: calling the already-ported function is strictly more faithful than
+re-transcribing its body, because a transcription can drift from its original one line at a
+time while a call cannot drift at all. `motion_at_agrees_bit_for_bit_with_motion_between_on_the_same_margin`
+checks the consequence directly, `to_bits()` and all.
+
+Every test count above was verified by running the suites, not copied from an earlier
+report: 91 Rust lib tests plus the 6-test `no_std_math` guard, 63 in
+`test_conformance.py`, and 303 in the full Python suite -- all unchanged from Task 4's own
+numbers, since this task added no tests of its own.
