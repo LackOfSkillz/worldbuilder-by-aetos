@@ -128,14 +128,40 @@ use crate::stream::StreamGraph;
 /// constant, not a tunable: solving the equation with a different exponent is solving a
 /// different equation, so this is named and cited rather than left as a literal `0.5`
 /// wherever the solver needs it.
+///
+/// **This constant documents the spec's value; it is not a switch.** `implicit_receiver_update`
+/// hardcodes `detmath::sqrt(area_m2)` for `A^0.5` rather than reading this constant, because
+/// `sqrt` is a distinct, cheaper, correctly-rounded operation and not `powf` called with an
+/// argument -- there is no generic `A^m` in the inner loop to parameterise. Editing this
+/// constant's value therefore changes nothing except `the_stream_power_exponents_match_the_spec`,
+/// which exists to fail loudly the moment that becomes true, rather than let a wrong sense of
+/// "increased granularity" imply that increasing this constant changes the solver's behaviour.
+/// If `A^m` is ever generalised past `m = 0.5`, that is the moment this constant becomes a real
+/// input to `powf` and this note should be deleted, not the moment to add a tolerance.
 pub const STREAM_POWER_AREA_EXPONENT: f64 = 0.5;
 
 /// The slope exponent `n` in `dh/dt = u - k * A^m * s^n`.
 ///
 /// Fixed at `1` by the same source as [`STREAM_POWER_AREA_EXPONENT`]. At this value `s^n`
-/// is `s` itself -- multiplication, not a call -- which is exactly why this module's inner
-/// loop contract is the strict bit-for-bit one and not the bounded one `detmath.rs` requires
-/// of `sin`/`cos`/`pow`.
+/// is `s` itself -- multiplication, not a call. **This buys a cost win, not a conformance
+/// upgrade**: it means `detmath::powf` never enters the inner loop of a 100-300 iteration
+/// bake. It does not make this module's inner loop transcendental-free -- `erode_step`
+/// still calls `detmath::atan2` by way of `SpherePoint::distance_to` (see the module doc's
+/// "Bit-exact, but not because the inner loop avoids transcendentals" section) -- and the
+/// strict/bounded contract split this project otherwise cares about governs
+/// Python-against-Rust conformance, which does not apply here at all since erosion has no
+/// Python counterpart. An earlier version of this doc claimed the opposite ("the strict
+/// bit-for-bit contract... not the bounded one") and was corrected in `cea453f`; this
+/// paragraph must keep agreeing with the module doc above, not repeat the retracted claim.
+///
+/// **Like [`STREAM_POWER_AREA_EXPONENT`], this constant documents the spec's value; it is
+/// not a switch.** `implicit_receiver_update` computes slope as a bare `(h_i - h_r) / d`,
+/// which *is* `s^1` -- there is no `powf(s, n)` call anywhere for this to parameterise, so
+/// editing this constant changes nothing except the pin test that checks it still equals
+/// `1.0`. Wiring it through a real `powf(s, STREAM_POWER_SLOPE_EXPONENT)` would put a
+/// transcendental in the inner loop for a case that is always `n = 1` today -- a real cost
+/// paid for a cosmetic generality -- so this stays a documented, pinned value rather than a
+/// parameter threaded through the solver.
 pub const STREAM_POWER_SLOPE_EXPONENT: f64 = 1.0;
 
 /// Everything the stream power equation needs beyond the graph itself, and everything a
@@ -201,14 +227,24 @@ pub fn root_to_leaves(graph: &StreamGraph) -> Vec<u32> {
 /// Computed as a single pass over the whole graph, **once**, so [`erode_step`] (and Task
 /// 3's loop over it) never recomputes `atan2` for a node/receiver pair that has not moved:
 /// positions are fixed for the whole bake, only heights change per step. A root has no
-/// receiver, so its entry is `0.0` -- a placeholder that [`erode_step`] never reads, since a
-/// root's update does not consult distance at all (see the module doc).
+/// receiver, so its entry is `0.0` -- a placeholder that [`erode_step`]'s `None` branch
+/// structurally never indexes into, since a root's update does not consult distance at
+/// all (see the module doc). `0.0` was kept rather than `f64::NAN` -- which would fail
+/// louder if some future caller ever did read it, at the cost of turning today's `is_finite`
+/// check into something that would need to special-case roots -- because the read really is
+/// unreachable today: making it loud is a Task 3 concern, for whichever task first starts
+/// holding this vector across an iteration loop and so first has an opportunity to misuse it.
 ///
 /// `positions` must be indexed exactly like the graph, i.e. `stream::node_positions` called
 /// with the same seed and count the graph itself was built from; this function trusts that
 /// rather than re-deriving it, the same way `StreamGraph::build` trusts the positions it is
 /// handed.
 pub fn receiver_distances_m(graph: &StreamGraph, positions: &[SpherePoint]) -> Vec<f64> {
+    debug_assert_eq!(
+        positions.len(),
+        graph.node_count() as usize, // cast-ok: node_count is bounded (stream.rs::MAX_NODES)
+        "positions must be exactly as long as the graph has nodes"
+    );
     let radius_m = graph.header().radius_m;
     (0..graph.node_count())
         .map(|node| match graph.downhill_of(node) {
@@ -263,6 +299,8 @@ pub fn receiver_distances_m(graph: &StreamGraph, positions: &[SpherePoint]) -> V
 /// precondition is enforced upstream, once, rather than defended against redundantly here.
 pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], params: &ErosionParams) -> Vec<f64> {
     let count = graph.node_count() as usize; // cast-ok: node_count is bounded (stream.rs::MAX_NODES)
+    debug_assert_eq!(heights.len(), count, "heights must be exactly as long as the graph has nodes");
+    debug_assert_eq!(distances_m.len(), count, "distances_m must be exactly as long as the graph has nodes");
     let mut next = heights.to_vec();
     let dt = params.timestep_yr;
 
@@ -527,23 +565,36 @@ mod tests {
 
     #[test]
     fn erode_step_is_bit_identical_across_two_runs_of_the_same_inputs() {
-        // Population: every one of NODES = 300 nodes in `small_graph_and_positions()`.
-        // Method: `erode_step` called twice on identical graph, heights, distances and
-        // params, comparing `f64::to_bits()` element-by-element (never `==`, which would
-        // let two differently-signed zeros or a native/WASM tolerance pass unnoticed).
-        // Host: this crate's own test process (native), run-against-run rather than
-        // native-against-WASM -- see the module doc for why that is the claim this test
-        // can make.
-        let (graph, positions, heights) = small_graph_and_positions();
-        let distances = receiver_distances_m(&graph, &positions);
+        // Population: every one of NODES = 300 nodes, built TWICE from independent calls to
+        // `small_graph_and_positions()` -- two distinct `StreamGraph`s, `Vec<SpherePoint>`s
+        // and `Vec<f64>`s at different addresses, rather than one set of inputs reused --
+        // so this cannot pass by accident of aliasing or allocator reuse. Method:
+        // `receiver_distances_m` then `erode_step`, run once per independent build,
+        // compared by `f64::to_bits()` element-by-element (never `==`, which would let two
+        // differently-signed zeros or a native/WASM tolerance pass unnoticed). Host: this
+        // crate's own test process (native), run-against-run rather than
+        // native-against-WASM.
+        //
+        // What this test cannot claim: it says nothing about the module doc's
+        // native-against-WASM equality (that would need a WASM harness this crate's unit
+        // tests do not run -- see `viewer/`'s `build:wasm:self-test`), and both builds still
+        // execute the same code path in the same process, so it cannot catch a
+        // hypothetical dependency on iteration order over an actual `HashMap` (this module
+        // has none; `StreamGraph::peel()`'s queue is a `Vec`, not a hash-ordered
+        // structure). It does rule out the weaker failure modes above it, which is what a
+        // "same inputs, same process" version of this test could not.
+        let (graph_a, positions_a, heights_a) = small_graph_and_positions();
+        let (graph_b, positions_b, heights_b) = small_graph_and_positions();
+        let distances_a = receiver_distances_m(&graph_a, &positions_a);
+        let distances_b = receiver_distances_m(&graph_b, &positions_b);
         let params = default_test_params();
 
-        let first = erode_step(&graph, &heights, &distances, &params);
-        let second = erode_step(&graph, &heights, &distances, &params);
+        let first = erode_step(&graph_a, &heights_a, &distances_a, &params);
+        let second = erode_step(&graph_b, &heights_b, &distances_b, &params);
 
         assert_eq!(first.len(), second.len());
         for i in 0..first.len() {
-            assert_eq!(first[i].to_bits(), second[i].to_bits(), "node {i} disagreed bit-for-bit between two runs");
+            assert_eq!(first[i].to_bits(), second[i].to_bits(), "node {i} disagreed bit-for-bit between two independent builds");
         }
     }
 
@@ -602,6 +653,40 @@ mod tests {
         assert!(has_two_hop_chain, "fixture must contain a downhill chain at least two hops deep");
     }
 
+    // ---- erode_step: the root policy is held-fixed, not uplift-only -----------------------
+
+    #[test]
+    fn a_root_is_held_at_its_old_height_rather_than_uplifted() {
+        // The module doc chose "held fixed" over "uplift-only" because a root is the local
+        // base level of its basin (a mouth or a lake outlet -- stream.rs's own invariant
+        // says every root is exactly one of those), and the equation erodes everything
+        // else toward that level rather than raising the level itself. That choice was
+        // documented but previously asserted nowhere: a review confirmed by mutation that
+        // flipping the root branch to `heights[idx] + uplift * dt` left all other tests
+        // green. This test exists so that mutation is instead caught here, exactly, by bit
+        // pattern -- not "close to unchanged", since holding fixed means literally copying
+        // the old value through with no arithmetic at all.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        // Uplift is deliberately large and nonzero: if a future edit silently switched the
+        // root branch to uplift-only, a zero uplift would let it pass unnoticed by
+        // coincidence.
+        let params = ErosionParams { uplift_m_per_yr: 5.0e-2, erodibility_per_yr: 1.0e-6, timestep_yr: 1000.0 };
+
+        let next = erode_step(&graph, &heights, &distances, &params);
+
+        let roots = graph.roots();
+        assert!(!roots.is_empty(), "fixture must contain at least one root to check this against");
+        for root in roots {
+            let idx = root as usize; // cast-ok: a node index into usize
+            assert_eq!(
+                next[idx].to_bits(),
+                heights[idx].to_bits(),
+                "root {root} must be held at its old height exactly, not uplifted by u*dt"
+            );
+        }
+    }
+
     // ---- implicit_receiver_update: the exact arithmetic identities -------------------------
 
     #[test]
@@ -619,14 +704,19 @@ mod tests {
     #[test]
     fn a_receiver_at_the_same_height_erodes_nothing() {
         // s = (h_i - h_r) / d = 0 when h_i == h_r, so with uplift also zero the update
-        // should return h_i essentially unchanged. Floating-point division by (1 + c) is
-        // not guaranteed bit-exact for arbitrary c (unlike the c = 0 case above, this one
-        // is not a no-op divide), so this compares within a tight relative tolerance
-        // rather than by bit pattern.
+        // is `(h + 0 + c*h) / (1 + c)` -- algebraically `h*(1+c)/(1+c)`, which cancels to
+        // `h` exactly. Division by `1 + c` is not guaranteed bit-exact for an arbitrary
+        // `c` the way dividing by the literal `1.0` is (the zero-drainage-area test
+        // above), so this was originally written with a tolerance on the assumption that
+        // rounding here was unavoidable. It was measured, not assumed: for these inputs
+        // `c` evaluates to exactly `0.024`, and every intermediate -- `c*h`, `h + c*h`,
+        // `1.0 + c`, and the final quotient -- lands on its exact value, so the result is
+        // bit-identical to `h`. `f64::to_bits()` says so directly; there is nothing here
+        // for a tolerance to forgive. (The general claim that an arbitrary `c` is not
+        // guaranteed exact is still true -- it just doesn't apply to this `c`.)
         let h = 777.0;
         let result = implicit_receiver_update(h, h, 4.0e6, 250.0, 0.0, 3.0e-6, 1000.0);
-        let relative_error = (result - h).abs() / h;
-        assert!(relative_error < 1.0e-12, "expected ~{h}, got {result} (relative error {relative_error})");
+        assert_eq!(result.to_bits(), h.to_bits(), "expected exactly {h}, got {result}");
     }
 
     // ---- erode_step: no NaN, no infinity, anywhere -----------------------------------------
@@ -662,11 +752,16 @@ mod tests {
         let with_low_k = erode_step(&graph, &heights, &distances, &low_k);
         let with_high_k = erode_step(&graph, &heights, &distances, &high_k);
 
-        // Floating-point rounding, not the underlying inequality, is the only reason this
-        // allows any slack at all: the closed form is monotone in exact arithmetic (see
-        // above), so a real violation would be a formula bug, not noise -- hence a tight
-        // absolute tolerance in metres rather than none.
-        const EPSILON_M: f64 = 1.0e-6;
+        // Zero tolerance, not a rounding allowance: measured on this fixture (300 nodes,
+        // seed 20_260_904, `SamplingKind::Spiral`, these two `k` values, `u = 1.0e-3`,
+        // `dt = 1000.0`), every one of the 262 draining nodes falls by at least 3.46 m
+        // between `low_k` and `high_k` -- nowhere near the boundary a rounding error could
+        // cross. A tolerance here would be six-plus orders of magnitude looser than that
+        // margin and would silently absorb a real formula regression instead of catching
+        // it, which is exactly backwards for a module whose claim is bit-exact
+        // determinism. If a future fixture or parameter choice ever needs slack, add it
+        // deliberately and cite the measured margin that justifies it, the way this
+        // comment does.
         let mut violations = Vec::new();
         let mut a_real_decrease_happened = false;
         for node in 0..graph.node_count() {
@@ -674,10 +769,10 @@ mod tests {
             if graph.downhill_of(node).is_none() {
                 continue; // roots are held fixed regardless of k; nothing to check
             }
-            if with_high_k[idx] > with_low_k[idx] + EPSILON_M {
+            if with_high_k[idx] > with_low_k[idx] {
                 violations.push((node, with_low_k[idx], with_high_k[idx]));
             }
-            if with_high_k[idx] < with_low_k[idx] - EPSILON_M {
+            if with_high_k[idx] < with_low_k[idx] {
                 a_real_decrease_happened = true;
             }
         }
