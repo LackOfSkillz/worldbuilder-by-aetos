@@ -122,6 +122,37 @@ test("reliefTile returns an ImageData-shaped size x size RGBA raster, fully opaq
   assert.ok(allOpaque, "every alpha texel must be 255 -- this is relief, not a mask");
 });
 
+// ---------------------------------------------------------------------------------------
+// Task 2: why `minStdDev = 2` (hasStructure's default) is not a number picked to make
+// today's output pass.
+//
+// Measured once, on this file's own fixtures (DEFAULT_WORLD, the same 8x4-scan
+// mountainRect/abyssalRect named above, size=128):
+//
+//   flat grey (128,128,128,255 everywhere)     luminance stdDev  0.00   (0 distinct bins)
+//   abyssal tile (depth -4615.6 m, weakest real spread observed)  21.00 (134 distinct bins)
+//   mountain tile (peak 743.5 m)                                 37.36 (149 distinct bins)
+//
+// The gap the threshold has to sit in is therefore between 0 (flat) and 21.0 (the
+// *weakest* real tile this fixture produces), not between 0 and the mountain's 37.36 --
+// using the mountain number alone would overstate the margin. `minStdDev = 2` sits at
+// under a tenth of that weaker real value, so it fails a flat raster by a wide margin
+// (mutation 1, below) while asking almost nothing of a genuinely varied one -- it is
+// intentionally loose in the "is there any relief signal at all" direction.
+//
+// **What this threshold does NOT catch, stated rather than papered over**: a partial
+// amplitude regression -- e.g. a bug that blends every sampled height toward the tile's
+// own mean by some fraction before shading -- keeps *some* spread. Measured on the same
+// mountain tile, blending 50% of the way to the mean still leaves stdDev 12.29 (comfortably
+// above 2); blending 80% of the way leaves 3.08 (still above 2); only past roughly 85-90%
+// does it drop below 2. So `hasStructure`'s luminance-spread threshold is well separated
+// from "no relief at all" and not from "most of the relief is gone" -- those two
+// populations (a flat mutant and a moderately-flattened one) are not comfortably
+// separated by any single stdDev cutoff without risking false failures on real
+// low-relief terrain (the abyssal tile's own 21.0 sits closer to a tightened cutoff than
+// to 2). This is a real limit of a single luminance-spread number, not a gap this task
+// closes by picking a different constant -- see the "swap" mutation below for the
+// discrimination this suite gets from a second, independent kind of assertion instead.
 test("a mountainous tile's raster has real luminance structure (not flat grey)", () => {
   const image = reliefTile({
     rectangle: mountainRect, size: 128, engine, worldHandle: world, radiusM: DEFAULT_WORLD.radiusM,
@@ -160,6 +191,18 @@ test("a mountainous tile is measurably different from an abyssal one", () => {
   assert.ok(
     aStats.mean < mStats.mean,
     `abyssal mean luminance ${aStats.mean.toFixed(2)} is not darker than mountain mean ${mStats.mean.toFixed(2)}`,
+  );
+  // **The swap guard.** `mStats.mean !== aStats.mean` above would already be satisfied by
+  // luck if a bug served the wrong tile for one of the two requests but that tile's *mean*
+  // happened to differ from the real one -- means collide far more often than whole
+  // buffers do. This compares the raw bytes directly: two distinct rectangles must not
+  // produce byte-identical rasters. This is the assertion mutation 2 (below) is built to
+  // exercise -- it is the one a "serve the mountain tile's raster for the abyssal
+  // request" regression actually violates, directly, rather than through the mean.
+  assert.notDeepEqual(
+    Array.from(mountain.data), Array.from(abyssal.data),
+    "mountain and abyssal tiles produced byte-identical rasters -- one request's output " +
+    "was served for the other's",
   );
 });
 
