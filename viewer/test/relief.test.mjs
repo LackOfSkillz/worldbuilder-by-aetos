@@ -22,11 +22,24 @@ import { Engine } from "../public/app/engine.js";
 import {
   reliefTile,
   luminanceStats,
+  marginedTileRequest,
   hasStructure,
+  slopeColor,
+  snowLineM,
   sunDirectionEnu,
+  AMBIENT,
   DEFAULT_SUN,
   DEFAULT_SUN_AZIMUTH_DEG,
   DEFAULT_SUN_ALTITUDE_DEG,
+  LAND_BANDS,
+  OCEAN_BANDS,
+  ROCK_COLOR,
+  ROCK_SLOPE_HIGH_DEG,
+  ROCK_SLOPE_LOW_DEG,
+  SNOW_COLOR,
+  SNOW_LINE_EQUATOR_M,
+  SNOW_LINE_ZERO_LAT_DEG,
+  Z_FACTOR,
 } from "../public/app/relief.js";
 
 const DEFAULT_WORLD = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
@@ -240,4 +253,283 @@ test("central differences use margin, not one-sided edge differences: interior r
   reliefTile({ rectangle: mountainRect, size, engine: spyEngine, worldHandle: world, radiusM: DEFAULT_WORLD.radiusM });
   assert.equal(requestedWidth, size + 2, "must sample an (n+2) grid so edge texels get real neighbours");
   assert.equal(requestedHeight, size + 2, "must sample an (n+2) grid so edge texels get real neighbours");
+});
+
+
+// =========================================================================================
+// Task 5: the z-factor, and the three colour blends that were dead code before it.
+//
+// Population/method/host for everything below, named once:
+//   - `peakLatDeg`/`peakLonDeg`: the highest post found by a 129 x 129 scan of `mountainRect`
+//     (the highest-relief 45-degree tile, found by the scan in `before()` above). Rectangles
+//     are built centred on that point with the EDGE LENGTH of a level-L geographic tile
+//     (180 / 2^L degrees tall), because it is the edge length -- not the tile's registration
+//     -- that sets the post spacing every figure here is about.
+//   - Rasters are `size = 256`, the shipped tile size, because **the shade factor IS a
+//     function of `size`**: `marginedTileRequest` derives the post spacing from the tile's
+//     edge over `size - 1` posts, so a 64-texel raster of a level-5 rectangle samples at a
+//     level-3 spacing and measures a smoother surface. Halving the raster to keep the suite
+//     quick would quietly halve the thing being measured, which is the mistake this whole
+//     task exists to undo.
+//   - Host: node v22.17.0, this repository's checked-in wasm.
+//
+// **The number this task exists to move**: Task 3 measured the shade factor -- the per-texel
+// ratio of a tile rendered normally to the same tile rendered with `ambient = 1`, which turns
+// shading off and leaves colour untouched -- at mean 0.808, sd 0.004, flat from level 5 to 12.
+// 0.8096 is `AMBIENT + (1 - AMBIENT) * sin(45 deg)`, the shade of perfectly flat ground.
+
+/// `AMBIENT + (1 - AMBIENT) * sin(altitude)`: the shade a texel gets when its normal is
+/// straight up. Derived from the module's own constants rather than restated, so it tracks
+/// them if either moves.
+const FLAT_SHADE = AMBIENT + (1 - AMBIENT) * DEFAULT_SUN.up;
+
+/// The land point with the most **local relief** on `DEFAULT_WORLD`, found once and memoised.
+///
+/// Not `mountainRect`'s highest post, which was tried and was the wrong probe: the 45-degree
+/// scan above maximises the spread of five corner samples, and on this world that picks the
+/// polar tile, whose highest post sits on a flat 770 m plateau at latitude -85.8. A tile there
+/// is genuinely smooth, so it would have measured this task's own change as absent. This scans
+/// a 2-degree grid (40,764 `wb_elevation_m` calls, ~60 ms) and scores each land point by the
+/// range of itself and its four neighbours a quarter degree away -- relief at roughly the
+/// scale a mid-level tile spans. On this world it lands at 32 S 28 W with 641 m of relief over
+/// half a degree, which is the same kind of place Task 3's own -9,65 probe was.
+///
+/// Deliberately NOT a second `test.before` hook: node:test runs top-level `before` hooks in
+/// registration order but the first one here is async, and depending on a second hook having
+/// seen the first one's output is a scheduling assumption this file does not need to make.
+let probe = null;
+function reliefProbe() {
+  if (probe) return probe;
+  let best = -Infinity;
+  for (let latDeg = -88; latDeg <= 88; latDeg += 2) {
+    for (let lonDeg = -180; lonDeg < 180; lonDeg += 2) {
+      const here = engine.elevationM(world, latDeg, lonDeg);
+      if (here <= 0) continue;
+      const d = 0.25;
+      const neighbours = [
+        engine.elevationM(world, latDeg + d, lonDeg), engine.elevationM(world, latDeg - d, lonDeg),
+        engine.elevationM(world, latDeg, lonDeg + d), engine.elevationM(world, latDeg, lonDeg - d),
+      ];
+      const relief = Math.max(here, ...neighbours) - Math.min(here, ...neighbours);
+      if (relief > best) { best = relief; probe = { latDeg, lonDeg, heightM: here, reliefM: relief }; }
+    }
+  }
+  return probe;
+}
+
+/// A rectangle the size of a level-`level` geographic tile, centred on the relief probe.
+function levelRect(level) {
+  const { latDeg, lonDeg } = reliefProbe();
+  const half = 90 / 2 ** level;
+  return rect(latDeg + half, latDeg - half, lonDeg - half, lonDeg + half);
+}
+
+/// The shade factor of one raster: the per-texel ratio of shaded to unshaded. Texels whose
+/// unshaded channel is under 8 are skipped -- the ratio of two small integers is 8-bit
+/// quantisation noise, not shade, and including them is what put a floor of about 0.005 under
+/// Task 3's own sd.
+function shadeFactor({ rectangle, level, size = 256, zFactor }) {
+  const base = {
+    rectangle, level, size, engine, worldHandle: world, radiusM: DEFAULT_WORLD.radiusM,
+  };
+  const args = zFactor === undefined ? base : { ...base, zFactor };
+  const lit = reliefTile(args);
+  const flat = reliefTile({ ...args, ambient: 1 });
+  let n = 0;
+  let sum = 0;
+  let sumSq = 0;
+  let far = 0;
+  for (let i = 0; i < size * size; i += 1) {
+    for (let c = 0; c < 3; c += 1) {
+      const denominator = flat.data[i * 4 + c];
+      if (denominator < 8) continue;
+      const ratio = lit.data[i * 4 + c] / denominator;
+      n += 1;
+      sum += ratio;
+      sumSq += ratio * ratio;
+      if (Math.abs(ratio - FLAT_SHADE) > 0.02) far += 1;
+    }
+  }
+  const mean = sum / n;
+  return {
+    mean, stdDev: Math.sqrt(Math.max(0, sumSq / n - mean * mean)), n, farFraction: far / n,
+  };
+}
+
+test("the hillshade is a hillshade: the shade factor varies, at every level from 5 to 12", () => {
+  // The success criterion of this task, as an assertion. `0.02` is well above both the 0.004
+  // Task 3 measured and the ~0.005 quantisation floor that number sat on, and well below the
+  // 0.03-0.06 this file now produces -- it separates "shading" from "constant darkening"
+  // without being tuned to the current value.
+  for (const level of [5, 8, 12]) {
+    const shade = shadeFactor({ rectangle: levelRect(level), level });
+    assert.ok(
+      shade.stdDev > 0.02,
+      `level ${level}: shade factor sd ${shade.stdDev.toFixed(4)} over ${shade.n} channels is a `
+      + "near-constant darkening, not relief",
+    );
+    // The spread, not the mean, is what "not a constant darkening" means -- and the mean is
+    // the wrong test for it in both directions. Task 3's mean was 0.808 because every texel
+    // was flat; this file's L5 mean is 0.816, ABOVE flat, because the probe's sunward aspects
+    // outnumber its shaded ones. A mean assertion would have failed a working hillshade.
+    assert.ok(
+      shade.farFraction > 0.25,
+      `level ${level}: only ${(100 * shade.farFraction).toFixed(1)}% of channels differ from the `
+      + `flat-ground shade ${FLAT_SHADE.toFixed(4)} by more than 0.02 -- that is a wash, not relief`,
+    );
+  }
+});
+
+test("and the z-factor is what does it: at zFactor 1 the same tiles collapse to flat ground", () => {
+  // The control. Without it the assertion above could be passing for some other reason and
+  // `Z_FACTOR` could be doing nothing. This is Task 3's tree re-measured through the same
+  // function: the shade factor must return to the flat-ground constant at every level, which
+  // is exactly the finding this task was written to answer.
+  for (const level of [5, 8, 12]) {
+    const shade = shadeFactor({ rectangle: levelRect(level), level, zFactor: 1 });
+    assert.ok(
+      shade.stdDev < 0.01,
+      `level ${level} at zFactor 1: sd ${shade.stdDev.toFixed(4)} -- this control is supposed to `
+      + "reproduce the flat wash, so either the terrain or the measurement has changed",
+    );
+    // Not zero: with `zFactor` 1 the residual spread is 8-bit rounding on the darkest
+    // channels (a green of 12 moves by 0.04 of its own value for one byte), so a few per cent
+    // of channels clear a 0.02 ratio. Measured at 4.9% (L5) and 0.0% (L8, L12) here, against
+    // 37.5%, 79.0% and 91.5% with the shipped z-factor -- the separation these bounds assert.
+    assert.ok(
+      shade.farFraction < 0.10,
+      `level ${level} at zFactor 1: ${(100 * shade.farFraction).toFixed(1)}% of channels are more `
+      + "than 0.02 from flat, so the control is not reproducing the flat wash",
+    );
+    assert.ok(
+      Math.abs(shade.mean - FLAT_SHADE) < 0.01,
+      `level ${level} at zFactor 1: mean ${shade.mean.toFixed(4)} vs flat ${FLAT_SHADE.toFixed(4)}`,
+    );
+  }
+  assert.ok(Z_FACTOR > 1, "Z_FACTOR must exaggerate, or the control above is the shipped path");
+});
+
+test("hasStructure now passes at the levels that refused these tiles", () => {
+  // Task 3: "Task 2's own hasStructure refuses these tiles from level 8 down -- luminance sd
+  // 0.73 at L9 against a minStdDev of 2." Those are the levels asserted here.
+  for (const level of [8, 9, 12]) {
+    const image = reliefTile({
+      rectangle: levelRect(level), level, size: 256, engine, worldHandle: world,
+      radiusM: DEFAULT_WORLD.radiusM,
+    });
+    const check = hasStructure(image);
+    assert.ok(
+      check.ok,
+      `level ${level}: hasStructure still refuses a real mountain tile: `
+      + JSON.stringify(check.stats),
+    );
+  }
+});
+
+test("water is lit as the flat plane it is, not as its own seabed", () => {
+  // A sea surface does not carry the relief under it, and a true-colour image of the ocean is
+  // depth scattering rather than seabed shading. The abyssal tile is entirely below the datum,
+  // so EVERY texel must carry exactly the flat-ground shade -- not approximately.
+  const size = 32;
+  const shared = {
+    rectangle: abyssalRect, size, engine, worldHandle: world, radiusM: DEFAULT_WORLD.radiusM,
+  };
+  const lit = reliefTile(shared);
+  const unlit = reliefTile({ ...shared, ambient: 1 });
+  // Which texels are water is asked of the ENGINE, through the same margined request
+  // `reliefTile` itself builds, rather than guessed from the colour: the abyssal tile is the
+  // deepest 45-degree tile and 6% of it is land, so a colour-based filter would be testing
+  // the filter.
+  const request = marginedTileRequest({
+    rectangle: abyssalRect, size, worldHandle: world, radiusM: DEFAULT_WORLD.radiusM,
+  });
+  const heights = engine.fillTileF32(request);
+  const { grid } = request;
+  let worst = 0;
+  let waterTexels = 0;
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      if (heights[(row + 1) * grid + (col + 1)] > 0) continue;
+      waterTexels += 1;
+      const i = row * size + col;
+      const denominator = unlit.data[i * 4 + 2]; // blue: the channel deep water actually has
+      if (denominator < 8) continue;
+      // Compared in BYTES, not in ratio. Deep water's blue is around 35, so one unit of
+      // `Uint8ClampedArray` rounding is 0.029 of the ratio -- three times any tolerance worth
+      // asserting, and it would look exactly like a real shading leak.
+      worst = Math.max(worst, Math.abs(lit.data[i * 4 + 2] - denominator * FLAT_SHADE));
+    }
+  }
+  assert.ok(waterTexels > 500, `only ${waterTexels} of ${size * size} texels were under water`);
+  assert.ok(
+    worst <= 1,
+    `an under-water texel's blue is ${worst.toFixed(3)} bytes away from its flat-plane value `
+    + `(colour x ${FLAT_SHADE.toFixed(4)}); the seabed is showing through the sea surface`,
+  );
+});
+
+test("the rock band fires on this terrain, and the band it replaced could not have", () => {
+  // The measurement that condemned the old thresholds: nothing on this planet is steeper than
+  // 1.9 degrees at raster spacing, so a 22-42 degree band was unreachable by construction. The
+  // band now reads the z-exaggerated slope, which is the surface actually drawn.
+  assert.ok(ROCK_SLOPE_LOW_DEG < 22, "the rock band must sit below the old unreachable 22 deg");
+  const green = slopeColor(500, 0);
+  const steep = slopeColor(500, (ROCK_SLOPE_LOW_DEG + ROCK_SLOPE_HIGH_DEG) / 2);
+  assert.notDeepEqual(green, steep, "slope does not move the colour at all");
+  // Toward rock, on every channel, and at the SAME height -- which is the thing a height ramp
+  // provably cannot do and the reason this layer exists at all.
+  for (let c = 0; c < 3; c += 1) {
+    assert.ok(
+      Math.abs(steep[c] - ROCK_COLOR[c]) < Math.abs(green[c] - ROCK_COLOR[c]),
+      `channel ${c}: a steep face at 500 m is not closer to rock than a flat one at 500 m`,
+    );
+  }
+  // And the constants have to be consistent with the TERRAIN, not just with each other: the
+  // steepest slope this generator produces, exaggerated, must clear the band's lower end.
+  const steepestExaggeratedDeg =
+    (Math.atan(Math.tan((1.9 * Math.PI) / 180) * Z_FACTOR) * 180) / Math.PI;
+  assert.ok(
+    steepestExaggeratedDeg > ROCK_SLOPE_LOW_DEG,
+    `the steepest slope measured on this generator reaches only ${steepestExaggeratedDeg.toFixed(1)} `
+    + `deg after exaggeration, below the ${ROCK_SLOPE_LOW_DEG} deg the rock band starts at`,
+  );
+});
+
+test("snow follows latitude and shelter, not a contour", () => {
+  // A single global elevation line draws a ring around every peak at the same height and reads
+  // as a bug. Three properties, each of which a contour-ring implementation fails.
+  assert.equal(snowLineM(0), SNOW_LINE_EQUATOR_M);
+  assert.equal(snowLineM(SNOW_LINE_ZERO_LAT_DEG), 0);
+  assert.equal(snowLineM(-60), snowLineM(60), "the snowline must be symmetric about the equator");
+  assert.ok(snowLineM(30) > snowLineM(60), "the snowline must fall with latitude");
+
+  // 1. Height alone does not decide it: the planet's highest point, at the equator, is bare.
+  assert.notDeepEqual(slopeColor(1381, 0, 0), SNOW_COLOR);
+  // 2. The same height at high latitude is snow.
+  assert.deepEqual(slopeColor(1381, 0, 78), [...SNOW_COLOR]);
+  // 3. Shelter: at the same height AND the same latitude, a steep face keeps less snow than
+  //    flat ground. This is the term that breaks the ring.
+  const sheltered = slopeColor(1200, 0, 70);
+  const exposed = slopeColor(1200, ROCK_SLOPE_HIGH_DEG, 70);
+  assert.ok(
+    sheltered[0] > exposed[0] && sheltered[1] > exposed[1] && sheltered[2] > exposed[2],
+    `a steep face (${exposed}) is not less snowy than flat ground (${sheltered}) at the same `
+    + "height and latitude",
+  );
+});
+
+test("every colour band is a height this generator reaches", () => {
+  // The other half of the dead-code finding: the previous table's 1,800 m and 3,200 m land
+  // stops and its -9,000 m ocean stop were outside the range this generator produces, so three
+  // of eleven colours in the file could never appear. Bounds from the global fill quoted in
+  // relief.js; loose on purpose -- the property is "reachable", not "exact".
+  const MEASURED_MIN_M = -6807;
+  const MEASURED_MAX_M = 2051;
+  for (const [metres] of [...OCEAN_BANDS, ...LAND_BANDS]) {
+    assert.ok(
+      metres >= MEASURED_MIN_M && metres <= MEASURED_MAX_M,
+      `band stop at ${metres} m is outside the ${MEASURED_MIN_M}..${MEASURED_MAX_M} m range this `
+      + "generator produces, so it can never be drawn",
+    );
+  }
 });

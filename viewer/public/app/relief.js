@@ -62,22 +62,73 @@
 // table and is deferred, not ruled out: it would couple this pure function to live scene
 // state, which Task 1 explicitly does not need yet.
 //
+// # The z-factor, and why without one this whole file was a 19% grey wash
+//
+// Task 3 shipped this raster and then measured that it does nothing: rendering each tile
+// with and without shading and taking the per-texel ratio gave a shade factor of mean 0.808
+// with sd 0.004, flat from level 5 to level 12. 0.8096 is exactly `AMBIENT + (1 - AMBIENT) *
+// sin(45 deg)` -- the shade of *perfectly flat ground*. Every texel was flat.
+//
+// **The cause is measured, not guessed.** At this raster's own post spacing, the land slopes
+// this generator produces are a fraction of a degree: at the highest-relief inland tile on
+// `DEFAULT_WORLD` the median land slope is 0.21 deg at level 5 and 1.19 deg at level 12, and
+// the steepest texel found anywhere in the probe set is 1.9 deg. A hillshade's response to a
+// 1-degree slope is a 1-degree tilt of the normal, which is under half a luminance unit.
+// That is not a bug in the shading; the planet really is that smooth. Its highest point is
+// 1,381 m on a 6,371 km sphere -- about a sixth of Earth's relief.
+//
+// Every desktop hillshade tool carries a **z-factor** (vertical exaggeration) for exactly
+// this reason; in GIS it is nominally a unit conversion, and it is used as an exaggeration
+// just as often. `Z_FACTOR` below multiplies the two gradients before the normal is built.
+// **This is a legibility choice and not a realism one, and it is the largest single lie this
+// file tells**: at level 12 it renders a median 1.2-degree slope as a 27-degree one. A MUD's
+// world map is read, not admired, and an unreadable honest picture loses to a readable
+// exaggerated one -- but the exaggeration is named, constant, and reported per level rather
+// than buried.
+//
+// It is one constant across every level on purpose. A level-dependent z would shade two
+// adjacent tiles differently whenever the quadtree straddles a level -- which it does
+// constantly during a descent -- and that is a seam. What *does* legitimately change with
+// level is the terrain: finer sampling resolves steeper local faces, so the shading gets
+// stronger and more detailed as you zoom. That is the answer to "when I zoom in it just
+// looks blurry", not a defect to normalise away.
+//
 // # Slope colour
 //
 // A height-only ramp cannot put rock on a steep face at low altitude -- it is given height
-// and nothing else. So land colour is height-banded (as the existing `ElevationRamp` canvas
-// in `main.js` already is) and then blended toward bare rock by slope angle, and toward
-// snow by height above a snowline. **The engine's `detail.rs` roughness constants
-// (`ABYSSAL_M` 55, `SHELF_M` 15, `COAST_M` 35, `INTERIOR_M` 80, `MOUNTAIN_M` 150) are
-// amplitudes of per-octave noise, not slope-angle thresholds, so they do not convert into
-// `ROCK_SLOPE_LOW_DEG`/`ROCK_SLOPE_HIGH_DEG` directly** -- there is no unit-preserving
-// formula from "150 m of roughness at the detail scale" to "42 degrees". They are used only
-// as a sanity check that mountainous terrain in this generator does in fact produce slopes
-// in the chosen range at this raster's post spacing (see the report). The slope thresholds
-// themselves are a physically-motivated but ultimately aesthetic choice: 22 deg is close to
-// the angle of repose for loose soil/scree (below it, ground plausibly holds vegetation);
-// 42 deg is within the range usually cited for scree/talus slopes and exposed rock faces.
-// This is a look, not a conformance surface, exactly as the brief says.
+// and nothing else. So land colour is height-banded and then blended toward bare rock by
+// slope angle, and toward snow by height, latitude and shelter.
+//
+// **All three of those blends were dead code before this task, and the same measurement
+// killed all three.** `ROCK_SLOPE_LOW_DEG` was 22 deg against a terrain whose steepest texel
+// is 1.9 deg; `SNOW_LINE_M` was 3,500 m against a planet whose highest point is 1,381 m; and
+// `LAND_BANDS`' top two stops (1,800 m and 3,200 m) sat above the 99.9th percentile of land
+// elevation. The layer was a two-band green-and-ochre ramp wearing the vocabulary of a
+// slope-aware one. The bands below are placed on the **measured** hypsometry of this
+// generator (see the report for the population), and the rock threshold is placed on the
+// **z-exaggerated** slope, which is the surface this file actually draws.
+//
+// What real satellite imagery does at the three transitions, and what is matched here:
+//
+// - **Water/land.** A calm sea surface is flat and its albedo does not vary with the seabed
+//   under it; ocean colour in a true-colour image is depth *scattering*, not relief. So the
+//   hillshade is switched off below the datum and the sea is lit as the flat plane it is,
+//   while the depth bands stay. This also stops seabed ridges from reading as land.
+// - **Vegetated/bare.** Bare rock is exposed where the slope exceeds what a soil mantle can
+//   hold -- the angle of repose, ~30-37 deg for loose material -- which is why mountain
+//   photographs show grey faces and green valleys at the *same* altitude. The band here is
+//   15-38 deg on the exaggerated surface. It is a minority accent at coarse levels and a
+//   real texture close in, and it is reported per level rather than claimed to be stable.
+// - **Bare/snow.** The snowline is not a contour. It falls with latitude (roughly 4,900 m in
+//   the tropics, ~2,100 m at 45 deg, sea level in the high Arctic) and snow is *shed*
+//   from steep faces, which is why alpine peaks read as mottled rock-and-white rather than a
+//   white cap with a hard rim. Both are modelled: a latitude-dependent line, and a shelter
+//   term that is one minus the rock fraction. A pure elevation threshold would draw a
+//   contour ring and read as a bug, which is what the brief asked to avoid.
+//
+// Not modelled, and visible: no continentality or precipitation in the snowline (a desert
+// mountain and a maritime one get the same line), no sea ice, no vegetation zonation beyond
+// altitude, no clouds.
 
 import { metresPerDegree } from "./terrain.js";
 
@@ -105,16 +156,50 @@ export const DEFAULT_SUN = sunDirectionEnu();
 /// from the sun still needs to read as *something*, not as an unshaded-vs-shaded binary.
 export const AMBIENT = 0.35;
 
-/// Slope-angle band, in degrees, over which land colour blends from its height band toward
-/// bare rock. See the module doc for what these are and are not derived from.
-export const ROCK_SLOPE_LOW_DEG = 22;
-export const ROCK_SLOPE_HIGH_DEG = 42;
-export const ROCK_COLOR = [120, 112, 100];
+/// **Vertical exaggeration, applied to both gradients before the normal is built.** See the
+/// module doc: without it this file measured a shade factor of 0.808 +- 0.004 -- a constant
+/// 19% darkening -- because this generator's land slopes at raster spacing are 0.2 to 1.9
+/// degrees. Chosen from the sweep in the report: 25 is the smallest value that puts Task 2's
+/// `hasStructure` (luminance sd >= 2) at three times its threshold at *every* level from 2 to
+/// 12 on both land probes; 20 clears the threshold but only by 2.6x at level 11. It saturates
+/// nothing: no texel on any probe tile at any level reaches the ambient floor, so nothing is
+/// crushed to black and the exaggeration could be raised later without a cliff.
+export const Z_FACTOR = 25;
 
-/// Height band, in metres above the datum, over which land colour blends toward snow.
-export const SNOW_LINE_M = 3500;
-export const SNOW_BAND_M = 1200;
+/// Slope-angle band, in degrees **of the z-exaggerated surface**, over which land colour
+/// blends from its height band toward bare rock. Placed against the measured exaggerated
+/// slope distribution, not against the true one: on the true surface nothing on this planet
+/// is steeper than 1.9 degrees, which is why the previous 22-42 band never once fired.
+export const ROCK_SLOPE_LOW_DEG = 15;
+export const ROCK_SLOPE_HIGH_DEG = 38;
+export const ROCK_COLOR = [126, 118, 106];
+
+/// The snowline, as a function of latitude rather than a single contour.
+///
+/// Earth's regional snowline runs about 4,900 m in the tropics and reaches sea level in the
+/// high Arctic around 78-80 degrees; this is the straight line through those two ends. It is
+/// a coarse approximation on purpose -- there is no climate model here to do better with,
+/// and a single global elevation threshold is the thing being avoided, not the thing being
+/// refined. On this generator (highest point 1,381 m) it puts no snow at all in the tropics,
+/// which is correct: nothing there is tall enough.
+///
+/// **Checked against what it produces, not only against its ends.** A 0.5-degree global scan
+/// of `DEFAULT_WORLD` (259,200 samples, area-weighted by cos(latitude)) puts 7.4% of land
+/// fully above its own snowline and a further 3.4% inside the blend band. Earth's permanent
+/// ice cover is about 10% of land area, so this lands where it was aimed rather than
+/// painting half the planet white -- which the first pair of ends (zero at 72 degrees) did,
+/// at 30% full plus 10% partial.
+export const SNOW_LINE_EQUATOR_M = 4900;
+export const SNOW_LINE_ZERO_LAT_DEG = 80;
+/// Metres of height over which the snow blend completes, once the line is crossed.
+export const SNOW_BAND_M = 260;
 export const SNOW_COLOR = [246, 248, 250];
+
+/// Snowline height, in metres above the datum, at a latitude.
+export function snowLineM(latitudeDeg) {
+  const t = clamp01(Math.abs(latitudeDeg) / SNOW_LINE_ZERO_LAT_DEG);
+  return SNOW_LINE_EQUATOR_M * (1 - t);
+}
 
 /// Hypsometric bands, height (m) -> RGB. Chosen to read the same way as the existing
 /// `elevationRamp()` canvas in `main.js` (abyssal near-black, basin blue, pale shelf, strand,
@@ -122,21 +207,29 @@ export const SNOW_COLOR = [246, 248, 250];
 /// both are visible, without literally sharing code -- one is a 256x1 canvas gradient
 /// consumed by a Cesium material, the other is a per-texel table consumed here, and forcing
 /// them through one function would coupled two things that change for different reasons.
-const OCEAN_BANDS = [
-  [-9000, [2, 10, 20]],
-  [-4000, [4, 24, 46]],
+/// **Every stop is a height this generator actually reaches**, which the previous table's
+/// top two were not. Measured over three worlds (seed 20260904 / 7 / 424242) by a 4,170,724
+/// -sample global fill at canonical resolution: land runs p50 421-619 m, p90 709-733 m,
+/// p99 973-1,314 m, p99.9 1,507-1,643 m, max 1,645-2,051 m; the sea floor runs p10 -4,610 m,
+/// p50 -3,261 to -4,264 m, min -6,345 to -6,807 m. The old table's 1,800 m and 3,200 m land
+/// stops and its -9,000 m ocean stop were all outside that, so three of eleven colours in
+/// this file were unreachable.
+export const OCEAN_BANDS = [
+  [-6800, [2, 10, 20]],
+  [-4600, [4, 24, 46]],
   [-1200, [10, 51, 88]],
   [-200, [20, 84, 140]],
   [-20, [47, 134, 189]],
   [0, [126, 197, 223]],
 ];
 
-const LAND_BANDS = [
+export const LAND_BANDS = [
   [0, [221, 207, 168]],
-  [50, [143, 154, 94]],
-  [600, [74, 122, 60]],
-  [1800, [125, 113, 80]],
-  [3200, [163, 150, 120]],
+  [40, [120, 142, 84]],
+  [380, [74, 122, 60]],
+  [700, [110, 116, 72]],
+  [1000, [148, 132, 96]],
+  [1500, [176, 168, 152]],
 ];
 
 function clamp01(x) {
@@ -182,15 +275,28 @@ export function baseColor(heightM) {
   return heightM <= 0 ? bandColor(OCEAN_BANDS, heightM) : bandColor(LAND_BANDS, heightM);
 }
 
-/// Height + slope colour, before shading. Slope only ever moves land toward rock or snow;
-/// underwater colour is height-only, because "rock on a steep face" is a subaerial idea and
-/// this generator does not model underwater sediment angle of repose.
-export function slopeColor(heightM, slopeDeg) {
+/// Height + slope + latitude colour, before shading.
+///
+/// `slopeDeg` is the slope of the **z-exaggerated** surface -- the one this file shades and
+/// therefore the one a reader sees. Passing the true slope here is what made the rock band
+/// dead code.
+///
+/// Slope only ever moves *land*: underwater colour is height-only, because "rock on a steep
+/// face" is a subaerial idea and this generator does not model underwater sediment angle of
+/// repose.
+///
+/// The snow term is deliberately **not** a pure elevation threshold. It is gated on the
+/// latitude-dependent snowline and then multiplied by `1 - rockT`, the shelter term: a face
+/// steep enough to read as bare rock is a face snow slides off. Together those two turn what
+/// would be a contour ring into a mottled cap that follows the terrain, which is what a
+/// photograph of a snowy range looks like.
+export function slopeColor(heightM, slopeDeg, latitudeDeg = 0) {
   const color = baseColor(heightM);
   if (heightM <= 0) return color;
   const rockT = smoothstep(ROCK_SLOPE_LOW_DEG, ROCK_SLOPE_HIGH_DEG, slopeDeg);
   const withRock = rockT > 0 ? lerpColor(color, ROCK_COLOR, rockT) : color;
-  const snowT = smoothstep(SNOW_LINE_M, SNOW_LINE_M + SNOW_BAND_M, heightM);
+  const line = snowLineM(latitudeDeg);
+  const snowT = smoothstep(line, line + SNOW_BAND_M, heightM) * (1 - rockT);
   return snowT > 0 ? lerpColor(withRock, SNOW_COLOR, snowT) : withRock;
 }
 
@@ -246,7 +352,7 @@ function makeImageData(data, size) {
 /// `engine` needs `fillTileF32`; `worldHandle` is the handle from `engine.newWorld(...)`.
 export function reliefTile({
   rectangle, level = null, size = 256, engine, worldHandle, radiusM,
-  resolutionM = null, sun = DEFAULT_SUN, ambient = AMBIENT,
+  resolutionM = null, sun = DEFAULT_SUN, ambient = AMBIENT, zFactor = Z_FACTOR,
 }) {
   if (!engine || typeof engine.fillTileF32 !== "function") {
     throw new Error("reliefTile: engine.fillTileF32 is required");
@@ -280,8 +386,15 @@ export function reliefTile({
       const dzdNorth = rowStepM > 0 ? (hNorth - hSouth) / (2 * rowStepM) : 0;
       const dzdEast = colStepM > 0 ? (hEast - hWest) / (2 * colStepM) : 0;
 
-      let nx = -dzdEast;
-      let ny = -dzdNorth;
+      // The z-factor is applied HERE, once, to the two gradients -- so the normal, the shade
+      // and the slope angle the colour reads all describe one and the same exaggerated
+      // surface. Exaggerating the shading but colouring from the true slope would put a rock
+      // face's shadow on ground the colour still calls a meadow.
+      const exEast = dzdEast * zFactor;
+      const exNorth = dzdNorth * zFactor;
+
+      let nx = -exEast;
+      let ny = -exNorth;
       let nz = 1;
       const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
       // nlen is never 0 (nz is always 1 before normalising), so no NaN guard is needed here
@@ -290,13 +403,17 @@ export function reliefTile({
       // "flat" shade.
       nx /= nlen; ny /= nlen; nz /= nlen;
 
-      const dot = nx * sun.east + ny * sun.north + nz * sun.up;
+      // **Water is lit as the flat plane it is.** A sea surface does not carry the seabed's
+      // relief, and shading the seabed through it made ocean ridges read as land. `sun.up`
+      // is exactly the dot product of the sun direction with a vertical normal, so this is
+      // the same expression evaluated at zero slope rather than a second lighting model.
+      const dot = hHere <= 0 ? sun.up : nx * sun.east + ny * sun.north + nz * sun.up;
       const shade = ambient + (1 - ambient) * Math.max(0, dot);
 
-      const slopeRad = Math.atan(Math.sqrt(dzdEast * dzdEast + dzdNorth * dzdNorth));
+      const slopeRad = Math.atan(Math.sqrt(exEast * exEast + exNorth * exNorth));
       const slopeDeg = (slopeRad * 180) / Math.PI;
 
-      const [r, gr, b] = slopeColor(hHere, slopeDeg);
+      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg);
 
       const idx = (row * size + col) * 4;
       data[idx] = r * shade;
