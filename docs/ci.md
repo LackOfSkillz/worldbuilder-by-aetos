@@ -189,10 +189,16 @@ file *appearing* moves the digest exactly as a file *changing* does.
 **6. Parity**, `parity_dump` (native) replayed through the committed `.wasm` by `parity.mjs`.
 A mutated artifact is refused rather than silently compared: `REFUSING TO REPORT PARITY --
 STALE ARTIFACT:` with the source/artifact hashes, because "the corpus and the .wasm agree
-with each other and with nothing else" is not evidence. Re-run on the current tree:
-`parity: 53251 values compared through the shipped exports, 0 divergent`, exit 0. A control
-run (`--mutate seed`) proves the harness can fail at all: of the same 53,251 values, 50,778
-diverge.
+with each other and with nothing else" is not evidence. Re-run on the current tree
+(slice 5a added the `erosion/erosion` group through `wb_erosion_run`, which the count below
+now includes -- re-derived, not carried forward from before that export existed):
+`parity: 56254 values compared through the shipped exports, 0 divergent`, exit 0. A control
+run (`--mutate seed`) proves the harness can fail at all: of the same 56,254 values, 53,778
+diverge. A second control, `--mutate erosion-k` (bumps `erodibility_per_yr` by one ULP before
+replaying the erosion record and touches nothing else), isolates that group specifically:
+216 of the erosion group's 3,000 heights diverge and its status/iteration/converged fields do
+not, so this control shows the arithmetic is sensitive to `k` without the divergence being an
+artifact of a different iteration count on the two sides.
 
    **A correction this project must not re-introduce.** Task 2 of this slice changed the
    `.wasm`'s bytes (`60244aec…` → `dcbed115…`) as a side effect of adding a Cargo
@@ -221,16 +227,21 @@ mismatch, if they disagree or either is missing:
 
   | configuration | listed | ignored | run (pinned in `gates.yml`) |
   |---|---|---|---|
-  | `--no-default-features` | 423 | 5 | **418** |
-  | default | 423 | 5 | **418** |
-  | `--features python` | 425 | 5 | **420** |
-  | `--features wasm` | 453 | 5 | **448** |
-  | `--features python,wasm` | 455 | 5 | **450** |
+  | `--no-default-features` | 458 | 5 | **453** |
+  | default | 458 | 5 | **453** |
+  | `--features python` | 460 | 5 | **455** |
+  | `--features wasm` | 493 | 5 | **488** |
+  | `--features python,wasm` | 495 | 5 | **490** |
 
-  These moved up from 409/409/409/439/439 in this slice: `tests/build_fingerprint.rs` (new,
-  all five configurations) adds 9 tests each, and `--features python` gains 2 more in `lib`
+  These moved up from 409/409/409/439/439 in the identity slice (`tests/build_fingerprint.rs`,
+  new, adding 9 tests to all five configurations, plus 2 more in `lib` for `--features python`
   because `source_fingerprint()` / `source_fingerprint_inputs()` are PyO3 exports whose
-  binding tests only compile with that feature. On a deleted test, the gate fails with
+  binding tests only compile with that feature), and again in slice 5a: `erosion.rs` (new,
+  compiles unconditionally) added 35 tests to `lib` across all five rows over that slice's
+  three tasks, and `tests/wasm_exports.rs` gained 5 more for `wb_erosion_run`'s parameter
+  refusals, moving only the two `wasm`-feature rows. Re-derived directly from `cargo test -p
+  worldbuilder-engine <features> -- --list` (and `--list --ignored`) on the current tree, not
+  carried forward from either earlier slice. On a deleted test, the gate fails with
   `COUNT GATE FAILED / expected <N> tests to run, found <M>` even though `cargo test` itself
   exits 0.
 - **Python suite**: `pytest --collect-only -q`'s per-test lines and its `<N> tests collected`
@@ -248,10 +259,10 @@ mismatch, if they disagree or either is missing:
   (**157**, not 150: the gate pins the file's total, and seven of those are the guard unit
   tests named just above. An earlier draft of this line said 150 and contradicted its own
   preceding bullet.)
-- **Parity corpus**: the total line (`53,251 values compared`) is cross-checked against the
-  nine per-group tallies summing to it, so a shrunk corpus fails with `COUNT GATE FAILED /
-  expected 53251 values compared, found <M>` even when provenance and parity both report
-  green on their own.
+- **Parity corpus**: the total line (`56,254 values compared` -- 53,251 plus the 3,003-value
+  `erosion/erosion` group slice 5a added) is cross-checked against the ten per-group tallies
+  summing to it, so a shrunk corpus fails with `COUNT GATE FAILED / expected 56254 values
+  compared, found <M>` even when provenance and parity both report green on their own.
 
 ## What CI does NOT cover
 

@@ -9,8 +9,9 @@ number that cannot be defended, so it lives here instead.
 
 `examples/parity_dump.rs` (native, `--release`) and `parity/parity.mjs` (the committed
 `.wasm`, in Node) call **the same shipped exports** — `wb_world_new`, `wb_elevation_m`,
-`wb_structural_m`, `wb_bottom_at`, `wb_fill_tile_f32`, `wb_generator_version` — never an
-internal function, because the exports are what a browser reaches.
+`wb_structural_m`, `wb_bottom_at`, `wb_fill_tile_f32`, `wb_generator_version`, and (slice 5a)
+`wb_erosion_run` — never an internal function, because the exports are what a browser
+reaches.
 
 The corpus is defined once, in the native dump, and carried to the replaying side as
 16-hex-digit bit patterns. Node parses no decimal text and recomputes no input, so a
@@ -26,8 +27,9 @@ Population, per run (`SEED = 20260904`, `radius = 6_371_000 m`, `plate_count = 1
 | the resolution sentinel | 200 harbour points × `{0.0, −1.0, +inf, NaN}` | 800 |
 | the inspection tap | 500 points per world, status + three fractions each | 4,000 |
 | **tiles** | 65×65 `wb_fill_tile_f32` in each world (f32 cells) | 8,450 |
+| **erosion** (slice 5a) | one `wb_erosion_run` call, 3,000 nodes, this crate's default test constants, capped at 20 iterations (chosen to hit the cap without converging, so `iterations`/`converged` are themselves part of the comparison) — 3,000 heights plus status/iterations/converged | 3,003 |
 | identity | `wb_generator_version` | 1 |
-| | | **53,251** |
+| | | **56,254** |
 
 A scattered corpus never lands inside a placed feature, and that gap has survived every
 earlier probe in this project — hence the second world and the second tile.
@@ -37,8 +39,17 @@ earlier probe in this project — hence the second world and the second tile.
 ```sh
 cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
 node crates/worldbuilder-engine/parity/parity.mjs native.txt
-node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed   # the control
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed        # control 1: a different planet
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate erosion-k   # control 2 (slice 5a): one ULP of erodibility
 ```
+
+`--mutate erosion-k` bumps `erodibility_per_yr` by exactly one ULP before replaying the
+erosion record and touches nothing else — `world`/`E`/`S`/`B`/`T`/`version` records are
+unaffected, so only the erosion group can move. Its job is different from `--mutate seed`'s:
+where the seed control proves the harness can detect a completely different planet, this one
+proves it can detect a one-ULP arithmetic change in a single group **without that group's own
+iteration count moving**, so a real divergence cannot be explained away as "the two sides
+just took a different number of steps."
 
 `--wasm <path>` overrides the artifact; the default is the committed
 `viewer/public/wasm/worldbuilder_engine.wasm`, i.e. the bytes a browser loads.
@@ -75,50 +86,82 @@ throws rather than guess, and this script turns that into a refusal too.
 ## Recorded output
 
 Host: Windows 11 (10.0.26200), x86_64-pc-windows-msvc, cargo 1.98.0, Node v22.17.0.
-Artifact: the committed `worldbuilder_engine.wasm`, 84,856 bytes. Dump: 41,805 lines.
+Artifact: the committed `worldbuilder_engine.wasm`, 117,040 bytes (12 exports, 0 imports —
+grew from 84,856 bytes / 11 exports when slice 5a added `wb_erosion_run`). Dump: 41,806
+lines. **Re-run for slice 5a Task 6**, not carried forward from before the erosion group or
+the second control existed.
 
 ```
 $ node parity.mjs native.txt
 provenance: the shipped .wasm matches its manifest and current source.
-parity: 53251 values compared through the shipped exports, 0 divergent
-artifact: .../viewer/public/wasm/worldbuilder_engine.wasm (84856 bytes)
-  elevation/plain:    10000 compared, 0 divergent
-  structural/plain:   10000 compared, 0 divergent
-  elevation/harbour:  10800 compared, 0 divergent
+parity: 56254 values compared through the shipped exports, 0 divergent
+artifact: .../viewer/public/wasm/worldbuilder_engine.wasm (117040 bytes)
+  elevation/plain: 10000 compared, 0 divergent
+  structural/plain: 10000 compared, 0 divergent
+  elevation/harbour: 10800 compared, 0 divergent
   structural/harbour: 10000 compared, 0 divergent
-  bottom/plain:        2000 compared, 0 divergent
-  bottom/harbour:      2000 compared, 0 divergent
-  tile/plain:           4225 compared, 0 divergent
-  tile/harbour:         4225 compared, 0 divergent
-  version:                 1 compared, 0 divergent
+  bottom/plain: 2000 compared, 0 divergent
+  bottom/harbour: 2000 compared, 0 divergent
+  tile/plain: 4225 compared, 0 divergent
+  tile/harbour: 4225 compared, 0 divergent
+  erosion/erosion: 3003 compared, 0 divergent
+  version: 1 compared, 0 divergent
 OK: zero divergent
-                                                          exit 0
 
 $ node parity.mjs native.txt --mutate seed
 provenance: the shipped .wasm matches its manifest and current source.
-CONTROL (--mutate seed): 53251 values compared through the shipped exports, 50778 divergent
-  elevation/plain:    10000 compared, 10000 divergent
-  structural/plain:   10000 compared,  9058 divergent
-  elevation/harbour:  10800 compared, 10800 divergent
+CONTROL (--mutate seed): 56254 values compared through the shipped exports, 53778 divergent
+  elevation/plain: 10000 compared, 10000 divergent
+  structural/plain: 10000 compared, 9058 divergent
+  elevation/harbour: 10800 compared, 10800 divergent
   structural/harbour: 10000 compared, 10000 divergent
-  bottom/plain:        2000 compared,  1489 divergent
-  bottom/harbour:      2000 compared,   982 divergent
-  tile/plain:           4225 compared,  4225 divergent
-  tile/harbour:         4225 compared,  4224 divergent
-  version:                 1 compared,     0 divergent
-  e.g. elevation plain 4050f64e53982ff4,c059b998e99bf26c res 406f400000000000:
-       native c064279493d609d0 wasm c0ac07bc33592429
+  bottom/plain: 2000 compared, 1489 divergent
+  bottom/harbour: 2000 compared, 982 divergent
+  tile/plain: 4225 compared, 4225 divergent
+  tile/harbour: 4225 compared, 4224 divergent
+  erosion/erosion: 3003 compared, 3000 divergent
+  version: 1 compared, 0 divergent
+  e.g. elevation plain ...: native ... wasm ...
 control OK: the harness can be made to fail
-                                                          exit 0
+
+$ node parity.mjs native.txt --mutate erosion-k
+provenance: the shipped .wasm matches its manifest and current source.
+CONTROL (--mutate erosion-k): 56254 values compared through the shipped exports, 216 divergent
+  elevation/plain: 10000 compared, 0 divergent
+  structural/plain: 10000 compared, 0 divergent
+  elevation/harbour: 10800 compared, 0 divergent
+  structural/harbour: 10000 compared, 0 divergent
+  bottom/plain: 2000 compared, 0 divergent
+  bottom/harbour: 2000 compared, 0 divergent
+  tile/plain: 4225 compared, 0 divergent
+  tile/harbour: 4225 compared, 0 divergent
+  erosion/erosion: 3003 compared, 216 divergent
+  version: 1 compared, 0 divergent
+  e.g. erosion height erosion[13]: native 407336eb79a24d0d wasm 407336eb79a24d0c
+control OK: the harness can be made to fail
 ```
 
+(All three exit 0 — the plain run because it is genuinely clean, both controls because a
+control that successfully fails the comparison is itself the passing outcome; see
+`parity.mjs`'s own exit-code table.)
+
 **The control matters more than the headline.** `--mutate seed` changes the world seed by
-one and nothing else; **50,778 of 53,251** values diverge, and **every sampled group moves
-except `version`**, which a seed cannot move. The residual agreements sit almost entirely
+one and nothing else; **53,778 of 56,254** values diverge, and **every sampled group moves
+except `version`**, which a seed cannot move — including, now, all 3,000 erosion heights
+(3,000 of the group's 3,003, not all 3,003: the run's own status/iterations/converged do not
+move under a seed change, only the heights do). The residual agreements sit almost entirely
 in `bottom`, whose 4,000 values are 1,000 discrete status codes and 3,000 fractions bounded
-into [0, 1] — 2,471 of the 2,473 agreements are there or in `structural/plain`. Not chased
-further: the control's job is to show that this harness can notice a wrong answer, and it
-does, in every group that carries a continuous height.
+into [0, 1]. Not chased further: the control's job is to show that this harness can notice a
+wrong answer, and it does, in every group that carries a continuous height.
+
+**`--mutate erosion-k` isolates arithmetic from iteration count.** Of the erosion group's
+3,003 values, exactly **216 of the 3,000 heights** diverge and the run's status, iteration
+count and converged flag do not — both sides still ran the same number of steps and reached
+the same (non-)convergence verdict, so the 216-height divergence is a real difference in the
+implicit update's output, not an artifact of one side stopping earlier or later than the
+other. This is a narrower, more targeted claim than the seed control's "everything moved":
+it shows the harness can catch a one-ULP change in one physical parameter of one export,
+without also being fooled by (or confused with) a difference in how many times the loop ran.
 
 The per-group tally exists so that a divergent count is never a single unexplained number.
 A run where only one group moved would be a finding, not a pass.
