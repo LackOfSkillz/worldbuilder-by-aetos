@@ -81,8 +81,8 @@ jobs:
   # other; that costs nothing, and the alternative is a sixth job that could drift out of step
   # with the suite it lives in.
   #
-  # Baselines: 432 passed / 0 failed / 5 ignored under no-default-features and default;
-  # 434/0/5 under python; 462/0/5 under wasm; 464/0/5 under python+wasm. These ARE asserted,
+  # Baselines: 439 passed / 0 failed / 5 ignored under no-default-features and default;
+  # 441/0/5 under python; 469/0/5 under wasm; 471/0/5 under python+wasm. These ARE asserted,
   # by a second step that
   # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
   # ran nothing gets called green. See the step's own comment.
@@ -106,28 +106,37 @@ jobs:
           # (434 and 464) for the pre-existing reason -- source_fingerprint() and
           # source_fingerprint_inputs() are PyO3 exports whose binding tests only compile
           # with that feature -- unchanged by this task.
-          # Re-derived on this host by `cargo test -p worldbuilder-engine <cfg> -- --list`,
-          # counting `: test$` lines and subtracting the 5 ignored: 437/437/439/467/469
-          # listed.
+          #
+          # 2026-09-05, slice 5a Task 3: 434/434/436/464/466 -> 439/439/441/469/471 when
+          # `erosion.rs` gained `erode_to_convergence`/`ErosionRun` and five new tests
+          # (determinism, threshold-monotonicity, converged-is-a-fixed-point, cap-reached-is-
+          # reported, no-NaN-or-infinity) -- see task-3-report.md. `expect_ignored` stays 5;
+          # this task added no `#[ignore]`d test (the multi-resolution sweep is
+          # `src/bin/erosion_convergence_sweep.rs`, a `[[bin]]` outside the test harness
+          # entirely, per the task-3 brief's "keep CI fast" instruction, so it contributes 0
+          # tests to every configuration's count here). Re-derived on this host by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines and
+          # subtracting the 5 ignored (from the same command with `--ignored` added):
+          # 439/439/441/469/471.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 434
+            expect: 439
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 434
+            expect: 439
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 436
+            expect: 441
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 464
+            expect: 469
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 466
+            expect: 471
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

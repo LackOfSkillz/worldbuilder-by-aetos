@@ -192,6 +192,29 @@ pub struct ErosionParams {
     /// a bare argument that a stored graph's header says nothing about. Named with its unit
     /// like its siblings, for the same reason they are.
     pub timestep_yr: f64,
+
+    /// The convergence criterion for [`erode_to_convergence`]'s loop, in metres: the
+    /// **maximum absolute per-node height change produced by one `erode_step` call**, over
+    /// every node in the graph. A run stops the moment this falls to or below the
+    /// threshold. Named for what it measures rather than "tolerance" -- a run that stops at
+    /// a different threshold ends at different heights, so this is exactly the kind of
+    /// value Task 1's `dt` review already flagged: a hidden input if it lived as a module
+    /// constant instead of a recorded field.
+    ///
+    /// A loose threshold makes "converges quickly" true by construction (see
+    /// `erode_to_convergence`'s doc and this module's convergence-sweep binary for the
+    /// measured consequence of tightening it), so choose it deliberately rather than by
+    /// habit.
+    pub max_height_change_per_step_m: f64,
+
+    /// The iteration cap for [`erode_to_convergence`]. A run that reaches this many steps
+    /// without satisfying `max_height_change_per_step_m` has **not converged** --
+    /// [`ErosionRun::NotConverged`] says so explicitly rather than returning a plain
+    /// `Vec<f64>` indistinguishable from a converged answer, which is this project's
+    /// signature defect (see the module doc). Two runs that differ only in this cap can
+    /// stop at different heights, so it is recorded here rather than passed as a loose loop
+    /// bound.
+    pub max_iterations: u32,
 }
 
 impl ErosionParams {
@@ -352,6 +375,103 @@ pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], par
     next
 }
 
+/// The outcome of [`erode_to_convergence`]. Deliberately **not** a bare `Vec<f64>`: this
+/// project has already shipped checks that counted zero work as success and fingerprints
+/// that could not notice a change (see the module doc and `erode_to_convergence`'s own
+/// doc), and a run that hit [`ErosionParams::max_iterations`] without converging returning
+/// something that *looks* like a converged answer would be exactly that defect again. A
+/// caller must match on this enum to get at the heights at all, so "did this converge" is
+/// not something a caller can forget to check.
+///
+/// Both variants carry the same two things -- `heights` (the state after the last step run,
+/// converged or not) and `iterations` (how many `erode_step` calls it took to get there) --
+/// because Task 6 records a measured iteration count, and if that count only existed for
+/// the success path a caller building that record for a non-converged run would have to
+/// re-derive it by some other route that could disagree with this one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ErosionRun {
+    /// The maximum per-node height change fell to or below
+    /// [`ErosionParams::max_height_change_per_step_m`] after this many `erode_step` calls.
+    Converged { heights: Vec<f64>, iterations: u32 },
+    /// [`ErosionParams::max_iterations`] steps ran and the change was still above
+    /// threshold on the last one. `heights` is the state after that last step -- **not** a
+    /// converged answer, and a caller that unwraps this variant's heights and uses them as
+    /// though it were is exactly the mistake this enum exists to make impossible to make
+    /// silently.
+    NotConverged { heights: Vec<f64>, iterations: u32 },
+}
+
+/// The maximum absolute per-node height change between two same-length height arrays --
+/// the exact quantity [`ErosionParams::max_height_change_per_step_m`] is a threshold on.
+/// Never `f64::max`/`.max()`: both are NaN-asymmetric (`plates.rs::margin_at` is the house
+/// precedent for avoiding them), so this folds with an explicit `if b > a` the way
+/// `plates.rs`'s own largest-single-step-change check does. `.abs()` is exempt from the
+/// no-std-math ban -- it is exact, not a transcendental.
+fn max_abs_height_change(before: &[f64], after: &[f64]) -> f64 {
+    debug_assert_eq!(before.len(), after.len(), "convergence check must compare same-length height arrays");
+    before
+        .iter()
+        .zip(after.iter())
+        .map(|(a, b)| (b - a).abs())
+        .fold(0.0f64, |largest, change| if change > largest { change } else { largest })
+}
+
+/// Iterate [`erode_step`] until the maximum per-node height change in one step falls to or
+/// below [`ErosionParams::max_height_change_per_step_m`], or until
+/// [`ErosionParams::max_iterations`] steps have run -- whichever comes first.
+///
+/// # What "converged" means, precisely
+///
+/// **What is measured:** the maximum absolute height change across every node in the graph
+/// produced by a single `erode_step` call, via [`max_abs_height_change`] -- not a mean, not
+/// a per-node threshold, not a relative change. One node still moving by more than the
+/// threshold means the run has not converged, even if every other node has stopped moving
+/// entirely.
+///
+/// **What happens at the cap:** [`ErosionRun::NotConverged`] is returned, carrying the
+/// state after the `max_iterations`th step and that same count -- not
+/// [`ErosionRun::Converged`], and not a bare `Vec<f64>` a caller could mistake for one. See
+/// the enum's own doc for why that distinction is a type, not a comment.
+///
+/// **Whether the count is part of the output:** yes, on both variants, as `iterations` --
+/// see [`ErosionRun`]'s doc for why both need it rather than only the success path.
+///
+/// # This calls `erode_step`; it does not re-implement its update
+///
+/// Every step in this loop is exactly one `erode_step` call over `distances_m` (computed
+/// once by the caller via [`receiver_distances_m`] and reused across every iteration, per
+/// the module doc's "Distances are computed once per step" section) -- there is no second
+/// copy of the implicit update here for the two logic paths to drift apart on.
+///
+/// # Iterations-to-convergence is measured, not assumed
+///
+/// §14.3 of the design doc claims 100-300 iterations on a 50 x 50 km planar domain with the
+/// paper's own uplift and erodibility, and separately claims that count does not depend on
+/// resolution -- the second half is why a planetary bake is thought feasible at all. This
+/// function makes that count observable (`iterations` on either variant of the result) so
+/// it can be measured on this implementation -- a sphere, uniform uplift, this crate's own
+/// `k`/`dt`/threshold -- rather than the paper's own numbers being reported as though they
+/// held here unmeasured. `src/bin/erosion_convergence_sweep.rs` is where that measurement
+/// actually happens, across several node counts, since a multi-resolution sweep is too slow
+/// to run on every push (see that binary's own doc for the resulting numbers and verdict).
+pub fn erode_to_convergence(
+    graph: &StreamGraph,
+    heights: &[f64],
+    distances_m: &[f64],
+    params: &ErosionParams,
+) -> ErosionRun {
+    let mut current = heights.to_vec();
+    for iteration in 1..=params.max_iterations {
+        let next = erode_step(graph, &current, distances_m, params);
+        let change = max_abs_height_change(&current, &next);
+        current = next;
+        if change <= params.max_height_change_per_step_m {
+            return ErosionRun::Converged { heights: current, iterations: iteration };
+        }
+    }
+    ErosionRun::NotConverged { heights: current, iterations: params.max_iterations }
+}
+
 /// The closed form itself, isolated from graph traversal so it can be tested against exact
 /// arithmetic identities directly (a real `StreamGraph` node can never have `area_m2 == 0`
 /// -- `drainage_area_m2` includes the node's own area, and `build` rejects non-positive
@@ -432,7 +552,7 @@ mod tests {
     }
 
     fn default_test_params() -> ErosionParams {
-        ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-6, timestep_yr: 1000.0 }
+        ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 }
     }
 
     // ---- the spec constants are pinned, not silently driftable ---------------------------
@@ -447,26 +567,39 @@ mod tests {
 
     #[test]
     fn erosion_params_is_copy_and_compares_by_value() {
-        let a = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0 };
+        let a = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
         let b = a; // Copy, not a move -- `a` must still be usable below.
         assert_eq!(a, b);
 
         let different =
-            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 3.0e-6, timestep_yr: 1000.0 };
+            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 3.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
         assert_ne!(a, different, "two runs differing only in erodibility must not compare equal");
 
         let different_dt =
-            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 2000.0 };
+            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 2000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
         assert_ne!(a, different_dt, "two runs differing only in timestep must not compare equal");
+
+        let different_threshold =
+            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.5, max_iterations: 1000 };
+        assert_ne!(
+            a, different_threshold,
+            "two runs differing only in the convergence threshold must not compare equal"
+        );
+
+        let different_cap =
+            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 2000 };
+        assert_ne!(a, different_cap, "two runs differing only in the iteration cap must not compare equal");
     }
 
     #[test]
     fn debug_output_shows_all_fields() {
-        let params = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0 };
+        let params = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
         let text = format!("{params:?}");
         assert!(text.contains("uplift_m_per_yr"));
         assert!(text.contains("erodibility_per_yr"));
         assert!(text.contains("timestep_yr"));
+        assert!(text.contains("max_height_change_per_step_m"));
+        assert!(text.contains("max_iterations"));
     }
 
     // ---- uniform now, and honestly so ------------------------------------------------------
@@ -474,7 +607,7 @@ mod tests {
     #[test]
     fn uplift_and_erodibility_are_uniform_across_every_node() {
         let params =
-            ErosionParams { uplift_m_per_yr: 5.0e-4, erodibility_per_yr: 7.0e-7, timestep_yr: 1000.0 };
+            ErosionParams { uplift_m_per_yr: 5.0e-4, erodibility_per_yr: 7.0e-7, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
         for node in [0u32, 1, 42, NODES - 1] {
             assert_eq!(params.uplift_at(node), params.uplift_m_per_yr);
             assert_eq!(params.erodibility_at(node), params.erodibility_per_yr);
@@ -714,7 +847,7 @@ mod tests {
         // Uplift is deliberately large and nonzero: if a future edit silently switched the
         // root branch to uplift-only, a zero uplift would let it pass unnoticed by
         // coincidence.
-        let params = ErosionParams { uplift_m_per_yr: 5.0e-2, erodibility_per_yr: 1.0e-6, timestep_yr: 1000.0 };
+        let params = ErosionParams { uplift_m_per_yr: 5.0e-2, erodibility_per_yr: 1.0e-6, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
 
         let next = erode_step(&graph, &heights, &distances, &params);
 
@@ -789,8 +922,8 @@ mod tests {
         let (graph, positions, heights) = small_graph_and_positions();
         let distances = receiver_distances_m(&graph, &positions);
 
-        let low_k = ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-8, timestep_yr: 1000.0 };
-        let high_k = ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-4, timestep_yr: 1000.0 };
+        let low_k = ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-8, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
+        let high_k = ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-4, timestep_yr: 1000.0, max_height_change_per_step_m: 0.05, max_iterations: 1000 };
 
         let with_low_k = erode_step(&graph, &heights, &distances, &low_k);
         let with_high_k = erode_step(&graph, &heights, &distances, &high_k);
@@ -821,5 +954,157 @@ mod tests {
         }
         assert!(violations.is_empty(), "higher erodibility raised a draining node: {violations:?}");
         assert!(a_real_decrease_happened, "fixture and k values must produce a measurable difference somewhere");
+    }
+
+    // ---- erode_to_convergence -------------------------------------------------------------
+    //
+    // Fixture: the same 300-node graph as the rest of this module (seed 20_260_904,
+    // `SamplingKind::Spiral`), `u = 1.0e-3 m/yr`, `k = 1.0e-6 /yr`, `dt = 1000 yr` -- the
+    // same as `default_test_params`, plus a convergence threshold/cap that these tests set
+    // per-property rather than inheriting a shared default, since the whole point of this
+    // section is what changing those two values does.
+
+    fn convergence_test_params(max_height_change_per_step_m: f64, max_iterations: u32) -> ErosionParams {
+        ErosionParams {
+            uplift_m_per_yr: 1.0e-3,
+            erodibility_per_yr: 1.0e-6,
+            timestep_yr: 1000.0,
+            max_height_change_per_step_m,
+            max_iterations,
+        }
+    }
+
+    #[test]
+    fn erode_to_convergence_is_bit_identical_and_same_iteration_count_across_two_runs() {
+        // Same property as erode_step's own determinism test, one level up: two
+        // independent graph builds, run to convergence, compared by bit pattern AND by
+        // iteration count -- a solver that converges deterministically but at a different
+        // step count on a repeat run is exactly as unreproducible as one with different
+        // final heights.
+        let (graph_a, positions_a, heights_a) = small_graph_and_positions();
+        let (graph_b, positions_b, heights_b) = small_graph_and_positions();
+        let distances_a = receiver_distances_m(&graph_a, &positions_a);
+        let distances_b = receiver_distances_m(&graph_b, &positions_b);
+        let params = convergence_test_params(1.0e-3, 20_000);
+
+        let first = erode_to_convergence(&graph_a, &heights_a, &distances_a, &params);
+        let second = erode_to_convergence(&graph_b, &heights_b, &distances_b, &params);
+
+        let (ErosionRun::Converged { heights: first_h, iterations: first_i }, ErosionRun::Converged { heights: second_h, iterations: second_i }) = (first, second) else {
+            panic!("this fixture and cap are expected to converge; a NotConverged result here means the cap needs raising, not that this test should tolerate it");
+        };
+        assert_eq!(first_i, second_i, "two independent builds converged in different iteration counts");
+        assert_eq!(first_h.len(), second_h.len());
+        for i in 0..first_h.len() {
+            assert_eq!(first_h[i].to_bits(), second_h[i].to_bits(), "node {i} disagreed bit-for-bit between two independent runs to convergence");
+        }
+    }
+
+    #[test]
+    fn convergence_is_monotone_in_the_threshold() {
+        // A tighter threshold must never converge in FEWER iterations than a looser one,
+        // on the same graph and the same everything else. Three thresholds spanning two
+        // orders of magnitude, not two, so a flat result across all three would be visible
+        // rather than hiding behind a single coincidental pair.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let cap = 20_000;
+
+        let loose = convergence_test_params(1.0, cap);
+        let medium = convergence_test_params(1.0e-2, cap);
+        let tight = convergence_test_params(1.0e-4, cap);
+
+        let run = |p: &ErosionParams| match erode_to_convergence(&graph, &heights, &distances, p) {
+            ErosionRun::Converged { iterations, .. } => iterations,
+            ErosionRun::NotConverged { .. } => {
+                panic!("threshold {} did not converge within the {cap}-iteration cap this test relies on", p.max_height_change_per_step_m)
+            }
+        };
+
+        let loose_iters = run(&loose);
+        let medium_iters = run(&medium);
+        let tight_iters = run(&tight);
+
+        assert!(
+            medium_iters >= loose_iters,
+            "a tighter threshold ({}) took fewer iterations ({medium_iters}) than a looser one ({}, {loose_iters})",
+            medium.max_height_change_per_step_m, loose.max_height_change_per_step_m
+        );
+        assert!(
+            tight_iters >= medium_iters,
+            "a tighter threshold ({}) took fewer iterations ({tight_iters}) than a looser one ({}, {medium_iters})",
+            tight.max_height_change_per_step_m, medium.max_height_change_per_step_m
+        );
+        // Not vacuous: at least one of the two gaps above must be a strict increase, or a
+        // threshold three orders of magnitude apart would have proven nothing about
+        // monotonicity, only that iteration counts are non-negative.
+        assert!(
+            tight_iters > loose_iters,
+            "loosest ({}) and tightest ({}) threshold converged in the same {loose_iters} iterations; \
+             this fixture does not distinguish them",
+            loose.max_height_change_per_step_m, tight.max_height_change_per_step_m
+        );
+    }
+
+    #[test]
+    fn a_converged_run_is_a_fixed_point() {
+        // The property that makes "converged" mean something: one more erode_step from a
+        // converged state must itself move no node by more than the threshold. This is
+        // cheap (one extra step) and it is the test that would catch a convergence check
+        // comparing the wrong two arrays (e.g. first-vs-last instead of consecutive steps).
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = convergence_test_params(1.0e-3, 20_000);
+
+        let ErosionRun::Converged { heights: converged, iterations } = erode_to_convergence(&graph, &heights, &distances, &params) else {
+            panic!("this fixture and cap are expected to converge");
+        };
+        assert!(iterations > 1, "a fixed point one step away from the START is not a meaningful test of the LOOP");
+
+        let one_more = erode_step(&graph, &converged, &distances, &params);
+        let change = max_abs_height_change(&converged, &one_more);
+        assert!(
+            change <= params.max_height_change_per_step_m,
+            "one more erode_step from a converged state moved a node by {change} m, above the {} m threshold",
+            params.max_height_change_per_step_m
+        );
+    }
+
+    #[test]
+    fn a_small_cap_reports_non_convergence_rather_than_success() {
+        // Construct a run that genuinely cannot converge within the cap: an impossibly
+        // tight threshold (below the smallest positive f64 height change this fixture
+        // could ever produce) paired with a cap of exactly 1 iteration. This is the
+        // property the module doc calls out as the failure mode most likely here --
+        // returning a bare `Vec<f64>` indistinguishable from a converged one -- asserted by
+        // constructing a run that cannot converge, not merely by inspecting that the call
+        // returned.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = convergence_test_params(0.0, 1);
+
+        let result = erode_to_convergence(&graph, &heights, &distances, &params);
+        match result {
+            ErosionRun::NotConverged { heights: after, iterations } => {
+                assert_eq!(iterations, 1, "the cap is 1 iteration; a NotConverged result must report exactly that many");
+                assert_eq!(after.len(), heights.len());
+            }
+            ErosionRun::Converged { .. } => {
+                panic!("a threshold of exactly 0.0 m converging is not credible for a real, non-flat height field")
+            }
+        }
+    }
+
+    #[test]
+    fn erode_to_convergence_output_is_finite_everywhere() {
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = convergence_test_params(1.0e-3, 20_000);
+
+        let (ErosionRun::Converged { heights: result, .. } | ErosionRun::NotConverged { heights: result, .. }) =
+            erode_to_convergence(&graph, &heights, &distances, &params);
+
+        let non_finite: Vec<usize> = result.iter().enumerate().filter(|(_, h)| !h.is_finite()).map(|(i, _)| i).collect();
+        assert!(non_finite.is_empty(), "non-finite output at node indices {non_finite:?}");
     }
 }
