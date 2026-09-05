@@ -46,3 +46,10 @@
                                                  CSP's proof of refusal
 -->
 <script type="module" src="/app/main.js"></script>
+
+<!--
+  The control panel. Every knob it exposes is one main.js already read from the query
+  string above; what is new is that a person can turn them without typing a URL.
+  Loaded after main.js so `window.viewer` and `window.__wbReady` exist.
+-->
+<script type="module" src="/app/controls.js"></script>
