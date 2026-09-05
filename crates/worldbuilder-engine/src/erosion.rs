@@ -205,6 +205,13 @@ pub struct ErosionParams {
     /// `erode_to_convergence`'s doc and this module's convergence-sweep binary for the
     /// measured consequence of tightening it), so choose it deliberately rather than by
     /// habit.
+    ///
+    /// **This is a bound on the rate of change, not on the distance from steady state.**
+    /// With `c` the dimensionless number `erode_step`'s doc names, this threshold and the
+    /// actual remaining residual differ by roughly a factor of `1/c` -- see
+    /// `erode_to_convergence`'s "`threshold` is a per-step bound, not a distance from the
+    /// fixed point" section for the derivation and a worked example at this crate's own
+    /// test constants.
     pub max_height_change_per_step_m: f64,
 
     /// The iteration cap for [`erode_to_convergence`]. A run that reaches this many steps
@@ -307,6 +314,22 @@ pub fn receiver_distances_m(graph: &StreamGraph, positions: &[SpherePoint]) -> V
 /// `h_r'` is the receiver's already-updated height, which only exists at this point in the
 /// walk because the walk is root-to-leaves.
 ///
+/// # `c` is the dimensionless number this whole method actually responds to
+///
+/// `c = k * dt * sqrt(A_i) / d` above is not an intermediate convenience -- it is the single
+/// dimensionless group that governs everything about how one step (and therefore a whole
+/// [`erode_to_convergence`] run) behaves. The closed form says a node moves a fraction
+/// `c / (1 + c)` of the way from its old height toward `(h_i + u*dt + c*h_r') / c` each step
+/// -- so `c` alone sets the per-step relaxation rate, and the number of steps needed to reach
+/// a given per-step-change threshold scales as `ln(1/threshold) / c` (see
+/// [`erode_to_convergence`]'s doc). `u`, `k`, `d`, and `A` each varying independently would
+/// suggest four separate knobs; naming `c` says there is really only one that the *count*
+/// depends on, and the other three enter only through this ratio. **A comparison against a
+/// different `k`/`dt`, a different mesh spacing, or a different published result is not
+/// like-for-like unless `c` is comparable too** -- see `erode_to_convergence`'s doc and
+/// `src/bin/erosion_convergence_sweep.rs`'s corrected verdict for what happens when that
+/// comparison is made without checking `c` first.
+///
 /// A root has no `r`, `s`, or `d` at all -- see the module doc for why this function holds
 /// a root's height fixed rather than applying `u * dt` to it.
 ///
@@ -407,13 +430,25 @@ pub enum ErosionRun {
 /// precedent for avoiding them), so this folds with an explicit `if b > a` the way
 /// `plates.rs`'s own largest-single-step-change check does. `.abs()` is exempt from the
 /// no-std-math ban -- it is exact, not a transcendental.
+///
+/// **NaN-poisoning, deliberately in the OPPOSITE direction from `plates.rs`'s own fold.**
+/// `plates.rs::margin_at`'s max exists to find the largest of values that are never expected
+/// to be NaN, so `NaN > largest` silently losing to a finite `largest` is harmless there. Here
+/// a NaN height change is not noise to discard -- one NaN node poisoning the whole max down to
+/// `0.0` is exactly how a broken run would get reported as [`ErosionRun::Converged`], which is
+/// this project's signature defect arriving through this fold instead of through the cap. So
+/// this fold treats `change.is_nan()` as an explicit win over `largest`: one NaN anywhere in
+/// the comparison makes the whole result `NaN`, which [`erode_to_convergence`] then asserts
+/// against rather than silently comparing `NaN <= threshold` (always `false`, which would have
+/// looked like ordinary non-convergence -- itself still not the loud failure a poisoned run
+/// deserves).
 fn max_abs_height_change(before: &[f64], after: &[f64]) -> f64 {
     debug_assert_eq!(before.len(), after.len(), "convergence check must compare same-length height arrays");
     before
         .iter()
         .zip(after.iter())
         .map(|(a, b)| (b - a).abs())
-        .fold(0.0f64, |largest, change| if change > largest { change } else { largest })
+        .fold(0.0f64, |largest, change| if change > largest || change.is_nan() { change } else { largest })
 }
 
 /// Iterate [`erode_step`] until the maximum per-node height change in one step falls to or
@@ -433,8 +468,32 @@ fn max_abs_height_change(before: &[f64], after: &[f64]) -> f64 {
 /// [`ErosionRun::Converged`], and not a bare `Vec<f64>` a caller could mistake for one. See
 /// the enum's own doc for why that distinction is a type, not a comment.
 ///
+/// **What happens on a NaN.** A NaN per-node change is asserted against, loudly, rather than
+/// silently reported as either variant -- see [`max_abs_height_change`]'s doc for why a plain
+/// `NaN <= threshold` (always `false`) would still have been too quiet. Not reachable today
+/// (`erode_step`'s own inputs are checked upstream), but a later arithmetic path into this
+/// loop (a thermal correction, say) could reach it, and this loop should not have to be
+/// re-audited to notice when one does.
+///
 /// **Whether the count is part of the output:** yes, on both variants, as `iterations` --
 /// see [`ErosionRun`]'s doc for why both need it rather than only the success path.
+///
+/// # `threshold` is a per-step bound, not a distance from the fixed point
+///
+/// The map this loop iterates is a contraction with ratio `1 / (1 + c)` (`c` per
+/// [`erode_step`]'s "dimensionless number this whole method actually responds to" section),
+/// so a per-step change of `eps` corresponds to a REMAINING distance from the true fixed
+/// point of roughly `eps / c` -- not `eps`. At this crate's own test constants (`c` on the
+/// order of `1.0e-3`), a `max_height_change_per_step_m` of `1.0e-4` still leaves the field
+/// roughly `0.1` m from steady state, and a threshold of `1.0` m leaves it roughly a
+/// kilometre away, moving slowly rather than sitting still. **"Converged" here means
+/// "moving slower than `threshold` per step", not "within `threshold` of steady state"** --
+/// a caller that wants the latter must either tighten `threshold` by roughly `1/c`, or accept
+/// that this criterion is a rate bound. `a_converged_run_is_a_fixed_point` below tests the
+/// weaker, still-real claim (one more step does not exceed the threshold either) -- with `c`
+/// this small that claim is close to automatic, since the map having already taken one step
+/// under the threshold barely changes on the next; it is a real regression guard against the
+/// loop comparing the wrong two arrays, not evidence of proximity to the true fixed point.
 ///
 /// # This calls `erode_step`; it does not re-implement its update
 ///
@@ -443,17 +502,25 @@ fn max_abs_height_change(before: &[f64], after: &[f64]) -> f64 {
 /// the module doc's "Distances are computed once per step" section) -- there is no second
 /// copy of the implicit update here for the two logic paths to drift apart on.
 ///
-/// # Iterations-to-convergence is measured, not assumed
+/// # Iterations-to-convergence is measured, not assumed -- and it is a function of `c`, not of "this implementation"
 ///
 /// §14.3 of the design doc claims 100-300 iterations on a 50 x 50 km planar domain with the
 /// paper's own uplift and erodibility, and separately claims that count does not depend on
 /// resolution -- the second half is why a planetary bake is thought feasible at all. This
-/// function makes that count observable (`iterations` on either variant of the result) so
-/// it can be measured on this implementation -- a sphere, uniform uplift, this crate's own
-/// `k`/`dt`/threshold -- rather than the paper's own numbers being reported as though they
-/// held here unmeasured. `src/bin/erosion_convergence_sweep.rs` is where that measurement
-/// actually happens, across several node counts, since a multi-resolution sweep is too slow
-/// to run on every push (see that binary's own doc for the resulting numbers and verdict).
+/// function makes that count observable (`iterations` on either variant of the result) so it
+/// can be measured here rather than the paper's own numbers being reported as though they
+/// held unmeasured. `src/bin/erosion_convergence_sweep.rs` is where that measurement actually
+/// happens, since a multi-resolution sweep is too slow to run on every push.
+///
+/// **The count this loop takes is governed by `c` (see [`erode_step`]'s doc), not by
+/// resolution and not by "this implementation" as a monolith.** `N ≈ ln(1/threshold) / c`
+/// (up to the constant residual/root terms the sweep's own doc discusses), so two runs with
+/// the same `c` converge in comparable counts regardless of node count, and two runs at
+/// different `c` are not a like-for-like test of anything resolution-related even if
+/// everything else about them matches. At this crate's default test constants
+/// (`k = 1.0e-6 /yr`, `dt = 1000 yr`), `c` on a sphere sampled at planetary densities lands
+/// around `1.0e-3`; the sweep binary's doc records what happens to the count when `c` is
+/// instead pushed toward the paper's implied regime.
 pub fn erode_to_convergence(
     graph: &StreamGraph,
     heights: &[f64],
@@ -464,6 +531,24 @@ pub fn erode_to_convergence(
     for iteration in 1..=params.max_iterations {
         let next = erode_step(graph, &current, distances_m, params);
         let change = max_abs_height_change(&current, &next);
+        // `assert!`, not `debug_assert!`: this loop runs in release, same reasoning as
+        // `erode_step`'s own slice-length checks. `change.is_nan()` here means SOME node's
+        // height went non-finite -- `max_abs_height_change`'s fold is deliberately
+        // NaN-poisoning so this can catch it -- and a plain `NaN <= threshold` comparison
+        // is always `false`, which would have silently fallen through to "keep iterating"
+        // and eventually reported ErosionRun::NotConverged for a run that was not merely
+        // slow, it was broken. Not reachable today (erode_step's own inputs are checked
+        // upstream of this loop), but a later arithmetic path into this loop should not have
+        // to be re-audited for this failure mode to be caught; the loop itself catches it.
+        assert!(
+            !change.is_nan(),
+            "erode_to_convergence: a NaN height change appeared at iteration {iteration} \
+             (graph has {} nodes) -- some node's height went non-finite. This is a defect in \
+             whatever produced this step's heights, not ordinary non-convergence, and \
+             continuing would silently poison every later step and could report \
+             ErosionRun::NotConverged as though this were merely slow.",
+            graph.node_count(),
+        );
         current = next;
         if change <= params.max_height_change_per_step_m {
             return ErosionRun::Converged { heights: current, iterations: iteration };
@@ -477,7 +562,10 @@ pub fn erode_to_convergence(
 /// -- `drainage_area_m2` includes the node's own area, and `build` rejects non-positive
 /// area -- so the zero-area case is only reachable by calling this function directly).
 ///
-/// See [`erode_step`]'s doc for the derivation this implements.
+/// See [`erode_step`]'s doc for the derivation this implements, and its "`c` is the
+/// dimensionless number this whole method actually responds to" section for what the local
+/// `c` computed below actually governs -- it is not a scratch intermediate, it is the
+/// method's one real parameter.
 fn implicit_receiver_update(
     h_i: f64,
     receiver_h_new: f64,
@@ -487,6 +575,9 @@ fn implicit_receiver_update(
     erodibility: f64,
     dt: f64,
 ) -> f64 {
+    // `c`, per erode_step's doc: the dimensionless relaxation number `k * dt * sqrt(A) / d`.
+    // Every iteration's step size, and therefore erode_to_convergence's whole iteration
+    // count, is a function of this number and nothing else that isn't folded into it.
     let c = erodibility * dt * detmath::sqrt(area_m2) / distance_m;
     (h_i + uplift * dt + c * receiver_h_new) / (1.0 + c)
 }
@@ -1106,5 +1197,34 @@ mod tests {
 
         let non_finite: Vec<usize> = result.iter().enumerate().filter(|(_, h)| !h.is_finite()).map(|(i, _)| i).collect();
         assert!(non_finite.is_empty(), "non-finite output at node indices {non_finite:?}");
+    }
+
+    // ---- erode_to_convergence: a NaN height change is a loud panic, not a quiet result ----
+
+    #[test]
+    #[should_panic(expected = "a NaN height change appeared at iteration")]
+    fn erode_to_convergence_panics_loudly_on_a_nan_poisoned_height_change() {
+        // Review finding 4: `max_abs_height_change`'s old fold silently discarded a NaN
+        // (`NaN > largest` is false), so a NaN-poisoned run reported `Converged` on its very
+        // first step -- the exact "non-convergence mistaken for success" shape the brief
+        // spent a whole section on, arriving through a different door. Not reachable via a
+        // real StreamGraph today (`build` rejects non-positive area and coincident nodes,
+        // which are the only routes to a zero denominator), so this test reaches it the
+        // only way currently possible: a raw `heights` slice handed to this function
+        // directly, exactly as a caller could construct even though `StreamGraph::build`
+        // itself would refuse to.
+        let (graph, positions, mut heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        // Poisoning a NON-root node: a root is held fixed (module doc's "held fixed" policy),
+        // so `next[root] = heights[root]` would carry the same NaN through unchanged and
+        // `(NaN - NaN).abs()` is still NaN -- either choice works, but a draining node
+        // exercises the arithmetic path (implicit_receiver_update), not just a copy.
+        let draining_node = (0..graph.node_count())
+            .find(|&n| graph.downhill_of(n).is_some())
+            .expect("fixture must contain at least one draining node");
+        heights[draining_node as usize] = f64::NAN; // cast-ok: a node index into usize
+        let params = convergence_test_params(1.0e-3, 20_000);
+
+        let _ = erode_to_convergence(&graph, &heights, &distances, &params);
     }
 }
