@@ -338,3 +338,54 @@ architectural constraint is identified (§3.4). Nothing is approved for implemen
 
 Resume with: propose the design in sections, get approval per section, then write the spec
 amendment to `docs/superpowers/specs/`, then `writing-plans`.
+
+---
+
+## 8. Owner decisions, 2026-09-05
+
+Four questions from §6 answered, and one operational decision taken.
+
+### 8.1 Slice 2a's fixture: dragonsire, copied, never the original
+
+A copy of a dragonsire backup now sits at `fixtures/dragonsire/dragonsire.db3`. **The original is never
+opened.** The source was a backup rather than the live database, so nothing in the running game is touched
+even by a read.
+
+`fixtures/dragonsire/` is **gitignored, anchored, and ignored as a whole directory** rather than by
+extension, so a journal, a WAL file or an extracted table is covered too. This repository's commits feed a
+public channel; an accidental `git add -A` would publish somebody's game.
+
+**It is the fixture 2a needed and the testbed could never be.** Read-only inspection: 6,803 objects, of
+which 1,616 `Room` and 567 `ExtendedDireRoom`, and 2,619 `Exit`. A `region` attribute on **1,686 objects in
+production use**, alongside `zone`, `zone_id`, `area`, `area_id`, `canonical_area`, `canonical_area_name`.
+
+So **both adapter paths are exercisable for the first time**: `explicit_adapter` against real zone
+attributes, and `graph_inference` against a real exit graph. `maritime_testbed` has no zone attribute of any
+spelling and could only ever have tested one of them.
+
+It also carries `terrain_type` on 1,682 objects and `map_x` / `map_y` / `map_layer` / `coordinates` — **a
+coordinatisation scheme that is not Worldbuilder's**, which is exactly the messy prior state §2 promises to
+accommodate rather than require the absence of.
+
+### 8.2 The stack lands bottom-up, one PR at a time
+
+Beginning now, from #1 into `master`. Each merge auto-retargets the next. Preserves every slice's commits
+and review record, and any single merge can be stopped.
+
+### 8.3 Climate lands after 5b, before the studio
+
+Water exists first, so rainfall has somewhere to go, and areas placed in the studio inherit real climate
+metadata from the day placement exists. This settles §6 question 1 — which slice 5a had already partly
+overtaken by shipping with uniform uplift and no rainfall input.
+
+### 8.4 Cartography is its own slice, after the studio, at full scope
+
+Planet, region and town, artistic styling, image export. It needs placed areas to be worth drawing, which
+puts it after the studio rather than before. Settles §6 question 5.
+
+### Still open from §6
+
+Questions 2 (zoom depth and frame budget), 3 (the moisture march's sample budget, measured in Rust and WASM
+rather than through FFI) and 6 (whether `bathymetry` is renamed or wrapped) remain unanswered. Question 4
+(Cesium versus Rust-native) has been **answered by events**: slice 2b vendored Cesium 1.145.0 and the viewer
+ships on it.
