@@ -40,6 +40,60 @@ pub const CONTINENT_COLLISION_WIDTH_M: f64 = 400_000.0;
 Alps about 4,000 m over 50 km (~8%). **Height alone is not a mountain -- height over a short distance is** --
 so this slice moves amplitude and width together, and width is the one nobody has touched.
 
+## REVISED BY RESEARCH, 2026-09-05: AMPLITUDE AND WIDTH ARE NOT THE KNOBS
+
+Two shipped procedural planet generators were read at source level, and both do the same thing this plan
+does not:
+
+**They keep a broad smooth envelope that says WHERE mountains are, and MULTIPLY it by a high-frequency
+structure field that supplies the local grade.**
+
+We have the envelope. We have no structure field. **We have been tuning the envelope.**
+
+That reframes this slice's own measurement. 1,500 m over 400 km and 6,000 m over 100 km are **the same
+landform rescaled** -- the second is steeper and taller and it is still one smooth swell, not a range. The
+probe's 7.03% grade is real and it is a grade *of the envelope*. It does not become ridge-and-valley
+structure by being steeper, which is exactly what "smooth ridge rather than a RANGE" was pointing at.
+
+**The sliders are not wasted.** Height and width are the right controls for the envelope, they are measured,
+and the owner asked for them. They are necessary and they are not sufficient.
+
+### The four techniques worth adopting, in the order they buy structure
+
+1. **Multiply the envelope by a ridged multifractal times a low-frequency segmentation field.** The
+   segmentation is what breaks a continuous welt into separate massifs. **Cost: `noise.rs` has no ridged
+   variant**, so this needs a new primitive in BOTH the Rust and the Python oracle, under the conformance
+   harness. That is the expensive one of the four; the other three need no new primitive.
+2. **Warp the SIGNED across-margin distance before taking its absolute value.** Bends the crest line off the
+   plate boundary rather than displacing the whole range. Essentially free, and it fixes the tell-tale that
+   a range follows a Voronoi edge.
+3. **Stack two to four sutures instead of one crest**, at hashed inboard offsets. **This is the sleeper.**
+   Pure arithmetic, no new primitive, and it supplies structure ACROSS the range at 50-200 km -- the axis
+   the noise techniques do not reach and the one a real mountain range has. Not taken from either project;
+   implied by terrane accretion.
+4. **Domain-warp the query point.** Cheaper for us than for the projects we read it in, because they walk a
+   graph and we evaluate a function. **Honest cost: it doubles every elevation query and it does NOT conserve
+   land fraction.** Neither reference project solves that; it stays our problem.
+
+### A second finding, possibly as large as the first
+
+`MAX_TECTONIC_RANGE_M = 420_000` against a 400 km collision bump means **the collision profile is
+essentially always-on wherever a margin is in range.** One reference project's equivalent cutoff is its
+chain width times six, with chain width clamped to **4-18 km** -- two orders of magnitude tighter.
+**Localisation may matter as much as grade**, and nothing in this slice has looked at it.
+
+### LICENCES BIND HOW WE USE THIS
+
+**World Orogen is GPL-3.0.** It was read for technique, which is fine and is what the study did. **No code,
+shader source, or curated parameter bundle may be copied from it into this repository** -- an excerpt would
+place copyleft obligations on this entire codebase.
+
+**So do not transcribe its constants.** Ridged multifractal and domain warping are long-published techniques
+(Musgrave and others) and reimplementing them is unencumbered. But the specific tuned values -- warp
+frequencies, blend weights, octave gains -- are that project's curation. **Sweep for our own on our own
+worlds**, which is better practice regardless: our planet is 4,500 km, theirs is not, and this project has a
+survey-binary pattern for exactly this.
+
 ## Global Constraints
 
 Every task's requirements implicitly include this section.
