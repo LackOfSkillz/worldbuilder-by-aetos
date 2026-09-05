@@ -72,14 +72,33 @@ function elevationRamp() {
   // The stops are placed against a -9000..+6000 m ramp, so 0 m -- sea level, the datum --
   // sits at 0.6 and the colour changes hard across it. A soft transition there would hide
   // exactly the thing being checked.
-  gradient.addColorStop(0.0, "#031b33");
-  gradient.addColorStop(0.45, "#0b3c66");
-  gradient.addColorStop(0.598, "#2f7fb8");
-  gradient.addColorStop(0.6, "#d9c9a3");
-  gradient.addColorStop(0.63, "#3f7a3a");
-  gradient.addColorStop(0.75, "#8a7b4a");
-  gradient.addColorStop(0.9, "#7a6a5a");
-  gradient.addColorStop(1.0, "#ffffff");
+  //
+  // Below sea level the ramp now carries depth rather than one flat blue: an abyssal
+  // near-black, a basin blue, and a bright shelf immediately under the coast. The shelf
+  // stop is what draws the pale rim around every landmass, and it is the engine's
+  // bathymetry doing it, not a halo effect.
+  //
+  // Above it the land is banded by height the way a physical atlas is -- lowland green,
+  // upland ochre, bare rock, then snow -- with the snow band deliberately narrow so it
+  // reads as caps and ridges rather than a white hemisphere. This is still colour-by-height
+  // only: it cannot put rock on a steep face at low altitude, because a ramp gets height
+  // and nothing else. Slope needs a per-fragment normal, which needs the relief-imagery
+  // work that is a slice of its own.
+  gradient.addColorStop(0.00, "#020a14");   // abyssal plain
+  gradient.addColorStop(0.28, "#04182e");
+  gradient.addColorStop(0.47, "#0a3358");   // basin
+  gradient.addColorStop(0.565, "#14548c");
+  gradient.addColorStop(0.592, "#2f86bd");  // shelf, just under the coast
+  gradient.addColorStop(0.5985, "#7ec5df");
+  gradient.addColorStop(0.6, "#ddcfa8");    // the datum: strand
+  gradient.addColorStop(0.615, "#8f9a5e");
+  gradient.addColorStop(0.66, "#4a7a3c");   // lowland
+  gradient.addColorStop(0.74, "#5d7440");
+  gradient.addColorStop(0.82, "#7d7150");   // upland
+  gradient.addColorStop(0.89, "#8e8272");
+  gradient.addColorStop(0.945, "#b9b2a8");  // bare rock
+  gradient.addColorStop(0.975, "#e8e6e2");
+  gradient.addColorStop(1.0, "#ffffff");    // snow
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 256, 1);
   return canvas;
@@ -149,21 +168,40 @@ async function boot() {
   viewer.scene.globe.depthTestAgainstTerrain = true;
   viewer.scene.verticalExaggeration = number("exaggeration", 1);
 
-  // Atmosphere off by default. With no imagery layer the hypsometric ramp *is* the
-  // picture, and the ground atmosphere washes it to a uniform pale green from orbit --
-  // measured: a deep-ocean point at 15,000 km read (122,172,137), the same colour as land
-  // 500 m up. `?atmosphere=1` puts it back.
+  // Sun shading, on by default. Without it the globe is coloured purely by height and every
+  // slope reads flat -- a heightfield rendered as a paint-by-numbers map rather than a
+  // surface. It is the single largest visual difference available for one line, and it
+  // costs nothing: the terrain normals already exist, they were simply unlit.
+  //
+  // `?flat=1` restores the unlit look, which is what every screenshot before this change
+  // shows and the only way to compare like with like.
+  viewer.scene.globe.enableLighting = params.get("flat") !== "1";
+
+  // GROUND atmosphere and SKY atmosphere are different effects and only one of them was
+  // ever the problem. The measured objection stands and is preserved: ground atmosphere
+  // washes the ramp to a uniform pale green from orbit -- a deep-ocean point at 15,000 km
+  // read (122,172,137), the same colour as land 500 m up -- so it stays off unless
+  // `?atmosphere=1` asks for it.
+  //
+  // The sky atmosphere is the blue limb outside the silhouette. It touches no ground
+  // fragment, so it cannot wash anything, and it is most of what makes a render read as a
+  // planet rather than a textured ball. On by default; `?flat=1` turns it off with the rest.
+  viewer.scene.skyAtmosphere.show = params.get("flat") !== "1";
+  viewer.scene.fog.enabled = false;
   if (params.get("atmosphere") !== "1") {
     viewer.scene.globe.showGroundAtmosphere = false;
-    viewer.scene.skyAtmosphere.show = false;
-    viewer.scene.fog.enabled = false;
   }
 
   if (params.get("paint") !== "0") {
     const material = Cesium.Material.fromType("ElevationRamp");
     material.uniforms.image = elevationRamp();
-    material.uniforms.minimumHeight = number("rampMin", -9000);
-    material.uniforms.maximumHeight = number("rampMax", 6000);
+    // -9000..+6000 spans every height the engine can produce, but this generator's land
+    // tops out far below +6000, so the upper third of the ramp -- rock and snow -- never
+    // got used and every continent rendered in two greens. Narrowing the window to the
+    // range the terrain actually occupies is what puts the bands back on the mountains.
+    // Both ends stay overridable, and `?rampMax=6000` restores the old framing exactly.
+    material.uniforms.minimumHeight = number("rampMin", -7000);
+    material.uniforms.maximumHeight = number("rampMax", 2400);
     viewer.scene.globe.material = material;
   }
 
