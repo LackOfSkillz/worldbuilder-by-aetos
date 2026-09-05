@@ -186,25 +186,39 @@ jobs:
           # 36 is what the wasm rows actually run, independent of this task. Re-derived by
           # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
           # configuration, through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, slice 5b Task 1 review fix round: 465/465/467/501/503 ->
+          # 469/469/471/505/507. Two tests added to `stream.rs`
+          # (`set_lake_level_m_moves_only_the_named_lakes_level`,
+          # `set_lake_level_m_reports_false_for_a_node_with_no_lake`, pinning the new
+          # `StreamGraph::set_lake_level_m` the review's MEDIUM finding asked for -- the
+          # computed levels reaching `Lake::level_m` itself, not just a parallel `WaterFill`)
+          # and two to `water.rs` (`apply_levels_writes_the_filled_value_onto_the_graphs_own_
+          # lake_table`, `fill_basins_and_apply_moves_the_graphs_own_lake_levels`, exercising
+          # the new `apply_levels`/`fill_basins_and_apply`). Both files compile
+          # unconditionally, so all five rows move by +4 uniformly. `expect_ignored` stays 5;
+          # no `#[ignore]`d test was added. Re-derived by `cargo test -p worldbuilder-engine
+          # <cfg> -- --list` (and `--ignored`) per configuration, cross-checked through
+          # `assert_counts.py cargo-list` itself, which reported `count OK` at all five.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 465
+            expect: 469
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 465
+            expect: 469
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 467
+            expect: 471
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 501
+            expect: 505
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 503
+            expect: 507
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

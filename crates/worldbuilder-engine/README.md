@@ -2956,11 +2956,11 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 451 | 4 | 9 | 6 | -- | 470 | 5 | **465** |
-| default (the same set -- the crate declares no default features) | 451 | 4 | 9 | 6 | -- | 470 | 5 | **465** |
-| `--features python` | 453 | 4 | 9 | 6 | -- | 472 | 5 | **467** |
-| `--features wasm` | 451 | 4 | 9 | 6 | 36 | 506 | 5 | **501** |
-| `--features python,wasm` | 453 | 4 | 9 | 6 | 36 | 508 | 5 | **503** |
+| `--no-default-features` | 455 | 4 | 9 | 6 | -- | 474 | 5 | **469** |
+| default (the same set -- the crate declares no default features) | 455 | 4 | 9 | 6 | -- | 474 | 5 | **469** |
+| `--features python` | 457 | 4 | 9 | 6 | -- | 476 | 5 | **471** |
+| `--features wasm` | 455 | 4 | 9 | 6 | 36 | 510 | 5 | **505** |
+| `--features python,wasm` | 457 | 4 | 9 | 6 | 36 | 512 | 5 | **507** |
 
 0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
 and 0 doc-tests in every configuration.
@@ -2981,8 +2981,11 @@ version of the fix round's own erosion-side test was itself superseded once
 is the one test that survived (`gates.yml`'s own inline commentary tells that story in
 full, including the miscount an early draft of it made by arithmetic instead of by running
 `--list`). Both deltas match `.github/workflows/gates.yml`'s own inline commentary
-for the engine job matrix, which is pinned to the same run figures (454/454/456/490/492)
-and was independently re-run for this record rather than trusted because it agreed.
+for the engine job matrix, which **was, at that point in the branch's history,** pinned to
+the same run figures (454/454/456/490/492) and was independently re-run for this record
+rather than trusted because it agreed. **That pin has since moved again** -- see the next
+correction below and slice 5b Task 1's entry further down this section for the current
+figures.
 
 **The `wasm_exports.rs` column above read 35 in the row this table has carried since the
 review fix round, and that was already stale then: the fix round's own prose two paragraphs
@@ -2999,6 +3002,19 @@ Combined with the `wasm_exports.rs` correction above, the table's run figures mo
 454/454/456/490/492 -> 465/465/467/501/503. Re-derived the same way as every prior entry in
 this section: `cargo test -p worldbuilder-engine <cfg> -- --list` and the same with
 `--ignored`, per configuration, counted rather than assumed.
+
+**Task 1's review fix round adds four more tests, uniformly again**: two in `stream.rs`
+(`set_lake_level_m_moves_only_the_named_lakes_level`,
+`set_lake_level_m_reports_false_for_a_node_with_no_lake`, pinning the new
+`StreamGraph::set_lake_level_m` write-back the review's MEDIUM finding asked for) and two in
+`water.rs` (`apply_levels_writes_the_filled_value_onto_the_graphs_own_lake_table`,
+`fill_basins_and_apply_moves_the_graphs_own_lake_levels`, exercising the new `apply_levels`/
+`fill_basins_and_apply` entry points). Both files compile unconditionally, so `lib` moves
+451/451/453/451/453 -> 455/455/457/455/457 and every row's `listed`/`run` by +4 again:
+465/465/467/501/503 -> **469/469/471/505/507**. `expect_ignored` stays 5. Re-derived the same
+way as every entry above, and cross-checked through `.github/scripts/assert_counts.py
+cargo-list` itself (the same script `gates.yml` runs), which reported `count OK` at all five
+configurations against these figures.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read

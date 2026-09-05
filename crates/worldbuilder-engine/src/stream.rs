@@ -731,6 +731,26 @@ impl StreamGraph {
         self.lakes.iter().find(|lake| lake.root_node == node)
     }
 
+    /// Write `level_m` onto the lake recorded at `root_node`. Returns whether one was found
+    /// there.
+    ///
+    /// A small, deliberate hole in "fields are private, `build` is the only constructor"
+    /// (this type's own doc comment): slice 5's basin-filling pass (`water::apply_levels`)
+    /// needs to write back the one field it computes, and this is scoped to exactly that --
+    /// it can only move `level_m` on an existing lake record, never add a lake, move a root,
+    /// or touch `outflow_lake`/`kind`, which stay later slice-5 tasks' business. A general
+    /// `lakes_mut() -> &mut [Lake]` would let a caller do all of those by accident; this
+    /// does not.
+    pub fn set_lake_level_m(&mut self, root_node: u32, level_m: f64) -> bool {
+        for lake in &mut self.lakes {
+            if lake.root_node == root_node {
+                lake.level_m = level_m;
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn reaches(&self) -> &[Reach] {
         &self.reaches
     }
@@ -1438,6 +1458,43 @@ mod tests {
         graph.flags[victim as usize] |= flag::MOUTH; // cast-ok: a node index into usize
         let defects = graph.validate().expect_err("a double-classed root must not validate");
         assert!(defects.contains(&GraphDefect::RootIsBothMouthAndLake { node: victim }));
+    }
+
+    #[test]
+    fn set_lake_level_m_moves_only_the_named_lakes_level() {
+        let mut graph = built(20_260_904, 0.0);
+        let victim = *graph
+            .roots()
+            .iter()
+            .find(|&&r| graph.lake_at(r).is_some())
+            .expect("a lake root");
+        let before = graph.lakes().to_vec();
+        let new_level = graph.lake_at(victim).expect("still there").level_m + 5.0;
+
+        assert!(graph.set_lake_level_m(victim, new_level));
+
+        for lake in graph.lakes() {
+            if lake.root_node == victim {
+                assert_eq!(lake.level_m, new_level);
+            } else {
+                let original = before.iter().find(|l| l.root_node == lake.root_node).expect("unchanged lake still present");
+                assert_eq!(lake.level_m.to_bits(), original.level_m.to_bits(), "an unrelated lake's level moved");
+                assert_eq!(lake.kind, original.kind);
+                assert_eq!(lake.outflow_lake, original.outflow_lake);
+            }
+        }
+    }
+
+    #[test]
+    fn set_lake_level_m_reports_false_for_a_node_with_no_lake() {
+        let mut graph = built(20_260_904, 0.0);
+        let non_lake_root = *graph
+            .roots()
+            .iter()
+            .find(|&&r| graph.lake_at(r).is_none())
+            .expect("at least one mouth root");
+        assert!(!graph.set_lake_level_m(non_lake_root, 123.0));
+        assert!(!graph.set_lake_level_m(NO_LAKE, 123.0), "the sentinel index names no lake either");
     }
 
     #[test]

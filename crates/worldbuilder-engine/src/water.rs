@@ -27,6 +27,18 @@
 //! hand-authored fixture can exercise the spill formula exactly without also having to agree
 //! with the spiral sampler about where thousands of nodes sit. `fill_basins` is the only
 //! caller that pays to regenerate one for real.
+//!
+//! # Computing a level and writing it are two different steps
+//!
+//! [`fill_basins`] (and [`fill_lakes`] underneath it) only *compute* -- they take `&StreamGraph`
+//! and hand back a [`WaterFill`]/`Vec<FilledLake>` alongside it, touching nothing. `Lake::level_m`
+//! itself is not written until something calls [`apply_levels`] (or the combined
+//! [`fill_basins_and_apply`]), which is the only place in this crate that can move it
+//! (`StreamGraph::set_lake_level_m`, added for exactly this write-back). Keeping the two apart
+//! means the formula stays testable against a plain, unowned `&StreamGraph` fixture; a caller
+//! that actually wants `Lake::level_m` to carry the filled value -- which every real caller
+//! does -- must reach for the `_and_apply` entry point rather than assume `fill_basins` alone
+//! did it.
 
 use std::collections::HashMap;
 
@@ -191,10 +203,27 @@ pub struct FilledLake {
 /// banned by house rule but are not in `tests/no_std_math.rs`'s scan (it bans transcendental
 /// calls and float-truncating casts, not these two), so nothing but review catches a call to
 /// either here. Both are written as an explicit branch instead -- `plates.rs::margin_at`'s
-/// house form -- with the same NaN-floors-rather-than-spreads operand order that form uses
-/// elsewhere in this crate. Every height feeding this loop was validated finite at
-/// `StreamGraph::build`, so NaN is not reachable through it today; the form is used anyway,
-/// because the alternative is a call this project has already decided never to make.
+/// house form for a `min`/`max` pair, an `if`/`else` rather than a call. The two branches are
+/// **not** symmetric in how they treat a NaN, and that asymmetry is intentional only for the
+/// outer one:
+///
+/// - the inner `max` (`if h_inside > h_outside { h_inside } else { h_outside }`) floors a NaN
+///   `h_inside` to `h_outside` (the comparison is false, so the `else` arm runs), but a NaN
+///   `h_outside` **propagates**: the comparison is still false, so the `else` arm returns the
+///   NaN itself. This is the opposite of `plates.rs:266-268`'s own stated reason for choosing
+///   its operand order ("a NaN ratio saturates ... rather than propagating") -- that guarantee
+///   holds for one operand of this `max`, not both.
+/// - the outer `min` (`if crossing < best { crossing } else { best }`) discards a NaN
+///   `crossing` cleanly (false comparison keeps `best`), so a NaN that reaches the outer
+///   accumulator is dropped rather than spread.
+///
+/// Put together: a NaN on the very first boundary edge scanned poisons `spill` outright and is
+/// caught loudly by the `is_finite` check below; a NaN surfacing from `h_outside` on any
+/// *later* edge is silently discarded by the outer `min` once a finite `spill` already exists.
+/// Neither behaviour is wrong -- every height feeding this loop is validated finite at
+/// `StreamGraph::build`, so none of it is reachable today -- but it is not the uniform
+/// "NaN floors" story a reader skimming `plates.rs`'s own comment might expect, so it is
+/// spelled out rather than claimed away.
 ///
 /// # Panics
 ///
@@ -206,13 +235,28 @@ pub struct FilledLake {
 /// this graph, which is a defect to surface loudly rather than a basin to silently treat as
 /// filling forever.
 ///
-/// Also panics if the computed spill is non-finite, or if either of the two invariants a
-/// filled lake must satisfy fails: `level_m <= spill` (trivially true, since `level_m` is set
-/// to `spill`, but checked anyway because a level above the spill is a defect in the caller's
-/// data, not a big lake) and `level_m >= height_m(root_node)` (the root is its basin's lowest
-/// point by construction -- every downhill chain inside it strictly descends to it -- so the
-/// water surface can never sit under it).
+/// Also panics if `neighbours.len()` does not match `graph.node_count()`, if the computed
+/// spill is non-finite, or if `level_m >= height_m(root_node)` fails (the root is its basin's
+/// lowest point by construction -- every downhill chain inside it strictly descends to it --
+/// so the water surface can never sit under it). There is no separate `level_m <= spill` check:
+/// `level_m` is *defined* as `spill` in this function, so that comparison would be `x <= x` and
+/// could never fail under any mutation of the formula -- Ruling 2's cap has nothing to enforce
+/// until Task 2 gives a lake a second way to reach a level (via an overflow chain), at which
+/// point a real check belongs here.
 pub fn fill_lakes(graph: &StreamGraph, basins: &Basins, neighbours: &[Vec<u32>]) -> Vec<FilledLake> {
+    // Two comparisons, once per call, not once per node: the same shape 5a settled on for a
+    // release-time bounds check on a caller-supplied slice
+    // (`erosion.rs`'s own length checks ahead of its per-node loops). Without it, a
+    // `neighbours` shorter than the graph's node count gives a raw index-out-of-bounds deep
+    // inside the loop below instead of a panic that names the actual mismatch.
+    assert_eq!(
+        neighbours.len(),
+        graph.node_count() as usize, // cast-ok: a node count into usize
+        "fill_lakes: neighbours has {} entries but the graph has {} nodes -- every node needs \
+         an entry (an empty one is fine) for the rim scan to index safely.",
+        neighbours.len(),
+        graph.node_count(),
+    );
     let mut out = Vec::with_capacity(graph.lakes().len());
     for lake in graph.lakes() {
         let root = lake.root_node;
@@ -227,10 +271,10 @@ pub fn fill_lakes(graph: &StreamGraph, basins: &Basins, neighbours: &[Vec<u32>])
                 }
                 let h_outside = graph.height_m(outside);
                 // House form for `max` (`plates.rs::margin_at`): an explicit branch, never
-                // `f64::max`. The inside height wins ties and a NaN falls through to the
-                // outside height rather than spreading -- unreachable today (see the doc
-                // comment above), kept for the same reason every other extremum in this
-                // crate is written this way.
+                // `f64::max`. The inside height wins ties; a NaN `h_inside` falls through to
+                // `h_outside`, but a NaN `h_outside` propagates instead -- this function's own
+                // doc comment spells out why that asymmetry is fine here (unreachable today,
+                // and caught loudly if it ever were).
                 let crossing = if h_inside > h_outside { h_inside } else { h_outside };
                 spill = Some(match spill {
                     None => crossing,
@@ -257,13 +301,11 @@ pub fn fill_lakes(graph: &StreamGraph, basins: &Basins, neighbours: &[Vec<u32>])
              StreamGraph::build, so this can only be a defect in the formula itself.",
         );
 
+        // No separate `level_m <= spill` check: `level_m` is *defined* as `spill` two lines
+        // below, so that comparison would be `x <= x`, provably unable to fail under any
+        // mutation of the formula above it. See this function's own doc comment ("Panics")
+        // for why that check is deferred rather than kept as decoration.
         let level_m = spill;
-        assert!(
-            level_m <= spill,
-            "fill_lakes: basin {root} filled to {level_m} m, above its own spill point \
-             {spill} m -- a level above the spill is a defect (the water would already have \
-             left through the rim), not a big lake.",
-        );
         let root_height = graph.height_m(root);
         assert!(
             level_m >= root_height,
@@ -326,6 +368,44 @@ pub fn fill_basins(graph: &StreamGraph) -> WaterFill {
     WaterFill { basins, lakes }
 }
 
+/// Write every computed level back onto `graph`'s own `Lake` table.
+///
+/// `fill_basins`/`fill_lakes` only compute; nothing calls `StreamGraph::set_lake_level_m`
+/// until this does. A graph a caller has not run this over still reads back exactly as
+/// `StreamGraph::build` left it -- `level_m` at the root's own elevation, "an empty basin"
+/// per `Lake::level_m`'s own doc comment -- regardless of how many `WaterFill`s have been
+/// computed from it on the side.
+///
+/// # Panics
+///
+/// If `lakes` names a `root_node` that `graph.lakes()` has no record of. `fill_lakes` always
+/// produces one `FilledLake` per entry in `graph.lakes()` (see its own loop), so this should
+/// be unreachable for a `lakes` slice that actually came from `fill_lakes`/`fill_basins`
+/// over this same `graph` -- reachable only by handing this a mismatched pair, which is a
+/// caller error to surface loudly rather than silently skip.
+pub fn apply_levels(graph: &mut StreamGraph, lakes: &[FilledLake]) {
+    for filled in lakes {
+        let found = graph.set_lake_level_m(filled.root_node, filled.level_m);
+        assert!(
+            found,
+            "apply_levels: no lake recorded at root {} -- this FilledLake did not come from \
+             fill_lakes/fill_basins over this graph.",
+            filled.root_node,
+        );
+    }
+}
+
+/// The production entry point that leaves nothing on the side: [`fill_basins`], then
+/// [`apply_levels`] over its result, so `graph.lakes()` reads back with `level_m` actually
+/// raised rather than only a `WaterFill` a caller might forget to apply. Hands back the basin
+/// partition alone, since the lake levels are now sitting on `graph` itself where `Lake`'s own
+/// doc comment says they belong.
+pub fn fill_basins_and_apply(graph: &mut StreamGraph) -> Basins {
+    let WaterFill { basins, lakes } = fill_basins(graph);
+    apply_levels(graph, &lakes);
+    basins
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +435,15 @@ mod tests {
     // asserted below specifically because A's answer does not depend on symmetrisation and
     // B's does -- the two together prove the symmetrisation step is load-bearing, not
     // decorative.
+    //
+    // Lake A's root sitting at h=0.0 -- the lowest elevation anywhere in the fixture -- is
+    // itself load-bearing, and for a different test: it is what keeps
+    // `spill_uses_the_inner_max_not_the_inner_min` a real discrimination rather than one the
+    // `level_m >= height_m(root)` invariant would catch on its own. Under the mutated `min`,
+    // lake A's spill drops to `min(0.0, 5.0) = 0.0`, which still satisfies `0.0 >= 0.0` --
+    // the invariant is blind to this particular swap, so only `assert_eq!(a.level_m, 1.0)`
+    // actually catches it. Raise lake A's root above every other node's height and that
+    // assertion stops constraining the operator with no test failure to say so.
     fn touching_lakes_fixture() -> (StreamGraph, Vec<Vec<u32>>) {
         let positions = vec![
             SpherePoint::from_latlon(0.0, 0.0),
@@ -472,6 +561,28 @@ mod tests {
             assert!(lake.level_m.is_finite());
             assert!(lake.level_m >= graph.height_m(lake.root_node));
         }
+    }
+
+    /// Finding 1's fix: `fill_lakes` alone leaves `graph`'s own `Lake` table untouched --
+    /// `apply_levels` is the step that actually moves it.
+    #[test]
+    fn apply_levels_writes_the_filled_value_onto_the_graphs_own_lake_table() {
+        let (mut graph, directed) = touching_lakes_fixture();
+        let basins = basins_of(&graph);
+        let symmetric = symmetric_adjacency(&directed);
+        let filled = fill_lakes(&graph, &basins, &symmetric);
+
+        // Before applying, the graph's own record still reads exactly what `build` left it
+        // at: the root's own elevation, `Lake::level_m`'s own doc comment's "empty basin".
+        assert_eq!(graph.lake_at(0).expect("lake A").level_m, 0.0, "unapplied: still root A's own elevation");
+
+        apply_levels(&mut graph, &filled);
+
+        assert_eq!(graph.lake_at(0).expect("lake A").level_m, 1.0, "lake A's level_m was not written back by apply_levels");
+        assert_eq!(graph.lake_at(2).expect("lake B").level_m, 1.0);
+        // Nothing else on either record moved.
+        assert_eq!(graph.lake_at(0).expect("lake A").kind, LakeKind::Lake);
+        assert_eq!(graph.lake_at(0).expect("lake A").outflow_lake, crate::stream::NO_LAKE);
     }
 
     /// Property 3: a basin covering the whole node set has nowhere for water to leave, and
@@ -595,6 +706,39 @@ mod tests {
         }
     }
 
+    /// `fill_basins_and_apply` is the production entry point (finding 1's fix): confirms it
+    /// actually moves `graph.lakes()`'s own `level_m`, not merely a `WaterFill` on the side.
+    #[test]
+    fn fill_basins_and_apply_moves_the_graphs_own_lake_levels() {
+        let mut graph = real_graph(SEED);
+        assert!(!graph.lakes().is_empty(), "fixture must actually have lakes to test this");
+        let before: HashMap<u32, f64> =
+            graph.lakes().iter().map(|l| (l.root_node, l.level_m)).collect();
+
+        let basins = fill_basins_and_apply(&mut graph);
+        assert_eq!(basins.node_count(), graph.node_count() as usize); // cast-ok: a node count into usize
+
+        let mut any_raised = false;
+        for lake in graph.lakes() {
+            let root_height = graph.height_m(lake.root_node);
+            assert!(lake.level_m >= root_height);
+            let prior = before[&lake.root_node];
+            assert_eq!(
+                prior, root_height,
+                "fixture assumption broken: StreamGraph::build should leave level_m at the \
+                 root's own elevation before anything applies a fill"
+            );
+            if lake.level_m > prior {
+                any_raised = true;
+            }
+        }
+        assert!(
+            any_raised,
+            "at least one real lake should fill strictly above its own root's elevation, or \
+             this test cannot tell a real write from a no-op"
+        );
+    }
+
     /// `basins_of`'s partition must account for every node exactly once, over a graph large
     /// enough that this is not true by accident of a small fixture's shape.
     #[test]
@@ -617,15 +761,14 @@ mod tests {
         assert!(seen.iter().all(|&s| s), "every node must land in exactly one basin");
     }
 
+    /// Message-pinned, matching `a_basin_covering_the_whole_graph_has_no_rim_and_panics`'s own
+    /// precedent one test above -- an unpinned `#[should_panic]` (or a bare `catch_unwind` +
+    /// `is_err()`) would pass for any panic at all, including an unrelated one.
     #[test]
+    #[should_panic(expected = "call fill_lakes directly")]
     fn fill_basins_refuses_a_graph_it_did_not_regenerate_from_a_seed() {
         let (graph, _) = touching_lakes_fixture();
         assert_eq!(graph.header().sampling_kind, crate::stream::SamplingKind::Supplied);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill_basins(&graph)));
-        assert!(
-            result.is_err(),
-            "fill_basins must refuse a Supplied-position graph rather than silently \
-             regenerating unrelated geometry for it"
-        );
+        let _ = fill_basins(&graph);
     }
 }
