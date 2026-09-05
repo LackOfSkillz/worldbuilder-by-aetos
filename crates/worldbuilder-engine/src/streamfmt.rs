@@ -1483,7 +1483,7 @@ mod tests {
         // `fill_and_resolve_water`, not the two separate entry points: it regenerates the
         // neighbour relation once and shares it between Task 1's fill and Task 2's resolve
         // (review Finding 6), which is also the path a real pipeline should take.
-        let _basins = water::fill_and_resolve_water(&mut graph);
+        let _basins = water::fill_and_resolve_water(&mut graph, params.pond_max_drainage_area_m2);
 
         let non_sentinel = graph.lakes().iter().filter(|l| l.outflow_lake != NO_LAKE).count();
         assert!(

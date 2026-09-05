@@ -772,6 +772,27 @@ impl StreamGraph {
         false
     }
 
+    /// Write `kind` onto the lake recorded at `root_node`. Returns whether one was found
+    /// there.
+    ///
+    /// Slice 5 Task 3's write-back, scoped exactly like `set_lake_level_m` and
+    /// `set_lake_outflow_lake` above and for the same reason -- it can move only `kind` on
+    /// an existing lake record, never `level_m` or `outflow_lake`, and never add a lake or
+    /// move a root. `StreamGraph::build` already writes an initial `kind` from each root's
+    /// own (pre-merge) drainage area; this exists because Task 2's plateau merge can join
+    /// several roots into one physical body afterwards, whose *combined* drainage area is
+    /// what actually decides pond-or-lake, so `water::classify_lake_kinds` calls this once
+    /// per lake, over every lake, after outflow resolution has landed.
+    pub fn set_lake_kind(&mut self, root_node: u32, kind: LakeKind) -> bool {
+        for lake in &mut self.lakes {
+            if lake.root_node == root_node {
+                lake.kind = kind;
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn reaches(&self) -> &[Reach] {
         &self.reaches
     }

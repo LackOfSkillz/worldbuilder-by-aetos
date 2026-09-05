@@ -240,25 +240,47 @@ jobs:
           # regression both findings share: a merge needing a second pass, verified by
           # mutation to fail when the first pass's accumulated membership is dropped. All five
           # rows move by +2 uniformly. `expect_ignored` stays 5.
+          #
+          # 2026-09-05, slice 5b Task 3 (pond/lake classification by drainage area):
+          # 494/494/496/530/532 -> 499/499/501/535/537. `water.rs` gained `classify_lake_kinds`
+          # (reclassifies every `Lake` row by its physical BODY's combined drainage area,
+          # since a merged plateau's own pre-merge `drainage_area_m2` under-counts a body
+          # Task 2 folded from several roots) and `lake_body_drainage_totals_m2` (the
+          # measurement accessor `pond_threshold_survey.rs` -- a `[[bin]]`, so it contributes
+          # 0 tests here -- uses to report the calibration distribution). `stream.rs` gained
+          # `StreamGraph::set_lake_kind`, the write-back mirroring `set_lake_level_m`/
+          # `set_lake_outflow_lake`. Five tests added to `water.rs`
+          # (`a_lake_whose_drainage_area_equals_the_threshold_is_a_pond`,
+          # `a_lake_whose_drainage_area_is_strictly_over_the_threshold_is_not_a_pond`,
+          # `classify_lake_kinds_overwrites_the_builders_own_initial_guess`,
+          # `classify_lake_kinds_is_deterministic_across_two_runs`,
+          # `a_merged_bodys_kind_is_decided_by_its_combined_drainage_area_not_either_roots_own`).
+          # The boundary test was verified by mutation (`<=` to `<` in
+          # `classify_lake_kinds`) and is a single-assertion test so it cannot be shadowed by
+          # a sibling, per this slice's own recurring finding; see task-3-report.md. Both
+          # files compile unconditionally, so all five rows move by +5 uniformly.
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
+          # configuration.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 494
+            expect: 499
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 494
+            expect: 499
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 496
+            expect: 501
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 530
+            expect: 535
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 532
+            expect: 537
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
