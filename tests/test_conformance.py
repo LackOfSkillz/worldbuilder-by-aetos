@@ -3516,3 +3516,1507 @@ def test_shelf_evaluate_agrees_within_the_shelf_composed_bounds():
         f"tectonic_m's worst observed divergence grew to {worst_tectonic} ULP, beyond the "
         f"measured SHELF_TECTONIC_MAX_ULPS ({SHELF_TECTONIC_MAX_ULPS})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Features: bump, Feature.reach_m, Placed.weight_at, Features.apply/marks_near
+# ---------------------------------------------------------------------------
+# Which contract applies to what, chosen per code path, and measured on THIS module's own
+# corpus rather than borrowed from any other section (the previous slice borrowed a bound
+# and it was both 227x too loose and justified by a factually wrong theory):
+#
+#   _bump(), and the module constants          no transcendental at all -- STRICT, raw bits.
+#   Feature.reach_m()                          `hypot` alone -- BOUNDED, 1 ULP measured.
+#   Placed.weight_at()                         `atan2` + `sqrt` (via sphere_to_local; NOT
+#                                              local_to_sphere's hypot/cos/sin) -- BOUNDED,
+#                                              and bounded ABSOLUTELY, not in ULP; see
+#                                              FEATURES_WEIGHT_MAX_ABS.
+#   Placed.weight_at(), reach gate rejected    nothing at all is reached -- STRICT, raw bits,
+#                                              exactly 0.0 on both sides.
+#   Features.apply() -> shaped_metres          BOUNDED, its own ULP + absolute pair.
+#   Features.apply() -> authority              BOUNDED, its own ABSOLUTE bound, measured
+#                                              separately from shaped_metres.
+#   Features.apply(), zero-weight / zero-lift  STRICT, raw bits -- the -0.0 cases.
+#   Features.marks_near() -> distance_m        BOUNDED, 2 ULP measured...
+#   Features.marks_near() -> membership/order  ...but feeding a DISCRETE output, which is a
+#                                              FINDING rather than a bound. See
+#                                              test_features_marks_near_membership_can_flip
+#                                              _when_within_m_is_taken_from_a_distance.
+#
+# `apply` returns `(shaped_metres, authority)`: an absolute elevation in metres first, a
+# nothing-to-one blend weight second. They are different quantities in different units and
+# they get different bounds, which is the whole reason they are measured apart.
+
+from worldbuilder.bathymetry import features as py_features
+from worldbuilder.bathymetry.features import CARVE as PY_CARVE
+from worldbuilder.bathymetry.features import RAISE as PY_RAISE
+from worldbuilder.bathymetry.features import SETTLE_M as PY_SETTLE_M
+from worldbuilder.bathymetry.features import SHAPE as PY_SHAPE
+from worldbuilder.bathymetry.features import Feature as PyFeature
+from worldbuilder.bathymetry.features import Features as PyFeatures
+from worldbuilder.bathymetry.features import Placed as PyPlaced
+
+FEATURE_SHAPES = [
+    (3.0, 2.0), (20.0, 20.0), (150.0, 90.0), (500.0, 500.0), (1200.0, 300.0),
+    (5000.0, 30.0), (10000.0, 40.0), (40.0, 10000.0),
+    (20000.0, 7000.0), (40000.0, 12000.0),
+]
+"""
+Spans four orders of magnitude in `length_m` AND two in aspect ratio, and both of those
+are load-bearing.
+
+**Size.** The reach gate's corner leak -- points the gate rejects whose ungated `bump`
+product is still non-zero -- falls off as roughly a **fourth** power in each of `length_m`
+and `width_m`. It is NOT the `1 / (length_m^2 * width_m^2)` an earlier version of this
+docstring claimed; that law came from a relative-span grid that never reached the widest
+part of the band, and it was overturned in this slice (see `features.rs`'s `weight_at`
+notes and the crate README). The band the leak lives in is where `dot` and `cos_reach` are
+both within an ULP of 1.0 and the comparison stops resolving distance at all, so its width
+in metres runs as `ULP(1.0) * radius_m^2 / reach_m` and *narrows* as the feature grows --
+2.500e-3 m at 3x2 against 7.286e-6 m at 1200x300 -- rather than staying a fixed sliver of
+arc.
+
+Re-measured for this docstring rather than copied: an absolute-inset corner scan, insets
+from 1e-12 m to 1e-1 m in the along and the across direction independently, **120 samples
+per decade**, feature at (12.34, 56.78) on bearing 37 deg at Earth radius. Worst leaked
+ungated weight:
+
+    3x2         1.20474e-12
+    20x20       4.82446e-21
+    150x90      1.10546e-26
+    1200x300    8.41881e-32
+
+**A scanned extremum depends on the scan, so the density is quoted beside the number.** The
+same scan at 40 samples per decade finds only 4.98373e-13 at 3x2 and 2.196e-32 at 1200x300
+-- the coarser grid misses the peak of the band by a factor of two to four, which is why a
+figure here without its scan is not a figure. The measured 3x2-to-1200x300 ratio is 1.4e19,
+against the 1.3e19 a fourth power per dimension predicts and the 3.6e9 the old squared law
+predicted: nearly ten orders of magnitude out, which is what overturned it.
+
+At 1200x300 a leak of 1e-32 is invisible to `shaped_metres` and reaches only `authority`
+(which starts at a hard `0.0`, where `max(0.0, tiny)` is `tiny`), so a matrix built only on
+large features proves nothing about the gate. At 3x2 the leak is 1e-12, which reaches
+`shaped_metres` itself -- an ungated `result` of `-29.999999999970655` against an exact
+`-30.0` has been measured at that shape.
+
+**Aspect ratio, which an earlier version of this list got wrong and which every bound below
+was resized for.** That version topped out at 4:1 (1200x300), and every absolute bound came
+out near 5e-16 as a result. Substituting a 5000x30 dredged channel for it -- nothing else
+changed, unmutated engine -- failed two of these tests outright, and at 10000x40 the true
+worsts are twenty times the 4:1 figures: 1.08e-14 absolute on the weight and 14,080 ULP on
+`shaped_metres`. The mechanism is cancellation in
+`across = east * across_e + north * across_n`, amplified by `along_m / width_m`; at bearings
+0, 90 and 270 degrees, where one of those two terms is exactly zero, it collapses back to
+4.44e-16, which is what confirms it. A long narrow feature is not exotic -- a dredged
+channel, a breakwater, a sandbar and a levee are all high aspect ratio, and placing exactly
+those is what this module is for. `40x10000` is the same ratio with the extents swapped,
+included because `along` and `across` are not quite interchangeable under a bearing change.
+"""
+
+FEATURE_ORIGINS = [(12.34, 56.78), (0.0, 0.0), (-33.0, 151.0), (89.5, 10.0), (-89.9, -170.0)]
+"""Including both poles, where `TangentFrame.at` takes its fallback basis."""
+
+FEATURE_BEARINGS = [0.0, 37.0, 90.0, 143.5, 270.0]
+"""0 and 90 exercise the exact `sin`/`cos` landmarks; the rest do not."""
+
+FEATURE_FRACTIONS = [
+    0.0, 0.05, 0.2, 0.4, 0.6, 0.8, 0.95, 0.999, 0.99999, 1.0, 1.00001, 1.05, 1.3, 2.0,
+]
+"""
+Fractions of `length_m`/`width_m` to probe at, taken in every ordered pair and in both
+signs: well inside, at the edge (1.0 exactly, where `bump`'s `min(1.0, ...)` decides), a
+hair either side of it, and beyond the reach. The pair `(1.0, 1.0)` is the corner the reach
+gate exists for -- `along` and `across` both landing inside their own extent while the true
+arc distance has already reached `reach_m`.
+"""
+
+FEATURE_APPLY_CASES = [
+    (PY_RAISE, -5.0, -30.0),
+    (PY_CARVE, -60.0, -30.0),
+    (PY_SHAPE, 4.0, -2.0),
+    (PY_SHAPE, 0.5, -0.5),
+    (PY_RAISE, 1000.0, -4000.0),
+    (PY_CARVE, -8000.0, 120.0),
+]
+"""`(compose, target_m, elevation_m)`. All three compose arms, both one-way guards on
+their contributing and their skipping side, a case whose `shaped_metres` lands near zero
+(0.5 over -0.5), and two with kilometres of `lift` so the absolute error has room to grow."""
+
+FEATURES_REACH_MAX_ULPS = 1
+"""
+`Feature.reach_m()` is `math.hypot(length_m, width_m)` and nothing else.
+
+BOUNDED, not strict, and for a specific reason: since Python 3.8 CPython does not call the
+platform `hypot` at all -- it computes its own Neumaier-compensated norm -- while the engine
+calls `libm::hypot`. Those are two different algorithms, not two roundings of one algorithm,
+so bit-equality is not something either side promises.
+
+Measured worst over 20,010 `(length_m, width_m)` pairs (this section's ten shapes plus
+20,000 drawn from [0.5, 50000]): exactly 1 ULP, at
+`(24628.73974506011, 42633.3696821233)`. The bound is that 1, with no headroom, because a
+`hypot` that started disagreeing by 2 would be worth being told about.
+"""
+
+FEATURES_WEIGHT_MAX_ABS = 2.2e-14
+"""
+`Placed.weight_at()` is bounded ABSOLUTELY rather than in ULP, and that is the measurement
+talking, not a preference.
+
+Measured worst absolute divergence over 98,000 probe points (ten shapes x five origins x
+five bearings x 196 fraction pairs x both signs): **1.082467e-14**, at a **10000x40 m**
+feature from **(-89.9, -170.0)** on **bearing 143.5 deg**, probing (-0.4, -0.4) of its
+extents, where the weight is ~0.41990400000001615 against ~0.41990400000000533.
+
+Per shape, worst absolute:
+
+    3x2           3.330669e-16   (12.34, 56.78)   bearing 0
+    20x20         4.996004e-16   (-33.0, 151.0)   bearing 37
+    150x90        4.440892e-16   (-33.0, 151.0)   bearing 0
+    500x500       4.302114e-16   (12.34, 56.78)   bearing 143.5
+    1200x300      4.440892e-16   (12.34, 56.78)   bearing 37
+    5000x30       7.771561e-15   (-89.9, -170.0)  bearing 37
+    10000x40      1.082467e-14   (-89.9, -170.0)  bearing 143.5   <- the bound
+    40x10000      1.060263e-14   (0.0, 0.0)       bearing 143.5
+    20000x7000    4.996004e-16   (-89.9, -170.0)  bearing 37
+    40000x12000   4.440892e-16   (12.34, 56.78)   bearing 0
+
+**The bound is driven by aspect ratio, not by size** -- 40000x12000 (3.3:1) sits at
+4.44e-16 while 10000x40 (250:1) is twenty-four times worse. And it is driven by bearing:
+the worst at bearing 0, at 90 and at 270 is 4.440892e-16 in each case, against 1.082467e-14
+at 143.5 and 1.063039e-14 at 37. At the axis-aligned bearings one of the two terms of
+`across = east * across_e + north * across_n` is exactly zero and there is nothing to
+cancel; off-axis both terms are large and opposite, and `along_m / width_m` amplifies what
+is left.
+
+**Headroom: 2.03x** (2.2e-14 over a legitimate maximum of 1.082467e-14). Deliberately about
+two, not about a hundred -- a bound with 100x headroom would accommodate a real defect
+without noticing, and this quantity's whole range is [0, 1].
+
+**Why not a ULP bound.** `bump` is `smooth(1.0 - min(1.0, d / half))`, so at the edge of a
+feature's support the weight is a smoothstep evaluated on a quantity going to zero, and the
+result cancels down to 1e-30 and below. There, one ULP of `along` (which is bounded, coming
+through `sphere_to_local`'s `atan2`) is the entire value. Measured worst ULP divergence,
+bucketed by how big the weight actually is: 2,517 ULP where the weight is >= 1e-3, 76,326
+where it is >= 1e-6, 32,642,720 where it is >= 1e-12, and 4.19e18 -- i.e. no bound at all --
+taking every point. (These are the 250:1 corpus's figures. The buckets first written here
+were measured on the earlier 7-shape corpus capped at 4:1 and were not re-measured when the
+corpus widened; they read 145 / 6,239 / 725,675 / 1.8e16. The bound is unaffected -- the
+collapse is worse than first recorded, so the argument for an absolute bound is stronger.) A ULP bound wide enough to hold everywhere would assert precisely nothing;
+this absolute bound holds everywhere AND is tight. See
+`test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collapses` for the
+two-sided version of that claim.
+
+**THE ENVELOPE. This bound is not universal and it is not scalable.** It is validated over
+a corpus spanning 1.5:1 to 250:1 in both orientations, it holds empirically to about 500:1,
+and beyond that it FAILS on the unmutated engine. Re-measured by extending only
+`FEATURE_SHAPES`, over the same origins, bearings, fraction pairs and signs:
+
+    30x12000   (400:1)   worst weight 2.847722e-14   -- over this 2.2e-14 bound
+    40000x40  (1000:1)   worst weight 4.252154e-14   -- over it by nearly twice
+
+**A feature beyond that envelope needs this bound RE-MEASURED, never scaled.** The
+mechanism is catastrophic cancellation in `across = east * across_e + north * across_n`,
+amplified by `along_m / width_m` -- and that amplification grows without limit as the aspect
+ratio grows, so **no finite corpus makes this bound universal**. Extending the corpus to
+500:1 would relocate the same cliff to 800:1 and buy nothing; a bound that implied
+universality would be the real defect. Aspect ratio is the axis, size is not: 40000x12000
+(3.3:1) sits at 4.44e-16 while 10000x40 (250:1) sets the bound.
+
+**AND IT IS NOT YOURS TO BORROW.** `substrate.py` calls `weight_at` directly -- it is the
+second consumer this method is public for -- and reusing this constant when it is ported
+will be tempting and is wrong. Measure `substrate.py`'s own quantity, over its own corpus,
+with a high-aspect-ratio feature in it. This is not a hypothetical: in a previous slice
+`shelf.rs` took `TECTONICS_BOUNDED_MAX_ULPS` (8192) wholesale, an algebraically-equal
+rewrite of the blend diverged `elevation_m` by 203 ULP, and the defect sat green inside the
+borrowed bound. **A borrowed bound admits whatever the lending module admits**, and the
+justification offered for that borrowing was itself factually wrong.
+"""
+
+FEATURES_AUTHORITY_MAX_ABS = 2.2e-14
+"""
+`apply`'s second return value, measured SEPARATELY from `shaped_metres` -- they are
+different quantities in different units and a shared bound would be a borrowed one.
+
+Measured worst absolute divergence over the same 98,000 points x six `FEATURE_APPLY_CASES`:
+**1.082467e-14**, at **10000x40** from **(-89.9, -170.0)**, **bearing 143.5 deg**,
+fractions (-0.4, -0.4), a RAISE to -5 m over -30 m, authority ~0.41990400000001615.
+
+Per shape, worst absolute: 3.330669e-16 at 3x2, 4.996004e-16 at 20x20, 4.440892e-16 at
+150x90, 4.302114e-16 at 500x500, 4.440892e-16 at 1200x300, 7.771561e-15 at 5000x30,
+1.082467e-14 at 10000x40, 1.060263e-14 at 40x10000, 4.996004e-16 at 20000x7000 and
+4.440892e-16 at 40000x12000 -- the same aspect-ratio story as the weight, for the reason
+below.
+
+**Headroom: 2.03x** (2.2e-14 over 1.082467e-14), matching the weight's on purpose.
+
+It equals `FEATURES_WEIGHT_MAX_ABS` and that is not an accident to be tidied away by
+sharing one constant: `authority` is `weight * smooth(|lift| / SETTLE_M)`, and at every
+worst case measured the `smooth` factor had saturated to exactly 1.0, so authority was
+carrying the weight's error and nothing else. If `smooth` were ever the dominant term the
+two would part company, which is why they are measured and asserted apart.
+
+Absolute rather than ULP for the same reason as the weight, and one more: `authority` starts
+at a hard `0.0` and `max(0.0, tiny)` is `tiny`, so a sub-ULP contribution that
+`shaped_metres` absorbs invisibly shows up here at full size. Where the gate rejects, the
+comparison is not this bound at all but raw bits -- see
+`test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero`.
+
+**THE ENVELOPE. This bound is not universal and it is not scalable.** Validated over a
+corpus spanning 1.5:1 to 250:1 in both orientations; it holds empirically to about 500:1
+and FAILS on the unmutated engine beyond that. Re-measured by extending only
+`FEATURE_SHAPES`, over the same origins, bearings, fraction pairs, signs and
+`FEATURE_APPLY_CASES`:
+
+    30x12000   (400:1)   worst authority 2.847722e-14   -- over this 2.2e-14 bound
+    40000x40  (1000:1)   worst authority 4.252154e-14   -- over it by nearly twice
+
+(Identical to the weight's figures at both shapes, for the reason above: `smooth` had
+saturated to 1.0 and authority was carrying the weight's error and nothing else.)
+
+**A feature beyond that envelope needs this bound RE-MEASURED, never scaled.** The
+amplification of the `across` cancellation by `along_m / width_m` grows without limit with
+the aspect ratio, so **no finite corpus makes this bound universal** -- pushing the corpus to
+500:1 would relocate the same cliff to 800:1.
+
+**AND IT IS NOT YOURS TO BORROW.** `substrate.py` calls `weight_at` directly and will be
+tempted to reuse a features bound when it is ported. Do not. Measure its own quantity over
+its own corpus with a high-aspect-ratio feature in it. `shelf.rs` borrowed
+`TECTONICS_BOUNDED_MAX_ULPS` (8192) in a previous slice and a real 203-ULP defect sat green
+inside it; a borrowed bound admits whatever the lending module admits.
+"""
+
+FEATURES_RESULT_MAX_ULPS = 32768
+"""
+`apply`'s first return value, `shaped_metres`: an absolute elevation in metres.
+
+Measured worst over the same sweep, counted only where `|shaped_metres| > 1e-6` (below that
+the quantity is cancelling to zero and ULP stops meaning anything -- see
+`FEATURES_RESULT_MAX_ABS`): **14,080 ULP**, at **10000x40** from **(-89.9, -170.0)**,
+**bearing 143.5 deg**, fractions (0.2, 0.2), a RAISE to `target_m=1000.0` over
+`elevation_m=-4000.0` giving 14.079999999988104 against 14.080000000013115.
+
+Per shape:
+
+    3x2             768    (12.34, 56.78)   bearing 0
+    20x20           208    (-33.0, 151.0)   bearing 37
+    150x90          160    (89.5, 10.0)     bearing 37
+    500x500         256    (12.34, 56.78)   bearing 37
+    1200x300        192    (89.5, 10.0)     bearing 37
+    5000x30       4,352    (-89.9, -170.0)  bearing 143.5
+    10000x40     14,080    (-89.9, -170.0)  bearing 143.5   <- the bound
+    40x10000      6,912    (12.34, 56.78)   bearing 143.5
+    20000x7000      224    (-89.9, -170.0)  bearing 37
+    40000x12000     768    (12.34, 56.78)   bearing 0
+
+**Headroom: 2.33x** (32768 over 14,080), in line with this file's own precedent for a
+measured bound on a bounded path -- `SHELF_ELEVATION_MAX_ULPS` is 96 over a measured 36
+(2.67x) and `SHELF_WEIGHT_MAX_ULPS` is 2048 over a measured 1024 (2.0x).
+
+**What drives it, and what does not.** The brief warned not to assume a tight bound here, on
+the strength of a one-ULP nudge to the reach threshold moving `shaped_metres` by ~105,470
+ULP at 3x2. That sensitivity is real but it is NOT what happens between these two
+implementations, and the reason is measured rather than assumed: the reach gate does not
+move between them at all. Over 98,000 cross-language probes there were ZERO points where one
+language's gate accepted and the other's rejected (see
+`test_features_reach_gate_classifies_identically_in_both_languages`), because `reach_m`
+agrees to within 1 ULP and `cos` of it lands on the same bit. So the 105,470-ULP sensitivity
+never gets excited.
+
+What DOES drive it is aspect ratio, which an earlier version of this constant missed
+entirely by capping the shape matrix at 4:1 and landing on 1024. The 14,080 worst is
+eighteen times that, and it comes from a 250:1 feature at an oblique bearing -- the same
+cancellation in `across` that sets the weight bound. Sizing to the threshold sensitivity
+would have been 137x looser than the field needs; sizing to a 4:1 matrix was 13x too tight.
+Both are the same mistake in opposite directions: a bound taken from something other than a
+measurement over the inputs the module will actually see.
+
+**Do not read that as "and now the corpus is wide enough".** It is the inference this
+paragraph most invites and it is false. Widening the corpus from 4:1 to 250:1 fixed a bound
+that was wrong for the inputs this module ships against; it did not make the bound
+universal, and it could not have, because the quantity that sets it grows without limit.
+What the widening actually established is the method -- measure over the inputs the module
+will see -- and that method obliges the NEXT author to measure again, not to inherit this
+number. Which is what the envelope below is for.
+
+**THE ENVELOPE. This bound is not universal and it is not scalable.** Validated over a
+corpus spanning 1.5:1 to 250:1 in both orientations; it holds empirically to about 500:1 and
+FAILS on the unmutated engine beyond that. Re-measured by extending only `FEATURE_SHAPES`,
+over the same origins, bearings, fraction pairs, signs and `FEATURE_APPLY_CASES`:
+
+    30x12000   (400:1)   worst 18,432 ULP   -- inside this 32,768 bound, but its
+                                               companion `FEATURES_RESULT_MAX_ABS` and
+                                               `FEATURES_WEIGHT_MAX_ABS` both fail here
+    40000x40  (1000:1)   worst 55,296 ULP   -- over this bound by 1.7x
+
+**A feature beyond that envelope needs this bound RE-MEASURED, never scaled.** The
+amplification of the `across` cancellation by `along_m / width_m` grows without limit as the
+aspect ratio grows, so **no finite corpus makes this bound universal**: pushing the corpus to
+500:1 would relocate the same cliff to 800:1 and buy nothing. A bound that implied
+universality would be the real defect; a bound with a stated envelope is honest.
+
+**AND IT IS NOT YOURS TO BORROW.** `substrate.py` is the next slice and it calls `weight_at`
+directly. Measure its own quantity, over its own corpus, with a high-aspect-ratio feature in
+it -- do not reuse this constant or any of its three neighbours. `shelf.rs` borrowed
+`TECTONICS_BOUNDED_MAX_ULPS` (8192) in a previous slice; an algebraically-equal rewrite of
+the blend diverged `elevation_m` by 203 ULP and sat green inside the borrowed bound, and the
+justification given for borrowing was itself false. **A borrowed bound admits whatever the
+lending module admits.**
+"""
+
+FEATURES_RESULT_MAX_ABS = 1.8e-10
+"""
+The companion to `FEATURES_RESULT_MAX_ULPS`, and the reason the assertion is
+`close_enough(...) or abs(...) <= this` rather than either one alone.
+
+Where `shaped_metres` cancels towards zero -- a CARVE to `target_m=-1e-9` over
+`elevation_m=0.0`, say -- the answer can be 1e-46 on one side and exactly 0.0 on the other,
+which is unbounded in ULP and utterly meaningless in metres. Conversely a purely absolute
+bound would be a weak assertion where the elevation is kilometres. Each half covers the
+other's blind spot.
+
+Measured worst absolute divergence over the sweep: **8.776624e-11 m**, at **10000x40** from
+**(-89.9, -170.0)**, **bearing 143.5 deg**, fractions (-0.4, -0.4), a CARVE to -8000 m over
++120 m giving -3289.620480000131 against -3289.6204800000432.
+
+Per shape: 2.728484e-12 at 3x2, 4.092726e-12 at 20x20, 3.637979e-12 at 150x90, 3.524292e-12
+at 500x500, 3.637979e-12 at 1200x300, 6.298251e-11 at 5000x30, 8.776624e-11 at 10000x40,
+8.617462e-11 at 40x10000, 4.092726e-12 at 20000x7000, 3.637979e-12 at 40000x12000.
+
+**Headroom: 2.05x** (1.8e-10 over 8.776624e-11). That is 180 picometres of elevation, which
+no chart, sounding or hull has an opinion about, and it is still tight enough that a real
+defect in the blend could not hide under it.
+
+**THE ENVELOPE. This bound is not universal and it is not scalable.** Validated over a
+corpus spanning 1.5:1 to 250:1 in both orientations; it holds empirically to about 500:1 and
+FAILS on the unmutated engine beyond that. Re-measured by extending only `FEATURE_SHAPES`,
+over the same origins, bearings, fraction pairs, signs and `FEATURE_APPLY_CASES`:
+
+    30x12000   (400:1)   worst 2.314664e-10 m   -- over this 1.8e-10 bound
+    40000x40  (1000:1)   worst 3.453806e-10 m   -- over it by nearly twice
+
+**A feature beyond that envelope needs this bound RE-MEASURED, never scaled.** The
+amplification of the `across` cancellation by `along_m / width_m` grows without limit as the
+aspect ratio grows, so **no finite corpus makes this bound universal**: pushing the corpus to
+500:1 would relocate the same cliff to 800:1. Note that the two halves of the assertion fail
+together rather than covering for each other here -- at 400:1 the ULP half is still inside
+32,768 while this absolute half is already out, so a caller past the envelope who checks only
+one has checked nothing.
+
+**AND IT IS NOT YOURS TO BORROW.** `substrate.py` calls `weight_at` directly and is the next
+slice. Measure its own quantity over its own corpus, with a high-aspect-ratio feature in it.
+`shelf.rs` borrowed `TECTONICS_BOUNDED_MAX_ULPS` (8192) in a previous slice and a real
+203-ULP defect sat green inside it; a borrowed bound admits whatever the lending module
+admits.
+"""
+
+FEATURES_MARK_DISTANCE_MAX_ULPS = 2
+"""
+`marks_near`'s `distance_m`, which comes through `SpherePoint.distance_to` -> `angle_to`
+(`atan2` over a cross-product magnitude) and is therefore BOUNDED.
+
+Measured worst over 120,000 mark distances (400 marked features x 300 probe points):
+**2 ULP**, at 4040848.634591214 m against 4040848.634591215 m. That is under a nanometre on
+a four-thousand-kilometre distance, and it is a well-behaved bound.
+
+It is also, on its own, a misleading one -- `distance_m` feeds a discrete output. See
+`test_features_marks_near_membership_can_flip_when_within_m_is_taken_from_a_distance`.
+"""
+
+
+def _feature_tuple(feature):
+    """A `Feature` in the positional shape the binding takes: `at` flattened, then fields."""
+    v = feature.at.vector
+    return (
+        feature.kind, v.x, v.y, v.z, feature.target_m, feature.length_m, feature.width_m,
+        feature.bearing_deg, feature.compose, feature.marked, feature.substrate,
+    )
+
+
+def _feature(kind="f", lat=0.0, lon=0.0, target_m=-5.0, length_m=1200.0, width_m=300.0,
+             bearing_deg=0.0, compose=PY_RAISE, marked=False, substrate=None):
+    return PyFeature(
+        kind=kind, at=SpherePoint.from_latlon(lat, lon), target_m=target_m,
+        length_m=length_m, width_m=width_m, bearing_deg=bearing_deg, compose=compose,
+        marked=marked, substrate=substrate,
+    )
+
+
+def _probe_point(placed, along_fraction, across_fraction):
+    """
+    A point at a given fraction of the feature's own extents, along and across its bearing.
+
+    Built through the feature's own frame so that the probe lands where it is meant to for
+    every bearing and every origin -- a fixed lat/lon offset would land somewhere quite
+    different on a feature bearing 37 degrees than on one bearing 0.
+    """
+    along_m = along_fraction * placed.feature.length_m
+    across_m = across_fraction * placed.feature.width_m
+    east_m = along_m * placed._along_e + across_m * placed._across_e
+    north_m = along_m * placed._along_n + across_m * placed._across_n
+    return placed.frame.local_to_sphere(east_m, north_m)
+
+
+def _engine_apply(features, point, elevation_m, radius_m=EARTH_RADIUS_M):
+    v = point.vector
+    return engine.features_apply(
+        [_feature_tuple(f) for f in features], v.x, v.y, v.z, elevation_m, radius_m,
+    )
+
+
+def _engine_marks_near(features, point, within_m, radius_m=EARTH_RADIUS_M):
+    """`(distance_m, kind)` pairs, so the engine's index answer is comparable to Python's."""
+    v = point.vector
+    got = engine.features_marks_near(
+        [_feature_tuple(f) for f in features], v.x, v.y, v.z, within_m, radius_m,
+    )
+    return [(distance_m, features[index].kind) for distance_m, index in got]
+
+
+def _engine_weight_at(feature, point, radius_m=EARTH_RADIUS_M):
+    v = point.vector
+    return engine.features_weight_at(_feature_tuple(feature), v.x, v.y, v.z, radius_m)
+
+
+def test_features_constants_agree():
+    """The three compose names and `SETTLE_M`, so everything below is comparing like with
+    like rather than each language against its own copy of the literals. STRICT: no path."""
+    raise_name, carve_name, shape_name, settle_m = engine.features_constants()
+    assert raise_name == PY_RAISE
+    assert carve_name == PY_CARVE
+    assert shape_name == PY_SHAPE
+    assert same(settle_m, PY_SETTLE_M)
+
+
+def test_features_bump_agrees_bit_for_bit():
+    """
+    STRICT. `_bump` is `abs`, a divide, a two-argument `min` and `_smooth` -- there is no
+    transcendental anywhere in it, so a tolerance here would be hiding a defect rather than
+    accommodating a libm. Covers the `half_m <= 0.0` early return, the `min(1.0, ...)` clamp
+    at and either side of the edge, and both signs.
+
+    **`-0.0` in `halves` is the whole point of the early return's strictness, and it was
+    missing while this docstring claimed it was here.** An earlier version of this docstring
+    said the negative case was covered because `-1.0` was in the list. `-1.0` exercises the
+    *branch*; it does not exercise its *strictness*. The only input in the universe where
+    `half_m <= 0.0` and `half_m < 0.0` disagree is `half_m == -0.0`, and until it was added
+    below, changing the guard to `<` passed both the Rust and the Python suite outright --
+    at `_bump(10.0, -0.0)` Python gives `0.0` and the mutant gives `1.0`, full weight where
+    there is none. `distances` had carried `-0.0` all along; `halves` had not. A docstring
+    asserting coverage that does not exist is how a gap stays a gap, so this paragraph
+    records what the case is for rather than merely naming it.
+    """
+    halves = [0.0, -0.0, -1.0, 1e-9, 1.0, 2.0, 3.0, 90.0, 300.0, 500.0, 12000.0]
+    distances = [
+        0.0, -0.0, 1e-12, 0.1, 0.5, 1.0, 1.4999, 1.5, 2.9999, 3.0, -3.0, 149.9, 150.0,
+        299.999999, 300.0, 300.0000001, 1e9, -1e9, 0.3333333333333333,
+    ]
+    checked = 0
+    for half_m in halves:
+        for distance_m in distances:
+            want = py_features._bump(distance_m, half_m)
+            got = engine.features_bump(distance_m, half_m)
+            assert same(want, got), (distance_m, half_m, want, got)
+            checked += 1
+    assert checked == len(halves) * len(distances) == 209
+
+
+def test_features_reach_m_agrees_within_its_own_measured_hypot_bound():
+    """
+    BOUNDED at `FEATURES_REACH_MAX_ULPS` (1), because `hypot` is where CPython and `libm`
+    genuinely run different algorithms -- see that constant's docstring. Two-sided: the
+    bound must hold, and it must not be vacuous, so the sweep is also required to find at
+    least one pair that is NOT bit-identical.
+    """
+    pairs = list(FEATURE_SHAPES)
+    state = 0x9E3779B97F4A7C15
+    mask = (1 << 64) - 1
+    for _ in range(20000):
+        drawn = []
+        for _ in range(2):
+            state = (state * 6364136223846793005 + 1442695040888963407) & mask
+            h = state ^ (state >> 33)
+            drawn.append(0.5 + (h >> 11) / float(1 << 53) * 49999.5)
+        pairs.append((drawn[0], drawn[1]))
+
+    worst = 0
+    differed = 0
+    for length_m, width_m in pairs:
+        want = math.hypot(length_m, width_m)
+        got = engine.features_reach_m(length_m, width_m)
+        assert close_enough(want, got, FEATURES_REACH_MAX_ULPS), (
+            length_m, width_m, want, got, ulps_apart(want, got),
+        )
+        d = ulps_apart(want, got)
+        if d is not None:
+            worst = max(worst, abs(d))
+        if bits(want) != bits(got):
+            differed += 1
+    assert len(pairs) == 20010
+    assert differed > 0, (
+        "reach_m came out bit-identical on every pair, so this bound asserts nothing; "
+        "CPython's Neumaier hypot and libm's are supposed to be distinguishable"
+    )
+    assert worst <= FEATURES_REACH_MAX_ULPS, f"reach_m divergence grew to {worst} ULP"
+
+
+def _weight_sweep():
+    """Every (shape, origin, bearing, fraction pair, sign) probe, yielded once."""
+    for length_m, width_m in FEATURE_SHAPES:
+        for lat, lon in FEATURE_ORIGINS:
+            for bearing_deg in FEATURE_BEARINGS:
+                feature = _feature(
+                    lat=lat, lon=lon, length_m=length_m, width_m=width_m,
+                    bearing_deg=bearing_deg,
+                )
+                placed = PyPlaced(feature, EARTH_RADIUS_M)
+                for along_fraction in FEATURE_FRACTIONS:
+                    for across_fraction in FEATURE_FRACTIONS:
+                        for sign in (1.0, -1.0):
+                            point = _probe_point(
+                                placed, sign * along_fraction, sign * across_fraction,
+                            )
+                            yield feature, placed, point, (
+                                length_m, width_m, lat, lon, bearing_deg,
+                                sign * along_fraction, sign * across_fraction,
+                            )
+
+
+def test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collapses():
+    """
+    BOUNDED at `FEATURES_WEIGHT_MAX_ABS`, absolutely rather than in ULP -- `weight_at`
+    reaches `atan2` and `sqrt` through `sphere_to_local` and nothing more (not
+    `local_to_sphere`'s `hypot`/`cos`/`sin`, which is the other tangent-frame direction and
+    a different profile).
+
+    Three-sided, because the choice of measure is itself the claim being made:
+
+    1. the absolute bound holds on all 98,000 probes;
+    2. it is not vacuous -- some probe genuinely approaches it;
+    3. the ULP measure really does collapse. The same sweep contains 312 points where one
+       language returns exactly 0.0 and the other returns as much as 8.617674e-29, which is
+       infinitely many ULP apart and physically indistinguishable from agreement. That is
+       `bump`'s support edge, NOT the reach gate -- 0 of the 312 are gate-rejected, and the
+       flips run in both directions -- and it is the finding that makes an absolute bound
+       the only honest one here. Per shape: 22 at 3x2, 8 at 20x20, 13 at 150x90, 25 at
+       500x500, 39 at 1200x300, 30 at 5000x30, 40 at 10000x40, 39 at 40x10000, 39 at
+       20000x7000, 57 at 40000x12000 -- worst magnitude 8.617674e-29, at 10000x40.
+    """
+    worst_abs = 0.0
+    worst_case = None
+    zero_flips = 0
+    worst_flip_magnitude = 0.0
+    checked = 0
+    for feature, placed, point, ctx in _weight_sweep():
+        want = placed.weight_at(point)
+        got = _engine_weight_at(feature, point)
+        difference = abs(want - got)
+        assert difference <= FEATURES_WEIGHT_MAX_ABS, (ctx, want, got, difference)
+        if difference > worst_abs:
+            worst_abs, worst_case = difference, (ctx, want, got)
+        if (want == 0.0) != (got == 0.0):
+            zero_flips += 1
+            worst_flip_magnitude = max(worst_flip_magnitude, abs(want), abs(got))
+        checked += 1
+
+    assert checked == 98000, checked
+    assert worst_abs > FEATURES_WEIGHT_MAX_ABS / 10.0, (
+        f"worst observed weight divergence was only {worst_abs:e}, an order of magnitude "
+        f"inside the bound -- either the corpus stopped reaching the hard cases or the "
+        f"bound wants tightening. Worst case: {worst_case}"
+    )
+    assert zero_flips > 0, (
+        "no probe found a point where one language's weight is exactly zero and the "
+        "other's is not; that flip is the reason this bound is absolute rather than in "
+        "ULP, and a sweep that cannot find it is not testing the claim"
+    )
+    assert zero_flips == 312, (
+        f"the support-edge zero/non-zero flip census measured {zero_flips}, not the 312 "
+        f"this corpus was measured to produce; the mechanism has changed"
+    )
+    assert worst_flip_magnitude < 1e-24, (
+        f"a zero/non-zero weight flip carried {worst_flip_magnitude:e}, far more than the "
+        f"8.617674e-29 support-edge cancellation measured on this corpus -- that would be a "
+        f"real divergence, not a last-bit one"
+    )
+
+
+def test_features_reach_gate_classifies_identically_in_both_languages():
+    """
+    The reach gate -- `point.vector.dot(feature.at.vector) < cos_reach` -- is measured to
+    fire on exactly the same points in both languages, and that is what licenses
+    `FEATURES_RESULT_MAX_ULPS` being 32768 rather than the ~105,470 a one-ULP threshold nudge
+    would imply. `cos_reach` is `cos(min(pi, hypot(length_m, width_m) / radius_m))`: two
+    bounded calls, so it *could* move, but `hypot` agrees to within 1 ULP and `cos` of that
+    lands on the same bit, so in practice it does not.
+
+    **Checked in BOTH directions**, because a gate can part company either way and a
+    one-directional test names the gate while only catching half of it:
+
+    A. Python rejects, engine must return exactly `0.0`. Catches a threshold that has moved
+       so as to make the ENGINE's gate more permissive.
+    B. Python accepts with a weight comfortably clear of zero, engine must also return
+       non-zero. Catches a threshold that has moved so as to make the engine's gate
+       STRICTER -- which direction A cannot see at all.
+
+    Direction B needs the "comfortably clear of zero" qualifier and it is measured, not
+    arbitrary. At `bump`'s support edge there are 312 points in this sweep where one
+    language returns exactly `0.0` and the other returns ~1e-29 (see
+    `test_features_weight_at_is_bounded_absolutely_because_the_ulp_measure_collapses` --
+    that is a different mechanism, and 0 of those 312 are gate-rejected). Their largest
+    magnitude measured 8.617674e-29, so a `GATE_CLEAR_OF_ZERO` floor of 1e-24 sits five
+    orders of magnitude above the contamination and still far below any weight that means
+    anything. Measured on the unmutated engine: zero violations in either direction.
+
+    The decisive test of direction B is the millimetre-band scan in
+    `test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero`, which puts
+    3,061 probes on the accepting side of the gate boundary itself with weights up to
+    2.3e-13; this sweep's direction B is the broader, weaker version over all ten shapes.
+    """
+    GATE_CLEAR_OF_ZERO = 1e-24
+    permissive_flips = 0
+    strict_flips = 0
+    gate_rejected = 0
+    gate_accepted_clear = 0
+    checked = 0
+    for feature, placed, point, ctx in _weight_sweep():
+        rejected = point.vector.dot(feature.at.vector) < placed._cos_reach
+        got = _engine_weight_at(feature, point)
+        if rejected:
+            gate_rejected += 1
+            if bits(got) != bits(0.0):
+                permissive_flips += 1
+        elif placed.weight_at(point) > GATE_CLEAR_OF_ZERO:
+            gate_accepted_clear += 1
+            if got == 0.0:
+                strict_flips += 1
+        checked += 1
+    assert checked == 98000
+    assert gate_rejected > 0, "the sweep never once reached past the gate; it proves nothing"
+    assert gate_accepted_clear > 0, (
+        "no probe landed inside the gate with a weight clear of zero, so direction B "
+        "asserted nothing"
+    )
+    assert permissive_flips == 0, (
+        f"{permissive_flips} of {gate_rejected} gate-rejected points got a non-zero weight "
+        f"from the engine -- the engine's reach gate has become more permissive than "
+        f"Python's, which would invalidate FEATURES_RESULT_MAX_ULPS's justification as "
+        f"well as this test"
+    )
+    assert strict_flips == 0, (
+        f"{strict_flips} of {gate_accepted_clear} points that Python accepts with a "
+        f"meaningful weight got exactly 0.0 from the engine -- the engine's reach gate has "
+        f"become stricter than Python's"
+    )
+
+
+def test_features_reach_gate_rejects_identically_and_authority_stays_raw_zero():
+    """
+    STRICT, RAW BITS, and deliberately at a 3x2 m feature.
+
+    The gate guards the corner: `along` a hair inside `length_m` and `across` a hair inside
+    `width_m` at the same time, so both `bump` factors are individually non-zero even though
+    the arc distance has already passed `reach_m`. How much weight leaks if the gate is
+    removed falls off as roughly a **fourth** power in each of `length_m` and `width_m` --
+    NOT the `1 / (length_m^2 * width_m^2)` recorded earlier in this slice, which came from a
+    relative-span grid that never reached the widest part of the band and understated the
+    fall-off by nearly ten orders of magnitude over the 3x2-to-1200x300 span; see
+    `FEATURE_SHAPES` for the re-measurement and the scan that produced it. The direction of
+    the correction does not change what this test needs: it makes the small feature MORE
+    necessary, not less, so this must still be probed at a SMALL feature and at the RIGHT
+    scale. At 3x2 the disagreement band between the numerical
+    gate and the exact geometry is about 1.4 mm wide, and probing at 1e-8 relative (about
+    3e-8 m) lands far inside it and finds only ~1e-38, which would prove nothing.
+
+    Scanned here at millimetre scale: 939 of 4,000 corner probes are gate-rejected while
+    carrying a non-zero ungated `bump` product, worst 2.277550e-13 at 1.438 mm of inset. The
+    other 3,061 sit on the ACCEPTING side of the same boundary with weights from 5.62e-25 up
+    to 2.30e-13, and they are checked too -- this is the scan where the gate's threshold
+    actually lives, so it is where a threshold nudged in the strict direction (`cos_reach`
+    plus one ULP, which direction A cannot see) shows up.
+
+    Note what is NOT asserted on the accepting side: raw-bit equality. 486 of the 4,000
+    probes have bit-different weights across the two languages, because on the accepting
+    side the weight is a real (if tiny) number computed through `sphere_to_local`'s bounded
+    `atan2`. The assertion there is that the engine agrees the feature APPLIES -- non-zero
+    against non-zero -- which is the gate's decision, not the weight's value.
+
+    The assertion is raw bits, not a tolerance, and it is on `authority` as well as on the
+    weight. 2.28e-13 of weight is invisible in `shaped_metres` -- an elevation tolerance in
+    metres would never notice it -- but `authority` starts at a hard `0.0` where
+    `max(0.0, tiny)` is `tiny`, so it is the field where deleting this gate becomes
+    observable. A tolerance on `authority` would make that untestable, which is why there
+    is not one here.
+    """
+    feature = _feature(
+        kind="rock", lat=12.34, lon=56.78, target_m=0.5, length_m=3.0, width_m=2.0,
+    )
+    placed = PyPlaced(feature, EARTH_RADIUS_M)
+    length_m, width_m = feature.length_m, feature.width_m
+
+    leaks = 0
+    accepted = 0
+    worst_leak = 0.0
+    worst_accepted = 0.0
+    worst_inset_mm = 0.0
+    for step in range(1, 4001):
+        inset = step * 1e-7
+        along_m = length_m * (1.0 - inset)
+        across_m = width_m * (1.0 - inset)
+        east_m = along_m * placed._along_e + across_m * placed._across_e
+        north_m = along_m * placed._along_n + across_m * placed._across_n
+        point = placed.frame.local_to_sphere(east_m, north_m)
+
+        if point.vector.dot(feature.at.vector) >= placed._cos_reach:
+            # Direction B: the gate let this one through, so if Python finds any weight
+            # here the engine must find some too. A `cos_reach` nudged one ULP in the
+            # strict direction rejects exactly these points and is caught right here.
+            want_inside = placed.weight_at(point)
+            if want_inside > 0.0:
+                accepted += 1
+                worst_accepted = max(worst_accepted, want_inside)
+                got_inside = _engine_weight_at(feature, point)
+                assert got_inside != 0.0, (
+                    "the engine's reach gate rejected a point Python's gate accepted with "
+                    "a real weight; cos_reach has moved in the strict direction",
+                    step, want_inside, got_inside,
+                )
+            continue
+
+        east_back, north_back = placed.frame.sphere_to_local(point)
+        along_back = east_back * placed._along_e + north_back * placed._along_n
+        across_back = east_back * placed._across_e + north_back * placed._across_n
+        ungated = (
+            py_features._bump(along_back, length_m) * py_features._bump(across_back, width_m)
+        )
+        if ungated <= 0.0:
+            continue  # gate-rejected, but the bumps would have zeroed it anyway
+        leaks += 1
+        worst_leak = max(worst_leak, ungated)
+        worst_inset_mm = max(
+            worst_inset_mm, (feature.reach_m() - math.hypot(along_m, across_m)) * 1000.0
+        )
+
+        # Raw bits, both languages, both fields. Not close_enough, not abs().
+        want_weight = placed.weight_at(point)
+        got_weight = _engine_weight_at(feature, point)
+        assert bits(want_weight) == bits(0.0), (ungated, want_weight)
+        assert bits(got_weight) == bits(0.0), (ungated, got_weight)
+
+        want = PyFeatures([feature], EARTH_RADIUS_M).apply(point, -30.0)
+        got = _engine_apply([feature], point, -30.0)
+        assert bits(want[1]) == bits(0.0), ("python authority", ungated, want[1])
+        assert bits(got[1]) == bits(0.0), ("engine authority", ungated, got[1])
+        assert bits(want[0]) == bits(got[0]), ("shaped_metres", want[0], got[0])
+
+    assert leaks >= 900, (
+        f"only {leaks} corner probes were gate-rejected with a non-zero ungated weight; "
+        f"the scan has drifted off the ~1.4 mm disagreement band this test exists to stand "
+        f"in, and proves nothing where it is now"
+    )
+    assert worst_leak > 1e-14, (
+        f"worst leaked weight was only {worst_leak:e}. Below ~1e-14 this test is back in "
+        f"the 1e-32-to-1e-44 band a large feature produces, which no assertion can "
+        f"distinguish from agreement -- probe at millimetre offsets, not at 1e-8 relative"
+    )
+    assert 1.0 < worst_inset_mm < 2.0, (
+        f"the gate/geometry disagreement band at 3x2 measured {worst_inset_mm:.4f} mm, not "
+        f"the ~1.4 mm this test was sized against"
+    )
+    assert accepted >= 3000, (
+        f"only {accepted} probes landed on the accepting side of the gate boundary, so "
+        f"direction B had almost nothing to assert over"
+    )
+    assert worst_accepted > 1e-14, (
+        f"the largest weight on the accepting side was only {worst_accepted:e}; the scan is "
+        f"no longer straddling the boundary and direction B proves nothing"
+    )
+    assert leaks + accepted == 4000, (leaks, accepted)
+
+
+def test_features_apply_agrees_within_its_own_per_field_measured_bounds():
+    """
+    BOUNDED, with `shaped_metres` and `authority` on separate, separately-measured bounds
+    (`FEATURES_RESULT_MAX_ULPS`/`FEATURES_RESULT_MAX_ABS` and `FEATURES_AUTHORITY_MAX_ABS`).
+    They are an elevation in metres and a dimensionless blend weight; one number for both
+    would be a bound borrowed from whichever field happened to be worse.
+
+    `shaped_metres` is asserted as "within its ULP bound OR within its absolute bound",
+    because neither half covers the whole range on its own: where the elevation cancels
+    towards zero the ULP measure is unbounded and meaningless, and where it is kilometres an
+    absolute bound alone is a weak assertion. Both halves are sized to this module's own
+    measured worst -- see each constant.
+
+    Two-sided, per this file's precedent: each bound must hold, and the sweep must genuinely
+    approach it.
+    """
+    worst_result_ulps = 0
+    worst_result_abs = 0.0
+    worst_authority_abs = 0.0
+    worst_result_case = None
+    checked = 0
+    for feature, placed, point, ctx in _weight_sweep():
+        for compose, target_m, elevation_m in FEATURE_APPLY_CASES:
+            shaped = PyFeature(
+                kind="f", at=feature.at, target_m=target_m, length_m=feature.length_m,
+                width_m=feature.width_m, bearing_deg=feature.bearing_deg, compose=compose,
+                marked=False, substrate=None,
+            )
+            want = PyFeatures([shaped], EARTH_RADIUS_M).apply(point, elevation_m)
+            got = _engine_apply([shaped], point, elevation_m)
+
+            result_abs = abs(want[0] - got[0])
+            assert (
+                close_enough(want[0], got[0], FEATURES_RESULT_MAX_ULPS)
+                or result_abs <= FEATURES_RESULT_MAX_ABS
+            ), ("shaped_metres", ctx, compose, target_m, elevation_m, want[0], got[0],
+                ulps_apart(want[0], got[0]), result_abs)
+
+            authority_abs = abs(want[1] - got[1])
+            assert authority_abs <= FEATURES_AUTHORITY_MAX_ABS, (
+                "authority", ctx, compose, target_m, elevation_m, want[1], got[1],
+                authority_abs,
+            )
+
+            if result_abs > worst_result_abs:
+                worst_result_abs = result_abs
+                worst_result_case = (ctx, compose, target_m, elevation_m, want, got)
+            worst_authority_abs = max(worst_authority_abs, authority_abs)
+            d = ulps_apart(want[0], got[0])
+            if d is not None and abs(want[0]) > 1e-6:
+                worst_result_ulps = max(worst_result_ulps, abs(d))
+            checked += 1
+
+    assert checked == 98000 * len(FEATURE_APPLY_CASES)
+    assert worst_result_ulps > MAX_TRANSCENDENTAL_ULPS, (
+        f"shaped_metres's worst divergence was only {worst_result_ulps} ULP, inside the "
+        f"ordinary {MAX_TRANSCENDENTAL_ULPS}-ULP bound -- if that is genuinely true this "
+        f"section does not need a bound of its own and should say so"
+    )
+    assert worst_result_ulps <= FEATURES_RESULT_MAX_ULPS, (
+        f"shaped_metres grew to {worst_result_ulps} ULP, past the measured "
+        f"FEATURES_RESULT_MAX_ULPS ({FEATURES_RESULT_MAX_ULPS}). Worst case: "
+        f"{worst_result_case}"
+    )
+    assert worst_result_abs > FEATURES_RESULT_MAX_ABS / 10.0, (
+        f"worst absolute shaped_metres divergence was only {worst_result_abs:e}; the corpus "
+        f"is no longer reaching the kilometre-lift cases this bound was sized on"
+    )
+    assert worst_authority_abs > FEATURES_AUTHORITY_MAX_ABS / 10.0, (
+        f"worst absolute authority divergence was only {worst_authority_abs:e}; either the "
+        f"corpus stopped reaching the hard cases or the bound wants tightening"
+    )
+
+
+def test_features_apply_is_empty_single_and_order_sensitive():
+    """
+    An empty `Features` (the loop never runs), a single feature, and the same two features
+    in both orders. Order is SEMANTIC here, not merely float non-associativity: each
+    iteration's `shaped_metres` feeds the next feature's `lift`, so a bar listed after the
+    channel it crosses sits on the carved bottom, and listed before it is cut straight
+    through. The two orders must therefore DISAGREE with each other -- by tens of metres,
+    not by last bits -- while each agrees with its own Python counterpart.
+    """
+    far = SpherePoint.from_latlon(40.0, 20.0)
+    want_empty = PyFeatures([], EARTH_RADIUS_M).apply(far, -12.5)
+    got_empty = _engine_apply([], far, -12.5)
+    assert bits(want_empty[0]) == bits(got_empty[0]) == bits(-12.5)
+    assert bits(want_empty[1]) == bits(got_empty[1]) == bits(0.0)
+    assert engine.features_round_trip([], EARTH_RADIUS_M) == (0, [], [])
+
+    channel = _feature(
+        kind="channel", lat=5.0, lon=5.0, target_m=-60.0, length_m=4000.0, width_m=400.0,
+        bearing_deg=90.0, compose=PY_CARVE,
+    )
+    bar = _feature(
+        kind="bar", lat=5.0, lon=5.0, target_m=-8.0, length_m=800.0, width_m=2000.0,
+        bearing_deg=0.0, compose=PY_RAISE,
+    )
+    point = SpherePoint.from_latlon(5.0005, 5.0005)
+
+    single_want = PyFeatures([channel], EARTH_RADIUS_M).apply(point, -30.0)
+    single_got = _engine_apply([channel], point, -30.0)
+    assert abs(single_want[0] - single_got[0]) <= FEATURES_RESULT_MAX_ABS
+    assert abs(single_want[1] - single_got[1]) <= FEATURES_AUTHORITY_MAX_ABS
+    assert single_want[0] < -30.0, "the channel must actually carve for this to be a test"
+
+    results = {}
+    for order in ([channel, bar], [bar, channel]):
+        kinds = tuple(f.kind for f in order)
+        want = PyFeatures(order, EARTH_RADIUS_M).apply(point, -30.0)
+        got = _engine_apply(order, point, -30.0)
+        assert abs(want[0] - got[0]) <= FEATURES_RESULT_MAX_ABS, (kinds, want, got)
+        assert abs(want[1] - got[1]) <= FEATURES_AUTHORITY_MAX_ABS, (kinds, want, got)
+        assert engine.features_round_trip(
+            [_feature_tuple(f) for f in order], EARTH_RADIUS_M
+        ) == (2, list(kinds), [None, None])
+        results[kinds] = (want, got)
+
+    forwards = results[("channel", "bar")]
+    backwards = results[("bar", "channel")]
+    assert abs(forwards[0][0] - backwards[0][0]) > 10.0, (
+        "swapping the two features must change the answer by tens of metres; if it does "
+        "not, this fixture is not exercising order at all", forwards, backwards,
+    )
+    assert abs(forwards[1][0] - backwards[1][0]) > 10.0, (
+        "the engine must be as order-sensitive as the Python", forwards, backwards,
+    )
+
+
+def test_features_apply_exercises_all_three_compose_arms_including_shape():
+    """
+    All three arms of the compose enum, each on both sides of its own guard.
+
+    `SHAPE` in particular: it has no guard at all, so a widened RAISE guard (`compose !=
+    CARVE`) would silently swallow it. The first fixture below is the case that
+    distinguishes them -- a SHAPE feature whose `lift` is negative at full weight. Python
+    gives `(-10.0, 1.0)`; a RAISE-guard-widened engine would give `(-5.0, 0.0)`, which is a
+    whole feature going missing rather than a last bit moving. Probed at the feature's own
+    centre, where the weight is exactly 1.0 and the arithmetic is exact, so these are
+    raw-bit comparisons rather than bounded ones.
+    """
+    at_centre = SpherePoint.from_latlon(10.0, 20.0)
+
+    def centred(compose, target_m):
+        return PyFeature(
+            kind=compose, at=at_centre, target_m=target_m, length_m=1200.0, width_m=300.0,
+            bearing_deg=0.0, compose=compose, marked=False, substrate=None,
+        )
+
+    assert same(PyPlaced(centred(PY_SHAPE, 0.0), EARTH_RADIUS_M).weight_at(at_centre), 1.0)
+
+    cases = [
+        # (compose, target_m, elevation_m, expected shaped_metres, expected authority)
+        (PY_SHAPE, -10.0, -5.0, -10.0, 1.0),   # SHAPE going DOWN: a RAISE guard would skip
+        (PY_SHAPE, -1.0, -5.0, -1.0, 1.0),     # SHAPE going up: a CARVE guard would skip
+        (PY_RAISE, -1.0, -5.0, -1.0, 1.0),     # RAISE contributing
+        (PY_RAISE, -10.0, -5.0, -5.0, 0.0),    # RAISE skipping, lift < 0
+        (PY_CARVE, -10.0, -5.0, -10.0, 1.0),   # CARVE contributing
+        (PY_CARVE, -1.0, -5.0, -5.0, 0.0),     # CARVE skipping, lift > 0
+        (PY_RAISE, -5.0, -5.0, -5.0, 0.0),     # lift exactly 0.0: RAISE skips
+        (PY_CARVE, -5.0, -5.0, -5.0, 0.0),     # lift exactly 0.0: CARVE skips too
+    ]
+    for compose, target_m, elevation_m, expected_result, expected_authority in cases:
+        feature = centred(compose, target_m)
+        want = PyFeatures([feature], EARTH_RADIUS_M).apply(at_centre, elevation_m)
+        got = _engine_apply([feature], at_centre, elevation_m)
+        assert bits(want[0]) == bits(got[0]), (compose, target_m, elevation_m, want, got)
+        assert bits(want[1]) == bits(got[1]), (compose, target_m, elevation_m, want, got)
+        assert want == (expected_result, expected_authority), (
+            "the Python reference itself has moved", compose, target_m, elevation_m, want,
+        )
+
+
+def test_features_apply_keeps_negative_zero_where_a_contribution_is_skipped():
+    """
+    STRICT, RAW BITS. Two separate places in `apply`'s loop where a skipped contribution is
+    bit-observable, and `-0.0` is the only thing that can see either of them:
+
+    1. the `weight <= 0.0` guard. Probed far outside the reach, where the weight is exactly
+       `0.0`. Weakening it to `weight < 0.0` lets the zero-weight case fall through to
+       `result += weight * lift`, which is `-0.0 + 0.0 * lift` = `+0.0` -- value-equal,
+       bit-different.
+    2. the RAISE and CARVE guards, at `lift == 0.0` exactly (`elevation_m == -0.0`,
+       `target_m == 0.0`). Both skip there, keeping `-0.0`; folding them into one rule that
+       fell through would give `-0.0 + weight * 0.0` = `+0.0`.
+
+    `SHAPE` has no guard, so at `lift == 0.0` it DOES fall through and DOES produce `+0.0` --
+    included below, because "both languages produce +0.0 here" is as much a part of the
+    contract as "both produce -0.0 there", and a test that only pinned the minus signs would
+    pass against an engine that had lost the distinction entirely.
+    """
+    at_centre = SpherePoint.from_latlon(10.0, 20.0)
+    far = SpherePoint.from_latlon(40.0, 20.0)
+
+    # 1. weight exactly zero, elevation_m == -0.0.
+    for compose in (PY_RAISE, PY_CARVE, PY_SHAPE):
+        feature = PyFeature(
+            kind="far", at=at_centre, target_m=5.0, length_m=1200.0, width_m=300.0,
+            bearing_deg=0.0, compose=compose, marked=False, substrate=None,
+        )
+        assert bits(PyPlaced(feature, EARTH_RADIUS_M).weight_at(far)) == bits(0.0)
+        assert bits(_engine_weight_at(feature, far)) == bits(0.0)
+        want = PyFeatures([feature], EARTH_RADIUS_M).apply(far, -0.0)
+        got = _engine_apply([feature], far, -0.0)
+        assert bits(want[0]) == bits(-0.0), ("python lost the sign", compose, want)
+        assert bits(got[0]) == bits(-0.0), (
+            "the engine turned -0.0 into +0.0 on a zero-weight feature; the `weight <= 0.0`"
+            " guard has been weakened to `weight < 0.0`", compose, got,
+        )
+        assert bits(want[1]) == bits(got[1]) == bits(0.0)
+
+    # 2. lift exactly zero at full weight, elevation_m == -0.0, target_m == 0.0.
+    expected_bits = {PY_RAISE: bits(-0.0), PY_CARVE: bits(-0.0), PY_SHAPE: bits(0.0)}
+    for compose, expected in expected_bits.items():
+        feature = PyFeature(
+            kind="zero", at=at_centre, target_m=0.0, length_m=1200.0, width_m=300.0,
+            bearing_deg=0.0, compose=compose, marked=False, substrate=None,
+        )
+        want = PyFeatures([feature], EARTH_RADIUS_M).apply(at_centre, -0.0)
+        got = _engine_apply([feature], at_centre, -0.0)
+        assert bits(want[0]) == expected, ("python reference moved", compose, want)
+        assert bits(got[0]) == expected, (compose, want, got)
+        assert bits(want[1]) == bits(got[1]), (compose, want, got)
+
+    # 3. an empty Features must not touch the sign either.
+    want = PyFeatures([], EARTH_RADIUS_M).apply(at_centre, -0.0)
+    got = _engine_apply([], at_centre, -0.0)
+    assert bits(want[0]) == bits(got[0]) == bits(-0.0)
+
+
+def _mark(kind, lat, lon, marked=True):
+    return PyFeature(
+        kind=kind, at=SpherePoint.from_latlon(lat, lon), target_m=-3.0, length_m=100.0,
+        width_m=80.0, bearing_deg=10.0, compose=PY_RAISE, marked=marked, substrate=None,
+    )
+
+
+MARKS_FIXTURE = [
+    _mark("a", 0.01, 0.0), _mark("b", -0.01, 0.0), _mark("c", 0.0, 0.02),
+    _mark("d", 0.05, 0.05), _mark("unmarked", 0.0, 0.001, marked=False),
+    _mark("e", -0.2, 0.3),
+]
+"""`a` and `b` are placed symmetrically so their distances from the origin are bit-identical
+-- the tie the stable sort has to survive. `unmarked` is there so the `marked` filter is
+exercised by something other than its absence, and it is the nearest feature of the lot, so
+a filter that stopped filtering would change every answer below."""
+
+
+def test_features_marks_near_agrees_at_several_radii():
+    """
+    `distance_m` is BOUNDED at `FEATURES_MARK_DISTANCE_MAX_ULPS` (2, measured over 120,000
+    mark distances); membership and order are DISCRETE and must match exactly.
+
+    Radii chosen to select none, some and all of the fixture, including one below the
+    nearest mark and one at 1e9 (past the far side of the planet).
+    """
+    centre = SpherePoint.from_latlon(0.0, 0.0)
+    selected = []
+    for within_m in (0.0, 500.0, 1000.0, 1200.0, 2300.0, 5000.0, 50000.0, 1e9):
+        want = [
+            (d, f.kind)
+            for d, f in PyFeatures(MARKS_FIXTURE, EARTH_RADIUS_M).marks_near(centre, within_m)
+        ]
+        got = _engine_marks_near(MARKS_FIXTURE, centre, within_m)
+        assert [k for _, k in want] == [k for _, k in got], (within_m, want, got)
+        for (want_d, kind), (got_d, _) in zip(want, got):
+            assert close_enough(want_d, got_d, FEATURES_MARK_DISTANCE_MAX_ULPS), (
+                within_m, kind, want_d, got_d, ulps_apart(want_d, got_d),
+            )
+        assert all(kind != "unmarked" for _, kind in want), "the marked filter is not filtering"
+        selected.append(len(want))
+    assert selected == [0, 0, 0, 2, 3, 3, 5, 5], selected
+
+    empty = PyFeatures([], EARTH_RADIUS_M).marks_near(centre, 1e9)
+    assert empty == ()
+    assert _engine_marks_near([], centre, 1e9) == []
+
+
+def test_features_marks_near_keeps_construction_order_on_a_tie():
+    """
+    DISCRETE, and no tolerance absorbs it. Python's `list.sort` is stable and Rust's
+    `sort_by` is stable, so two marks at the same distance must come back in the order they
+    were given -- which is only observable if the two can be told apart, hence the binding
+    answering with indices rather than cloned features.
+
+    `a` at +0.01 deg and `b` at -0.01 deg of latitude are bit-identical distances from the
+    origin (asserted, not assumed). Both build orders are checked: an unstable sort would be
+    free to return either order for either build, so testing one build order alone could
+    pass by luck.
+
+    **A two-element tie is not sufficient on its own, and that was measured rather than
+    assumed.** Rust's `sort_unstable_by` is pattern-defeating quicksort: it falls back to
+    insertion sort on short slices and detects an all-equal partition outright, so
+    substituting it for `sort_by` reorders NOTHING for a 2-mark tie, nor for a single tie
+    group of up to 64 marks. Catching it takes ties scattered through a list long enough to
+    reach the quicksort proper. 60 marks at 30 distinct distances, each distance used twice,
+    is the smallest fixture measured to do it, and the second half of this test is exactly
+    that -- without it the whole test passes against an unstable sort.
+    """
+    centre = SpherePoint.from_latlon(0.0, 0.0)
+    north, south = MARKS_FIXTURE[0], MARKS_FIXTURE[1]
+    assert bits(centre.distance_to(north.at, EARTH_RADIUS_M)) == \
+        bits(centre.distance_to(south.at, EARTH_RADIUS_M)), \
+        "the fixture no longer ties; this test cannot see stability without a tie"
+
+    for order in ([north, south], [south, north]):
+        expected = [f.kind for f in order]
+        want = [f.kind for _, f in PyFeatures(order, EARTH_RADIUS_M).marks_near(centre, 5000.0)]
+        got = [kind for _, kind in _engine_marks_near(order, centre, 5000.0)]
+        assert want == expected, ("python's sort stopped being stable", want, expected)
+        assert got == expected, (
+            "the engine reordered two tied marks; sort_by has become sort_unstable_by",
+            got, expected,
+        )
+
+    # 60 marks over 30 distances, each used twice: marks i and i+30 tie, and the pairs sit
+    # far enough apart in the input that an unstable partition genuinely swaps them.
+    paired = [_mark(f"k{i}", 0.01 * (1 + (i % 30)), 0.0) for i in range(60)]
+    distances = [centre.distance_to(f.at, EARTH_RADIUS_M) for f in paired]
+    assert len(set(bits(d) for d in distances)) == 30, (
+        "the 60-mark fixture no longer resolves to 30 bit-identical pairs, so it is no "
+        "longer a tie fixture at all"
+    )
+    expected = [f"k{i}" for j in range(30) for i in (j, j + 30)]
+    want = [f.kind for _, f in PyFeatures(paired, EARTH_RADIUS_M).marks_near(centre, 1e9)]
+    got = [kind for _, kind in _engine_marks_near(paired, centre, 1e9)]
+    assert want == expected, ("python's sort stopped being stable", want, expected)
+    assert got == expected, (
+        "the engine reordered tied marks in a 60-mark list; sort_by has become "
+        "sort_unstable_by", got, expected,
+    )
+
+
+def test_features_marks_near_names_which_feature_when_several_share_a_kind():
+    """
+    DISCRETE, on raw indices rather than on kinds.
+
+    The binding answers `marks_near` with `(distance_m, index)` and recovers each index by
+    **pointer identity** against `built.placed`, and its doc comment justifies that O(n^2)
+    walk on the grounds that two features may share a `kind`. Until this test existed that
+    hazard was hypothetical: every other fixture in this section uses distinct kinds
+    (`a`..`e`, `k0`..`k59`), and `_engine_marks_near` maps the returned index straight back
+    to `features[index].kind`, so a wrong index carrying the right kind is invisible by
+    construction. Substituting `placed.feature.kind == feature.kind` for
+    `std::ptr::eq(&placed.feature, feature)` survived both suites.
+
+    It cannot survive this one. Five rocks all called `rock` are placed so that distance
+    order and construction order disagree; `Vec::position` returns the FIRST match, so a
+    kind comparison answers index 0 for every mark. This test compares indices directly and
+    never looks at a kind, which is the only way the identity mechanism is observable at
+    all.
+
+    A chart with five unnamed rocks on it is the ordinary case, not the exotic one: `kind`
+    is documented as "what it is called, for diagnostics and for chart symbols", so it is a
+    symbol class, and symbol classes repeat.
+    """
+    centre = SpherePoint.from_latlon(0.0, 0.0)
+    # Construction order deliberately not distance order.
+    offsets = [0.05, 0.03, 0.01, 0.04, 0.02]
+    rocks = [_mark("rock", lat, 0.0) for lat in offsets]
+    assert len({f.kind for f in rocks}) == 1, "the fixture must actually share one kind"
+
+    want_pairs = PyFeatures(rocks, EARTH_RADIUS_M).marks_near(centre, 1e9)
+    want_indices = [next(i for i, f in enumerate(rocks) if f is feature)
+                    for _, feature in want_pairs]
+    assert want_indices == [2, 4, 1, 3, 0], (
+        "the fixture no longer separates construction order from distance order, so a "
+        "binding that answered 0 for everything could pass", want_indices,
+    )
+
+    v = centre.vector
+    got = engine.features_marks_near(
+        [_feature_tuple(f) for f in rocks], v.x, v.y, v.z, 1e9, EARTH_RADIUS_M,
+    )
+    got_indices = [index for _, index in got]
+    assert got_indices == want_indices, (
+        "the engine named the wrong placed feature: it is matching marks back to features "
+        "by something other than identity, and every one of these shares a kind",
+        got_indices, want_indices,
+    )
+
+    # And a tie inside the shared kind, where identity is the only thing left to tell the
+    # two apart -- same distance, same kind, different index.
+    tied = [_mark("rock", 0.01, 0.0), _mark("rock", -0.01, 0.0)]
+    assert bits(centre.distance_to(tied[0].at, EARTH_RADIUS_M)) == \
+        bits(centre.distance_to(tied[1].at, EARTH_RADIUS_M)), "the tie fixture no longer ties"
+    tied_got = engine.features_marks_near(
+        [_feature_tuple(f) for f in tied], v.x, v.y, v.z, 1e9, EARTH_RADIUS_M,
+    )
+    assert [index for _, index in tied_got] == [0, 1], (
+        "two tied marks of the same kind must still come back as index 0 then index 1",
+        tied_got,
+    )
+
+
+def _marks_corpus(count=400, probes=300):
+    state = 0x243F6A8885A308D3
+    mask = (1 << 64) - 1
+
+    def nxt():
+        nonlocal state
+        state = (state * 6364136223846793005 + 1442695040888963407) & mask
+        h = state ^ (state >> 33)
+        return (h >> 11) / float(1 << 53)
+
+    features = [
+        _mark(f"m{i}", nxt() * 179.8 - 89.9, nxt() * 360.0 - 180.0) for i in range(count)
+    ]
+    points = [
+        SpherePoint.from_latlon(nxt() * 179.8 - 89.9, nxt() * 360.0 - 180.0)
+        for _ in range(probes)
+    ]
+    return features, points
+
+
+def test_features_marks_near_distance_and_order_agree_over_a_corpus():
+    """
+    The bounded half of `marks_near`, over 400 marks x 300 probe points: `distance_m` within
+    `FEATURES_MARK_DISTANCE_MAX_ULPS`, and the resulting order identical every time.
+    """
+    features, points = _marks_corpus()
+    py = PyFeatures(features, EARTH_RADIUS_M)
+    worst = 0
+    compared = 0
+    for point in points:
+        want = py.marks_near(point, 1e9)
+        got = _engine_marks_near(features, point, 1e9)
+        assert [f.kind for _, f in want] == [k for _, k in got], point.to_latlon()
+        for (want_d, feature), (got_d, _) in zip(want, got):
+            assert close_enough(want_d, got_d, FEATURES_MARK_DISTANCE_MAX_ULPS), (
+                feature.kind, want_d, got_d, ulps_apart(want_d, got_d),
+            )
+            d = ulps_apart(want_d, got_d)
+            if d is not None:
+                worst = max(worst, abs(d))
+            compared += 1
+    assert compared == 400 * 300
+    assert worst == FEATURES_MARK_DISTANCE_MAX_ULPS, (
+        f"distance_m's worst divergence measured {worst} ULP, not the "
+        f"{FEATURES_MARK_DISTANCE_MAX_ULPS} this bound was sized on"
+    )
+
+
+def test_features_marks_near_membership_can_flip_when_within_m_is_taken_from_a_distance():
+    """
+    THE FINDING, reported rather than bounded, because a discrete flip is the one thing no
+    tolerance absorbs.
+
+    `distance_m` is bounded at 2 ULP but it feeds `distance <= within_m`, which is a yes or
+    a no. Ordinarily the margin is enormous: over this corpus the smallest gap between any
+    two adjacent mark distances measured 20,709,884 ULP (0.0386 m), so nothing within 2 ULP
+    could reorder two marks; and the nearest a mark distance came to a round `within_m`
+    (1e5 ... 1e7) was 3.17 m, so nothing within 2 ULP could reclassify one either. Both are
+    asserted below, so the claim is measured rather than believed.
+
+    But a caller who derives `within_m` FROM a distance -- "everything at least as close as
+    that rock" -- lands exactly on the boundary, and there the 2 ULP decides. Measured: of
+    1,800 such boundary cases (300 probe points x the six nearest marks to each), **174 --
+    9.67% -- return a different set of marks from the engine than from the Python**, in
+    every observed case one fewer, because the engine's distance for the boundary mark came
+    out fractionally larger than the Python value being used as the threshold.
+
+    This is not a defect in the port and no bound would fix it: it is what "bounded" means
+    when the consumer is a comparison operator. It is pinned here so the behaviour cannot
+    change unnoticed, and so a caller computing `within_m` from a distance obtained from the
+    other language knows it is standing on the edge.
+    """
+    features, points = _marks_corpus()
+    py = PyFeatures(features, EARTH_RADIUS_M)
+
+    smallest_gap_ulps = None
+    for point in points:
+        distances = [d for d, _ in py.marks_near(point, 1e9)]
+        for i in range(len(distances) - 1):
+            gap = ulps_apart(distances[i], distances[i + 1])
+            if gap is not None and (smallest_gap_ulps is None or gap < smallest_gap_ulps):
+                smallest_gap_ulps = gap
+    assert smallest_gap_ulps is not None
+    assert smallest_gap_ulps > 1_000_000 * FEATURES_MARK_DISTANCE_MAX_ULPS, (
+        f"two marks came within {smallest_gap_ulps} ULP of each other, close enough to the "
+        f"{FEATURES_MARK_DISTANCE_MAX_ULPS}-ULP distance bound that the two languages could "
+        f"sort them differently -- a reordering hazard this corpus was measured not to have"
+    )
+
+    closest_to_a_round_radius = None
+    for point in points:
+        for distance_m in (d for d, _ in py.marks_near(point, 1e9)):
+            for within_m in (1e5, 5e5, 1e6, 5e6, 1e7):
+                margin = abs(distance_m - within_m)
+                if closest_to_a_round_radius is None or margin < closest_to_a_round_radius:
+                    closest_to_a_round_radius = margin
+    assert closest_to_a_round_radius > 1.0, (
+        f"a mark sat {closest_to_a_round_radius:e} m from a round within_m; at that margin a "
+        f"bounded distance could reclassify it and this corpus would be measuring luck"
+    )
+
+    flips = 0
+    boundary_cases = 0
+    for point in points:
+        for boundary_m, _ in py.marks_near(point, 1e9)[:6]:
+            want = [f.kind for _, f in py.marks_near(point, boundary_m)]
+            got = [kind for _, kind in _engine_marks_near(features, point, boundary_m)]
+            boundary_cases += 1
+            if want != got:
+                flips += 1
+                assert len(got) == len(want) - 1, (
+                    "a boundary flip that was not the expected 'engine excludes the mark "
+                    "the threshold came from' shape", boundary_m, want, got,
+                )
+                assert set(want) > set(got), (boundary_m, want, got)
+    assert boundary_cases == 1800, boundary_cases
+    assert flips > 0, (
+        "no boundary flip at all. That would be a change in behaviour rather than an "
+        "improvement to celebrate quietly -- distance_m is still bounded at 2 ULP and `<=` "
+        "is still a hard comparison, so re-measure before deleting this test"
+    )
+    assert 100 <= flips <= 300, (
+        f"{flips} of {boundary_cases} boundary cases flipped; the measured figure was 174 "
+        f"(9.67%) and a large move in either direction means distance_m's agreement has "
+        f"changed"
+    )
+
+
+def test_features_honour_a_non_earth_radius():
+    """
+    `radius_m` is threaded through `Features::new` (into every `Placed`'s frame and
+    `cos_reach`) and separately through `marks_near`'s `distance_to`. Hard-coding
+    `EARTH_RADIUS_M` in either place passes every other test in this section, because every
+    other test uses Earth.
+
+    1000 m: a feature 300 m long is then a sixth of the way round the world, so the answers
+    are nowhere near their Earth-radius counterparts -- asserted below, so this cannot pass
+    by the two radii happening to agree.
+    """
+    radius_m = 1000.0
+    bank = PyFeature(
+        kind="bank", at=SpherePoint.from_latlon(0.0, 0.0), target_m=-3.0, length_m=100.0,
+        width_m=80.0, bearing_deg=25.0, compose=PY_RAISE, marked=True, substrate=None,
+    )
+    trench = PyFeature(
+        kind="trench", at=SpherePoint.from_latlon(1.0, 2.0), target_m=-9.0, length_m=300.0,
+        width_m=200.0, bearing_deg=200.0, compose=PY_CARVE, marked=True, substrate="rock",
+    )
+    features = [bank, trench]
+    point = SpherePoint.from_latlon(0.3, 0.4)
+
+    want = PyFeatures(features, radius_m).apply(point, -5.0)
+    got = _engine_apply(features, point, -5.0, radius_m)
+    assert abs(want[0] - got[0]) <= FEATURES_RESULT_MAX_ABS, (want, got)
+    assert abs(want[1] - got[1]) <= FEATURES_AUTHORITY_MAX_ABS, (want, got)
+    assert want[1] > 0.5, "the fixture must actually engage a feature at this radius"
+
+    earth = PyFeatures(features, EARTH_RADIUS_M).apply(point, -5.0)
+    assert abs(earth[0] - want[0]) > 1.0, (
+        "the two radii give the same answer, so this fixture cannot detect a hard-coded "
+        "EARTH_RADIUS_M", earth, want,
+    )
+
+    want_marks = [
+        (d, f.kind) for d, f in PyFeatures(features, radius_m).marks_near(point, 60.0)
+    ]
+    got_marks = _engine_marks_near(features, point, 60.0, radius_m)
+    assert [k for _, k in want_marks] == [k for _, k in got_marks] == ["bank", "trench"]
+    for (want_d, kind), (got_d, _) in zip(want_marks, got_marks):
+        assert close_enough(want_d, got_d, FEATURES_MARK_DISTANCE_MAX_ULPS), (
+            kind, want_d, got_d,
+        )
+    assert PyFeatures(features, EARTH_RADIUS_M).marks_near(point, 60.0) == (), (
+        "at Earth's radius this within_m selects nothing, which is what makes the 1000 m "
+        "answer above evidence that radius_m reached marks_near"
+    )
+
+
+def test_features_the_reach_arc_is_clamped_at_pi_when_a_feature_outgrows_its_world():
+    """
+    BOUNDED at `FEATURES_WEIGHT_MAX_ABS`, and it exists solely to put a test under the
+    `min(math.pi, ...)` in `Placed.__init__`:
+
+        self._cos_reach = math.cos(min(math.pi, feature.reach_m() / radius_m))
+
+    **That clamp had no coverage at all, and deleting it is not a subtle divergence.**
+    `test_features_honour_a_non_earth_radius` is the only test in this file that leaves
+    Earth, and its features are 100x80 m and 300x200 m at `radius_m = 1000.0`, so
+    `reach_m / radius_m` is 0.128 and 0.360 -- nowhere near pi, and the clamp never fires.
+    Nothing else in the corpus goes near it either. Replacing the whole clamp with the raw
+    ratio passed `cargo test --release` and `pytest tests/test_conformance.py` outright.
+
+    The fixture below fires it: a 5000x5000 m feature on a 1000 m world has
+    `reach_m / radius_m = 7.0710678`, so Python clamps to pi and `cos_reach` is exactly
+    `-1.0` -- the gate cannot reject anything, which is correct, because past half a turn
+    the arc distance starts coming back down and a cosine threshold has stopped meaning
+    anything. Unclamped, `cos(7.0710678)` is `+0.7053`, a gate that rejects most of the
+    world. Measured against the unclamped variant at these probes: 0.8867793645367641
+    against 0.0 at (0, 60), 0.8096072198488381 against 0.0 at (0, 80),
+    0.7195243272032742 against 0.0 at (0, 100), 0.5169588223811201 against 0.0 at
+    (0, 140). A divergence of 0.89 in a quantity whose entire range is [0, 1], against a
+    bound of 2.2e-14.
+
+    `radius_m` is a plain argument of `Features.__init__`; a world generator that models a
+    moon, an asteroid or a test fixture at kilometre scale reaches this on its first
+    feature.
+    """
+    radius_m = 1000.0
+    atoll = PyFeature(
+        kind="atoll", at=SpherePoint.from_latlon(0.0, 0.0), target_m=-3.0,
+        length_m=5000.0, width_m=5000.0, bearing_deg=0.0, compose=PY_RAISE,
+        marked=True, substrate=None,
+    )
+    placed = PyPlaced(atoll, radius_m)
+    assert atoll.reach_m() / radius_m > math.pi, (
+        "the fixture no longer outgrows its world, so the pi clamp is not exercised and "
+        "this test asserts nothing it means to"
+    )
+    assert bits(placed._cos_reach) == bits(-1.0), (
+        "the clamp must take cos_reach to exactly -1.0 here; if Python's own value has "
+        "moved, the engine comparison below is measuring the wrong thing", placed._cos_reach,
+    )
+
+    checked = 0
+    for latitude_deg, longitude_deg in [
+        (0.0, 0.0), (0.0, 10.0), (0.0, 30.0), (0.0, 60.0), (0.0, 80.0), (0.0, 100.0),
+        (0.0, 140.0), (0.0, 179.0), (30.0, 60.0), (-45.0, -120.0), (89.0, 200.0),
+    ]:
+        point = SpherePoint.from_latlon(latitude_deg, longitude_deg)
+        want = placed.weight_at(point)
+        got = _engine_weight_at(atoll, point, radius_m)
+        assert abs(want - got) <= FEATURES_WEIGHT_MAX_ABS, (
+            latitude_deg, longitude_deg, want, got,
+        )
+        checked += 1
+    assert checked == 11
+
+    # The half of the world an unclamped cos_reach would reject: dot below cos(7.0710678).
+    far = SpherePoint.from_latlon(0.0, 140.0)
+    assert far.vector.dot(atoll.at.vector) < math.cos(atoll.reach_m() / radius_m), (
+        "this probe no longer sits where an unclamped gate would reject it, so it can no "
+        "longer tell a clamped cos_reach from an unclamped one"
+    )
+    assert placed.weight_at(far) > 0.5, (
+        "the clamped gate must accept this probe with a weight nothing like zero -- that "
+        "gap is the whole signal", placed.weight_at(far),
+    )
+    assert abs(placed.weight_at(far) - _engine_weight_at(atoll, far, radius_m)) \
+        <= FEATURES_WEIGHT_MAX_ABS
+
+
+def test_features_substrate_none_survives_the_crossing_as_none_not_as_empty():
+    """
+    `substrate` is an `is None` sentinel, not a falsy check: `None` means "derive the bottom
+    from the shape of the ground", and an empty string does not mean the same thing.
+
+    **Nothing inside the crate reads this field.** `substrate.py` is not ported, so
+    `Features::apply` and `marks_near` are both indifferent to it, and an earlier version of
+    this test -- which only round-tripped `kind` -- therefore could not fail on what it was
+    named for: a binding doing `substrate.clone().unwrap_or_default()` survived the entire
+    conformance file at exit 0. A test that cannot fail is worse than no test, because it
+    reads as coverage.
+
+    So the field is round-tripped explicitly through `features_round_trip`, which is the only
+    place in the binding surface that observes it. That makes the sentinel's survival an
+    assertion rather than an assumption, and it will keep being one when `substrate.py`
+    arrives to depend on it. `None` and `""` must come back distinct, and `None` must come
+    back as `None`.
+    """
+    derived = _feature(kind="derived", substrate=None)
+    stated = _feature(kind="stated", substrate="")
+    named = _feature(kind="named", substrate="rock")
+    features = [derived, stated, named]
+    assert derived.substrate is None and stated.substrate == "" and named.substrate == "rock"
+
+    count, kinds, substrates = engine.features_round_trip(
+        [_feature_tuple(f) for f in features], EARTH_RADIUS_M,
+    )
+    assert (count, kinds) == (3, ["derived", "stated", "named"])
+    assert substrates == [None, "", "rock"], (
+        "the substrate sentinel did not survive the crossing intact; a binding that "
+        "flattens Option<String> (unwrap_or_default) turns None into the empty string, "
+        "which means something different",
+        substrates,
+    )
+    assert substrates[0] is None, "None came back as something falsy but not None"
+    assert substrates[1] is not None, "the empty string came back as None"
+
+    python_side = list(PyFeatures(features, EARTH_RADIUS_M))
+    assert len(PyFeatures(features, EARTH_RADIUS_M)) == count
+    assert [f.kind for f in python_side] == kinds
+    assert [f.substrate for f in python_side] == substrates
