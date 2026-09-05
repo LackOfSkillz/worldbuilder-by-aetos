@@ -321,7 +321,7 @@ jobs:
       # THE COUNT GATE, python half. The step above asks "did anything fail". It cannot ask
       # "did anything RUN", and on THIS suite that distinction has already cost a slice:
       # with WORLDBUILDER_REQUIRE_ENGINE unset and no engine built, tests/test_conformance.py
-      # skips AT IMPORT, all 150 of its comparisons collapse into one `1 skipped`, and pytest
+      # skips AT IMPORT, all 156 of its comparisons collapse into one `1 skipped`, and pytest
       # exits 0 reporting `240 passed, 1 skipped`. Green, having compared nothing. Nobody
       # scanning that log finds a suspicious number, because there isn't one.
       #
@@ -329,20 +329,27 @@ jobs:
       # statements that must agree -- and the script fails hard if either is absent, rather
       # than matching nothing and calling it clean.
       #
-      # 391 = 150 in test_conformance.py + 240 across the other thirteen pre-existing files +
+      # 397 = 156 in test_conformance.py + 240 across the other thirteen pre-existing files +
       # 1 in tests/test_installation.py (added by the identity slice's Task 1; it needs a
       # subprocess with a different cwd, so it could not be an ordinary unit test, and it
       # joins this suite rather than living elsewhere because this count gate is the thing
       # that would otherwise let it silently stop running). NOTE: the Task 2 report reads
       # "390 conformance, 240 elsewhere"; that is a misreading of its own run -- 390 was the
       # WHOLE suite before this file existed. Re-derived here from `--collect-only -q`.
-      - name: Assert the suite -- 391 tests, 150 of them conformance
+      #
+      # 156 = the 150 conformance comparisons pinned above, plus 6 unit tests Task 4 added
+      # for `_require_current_engine`/`_manifest_source_fingerprint` (the staleness guard
+      # that makes WORLDBUILDER_REQUIRE_ENGINE=1 reject a stale engine, not just a missing
+      # one). Those 6 exercise the pure helper functions with a fake engine object and a
+      # tmp_path manifest -- the module-level gate itself runs once, at collection, before
+      # any test function exists to assert against it.
+      - name: Assert the suite -- 397 tests, 156 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 391 --expect-file tests/test_conformance.py=150
+            --expect-total 397 --expect-file tests/test_conformance.py=156
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
