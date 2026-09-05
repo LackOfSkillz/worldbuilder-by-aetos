@@ -137,9 +137,11 @@ impl ReliefParams {
     /// **Ruling 6, and what this preset does not attempt:** the roughness spectrum alone
     /// cannot make mountains -- Task 2's most extreme corner (this same `mountain_m` x4,
     /// `quieting_strength=-0.7`, but `octave_persistence=0.75`, outside real terrain's
-    /// Hurst range) topped out at 161 m on land and never reached Hammond's low-mountains
-    /// band. Mountain height is tectonic (Ruling 4, a separate slice); this preset is the
-    /// best hills the roughness spectrum can produce, not mountains it cannot.
+    /// Hurst range) topped out at 161.34 m relief on the peak population (82.10 m on land;
+    /// `progress.md`'s own Ruling 6 prose has these two swapped, see task-3-report.md) and
+    /// never reached Hammond's low-mountains band. Mountain height is tectonic (Ruling 4, a
+    /// separate slice); this preset is the best hills the roughness spectrum can produce,
+    /// not mountains it cannot.
     pub fn hills() -> Self {
         Self { mountain_m: MOUNTAIN_M * 4.0, quieting_strength: -0.7, octave_persistence: 0.65, ..Self::canonical() }
     }
