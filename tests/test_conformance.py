@@ -71,7 +71,12 @@ def _manifest_source_fingerprint(manifest_path):
     """
     try:
         text = manifest_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError, NOT an OSError, so catching OSError alone let
+        # an undecodable manifest escape as a raw traceback instead of this wording. It still
+        # failed the run -- but the docstring promises "unreadable" is handled here, and a
+        # promise that holds for five of six unreadable cases is the kind of gap this project
+        # keeps finding.
         raise EngineFingerprintUnavailable(
             f"cannot read {manifest_path} to check whether worldbuilder_engine is "
             f"current ({exc}). This oracle being unavailable is not the same as the "
@@ -7619,12 +7624,29 @@ def test_require_current_engine_fails_on_an_empty_fingerprint_value(tmp_path):
         _require_current_engine(_FakeEngine("abc123"), manifest)
 
 
-def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value():
+def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value(tmp_path):
     # The signature defect this task exists to close: an oracle that cannot be read must
     # not be interpretable as "no disagreement". Confirm the unavailable path is a raise,
     # not a sentinel return value that a caller could accidentally treat as equal to
     # anything (including itself).
-    import inspect
+    # Asserted BEHAVIOURALLY, not by reading the function's source text. An earlier version
+    # of this test grepped `inspect.getsource` for `return None` -- which a regression
+    # written as `return _UNKNOWN` would have sailed straight through. What matters is that
+    # no unreadable manifest can produce a VALUE, whatever that value is spelled.
+    unusable = [
+        "",
+        "artifact-sha256: abc\n",
+        "source-fingerprint:\n",
+        "source-fingerprint:    \n",
+        "Source-Fingerprint: 029396ea\n",
+        "prefixed source-fingerprint: 029396ea\n",
+    ]
+    for i, content in enumerate(unusable):
+        path = tmp_path / f"manifest-{i}.txt"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(EngineFingerprintUnavailable):
+            _manifest_source_fingerprint(path)
 
-    source = inspect.getsource(_manifest_source_fingerprint)
-    assert "return None" not in source and "return \"\"" not in source and "return ''" not in source
+    # And a missing file, which cannot be written.
+    with pytest.raises(EngineFingerprintUnavailable):
+        _manifest_source_fingerprint(tmp_path / "does-not-exist.txt")
