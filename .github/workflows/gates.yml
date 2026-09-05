@@ -282,7 +282,7 @@ jobs:
         working-directory: viewer
         run: |
           set -euo pipefail
-          node scripts/build-wasm.mjs digest | tee ../node-fingerprint.out
+          echo "PROVE: deliberately not running the node digest, to prove the gate rejects a missing/malformed statement rather than only a wrong one." | tee ../node-fingerprint.out
 
       # See .github/scripts/assert_fingerprint_parity.py's own docstring for why this does
       # not simply compare two strings: both sides' digest and input count are validated
