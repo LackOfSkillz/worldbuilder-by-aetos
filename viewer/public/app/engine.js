@@ -2,8 +2,9 @@
 //
 // `viewer/public/wasm/worldbuilder_engine.wasm` has **zero imports** by design, so
 // `WebAssembly.instantiate(bytes, {})` is the entire loader: no wasm-bindgen, no glue
-// module, no bundler. Everything below is hand-written marshalling over the ten
-// `extern "C"` entry points documented in `crates/worldbuilder-engine/src/wasm.rs`.
+// module, no bundler. Everything below is hand-written marshalling over the fourteen
+// `extern "C"` entry points documented in `crates/worldbuilder-engine/src/wasm.rs`
+// (`WB_EXPORTS` is the declared list; a Rust test holds that file's source to it).
 //
 // Two things about linear memory are load-bearing and easy to get wrong:
 //
@@ -15,12 +16,20 @@
 //    `wb_alloc` was asked for; a mismatch is undefined behaviour, not a leak. Each helper
 //    below frees in a `finally` with the length it asked for.
 
+// The one import: `relief-params.js`, which is itself dependency-free and DOM-free (field
+// order, slider travel, the query-string map). It is imported rather than restated because
+// the relief record's field ORDER is the ABI, and two copies of an order drift silently --
+// there is no type error for a shelf amplitude written into the coast slot.
+
+import { RELIEF_STRIDE, RELIEF_PRESET, toRecord, fromRecord } from "./relief-params.js";
+
 /// Status codes, mirrored from `wasm.rs`. Kept as names so a failure reads as a sentence.
 export const WB_OK = 0;
 export const WB_ERR_HANDLE = 1;
 export const WB_ERR_BUFFER = 2;
 export const WB_ERR_GRID = 3;
 export const WB_ERR_SUBSTRATE = 4;
+export const WB_ERR_PARAM = 5;
 
 const STATUS_NAMES = {
   0: "WB_OK",
@@ -28,6 +37,7 @@ const STATUS_NAMES = {
   2: "WB_ERR_BUFFER",
   3: "WB_ERR_GRID",
   4: "WB_ERR_SUBSTRATE",
+  5: "WB_ERR_PARAM",
 };
 
 /// Feature record codes, mirrored from `wasm.rs`. A record is eight f64.
@@ -67,7 +77,8 @@ export class Engine {
     // is a green build. Refuse it here too rather than discovering it as a TypeError three
     // frames later.
     for (const name of [
-      "wb_generator_version", "wb_alloc", "wb_dealloc", "wb_world_new", "wb_world_free",
+      "wb_generator_version", "wb_alloc", "wb_dealloc", "wb_world_new", "wb_world_new_relief",
+      "wb_relief_preset", "wb_relief_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32",
     ]) {
@@ -93,10 +104,65 @@ export class Engine {
   /// bearingDeg, compose, substrate }`. The engine refuses the *whole* call if any record
   /// fails to decode — a world built from five of six requested features is the
   /// silently-dropping-builder shape, and the refusal is deliberate.
-  newWorld({ seed, radiusM, plateCount, landFraction, features = [] }) {
+  /// The ten f64 of a named preset, as an object keyed by `RELIEF_FIELDS`.
+  ///
+  /// **The only way the viewer learns a relief number.** Nothing in `viewer/` restates
+  /// `canonical()`'s or `hills()`'s values; the panel's slider defaults, both ends of two of
+  /// its three sliders and its preset button all come from here, so `detail.rs` stays the
+  /// single place those numbers live. `name` is a key of `RELIEF_PRESET`.
+  reliefPreset(name = "canonical") {
+    const selector = RELIEF_PRESET[name];
+    if (selector === undefined) throw new Error(`unknown relief preset "${name}"`);
+    const bytes = RELIEF_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the relief preset buffer");
+    try {
+      const status = this.exports.wb_relief_preset(selector, ptr, RELIEF_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_relief_preset(${name}) returned ${statusName(status)}`);
+      }
+      // The view is created after the allocation and copied immediately — a view taken
+      // before `wb_alloc` could be detached by heap growth.
+      return fromRecord(Array.from(new Float64Array(this.memory.buffer, ptr, RELIEF_STRIDE)));
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Ask the engine whether a relief block would be accepted, **without building a world**.
+  /// Returns a `WB_*` status: `WB_OK`, `WB_ERR_PARAM` for a field outside its domain, or
+  /// `WB_ERR_BUFFER`. `null` is the canonical path and always answers `WB_OK`.
+  ///
+  /// A refused world comes back from `wb_world_new_relief` as a handle of 0, which says
+  /// *that* it refused and never *why*; the panel calls this so it can say which.
+  checkRelief(relief) {
+    if (relief === null || relief === undefined) return WB_OK;
+    const bytes = RELIEF_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the relief buffer");
+    try {
+      new Float64Array(this.memory.buffer, ptr, RELIEF_STRIDE).set(toRecord(relief));
+      return this.exports.wb_relief_check(ptr, RELIEF_STRIDE) >>> 0;
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// `relief` is `null`/absent for the canonical path — a null pointer and a length of zero,
+  /// which is the same `None` `wb_world_new` passes and is byte-for-byte today's world. An
+  /// object keyed by `RELIEF_FIELDS` asks for a different one.
+  newWorld({ seed, radiusM, plateCount, landFraction, features = [], relief = null }) {
     let ptr = 0;
     let bytes = 0;
+    let reliefPtr = 0;
+    let reliefBytes = 0;
     try {
+      if (relief) {
+        reliefBytes = RELIEF_STRIDE * 8;
+        reliefPtr = this.exports.wb_alloc(reliefBytes);
+        if (reliefPtr === 0) throw new Error("wb_alloc refused the relief buffer");
+        new Float64Array(this.memory.buffer, reliefPtr, RELIEF_STRIDE).set(toRecord(relief));
+      }
       if (features.length > 0) {
         bytes = features.length * WB_FEATURE_STRIDE * 8;
         ptr = this.exports.wb_alloc(bytes);
@@ -109,18 +175,26 @@ export class Engine {
           ], i * WB_FEATURE_STRIDE);
         });
       }
-      const handle = this.exports.wb_world_new(
+      // One constructor for both paths. With `relief` null this is `(null, 0)`, which the
+      // engine reads as `None` — the same world `wb_world_new` builds, which the engine-side
+      // test `the_relief_channel_default_path_is_the_untouched_world` pins bit for bit.
+      const handle = this.exports.wb_world_new_relief(
         BigInt(seed), radiusM, plateCount, landFraction, ptr, features.length,
+        reliefPtr, relief ? RELIEF_STRIDE : 0,
       ) >>> 0;
       if (handle === 0) {
+        // A refused world is a blank viewer, so the message has to name the reason. The
+        // relief block is the only argument here with a checker that can say which field.
+        const why = relief ? ` relief=${statusName(this.checkRelief(relief))}` : "";
         throw new Error(
-          `wb_world_new refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
-          `land=${landFraction} features=${features.length}`,
+          `wb_world_new_relief refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
+          `land=${landFraction} features=${features.length}${why}`,
         );
       }
       return handle;
     } finally {
       if (ptr !== 0) this.exports.wb_dealloc(ptr, bytes);
+      if (reliefPtr !== 0) this.exports.wb_dealloc(reliefPtr, reliefBytes);
     }
   }
 

@@ -966,3 +966,517 @@ fn the_declared_export_list_is_the_source() {
     let no_mangle = source.matches("#[no_mangle]").count();
     assert_eq!(no_mangle, WB_EXPORTS.len(), "a pub extern fn without #[no_mangle] is invisible");
 }
+
+// ============================================================================ the relief channel
+//
+// Slice `2026-09-05-slice-relief-amplitude`, Task 4. The rest of this file tests a boundary
+// that was already there; this section tests one being opened, and the thing it is mostly
+// about is the **nounwind** property `wasm.rs`'s own module doc states: an `extern "C"`
+// function that panics aborts the process, and in wasm that is a dead module and a blank
+// viewer with nothing useful in the console.
+//
+// Slice 5a shipped two reachable aborts through exports whose bounds looked complete, and
+// **both were bands rather than cliffs** -- fine at one end, fine at the other, fatal
+// somewhere in between. So the tests below **sweep**. Every record a sweep produces is put
+// through `wb_relief_check` AND `wb_world_new_relief`; every record the boundary accepts is
+// then actually *sampled*, because a bad relief block does not fail in the constructor, it
+// fails the first time `Detail::plan`'s schedule or `Detail::offset_m`'s loop is walked. A
+// test that only asserted a validator returns false for three hand-picked values would have
+// missed both of slice 5a's aborts, and it would miss the non-terminating loop this channel
+// closes.
+//
+// Population/method/host for every figure in this section: the world is
+// `Surface::new(20_260_904, 6_371_000, 12, 0.29, None)` -- the same `SEED`/`RADIUS_M`/
+// `PLATES`/`LAND` fixture the rest of this file uses, whose elevation at lat 12 lon 34 is
+// witnessed three ways. The probe points are `RELIEF_PROBES` below. The host is a native
+// `cargo test -p worldbuilder-engine --features wasm` run; native and WASM parity for the
+// export surface is a separate committed harness (see this file's own module doc).
+
+/// Where every accepted relief record is sampled. Chosen to cross the settings
+/// `Detail::amplitude_m` blends between -- deep water, shelf, shoreline, ordinary land, and
+/// the witnessed point -- because a record that only ever touched one of those five terms
+/// would leave the other four unswept.
+const RELIEF_PROBES: &[(f64, f64)] = &[
+    (12.0, 34.0), // the witnessed point
+    (0.0, 0.0),
+    (-18.25, 121.5), // the harbour, near a coast
+    (62.5, -145.0),
+    (-71.0, 25.0),
+    (35.0, 138.0),
+];
+
+fn canonical_record() -> [f64; WB_RELIEF_STRIDE] {
+    let mut record = [0.0; WB_RELIEF_STRIDE];
+    let status = wb_relief_preset(WB_RELIEF_CANONICAL, record.as_mut_ptr(), WB_RELIEF_STRIDE as u32);
+    assert_eq!(status, WB_OK, "the canonical preset must be readable");
+    record
+}
+
+fn hills_record() -> [f64; WB_RELIEF_STRIDE] {
+    let mut record = [0.0; WB_RELIEF_STRIDE];
+    let status = wb_relief_preset(WB_RELIEF_HILLS, record.as_mut_ptr(), WB_RELIEF_STRIDE as u32);
+    assert_eq!(status, WB_OK, "the hills preset must be readable");
+    record
+}
+
+fn world_with_relief(record: &[f64; WB_RELIEF_STRIDE]) -> u32 {
+    wb_world_new_relief(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        record.as_ptr(),
+        WB_RELIEF_STRIDE as u32,
+    )
+}
+
+/// Build the world a record asks for, walk every probe point, and free it.
+///
+/// **This is where an abort would happen, and that is the point of calling it.** The
+/// constructor plans the octave schedule; the sampling walks it. Returning the elevations
+/// rather than just asserting on them lets a caller compare two records at the same points.
+fn sample_relief(record: &[f64; WB_RELIEF_STRIDE], label: &str) -> Vec<f64> {
+    let handle = world_with_relief(record);
+    assert_ne!(handle, 0, "accepted record refused by the constructor: {label} {record:?}");
+    let mut heights = Vec::with_capacity(RELIEF_PROBES.len());
+    for (lat, lon) in RELIEF_PROBES {
+        let height = wb_elevation_m(handle, *lat, *lon, RES_M);
+        assert!(
+            height.is_finite(),
+            "accepted record produced a non-finite elevation at ({lat}, {lon}): {label} {record:?}",
+        );
+        heights.push(height);
+        // The canonical-resolution path walks EVERY planned band rather than breaking out of
+        // the loop early, so it is the one that actually exercises a 41-octave schedule.
+        let canonical = wb_elevation_m(handle, *lat, *lon, -1.0);
+        assert!(canonical.is_finite(), "non-finite at canonical resolution: {label} {record:?}");
+    }
+    assert_eq!(wb_world_free(handle), WB_OK);
+    heights
+}
+
+/// The values a browser can hand across this boundary that are not numbers anybody meant.
+///
+/// `Number` is an f64, so every one of these is reachable from JS without trying: `NaN` from
+/// a `parseFloat` of an empty field, both infinities from an overflow or a division, `-0.0`
+/// from `Number("-0")`, the denormals from a slider whose step was computed rather than
+/// typed. They are swept against **every one of the ten fields**, not against a chosen few.
+const HOSTILE: &[f64] = &[
+    f64::NAN,
+    -f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    0.0,
+    -0.0,
+    f64::MIN_POSITIVE,
+    -f64::MIN_POSITIVE,
+    5.0e-324, // the smallest positive denormal
+    -5.0e-324,
+    f64::EPSILON,
+    -f64::EPSILON,
+    -1.0,
+    1.0,
+    1.0e-300,
+    -1.0e-300,
+    1.0e300,
+    -1.0e300,
+    f64::MAX,
+    -f64::MAX,
+];
+
+/// The documented domain of each field, by its index in `WB_RELIEF_STRIDE`'s order.
+fn field_domain(field: usize) -> (f64, f64) {
+    match field {
+        0 | 1 => (WB_MIN_RELIEF_WAVELENGTH_M, WB_MAX_RELIEF_WAVELENGTH_M),
+        2..=6 => (0.0, WB_MAX_RELIEF_AMPLITUDE_M),
+        7 => (-WB_MAX_QUIETING_STRENGTH, WB_MAX_QUIETING_STRENGTH),
+        8 => (WB_MIN_QUIETING_SCALE_M, WB_MAX_QUIETING_SCALE_M),
+        9 => (0.0, 1.0),
+        _ => unreachable!("WB_RELIEF_STRIDE is 10"),
+    }
+}
+
+/// Every value one field is driven through: the hostile set, both documented bounds and the
+/// values immediately either side of each, and a ladder across the admissible interval.
+///
+/// **The ladder is geometric where the field's domain spans orders of magnitude** (the two
+/// wavelengths and the quieting scale run 1e-3 to 1e9, where a linear ladder would put its
+/// first rung 40 million metres above the floor and never sample the small end at all) and
+/// linear where it does not. That is the "bands, not cliffs" lesson applied to the sweep's
+/// own design: an evenly-spaced sample of a log-scaled domain is a spot-check wearing a
+/// sweep's name.
+fn field_sweep(field: usize) -> Vec<f64> {
+    let (low, high) = field_domain(field);
+    let mut values: Vec<f64> = HOSTILE.to_vec();
+    for bound in [low, high] {
+        values.extend_from_slice(&[
+            bound,
+            bound - bound.abs() * 1.0e-12,
+            bound + bound.abs() * 1.0e-12,
+            bound * 0.5,
+            bound * 2.0,
+            -bound,
+        ]);
+    }
+    let steps = 24;
+    let geometric = low > 0.0 && high / low >= 1.0e3;
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        values.push(if geometric { low * (high / low).powf(t) } else { low + (high - low) * t });
+    }
+    values
+}
+
+/// Every record the field-by-field sweep produces, labelled by the field it moved.
+fn swept_records() -> Vec<(String, [f64; WB_RELIEF_STRIDE])> {
+    let base = canonical_record();
+    let mut out = Vec::new();
+    for field in 0..WB_RELIEF_STRIDE {
+        for value in field_sweep(field) {
+            let mut record = base;
+            record[field] = value;
+            out.push((format!("field {field} = {value:e}"), record));
+        }
+    }
+    out
+}
+
+#[test]
+fn every_relief_field_swept_across_its_whole_range_and_beyond_never_aborts() {
+    let records = swept_records();
+    // A sweep that refused everything would pass a "nothing aborted" assertion trivially, and
+    // one that accepted everything would prove the validator absent. Both counts are asserted.
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for (label, record) in &records {
+        if wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32) == WB_OK {
+            sample_relief(record, label);
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The split is stated as a floor rather than an equality so adding a value to HOSTILE
+    // does not force this line to be re-derived, but both sides have to be substantial or the
+    // sweep is not sweeping.
+    assert_eq!(accepted + refused, records.len());
+    assert!(
+        accepted >= 200,
+        "only {accepted} records were accepted; the sweep is not exercising the engine",
+    );
+    assert!(
+        refused >= 100,
+        "only {refused} records were refused; the validator is not doing its job",
+    );
+}
+
+#[test]
+fn the_relief_checker_and_the_constructor_agree_on_every_swept_record() {
+    // Two validators would be two chances to disagree, and the disagreement that matters is
+    // "the checker said yes and the constructor aborted". They are held to each other here
+    // over the identical population the sweep above uses.
+    for (label, record) in swept_records() {
+        let status = wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32);
+        let handle = world_with_relief(&record);
+        if status == WB_OK {
+            assert_ne!(handle, 0, "checker accepted, constructor refused: {label}");
+            assert_eq!(wb_world_free(handle), WB_OK);
+        } else {
+            assert_eq!(
+                status, WB_ERR_PARAM,
+                "a well-formed buffer refused for a buffer reason: {label}",
+            );
+            assert_eq!(handle, 0, "checker refused, constructor built: {label}");
+        }
+    }
+}
+
+#[test]
+fn a_zero_canonical_wavelength_would_hang_plan_and_is_refused_before_it_can() {
+    // `Detail::plan` runs `while wavelength >= canonical_wavelength_m { wavelength *= 0.5 }`.
+    // At 0.0 that loop never terminates -- halving reaches 0.0 and `0.0 >= 0.0` stays true --
+    // and a hung tab has no console message and no stack. Negative values and -0.0 are the
+    // same loop; +inf hangs it from the coarse end, since `inf * 0.5` is `inf`.
+    //
+    // This test can only ever assert the refusal, never demonstrate the hang: a test that
+    // entered the loop would not return. That asymmetry is why the bound lives on a constant
+    // with the mechanism written out, rather than only in a test.
+    let base = canonical_record();
+    for hang in [0.0, -0.0, -1.0, -250.0, f64::NEG_INFINITY] {
+        let mut record = base;
+        record[0] = hang;
+        assert_eq!(
+            wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32),
+            WB_ERR_PARAM,
+            "canonical_wavelength_m = {hang} would not terminate Detail::plan",
+        );
+        assert_eq!(world_with_relief(&record), 0);
+    }
+    for hang in [f64::INFINITY, f64::MAX] {
+        let mut record = base;
+        record[1] = hang;
+        assert_eq!(
+            wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32),
+            WB_ERR_PARAM,
+            "coarsest_wavelength_m = {hang} would not descend to the canonical band",
+        );
+        assert_eq!(world_with_relief(&record), 0);
+    }
+    // The ordering rule itself: a coarsest band finer than the canonical one plans zero
+    // octaves, which is a world with the roughness silently switched off.
+    let mut inverted = base;
+    inverted[0] = 20_000.0;
+    inverted[1] = 250.0;
+    assert_eq!(wb_relief_check(inverted.as_ptr(), WB_RELIEF_STRIDE as u32), WB_ERR_PARAM);
+    assert_eq!(world_with_relief(&inverted), 0);
+}
+
+/// The exact slider travel Task 2's tables calibrated, at every step the widget can produce.
+///
+/// `mountain_m` 150 -> 600 in steps of 10 (46 positions), `quieting_strength` +0.7 -> -0.7 in
+/// steps of 0.05 (29 positions, and **zero is one of them**, which is the point -- it is the
+/// setting at which the quieting term is off), `octave_persistence` 0.50 -> 0.75 in steps of
+/// 0.01 (26 positions). These are the panel's own `step` attributes, so this test sweeps
+/// every value a person dragging the slider can actually land on. Both ends of the first two
+/// come from the engine's own presets rather than from literals here.
+fn slider_travel() -> Vec<(usize, Vec<f64>)> {
+    let canonical = canonical_record();
+    let hills = hills_record();
+    let mut mountain = Vec::new();
+    let mut step = 0;
+    while canonical[6] + f64::from(step) * 10.0 <= hills[6] {
+        mountain.push(canonical[6] + f64::from(step) * 10.0);
+        step += 1;
+    }
+    // **Not `0.7 - i * 0.05`.** That is the obvious spelling and it never lands on zero: the
+    // fourteenth step comes out at `-1.1e-16`, not `0.0`, so a slider built that way could
+    // not switch the quieting term off -- the one setting on this axis with a stated meaning.
+    // Found by the assertion below rather than by inspection. The panel's widget is an
+    // integer slider mapped through this same expression, so the two produce the same 29
+    // values and neither has to trust the other.
+    let mut quieting = Vec::new();
+    for i in 0..=28 {
+        quieting.push(canonical[7] * f64::from(14 - i) / 14.0);
+    }
+    let mut persistence = Vec::new();
+    for i in 0..=25 {
+        persistence.push(canonical[9] + f64::from(i) * 0.01);
+    }
+    vec![(6, mountain), (7, quieting), (9, persistence)]
+}
+
+#[test]
+fn the_calibrated_slider_travel_is_swept_at_every_step_the_widget_can_produce() {
+    let base = canonical_record();
+    let travel = slider_travel();
+    assert_eq!(travel[0].1.len(), 46, "mountain_m travel");
+    assert_eq!(travel[1].1.len(), 29, "quieting_strength travel");
+    assert_eq!(travel[2].1.len(), 26, "octave_persistence travel");
+    // Zero has to be landable exactly, not approached: it is the setting at which the term is
+    // off, and a slider that can only get within 1e-17 of it cannot say so.
+    assert!(travel[1].1.iter().any(|v| *v == 0.0), "the quieting slider must land on exactly 0.0");
+    for (field, values) in travel {
+        for value in values {
+            let mut record = base;
+            record[field] = value;
+            assert_eq!(
+                wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32),
+                WB_OK,
+                "the panel can produce field {field} = {value}, and the engine refuses it",
+            );
+            sample_relief(&record, &format!("slider field {field} = {value}"));
+        }
+    }
+}
+
+#[test]
+fn the_three_exposed_parameters_are_swept_together_not_one_at_a_time() {
+    // Task 2's finding 3: the three parameters compound multiplicatively rather than adding.
+    // A one-axis-at-a-time sweep therefore never visits the corner where they multiply, which
+    // is exactly where a band-shaped failure would live. 6 x 5 x 5 = 150 combinations,
+    // spanning each slider end to end.
+    let base = canonical_record();
+    let hills = hills_record();
+    let mut built = 0usize;
+    for m in 0..6 {
+        for q in 0..5 {
+            for p in 0..5 {
+                let mut record = base;
+                record[6] = base[6] + (hills[6] - base[6]) * f64::from(m) / 5.0;
+                record[7] = base[7] + (hills[7] - base[7]) * f64::from(q) / 4.0;
+                record[9] = base[9] + 0.25 * f64::from(p) / 4.0;
+                // The quieting expression above walks +0.7 -> -0.7 by construction; assert it
+                // rather than trusting the arithmetic, since a sweep that silently covered
+                // half its axis would still pass every other assertion here.
+                assert!(record[7] >= -0.7001 && record[7] <= 0.7001, "quieting axis: {}", record[7]);
+                assert_eq!(wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32), WB_OK);
+                sample_relief(&record, "cross product");
+                built += 1;
+            }
+        }
+    }
+    assert_eq!(built, 150);
+}
+
+#[test]
+fn the_relief_channel_default_path_is_the_untouched_world() {
+    // RULING 1. `worldbuilder/terrain/detail.py` is the conformance oracle for 157 tests and
+    // no default moves. The viewer's untouched path is a null pointer with a length of zero,
+    // and this proves it is the same planet as `wb_world_new`'s -- bit for bit at the probe
+    // points, not "close enough".
+    let plain = plain_world();
+    let defaulted = wb_world_new_relief(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+    );
+    assert_ne!(defaulted, 0);
+    let explicit_canonical = world_with_relief(&canonical_record());
+    assert_ne!(explicit_canonical, 0);
+    for (lat, lon) in RELIEF_PROBES {
+        for resolution in [RES_M, -1.0] {
+            let reference = wb_elevation_m(plain, *lat, *lon, resolution);
+            assert_eq!(
+                wb_elevation_m(defaulted, *lat, *lon, resolution).to_bits(),
+                reference.to_bits(),
+                "the null relief path moved the world at ({lat}, {lon})",
+            );
+            assert_eq!(
+                wb_elevation_m(explicit_canonical, *lat, *lon, resolution).to_bits(),
+                reference.to_bits(),
+                "Some(canonical()) is not None at ({lat}, {lon})",
+            );
+        }
+    }
+    // And the witnessed value survives the refactor that put both constructors behind one
+    // builder -- the single number this whole repository pinned three independent ways.
+    assert_eq!(wb_elevation_m(defaulted, 12.0, 34.0, RES_M), WITNESSED_ELEVATION_M);
+    assert_eq!(wb_world_free(defaulted), WB_OK);
+    assert_eq!(wb_world_free(explicit_canonical), WB_OK);
+}
+
+#[test]
+fn wb_relief_preset_hands_back_the_engines_own_presets_and_nothing_else() {
+    use worldbuilder_engine::detail::ReliefParams;
+    // The preset export is the reason no host has to transcribe `600.0`, `-0.7` and `0.65`.
+    // It is held to `detail.rs`'s own values field by field, so a retune there fails here
+    // rather than leaving a viewer quietly showing the old numbers.
+    for (selector, expected) in
+        [(WB_RELIEF_CANONICAL, ReliefParams::canonical()), (WB_RELIEF_HILLS, ReliefParams::hills())]
+    {
+        let mut record = [0.0; WB_RELIEF_STRIDE];
+        assert_eq!(wb_relief_preset(selector, record.as_mut_ptr(), WB_RELIEF_STRIDE as u32), WB_OK);
+        assert_eq!(record[0], expected.canonical_wavelength_m);
+        assert_eq!(record[1], expected.coarsest_wavelength_m);
+        assert_eq!(record[2], expected.abyssal_m);
+        assert_eq!(record[3], expected.shelf_m);
+        assert_eq!(record[4], expected.coast_m);
+        assert_eq!(record[5], expected.interior_m);
+        assert_eq!(record[6], expected.mountain_m);
+        assert_eq!(record[7], expected.quieting_strength);
+        assert_eq!(record[8], expected.quieting_scale_m);
+        assert_eq!(record[9], expected.octave_persistence);
+        // Every preset this build offers must also be one the boundary accepts, or the panel
+        // could offer a button that refuses itself.
+        assert_eq!(wb_relief_check(record.as_ptr(), WB_RELIEF_STRIDE as u32), WB_OK);
+    }
+    // A preset that round-trips has to also *do* something: hills must not be canonical.
+    let canonical = canonical_record();
+    let hills = hills_record();
+    assert_ne!(canonical, hills);
+    let plain_heights = sample_relief(&canonical, "canonical");
+    let hills_heights = sample_relief(&hills, "hills");
+    assert!(
+        plain_heights.iter().zip(&hills_heights).any(|(a, b)| a != b),
+        "the hills preset produced the canonical world at every probe",
+    );
+    // Unknown selectors are refused rather than silently answered with canonical, which would
+    // be a viewer showing "hills" and rendering today's world.
+    let mut scratch = [0.0; WB_RELIEF_STRIDE];
+    for unknown in [2u32, 3, u32::MAX] {
+        assert_eq!(
+            wb_relief_preset(unknown, scratch.as_mut_ptr(), WB_RELIEF_STRIDE as u32),
+            WB_ERR_PARAM,
+        );
+    }
+}
+
+#[test]
+fn the_relief_buffer_channel_refuses_what_it_cannot_read() {
+    let record = canonical_record();
+    // A null pointer with a length: the host computed a length and forgot the buffer.
+    assert_eq!(wb_relief_check(core::ptr::null(), WB_RELIEF_STRIDE as u32), WB_ERR_BUFFER);
+    // A buffer with a length of zero: the host has a buffer and computed the length wrong.
+    // This is NOT read as "canonical" -- answering it with a different world than the caller
+    // described is the silently-dropping-builder shape.
+    assert_eq!(wb_relief_check(record.as_ptr(), 0), WB_ERR_BUFFER);
+    // Wrong lengths, either side. A short buffer read as ten f64 would read past the end.
+    for length in [1u32, 9, 11, 20, u32::MAX] {
+        assert_eq!(
+            wb_relief_check(record.as_ptr(), length),
+            WB_ERR_BUFFER,
+            "a {length}-word relief record is not a relief record",
+        );
+    }
+    // Misaligned. Refused on the address, BEFORE any slice is formed over it -- forming one
+    // would be undefined behaviour rather than a status code.
+    let bytes = [0u8; WB_RELIEF_STRIDE * 8 + 8];
+    let base = bytes.as_ptr() as usize; // cast-ok: a pointer to an integer to construct a deliberately odd address
+    let misaligned = ((base | 1) as *const u8) as *const f64; // cast-ok: an integer back to a pointer, never dereferenced
+    assert_eq!(wb_relief_check(misaligned, WB_RELIEF_STRIDE as u32), WB_ERR_BUFFER);
+    // The same three refusals through the constructor, which answers with a handle rather
+    // than a status.
+    assert_eq!(
+        wb_world_new_relief(
+            SEED,
+            RADIUS_M,
+            PLATES,
+            LAND,
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+            WB_RELIEF_STRIDE as u32,
+        ),
+        0,
+    );
+    assert_eq!(
+        wb_world_new_relief(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0, record.as_ptr(), 0),
+        0,
+    );
+    assert_eq!(
+        wb_world_new_relief(
+            SEED,
+            RADIUS_M,
+            PLATES,
+            LAND,
+            core::ptr::null(),
+            0,
+            misaligned,
+            WB_RELIEF_STRIDE as u32,
+        ),
+        0,
+    );
+    // And the preset writer's own buffer checks.
+    let mut out = [0.0; WB_RELIEF_STRIDE];
+    assert_eq!(
+        wb_relief_preset(WB_RELIEF_CANONICAL, core::ptr::null_mut(), WB_RELIEF_STRIDE as u32),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(wb_relief_preset(WB_RELIEF_CANONICAL, out.as_mut_ptr(), 9), WB_ERR_BUFFER);
+    assert_eq!(wb_relief_preset(WB_RELIEF_CANONICAL, out.as_mut_ptr(), 11), WB_ERR_BUFFER);
+    assert_eq!(out, [0.0; WB_RELIEF_STRIDE], "a refused preset call must write nothing");
+    // A refused world is not a leaked world: nothing above should have taken a slot.
+    let before = wb_world_count();
+    assert_eq!(
+        wb_world_new_relief(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0, record.as_ptr(), 3),
+        0,
+    );
+    assert_eq!(wb_world_count(), before);
+}

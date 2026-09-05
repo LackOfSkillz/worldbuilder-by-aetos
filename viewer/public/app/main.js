@@ -10,6 +10,7 @@
 // a code change -- including the deliberately wrong ones.
 
 import { Engine } from "./engine.js";
+import { reliefFromParams } from "./relief-params.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
 import { createAvailability, FEATURE_CEILING } from "./availability.js";
@@ -52,6 +53,10 @@ function worldSpecFromParams() {
     plateCount: number("plates", DEFAULT_WORLD.plateCount),
     landFraction: number("land", DEFAULT_WORLD.landFraction),
     features: params.has("harbour") ? HARBOUR : [],
+    // `relief` is filled in during boot, once the engine can be asked what canonical is.
+    // Absent here on purpose: there is no relief default in this file to drift from the
+    // engine's, which is the shape the ramp defaults got wrong once already.
+    relief: null,
   };
 }
 
@@ -114,6 +119,20 @@ async function boot() {
   }
 
   const engine = await Engine.load();
+
+  // The relief block, and RULING 1 in one line: with no relief parameter in the query string
+  // `reliefFromParams` returns `null`, which reaches the engine as a null pointer and a
+  // length of zero -- `None`, the canonical path, byte-for-byte the world this viewer built
+  // before the relief channel existed. Canonical is read FROM THE ENGINE rather than
+  // restated here, so there is no second copy of a default to drift from the first.
+  //
+  // Deliberately after `Engine.load()` and before the pool: the workers are handed this same
+  // `spec` by `structuredClone`, so a relief block chosen here reaches every worker's own
+  // `wb_world_new_relief` call and the tiles they fill are the same planet as the main
+  // thread's. A relief block applied on only one side would be the `stale-worker` fault
+  // shape, arrived at by accident.
+  const reliefCanonical = engine.reliefPreset("canonical");
+  spec.relief = reliefFromParams(params, reliefCanonical);
 
   // Two handles on purpose. `world` is what the provider draws; `reference` is what the
   // checks compare against, and it is always built from the *stated* parameters. Under
@@ -244,7 +263,11 @@ async function boot() {
   const line =
     `Cesium ${Cesium.VERSION} | generator v${engine.generatorVersion()} | ` +
     `seed=${spec.seed} plates=${spec.plateCount} land=${spec.landFraction} ` +
-    `features=${spec.features.length} | terrain=${provider.constructor.name} ` +
+    `features=${spec.features.length} relief=${
+      spec.relief
+        ? `mtn ${spec.relief.mountainM} quiet ${spec.relief.quietingStrength} pers ${
+          spec.relief.octavePersistence}`
+        : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
     `workers=${pool ? pool.ready.length : 0} cache=${cache ? cache.capacity : "off"} | ` +
@@ -255,6 +278,15 @@ async function boot() {
     engine, provider, viewer, spec, fault,
     world, reference, pool, cache, availability,
     FAULTS,
+    /// The engine's own relief presets, read across the boundary at boot. `controls.js`
+    /// takes its slider defaults, two of its three travel ends and its preset button from
+    /// here -- so the panel cannot drift from `detail.rs`, because it holds no relief number
+    /// of its own to drift.
+    relief: {
+      canonical: reliefCanonical,
+      hills: engine.reliefPreset("hills"),
+      chosen: spec.relief,
+    },
     /// The frame-budget measurement. Populations, not a single number.
     bench: (options = {}) => runBench({ viewer, engine, provider, spec, ...options }),
     /// The whole verification, callable from the console or from a driver.
@@ -283,7 +315,13 @@ async function boot() {
   }
 }
 
-boot().catch((error) => {
+// **A promise, published synchronously at module evaluation.** `window.__wbReady` is set at
+// the *end* of `boot`, so a later module script that wants to wait for the engine has
+// nothing to wait on -- `controls.js` already carried a `typeof __wbReady.then === "function"`
+// branch that has never once been taken. The relief section of the panel genuinely needs the
+// engine (it reads its defaults from `wb_relief_preset`), so the wait has to be real. Module
+// scripts execute in document order, so this assignment happens before `controls.js` runs.
+window.__wbBoot = boot().catch((error) => {
   window.__wbReady = { ok: false, error: String(error && error.stack ? error.stack : error) };
   const status = document.getElementById("status");
   if (status) status.textContent = `FAILED: ${error}`;

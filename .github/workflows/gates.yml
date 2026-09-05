@@ -361,6 +361,17 @@ jobs:
           # `ReliefParams::hills()` preset (`detail.rs`), +4 uniformly over Task 2's
           # 513/513/515/549/551 -- re-derived through `assert_counts.py cargo-list` itself,
           # not by hand arithmetic. See task-3-report.md.
+          # Slice 2026-09-05-slice-relief-amplitude Task 4 opened the relief channel across
+          # the WASM boundary (`wb_world_new_relief`, `wb_relief_preset`, `wb_relief_check`)
+          # and added eight tests for it in `tests/wasm_exports.rs`. That file is
+          # `#![cfg(feature = "wasm")]` in its entirety, so **only the two wasm rows move**,
+          # by +8 each -- 553 -> 561 and 555 -> 563 -- and the three non-wasm rows stay at
+          # 517/517/519. `expect_ignored` stays 5; no `#[ignore]`d test was added. Five of the
+          # eight are sweeps rather than spot-checks (510 field-by-field records, 101 slider
+          # positions, a 150-point cross product), which is why the file grew far more than
+          # the count did. Re-derived per configuration through `assert_counts.py cargo-list`
+          # itself against fresh `-- --list` / `-- --list --ignored` output, not by hand
+          # arithmetic and never by grepping `test result:`. See task-4-report.md.
           - name: no-default-features
             features: "--no-default-features"
             expect: 517
@@ -375,11 +386,11 @@ jobs:
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 553
+            expect: 561
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 555
+            expect: 563
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

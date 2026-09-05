@@ -93,6 +93,7 @@ use std::alloc as sys;
 use std::alloc::Layout;
 use std::cell::RefCell;
 
+use crate::detail::ReliefParams;
 use crate::erosion::{erode_to_convergence, receiver_distances_m, ErosionParams, ErosionRun};
 use crate::features::Feature;
 use crate::features::{CARVE, RAISE, SHAPE};
@@ -235,6 +236,100 @@ pub const WB_SUBSTRATE_ROCK: f64 = 3.0;
 /// bearing_deg, compose code, substrate code.
 pub const WB_FEATURE_STRIDE: usize = 8;
 
+/// f64 words per relief record, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `canonical_wavelength_m` |
+/// | 1 | `coarsest_wavelength_m` |
+/// | 2 | `abyssal_m` |
+/// | 3 | `shelf_m` |
+/// | 4 | `coast_m` |
+/// | 5 | `interior_m` |
+/// | 6 | `mountain_m` |
+/// | 7 | `quieting_strength` |
+/// | 8 | `quieting_scale_m` |
+/// | 9 | `octave_persistence` |
+///
+/// That is `ReliefParams`'s own declaration order, and [`wb_relief_preset`] writes it in
+/// exactly this order so a host never has to transcribe a preset's numbers. **A host that
+/// wants `hills()` asks the engine for it; it does not restate three literals.**
+pub const WB_RELIEF_STRIDE: usize = 10;
+
+/// [`wb_relief_preset`] selector: `ReliefParams::canonical()`, today's ten values and the
+/// `None` path's exact equivalent.
+pub const WB_RELIEF_CANONICAL: u32 = 0;
+/// [`wb_relief_preset`] selector: `ReliefParams::hills()`, the named preset Task 3 chose
+/// against the measured tables.
+pub const WB_RELIEF_HILLS: u32 = 1;
+
+/// The floor on both wavelengths in a relief record, and **the one bound here that closes a
+/// hang rather than a surprise.**
+///
+/// `Detail::plan` walks `while wavelength >= relief.canonical_wavelength_m { wavelength *=
+/// 0.5 }`. At `canonical_wavelength_m == 0.0` that loop **never terminates**: halving
+/// reaches `0.0` after about 1,080 steps and `0.0 >= 0.0` stays true forever, with the band
+/// `Vec` growing on every pass. Every negative value is the same loop with the same end.
+///
+/// **Measured, not reasoned about.** Lowering this constant to `0.0` and re-running this
+/// task's sweep on this host does not hang politely: the band `Vec` grows until
+/// `memory allocation of 103079215104 bytes failed` and the process dies with
+/// `STATUS_STACK_BUFFER_OVERRUN` (exit `0xc0000409`) out of Rust's allocation-failure
+/// handler. That is an **abort reachable from a single f64 a browser can send**, through an
+/// `extern "C"` function -- exactly the failure class this task exists to close -- and it
+/// is a *band* rather than a cliff in the way slice 5a's two aborts were: `250.0` is fine,
+/// `1.0e-3` is fine, `0.0` is fatal.
+/// `a_zero_canonical_wavelength_would_hang_plan_and_is_refused_before_it_can` asserts the
+/// refusal without ever entering the loop -- a test that entered it would not return, which
+/// is why the mechanism is written out here rather than left to a test alone.
+///
+/// A millimetre is far below anything this generator means by a wavelength (canonical is
+/// 250 m) and is chosen for margin, not as the measured edge of anything -- the same
+/// posture [`WB_MAX_WORLD_RADIUS_M`] takes.
+pub const WB_MIN_RELIEF_WAVELENGTH_M: f64 = 1.0e-3;
+
+/// The ceiling on both wavelengths in a relief record. `+inf` is the hang again from the
+/// other end -- `inf * 0.5` is `inf`, so the loop above never descends -- and this bound
+/// refuses it along with every finite value large enough to matter.
+///
+/// It is also what bounds the **octave count**, which nothing else does: the loop runs
+/// `log2(coarsest / canonical) + 1` times, so this ceiling with
+/// [`WB_MIN_RELIEF_WAVELENGTH_M`] caps a record at `log2(1e9 / 1e-3) + 1 ~ 41` bands
+/// against canonical's 7. Every band is a noise sample on every elevation call, so an
+/// unbounded ratio is a slow world rather than a wrong one -- still worth a bound at the
+/// door. Set to [`WB_MAX_WORLD_RADIUS_M`]'s value for the same reason it was: a wavelength
+/// larger than the largest admissible planet is a caller mistake.
+pub const WB_MAX_RELIEF_WAVELENGTH_M: f64 = 1.0e9;
+
+/// The ceiling on each of the five roughness amplitudes (`abyssal_m`, `shelf_m`, `coast_m`,
+/// `interior_m`, `mountain_m`). The floor is `0.0`: `Detail::offset_m` already returns `0.0`
+/// for a non-positive amplitude, so a negative one is a field that looks configured and does
+/// nothing -- the silently-dropping-builder shape this project refuses elsewhere in this
+/// same file. A million metres is a hundred and fifty times the largest amplitude this
+/// generator ships (`MOUNTAIN_M * 4.0 = 600` in `hills()`) and is a domain statement, not a
+/// measured hazard: no amplitude in this range makes `offset_m` non-finite, which the sweep
+/// test asserts by sampling every accepted record rather than by argument.
+pub const WB_MAX_RELIEF_AMPLITUDE_M: f64 = 1.0e6;
+
+/// The magnitude bound on `quieting_strength`, which is signed and admits both ends.
+///
+/// `amplitude_m` computes `quieted = 1.0 - quieting_strength * smooth(..)`, and `smooth`
+/// returns `[0, 1]`, so `|strength| <= 1` keeps `quieted` in `[0, 2]` -- roughness fully
+/// suppressed at one end, doubled at the other. Past `1.0` the term changes the *sign* of
+/// the roughness where tectonics are large, which is not "more relief" but inverted relief,
+/// and is a different mechanism wearing this parameter's name. Canonical is `+0.7` and
+/// `hills()` is `-0.7`; both ends of the calibrated slider travel sit well inside this.
+pub const WB_MAX_QUIETING_STRENGTH: f64 = 1.0;
+
+/// The floor and ceiling on `quieting_scale_m`, which is a divisor
+/// (`smooth(tectonic_m.abs() / quieting_scale_m)`). Zero does not abort -- `smooth` clamps
+/// `inf` and `NaN` alike to `1.0`, which the module's own doc records -- so this pair is a
+/// domain statement rather than a closed hazard, and is documented as one. Canonical is
+/// `1200.0`.
+pub const WB_MIN_QUIETING_SCALE_M: f64 = 1.0e-3;
+/// See [`WB_MIN_QUIETING_SCALE_M`].
+pub const WB_MAX_QUIETING_SCALE_M: f64 = 1.0e9;
+
 /// The ceiling on `plate_count`, and it is a *refusal*, not a clamp.
 ///
 /// Every sample walks the plate table and `Surface::new` builds it, so a plate count in the
@@ -279,6 +374,9 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_alloc",
     "wb_dealloc",
     "wb_world_new",
+    "wb_world_new_relief",
+    "wb_relief_preset",
+    "wb_relief_check",
     "wb_world_free",
     "wb_world_count",
     "wb_elevation_m",
@@ -461,6 +559,176 @@ fn decode_feature(record: &[f64]) -> Option<Feature> {
     })
 }
 
+// ------------------------------------------------------------------ the relief channel
+
+/// `low <= value <= high`, **and NaN answers `false`**, which is the whole reason this is a
+/// named function rather than a `.clamp(` or a pair of `f64::min`/`f64::max` calls.
+///
+/// The house rule against those three forms exists because they are NaN-asymmetric, and
+/// `tests/no_std_math.rs`'s guard does not catch them -- so validation code, which is where
+/// clamping is most tempting, gets an explicit-branch form instead, the same shape
+/// `plates.rs::margin_at` uses. Written as two comparisons because IEEE 754 makes every
+/// comparison against NaN false: `NaN >= low` is false, so a NaN field is refused by the
+/// same expression that bounds a finite one, with no separate `is_finite` test.
+///
+/// Both infinities fall out for free too: `+inf <= high` is false and `-inf >= low` is
+/// false for every finite `low`/`high`. **A clamp here would have silently turned each of
+/// those into a bound**, which is exactly the band-not-cliff failure this task's sweep is
+/// looking for.
+fn within(value: f64, low: f64, high: f64) -> bool {
+    value >= low && value <= high
+}
+
+/// Whether a relief block is one this boundary will let reach `Surface::new`.
+///
+/// Every bound is documented on its own constant, with which ones close a real hazard
+/// (`WB_MIN_RELIEF_WAVELENGTH_M` and `WB_MAX_RELIEF_WAVELENGTH_M` close a **non-terminating
+/// loop** in `Detail::plan`) and which are domain statements. Nothing here clamps: a record
+/// is admitted as the host wrote it or refused entire, because a silently-adjusted
+/// parameter is a world nobody asked for.
+fn relief_is_admissible(relief: &ReliefParams) -> bool {
+    for wavelength in [relief.canonical_wavelength_m, relief.coarsest_wavelength_m] {
+        if !within(wavelength, WB_MIN_RELIEF_WAVELENGTH_M, WB_MAX_RELIEF_WAVELENGTH_M) {
+            return false;
+        }
+    }
+    // The band schedule runs coarse to fine. A record whose coarsest band is finer than its
+    // canonical one plans *zero* octaves -- a world with no detail at all, which reads as a
+    // working world with the roughness silently switched off rather than as a refusal.
+    if !(relief.coarsest_wavelength_m >= relief.canonical_wavelength_m) {
+        return false;
+    }
+    for amplitude in [
+        relief.abyssal_m,
+        relief.shelf_m,
+        relief.coast_m,
+        relief.interior_m,
+        relief.mountain_m,
+    ] {
+        if !within(amplitude, 0.0, WB_MAX_RELIEF_AMPLITUDE_M) {
+            return false;
+        }
+    }
+    if !within(relief.quieting_strength, -WB_MAX_QUIETING_STRENGTH, WB_MAX_QUIETING_STRENGTH) {
+        return false;
+    }
+    if !within(relief.quieting_scale_m, WB_MIN_QUIETING_SCALE_M, WB_MAX_QUIETING_SCALE_M) {
+        return false;
+    }
+    // Both ends are admitted on purpose and both are swept: at `0.0` every octave past the
+    // first carries no share, at `1.0` every octave carries the same one. Neither is a
+    // division and neither is a panic; `plan`'s own `if sum == 0.0 { 1.0 }` guard is what
+    // makes the zero end safe, and it predates this task.
+    if !within(relief.octave_persistence, 0.0, 1.0) {
+        return false;
+    }
+    true
+}
+
+/// One relief record, decoded and validated, or `None` if this channel refuses it.
+fn decode_relief(record: &[f64]) -> Option<ReliefParams> {
+    let fields = <[f64; WB_RELIEF_STRIDE]>::try_from(record).ok()?;
+    let relief = ReliefParams {
+        canonical_wavelength_m: fields[0],
+        coarsest_wavelength_m: fields[1],
+        abyssal_m: fields[2],
+        shelf_m: fields[3],
+        coast_m: fields[4],
+        interior_m: fields[5],
+        mountain_m: fields[6],
+        quieting_strength: fields[7],
+        quieting_scale_m: fields[8],
+        octave_persistence: fields[9],
+    };
+    if relief_is_admissible(&relief) {
+        Some(relief)
+    } else {
+        None
+    }
+}
+
+/// The inverse of [`decode_relief`]'s field order, in one place so the two cannot drift.
+fn encode_relief(relief: &ReliefParams) -> [f64; WB_RELIEF_STRIDE] {
+    [
+        relief.canonical_wavelength_m,
+        relief.coarsest_wavelength_m,
+        relief.abyssal_m,
+        relief.shelf_m,
+        relief.coast_m,
+        relief.interior_m,
+        relief.mountain_m,
+        relief.quieting_strength,
+        relief.quieting_scale_m,
+        relief.octave_persistence,
+    ]
+}
+
+/// What a host's `(relief_ptr, relief_len)` pair means. Three outcomes, kept as a type so
+/// the two exports that read one cannot confuse "canonical" with "refused" -- an
+/// `Option<Option<..>>` would let them.
+enum ReliefArg {
+    /// A null pointer with a length of zero: the canonical path, `None`, byte-for-byte
+    /// today's world. **This is what the viewer sends when nothing was touched** -- Ruling
+    /// 1, held at the door rather than trusted to `canonical()` being equal to `None`.
+    Canonical,
+    /// A decoded, validated block.
+    Chosen(ReliefParams),
+    /// The buffer was unusable (null with a non-zero length, misaligned, or the wrong
+    /// length) or a field was outside its documented domain.
+    Refused(u32),
+}
+
+/// Read a relief argument out of linear memory.
+///
+/// # Safety
+/// If `relief_len` is non-zero, `relief_ptr` must be a live, 8-aligned allocation of at
+/// least `relief_len` f64.
+unsafe fn read_relief(relief_ptr: *const f64, relief_len: u32) -> ReliefArg {
+    if relief_len == 0 {
+        // A null pointer is the canonical path. A non-null pointer with a length of zero is
+        // a host that computed a length wrong, not a host asking for canonical, so it is
+        // refused rather than silently answered with a different world.
+        return if relief_ptr.is_null() {
+            ReliefArg::Canonical
+        } else {
+            ReliefArg::Refused(WB_ERR_BUFFER)
+        };
+    }
+    if relief_ptr.is_null() {
+        return ReliefArg::Refused(WB_ERR_BUFFER);
+    }
+    let address = relief_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return ReliefArg::Refused(WB_ERR_BUFFER);
+    }
+    let words = match usize::try_from(relief_len) {
+        Ok(words) if words == WB_RELIEF_STRIDE => words,
+        _ => return ReliefArg::Refused(WB_ERR_BUFFER),
+    };
+    let record = core::slice::from_raw_parts(relief_ptr, words);
+    match decode_relief(record) {
+        Some(relief) => ReliefArg::Chosen(relief),
+        None => ReliefArg::Refused(WB_ERR_PARAM),
+    }
+}
+
+/// The preset a selector names, or `None` for a selector this build does not know.
+///
+/// **The only place a preset's values are read**, and there is no second copy of them
+/// anywhere -- not in this file, not in the viewer. `ReliefParams::hills()` in `detail.rs`
+/// carries the numbers and the measurement that chose them; this hands them across the
+/// boundary unchanged so a host can present a preset button without restating `600.0`,
+/// `-0.7` and `0.65` as literals that drift the first time anybody retunes one.
+fn preset_by_selector(preset: u32) -> Option<ReliefParams> {
+    if preset == WB_RELIEF_CANONICAL {
+        Some(ReliefParams::canonical())
+    } else if preset == WB_RELIEF_HILLS {
+        Some(ReliefParams::hills())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------------- the exports
 
 /// The generator's identity, per VERSION-001. Not the package version and never derived
@@ -557,6 +825,137 @@ pub extern "C" fn wb_world_new(
     features_ptr: *const f64,
     feature_count: u32,
 ) -> u32 {
+    // `None` -- canonical roughness, unchanged by the relief channel Task 4 added beside
+    // this export. This signature is frozen: extending it in place would have broken every
+    // existing caller's arity for a parameter most of them never want, so
+    // `wb_world_new_relief` is a second door onto the same builder rather than a wider one
+    // onto this.
+    unsafe { build_world(world_seed, radius_m, plate_count, land_fraction, features_ptr, feature_count, None) }
+}
+
+/// Build a world with a caller-chosen relief block, or **0** if it refused.
+///
+/// Exactly [`wb_world_new`] plus a relief record, and every one of that function's own
+/// domains still applies unchanged -- read its doc for `radius_m`, `plate_count`,
+/// `land_fraction` and the feature channel.
+///
+/// # The relief argument
+///
+/// - **`relief_ptr` null with `relief_len == 0` is the canonical path** and is exactly what
+///   `wb_world_new` does: `None`, not `Some(canonical())`. Bit-identical to today's world,
+///   which Ruling 1 requires and `the_relief_channel_default_path_is_the_untouched_world`
+///   proves by sampling rather than by argument.
+/// - Otherwise `relief_len` must be exactly [`WB_RELIEF_STRIDE`] and `relief_ptr` a live,
+///   8-aligned buffer of that many f64 in the order that constant documents. Every field is
+///   bounded; **a single field outside its domain refuses the whole call**, the same way one
+///   bad feature record does, because a world built from nine of ten requested parameters is
+///   the silently-dropping-builder shape.
+///
+/// A host that wants to know *why* a record was refused calls [`wb_relief_check`] on the
+/// same buffer, which answers with a status instead of a handle.
+///
+/// # Safety
+/// The feature-channel safety requirement of [`wb_world_new`] applies unchanged. If
+/// `relief_len` is non-zero, `relief_ptr` must be a live, 8-aligned allocation of at least
+/// `relief_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_world_new_relief(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+) -> u32 {
+    let relief = match unsafe { read_relief(relief_ptr, relief_len) } {
+        ReliefArg::Canonical => None,
+        ReliefArg::Chosen(relief) => Some(relief),
+        ReliefArg::Refused(_) => return 0,
+    };
+    unsafe {
+        build_world(world_seed, radius_m, plate_count, land_fraction, features_ptr, feature_count, relief)
+    }
+}
+
+/// Write a named preset's ten f64 into a caller buffer, in [`WB_RELIEF_STRIDE`]'s order.
+///
+/// `WB_OK`, or `WB_ERR_PARAM` for a selector this build does not know, or `WB_ERR_BUFFER`
+/// for a null, misaligned, or wrongly-sized buffer. Selectors are [`WB_RELIEF_CANONICAL`]
+/// and [`WB_RELIEF_HILLS`].
+///
+/// **This export exists so no host ever transcribes a preset.** The pre-flight conflict
+/// scan for this slice flagged exactly that: Task 3 names the preset, Task 4 exposes it, and
+/// two copies of three numbers drift the first time one is retuned. The viewer's panel reads
+/// its slider defaults *and* its preset button from here, so `detail.rs` stays the only
+/// place the numbers live.
+///
+/// # Safety
+/// `out_ptr` must be a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_relief_preset(preset: u32, out_ptr: *mut f64, out_len: u32) -> u32 {
+    let relief = match preset_by_selector(preset) {
+        Some(relief) => relief,
+        None => return WB_ERR_PARAM,
+    };
+    if out_ptr.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(words) if words == WB_RELIEF_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    let values = encode_relief(&relief);
+    for (offset, value) in values.into_iter().enumerate() {
+        unsafe { out_ptr.add(offset).write(value) };
+    }
+    WB_OK
+}
+
+/// Ask whether a relief record would be accepted, **without building a world**.
+///
+/// `WB_OK` for a record [`wb_world_new_relief`] would take (including the canonical
+/// null/zero pair), `WB_ERR_BUFFER` for an unusable buffer, `WB_ERR_PARAM` for a field
+/// outside its documented domain.
+///
+/// The constructor answers a refusal with a handle of 0, which says *that* it refused and
+/// never *why*. A UI wiring sliders to these parameters needs the difference -- a panel that
+/// can only report "the engine said no" pushes the user into bisecting ten fields by hand --
+/// and a test sweeping the domain needs it too, so that "refused" and "accepted but fatal"
+/// cannot be confused for one another.
+/// `the_relief_checker_and_the_constructor_agree_on_every_swept_record` holds the two to
+/// each other across the whole sweep, so this cannot drift into a second, laxer validator.
+///
+/// # Safety
+/// If `relief_len` is non-zero, `relief_ptr` must be a live, 8-aligned allocation of at
+/// least `relief_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_relief_check(relief_ptr: *const f64, relief_len: u32) -> u32 {
+    match unsafe { read_relief(relief_ptr, relief_len) } {
+        ReliefArg::Canonical | ReliefArg::Chosen(_) => WB_OK,
+        ReliefArg::Refused(status) => status,
+    }
+}
+
+/// The one `Surface::new` call in this file, behind both constructors.
+///
+/// # Safety
+/// If `feature_count` is non-zero, `features_ptr` must be a live, 8-aligned allocation of at
+/// least `feature_count * WB_FEATURE_STRIDE` f64.
+unsafe fn build_world(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief: Option<ReliefParams>,
+) -> u32 {
     if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
         return 0;
     }
@@ -589,7 +988,7 @@ pub extern "C" fn wb_world_new(
             Some(words) => words,
             None => return 0,
         };
-        let records = unsafe { core::slice::from_raw_parts(features_ptr, words) };
+        let records = core::slice::from_raw_parts(features_ptr, words);
         let mut decoded = Vec::with_capacity(count);
         for record in records.chunks_exact(WB_FEATURE_STRIDE) {
             match decode_feature(record) {
@@ -600,9 +999,10 @@ pub extern "C" fn wb_world_new(
         Some(FeatureInput::Loose(decoded))
     };
 
-    // relief: None -- canonical roughness. This export does not expose ReliefParams; a
-    // later task decides whether and how a wasm caller chooses one (Task 4).
-    let surface = Surface::new(world_seed, radius_m, plates, land_fraction, features, None);
+    // `relief` arrives already validated -- `read_relief` refuses at the boundary, so
+    // nothing outside the documented domain reaches here. `None` is the canonical path and
+    // is what `wb_world_new` always passes.
+    let surface = Surface::new(world_seed, radius_m, plates, land_fraction, features, relief);
     insert_world(World::new(surface))
 }
 

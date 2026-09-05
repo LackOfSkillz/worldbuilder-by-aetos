@@ -34,6 +34,10 @@
   Parameters, all optional:
     ?seed= ?radius= ?plates= ?land= ?harbour=1   the world
     ?maxLevel= ?size=                            the tiling
+    ?mountainM= ?quieting= ?persistence=         relief amplitude. All three absent (or all
+                                                 at canonical) takes the engine's `None`
+                                                 path, which is byte-for-byte the world this
+                                                 viewer built before relief was reachable.
     ?exaggeration= ?paint=0 ?rampMin= ?rampMax=  what it looks like
     ?fly=lat,lon,height                          where to look
     ?workers= ?cache=0 ?cacheTiles=              the Task 5 pool and cache (workers=0 is

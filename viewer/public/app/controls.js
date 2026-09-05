@@ -25,6 +25,10 @@
 // Served under `default-src 'self'` with no `'unsafe-inline'`, so this is a module file and
 // its styles live in `viewer.css`. See `index.html`'s comment.
 
+import {
+  RELIEF_CONTROLS, RELIEF_PARAM_NAMES, HURST_BAND, hurst, sliderTravel, reliefToParams,
+} from "./relief-params.js";
+
 const params = new URLSearchParams(location.search);
 
 /// Defaults, repeated from their defining modules so a field can show what it will be if
@@ -70,6 +74,14 @@ const FAULT_OPTIONS = [
 /// panel is not mistaken for the whole product. `state` is deliberately blunt.
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
+  // Ruling 4 of the relief-amplitude slice, and it is a measurement, not a scheduling note.
+  // The highest point on this planet is 1,381 m and 1,378 m of that is the structural
+  // (tectonic) term, so no relief parameter can move a mountain's height at all; Ruling 6
+  // measured the roughness spectrum topping out at 161 m on peaks and 82 m on land at the
+  // most extreme corner ever swept. `mountainM` below is a roughness budget on high ground,
+  // and labelling it "mountain height" would be the wrong thing wearing the right label.
+  ["mountain height", "tectonic, not relief: 1,378 m of the 1,381 m peak is structural"],
+  ["mountain count", "tectonic: plate collisions place them, and no relief knob reaches that"],
   ["lakes + water", "slice 5b, in progress: no export yet"],
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],
   ["place areas", "slice 3, the studio: not started"],
@@ -178,6 +190,103 @@ function build() {
   const ceiling = row(tiling, "feat. cap", "wb-ceiling", "range",
     { min: 12, max: 22, step: 1, value: current("featureCeiling") });
 
+  // === relief — these rebuild =============================================================
+  //
+  // **Rebuild-class, not live**, and not by preference: relief parameters are an argument to
+  // `Surface::new`. They decide the octave schedule once, in the constructor, and every
+  // worker holds its own already-built world. There is no uniform to poke the way the ramp
+  // and the exaggeration have one, so these follow `location.search` like every other world
+  // knob in this panel.
+  //
+  // **No relief number is written in this file.** Every default and two of the three travel
+  // ends are read from the engine's own `wb_relief_preset` in `wireRelief` below. The panel's
+  // ramp defaults drifted from `main.js`'s once and silently reverted the ramp on every
+  // generate; the answer this time is to hold no copy at all rather than a correct copy.
+  // Until the engine answers, these sliders are disabled and say so.
+
+  const reliefSection = section(body, "relief · rebuilds");
+  const reliefLabels = {
+    mountainM: "hi-gnd rough",
+    quietingStrength: "quieting",
+    octavePersistence: "persistence",
+  };
+  const reliefRows = {};
+  for (const field of RELIEF_CONTROLS) {
+    reliefRows[field] = row(reliefSection, reliefLabels[field], `wb-relief-${field}`, "range",
+      { min: 0, max: 1, step: 1, value: 0, disabled: true });
+    reliefRows[field].out.textContent = "—";
+  }
+  const reliefNote = el("div", "wb-note", "waiting for the engine…");
+  reliefSection.append(reliefNote);
+  const reliefActions = el("div", "wb-actions");
+  const hillsButton = el("button", "wb-mini", "hills preset");
+  hillsButton.type = "button";
+  hillsButton.disabled = true;
+  hillsButton.title = "ReliefParams::hills(), read from the engine — not restated here";
+  const reliefReset = el("button", "wb-mini", "canonical");
+  reliefReset.type = "button";
+  reliefReset.disabled = true;
+  reliefReset.title = "back to the engine's canonical block, which is the untouched world";
+  reliefActions.append(hillsButton, reliefReset);
+  reliefSection.append(reliefActions);
+
+  /// The relief block the sliders currently describe, or `null` while the engine has not
+  /// answered. `rebuildFields` closes over this, so it is read at click time, not now.
+  let reliefState = null;
+  let reliefCanonical = null;
+
+  /// Fill in the travel, the defaults and the readouts once the engine can be asked.
+  function wireRelief(presets) {
+    reliefCanonical = presets.canonical;
+    const travel = sliderTravel(presets.canonical, presets.hills);
+    // The chosen block, if the URL carries one; otherwise canonical. Read through the same
+    // `reliefFromParams` the boot path uses, via `__wb.relief.chosen`, so the panel and the
+    // world cannot disagree about what was asked for.
+    reliefState = { ...presets.canonical, ...(presets.chosen ?? {}) };
+
+    const paint = () => {
+      for (const field of RELIEF_CONTROLS) {
+        const value = travel[field].toValue(Number(reliefRows[field].input.value));
+        reliefState[field] = value;
+        reliefRows[field].out.textContent = travel[field].format(value);
+      }
+      // The Hurst exponent is the number with meaning outside this engine: 0.65 persistence
+      // is an implementation detail of `plan`'s schedule, H is a measured property of real
+      // ground. Gagnon, Lovejoy & Schertzer put real terrain at H 0.6-0.71 across four DEMs,
+      // and the note says whether the current setting is inside that band rather than
+      // leaving the reader to compare two numbers.
+      const h = hurst(reliefState.octavePersistence);
+      const inBand = h >= HURST_BAND.low && h <= HURST_BAND.high;
+      reliefNote.textContent =
+        `H ${h.toFixed(3)} — real terrain is ${HURST_BAND.low}–${HURST_BAND.high} ` +
+        `(Gagnon, Lovejoy & Schertzer, four DEMs): ${inBand ? "inside" : "outside"}. ` +
+        "Roughness only — mountain height is tectonic.";
+    };
+
+    for (const field of RELIEF_CONTROLS) {
+      const { input } = reliefRows[field];
+      input.min = travel[field].min;
+      input.max = travel[field].max;
+      input.step = 1;
+      input.value = travel[field].toPosition(reliefState[field]);
+      input.disabled = false;
+      input.addEventListener("input", paint);
+    }
+    const setAll = (block) => {
+      for (const field of RELIEF_CONTROLS) {
+        reliefRows[field].input.value = travel[field].toPosition(block[field]);
+      }
+      paint();
+    };
+    hillsButton.disabled = false;
+    reliefReset.disabled = false;
+    // Both buttons send the engine's own records back to the engine. Neither restates a
+    // number, which is the whole point of `wb_relief_preset` existing.
+    hillsButton.addEventListener("click", () => setAll(presets.hills));
+    reliefReset.addEventListener("click", () => setAll(presets.canonical));
+    paint();
+  }
+
   // === appearance — live, no reload =======================================================
 
   const look = section(body, "appearance · live");
@@ -265,6 +374,10 @@ function build() {
     featureCeiling: ceiling.input.value,
     harbour: harbour.checked ? "1" : null,
     fault: fault.value || null,
+    // Every relief field still at canonical is dropped, so an untouched panel writes no
+    // relief parameter at all and the reload takes the `None` path -- Ruling 1, held in the
+    // one place a generate can break it.
+    ...(reliefState && reliefCanonical ? reliefToParams(reliefState, reliefCanonical) : {}),
   });
 
   const actions = el("div", "wb-actions");
@@ -320,7 +433,7 @@ function build() {
   missing.append(list);
 
   document.body.append(panel);
-  return readout;
+  return { readout, wireRelief, reliefNote };
 }
 
 /// Camera altitude, cursor position and the terrain height under it.
@@ -361,12 +474,28 @@ function wireReadout(readout) {
   });
 }
 
-// Module scripts run in document order, so `window.viewer` exists by the time this does.
-// `__wbReady` is main.js's signal that the engine-backed provider is installed; waiting on
-// it keeps the readout from reporting ellipsoid heights and calling them ground.
-const readout = build();
-if (window.__wbReady && typeof window.__wbReady.then === "function") {
-  window.__wbReady.then(() => wireReadout(readout)).catch(() => wireReadout(readout));
-} else {
-  wireReadout(readout);
-}
+// Module scripts run in document order, so `window.viewer` exists by the time this does, and
+// `main.js` has already published `window.__wbBoot` -- a real promise, assigned at module
+// evaluation rather than at the end of `boot`.
+//
+// The readout waits on it so it does not report ellipsoid heights and call them ground. The
+// relief section waits on it because it genuinely cannot exist without the engine: its
+// defaults and two of its three travel ends ARE `wb_relief_preset`'s answer, and there is no
+// fallback set of numbers here to fall back to. If boot fails, the sliders stay disabled and
+// the note says why, which is honest; a panel that showed plausible relief defaults over a
+// dead engine would be the drift hazard again, wearing a different hat.
+const { readout, wireRelief, reliefNote } = build();
+const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
+  ? window.__wbBoot
+  : Promise.resolve();
+booted
+  .then(() => {
+    wireReadout(readout);
+    const presets = window.__wb && window.__wb.relief;
+    if (presets) wireRelief(presets);
+    else reliefNote.textContent = "engine unavailable — relief cannot be read or set";
+  })
+  .catch((error) => {
+    wireReadout(readout);
+    reliefNote.textContent = `engine unavailable — relief cannot be set (${error})`;
+  });
