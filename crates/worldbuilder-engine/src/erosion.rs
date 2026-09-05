@@ -66,23 +66,59 @@
 //! terrain, because every node still gets *some* update; it is simply the wrong one, and
 //! nothing about the output announces that.
 //!
-//! # This module holds the strict bit-for-bit contract
+//! # Bit-exact, but not because the inner loop avoids transcendentals
+//!
+//! **An earlier draft of this doc claimed this module could hold the strict bit-for-bit
+//! contract because its exponents avoid transcendentals. Wrong on both halves -- see the
+//! plan's `cea453f` correction, which this section now matches.**
 //!
 //! With `n = 1`, `s^1` is `s` -- no call at all. With `m = 0.5`, `A^0.5` is `sqrt`, which
-//! IEEE-754 requires to be *correctly rounded*, unlike `sin`, `cos`, `pow`, `exp`, `log` and
-//! the rest of `detmath.rs`, whose own doc records native and WASM libm disagreeing by a bit
-//! on roughly 2.4% of sampled inputs. Because the inner loop of the equation this module
-//! documents contains no transcendental -- only `sqrt`, multiplication, subtraction and
-//! addition -- a test of it compares **bit patterns**, never a tolerance. A tolerance
-//! anywhere in this file (or in Tasks 2-4, which build the solver on top of it) is a defect,
-//! not a reasonable allowance, because nothing here has an excuse to disagree by even one
-//! bit between native and WASM.
+//! IEEE-754 requires to be *correctly rounded*. That is real and worth keeping: it means
+//! `detmath::powf` never enters the inner loop of a 100-300 iteration bake. **But slope
+//! needs the distance from a node to its receiver**, and
+//! [`crate::sphere::SpherePoint::distance_to`] is `angle_to * radius_m` with
+//! `angle_to = detmath::atan2(across, along)` -- so the step this module implements calls
+//! `atan2` after all, once per node per step. That is expected and correct here, not a
+//! violation to route around.
 //!
-//! If a later task needs `pow`, `exp`, `log` or a trig function inside the per-iteration
-//! step, the formulation has drifted away from `n = 1, m = 0.5` and this contract no longer
-//! holds for it -- that is the moment to come back and change this doc, not to add a
-//! tolerance and move on.
+//! The strict-versus-bounded split this project otherwise cares about governs
+//! *Python-against-Rust* conformance, and it does not apply to this module at all:
+//! `worldbuilder/` has no stream power and this plan forbids writing one, so there is no
+//! Python side to diverge from. The only equality claims a test here can make are **native
+//! against WASM** and **run against run** -- and both hold bit-for-bit regardless of
+//! `atan2`, because native and WASM share the same pure-Rust `libm` crate rather than each
+//! dispatching to its own platform's. A test in this module therefore still compares **bit
+//! patterns, never a tolerance** -- not because the loop is transcendental-free, but because
+//! both sides of every comparison this module can make run the identical `libm`.
+//!
+//! Distances are computed **once per step, before the walk**, via [`receiver_distances_m`],
+//! rather than once per node per iteration inside a caller's loop: Task 3's iteration calls
+//! it once and reuses the result across all 100-300 iterations, instead of recomputing
+//! `atan2` for the same node/receiver pair on every one of them. Positions themselves are
+//! not stored on the graph (`GraphHeader` keeps only a `position_checksum`); a caller
+//! regenerates them once with `stream::node_positions` and passes them in.
+//!
+//! If a later task finds itself reaching for `powf` in the inner loop, the formulation has
+//! drifted away from `n = 1, m = 0.5` -- that is the moment to come back and change this
+//! doc, not to add a tolerance and move on. `atan2` in the distance computation is not that
+//! signal; it was always expected here.
+//!
+//! # A root has no receiver, so it is held fixed rather than uplifted
+//!
+//! `StreamGraph::downhill_of` returns `None` exactly at a root, and `stream.rs`'s own
+//! invariant (`RootIsNeitherMouthNorLake` / `RootIsBothMouthAndLake`) says every root is
+//! either a mouth (the sea) or a pond/lake outlet -- in either case, the local **base
+//! level** its whole basin erodes toward, not a slope with a downhill neighbour to measure.
+//! Uplifting a root anyway would raise that base level independently of anything eroding
+//! into it, which is not what "base level" means: the land upstream would spend the whole
+//! bake chasing a floor that never stopped rising under it. This module instead holds a
+//! root's height fixed for the step ([`erode_step`] copies it through unchanged). Applying
+//! `u * dt` at roots instead is the other defensible choice -- it is a different equation,
+//! not a bug in this one, and a later task that wants a rising sea floor or a filling lake
+//! should change this decision explicitly rather than inherit it by accident.
 
+use crate::detmath;
+use crate::sphere::SpherePoint;
 use crate::stream::StreamGraph;
 
 /// The area exponent `m` in `dh/dt = u - k * A^m * s^n`.
@@ -122,6 +158,14 @@ pub struct ErosionParams {
     /// `1/yr`. Uniform across the graph, for the same reason and with the same limitation as
     /// `uplift_m_per_yr`.
     pub erodibility_per_yr: f64,
+
+    /// `dt`, the timestep of one implicit step, in years. Task 1's review flagged the
+    /// timestep as a value the result unambiguously depends on: two bakes that differ only
+    /// in `dt` erode by different amounts and are not comparable runs, so `dt` belongs on
+    /// this recorded, `PartialEq`-comparable type rather than living as a solver constant or
+    /// a bare argument that a stored graph's header says nothing about. Named with its unit
+    /// like its siblings, for the same reason they are.
+    pub timestep_yr: f64,
 }
 
 impl ErosionParams {
@@ -149,6 +193,130 @@ pub fn root_to_leaves(graph: &StreamGraph) -> Vec<u32> {
     let mut order = graph.peel().order;
     order.reverse();
     order
+}
+
+/// The great-circle distance from every node to its downhill receiver, in metres --
+/// `distances[node]` is `positions[node].distance_to(&positions[receiver], radius_m)`.
+///
+/// Computed as a single pass over the whole graph, **once**, so [`erode_step`] (and Task
+/// 3's loop over it) never recomputes `atan2` for a node/receiver pair that has not moved:
+/// positions are fixed for the whole bake, only heights change per step. A root has no
+/// receiver, so its entry is `0.0` -- a placeholder that [`erode_step`] never reads, since a
+/// root's update does not consult distance at all (see the module doc).
+///
+/// `positions` must be indexed exactly like the graph, i.e. `stream::node_positions` called
+/// with the same seed and count the graph itself was built from; this function trusts that
+/// rather than re-deriving it, the same way `StreamGraph::build` trusts the positions it is
+/// handed.
+pub fn receiver_distances_m(graph: &StreamGraph, positions: &[SpherePoint]) -> Vec<f64> {
+    let radius_m = graph.header().radius_m;
+    (0..graph.node_count())
+        .map(|node| match graph.downhill_of(node) {
+            Some(receiver) => {
+                let from = &positions[node as usize]; // cast-ok: a node index into usize
+                let to = &positions[receiver as usize]; // cast-ok: a node index into usize
+                from.distance_to(to, radius_m)
+            }
+            None => 0.0, // a root: never read by erode_step, see the module doc
+        })
+        .collect()
+}
+
+/// One implicit step of `dh/dt = u - k * A^0.5 * s` over the whole graph, walking
+/// [`root_to_leaves`] so every node's receiver is already at its new height when the node
+/// itself is updated.
+///
+/// # Derivation
+///
+/// Slope at node `i` with receiver `r` and receiver-distance `d` is `s = (h_i - h_r) / d`.
+/// Discretising implicitly -- the receiver height on the right-hand side is the *new* one,
+/// not the old -- gives
+///
+/// ```text
+/// (h_i' - h_i) / dt = u - k * sqrt(A_i) * (h_i' - h_r') / d
+/// ```
+///
+/// Multiply through by `dt`, expand, and collect every `h_i'` term on the left. With
+/// `c = k * dt * sqrt(A_i) / d`:
+///
+/// ```text
+/// h_i' - h_i = u*dt - c*h_i' + c*h_r'
+/// h_i' * (1 + c) = h_i + u*dt + c*h_r'
+/// h_i' = (h_i + u*dt + c*h_r') / (1 + c)
+/// ```
+///
+/// `h_r'` is the receiver's already-updated height, which only exists at this point in the
+/// walk because the walk is root-to-leaves.
+///
+/// A root has no `r`, `s`, or `d` at all -- see the module doc for why this function holds
+/// a root's height fixed rather than applying `u * dt` to it.
+///
+/// `heights[node]` is `h` before the step; the returned vector is `h'` after it, same
+/// length and same indexing. `distances_m` is [`receiver_distances_m`]'s output for this
+/// graph; passing it in rather than recomputing it here is what keeps `atan2` out of a
+/// caller's per-iteration cost (see the module doc).
+///
+/// `d` can only be zero if two nodes coincide, which `StreamGraph::build` already rejects
+/// (`GraphError::CoincidentNodes`) before a graph exists to call this on -- so this function
+/// adds no division guard. A guard that silently substituted a value for `d = 0` would hide
+/// exactly the defect the builder already refuses to let through; the well-formed
+/// precondition is enforced upstream, once, rather than defended against redundantly here.
+pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], params: &ErosionParams) -> Vec<f64> {
+    let count = graph.node_count() as usize; // cast-ok: node_count is bounded (stream.rs::MAX_NODES)
+    let mut next = heights.to_vec();
+    let dt = params.timestep_yr;
+
+    for node in root_to_leaves(graph) {
+        let idx = node as usize; // cast-ok: a node index into usize
+        debug_assert!(idx < count, "root_to_leaves must only yield indices within the graph");
+        let uplift = params.uplift_at(node);
+
+        match graph.downhill_of(node) {
+            None => {
+                // A root: held fixed for the step, not uplifted. See the module doc's
+                // "A root has no receiver" section for why.
+                next[idx] = heights[idx];
+            }
+            Some(receiver) => {
+                let receiver_idx = receiver as usize; // cast-ok: a node index into usize
+                // `next[receiver_idx]` is that node's NEW height, not the old one -- sound
+                // only because root_to_leaves visits every receiver before the node that
+                // drains into it, so by the time this line runs the receiver has already
+                // been overwritten in this same pass.
+                let receiver_h_new = next[receiver_idx];
+                next[idx] = implicit_receiver_update(
+                    heights[idx],
+                    receiver_h_new,
+                    graph.drainage_area_m2(node),
+                    distances_m[idx],
+                    uplift,
+                    params.erodibility_at(node),
+                    dt,
+                );
+            }
+        }
+    }
+
+    next
+}
+
+/// The closed form itself, isolated from graph traversal so it can be tested against exact
+/// arithmetic identities directly (a real `StreamGraph` node can never have `area_m2 == 0`
+/// -- `drainage_area_m2` includes the node's own area, and `build` rejects non-positive
+/// area -- so the zero-area case is only reachable by calling this function directly).
+///
+/// See [`erode_step`]'s doc for the derivation this implements.
+fn implicit_receiver_update(
+    h_i: f64,
+    receiver_h_new: f64,
+    area_m2: f64,
+    distance_m: f64,
+    uplift: f64,
+    erodibility: f64,
+    dt: f64,
+) -> f64 {
+    let c = erodibility * dt * detmath::sqrt(area_m2) / distance_m;
+    (h_i + uplift * dt + c * receiver_h_new) / (1.0 + c)
 }
 
 #[cfg(test)]
@@ -184,10 +352,13 @@ mod tests {
             .collect()
     }
 
-    fn small_graph() -> StreamGraph {
+    /// A graph and the positions it was built from, together -- `StreamGraph` does not
+    /// store positions (only their checksum), so any test that needs a distance has to
+    /// keep the positions alongside the graph itself, exactly as a real caller would.
+    fn small_graph_and_positions() -> (StreamGraph, Vec<SpherePoint>, Vec<f64>) {
         let sampling = sample_nodes(SEED, NODES, EARTH_RADIUS_M).expect("a node set");
         let heights = heights_for(SEED, NODES);
-        StreamGraph::build(
+        let graph = StreamGraph::build(
             &BuildParams {
                 world_seed: SEED,
                 radius_m: EARTH_RADIUS_M,
@@ -200,7 +371,16 @@ mod tests {
             &sampling.area_m2,
             &sampling.neighbours,
         )
-        .expect("a graph over a real field builds")
+        .expect("a graph over a real field builds");
+        (graph, sampling.positions, heights)
+    }
+
+    fn small_graph() -> StreamGraph {
+        small_graph_and_positions().0
+    }
+
+    fn default_test_params() -> ErosionParams {
+        ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-6, timestep_yr: 1000.0 }
     }
 
     // ---- the spec constants are pinned, not silently driftable ---------------------------
@@ -215,27 +395,34 @@ mod tests {
 
     #[test]
     fn erosion_params_is_copy_and_compares_by_value() {
-        let a = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6 };
+        let a = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0 };
         let b = a; // Copy, not a move -- `a` must still be usable below.
         assert_eq!(a, b);
 
-        let different = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 3.0e-6 };
+        let different =
+            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 3.0e-6, timestep_yr: 1000.0 };
         assert_ne!(a, different, "two runs differing only in erodibility must not compare equal");
+
+        let different_dt =
+            ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 2000.0 };
+        assert_ne!(a, different_dt, "two runs differing only in timestep must not compare equal");
     }
 
     #[test]
-    fn debug_output_shows_both_fields() {
-        let params = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6 };
+    fn debug_output_shows_all_fields() {
+        let params = ErosionParams { uplift_m_per_yr: 1.0e-4, erodibility_per_yr: 2.0e-6, timestep_yr: 1000.0 };
         let text = format!("{params:?}");
         assert!(text.contains("uplift_m_per_yr"));
         assert!(text.contains("erodibility_per_yr"));
+        assert!(text.contains("timestep_yr"));
     }
 
     // ---- uniform now, and honestly so ------------------------------------------------------
 
     #[test]
     fn uplift_and_erodibility_are_uniform_across_every_node() {
-        let params = ErosionParams { uplift_m_per_yr: 5.0e-4, erodibility_per_yr: 7.0e-7 };
+        let params =
+            ErosionParams { uplift_m_per_yr: 5.0e-4, erodibility_per_yr: 7.0e-7, timestep_yr: 1000.0 };
         for node in [0u32, 1, 42, NODES - 1] {
             assert_eq!(params.uplift_at(node), params.uplift_m_per_yr);
             assert_eq!(params.erodibility_at(node), params.erodibility_per_yr);
@@ -306,5 +493,195 @@ mod tests {
         let mut expected = peel.order.clone();
         expected.reverse();
         assert_eq!(root_to_leaves(&graph), expected);
+    }
+
+    // ---- receiver_distances_m -------------------------------------------------------------
+
+    #[test]
+    fn receiver_distances_m_matches_sphere_point_distance_to_directly() {
+        let (graph, positions, _heights) = small_graph_and_positions();
+        let radius_m = graph.header().radius_m;
+        let distances = receiver_distances_m(&graph, &positions);
+        assert_eq!(distances.len(), graph.node_count() as usize); // cast-ok: node_count is bounded
+
+        let mut receiver_edges_checked = 0;
+        for node in 0..graph.node_count() {
+            match graph.downhill_of(node) {
+                Some(receiver) => {
+                    let expected = positions[node as usize] // cast-ok: a node index into usize
+                        .distance_to(&positions[receiver as usize], radius_m); // cast-ok: a node index into usize
+                    assert_eq!(
+                        distances[node as usize].to_bits(), // cast-ok: a node index into usize
+                        expected.to_bits(),
+                        "node {node}'s receiver distance must be exactly SpherePoint::distance_to's own answer"
+                    );
+                    receiver_edges_checked += 1;
+                }
+                None => assert_eq!(distances[node as usize], 0.0, "a root's distance entry is an unread placeholder"), // cast-ok: a node index into usize
+            }
+        }
+        assert!(receiver_edges_checked > 0, "a graph with no downhill edges at all is not a meaningful fixture");
+    }
+
+    // ---- erode_step: determinism -----------------------------------------------------------
+
+    #[test]
+    fn erode_step_is_bit_identical_across_two_runs_of_the_same_inputs() {
+        // Population: every one of NODES = 300 nodes in `small_graph_and_positions()`.
+        // Method: `erode_step` called twice on identical graph, heights, distances and
+        // params, comparing `f64::to_bits()` element-by-element (never `==`, which would
+        // let two differently-signed zeros or a native/WASM tolerance pass unnoticed).
+        // Host: this crate's own test process (native), run-against-run rather than
+        // native-against-WASM -- see the module doc for why that is the claim this test
+        // can make.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = default_test_params();
+
+        let first = erode_step(&graph, &heights, &distances, &params);
+        let second = erode_step(&graph, &heights, &distances, &params);
+
+        assert_eq!(first.len(), second.len());
+        for i in 0..first.len() {
+            assert_eq!(first[i].to_bits(), second[i].to_bits(), "node {i} disagreed bit-for-bit between two runs");
+        }
+    }
+
+    // ---- erode_step: the traversal direction is load-bearing -------------------------------
+
+    #[test]
+    fn erode_step_would_differ_if_walked_leaves_to_roots_instead_of_root_to_leaves() {
+        // The property an off-by-a-direction bug breaks, made concrete rather than only
+        // asserted by inspection: re-run the exact same per-node closed form but drive it
+        // with `peel().order` (leaves-to-roots, `erosion.rs`'s own module doc names this as
+        // the WRONG direction for this solver) instead of `root_to_leaves`. The only
+        // difference between this block and `erode_step` is which order `next[]` gets
+        // written in, so any disagreement below comes from the direction, not the formula.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = default_test_params();
+
+        let correct = erode_step(&graph, &heights, &distances, &params);
+
+        let mut wrong_direction = heights.clone();
+        for node in graph.peel().order {
+            // NOTE: `peel().order`, NOT `root_to_leaves(&graph)` -- the bug under test.
+            let idx = node as usize; // cast-ok: a node index into usize
+            match graph.downhill_of(node) {
+                None => wrong_direction[idx] = heights[idx],
+                Some(receiver) => {
+                    let receiver_idx = receiver as usize; // cast-ok: a node index into usize
+                    // In this (wrong) order the receiver has NOT been overwritten yet when
+                    // a leaf-ward node reaches it, so this reads the OLD receiver height --
+                    // exactly the defect root-to-leaves exists to avoid.
+                    let receiver_h_stale = wrong_direction[receiver_idx];
+                    wrong_direction[idx] = implicit_receiver_update(
+                        heights[idx],
+                        receiver_h_stale,
+                        graph.drainage_area_m2(node),
+                        distances[idx],
+                        params.uplift_at(node),
+                        params.erodibility_at(node),
+                        params.timestep_yr,
+                    );
+                }
+            }
+        }
+
+        assert_ne!(
+            correct, wrong_direction,
+            "walking leaves-to-roots must disagree with root-to-leaves somewhere in this fixture"
+        );
+
+        // Not vacuous: the fixture must actually contain a chain two hops deep, i.e. some
+        // node whose receiver itself has its own receiver -- otherwise every h_r' is a
+        // root's untouched height under both orders and the two walks would coincide by
+        // accident rather than because the direction matters.
+        let has_two_hop_chain = (0..graph.node_count())
+            .any(|node| graph.downhill_of(node).and_then(|r| graph.downhill_of(r)).is_some());
+        assert!(has_two_hop_chain, "fixture must contain a downhill chain at least two hops deep");
+    }
+
+    // ---- implicit_receiver_update: the exact arithmetic identities -------------------------
+
+    #[test]
+    fn zero_drainage_area_rises_by_exactly_uplift_times_dt() {
+        // sqrt(0) = 0, so c = 0 and the closed form collapses to `(h_i + u*dt + 0) / 1`,
+        // an exact identity rather than a tolerance -- dividing by 1.0 is a no-op, and the
+        // numerator is a single addition chain with no term to round away.
+        let h_i = 1234.5;
+        let uplift = 3.0e-3;
+        let dt = 500.0;
+        let result = implicit_receiver_update(h_i, /* receiver_h_new */ -999.0, 0.0, 10.0, uplift, 1.0e-5, dt);
+        assert_eq!(result.to_bits(), (h_i + uplift * dt).to_bits());
+    }
+
+    #[test]
+    fn a_receiver_at_the_same_height_erodes_nothing() {
+        // s = (h_i - h_r) / d = 0 when h_i == h_r, so with uplift also zero the update
+        // should return h_i essentially unchanged. Floating-point division by (1 + c) is
+        // not guaranteed bit-exact for arbitrary c (unlike the c = 0 case above, this one
+        // is not a no-op divide), so this compares within a tight relative tolerance
+        // rather than by bit pattern.
+        let h = 777.0;
+        let result = implicit_receiver_update(h, h, 4.0e6, 250.0, 0.0, 3.0e-6, 1000.0);
+        let relative_error = (result - h).abs() / h;
+        assert!(relative_error < 1.0e-12, "expected ~{h}, got {result} (relative error {relative_error})");
+    }
+
+    // ---- erode_step: no NaN, no infinity, anywhere -----------------------------------------
+
+    #[test]
+    fn erode_step_output_is_finite_everywhere() {
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = default_test_params();
+        let next = erode_step(&graph, &heights, &distances, &params);
+
+        let non_finite: Vec<usize> = next.iter().enumerate().filter(|(_, h)| !h.is_finite()).map(|(i, _)| i).collect();
+        assert!(non_finite.is_empty(), "non-finite output at node indices {non_finite:?}");
+    }
+
+    // ---- erode_step: monotone in erodibility --------------------------------------------
+
+    #[test]
+    fn increasing_erodibility_never_raises_a_node_with_drainage_above_it() {
+        // Every non-root node in this graph has `h_i > h_r` (the downhill relation is
+        // strictly descending -- stream.rs's own invariant), and uplift is held positive
+        // and fixed, so `h_r' < h_i + u*dt` holds at every node. Under that condition the
+        // closed form's derivative with respect to `c` (and so with respect to k, since
+        // `c` is monotone increasing in k) has a fixed sign -- see erode_step's derivation
+        // -- so increasing k while everything else is held fixed must not raise any
+        // non-root node's answer.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+
+        let low_k = ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-8, timestep_yr: 1000.0 };
+        let high_k = ErosionParams { uplift_m_per_yr: 1.0e-3, erodibility_per_yr: 1.0e-4, timestep_yr: 1000.0 };
+
+        let with_low_k = erode_step(&graph, &heights, &distances, &low_k);
+        let with_high_k = erode_step(&graph, &heights, &distances, &high_k);
+
+        // Floating-point rounding, not the underlying inequality, is the only reason this
+        // allows any slack at all: the closed form is monotone in exact arithmetic (see
+        // above), so a real violation would be a formula bug, not noise -- hence a tight
+        // absolute tolerance in metres rather than none.
+        const EPSILON_M: f64 = 1.0e-6;
+        let mut violations = Vec::new();
+        let mut a_real_decrease_happened = false;
+        for node in 0..graph.node_count() {
+            let idx = node as usize; // cast-ok: a node index into usize
+            if graph.downhill_of(node).is_none() {
+                continue; // roots are held fixed regardless of k; nothing to check
+            }
+            if with_high_k[idx] > with_low_k[idx] + EPSILON_M {
+                violations.push((node, with_low_k[idx], with_high_k[idx]));
+            }
+            if with_high_k[idx] < with_low_k[idx] - EPSILON_M {
+                a_real_decrease_happened = true;
+            }
+        }
+        assert!(violations.is_empty(), "higher erodibility raised a draining node: {violations:?}");
+        assert!(a_real_decrease_happened, "fixture and k values must produce a measurable difference somewhere");
     }
 }

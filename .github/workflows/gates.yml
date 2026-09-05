@@ -81,8 +81,8 @@ jobs:
   # other; that costs nothing, and the alternative is a sixth job that could drift out of step
   # with the suite it lives in.
   #
-  # Baselines: 424 passed / 0 failed / 5 ignored under no-default-features and default;
-  # 426/0/5 under python; 454/0/5 under wasm; 456/0/5 under python+wasm. These ARE asserted,
+  # Baselines: 431 passed / 0 failed / 5 ignored under no-default-features and default;
+  # 433/0/5 under python; 461/0/5 under wasm; 463/0/5 under python+wasm. These ARE asserted,
   # by a second step that
   # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
   # ran nothing gets called green. See the step's own comment.
@@ -98,34 +98,35 @@ jobs:
           # `expect_ignored` the number that must be marked ignored. The wasm configurations
           # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
           #
-          # 2026-09-04, slice 5a Task 1: these moved 418/448 -> 424/454 when
-          # src/erosion.rs landed with `ErosionParams`, the two stream-power spec constants,
-          # and `root_to_leaves`, plus six tests. The `python` rows stay TWO HIGHER than
-          # their non-python neighbours (426 and 456) for the pre-existing reason --
-          # source_fingerprint() and source_fingerprint_inputs() are PyO3 exports whose
-          # binding tests only compile with that feature -- unchanged by this task.
+          # 2026-09-04, slice 5a Task 2: these moved 424/426/454/456 -> 431/433/461/463 when
+          # src/erosion.rs grew the one-step implicit solver (`erode_step`,
+          # `receiver_distances_m`, `implicit_receiver_update`, and `ErosionParams::timestep_yr`),
+          # plus seven tests. The `python` rows stay TWO HIGHER than their non-python
+          # neighbours (433 and 463) for the pre-existing reason -- source_fingerprint() and
+          # source_fingerprint_inputs() are PyO3 exports whose binding tests only compile
+          # with that feature -- unchanged by this task.
           # Re-derived on this host by `cargo test -p worldbuilder-engine <cfg> -- --list`,
-          # counting `: test$` lines and subtracting the 5 ignored: 429/429/431/459/461
+          # counting `: test$` lines and subtracting the 5 ignored: 436/436/438/466/468
           # listed.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 424
+            expect: 431
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 424
+            expect: 431
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 426
+            expect: 433
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 454
+            expect: 461
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 456
+            expect: 463
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
