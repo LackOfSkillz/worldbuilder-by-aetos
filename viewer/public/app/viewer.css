@@ -1,0 +1,6 @@
+/* Extracted from index.html's inline <style> in Task 6, so the page can be served under
+   `style-src 'self'` with no `'unsafe-inline'`. An inline block and this file render
+   identically; only the CSP treats them differently. */
+html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+#status { position: absolute; z-index: 10; top: 8px; left: 8px; font: 12px/1.4 monospace;
+          background: rgba(0,0,0,.65); color: #eee; padding: 6px 8px; border-radius: 3px; }

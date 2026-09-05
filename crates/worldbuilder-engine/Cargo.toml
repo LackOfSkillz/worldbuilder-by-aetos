@@ -15,8 +15,24 @@ crate-type = ["cdylib", "rlib"]
 # script -- which is what was blocking both a `[[bin]]` target and any
 # wasm32-unknown-unknown build. maturin passes --features python at wheel-build time.
 python = ["dep:pyo3"]
+# Off by default, and independent of `python` -- the two never build together in practice
+# (a CPython extension module is not a wasm32 cdylib), but nothing here forbids it either.
+# This feature gates `wasm.rs` alone: the `#[no_mangle] extern "C"` export surface the
+# browser studio loads. Without it the crate has no C ABI at all, which is why the first
+# wasm32 build of this crate was 327 bytes exporting only `memory` -- a `cdylib` discards
+# every module when nothing is `#[no_mangle] extern "C"`. It adds no dependency: the export
+# layer is hand-written marshalling, no `wasm-bindgen`, and the artifact has zero imports.
+wasm = []
 
 [dependencies]
 blake2 = "=0.10.6"
 libm = "=0.2.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+# The native side of the native-against-WASM parity harness. It calls the `extern "C"`
+# exports, so it only builds with the feature that defines them; without this line
+# `cargo test`/`cargo build` would try to compile it in the three configurations that have
+# no export surface and fail. See `parity/README.md`.
+[[example]]
+name = "parity_dump"
+required-features = ["wasm"]

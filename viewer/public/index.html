@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>worldbuilder viewer — offline shell</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="/vendor/cesium/Widgets/widgets.css" />
+<!--
+  Task 6: the page is served under a Content-Security-Policy whose base is
+  `default-src 'self'` (see scripts/serve.mjs). Two consequences for this file:
+
+    * there are NO inline <script> or <style> blocks, because the policy carries no
+      'unsafe-inline'. The former inline blocks are /app/viewer.css,
+      /app/cesium-base-url.js and /app/boot.js, in the same document order;
+    * nothing may reference an off-origin URL, which is the point.
+
+  If you re-inline anything here it will be blocked, loudly, in the console.
+-->
+<link rel="stylesheet" href="/app/viewer.css" />
+
+<div id="cesiumContainer"></div>
+<div id="status">booting…</div>
+
+<script src="/app/cesium-base-url.js"></script>
+<script src="/vendor/cesium/Cesium.js"></script>
+<script src="/app/boot.js"></script>
+
+<!--
+  Task 4. The terrain provider, as ES modules over the global `Cesium` above.
+
+  A module script is deferred by definition, so `window.viewer` and `Cesium` both exist by
+  the time it runs. It replaces `viewer.terrainProvider` -- the `EllipsoidTerrainProvider`
+  the status line above reports is the pre-Task-4 default, and `window.__wbReady` is the
+  handle that says the engine-backed one is installed.
+
+  Parameters, all optional:
+    ?seed= ?radius= ?plates= ?land= ?harbour=1   the world
+    ?maxLevel= ?size=                            the tiling
+    ?exaggeration= ?paint=0 ?rampMin= ?rampMax=  what it looks like
+    ?fly=lat,lon,height                          where to look
+    ?workers= ?cache=0 ?cacheTiles=              the Task 5 pool and cache (workers=0 is
+                                                 Task 4's synchronous main-thread fill,
+                                                 kept as the A/B timing baseline)
+    ?featureCeiling=                             hard ceiling on feature refinement
+    ?fault=flip-latitude|shift-tile|wrong-world  a deliberate wrong implementation
+          |stale-worker|cache-key
+    ?net-probe=1                                 the deliberate phone-home, now also the
+                                                 CSP's proof of refusal
+-->
+<script type="module" src="/app/main.js"></script>

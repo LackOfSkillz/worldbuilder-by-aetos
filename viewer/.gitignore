@@ -1,0 +1,10 @@
+node_modules/
+.server.log
+
+# The root .gitignore's diagnostic-render patterns were once UNANCHORED, so they matched at
+# any depth and silently swallowed one vendored Cesium asset:
+# public/vendor/cesium/Assets/Textures/maki/land-use.png. A 394-of-395 vendor would have
+# committed clean and passed unnoticed. Those patterns are now anchored to the repository
+# root, which is the real fix; this re-include stays as a belt against the next unanchored
+# pattern somebody adds, since a partial vendor fails silently by nature.
+!public/vendor/**

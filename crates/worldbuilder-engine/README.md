@@ -65,6 +65,117 @@ not merely documented.
     cd crates/worldbuilder-engine
     python -m maturin develop --release
 
+That is the Python wheel. The browser build is a different target, a different feature and
+a different script -- see the next section.
+
+## The WebAssembly surface, and the browser that consumes it
+
+`src/wasm.rs`, gated behind `--features wasm`, is the only door the browser has into this
+crate: a hand-written C ABI over `wasm32-unknown-unknown`, no `wasm-bindgen`, no glue, no
+bundler. The consumer is `viewer/`, whose own README carries everything about the page --
+the offline guarantee, the terrain provider, the worker pool and the frame budget. What
+belongs *here* is the shape of the door and the evidence that both sides of it agree.
+
+    cd viewer
+    npm run build:wasm      # builds, verifies the shape, fingerprints, copies into public/wasm/
+    npm run check:wasm      # is the SHIPPED artifact built from the source that is here now?
+
+**The artifact, read from `public/wasm/MANIFEST.txt` and from the file:** 84,856 bytes,
+**11 exports** (`memory` plus the ten functions below), **0 imports**. Zero imports is the
+design, not an accident: `WebAssembly.instantiate(bytes, {})` is the entire loader, there is
+no JS runtime to keep in step, and a worker gets its own instance and therefore its own
+linear memory for free.
+
+    wb_generator_version   wb_alloc      wb_dealloc     wb_world_new   wb_world_free
+    wb_world_count         wb_elevation_m  wb_structural_m  wb_bottom_at  wb_fill_tile_f32
+
+`WB_EXPORTS` in `wasm.rs` is that list, declared. A test holds this crate's source to it and
+the build script holds the built module's export section (id 7) to it, because a forgotten
+`#[no_mangle]` does not produce a compile error -- it produces a **327-byte artifact
+exporting only `memory`**, from a `cargo build` that exits 0. That failure mode is
+reproduced on demand by `npm run build:wasm:self-test`, which builds without the feature,
+confirms the assertion rejects the result, and rebuilds the real artifact.
+
+### Why the surface is a handle and not a function
+
+`bindings.rs` is the shape a conformance shim wants: pass every world parameter with every
+sample, and `Surface` is rebuilt on each call. That is right for a test corpus and wrong for
+a viewer, because the rebuild costs about **10^3x** a sample (`wasm.rs`'s own module docs
+carry the three-host table). So the browser surface is a handle: `wb_world_new` once,
+`wb_elevation_m` / `wb_fill_tile_f32` as often as you like, `wb_world_free` at the end.
+
+That is not a concession to cost. `Surface::new` is **milliseconds** -- 3.5-5.9 ms per
+worker measured in the browser, 5.1-6.4 ms median across the four pool sizes in this task's
+own run -- so a *parameter* change still rebuilds a world inside one animation frame, which
+is what will make slice 3's controls feel live.
+
+Three properties of the handle table are worth knowing before you build on it:
+
+* **Slots are never reused.** A freed handle stays freed and no later world takes its
+  number, so a worker that outlived a parameter change gets `WB_ERR_HANDLE` rather than a
+  silently different planet.
+* **The table is thread-local.** On wasm32 that is simply a static; natively it means
+  `wb_world_count()` is per-thread, which is a convenience in tests and not a bug.
+* **Panics are fatal, and not only on wasm.** `extern "C"` is nounwind, so a panic reaching
+  one of these boundaries aborts the process rather than unwinding -- measured, by deleting
+  a bound and watching a test binary die with `STATUS_STACK_BUFFER_OVERRUN` instead of
+  reporting a failure. Every representable bad input is answered with a status code
+  (`WB_ERR_HANDLE`, `WB_ERR_BUFFER`, `WB_ERR_GRID`, `WB_ERR_SUBSTRATE`) for that reason.
+
+`wb_fill_tile_f32` is **ergonomics, not throughput**, and must not be defended as an
+optimisation: a boundary crossing was measured at about 2% of the elevation it carries, and
+per-call sampling against a single fill over an identical grid measured indistinguishable.
+It exists because it hands a worker one `Float32Array` it can transfer, which is exactly the
+buffer `Cesium.HeightmapTerrainData` wants, in metres above the ellipsoid, with no
+conversion at all.
+
+### Parity: the shipped bytes, not a rebuild of them
+
+The whole studio architecture rests on native and wasm32 agreeing bit-for-bit, so that claim
+is a harness (`parity/`, with its own README) rather than a figure in a task report. Both
+sides call **the same shipped exports**, never an internal function, and the corpus crosses
+as 16-hex-digit bit patterns so a mismatch cannot be a `printf`.
+
+Re-run in this task, on the committed artifact:
+
+    cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed
+
+**53,251 values compared, 0 divergent.** The control -- `--mutate seed`, one seed away and
+nothing else -- moves **50,778 of them**, and every group carrying a continuous height moves
+entirely. The control is the half that matters: a harness that has never reported a
+disagreement is not known to be able to.
+
+**Parity alone cannot tell you the artifact is current, and for several commits of this
+project it did not.** The committed `.wasm` predated a change to `wasm.rs`; the two differed
+by five bytes, all of them panic-location line numbers, which never execute. It passed
+parity perfectly, because `native.txt` had been recorded from the same stale build -- a
+corpus and an artifact that are stale *together* agree with each other and with nothing else.
+`parity.mjs` now **imports** `checkFreshness()` from `viewer/scripts/build-wasm.mjs` and
+refuses to report at all when it returns problems. It imports rather than reimplements
+because two copies of a provenance rule drift, and the copy that drifts is the one that
+stops refusing.
+
+The fingerprint covers **24 inputs**: every file under `src/` recursively, this crate's
+`Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`, the `rustc -vV` release, commit hash
+and host, and the literal cargo argument list. It is deliberately over-inclusive --
+`bindings.rs` cannot affect a `--features wasm` build and will still trip it -- because a
+false *rebuild it* is cheap and a false *it is current* is the one that costs.
+
+**A consequence to plan for: touching a doc comment in `src/` invalidates the shipped
+artifact.** The fingerprint is over file content, not over anything semantic, so a one-line
+comment fix in `wasm.rs` makes `npm run check:wasm` and the parity harness both refuse until
+`npm run build:wasm` is re-run and the new bytes are committed. That is the guard working as
+designed, and it means a documentation-only change to this crate is not always a
+documentation-only commit.
+
+**What none of this claims.** Parity says the shipped bytes reproduce native source on this
+corpus. It says nothing about CPython: this crate routes every transcendental through
+pure-Rust `libm` precisely so that native and wasm agree, which is mutually exclusive with
+matching the platform libm CPython calls. See **Conformance** above for the 4-ULP contract
+that governs that boundary instead.
+
 ## Conformance
 
 The suite at `tests/test_conformance.py` compares this crate against the Python
@@ -2804,13 +2915,28 @@ ships regions.
 
 ### Test counts, with their environment
 
-**Read from a run, never from a report.** `cargo test -p worldbuilder-engine` exits 0 at
-**405** tests in each of the three feature configurations -- `--no-default-features`, default
-(which is the same set, since the crate declares no default features), and `--features
-python`. That is 395 lib, 4 `blake2_bytes.rs`, 6 `no_std_math.rs`, 0 from the
-`streambench` bin target and 0 doc-tests, plus 5
-`#[ignore]`d measurement tests that are compiled but not run. The baseline at `d72dbbd` was
-390 in all three, so this task adds 15. The `#[ignore]`d measurements take minutes and
+**Read from a run, never from a report.** There are **five** configurations to run, not
+three: the two feature flags are independent, and `wasm` adds a whole test file that the
+other three configurations never compile. Every number below is from a run of
+`cargo test -p worldbuilder-engine <flags>`, exit 0 in all five.
+
+| configuration | lib | `blake2_bytes.rs` | `no_std_math.rs` | `wasm_exports.rs` | total |
+|---|---|---|---|---|---|
+| `--no-default-features` | 399 | 4 | 6 | -- | **409** |
+| default (the same set -- the crate declares no default features) | 399 | 4 | 6 | -- | **409** |
+| `--features python` | 399 | 4 | 6 | -- | **409** |
+| `--features wasm` | 399 | 4 | 6 | 30 | **439** |
+| `--features python,wasm` | 399 | 4 | 6 | 30 | **439** |
+
+0 from the `streambench` bin target and 0 doc-tests in every configuration, plus 5
+`#[ignore]`d measurement tests that are compiled but not run.
+
+**Running only the first three is how a stale count survives.** This section said **405**
+(395 lib) for several commits and named only three configurations, so the 30 tests that
+hold `wasm.rs` to its declared export list were outside the number the record quoted. If
+you quote a test count here, quote all five rows.
+
+The `#[ignore]`d measurements take minutes and
 allocate half a gigabyte; they are tests rather than a throwaway script so they cannot rot
 silently while the constants they justify stay in the source, and they run with
 
