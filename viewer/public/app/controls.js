@@ -74,12 +74,13 @@ const FAULT_OPTIONS = [
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
   // Ruling 4 of the relief-amplitude slice, and it is a measurement, not a scheduling note.
-  // The highest point on this planet is 1,381 m and 1,378 m of that is the structural
-  // (tectonic) term, so no relief parameter can move a mountain's height at all; Ruling 6
+  // The highest point on this planet is 1,979 m (4,170,724-sample global fill), and its
+  // height is dominated by the structural (tectonic) term rather than by roughness, so no
+  // relief parameter can move a mountain's height at all; Ruling 6
   // measured the roughness spectrum topping out at 161 m on peaks and 82 m on land at the
   // most extreme corner ever swept. `mountainM` below is a roughness budget on high ground,
   // and labelling it "mountain height" would be the wrong thing wearing the right label.
-  ["mountain height", "tectonic, not relief: 1,378 m of the 1,381 m peak is structural"],
+  ["mountain height", "tectonic, not relief: roughness tops out at 161 m over 2 km"],
   ["mountain count", "tectonic: plate collisions place them, and no relief knob reaches that"],
   ["lakes + water", "slice 5b, in progress: no export yet"],
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],

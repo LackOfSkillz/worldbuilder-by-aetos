@@ -75,7 +75,7 @@
 // the steepest texel found anywhere in the probe set is 1.9 deg. A hillshade's response to a
 // 1-degree slope is a 1-degree tilt of the normal, which is under half a luminance unit.
 // That is not a bug in the shading; the planet really is that smooth. Its highest point is
-// 1,381 m on a 6,371 km sphere -- about a sixth of Earth's relief.
+// 1,979 m on a 6,371 km sphere -- about a quarter of Earth's relief.
 //
 // Every desktop hillshade tool carries a **z-factor** (vertical exaggeration) for exactly
 // this reason; in GIS it is nominally a unit conversion, and it is used as an exaggeration
@@ -101,7 +101,7 @@
 //
 // **All three of those blends were dead code before this task, and the same measurement
 // killed all three.** `ROCK_SLOPE_LOW_DEG` was 22 deg against a terrain whose steepest texel
-// is 1.9 deg; `SNOW_LINE_M` was 3,500 m against a planet whose highest point is 1,381 m; and
+// is 1.9 deg; `SNOW_LINE_M` was 3,500 m against a planet whose highest point is 1,979 m; and
 // `LAND_BANDS`' top two stops (1,800 m and 3,200 m) sat above the 99.9th percentile of land
 // elevation. The layer was a two-band green-and-ochre ramp wearing the vocabulary of a
 // slope-aware one. The bands below are placed on the **measured** hypsometry of this
@@ -180,7 +180,7 @@ export const ROCK_COLOR = [126, 118, 106];
 /// high Arctic around 78-80 degrees; this is the straight line through those two ends. It is
 /// a coarse approximation on purpose -- there is no climate model here to do better with,
 /// and a single global elevation threshold is the thing being avoided, not the thing being
-/// refined. On this generator (highest point 1,381 m) it puts no snow at all in the tropics,
+/// refined. On this generator (highest point 1,979 m) it puts no snow at all in the tropics,
 /// which is correct: nothing there is tall enough.
 ///
 /// **Checked against what it produces, not only against its ends.** A 0.5-degree global scan

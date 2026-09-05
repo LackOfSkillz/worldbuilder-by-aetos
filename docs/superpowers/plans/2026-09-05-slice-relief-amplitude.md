@@ -12,7 +12,11 @@
 
 Taken against the running engine, seed 20260904:
 
-- **The highest point on the planet is 1,381 m. Its tectonic component is 1,378 m. All surface detail contributes 2.9 m.**
+- **At the highest point my sparse probe found, 1,381 m, the tectonic component is 1,378 m and all
+  surface detail contributes 2.9 m.** CORRECTED 2026-09-05: 1,381 m was the maximum of a SPARSE SAMPLE,
+  not of the planet. A 4,170,724-sample global fill puts the true highest land at **1,979 m**. The
+  structural-versus-detail split at the sampled point stands and the conclusion is unchanged; the word
+  "planet" was wrong, and naming a population would have caught it.
 - Across 113 sites above 300 m, the median magnitude of the detail term is **18.2 m** and the maximum is **65.5 m**.
 - Relief over a 2 km transect, across 54 land sites: median **4.6 m**, max **14.1 m**. **The steepest gradient anywhere at that scale is 0.7%.**
 - The field converges at ~156 m sampling and is flat below it: peak-to-peak over 2 km reads 9.66, 9.55, 9.56, 9.59, 9.58 m at 78, 39, 19.5, 9.8 and 4.9 m spacing.
@@ -235,8 +239,10 @@ was chosen on; and **what still does not look like a mountain**.
 Asked for directly, and they do not both land on `ReliefParams`. Worth separating before Task 4 wires a
 panel, because one of them reaches a part of the engine this slice was not scoped to touch.
 
-**"Raise and lower mountains"** — how *tall* they are. Measured, the highest point on the planet is 1,381 m
-and **1,378 m of that is the structural (tectonic) term**, not roughness. So a height slider is a **tectonic
+**"Raise and lower mountains"** — how *tall* they are. Measured, the highest point on the planet is 1,979 m
+(4,170,724-sample global fill), and at the sampled 1,381 m peak **1,378 m of the height was the structural
+(tectonic) term** against 2.9 m of surface detail. Ruling 6 then measured the roughness spectrum's ceiling at
+**161 m of relief over 2 km** even at the most extreme corner ever swept. So a height slider is a **tectonic
 amplitude** control, and it lives in the plates/margins path rather than in `detail.rs`. It is not reachable
 from `ReliefParams` at all.
 
