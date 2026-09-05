@@ -323,6 +323,9 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 ?seed= ?radius= ?plates= ?land= ?harbour=1     the world
 ?maxLevel= ?size= ?featureCeiling=             the tiling and the caps
 ?workers= ?cache=0 ?cacheTiles=                the pool and the cache
+?relief=0 ?reliefSize= ?reliefMaxLevel=        the relief imagery layer
+?reliefPreset= ?mountainM= ?quietingStrength= ?octavePersistence=   the relief channel
+?sse=                                          THE detail knob -- see below
 ?exaggeration= ?paint=0 ?atmosphere=1 ?rampMin= ?rampMax=   what it looks like
 ?fly=lat,lon,height                            where to look
 ?trace=N                                       record N frame deltas from boot
@@ -332,6 +335,36 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 
 `window.viewer` and `window.__viewerReady` are exposed for the trace harness and for the
 later tasks in this slice.
+
+### `?sse=` -- the one detail knob, and why the default is the cheap one
+
+`maximumScreenSpaceError` is the **only** parameter that changes how much detail the
+whole-planet view resolves. `?reliefSize=` does not: imagery tile width is detail-invariant
+the same way heightmap width is -- a wider tile lowers geometric error and Cesium simply
+refines one level less, landing on the same metres per texel. Measured at the default
+orbital camera (`?fly=10,20,9000000`), 8 workers, hardware ANGLE/D3D11, 32 logical cores:
+
+| `?reliefSize=` | relief tiles | deepest level | total texels | worker CPU | settle |
+| --- | --- | --- | --- | --- | --- |
+| 128 | 244 | 4 | 4.00 M | 4.81 s | 1.85 s |
+| **256** (default) | 61 | 3 | 4.00 M | 4.79 s | 1.95 s |
+| 512 | 15 | 2 | 3.93 M | 4.26 s | 2.09 s |
+
+Same texels, same CPU, sixteen times fewer tiles. It is a **batching** knob.
+
+`?sse=` is the one that moves detail, and it costs:
+
+| | relief tiles | deepest level | m/texel | worker CPU | settle |
+| --- | --- | --- | --- | --- | --- |
+| **`sse=2`** (default) | 61 | 3 | 9,811 | 4.8 s | 1.95 s |
+| `sse=1.5` | 83 | 3 | 9,811 | 6.3 s | 2.12 s |
+| `sse=1` | 155 | 4 | 4,906 | 14.8 s | 3.35 s |
+
+`1.5` buys 36% more tiles and **not** one more level -- the level is a step function of
+this value, so the only two settings worth having are 2 and 1. The default is the cheap
+one; **`?sse=1` is what buys the extra imagery level at orbital distance**, and it is worth
+it if you are looking at the planet rather than flying over it. Note that it is a *global*
+knob: it refines the terrain mesh too, so its cost is not confined to the relief layer.
 
 ## Building the engine .wasm
 

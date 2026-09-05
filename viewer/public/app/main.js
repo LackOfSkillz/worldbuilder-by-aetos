@@ -184,6 +184,10 @@ async function boot() {
       // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
       maximumLevel: number("reliefMaxLevel", maxLevel),
       credit: `worldbuilder engine relief, generator v${engine.generatorVersion()}`,
+      // The same pool the terrain mesh uses, and the same `?workers=0` escape hatch. One
+      // pool and not two: the contention that matters is engine instances per core, and a
+      // second pool of eight would double the workers without doubling the cores.
+      pool,
     });
     viewer.imageryLayers.addImageryProvider(reliefProvider);
   }
@@ -215,7 +219,25 @@ async function boot() {
   // Halving it buys one extra level at four times the tiles. Left at Cesium's default so
   // nothing changes without being asked for, and exposed so the cost can be measured rather
   // than guessed at.
-  viewer.scene.globe.maximumScreenSpaceError = number("sse", 2);
+  //
+  // # TASK 4 MEASURED IT, AND THE DEFAULT STAYS AT 2
+  //
+  // This is the only knob that moves the whole-planet view, which is the view the owner's
+  // complaint was about: `?reliefSize=` does not, because imagery tile width is
+  // detail-invariant the same way heightmap width is (measured again below, in the report).
+  // At the default orbital camera, 8 workers, hardware ANGLE/D3D11 on 32 cores:
+  //
+  //   sse=2 (this default)  61 relief tiles, level 3, 1.95 s to settle, 4.8 s of worker CPU
+  //   sse=1                155 relief tiles, level 4, 3.35 s to settle, 14.8 s of worker CPU
+  //   sse=1.5               83 relief tiles, level 3 -- 36% more tiles and NOT one more
+  //                         level, because the level is a step function of this value
+  //
+  // 3.1x the CPU and 1.7x the time-to-settle for one extra imagery level at one camera
+  // distance, on a knob that is global rather than relief-specific (it refines the terrain
+  // mesh too). So the cheap one ships. `?sse=1` is what buys the extra level, and it is
+  // named in the status line below and in `viewer/README.md` rather than left as folklore.
+  const sse = number("sse", 2);
+  viewer.scene.globe.maximumScreenSpaceError = sse;
   viewer.scene.verticalExaggeration = number("exaggeration", DEFAULT_EXAGGERATION);
 
   // Sun shading, on by default. Without it the globe is coloured purely by height and every
@@ -287,8 +309,13 @@ async function boot() {
     `workers=${pool ? pool.ready.length : 0} cache=${cache ? cache.capacity : "off"} | ` +
     `reliefLayer=${
       reliefProvider
-        ? `${reliefProvider.tileWidth}px cap=${reliefProvider.maximumLevel}`
+        ? `${reliefProvider.tileWidth}px cap=${reliefProvider.maximumLevel} ${
+          pool ? "workers" : "MAIN THREAD"}`
         : "off"} paint=${paint ? "ramp" : "off"} | ` +
+    // The cost knob, named where it can be found. `?sse=1` buys one more imagery level at
+    // the whole-planet view for ~3x the tile cost -- measured above -- and a cost setting
+    // nobody can find is a setting that does not exist.
+    `sse=${sse}${sse === 2 ? " (?sse=1 for one more level, ~3x cost)" : ""} | ` +
     `fault=${fault ?? "none"}`;
   if (status) status.textContent = line;
 
