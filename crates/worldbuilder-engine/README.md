@@ -991,3 +991,156 @@ parametrised sweeps inside tests that already existed, so the case-count delta t
 mutations above depended on shows up inside the existing 87, not as a further rise in
 the count.
 `cargo test -p worldbuilder-engine`, run unfiltered, exits 0.
+
+## `shelf.rs`: the first module that blends instead of adding
+
+`worldbuilder/bathymetry/shelf.py`'s own docstring opens with three rules, and two of them
+are scars from M1.4. The first is the one that makes this module different from every
+earlier port: **it returns an absolute elevation by blending, not a contribution to add.**
+`tectonics.py` and `detail.py` both return offsets that something else sums in; `shelf.py`
+returns the ground itself, computed as `macro + weight * (target - macro)`. The docstring
+is emphatic about why, and the reason is worth carrying forward exactly as written rather
+than paraphrased: *"A shelf describes what the coastal profile should tend to, and
+blending leaves control over what it may override -- so a trench crossing a continental
+margin is not quietly flattened by something announcing that the water here is about a
+hundred metres."* An offset cannot express "defer to whatever is already here"; a blend
+weighted toward zero can, and that is the whole reason `weight` exists as a first-class
+output of `evaluate` rather than an internal detail.
+
+**The contract split, measured rather than assumed.** `shelf.py` contains no
+transcendental call of its own -- no `math` name is bound in the module, and no
+transcendental function appears in its source. It reaches exactly one, indirectly:
+`hypot`, inside `Continentality`'s `Gradient::magnitude()`, and only by way of
+`coastal()`'s `gradient(point).magnitude()` call that produces `slope`. **`above_shore`
+does not reach it**, and that was checked behaviourally, not just by reading imports: with
+`math.hypot` patched to raise, `above_shore()` ran clean over 2,000 corpus points, while
+the same patch made `coastal()` hit the raise on effectively every point not already
+short-circuited by the window gate. Structural evidence (no mention of `gradient` or
+`magnitude` in `above_shore`'s source) and behavioural evidence (the corpus ran with the
+function exploding on contact) agree, and the behavioural check is the stronger of the two
+-- it is evidence about what the code actually does, not about what its source happens to
+mention. So `above_shore` (gate 1, `abs(value) > COASTAL_WINDOW`) is strict, and only what
+is downstream of `slope` -- `Coastal.distance_m`, `Coastal.breadth`, gate 2 -- is bounded.
+`target_depth_m` and `weight` are themselves purely algebraic (division, `max`, a
+smoothstep, `abs`), and given bit-identical inputs they measured **bit-exact**, confirming
+they carry no hazard of their own and that the split runs exactly where the source says it
+does.
+
+The sign arguments in `target_depth_m` and `weight` follow directly from that split.
+`offshore = -coastal.distance_m`, and `distance_m = value / slope` with `slope` strictly
+positive by the time either function runs (the `MIN_GRADIENT` gate in `coastal()` has
+already returned otherwise) -- so every branch on the sign of `offshore` is decided by the
+sign of `value`, which never touches `hypot`, even though it looks exposed to the same
+mixed-sign hazard `slope` carries. `shelf.rs` states this in its own comments rather than
+leaving it to be re-derived by a future reader.
+
+**Why the two gates in `evaluate` are safe, structurally rather than numerically.** Both
+early returns in `evaluate` -- the `coastal()` gate and the `weight <= 0.0` gate --
+produce the *identical* `Reading { elevation_m: macro, weight: 0.0, tectonic_m: tectonic }`.
+That means a gate flipping incorrectly is observable only if the branch not taken would
+have produced a `weight` above zero; the two gates are not independent hazards, they funnel
+into one result. This is the module's own rule -- *"every gate sits outside the support of
+what it gates"* -- realised in the control flow rather than merely stated in the docstring.
+Reversing the two `return` statements was mutation-tested and, correctly, changed nothing:
+there is nothing for the swap to disturb when both branches already agree on what they
+hand back.
+
+The measured margins back that up with numbers rather than leaving it as a structural
+argument alone. Over the corpus, the closest any point comes to `COASTAL_WINDOW` is
+`1.053777e-06` -- about 1.5e11 ULPs at that threshold -- and the closest any point comes to
+`MIN_GRADIENT` is `2.371402e-09` -- about 1.4e15 ULPs. A 1-ULP disagreement in `hypot`
+cannot move either margin by anything close to enough to flip a gate. And the gradient gate
+is not dead code being carried out of caution: it is **live**, firing on 6 of the corpus's
+20,006 points, with the closest approach to firing at `0.2501 x MIN_GRADIENT`.
+
+**A claim in the reference Python that is corpus-true, not universal -- recorded as an
+observation, since nothing under `worldbuilder/` changed.** `MIN_GRADIENT`'s own comment
+says *"the weight has already faded out by here; this only stops the arithmetic."* Every
+sub-threshold point the corpus actually produces does give a weight near zero, consistent
+with the comment. But a hand-built point with a tiny `value` *and* a tiny `slope` --
+tiny enough to fail `MIN_GRADIENT`, but not zero -- gives a weight of **0.9999979**, not
+faded at all. The comment describes what this corpus happens to sample, not what the
+formula guarantees; the gate is load-bearing in a way its own wording understates.
+
+**The composed bounds, and the mistake they replaced.** A first pass on `evaluate`'s three
+returned fields borrowed `TECTONICS_BOUNDED_MAX_ULPS` (8192) wholesale, on the theory that
+the divergence was inherited from the Tectonics section's own cancellation hazard. Mutation
+testing found two things wrong with that, not one:
+
+- **It was loose enough to hide a real defect.** Rewriting `evaluate`'s blend to the
+  algebraically-equal `macro * (1.0 - weight) + target * weight` diverges `elevation_m` by
+  203 ULP -- comfortably inside 8192, so the conformance suite would have stayed green on a
+  genuine bug in the port.
+- **The attribution was factually wrong.** At the point where `weight` diverges most
+  (1024 ULP), `tectonic_m` is bit-identical on both sides -- 0 ULP, not the inherited hazard
+  a first pass assumed. The real mechanism is local to this module's own formula:
+  `seaward = 1.0 - smooth(x)` at that point evaluates `smooth` at `x ~= 0.98197`, where
+  `smooth(x) ~= 0.999037` -- close enough to 1.0 that subtracting it from 1.0 loses most of
+  the input's precision to catastrophic cancellation. That is a hazard `shelf.py`'s own
+  formula introduces, not one it picked up from `tectonics.rs`.
+
+Each field now gets its own bound, sized to what it actually needs rather than shared by
+assumption: **`SHELF_ELEVATION_MAX_ULPS = 96`** (measured worst 36; the composition with
+`Tectonics.offset_m` and `Continentality.base_elevation` genuinely moves it a little), and
+96 is proven tight by the mutation itself -- it passes the real port at 36 and fails the
+blend-rewrite mutation at 203. **`SHELF_WEIGHT_MAX_ULPS = 2048`** (measured worst 1024, the
+`seaward` cancellation above -- not inherited from tectonics). **`SHELF_TECTONIC_MAX_ULPS
+= 512`** (measured worst 230, and this one genuinely *is* inherited, since `tectonic_m` is
+a literal passthrough of `Tectonics.offset_m`). The headroom each bound carries over its
+own measurement -- 2.67x for elevation, 2.0x for weight, 2.2x for tectonic -- sits in the
+same proportionate range across all three, against the discredited 8192, which sat 8.0x
+(weight: 8192/1024), 35.6x (tectonic: 8192/230), and 227.5x (elevation: 8192/36) above its
+own legitimate per-field values -- an 8x-to-228x spread, not the tight one previously
+claimed. Put more precisely than a bare range can: 8192 was 227x too loose for
+`elevation_m` specifically, which is exactly why the 203-ULP blend-rewrite defect above
+passed through it unnoticed. **A borrowed bound admits whatever the lending module
+admits, whether or not that is what is actually being measured.**
+
+**One limitation, stated honestly rather than left implicit.** A 2048-ULP bound on a
+`weight` confined to `[0, 1]` is a weak assertion. Decomposing `weight` into `seaward`,
+`breadth`, and `authority` and bounding each separately would likely tighten it, since
+`breadth` is exact here (carried straight through from `coastal()`, not recomputed) and
+`authority` is only as bad as `tectonic_m`'s own 230-ULP hazard -- so the real payoff is
+isolating `seaward`'s cancellation on its own. That decomposition was not done in this
+slice. The tight elevation bound partially backstops the weak weight bound, because
+`weight` only reaches `elevation_m` through the blend -- but that backstop scales with
+`(target - macro)`, so it weakens wherever those two are close. At the actual point where
+`weight` diverges worst, `(target - macro)` is `112.301` -- not small -- and `elevation_m`
+there diverges by only 1 ULP, so the backstop holds at the point measured. That does not
+rule out some other point combining a near-maximal `weight` divergence with a small
+`(target - macro)`, where the backstop would do little. **`surface.py`, the module that
+consumes `weight` directly once it composes every terrain layer, is where this should be
+revisited** -- the limitation has a named successor rather than being left open-ended.
+
+**Two properties no test covers, recorded plainly rather than implied as tested.** The
+value is checked before the gradient is taken in `coastal()`, and `Tectonics.offset_m` is
+computed exactly once per call to `evaluate` rather than once per place that wants it.
+Both are *cost* properties, not correctness ones: an implementation that recomputed the
+gradient eagerly, or called `offset_m` two or three times over, would produce identical
+values and a fully green suite while quietly paying for it. They are verified by reading
+`shelf.rs`, not by an assertion that could catch a regression -- there is no cheap way to
+observe call counts against `Continentality` and `Tectonics`, both concrete types with no
+counting seam. `shelf.py`'s own docstring records this exact failure having happened
+before: asking for the gradient, the tectonic offset, and the macro elevation separately
+rather than threading them through `evaluate`'s `Reading` cost the gradient twice and the
+tectonics three times over, and took a whole-pipeline chart from three hundred
+milliseconds to twelve hundred -- while a comment at the time claimed the values were
+"recovered rather than recomputed where it is free." `shelf.rs`'s `evaluate` computes
+`tectonic` once and threads it through as `Some(tectonic)` so `weight` never asks
+`self.tectonics.offset_m` again; nothing currently proves that stays true under a future
+edit.
+
+**The throwaway is gone.** Task 1's `tests/test_shelf_gates.py`, which measured the two
+gate margins and the `MIN_GRADIENT` comment's claim against the live Python before
+anything in the port depended on the answer, is deleted as of this section. Its four
+findings -- where the `hypot` is and is not reached, the two measured margins, the
+corpus-true-not-universal verdict on the comment, and the gradient gate's liveness -- live
+here and in `test_conformance.py`'s permanent measurements instead.
+
+Every count in this section was verified by running the suites, not copied from an earlier
+report: 164 Rust tests before this task (154 lib plus the 4-test `blake2_bytes.rs` plus the
+6-test `no_std_math` guard), unchanged by this task -- `shelf.rs`'s tests already existed
+going in and this task added no new ones. The full Python suite drops from 344 to **338**
+(the 6 tests deleted with `tests/test_shelf_gates.py`), and `test_conformance.py` stays at
+**98** -- those 6 tests never lived there. `cargo test -p worldbuilder-engine`, run
+unfiltered, exits 0.

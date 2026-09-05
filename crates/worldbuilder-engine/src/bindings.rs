@@ -11,6 +11,7 @@ use crate::generation;
 use crate::generation::Part;
 use crate::kinematics::{motion_at, motion_between, surface_velocity};
 use crate::plates::{Plate, PlateSet};
+use crate::shelf::{Coastal, Shelf};
 use crate::sphere::SpherePoint;
 use crate::tectonics::Tectonics;
 use crate::vectors::Vec3;
@@ -636,4 +637,124 @@ pub fn detail_offset_m(
     let detail = crate::detail::Detail::new(world_seed, radius_m);
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
     detail.offset_m(&point, amplitude_m, resolution_m)
+}
+
+/// Builds the `Shelf` a binding needs: a `Tectonics` from the same flat seeds/poles/rates
+/// convention as every `tectonics_*` binding, plus a second, independent draw on the
+/// `Continentality` cache for `Shelf`'s own `land` field. `Tectonics` does not expose its
+/// internal `Continentality` (no accessor exists), so this asks `cached_continentality`
+/// again with the same key rather than trying to extract one from the `Tectonics` just
+/// built -- the cache makes the second call free, and both draws are guaranteed identical
+/// because the key (seed, radius_m bits, land_fraction bits) is the same. Conversion only.
+fn shelf_from_parts(
+    seeds_flat: &[f64],
+    poles_flat: &[f64],
+    rates: &[f64],
+    continentality_seed: u64,
+    land_fraction: f64,
+    radius_m: f64,
+) -> Shelf {
+    let tectonics =
+        tectonics_from_parts(seeds_flat, poles_flat, rates, continentality_seed, land_fraction, radius_m);
+    let land = cached_continentality(continentality_seed, radius_m, land_fraction);
+    Shelf::new(tectonics, land, radius_m)
+}
+
+/// A `Shelf` for `shelf_target_depth_m` alone, which -- read from `shelf.rs` -- never
+/// touches `self.tectonics`, `self.land` or `self.radius_m`; its whole computation is a
+/// function of the `Coastal` argument. So the plates and continentality behind this
+/// instance are arbitrary filler to satisfy the type, not live inputs: an empty
+/// `PlateSet` and a fixed, cached `Continentality` (seed 0, the module's own
+/// `LAND_FRACTION`), never varied and never read by the method this binding calls.
+fn dummy_shelf(radius_m: f64) -> Shelf {
+    let land = cached_continentality(0, radius_m, crate::continentality::LAND_FRACTION);
+    let tectonics = Tectonics::new(PlateSet::new(Vec::new()), land, radius_m);
+    Shelf::new(tectonics, land, radius_m)
+}
+
+/// Where the shore is from here, or `None` exactly where `Shelf::coastal` returns `None`
+/// -- positionally, not merely where both sides happen to agree. Conversion only:
+/// `Shelf::coastal` does all the arithmetic (including the one indirect `hypot`, inside
+/// `Gradient::magnitude`, that this module reaches); this just unwraps `Coastal` into a
+/// pair.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn shelf_coastal(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    continentality_seed: u64,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> Option<(f64, f64)> {
+    let shelf = shelf_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    shelf.coastal(&point).map(|c| (c.distance_m, c.breadth))
+}
+
+/// What the water ought to be doing at `distance_m`/`breadth`. Conversion only, and no
+/// live `Shelf` state is needed to call it -- see `dummy_shelf` above.
+#[pyfunction]
+pub fn shelf_target_depth_m(distance_m: f64, breadth: f64) -> f64 {
+    let shelf = dummy_shelf(crate::sphere::EARTH_RADIUS_M);
+    shelf.target_depth_m(&Coastal { distance_m, breadth })
+}
+
+/// How much say the shelf has here. Conversion only: `Shelf::weight` does all the
+/// arithmetic. `tectonic_m` is threaded through as the `Option<f64>` PyO3 hands back from
+/// Python's `None`/a real float -- not flattened or defaulted here -- so `Some(0.0)`
+/// reaches `Shelf::weight` as a supplied zero, exactly as it would coming from Python's
+/// `tectonic_m=0.0`, and only Python's real `None` reaches it as `None`, taking the
+/// `self.tectonics.offset_m(point)` recompute branch. Flattening `Option` on the way
+/// through (e.g. `tectonic_m.unwrap_or(0.0)`) would be the previous slice's trap in
+/// reverse: it would make a supplied zero and an absent value indistinguishable.
+#[pyfunction]
+#[pyo3(signature = (
+    seeds_flat, poles_flat, rates, continentality_seed, land_fraction,
+    x, y, z, distance_m, breadth, radius_m, tectonic_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn shelf_weight(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    continentality_seed: u64,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    distance_m: f64,
+    breadth: f64,
+    radius_m: f64,
+    tectonic_m: Option<f64>,
+) -> f64 {
+    let shelf = shelf_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let coastal = Coastal { distance_m, breadth };
+    shelf.weight(&point, &coastal, tectonic_m)
+}
+
+/// The ground here, and the working that produced it, as `(elevation_m, weight,
+/// tectonic_m)`. Conversion only: `Shelf::evaluate` does all the arithmetic; this just
+/// unwraps its `Reading` into a triple, positionally.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn shelf_evaluate(
+    seeds_flat: Vec<f64>,
+    poles_flat: Vec<f64>,
+    rates: Vec<f64>,
+    continentality_seed: u64,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    radius_m: f64,
+) -> (f64, f64, f64) {
+    let shelf = shelf_from_parts(&seeds_flat, &poles_flat, &rates, continentality_seed, land_fraction, radius_m);
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let reading = shelf.evaluate(&point);
+    (reading.elevation_m, reading.weight, reading.tectonic_m)
 }

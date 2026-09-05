@@ -17,6 +17,7 @@ pub mod continentality;
 pub mod plates;
 pub mod kinematics;
 pub mod tectonics;
+pub mod shelf;
 
 use pyo3::prelude::*;
 
@@ -70,5 +71,9 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::detail_bands, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::detail_amplitude_m, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::detail_offset_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::shelf_coastal, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::shelf_target_depth_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::shelf_weight, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::shelf_evaluate, m)?)?;
     Ok(())
 }
