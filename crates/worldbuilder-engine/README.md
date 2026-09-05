@@ -9,11 +9,13 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
 
 ## What is here so far
 
-Counted from `src/`, not from memory: **eighteen modules plus the crate root**, and one
-binary. Sixteen of the modules are ported from a named Python module and held to it by
-`tests/test_conformance.py`; the last two, `stream.rs` and `streamfmt.rs`, are **new in this
+Counted from `src/`, not from memory (re-counted for slice 5a Task 6, which found this
+stale by two modules and one binary -- `erosion.rs` and `wasm.rs` had landed without this
+count moving): **twenty modules plus the crate root, and two binaries**. Sixteen of the
+modules are ported from a named Python module and held to it by `tests/test_conformance.py`;
+the last four -- `stream.rs`, `streamfmt.rs`, `erosion.rs` and `wasm.rs` -- are **new in this
 crate and have no Python to be conformant with**, so every claim they make is a property
-test or a measurement instead.
+test, a measurement, or (for `wasm.rs`) the parity harness instead.
 
     src/lib.rs       the crate root: the module tree and the PyO3 module registration
     src/detmath.rs   the only place a transcendental is called
@@ -33,14 +35,20 @@ test or a measurement instead.
     src/surface.rs     the whole world assembled: structural_m, elevation_m, bottom_at
     src/stream.rs      the node sampler and StreamGraph: the second representation
     src/streamfmt.rs   the stream graph's on-disk format: fail closed, sliceable by region
+    src/erosion.rs     the Cordonnier stream-power bake over a StreamGraph: slice 5a
     src/bindings.rs  the PyO3 surface, conversion only
+    src/wasm.rs        the hand-written C ABI the browser studio calls, --features wasm
     src/bin/streambench.rs  what a graph costs, at sizes up to a whole planet
+    src/bin/erosion_convergence_sweep.rs  whether §14.3's iteration count holds, and against which parameter
 
 The first seventeen entries are the engine core, and it is closed -- see **This closes the
-engine core** below. `stream.rs` and `streamfmt.rs` are not part of it: they are the *second*
-representation CORE-001 adds beside it, and they add nothing to `Surface`.
-Keep it in step with `src/` when a module lands: it went seven modules stale across the
-slices that added them, on the same page that claims the core is complete.
+engine core** below. `stream.rs`, `streamfmt.rs` and `erosion.rs` are not part of it: they
+are the *second* representation CORE-001 adds beside it and the bake that runs over it, and
+none of the three add anything to `Surface`. `wasm.rs` is not part of it either -- it is the
+export surface both representations are reached through, not a third representation.
+Keep it in step with `src/` when a module lands: it went seven modules stale once already,
+and two more (`erosion.rs`, `wasm.rs`) had landed by slice 5a Task 6 before this count
+caught up with them again, on the same page that claims the core is complete.
 
 The Python in `worldbuilder/` is still the reference implementation and is unchanged.
 Nothing has been deleted, and the engine is additive until conformance is established for
@@ -80,14 +88,17 @@ belongs *here* is the shape of the door and the evidence that both sides of it a
     npm run build:wasm      # builds, verifies the shape, fingerprints, copies into public/wasm/
     npm run check:wasm      # is the SHIPPED artifact built from the source that is here now?
 
-**The artifact, read from `public/wasm/MANIFEST.txt` and from the file:** 84,856 bytes,
-**11 exports** (`memory` plus the ten functions below), **0 imports**. Zero imports is the
-design, not an accident: `WebAssembly.instantiate(bytes, {})` is the entire loader, there is
-no JS runtime to keep in step, and a worker gets its own instance and therefore its own
-linear memory for free.
+**The artifact, read from `public/wasm/MANIFEST.txt` and from the file (re-derived for
+slice 5a Task 6, which found the byte count and export count here stale by one export --
+`wb_erosion_run` had landed without this figure moving):** 117,146 bytes, **12 exports**
+(`memory` plus the eleven functions below), **0 imports**. Zero imports is the design, not
+an accident: `WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS
+runtime to keep in step, and a worker gets its own instance and therefore its own linear
+memory for free.
 
     wb_generator_version   wb_alloc      wb_dealloc     wb_world_new   wb_world_free
     wb_world_count         wb_elevation_m  wb_structural_m  wb_bottom_at  wb_fill_tile_f32
+    wb_erosion_run
 
 `WB_EXPORTS` in `wasm.rs` is that list, declared. A test holds this crate's source to it and
 the build script holds the built module's export section (id 7) to it, because a forgotten
@@ -2945,26 +2956,46 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 404 | 4 | 9 | 6 | -- | 423 | 5 | **418** |
-| default (the same set -- the crate declares no default features) | 404 | 4 | 9 | 6 | -- | 423 | 5 | **418** |
-| `--features python` | 406 | 4 | 9 | 6 | -- | 425 | 5 | **420** |
-| `--features wasm` | 404 | 4 | 9 | 6 | 30 | 453 | 5 | **448** |
-| `--features python,wasm` | 406 | 4 | 9 | 6 | 30 | 455 | 5 | **450** |
+| `--no-default-features` | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
+| default (the same set -- the crate declares no default features) | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
+| `--features python` | 442 | 4 | 9 | 6 | -- | 461 | 5 | **456** |
+| `--features wasm` | 440 | 4 | 9 | 6 | 35 | 495 | 5 | **490** |
+| `--features python,wasm` | 442 | 4 | 9 | 6 | 35 | 497 | 5 | **492** |
 
-0 from the `streambench` bin target and 0 doc-tests in every configuration.
+0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
+and 0 doc-tests in every configuration.
+
+**Re-derived twice now: for slice 5a Task 6, and again for the whole-branch review's fix
+round that followed it.** Task 6 found this table stale by 35 `lib` tests and 5
+`wasm_exports.rs` tests -- every erosion test this slice added (Task 3's convergence loop,
+Task 4's thermal cap, Task 5's `wb_erosion_run` refusals) had landed in the source without
+this table moving. It last read 404/404/406/404/406 in `lib`, 30 in `wasm_exports.rs` (the
+counts the identity slice's own commentary below still describes); Task 6 corrected it to
+439/439/441/439/441 and 35. The fix round for the review's HIGH finding (a second abort
+band, `radius_m` overflowing `stream::node_areas_m2`'s area calculation to `+inf`) then
+added one more `stream.rs` test (`build_refuses_an_infinite_or_nan_area`), uniformly across
+all five configurations since `stream.rs` compiles unconditionally, moving `lib` to
+440/440/442/440/442; `wasm_exports.rs` went 35 -> 36 net -- not net zero, since a first
+version of the fix round's own erosion-side test was itself superseded once
+`WB_MAX_WORLD_RADIUS_M` closed the door that test assumed stayed open, and its replacement
+is the one test that survived (`gates.yml`'s own inline commentary tells that story in
+full, including the miscount an early draft of it made by arithmetic instead of by running
+`--list`). Both deltas match `.github/workflows/gates.yml`'s own inline commentary
+for the engine job matrix, which is pinned to the same run figures (454/454/456/490/492)
+and was independently re-run for this record rather than trusted because it agreed.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read
 409/409/409/439/439. **The `python` rows are two higher in `lib` than their non-python
-neighbours** (406 vs 404) because `source_fingerprint()` and `source_fingerprint_inputs()`
+neighbours** (441 vs 439) because `source_fingerprint()` and `source_fingerprint_inputs()`
 are PyO3 exports whose binding tests only compile with `--features python`. These five
 numbers are pinned verbatim in `.github/workflows/gates.yml`'s `engine` job matrix and
 asserted there by the same `assert_counts.py cargo-list` check, not merely quoted here.
 
 **Running only the first three is how a stale count survives.** This section said **405**
-(395 lib) for several commits and named only three configurations, so the 30 tests that
-hold `wasm.rs` to its declared export list were outside the number the record quoted. If
-you quote a test count here, quote all five rows.
+(395 lib) for several commits and named only three configurations, so the 30 (now 35) tests
+that hold `wasm.rs` to its declared export list were outside the number the record quoted.
+If you quote a test count here, quote all five rows.
 
 The `#[ignore]`d measurements take minutes and
 allocate half a gigabyte; they are tests rather than a throwaway script so they cannot rot
@@ -2975,3 +3006,286 @@ silently while the constants they justify stay in the source, and they run with
 `streambench` is not a test and is not counted:
 
     cargo run --release --no-default-features --bin streambench -- 20000000
+
+## `erosion.rs`: the Cordonnier stream-power bake, and the number nobody had named
+
+Slice 5a implements one implicit step of `dh/dt = u - k * A^0.5 * s` over an existing
+`StreamGraph`, iterated to convergence, with a thermal-erosion slope cap wired in per
+iteration -- `docs/design/2026-09-02-mark-2-world-studio.md` §14.1's Cordonnier method,
+`§14.3`'s bake-not-query argument, `§14.4`'s CORE-001. No lakes, no overflow, no water
+manifest, no feature-kernel blend back into terrain -- that is slice 5b, listed at the end
+of this section. Every number below was re-run for this record rather than carried forward
+from an earlier task's report, because this slice's own history is why that distinction
+matters: **Task 4's brief quoted a digest Task 3 had already moved, and Task 5 reported five
+correct count pins as "stale by +5" because it counted `--list` lines without subtracting
+the five ignored -- on both sides of a `git stash`.** A control wrapped around an
+incorrectly defined measurement reads as convincing precisely because the control itself
+passes. Where a number below disagrees with an earlier report's, this section's own
+measurement is what is recorded, and the disagreement is stated rather than smoothed over
+(see "Figures found stale" at the end).
+
+### 1. §14.3's convergence claim holds -- at a governing group nobody had named
+
+§14.3 claims Cordonnier's implicit solver converges in **100-300 iterations**, independent
+of resolution. Run at this crate's own default test constants (`u = 1.0e-3 m/yr`,
+`k = 1.0e-6 /yr`, `dt = 1000 yr`), the claim looks false: thousands of iterations, and the
+count keeps climbing as the convergence threshold tightens. It is not false. It is a
+function of one dimensionless group, derived in `erode_step`'s own doc from the closed-form
+update:
+
+    c = k * dt * sqrt(A_drainage) / d
+
+(`A_drainage` the node's drainage area in m², `d` the great-circle distance to its
+receiver). The closed form moves a node a fraction `c / (1 + c)` of the remaining distance
+toward its new steady state each step, so the iteration count to reach a fixed per-step
+threshold scales as `ln(1/threshold) / c` -- **the count is a function of `c`, not of node
+count, not of "this implementation" as a monolith.** `sqrt(A)/d` is itself close to
+resolution-invariant (both terms scale as `1/sqrt(n)` as the mesh refines), so `c ≈ k * dt`
+in practice: it is set by the two constants a caller chooses, not by the mesh.
+
+Re-run for this record, `cargo run --release --bin erosion_convergence_sweep` (Windows 11,
+`x86_64-pc-windows-msvc`, `cargo 1.98.0`, release only; `SamplingKind::Spiral` nodes over
+`Surface::new(20260904, EARTH_RADIUS_M, 22, 0.29, None)` terrain, `u = 1.0e-3 m/yr` and
+`dt = 1000 yr` fixed throughout, six node counts from 300 to 100,000 -- just over two
+decades):
+
+**Table 1 -- `k` fixed at `1.0e-6 /yr` (`c` median ≈ `1.0e-3` at every size), threshold
+varied.** A tighter threshold demanding more work at a fixed `c` is the sanity check that
+this sweep is measuring something rather than reporting one number by construction:
+
+| nodes | threshold (m) | `c` median | `c` max | iterations |
+|---:|---:|---:|---:|---:|
+| 300 | 1.0 | 1.046e-3 | 4.394e-3 | 2,370 |
+| 300 | 1.0e-3 | 1.046e-3 | 4.394e-3 | 14,350 |
+| 300 | 1.0e-4 | 1.046e-3 | 4.394e-3 | 18,790 |
+| 100,000 | 1.0 | 1.171e-3 | 3.364e-2 | 4,581 |
+| 100,000 | 1.0e-3 | 1.171e-3 | 3.364e-2 | 19,858 |
+| 100,000 | 1.0e-4 | 1.171e-3 | 3.364e-2 | 24,332 |
+
+Thousands of iterations at every size, at this crate's own constants -- §14.3's band does
+not appear here, and the `c` column shows why: `c` sits near `1.0e-3` regardless of node
+count, essentially flat across a 333x span of `n` (1.046e-3 to 1.171e-3), which is the
+resolution-invariance of `sqrt(A)/d` made visible rather than asserted.
+
+**Table 2 -- threshold fixed at `1.0e-3` m, `k` varied instead (the parameter `c` actually
+depends on).** This is the decisive comparison: the same unmodified solver, at a `c` an
+order of magnitude closer to what a caller wanting §14.3's own timescale would choose.
+
+| nodes | `k` (/yr) | `c` median | `c` max | iterations |
+|---:|---:|---:|---:|---:|
+| 300 | 1.0e-6 | 1.046e-3 | 4.394e-3 | 14,350 |
+| 300 | 1.0e-5 | 1.046e-2 | 4.394e-2 | 2,015 |
+| 300 | 1.0e-4 | 1.046e-1 | 4.394e-1 | **253** |
+| 300 | 1.0e-3 | 1.046e0 | 4.394e0 | 37 |
+| 100,000 | 1.0e-6 | 1.171e-3 | 3.364e-2 | 19,858 |
+| 100,000 | 1.0e-5 | 1.171e-2 | 3.364e-1 | 2,521 |
+| 100,000 | 1.0e-4 | 1.171e-1 | 3.364e0 | **301** |
+| 100,000 | 1.0e-3 | 1.171e0 | 3.364e1 | 43 |
+
+At `c` median ≈ `0.1` (`k = 1.0e-4`), every one of the six node counts this sweep runs
+(300 through 100,000, a 333x span) converges in **253 to 301 iterations -- inside or
+one iteration outside §14.3's 100-300 band, on the same solver Table 1 shows converging in
+the thousands at a different `c`.** One order of magnitude higher (`c` median ≈ `1`) and the
+same solver converges in 37-43 iterations, below the band; one order lower (`c` median ≈
+`1.0e-2`) and it takes ~2,000-2,500, above it. **The band is a property of `c`, and this
+crate's own default test constants (`c` ≈ `1.0e-3`) simply are not in it.** Record the
+group, this project's figure rule now says explicitly, where parameters combine into one --
+`u`, `k`, `dt` named separately would suggest three independent knobs when the count that
+actually matters depends on one ratio of them (with the mesh's own `sqrt(A)/d` folded in,
+which is why `c` and not `k*dt` alone is the exact quantity).
+
+### 2. The thermal cap is inert at every resolution this crate measures, and the reason is geometric
+
+Both tables above print `clamped: 0 edges over 0 iterations` on **every one of their 42
+rows**, without exception. That is not a coincidence of these particular parameter choices;
+it is geometric. A 30-degree slope needs a rise of `tan(30°) * d` between two adjacent
+nodes, and `d` is the mesh spacing -- large at the node counts a test suite can afford,
+small only near the planetary target. Re-derived directly (not copied from `erosion.rs`'s
+own doc comment, though it agrees), taking `d` as the square root of the mean cell area over
+a sphere of Earth's radius (6,371,000 m) and the required rise as `tan(30°) * d`:
+
+| nodes | spacing `d` (m) | rise needed for 30° (m) |
+|---:|---:|---:|
+| 300 | 1,303,923 | 752,820 |
+| 10,000 | 225,846 | 130,392 |
+| 100,000 | 71,419 | 41,234 |
+| 20,000,000 | 5,050 | 2,916 |
+
+Earth's entire relief, Everest to Challenger Deep, is about 19,700 m. At 100,000 nodes --
+this sweep's largest size -- the cap would need **more than twice the planet's whole relief
+concentrated between two neighbouring nodes** before it could fire; it cannot bind at any
+`k` this crate has run. Only near the 20,000,000-node, ~5 km spacing target §14.3 names does
+the required rise (2,916 m) fall inside the range of ordinary steep mountain terrain, which
+is where the cap stops being decoration.
+
+Two consequences follow, stated rather than left to be inferred from an unchanged number:
+
+- **The sweep exercises `cap_slopes`'s clamp branch not at all.** Every claim that the cap
+  corrects a real spike rests on `erosion.rs`'s own synthetic pathology tests (a
+  deliberately low-drainage-area node driven past the cap by hand), not on anything measured
+  above. A zero that looks like "the cap works, see, nothing needed clamping" and a zero that
+  means "the cap was never exercised" are indistinguishable from the outside, which is
+  exactly why `ClampStats` reports the count explicitly rather than leaving it to be read off
+  an unmoved iteration total.
+- **Task 3's convergence figures above are unchanged, not superseded, by Task 4's cap.** The
+  cap runs per-iteration inside the same loop these tables measure; had it fired even once on
+  any row, the iteration counts above would be Task 4's numbers, not Task 3's. They are
+  identical, because the cap did nothing over this corpus.
+
+### 3. Native/WASM parity exists for erosion, and what it does and does not cover
+
+`wb_erosion_run` (slice 5a Task 5) is a real, shipped export -- re-checked here rather than
+reported from Task 5's own record. Re-run for this task (`cargo run --release -p
+worldbuilder-engine --example parity_dump --features wasm`, replayed by `parity/parity.mjs`
+against the committed `viewer/public/wasm/worldbuilder_engine.wasm`, 117,146 bytes, on the
+same host as the sweep above; full corpus and method in `parity/README.md`, which this task
+also found stale by one whole group and re-derived -- see "Figures found stale"):
+
+| run | values compared | divergent |
+|---|---:|---:|
+| parity | 56,254 | **0** |
+| `--mutate seed` (a different planet) | 56,254 | 53,778 |
+| `--mutate erosion-k` (`erodibility_per_yr` bumped one ULP) | 56,254 | **216** |
+
+The plain run is bit-for-bit across all 56,254 values, 3,003 of which are the erosion
+group's own corpus (3,000 heights from one `wb_erosion_run` call, 3,000 nodes, this crate's
+default test constants, capped at 20 iterations so it exercises the not-yet-converged path
+deliberately, plus status/iterations/converged). The seed control shows the harness can
+detect an entirely different world: 3,000 of the erosion group's 3,003 values move (every
+height, not the run's own status/iterations/converged, which a seed alone cannot change).
+
+**The `--mutate erosion-k` control isolates arithmetic from iteration count, which is the
+precise thing a seed control cannot show.** Bumping `erodibility_per_yr` by exactly one ULP
+moves 216 of the 3,000 heights and *nothing else in the record* -- both `iterations` and
+`converged` compare equal on both sides. That is the control doing its one job: proving the
+harness can catch a one-ULP divergence in the implicit update's own arithmetic, with the
+possibility that "the two sides just ran a different number of steps" excluded by the same
+comparison. Confirmed by re-running it for this task, not assumed from Task 5's report.
+
+**What this parity claim does not cover.** `cap_slopes`'s own clamp branch is called by
+`wb_erosion_run` (it always runs the capped path) but, per section 2 above, is inert at this
+export's 3,000-node parity fixture -- so the parity corpus is a genuine bit-for-bit test of
+`sqrt`, `atan2` (via `receiver_distances_m`) and the implicit update, and it is **not** a
+test of the cap's own clamp arithmetic agreeing between native and WASM. That remains
+unverified by parity until a corpus reaches a node density where the cap can fire at all.
+
+### 4. An abort was reachable through `wb_erosion_run`, closed, and not exhaustively searched
+
+`erodibility_per_yr` was originally bounded only by magnitude, so a negative `k` was
+in-domain. A negative `k` makes `c` negative; `implicit_receiver_update`'s `1 / (1 + c)`
+stops being a contraction and becomes an amplifying map for `c` in `(-2, 0)`, heights
+overflow to `±inf` within roughly a hundred iterations at this crate's own `dt`, and the
+following iteration's `inf - inf` trips `erode_to_convergence`'s release-time
+`assert!(!change.is_nan())` -- correct as a Rust-internal invariant, but `extern "C"` is
+nounwind, so the panic aborts the whole module rather than returning a status, both natively
+and in the shipped `.wasm`. `tests/wasm_exports.rs::a_negative_erodibility_is_refused_...`
+(re-run for this task, `cargo test -p worldbuilder-engine --features wasm`, exit 0, 35
+passed / 0 failed) confirms `-9.0e-4`, `-1.0e-3`, `-1.0e-2`, `-1.0`, `-1.0e-6` and
+`-infinity` are now all refused with `WB_ERR_PARAM` before the solver runs at all, and that
+flipping the same value positive still succeeds and returns only finite heights.
+
+**It was a band, not a cliff.** Only some of the negative values above actually reach the
+amplifying overflow within a bounded iteration count; others stay finite over the same
+budget. A single spot-check at one negative `k` would have found "that value is fine" and
+missed the reachable ones. Closed by requiring `erodibility_per_yr >= 0.0` in the guard
+(which also refuses NaN, since `NaN >= 0.0` is `false`), rather than by bounding magnitude
+alone or by fixing one specific value.
+
+**No exhaustive search of the remaining in-domain parameter space was done, and this record
+does not claim otherwise.** The one path into the assertion that this task found was
+reasoning about the sign of `1 + c` for negative `k`; the guard closes exactly that path.
+Adversarial combinations of a very large `A_drainage`, a near-ceiling `k` and `dt`, and a
+very small receiver distance `d` were not fuzzed against `f64`'s own overflow boundary.
+Finding one reachable band is a reason to raise the prior that others exist, not to lower
+it -- the numeric-domain ceilings on `wb_erosion_run`'s parameters
+(`WB_MAX_EROSION_RATE_PER_YR`, `WB_MAX_EROSION_TIMESTEP_YR`) are chosen to keep `c`'s
+multiplication chain far from `f64::MAX` at every value this crate's own fixtures use, which
+is a defensive margin, not a proof.
+
+### What this implementation actually costs, measured, not extrapolated past what ran
+
+§14.3's own figure is explicitly arithmetic, not measurement, and is quoted here from the
+design doc directly rather than from an intermediate report: **160,000 nodes over a
+50 x 50 km domain, about 200 steps, 252 seconds on a 2016 desktop**, extrapolated (their
+per-iteration cost scaling worse than linearly, 1.8x the nodes costing 3.2x the time) to
+"plausibly many hours" for a 20,000,000-node planet at ~128x their largest run.
+
+This implementation was timed directly for this record -- a scratch timing binary over
+`erode_to_convergence_with_clamp_counts` at a fixed 200 iterations (never reaching
+convergence, so every size does the same number of steps), release build, this same host,
+graph build and the 200-iteration run timed separately:
+
+| nodes | graph build | 200 iterations | per-iteration |
+|---:|---:|---:|---:|
+| 3,000 | 0.019 s | 0.016 s | 0.081 ms |
+| 30,000 | 0.198 s | 0.227 s | 1.137 ms |
+| 100,000 | 0.822 s | 0.824 s | 4.120 ms |
+| 200,000 | 1.877 s | 2.373 s | 11.864 ms |
+
+Per-iteration cost is not linear in node count over this range either (100,000 -> 200,000 is
+2x the nodes for 2.88x the time), the same superlinear shape `streambench.rs`'s own
+`node_neighbours` measurement already reports for graph construction and consistent with
+`wasm.rs`'s own doc's independent timing (~8.5 ms/iteration at 200,000 nodes on whatever
+host that figure came from -- this host's 11.864 ms differs by about 40%, which is a
+different-machine spread, not a contradiction; neither figure claims to be host-independent).
+
+**200,000 nodes is the largest size run for this record, and it is 100x short of the
+20,000,000-node planetary target -- that gap is not bridged here.** Naively multiplying
+11.864 ms by a plausible iteration count and a 100x larger node count would repeat exactly
+the extrapolation error this section's own quoted paragraph warns against (per-iteration
+cost is already measured as superlinear over a 66x span in this table alone, so a linear
+projection two more decades out is not defensible from this data). What can be said from
+what actually ran: at the `c ≈ 0.1` regime section 1 identifies as the one landing inside
+§14.3's iteration band, and at this host's measured 4-12 ms/iteration in the 100,000-200,000
+node range, a bake in the hundreds-of-iterations count is a matter of seconds to low tens of
+seconds at these sizes -- not hours. Whether that holds at 20,000,000 nodes is not
+established by anything measured here.
+
+### Figures found stale while re-deriving this section
+
+Re-deriving every number above, rather than trusting an earlier report, surfaced several
+figures elsewhere in this crate's own documentation that had drifted:
+
+- **This section's own "What is here so far" module count** (top of this file) still read
+  eighteen modules and one binary after `erosion.rs`, `wasm.rs` and
+  `src/bin/erosion_convergence_sweep.rs` had all landed -- corrected above to twenty modules,
+  two binaries.
+- **The WASM artifact's own byte count and export count**, quoted twice in this file (the
+  WebAssembly surface section, and the module list), still read 84,856 bytes / 11 exports
+  after `wb_erosion_run` shipped, which is a twelfth export at 117,146 bytes -- both
+  corrected.
+- **The "Test counts, with their environment" table** read 404/404/406/404/406 in `lib` and
+  30 in `wasm_exports.rs`, from before any of this slice's three tasks landed a test --
+  corrected to 439/439/441/439/441 and 35, re-derived directly from `cargo test -p
+  worldbuilder-engine <features> -- --list` (and `--list --ignored`) for all five
+  configurations on this host, matching `.github/workflows/gates.yml`'s own pinned figures
+  exactly (453/453/455/488/490 run, `expect_ignored: 5` throughout) rather than being copied
+  from that file.
+- **`parity/README.md`'s entire "Recorded output" section** predated the erosion group and
+  the `--mutate erosion-k` control: it still quoted 53,251 values / 84,856 bytes with no
+  erosion row at all, despite `examples/parity_dump.rs` and `parity.mjs` both already
+  containing the erosion-group code that produces the 56,254-value corpus measured above.
+  Corrected, with both controls now recorded.
+- **`docs/ci.md`'s "current tree" claims** (the parity re-run line, the engine-suite test
+  table, and the parity-corpus count-gate description) carried the same pre-erosion figures;
+  corrected to match. Its historical paragraph about the identity slice's `.wasm`-byte-diff
+  correction was left untouched, since that describes a specific past commit's evidence and
+  updating it to today's byte count would misrepresent what was true at the time it
+  describes.
+
+None of these were found by disagreeing with a number in a task brief -- every one was
+found by running the actual command a stale sentence claimed to summarize and comparing the
+output. That is the check this slice's own history says is worth repeating: a correct
+control wrapped around an incorrectly defined (or simply un-rerun) measurement is exactly
+what let a prior task's report call five correct pins "stale by +5."
+
+### What slice 5b still owes
+
+Lakes and the overflow super-graph, the water manifest as a byproduct of building them, and
+the feature-kernel blend that lets `terrain_z_at` stay a function after erosion has run
+(§14.3's own argument for why the query can remain analytic even though the structure is
+baked). Also carried forward as a note for whoever picks that slice up: **`sea_level_m` is
+hardcoded inside `wb_erosion_run`** (`WB_EROSION_SEA_LEVEL_M = 0.0`) and is **not inert** --
+it is what decides which nodes the graph classifies as roots, and therefore which nodes this
+slice's solver holds fixed as local base levels. Lakes and water will need to revisit that
+constant, not merely add parameters alongside it.

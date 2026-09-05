@@ -81,8 +81,8 @@ jobs:
   # other; that costs nothing, and the alternative is a sixth job that could drift out of step
   # with the suite it lives in.
   #
-  # Baselines: 418 passed / 0 failed / 5 ignored under no-default-features and default;
-  # 420/0/5 under python; 448/0/5 under wasm; 450/0/5 under python+wasm. These ARE asserted,
+  # Baselines: 440 passed / 0 failed / 5 ignored under no-default-features and default;
+  # 442/0/5 under python; 470/0/5 under wasm; 472/0/5 under python+wasm. These ARE asserted,
   # by a second step that
   # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
   # ran nothing gets called green. See the step's own comment.
@@ -96,34 +96,94 @@ jobs:
         include:
           # `expect` is the number of tests that must RUN in that configuration, and
           # `expect_ignored` the number that must be marked ignored. The wasm configurations
-          # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
+          # compile tests/wasm_exports.rs, which is 35 tests the other three never see.
           #
-          # 2026-09-04, slice identity: these moved 409/439 -> 418/448 when build.rs and
-          # tests/build_fingerprint.rs landed. The `python` rows are TWO HIGHER than their
-          # non-python neighbours (420 and 450) because source_fingerprint() and Task 3's
-          # source_fingerprint_inputs() are both PyO3 exports whose binding tests only
-          # compile with that feature. Re-derived on this host by
-          # `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines and
-          # subtracting the 5 ignored: 423/423/425/453/455 listed.
+          # 2026-09-04, slice 5a Task 2 review fix round: these moved 431/433/461/463 ->
+          # 432/434/462/464 when src/erosion.rs gained one test
+          # (`a_root_is_held_at_its_old_height_rather_than_uplifted`, pinning the root policy
+          # the review found unguarded -- finding 3) with no change to shipped solver
+          # behaviour. The `python` rows stay TWO HIGHER than their non-python neighbours
+          # (434 and 464) for the pre-existing reason -- source_fingerprint() and
+          # source_fingerprint_inputs() are PyO3 exports whose binding tests only compile
+          # with that feature -- unchanged by this task.
+          #
+          # 2026-09-05, slice 5a Task 3: 434/434/436/464/466 -> 439/439/441/469/471 when
+          # `erosion.rs` gained `erode_to_convergence`/`ErosionRun` and five new tests
+          # (determinism, threshold-monotonicity, converged-is-a-fixed-point, cap-reached-is-
+          # reported, no-NaN-or-infinity) -- see task-3-report.md. `expect_ignored` stays 5;
+          # this task added no `#[ignore]`d test (the multi-resolution sweep is
+          # `src/bin/erosion_convergence_sweep.rs`, a `[[bin]]` outside the test harness
+          # entirely, per the task-3 brief's "keep CI fast" instruction, so it contributes 0
+          # tests to every configuration's count here).
+          #
+          # 2026-09-05, slice 5a Task 4 (the thermal-erosion slope cap): 440/440/442/470/472
+          # -> 453/453/455/483/485. Task 4 added thirteen tests to `erosion.rs`: the slope-cap
+          # constant pin, the §14.1 pathology demonstration (a low-drainage-area node grows
+          # past the cap without correction), seven covering `cap_slopes` itself (binds every
+          # edge, idempotent, never raises a node, deterministic, finite, does not launder a
+          # NaN), the end-to-end `erode_to_convergence_output_never_exceeds_the_slope_cap`,
+          # and four more once the coordinator asked for `ClampStats` instrumentation so a
+          # reader could see whether the cap actually fired rather than inferring it from an
+          # unchanged iteration count (`slope_cap_clamped_count_counts_exactly_the_changed_bit_patterns`,
+          # `erode_to_convergence_with_clamp_counts_agrees_with_the_plain_wrapper`,
+          # `erode_to_convergence_clamps_nothing_at_this_crates_default_test_constants`,
+          # `erode_to_convergence_with_clamp_counts_is_nonzero_under_the_pathology`).
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived on this host
+          # by `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines
+          # and subtracting the 5 ignored (from the same command with `--ignored` added):
+          # 453/453/455/483/485.
+          #
+          # 2026-09-05, slice 5a Task 5 review fix (the `wb_erosion_run` refusal tests):
+          # 453/453/455/483/485 -> 453/453/455/488/490. `tests/wasm_exports.rs` gained five
+          # tests for the new export's parameter validation (the negative-`erodibility_per_yr`
+          # refusal that closes the review's reachable abort, the other numeric-domain
+          # refusals, the handle and buffer refusals, and one happy-path check) -- 30 -> 35
+          # tests, so only the two wasm-feature rows move. `expect_ignored` stays 5.
+          # Re-derived by running the gate's own two commands per config
+          # (`cargo test -p worldbuilder-engine <cfg> -- --list` and the same with
+          # `--ignored`) through `assert_counts.py cargo-list` itself, not by counting lines
+          # by hand -- the prior revision of this pin block was wrong precisely because it
+          # counted the LISTED total and never subtracted the ignored five.
+          #
+          # 2026-09-05, whole-branch review fix round (the HIGH, second abort band):
+          # 453/453/455/488/490 -> 454/454/456/490/492. `stream.rs` gained one test,
+          # `build_refuses_an_infinite_or_nan_area`, pinning the fixed area check (an
+          # infinite `radius_m` overflowed `4*pi*r^2` to `+inf`, which the OLD `> 0.0` check
+          # admitted) -- +1 across all five configurations, since `stream.rs` compiles
+          # unconditionally. `tests/wasm_exports.rs` went 35 -> 36, +1 net: this round first
+          # added `a_world_with_an_overflowing_radius_refuses_erosion_rather_than_aborting`,
+          # then discovered `WB_MAX_WORLD_RADIUS_M` (added in the same round to also close an
+          # unrelated `i64`-overflow panic in `noise.rs`, reachable through the identical
+          # huge-radius door, that a normal debug `cargo test` run would otherwise hit before
+          # ever reaching the area-overflow bug) made that test's premise false -- the world
+          # no longer builds at that radius at all -- so it was deleted and replaced with
+          # `a_radius_that_would_overflow_downstream_arithmetic_is_refused_at_world_creation`,
+          # net +1 rather than net zero. The two wasm rows therefore move by +2 (the shared
+          # `stream.rs` test plus this one), the other three by +1. Re-derived the same way
+          # as every prior entry in this block: the gate's own two `--list` commands per
+          # config, through `assert_counts.py cargo-list` itself, not by hand arithmetic --
+          # which is what caught the wasm_exports.rs miscount above before it reached this
+          # file: an early draft of this comment claimed net zero on that file from arithmetic
+          # alone, and the actual `--list` run (36, not 35) disagreed.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 418
+            expect: 454
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 418
+            expect: 454
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 420
+            expect: 456
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 448
+            expect: 490
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 450
+            expect: 492
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -455,18 +515,22 @@ jobs:
       # 2026-09-04 -- run 33916847441 shrank the corpus by a sixth with provenance, parity
       # and `cargo test` all green, and this gate was the only thing that noticed. It is a
       # fingerprint input now, so provenance refuses too; the two are independent and both
-      # are kept. 53,251 is the recorded population; the script also checks the nine
-      # per-group tallies sum to it, so a format change fails loudly instead of matching
-      # nothing.
-      - name: Assert the corpus -- 53,251 values, 0 divergent
+      # are kept. 56,254 is the recorded population -- 53,251 from the Surface-level corpus
+      # plus 3,003 from Task 5's erosion group (a 3,000-node capped `erode_to_convergence`
+      # bake through `wb_erosion_run`, plus its status/iterations/converged trio; see
+      # `examples/parity_dump.rs` for why 3,000 nodes exercises every arithmetic path a
+      # planetary bake would, and task-5-report.md for why size does not matter to a
+      # bit-equality claim). The script also checks the ten per-group tallies sum to it, so
+      # a format change fails loudly instead of matching nothing.
+      - name: Assert the corpus -- 56,254 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 53251 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 56254 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
-      # `--mutate seed` moves the world seed by one and 50,778 of 53,251 values diverge. A
+      # `--mutate seed` moves the world seed by one and 53,778 of 56,254 values diverge. A
       # parity run whose harness cannot fail is not evidence, and this is the cheapest place
       # in the project to keep proving that it can.
       - name: Parity -- the control (a harness that cannot fail is not evidence)
@@ -477,12 +541,42 @@ jobs:
           node parity.mjs native.txt --mutate seed 2>&1 | tee control.out
 
       # The control's own count. "the harness can be made to fail" is satisfied by ONE
-      # divergent value; the recorded figure is 50,778 of 53,251, and a control that
+      # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 50,778 of 53,251 divergent
+      - name: Assert the control -- 53,778 of 56,254 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 53251 --expect-divergent 50778
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 56254 --expect-divergent 53778
+
+      # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
+      # entirely different planet" (95.6% of values move -- every group, gross). It does not
+      # by itself prove the harness is sensitive to the erosion solver's own arithmetic
+      # specifically, and a control that only ever diverges on everything is nearly as
+      # uninformative as one that never diverges at all (task-5-brief.md). `--mutate
+      # erosion-k` bumps `erodibility_per_yr` by exactly one ULP and touches nothing else --
+      # only the `erosion/erosion` group can move. The corpus is built so both the native
+      # run and this perturbed replay hit `max_iterations` without converging (see
+      # `examples/parity_dump.rs`), so the two runs take the identical number of steps by
+      # construction: a divergent height here is evidence of arithmetic sensitivity to `k`,
+      # not of a different iteration count.
+      - name: Parity -- the erosion control (a harness that cannot fail is not evidence)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate erosion-k 2>&1 | tee erosion-control.out
+
+      # The erosion control's own count: 216 of the erosion group's 3,000 heights move from
+      # a single ULP on `k` (7.2%) -- status, iterations and converged are unaffected (fixed
+      # step count, see above), and every non-erosion group is untouched (216 of 56,254
+      # overall). Neither zero nor "every non-root node" -- a plausible fraction, which is
+      # the property this control exists to demonstrate.
+      - name: Assert the erosion control -- 216 of 56,254 divergent
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 56254 --expect-divergent 216
