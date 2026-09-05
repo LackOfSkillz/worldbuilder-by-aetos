@@ -361,6 +361,120 @@ new for margins), 284 in the full Python suite, and 74 crate tests plus the 6-te
 `no_std_math` guard in the Rust suite -- all verified by running them, not carried over from
 an earlier report.
 
+## `margins_within`: the first membership decision downstream of a transcendental
+
+Every earlier ported function could be asked "is a transcendental in this path?" and get
+a clean yes-or-no that settled which conformance contract applied. `margins_within`
+(`worldbuilder/plates/lookup.py:212-283`) breaks that pattern: it decides *which margins
+it returns* -- not merely how precisely it states a distance -- by comparing an
+exactly-reproducible dot product against `limit = sin(min(pi/2, range_m/radius_m))`. A
+one-ULP disagreement in `limit` would not shave a low bit off a number; it would change
+the *length* of the returned list, which every caller that sums margin contributions
+depends on.
+
+**What Task 1 measured, and why that is not the reason membership is safe.** `limit` came
+back bit-identical between CPython and this engine across every value tested -- eight
+`range_m` values from 1 km to 5,000 km, the saturating case, and zero -- worst distance 0
+ULPs. That is a real result, but it is a measurement against one platform's C library
+(Windows' UCRT); another libm backing CPython's `sin` could disagree, and nothing here
+would catch it if it did. The fact that actually makes membership safe is the **geometric
+margin**: across the corpus this measurement actually runs over -- `_margins_corpus(2000)`
+(2,000 pseudo-random points, no pinned poles or meridian points) plus 1,000 points
+deliberately built near a bisector midpoint and nudged off it -- the closest any
+candidate's `offset` comes to `limit` is `7.307968641692697e-08`, about nine orders of
+magnitude above a ULP at that scale (~1e-16 to ~1e-18). That gap absorbs any plausible
+divergence in `limit`, whichever libm produced it. It is pinned by an asserted floor of
+`1e-9` in the permanent conformance suite, with the observed value carried in the failure
+message rather than merely printed. A second hard decision in this function, the shadow
+sign at the third-plate exclusion, gets the same treatment over the same corpus: smallest
+observed `|shadow|` is `5.962450345231574e-06`, floored the same way at `1e-9`.
+
+**Three bugs, three ways of encoding the same lesson.** `lookup.py`'s own comments record
+that all three trace back to one root cause: a hard decision taken on a quantity that is
+actually continuous.
+
+- **The arg-min flip this function exists to avoid.** `margin_at` returns a distance that
+  varies smoothly, but *which* margin that distance belongs to jumps at any point
+  equidistant from two bisectors -- Python's own comment prices this at five hundred
+  metres of cliff. The fix is not to pick one: `margins_within` returns every bisector
+  still in range and lets the caller sum their contributions, because a sum of continuous
+  functions is continuous even where the arg-min over them is not.
+- **The phantom bisector.** A bisector is the true margin between two plates only where
+  those two are genuinely the nearest pair; elsewhere it runs through a third plate's
+  territory, imaginary. Summing those unconditionally cost a hundred and seventy
+  kilometres of phantom mountain range, and it was discontinuous besides. The fix stands
+  at the closest point on the bisector and asks who the neighbours are *there*, one extra
+  lookup, paid only for candidates already inside range.
+- **The shadow weight that replaced a boolean.** The first fix for the phantom bisector
+  rejected a shadowed candidate outright, which switched a margin on and off in one step
+  wherever it landed near a triple junction -- a hundred and forty metres of cliff, and
+  the Python's own comment calls this the third instance of the same mistake. It fades
+  now: `genuine = smoothstep(clamp(shadow / SHADOW_BLEND, 0, 1))`, transcribed exactly.
+
+**One hard exit that is deliberately safe, so it is not mistaken for a fourth instance.**
+`if genuine <= 0.0 { continue }` is a boolean skip sitting right next to the fix for the
+last boolean skip -- but it does not reintroduce the bug, because the smoothstep is
+*exactly* zero at that boundary. A candidate that gets skipped there and a candidate that
+gets included with `weight: 0.0` are indistinguishable to any caller that sums weighted
+contributions; the `continue` only avoids pushing a no-op entry, it never changes what the
+caller sees.
+
+**The fade fix is now known to be guarded, not merely asserted.** Reverting the smoothstep
+to the boolean it replaced (`if shadow <= 0.0 { continue } else { genuine = 1.0 }`) makes
+`a_shadowed_margin_fades_rather_than_switching_off` fail with a single-step weight change
+of `1.0` against the test's `0.25` bound -- both the implementer and the reviewer ran this
+mutation independently and saw the same failure. The measured crossing along the test's
+sample path sits at 12.25 degrees latitude, with 9 of its 200 samples landing inside the
+fade band.
+
+**This function had no dedicated test before this slice.** It was not untouched --
+`tests/test_performance.py:215` and `tests/test_tectonics.py:201` both call it -- but
+neither exercises it directly; both are aimed at other things and happen to invoke it
+along the way. `test_plates.py`, which does target its neighbours directly (`nearest_two`,
+`margin_at`, `margin_normal`, `flattened`), carries 27 tests and none of them are
+`margins_within`'s. The conformance harness added here is the first test written to
+exercise `margins_within` itself, in either language.
+
+**The main corpus exercises the fade and skip paths on its own, not only through the two
+hand-built three-plate tests above.** Instrumenting `margins_within` over
+`test_plateset_margins_within_agrees_over_a_corpus_of_points`'s own corpus and range
+spread (the 806-point `_margins_corpus(800)` against every non-saturating range in
+`_range_values_for_margins`, i.e. excluding the range that selects every margin
+unconditionally) produces 6,344 margin entries, of which 489 carry a weight strictly
+between 0 and 1 -- the fade band, not merely on or off -- and 11,566 candidates that pass
+the range test but are shadow-skipped (`genuine <= 0.0`) before ever reaching the returned
+list. The corpus already exercises both paths at scale; the triple-junction and
+none/some/all tests above pin specific, checkable points within it.
+
+**The deliberate deviation, consistent with slices 1e and 1f.** The Rust addresses the
+bisector table, the seed table, and the third-plate exclusion by a plate's **position** in
+`self.plates`, on every axis. The Python is not internally consistent about this: within
+`margins_within` itself, the candidate loop's `zip(self.plates, self._bisector_xyz[nearest.index])`
+walks by position, but the third-plate exclusion compares `third.index == nearest.index or
+third.index == other.index`, mixing index-based and position-based logic in the same
+function. They coincide only because `generation.py` assigns `index=index for index in
+range(count)` -- position and index are the same number for every plate the corpus
+builds. This is the same deviation already recorded for `margin_at` and `margin_normal`
+above, extended to the one function that has both styles inside itself.
+
+**The scaffolding is gone, and that is intended, not an oversight.** Task 1 added a
+throwaway `margins_within_limit` binding (`plates.rs`, `bindings.rs`, `lib.rs`) purely to
+measure `limit`'s bit-identity directly, plus `tests/test_limit_ulps.py` to exercise it.
+Both are deleted as of this section. Deleting them removes the only direct pin on
+`limit`'s bit-identity -- but bit-identity was never the fact holding membership safe; the
+geometric margin is, and that margin is pinned permanently, by a floor, in
+`test_conformance.py`. A floor firing in the future is exactly the signal that strict
+membership comparison needs to be revisited on this platform; bit-identity holding would
+not have given that signal, only its absence would have, silently. So nobody should
+"restore" `margins_within_limit` believing it was lost by accident -- its job is now done
+by a test that can actually fail for the right reason.
+
+Every test count in this section was verified by running the suites, not copied from an
+earlier report: 86 crate tests (80 lib + 6 `no_std_math` guard, unchanged by this
+deletion -- `margins_within_limit` had no dedicated Rust unit test), 292 in the full Python
+suite (294 minus the 2 tests deleted with `test_limit_ulps.py`), and 52 in
+`test_conformance.py` (unchanged -- those two tests never lived there).
+
 ## Constants transcribed from Python: a rule learned the hard way
 
 The noise port's seed multiplier -- the FNV-1a 64-bit prime, `0x100000001B3` in the

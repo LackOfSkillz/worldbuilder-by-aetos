@@ -232,6 +232,164 @@ impl PlateSet {
         let clamped = if closest_sine < 1.0 { closest_sine } else { 1.0 };
         Margin { nearest: Some(near), neighbour: across, distance_m: m::asin(clamped) * radius_m }
     }
+
+    /// Every margin of the point's plate that is near enough to matter, not just the
+    /// nearest one.
+    ///
+    /// **Because picking one margin is not continuous, even when its distance is.**
+    /// `margin_at` returns a distance that varies smoothly, but the *identity* of the
+    /// neighbour it belongs to still jumps: at a point equidistant from two of a plate's
+    /// margins, which one is "the" margin flips under a step of a metre, and everything
+    /// derived from it -- the normal, the relative motion, what lies either side -- flips
+    /// with it. Terrain built on that gained five hundred metres of cliff wherever a plate
+    /// had two margins the same distance away.
+    ///
+    /// The honest answer is that both margins are there. A caller that sums their effects
+    /// is continuous, because each contribution depends on its own distance and each fades
+    /// out at its own range.
+    ///
+    /// Ported from `worldbuilder/plates/lookup.py:212-283`: the early exit, the range
+    /// threshold, the candidate loop, the phantom-bisector guard, and the shadow-and-weight
+    /// fade that keeps a shadowed margin from switching on and off in one step.
+    pub fn margins_within(
+        &self,
+        point: &SpherePoint,
+        range_m: f64,
+        radius_m: f64,
+    ) -> (Option<Plate>, Vec<NearbyMargin>) {
+        let (nearest, _) = self.nearest_two(point);
+        if self.plates.len() < 2 {
+            return (nearest, Vec::new());
+        }
+
+        // Python writes `min(math.pi / 2, range_m / radius_m)`; two-argument min keeps
+        // pi/2 unless the ratio is strictly below it, so a NaN ratio saturates to pi/2
+        // rather than propagating. Not f64::min, which would return the ratio.
+        let ratio = range_m / radius_m;
+        let angle = if ratio < core::f64::consts::FRAC_PI_2 { ratio } else { core::f64::consts::FRAC_PI_2 };
+        let limit = m::sin(angle);
+
+        let v = point.vector;
+        let (px, py, pz) = (v.x, v.y, v.z);
+
+        // The nearest plate's *position* in `self.plates`, not `Plate::index` -- see the
+        // note at `margin_normal` above: `PlateSet::new` addresses its tables by loop
+        // position, not by `Plate::index`, and nothing enforces the two coincide.
+        let near_pos = match nearest {
+            Some(near) => match self.plates.iter().position(|p| p.index == near.index) {
+                Some(pos) => pos,
+                None => return (nearest, Vec::new()),
+            },
+            None => return (nearest, Vec::new()),
+        };
+
+        let mut found = Vec::new();
+        for (other_index, other) in self.plates.iter().enumerate() {
+            let normal = match self.bisector(near_pos, other_index) {
+                Some(n) => n,
+                None => continue,
+            };
+            let signed = px * normal.x + py * normal.y + pz * normal.z;
+            let offset = signed.abs();
+            if offset > limit {
+                continue;
+            }
+
+            // Bug 2: is this bisector actually a margin here, or is a third plate in the
+            // way? Two seeds always have a bisector, but it is only part of the cell
+            // boundary where those two are genuinely the nearest pair; elsewhere it runs
+            // through a third plate's territory, imaginary. The test is to stand at the
+            // closest point on the bisector and ask who the neighbours are there.
+            let foot_x = px - normal.x * signed;
+            let foot_y = py - normal.y * signed;
+            let foot_z = pz - normal.z * signed;
+            let reach = m::sqrt(foot_x * foot_x + foot_y * foot_y + foot_z * foot_z);
+            if reach <= DEGENERATE {
+                continue;
+            }
+            let scale = 1.0 / reach;
+            let (stand_x, stand_y, stand_z) = (foot_x * scale, foot_y * scale, foot_z * scale);
+
+            // How far a third plate would have to be for this to be a real margin, against
+            // how far the nearest one actually is. Positive means genuine; negative means
+            // somebody else's territory.
+            //
+            // Addressed by loop position, not `Plate::index` -- see the note at
+            // `margin_normal` above (plates.rs:161): `PlateSet::new` builds its tables by
+            // loop position, not by `Plate::index`, and nothing enforces the two coincide.
+            let here = self.plates[near_pos].seed.vector;
+            let mine = stand_x * here.x + stand_y * here.y + stand_z * here.z;
+            let mut shadow = 2.0f64;
+            for (third_pos, third) in self.plates.iter().enumerate() {
+                if third_pos == near_pos || third_pos == other_index {
+                    continue;
+                }
+                let seed = third.seed.vector;
+                let candidate = mine - (stand_x * seed.x + stand_y * seed.y + stand_z * seed.z);
+                // Python writes `shadow = min(shadow, candidate)`; the accumulator is the
+                // first operand, so a NaN candidate is ignored and leaves shadow unchanged,
+                // while a NaN accumulator would stick permanently. Not f64::min, which is
+                // commutative.
+                if candidate < shadow {
+                    shadow = candidate;
+                }
+            }
+
+            // **A weight, not a test.** The first version rejected shadowed bisectors with
+            // a boolean, and that switched a margin on and off in one step wherever it
+            // ended at a triple junction -- a hundred and forty metres of cliff. The third
+            // time the same mistake appeared in this phase: a hard decision taken on a
+            // continuous quantity. It fades now.
+            //
+            // Python writes `min(1.0, max(0.0, shadow / SHADOW_BLEND))`. max keeps 0.0
+            // unless the value is strictly above it, so NaN clamps to 0.0; min then keeps
+            // that.
+            let scaled = shadow / SHADOW_BLEND;
+            let lifted = if scaled > 0.0 { scaled } else { 0.0 };
+            let mut genuine = if lifted < 1.0 { lifted } else { 1.0 };
+            if genuine <= 0.0 {
+                // A hard exit on a continuous quantity, and deliberately safe: the
+                // smoothstep below is exactly zero here, so a skipped candidate and an
+                // included one of weight zero are indistinguishable to any summing caller.
+                // Not a fourth instance of this module's recurring bug.
+                continue;
+            }
+            genuine = genuine * genuine * (3.0 - 2.0 * genuine);
+
+            // Python writes `min(1.0, offset)`; two-argument min keeps 1.0 unless offset
+            // is strictly below it, matching the same clamp used in `margin_at`.
+            let clamped = if offset < 1.0 { offset } else { 1.0 };
+            found.push(NearbyMargin {
+                other: *other,
+                distance_m: m::asin(clamped) * radius_m,
+                normal,
+                weight: genuine,
+            });
+        }
+
+        (nearest, found)
+    }
+}
+
+/// How wide the fade zone is where a third plate shadows a bisector, in the same units
+/// as the `shadow` quantity in `margins_within` (a difference of two dot products of unit
+/// vectors, i.e. dimensionless). Ported from `worldbuilder/plates/lookup.py`.
+pub const SHADOW_BLEND: f64 = 0.02;
+
+/// One margin found near a point, on the way to becoming a weighted contribution.
+///
+/// See `margins_within` for why there can be more than one, and why each carries its own
+/// weight rather than the caller picking a single "the" margin.
+#[derive(Debug, Clone, Copy)]
+pub struct NearbyMargin {
+    /// The plate across this margin.
+    pub other: Plate,
+    /// Metres to it, along the surface.
+    pub distance_m: f64,
+    /// The bisector's plane normal.
+    pub normal: Vec3,
+    /// How much this margin's effect should count, from 0 (shadowed away) to 1 (genuine).
+    pub weight: f64,
 }
 
 #[cfg(test)]
@@ -280,6 +438,123 @@ mod tests {
         assert_eq!(omega.x.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.y.to_bits(), 0.0f64.to_bits());
         assert_eq!(omega.z.to_bits(), 0.0f64.to_bits());
+    }
+
+    /// No prior helper in this file is parametrised by lat/lon (the closest, `a_plate`,
+    /// takes only an index and a rate against a fixed seed). Added to match the brief's
+    /// `test_plate(index, lat, lon)` name and signature, with a pole and rate that are
+    /// non-degenerate and differ from the seed, per the binding contract fixed in 1f.
+    fn test_plate(index: usize, lat: f64, lon: f64) -> Plate {
+        Plate {
+            index,
+            seed: SpherePoint::from_latlon(lat, lon),
+            euler_pole: SpherePoint::from_latlon(80.0, 5.0),
+            rate_rad_per_myr: 0.01,
+        }
+    }
+
+    /// Two seeds on the equator and one lifted off it. The third seed must NOT lie on
+    /// the great circle bisecting the other two -- see `a_wide_range_admits_every_candidate_bisector`.
+    fn three_plate_set() -> PlateSet {
+        PlateSet::new(vec![
+            test_plate(0, 0.0, 0.0),
+            test_plate(1, 0.0, 90.0),
+            test_plate(2, 60.0, 45.0),
+        ])
+    }
+
+    #[test]
+    fn a_single_plate_set_has_no_margins() {
+        let set = PlateSet::new(vec![test_plate(0, 0.0, 0.0)]);
+        let (nearest, found) = set.margins_within(
+            &SpherePoint::from_latlon(10.0, 10.0), 1.0e6, EARTH_RADIUS_M);
+        assert!(nearest.is_some(), "one plate still owns every point");
+        assert!(found.is_empty(), "fewer than two plates means no margin can exist");
+    }
+
+    #[test]
+    fn a_plate_interior_finds_nothing_in_a_short_range() {
+        // Standing on seed 0, the nearer bisector is the one with seed 2, roughly
+        // 35 degrees away - about 3,900 km. A 1,000 km range must reject both on
+        // the range test alone, before any shadow work is done.
+        let set = three_plate_set();
+        let (_, found) = set.margins_within(
+            &SpherePoint::from_latlon(0.0, 0.0), 1.0e6, EARTH_RADIUS_M);
+        assert!(found.is_empty(), "every candidate is beyond the range limit");
+    }
+
+    #[test]
+    fn a_wide_range_admits_every_candidate_bisector() {
+        // A range spanning the planet admits both of plate 0's candidate bisectors.
+        // This is the pre-shadow count; Task 3 re-verifies it once shadowing exists.
+        let set = three_plate_set();
+        let (_, found) = set.margins_within(
+            &SpherePoint::from_latlon(0.0, 0.0), 2.0e7, EARTH_RADIUS_M);
+        assert_eq!(found.len(), 2, "both bisectors are in range before shadowing");
+    }
+
+    #[test]
+    fn a_bisector_running_through_a_third_plate_is_not_a_margin() {
+        // Bug 2. Standing well north on plate 0, the bisector of plates 0 and 1 has
+        // its foot in territory that plate 2 owns, so that bisector is imaginary
+        // there and must not be returned. Derive the latitude from the set rather
+        // than trusting this comment: find a point whose nearest plate is 0 and
+        // where the 0-1 shadow is negative, and assert plate 1 is absent from the
+        // result while the margin against plate 2 is present.
+        let set = three_plate_set();
+        let (nearest, found) = set.margins_within(
+            &SpherePoint::from_latlon(20.0, 20.0), 2.0e7, EARTH_RADIUS_M);
+        assert_eq!(nearest.expect("a plate owns this point").index, 0);
+        let others: Vec<usize> = found.iter().map(|m| m.other.index).collect();
+        assert!(
+            !others.contains(&1),
+            "the 0-1 bisector is shadowed by plate 2 here, so it is not a margin; got {others:?}",
+        );
+    }
+
+    #[test]
+    fn a_shadowed_margin_fades_rather_than_switching_off() {
+        // Bug 3, and the test that would catch a reversion to the boolean. Walking
+        // north along longitude 20, the shadow that plate 2 casts on the 0-1 margin
+        // goes from about +0.207 at the equator to about -0.214 by 27 degrees, so
+        // the crossing lies inside this path. A boolean would step from 1.0 to
+        // absent in a single sample; the fade must not.
+        //
+        // SHADOW_BLEND is 0.02, so the fade occupies a narrow band: the shadow moves
+        // roughly 0.0021 per step here, which puts about ten samples inside it. If
+        // your measured numbers differ, add samples rather than relaxing the bound.
+        let set = three_plate_set();
+        let mut weights = Vec::new();
+        for step in 0..200 {
+            let lat = (step as f64) * 0.125; // cast-ok: loop counter to f64
+            let (_, found) = set.margins_within(
+                &SpherePoint::from_latlon(lat, 20.0), 2.0e7, EARTH_RADIUS_M);
+            weights.push(found.iter().find(|m| m.other.index == 1).map_or(0.0, |m| m.weight));
+        }
+        let biggest = weights.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f64, |a, b| if b > a { b } else { a });
+        assert!(
+            biggest < 0.25,
+            "the shadow weight must fade across neighbouring samples, not step; \
+             largest single-step change was {biggest}",
+        );
+        assert!(
+            weights.iter().any(|&w| w > 0.0) && weights.iter().any(|&w| w == 0.0),
+            "the path must actually cross the shadow boundary, or the test proves nothing",
+        );
+    }
+
+    #[test]
+    fn the_weight_never_leaves_zero_to_one() {
+        // The smoothstep of a [0,1] clamp cannot leave [0,1]. Weak on its own, which
+        // is why it is not the test that guards bug 3.
+        let set = three_plate_set();
+        let (_, found) = set.margins_within(
+            &SpherePoint::from_latlon(0.0, 20.0), 2.0e7, EARTH_RADIUS_M);
+        for margin in &found {
+            assert!(margin.weight > 0.0 && margin.weight <= 1.0, "weight {} out of range", margin.weight);
+        }
     }
 
     fn two_plates() -> PlateSet {
