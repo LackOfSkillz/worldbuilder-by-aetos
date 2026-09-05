@@ -299,8 +299,22 @@ pub fn receiver_distances_m(graph: &StreamGraph, positions: &[SpherePoint]) -> V
 /// precondition is enforced upstream, once, rather than defended against redundantly here.
 pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], params: &ErosionParams) -> Vec<f64> {
     let count = graph.node_count() as usize; // cast-ok: node_count is bounded (stream.rs::MAX_NODES)
-    debug_assert_eq!(heights.len(), count, "heights must be exactly as long as the graph has nodes");
-    debug_assert_eq!(distances_m.len(), count, "distances_m must be exactly as long as the graph has nodes");
+    // `assert_eq!`, not `debug_assert_eq!`: the bake runs in release, which is the one build
+    // a debug assertion does not reach. The two failure modes are not symmetric. A slice that
+    // is too SHORT panics anyway on the first out-of-range index, loudly and safely. A slice
+    // that is too LONG never trips a bounds check at all -- `next` is cloned from `heights`,
+    // so the extra entries are carried through untouched and returned, and the caller gets an
+    // array longer than the graph with a silent tail nobody wrote. That is a quiet
+    // wrong-length result, which is the failure this project keeps finding.
+    //
+    // These are two comparisons per STEP, not per node, so the release-time cost is nil
+    // against a 100-300 iteration bake over millions of nodes.
+    assert_eq!(heights.len(), count, "heights must be exactly as long as the graph has nodes");
+    assert_eq!(
+        distances_m.len(),
+        count,
+        "distances_m must be exactly as long as the graph has nodes"
+    );
     let mut next = heights.to_vec();
     let dt = params.timestep_yr;
 
@@ -599,6 +613,35 @@ mod tests {
     }
 
     // ---- erode_step: the traversal direction is load-bearing -------------------------------
+
+    #[test]
+    #[should_panic(expected = "heights must be exactly as long as the graph has nodes")]
+    fn erode_step_rejects_a_heights_slice_longer_than_the_graph() {
+        // The asymmetric case, and the reason these checks are `assert_eq!` rather than
+        // `debug_assert_eq!`. A slice that is too SHORT would panic anyway on the first
+        // out-of-range index. A slice that is too LONG trips no bounds check at all: `next`
+        // is cloned from `heights`, so the surplus entries ride through untouched and get
+        // returned, handing the caller an array longer than the graph with a tail nobody
+        // wrote. Without a release-time assertion that is silent, and the bake runs in
+        // release -- the one build a debug assertion does not reach.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let mut too_long = heights.clone();
+        too_long.push(0.0);
+        let _ = erode_step(&graph, &too_long, &distances, &default_test_params());
+    }
+
+    #[test]
+    #[should_panic(expected = "distances_m must be exactly as long as the graph has nodes")]
+    fn erode_step_rejects_a_distances_slice_that_does_not_match_the_graph() {
+        // The same check on the other slice, named separately so a failure says WHICH
+        // argument was wrong. Two arguments validated by one message is a message that
+        // sends the reader to the wrong place half the time.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let mut distances = receiver_distances_m(&graph, &positions);
+        distances.pop();
+        let _ = erode_step(&graph, &heights, &distances, &default_test_params());
+    }
 
     #[test]
     fn erode_step_would_differ_if_walked_leaves_to_roots_instead_of_root_to_leaves() {

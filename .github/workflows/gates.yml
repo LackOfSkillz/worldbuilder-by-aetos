@@ -111,23 +111,23 @@ jobs:
           # listed.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 432
+            expect: 434
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 432
+            expect: 434
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 434
+            expect: 436
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 462
+            expect: 464
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 464
+            expect: 466
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
