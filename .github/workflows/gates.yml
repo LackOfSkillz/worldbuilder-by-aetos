@@ -82,7 +82,7 @@ jobs:
   # with the suite it lives in.
   #
   # Baselines: 418 passed / 0 failed / 5 ignored under no-default-features and default;
-  # 419/0/5 under python; 448/0/5 under wasm; 449/0/5 under python+wasm. These ARE asserted,
+  # 420/0/5 under python; 448/0/5 under wasm; 450/0/5 under python+wasm. These ARE asserted,
   # by a second step that
   # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
   # ran nothing gets called green. See the step's own comment.
