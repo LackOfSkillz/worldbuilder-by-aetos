@@ -40,8 +40,12 @@ const DEFAULTS = {
   size: "65",                // terrain.js HEIGHTMAP_SIZE
   featureCeiling: "18",      // availability.js FEATURE_CEILING
   exaggeration: "1",         // main.js, scene.verticalExaggeration
-  rampMin: "-9000",
-  rampMax: "6000",
+  // These must track main.js's own defaults. They did not: the panel offered -9000/6000
+  // while main.js had narrowed to -7000/2400, so simply opening the panel and pressing
+  // generate silently reverted the ramp to a window this generator never fills, and the
+  // rock and snow bands vanished again.
+  rampMin: "-7000",
+  rampMax: "2400",
 };
 
 /// From `main.js`'s `HARBOUR`: a 900 x 260 m carve to -12 m with a 200 x 60 m mole to +4 m.
