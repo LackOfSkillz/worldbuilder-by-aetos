@@ -11,8 +11,15 @@ requires-python = ">=3.10"
 # No license field yet: the repository has no LICENSE, and which one it carries is
 # not a decision this file should make. Evennia and the maritime contrib are both
 # BSD 3-Clause, which is the obvious match when somebody chooses.
-# Deliberately none. The generator is standard library only, which is what lets it be
-# tested without an Evennia install and adopted without a dependency argument.
+# None today. The Mark 1 generator is standard library only, which is what lets it be
+# tested without an Evennia install.
+#
+# This changes in Mark 2. The generator core moves to Rust and ships as a prebuilt wheel,
+# and Worldbuilder does not target Evennia's vendored contrib tree - so the zero-dependency
+# argument no longer applies. Two limits survive it: nothing may enter the engine that breaks
+# native/WASM bit-equality, and nothing on the Python side may pin Django or Twisted, because
+# we install into somebody else's Evennia virtualenv. See
+# docs/design/2026-09-02-mark-2-world-studio.md, section 4.3.
 dependencies = []
 
 [tool.setuptools.packages.find]
