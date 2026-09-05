@@ -713,145 +713,232 @@ fn peel_lake_relation(roots: &[u32], outflow_of: &[u32]) -> (HashMap<u32, usize>
     (index_of, stuck)
 }
 
-/// Merge every tied plateau among freshly-resolved `edges`, in place, before anything is
+/// One live group in `merge_tied_plateaus`'s working set: either an as-yet-untouched single
+/// lake, or the accumulated result of merging two or more. `target_root` is `NO_LAKE` or a
+/// raw basin root -- the same namespace `LakeOutflow::outflow_lake` uses -- so a group's
+/// current level and target are exactly what `edges` would read back if finalised right now.
+struct ActiveGroup {
+    lake_roots: Vec<u32>,
+    node_members: Vec<u32>,
+    level_m: f64,
+    target_root: u32,
+}
+
+/// Merge every tied group among freshly-resolved `edges`, in place, before anything is
 /// written back to `graph`. Called unconditionally from `resolve_outflow_edges`.
 ///
-/// # A tied plateau is one body of water, not a tie to break
+/// # One bit-identical surface level, connected, is one body (Ruling 7)
 ///
 /// `lowest_crossing`'s target always has a level at or below the source's -- the same
 /// physical edge that produces the source's spill is itself one of the target's own
 /// candidate crossings, so the target's own minimum cannot exceed it (Property 5, and the
 /// reasoning `resolve_outflow_edges`'s own doc comment gives for it). Following outflow edges
-/// therefore never *raises* the level, so a cycle -- levels returning to where they started
-/// -- can only close if **every** edge in it holds the level exactly constant. A cycle is
-/// therefore always a plateau of lakes at one bit-identical surface level, mutually
-/// connected across shared saddles. That is the definition of one body of water, and treating
-/// it as two separate lakes with an arbitrary tie-break (this module's own first-round fix,
-/// `break_cycles`, reviewed and rejected) is wrong in a way that is not merely cosmetic: when
-/// two basins' cheapest exits are each other, *neither has actually found its true outlet*.
-/// A basin that shares its cheapest exit with a neighbour has strictly more capacity than
-/// Task 1's independent per-basin minimum credits it with -- the pair's *true* outflow is
-/// whatever the **union** of their members spills into once the shared internal saddle no
-/// longer counts as an exit, and that union's rim can sit strictly higher than either
-/// basin's own tied crossing. Cutting one lake to `NO_LAKE` fabricates a terminal lake at a
-/// level the basin does not actually hold and discards the merged body's real downstream
-/// continuation entirely; this task's own real-graph tests found this is not a rare case
-/// (see the task report's re-derived Finding 3 figures).
+/// therefore never *raises* the level, so **any two lakes connected by an outflow edge whose
+/// levels are bit-identical are one body of water**, whether or not that edge closes into a
+/// cycle. A cycle is the special case where the whole tied set drains into itself; a lake
+/// that ties with its own target while that target goes on to drain elsewhere at a *lower*
+/// level is the same "one body" fact without a cycle to make a peel notice it. Fix-round
+/// review Finding 4: an earlier version of this function only ever merged cycles, so a tied
+/// edge that happened to drain onward in a chain -- rare, but real (measured: 2 of 203 lakes
+/// at N = 30,000, 3 of 1,024 at N = 100,000) -- was left as two lakes reporting one body
+/// between them. Grouping now runs over *every* tied edge, cyclic or not.
 ///
-/// # The algorithm, and the bug in this function's first draft
+/// Treating either shape as two separate lakes with an arbitrary tie-break (this module's own
+/// first-round fix, `break_cycles`, reviewed and rejected) is wrong in a way that is not
+/// merely cosmetic: when two basins' cheapest exits are each other (or a chain member's
+/// cheapest exit ties with what it drains into), *neither has actually found its true
+/// outlet*. A basin that shares its cheapest exit with a neighbour at the identical level has
+/// strictly more capacity than Task 1's independent per-basin minimum credits it with -- the
+/// group's *true* outflow is whatever the **union** of their members spills into once the
+/// shared internal saddle no longer counts as an exit, and that union's rim can sit strictly
+/// higher than any single member's own tied crossing. Cutting one lake to `NO_LAKE`
+/// fabricates a terminal lake at a level the basin does not actually hold and discards the
+/// merged body's real downstream continuation entirely; this task's own real-graph tests
+/// found this is not a rare case (see the task report's re-derived Finding 3 figures).
 ///
-/// For each detected plateau (a cycle `peel_lake_relation` finds): union every member of
-/// every basin in it, then re-scan that union's rim **excluding internal edges** (an
-/// `outside` node that is itself inside the union is not a rim crossing, even though it
-/// would have been one for either basin alone) using the same `max(h_inside, h_outside)`
-/// formula every other rim scan in this module uses. The winning crossing is the plateau's
-/// true, possibly-higher level and its true outflow target. Every member of the plateau has
-/// its `revised_level_m` set to that new level (Task 1's field, deliberately revised here --
-/// see this module's own top-level doc comment on why that fence is lifted for exactly this
-/// case); the member with the smallest `root_node` (deterministic, since roots are unique)
-/// becomes the group's single representative and carries the real outflow target (another
-/// lake, or `NO_LAKE` if the union's own rim leads to the sea); every other member's
-/// `outflow_lake` is set to point at the representative, turning the plateau into an
-/// acyclic chain that ends there.
+/// # The algorithm, and two bugs its earlier drafts had
 ///
-/// A merged group's new outflow can itself tie with some other lake at the identical new
-/// level, forming a further plateau a single pass would not resolve -- so this runs across
-/// passes until a peel finds no stuck entries at all, exactly the hierarchical basin-merging
-/// standard priority-flood formulations do. **This function's first draft re-derived each
-/// pass's union from scratch via `basins.members_of(root)` on whatever roots were stuck
-/// *that pass*, which drops any member accumulated by an *earlier* pass's merge** (a lake `B`
+/// The working set is one `ActiveGroup` per **currently live** group, starting one per lake
+/// (using the per-lake resolution `edges` already carries in from the loop above, before this
+/// function does anything). Each pass: union live groups `i` and `j` whenever `i`'s
+/// `target_root` names a lake root `root_to_group` currently maps to `j`, and both groups'
+/// `level_m` are bit-identical. Every resulting union-find component of size two or more is
+/// **replaced by one new `ActiveGroup`**: its members are the union of the old groups'
+/// members, its rim is re-scanned **excluding internal edges** (an `outside` node already
+/// inside the union is not a rim crossing, even though it would have been one for any single
+/// old group alone) using the same `max(h_inside, h_outside)` formula every other rim scan in
+/// this module uses, and the winning crossing becomes the new group's `level_m`/`target_root`.
+/// The old groups are retired (removed from the live set, `root_to_group` repointed at the
+/// new one) rather than merely re-labelled -- this is what makes "no new ties found" a
+/// well-defined stopping condition, and it is why this draft does not repeat the first
+/// draft's mistake (below).
+///
+/// **First draft (this task's first attempt at this fix-round finding): re-derived each
+/// pass's union from scratch via `basins.members_of(root)` on whatever roots were touched
+/// *that pass*, which drops any member accumulated by an *earlier* pass's merge.** A lake `B`
 /// merged into representative `A` in pass 1 is not `A`'s own basin, so a pass-2 tie between
 /// `A` and some `C` re-scanned only `A`'s and `C`'s raw members, excluding `B`'s -- which can
 /// make an edge into `B`'s territory look external when it is not, letting the identical tie
-/// regenerate forever). Measured directly: at a real seed and node count this looped without
-/// terminating, the same 22-lake stuck set recurring pass after pass with no progress. The
-/// fix carries each group's accumulated membership (`groups`) and per-lake group lookup
-/// (`owner`) across passes, so a later pass that touches an already-merged representative
-/// expands the *whole* accumulated group, not just its most recent raw basin. Termination is
-/// now a standard union-find argument: each pass that does any work strictly reduces the
-/// number of distinct groups by merging at least two into one, and the number of groups is
-/// bounded by the lake count, so the total number of merges across every pass is at most
-/// `graph.lakes().len() - 1`.
+/// regenerate forever. Measured directly: at a real seed and node count this looped without
+/// terminating, the same 22-lake stuck set recurring pass after pass with no progress.
+///
+/// **Second draft (generalising cycles to arbitrary ties, this round): kept every original
+/// lake index live forever, including a group's own already-absorbed non-representative
+/// members, and re-ran a fresh union-find over *all* of them every pass.** A representative
+/// and its non-representative both carry the identical revised level permanently (that tie
+/// is not new information, it is the merge that already happened), so a plain "is `i` tied to
+/// its target" scan re-discovers that same pair as a "component" on every subsequent pass,
+/// tripping the progress guard (below) immediately -- caught before shipping by the very
+/// termination assertion this finding asked for, on the module's own two-lake merge fixture
+/// (`pass 3` over 2 lakes). The `ActiveGroup` working set fixes this by construction: a merge
+/// retires its inputs, so there is exactly one live entry per group at all times and nothing
+/// for a stable, already-resolved tie to be rediscovered as.
+///
+/// # Why termination is guaranteed, not merely observed, and the guard that backs it up
+///
+/// Live groups only ever *decrease* in count: a union-find pass either finds zero components
+/// of size two or more (and the loop returns) or finds at least one, which replaces two or
+/// more live groups with exactly one, strictly reducing the live count. The live count starts
+/// at `edges.len()` and is bounded below by `1`, so there are at most `edges.len() - 1`
+/// productive passes. **That argument is enforced, not merely documented**: `max_passes`
+/// below turns a violation (which would mean this function's own accounting broke -- a
+/// retired group's index reappearing as live, or `root_to_group` pointing at a stale index)
+/// into a named panic rather than a hang. The fix-round review demonstrated the hang directly
+/// (a 10-node fixture, killed at 240 s) against the membership-losing first draft; this
+/// assertion is what stands between a future regression and a repeat of that.
 ///
 /// # Panics
 ///
-/// Via `peel_lake_relation`, if any non-sentinel `outflow_lake` names a root absent from
-/// `edges` itself (unreachable in practice). If a union's own rim is empty -- every neighbour
-/// of every member of the merged union is itself inside the union -- meaning the union covers
-/// the graph's entire node set, the same "impossible on an actual sphere" case `fill_lakes`'
-/// own no-rim panic describes for a single basin (see that function's doc comment); reachable
-/// only on a fixture deliberately shaped that way (this crate's own `touching_lakes_fixture`
-/// is exactly such a fixture, which is why this module's cycle-handling tests do not use it
-/// for the merge-with-a-real-outlet case).
+/// If more passes run than `edges.len()` without reaching a fixed point. If a union's own rim
+/// is empty -- every neighbour of every member of the merged union is itself inside the
+/// union, meaning the union covers the graph's entire node set, the same "impossible on an
+/// actual sphere" case `fill_lakes`' own no-rim panic describes for a single basin (see that
+/// function's doc comment); reachable only on a fixture deliberately shaped that way (this
+/// crate's own `touching_lakes_fixture` is exactly such a fixture, which is why this module's
+/// cycle-handling tests do not use it for the merge-with-a-real-outlet case).
 fn merge_tied_plateaus(
     graph: &StreamGraph,
     basins: &Basins,
     neighbours: &[Vec<u32>],
     edges: &mut Vec<LakeOutflow>,
 ) {
-    // `groups[representative]` carries a merged group's full accumulated membership: every
-    // lake root ever merged into it, and the union of every one of those lakes' own raw
-    // basin members. A representative is always the smallest `root_node` in its group
-    // (assigned below), so a later pass that finds the same representative stuck again looks
-    // it up here and expands the *whole* accumulated group -- not just that representative's
-    // own original basin -- which is the fix for the membership-loss bug this function's own
-    // doc comment describes. Absent from this map means "still its own untouched basin".
-    let mut groups: HashMap<u32, (Vec<u32>, Vec<u32>)> = HashMap::new(); // root -> (lake_roots, node_members)
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent, parent[x]);
+        }
+        parent[x]
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            // Lower index always becomes the union-find root -- deterministic, and
+            // irrelevant to the eventual lake representative (chosen by `root_node` at
+            // finalisation), only to which slot this bookkeeping structure happens to use.
+            let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            parent[hi] = lo;
+        }
+    }
+
+    let index_of_root: HashMap<u32, usize> =
+        edges.iter().enumerate().map(|(i, e)| (e.root_node, i)).collect();
+
+    // The live working set: one `ActiveGroup` per lake initially, using the per-lake
+    // resolution `resolve_outflow_edges`'s own loop already computed and left in `edges`.
+    // `root_to_group` maps every lake root ever seen to whichever live slot currently holds
+    // it -- kept exact on every merge (repointed for every member of a retired group, not
+    // only its representative), which is what lets a later pass's tie-check resolve a target
+    // root to its *current* group regardless of how many times that group has already grown.
+    let mut active: Vec<Option<ActiveGroup>> = Vec::with_capacity(edges.len());
+    let mut root_to_group: HashMap<u32, usize> = HashMap::with_capacity(edges.len());
+    for e in edges.iter() {
+        let level_m = graph
+            .lake_at(e.root_node)
+            .expect("resolve_outflow_edges only ever builds one LakeOutflow per real lake")
+            .level_m;
+        let slot = active.len();
+        active.push(Some(ActiveGroup {
+            lake_roots: vec![e.root_node],
+            node_members: basins.members_of(e.root_node).to_vec(),
+            level_m,
+            target_root: e.outflow_lake,
+        }));
+        root_to_group.insert(e.root_node, slot);
+    }
+
+    let max_passes = edges.len() + 1;
+    let mut pass = 0usize;
 
     loop {
-        let roots: Vec<u32> = edges.iter().map(|e| e.root_node).collect();
-        let outflow_of: Vec<u32> = edges.iter().map(|e| e.outflow_lake).collect();
-        let (index_of, stuck) = peel_lake_relation(&roots, &outflow_of);
-        if stuck.is_empty() {
-            return;
-        }
+        pass += 1;
+        assert!(
+            pass <= max_passes,
+            "merge_tied_plateaus: exceeded {max_passes} passes over {} lakes without \
+             reaching a fixed point. Termination is guaranteed by construction (at most \
+             lakes().len() - 1 productive passes, since every pass that merges anything \
+             strictly reduces the live group count), so this means the live-group accounting \
+             itself has broken -- most likely a retired slot treated as live, or \
+             `root_to_group` pointing at a stale slot. This assertion exists so that failure \
+             is a named panic here, not a hang in CI (the fix-round review demonstrated the \
+             hang directly on a 10-node fixture built against an earlier, membership-losing \
+             draft of this function).",
+            edges.len(),
+        );
 
-        // The induced relation over `stuck` alone is a union of disjoint simple cycles (a
-        // standard fact about functional graphs: every node has at most one outgoing edge, so
-        // whatever does not peel away as a tree is exactly a set of cycles with no further
-        // structure) -- walking from any unvisited stuck node and following outflow pointers
-        // therefore always returns to that same node without ever needing to cross into
-        // another cycle.
-        let mut visited = vec![false; edges.len()];
-        for &start in &stuck {
-            if visited[start] {
+        let live: Vec<usize> = (0..active.len()).filter(|&i| active[i].is_some()).collect();
+        let mut parent: Vec<usize> = (0..active.len()).collect();
+        for &i in &live {
+            let group = active[i].as_ref().expect("i is live");
+            if group.target_root == NO_LAKE {
                 continue;
             }
-            let mut cycle_indices = Vec::new();
-            let mut cur = start;
-            loop {
-                if visited[cur] {
-                    break;
-                }
-                visited[cur] = true;
-                cycle_indices.push(cur);
-                cur = index_of[&edges[cur].outflow_lake];
+            let Some(&j) = root_to_group.get(&group.target_root) else {
+                // The target is not (and was never) a lake root -- a mouth's basin. No tie
+                // is possible against something that carries no tracked level.
+                continue;
+            };
+            if i == j {
+                continue; // unreachable: a group's own rim scan excludes its own members
             }
-            let cycle_roots: Vec<u32> = cycle_indices.iter().map(|&i| edges[i].root_node).collect();
+            let level_i = active[i].as_ref().expect("i is live").level_m;
+            let level_j = active[j].as_ref().expect("j is live").level_m;
+            if level_i.to_bits() == level_j.to_bits() {
+                union(&mut parent, i, j);
+            }
+        }
 
-            // Expand every root in this cycle to its FULL accumulated group -- not just this
-            // one pass's raw basin -- so a root that was already the representative of an
-            // earlier merge brings that merge's members along rather than losing them.
+        // Group live slots by union-find root without iterating a HashMap: a stable sort by
+        // the (already-computed) find-root is fully deterministic and needs no hashing.
+        let find_of: Vec<usize> = live.iter().map(|&i| find(&mut parent, i)).collect();
+        let mut order: Vec<usize> = (0..live.len()).collect();
+        order.sort_by_key(|&k| find_of[k]);
+
+        let mut any_merge = false;
+        let mut start = 0usize;
+        while start < order.len() {
+            let mut end = start + 1;
+            while end < order.len() && find_of[order[end]] == find_of[order[start]] {
+                end += 1;
+            }
+            let component: Vec<usize> = order[start..end].iter().map(|&k| live[k]).collect();
+            start = end;
+            if component.len() < 2 {
+                continue;
+            }
+            any_merge = true;
+
             let mut all_lake_roots: Vec<u32> = Vec::new();
             let mut all_node_members: Vec<u32> = Vec::new();
-            for &root in &cycle_roots {
-                match groups.remove(&root) {
-                    Some((lake_roots, node_members)) => {
-                        all_lake_roots.extend(lake_roots);
-                        all_node_members.extend(node_members);
-                    }
-                    None => {
-                        all_lake_roots.push(root);
-                        all_node_members.extend_from_slice(basins.members_of(root));
-                    }
-                }
+            for &slot in &component {
+                let group = active[slot].take().expect("component members are live");
+                all_lake_roots.extend(group.lake_roots);
+                all_node_members.extend(group.node_members);
             }
             let union_set: std::collections::HashSet<u32> = all_node_members.iter().copied().collect();
 
             // Re-scan the union's own rim, excluding edges whose outside end is itself part
-            // of the union (an edge between two plateau members is internal, however far
-            // apart their original basins were or however many passes ago they merged, not a
-            // rim crossing).
+            // of the union (an edge between two group members is internal, however many
+            // passes ago either side joined, not a rim crossing).
             let mut best: Option<Crossing> = None;
             for &inside in &all_node_members {
                 let h_inside = graph.height_m(inside);
@@ -885,25 +972,48 @@ fn merge_tied_plateaus(
                     all_lake_roots,
                 )
             });
-
-            let outflow_lake = if graph.lake_at(winner.target_root).is_some() {
+            let target_root = if graph.lake_at(winner.target_root).is_some() {
                 winner.target_root
             } else {
                 NO_LAKE
             };
-            let representative =
-                *all_lake_roots.iter().min().expect("a cycle's expanded group is never empty");
 
-            for &lake_root in &all_lake_roots {
-                let i = index_of[&lake_root];
-                edges[i].revised_level_m = Some(winner.level_m);
-                edges[i].outflow_lake =
-                    if lake_root == representative { outflow_lake } else { representative };
+            let new_slot = active.len();
+            for &root in &all_lake_roots {
+                root_to_group.insert(root, new_slot);
             }
-            groups.insert(representative, (all_lake_roots, all_node_members));
+            active.push(Some(ActiveGroup {
+                lake_roots: all_lake_roots,
+                node_members: all_node_members,
+                level_m: winner.level_m,
+                target_root,
+            }));
+        }
+
+        if !any_merge {
+            break;
         }
         // Loop again: a merged group's new outflow can itself tie with another lake at the
         // identical new level, which this pass alone would not have resolved.
+    }
+
+    // Finalise: every live group of size two or more writes back a representative (smallest
+    // `root_node`, deterministic and unique) plus every other member pointing at it, and a
+    // revised level for all of them. A group that was never merged (still a lone singleton)
+    // needs no write at all -- `edges` already carries exactly what `resolve_outflow_edges`'s
+    // per-lake loop computed for it.
+    for group in active.into_iter().flatten() {
+        if group.lake_roots.len() < 2 {
+            continue;
+        }
+        let representative =
+            *group.lake_roots.iter().min().expect("a merged group's roots are never empty");
+        for &lake_root in &group.lake_roots {
+            let i = index_of_root[&lake_root];
+            edges[i].revised_level_m = Some(group.level_m);
+            edges[i].outflow_lake =
+                if lake_root == representative { group.target_root } else { representative };
+        }
     }
 }
 
@@ -1917,6 +2027,120 @@ mod tests {
         }
     }
 
+    // ---- the chained-merge fixture: a merge whose second pass needs the first's members ---
+    //
+    // Fix-round review Finding 3: no test exercised a merge that needs more than one pass,
+    // which is exactly the shape the membership-loss bug (this module's own top-level doc
+    // comment on `merge_tied_plateaus`) lived in. Ten nodes, three basins:
+    //
+    //   node 0 (root A, h=0.0)   -- neighbours []          (A's root)
+    //   node 1 (in A,   h=10.0)  -- neighbours [0, 4]       (downhill -> 0; the A-B saddle)
+    //   node 2 (in A,   h=20.0)  -- neighbours [0]          (downhill -> 0; touches C)
+    //   node 3 (root B, h=0.0)   -- neighbours []           (B's root)
+    //   node 4 (in B,   h=10.0)  -- neighbours [3]          (downhill -> 3; the A-B saddle)
+    //   node 5 (in B,   h=25.0)  -- neighbours [3]          (downhill -> 3; B's own escape)
+    //   node 6 (mouth,  h=-100.0) -- neighbours [5]          (sea; sea_level_m = -50.0)
+    //   node 7 (root C, h=15.0)  -- neighbours []           (C's root)
+    //   node 8 (in C,   h=20.0)  -- neighbours [7, 2]       (downhill -> 7; touches A)
+    //
+    // Pass 1: A's candidates are 1--4 (max(10,10)=10, into B) and 2--8 (max(20,20)=20, into
+    // C); min 10, target B. B's only candidate is 4--1 (10, into A); tied with A -- a genuine
+    // plateau, merged. C's own candidate is 8--2 (20, into A's *original* basin, root 0) --
+    // **not tied with A's own pre-merge level (20 != 10), so C does not merge in pass 1.**
+    //
+    // The pass-1 merge's own rim scan (union {0,1,2,3,4,5}, excluding the internal 1--4
+    // saddle) finds two candidates: 2--8 (20, into C) and 5--6 (25, into the mouth); the
+    // group's new level is **20**, matching C's own level exactly -- a tie that only exists
+    // *because* the merged group's rim scan reached past the first saddle. This is pass 2's
+    // tie: the group (containing A **and B**) merges with C.
+    //
+    // The decisive check is the *second* merge's own rim scan. If the group's accumulated
+    // membership were lost (re-derived from A's and C's raw basins alone, forgetting B --
+    // this function's own doc comment names exactly this mistake), the 1--4 saddle would be
+    // wrongly treated as external again, surfacing a spurious 10 m candidate and pointing
+    // back at a root (B) already inside the same body -- the exact shape of the original
+    // non-terminating bug. With B's membership correctly carried forward, the only rim edge
+    // that survives exclusion is 5--6 (25, into the mouth): the final level is **25**, not
+    // 10, and the final target is the sea, not B.
+    fn chained_merge_fixture() -> (StreamGraph, Vec<Vec<u32>>) {
+        let positions = vec![
+            SpherePoint::from_latlon(0.0, 0.0),
+            SpherePoint::from_latlon(10.0, 0.0),
+            SpherePoint::from_latlon(20.0, 0.0),
+            SpherePoint::from_latlon(0.0, 10.0),
+            SpherePoint::from_latlon(10.0, 10.0),
+            SpherePoint::from_latlon(20.0, 10.0),
+            SpherePoint::from_latlon(30.0, 5.0),
+            SpherePoint::from_latlon(0.0, 20.0),
+            SpherePoint::from_latlon(10.0, 20.0),
+        ];
+        let heights = vec![0.0, 10.0, 20.0, 0.0, 10.0, 25.0, -100.0, 15.0, 20.0];
+        let areas = vec![1.0e9; 9];
+        let neighbours = vec![
+            vec![],
+            vec![0, 4],
+            vec![0],
+            vec![],
+            vec![3],
+            vec![3],
+            vec![5],
+            vec![],
+            vec![7, 2],
+        ];
+        let params = BuildParams {
+            world_seed: 6,
+            radius_m: EARTH_RADIUS_M,
+            sea_level_m: -50.0, // node 6 (-100.0) is BOUNDARY; every other node is LAND.
+            sampling_kind: crate::stream::SamplingKind::Supplied,
+            pond_max_drainage_area_m2: 1.0,
+        };
+        let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
+            .expect("the chained-merge fixture builds a valid graph");
+        (graph, neighbours)
+    }
+
+    #[test]
+    fn chained_merge_fixture_has_the_three_roots_this_test_relies_on() {
+        let (mut graph, directed) = chained_merge_fixture();
+        let symmetric = symmetric_adjacency(&directed);
+        let _basins = fill_fixture_lakes(&mut graph, &symmetric);
+        assert_eq!(graph.roots(), vec![0, 3, 6, 7], "fixture drifted: expected roots at 0, 3, 6, 7");
+        assert_eq!(graph.lake_at(0).expect("lake A").level_m, 10.0, "fixture drifted: A must tie at 10 with B");
+        assert_eq!(graph.lake_at(3).expect("lake B").level_m, 10.0, "fixture drifted: B must tie at 10 with A");
+        assert_eq!(graph.lake_at(7).expect("lake C").level_m, 20.0, "fixture drifted: C's own level must be 20");
+        assert!(graph.lake_at(6).is_none(), "node 6 must be a mouth, not a lake");
+    }
+
+    /// The regression this finding asks for: a merge that needs a **second** pass, and whose
+    /// second pass only gets the right answer if the first pass's full membership (including
+    /// `B`, which is not a party to the second tie at all) survives into the rescan. All
+    /// three lakes end up at the true 25 m sea outlet, not the intermediate 20 m tie C's own
+    /// independent resolution found, and not the original 10 m A-B saddle.
+    #[test]
+    fn a_chained_merge_carries_the_first_passs_full_membership_into_the_second() {
+        let (mut graph, directed) = chained_merge_fixture();
+        let symmetric = symmetric_adjacency(&directed);
+        let basins = fill_fixture_lakes(&mut graph, &symmetric);
+
+        let edges = resolve_outflow_edges(&graph, &basins, &symmetric);
+        let a = edges.iter().find(|e| e.root_node == 0).expect("lake A's edge");
+        let b = edges.iter().find(|e| e.root_node == 3).expect("lake B's edge");
+        let c = edges.iter().find(|e| e.root_node == 7).expect("lake C's edge");
+
+        // The representative is the smallest root_node across all three: 0.
+        assert_eq!(a.revised_level_m, Some(25.0), "A must end at the union's true 25 m outlet");
+        assert_eq!(b.revised_level_m, Some(25.0), "B must end at the union's true 25 m outlet");
+        assert_eq!(c.revised_level_m, Some(25.0), "C must end at the union's true 25 m outlet");
+        assert_eq!(a.outflow_lake, NO_LAKE, "the representative (0) must carry the real outlet: the sea");
+        assert_eq!(b.outflow_lake, 0, "B must point at the representative, not at A's pre-merge root only");
+        assert_eq!(c.outflow_lake, 0, "C must point at the representative, not stay tied at its own 20 m");
+
+        apply_outflows(&mut graph, &edges);
+        assert_eq!(graph.lake_at(0).expect("lake A").level_m, 25.0);
+        assert_eq!(graph.lake_at(3).expect("lake B").level_m, 25.0);
+        assert_eq!(graph.lake_at(7).expect("lake C").level_m, 25.0);
+    }
+
     /// `assert_lake_graph_acyclic` at length three, not just two -- a two-lake check alone
     /// would not distinguish "detects a cycle" from "detects a *mutual* pair specifically".
     /// Built directly from hand-authored `Lake` records (bypassing `StreamGraph::build`
@@ -2007,6 +2231,14 @@ mod tests {
     }
 
     /// Property 1 (determinism), over a real graph rather than the small fixture above.
+    ///
+    /// Fix-round review Finding 5: this compared `root_node` and `outflow_lake` only --
+    /// `revised_level_m`, the field this round's merge added and the whole reason a second
+    /// run could disagree with the first (a float recomputed from a `HashMap`-backed
+    /// union-find, rather than merely copied), went unchecked. A nondeterministic level
+    /// revision would have passed this test silently. The reviewer verified determinism of
+    /// the full record independently (203 lakes at 30,000 nodes, 54 revised, bit-identical
+    /// across runs); this closes the test gap that made that verification necessary by hand.
     #[test]
     fn resolve_outflows_is_bit_identical_across_two_runs_on_a_real_graph() {
         let mut graph = real_graph(SEED);
@@ -2016,6 +2248,7 @@ mod tests {
         let first = resolve_outflows(&graph, &basins);
         let second = resolve_outflows(&graph, &basins);
         assert_eq!(first.len(), second.len());
+        let mut any_revised = false;
         for (a, b) in first.iter().zip(second.iter()) {
             assert_eq!(a.root_node, b.root_node);
             assert_eq!(
@@ -2023,7 +2256,28 @@ mod tests {
                 "lake {} resolved to different outflow targets across two runs",
                 a.root_node,
             );
+            match (a.revised_level_m, b.revised_level_m) {
+                (None, None) => {}
+                (Some(x), Some(y)) => {
+                    any_revised = true;
+                    assert_eq!(
+                        x.to_bits(),
+                        y.to_bits(),
+                        "lake {} revised to different levels across two runs: {x} vs {y}",
+                        a.root_node,
+                    );
+                }
+                (x, y) => panic!(
+                    "lake {}: one run revised its level and the other did not ({x:?} vs {y:?})",
+                    a.root_node,
+                ),
+            }
         }
+        assert!(
+            any_revised,
+            "fixture must actually revise at least one lake's level, or this test does not \
+             exercise the field Finding 5 named"
+        );
     }
 
     /// Measures the lake count M this generator produces at a stated node count N, for

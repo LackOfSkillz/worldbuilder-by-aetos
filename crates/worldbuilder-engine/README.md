@@ -2956,11 +2956,11 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 478 | 4 | 9 | 6 | -- | 497 | 5 | **492** |
-| default (the same set -- the crate declares no default features) | 478 | 4 | 9 | 6 | -- | 497 | 5 | **492** |
-| `--features python` | 480 | 4 | 9 | 6 | -- | 499 | 5 | **494** |
-| `--features wasm` | 478 | 4 | 9 | 6 | 36 | 533 | 5 | **528** |
-| `--features python,wasm` | 480 | 4 | 9 | 6 | 36 | 535 | 5 | **530** |
+| `--no-default-features` | 480 | 4 | 9 | 6 | -- | 499 | 5 | **494** |
+| default (the same set -- the crate declares no default features) | 480 | 4 | 9 | 6 | -- | 499 | 5 | **494** |
+| `--features python` | 482 | 4 | 9 | 6 | -- | 501 | 5 | **496** |
+| `--features wasm` | 480 | 4 | 9 | 6 | 36 | 535 | 5 | **530** |
+| `--features python,wasm` | 482 | 4 | 9 | 6 | 36 | 537 | 5 | **532** |
 
 0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
 and 0 doc-tests in every configuration.
@@ -3058,6 +3058,20 @@ row's `listed`/`run` by +7: **485/485/487/521/523 -> 492/492/494/528/530**. `exp
 stays 5. Re-derived the same way as every entry above, and cross-checked through
 `.github/scripts/assert_counts.py cargo-list` itself, which reported `count OK` at all five
 configurations against these figures.
+
+**A second Task 2 fix round adds two more tests, uniformly again**: `water.rs` gains
+`chained_merge_fixture_has_the_three_roots_this_test_relies_on` and
+`a_chained_merge_carries_the_first_passs_full_membership_into_the_second` (review Finding 3:
+a merge that needs a second pass, whose correctness depends on the first pass's full
+accumulated membership surviving into the second -- verified by mutation to fail, `left: j is
+live`, when that accumulation is dropped). `lib` moves 478/478/480/478/480 ->
+480/480/482/480/482 and every row's `listed`/`run` by +2: **492/492/494/528/530 ->
+494/494/496/530/532**. `expect_ignored` stays 5. This same round also generalised
+`merge_tied_plateaus` from cycles to arbitrary ties (Finding 4) and added a pass-count
+termination guard (Finding 2), neither of which added a test by itself -- the chained-merge
+fixture above is what exercises both. Re-derived the same way as every entry above, and
+cross-checked through `.github/scripts/assert_counts.py cargo-list` itself, which reported
+`count OK` at all five configurations against these figures.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read

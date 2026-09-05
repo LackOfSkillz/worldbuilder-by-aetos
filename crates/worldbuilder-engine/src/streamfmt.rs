@@ -1454,8 +1454,9 @@ mod tests {
     /// where `outflow_lake` actually carries a non-sentinel value -- so the namespace
     /// mismatch between `resolve_outflow_edges` (writes a node id) and the format's own
     /// decoder (previously validated against the lake-table element count) went uncaught.
-    /// This builds a real Spiral graph, runs both of slice 5b's production entry points
-    /// (`fill_basins_and_apply`, `resolve_outflows_and_apply`), and asserts the file this
+    /// This builds a real Spiral graph, runs `water::fill_and_resolve_water` (the combined
+    /// entry point that regenerates the neighbour relation once and shares it between Task
+    /// 1's fill and Task 2's resolve -- see its own doc comment), and asserts the file this
     /// crate would actually produce decodes cleanly with every `outflow_lake` value intact
     /// -- including at least one non-sentinel one, or the test would not be exercising the
     /// path Finding 1 broke.

@@ -229,25 +229,36 @@ jobs:
           # `outflow_lake`-is-a-node-id fix). Both files compile unconditionally, so all five
           # rows move by +7 uniformly. `expect_ignored` stays 5. Re-derived the same way,
           # cross-checked through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, second Task 2 fix round: 492/492/494/528/530 -> 494/494/496/530/532.
+          # `merge_tied_plateaus` generalised from cycles to arbitrary ties (Finding 4: a tie
+          # that drains onward in a chain is one body too, not only a mutual cycle) and gained
+          # a pass-count termination guard (Finding 2: the union-find bound was proven but
+          # unenforced). Two tests added to `water.rs`
+          # (`chained_merge_fixture_has_the_three_roots_this_test_relies_on`,
+          # `a_chained_merge_carries_the_first_passs_full_membership_into_the_second`) pin the
+          # regression both findings share: a merge needing a second pass, verified by
+          # mutation to fail when the first pass's accumulated membership is dropped. All five
+          # rows move by +2 uniformly. `expect_ignored` stays 5.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 492
+            expect: 494
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 492
+            expect: 494
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 494
+            expect: 496
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 528
+            expect: 530
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 530
+            expect: 532
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
