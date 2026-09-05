@@ -90,7 +90,7 @@ belongs *here* is the shape of the door and the evidence that both sides of it a
 
 **The artifact, read from `public/wasm/MANIFEST.txt` and from the file (re-derived for
 slice 5a Task 6, which found the byte count and export count here stale by one export --
-`wb_erosion_run` had landed without this figure moving):** 117,040 bytes, **12 exports**
+`wb_erosion_run` had landed without this figure moving):** 117,146 bytes, **12 exports**
 (`memory` plus the eleven functions below), **0 imports**. Zero imports is the design, not
 an accident: `WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS
 runtime to keep in step, and a worker gets its own instance and therefore its own linear
@@ -2956,28 +2956,33 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 439 | 4 | 9 | 6 | -- | 458 | 5 | **453** |
-| default (the same set -- the crate declares no default features) | 439 | 4 | 9 | 6 | -- | 458 | 5 | **453** |
-| `--features python` | 441 | 4 | 9 | 6 | -- | 460 | 5 | **455** |
-| `--features wasm` | 439 | 4 | 9 | 6 | 35 | 493 | 5 | **488** |
-| `--features python,wasm` | 441 | 4 | 9 | 6 | 35 | 495 | 5 | **490** |
+| `--no-default-features` | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
+| default (the same set -- the crate declares no default features) | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
+| `--features python` | 442 | 4 | 9 | 6 | -- | 461 | 5 | **456** |
+| `--features wasm` | 440 | 4 | 9 | 6 | 35 | 495 | 5 | **490** |
+| `--features python,wasm` | 442 | 4 | 9 | 6 | 35 | 497 | 5 | **492** |
 
 0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
 and 0 doc-tests in every configuration.
 
-**Re-derived for slice 5a Task 6, which found this table stale by 35 `lib` tests and 5
+**Re-derived twice now: for slice 5a Task 6, and again for the whole-branch review's fix
+round that followed it.** Task 6 found this table stale by 35 `lib` tests and 5
 `wasm_exports.rs` tests -- every erosion test this slice added (Task 3's convergence loop,
 Task 4's thermal cap, Task 5's `wb_erosion_run` refusals) had landed in the source without
-this table moving.** It last read 404/404/406/404/406 in `lib`, 30 in `wasm_exports.rs`
-(the counts the identity slice's own commentary below still describes). `lib` gained 35
-tests across the three erosion tasks (`erosion.rs` went from not existing to 35 tests of
-its own, per the module's `#[cfg(test)] mod tests`), uniformly across all five
-configurations because `erosion.rs` compiles unconditionally; `wasm_exports.rs` gained the
-five `wb_erosion_run` parameter-refusal and happy-path tests Task 5 added, so only the two
-`wasm`-feature rows move on that column. Both deltas match `.github/workflows/gates.yml`'s
-own inline commentary for the engine job matrix, which is pinned to the same run figures
-(453/453/455/488/490) and was independently re-run for this task rather than trusted
-because it agreed.
+this table moving. It last read 404/404/406/404/406 in `lib`, 30 in `wasm_exports.rs` (the
+counts the identity slice's own commentary below still describes); Task 6 corrected it to
+439/439/441/439/441 and 35. The fix round for the review's HIGH finding (a second abort
+band, `radius_m` overflowing `stream::node_areas_m2`'s area calculation to `+inf`) then
+added one more `stream.rs` test (`build_refuses_an_infinite_or_nan_area`), uniformly across
+all five configurations since `stream.rs` compiles unconditionally, moving `lib` to
+440/440/442/440/442; `wasm_exports.rs` went 35 -> 36 net -- not net zero, since a first
+version of the fix round's own erosion-side test was itself superseded once
+`WB_MAX_WORLD_RADIUS_M` closed the door that test assumed stayed open, and its replacement
+is the one test that survived (`gates.yml`'s own inline commentary tells that story in
+full, including the miscount an early draft of it made by arithmetic instead of by running
+`--list`). Both deltas match `.github/workflows/gates.yml`'s own inline commentary
+for the engine job matrix, which is pinned to the same run figures (454/454/456/490/492)
+and was independently re-run for this record rather than trusted because it agreed.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read
@@ -3132,7 +3137,7 @@ Two consequences follow, stated rather than left to be inferred from an unchange
 `wb_erosion_run` (slice 5a Task 5) is a real, shipped export -- re-checked here rather than
 reported from Task 5's own record. Re-run for this task (`cargo run --release -p
 worldbuilder-engine --example parity_dump --features wasm`, replayed by `parity/parity.mjs`
-against the committed `viewer/public/wasm/worldbuilder_engine.wasm`, 117,040 bytes, on the
+against the committed `viewer/public/wasm/worldbuilder_engine.wasm`, 117,146 bytes, on the
 same host as the sweep above; full corpus and method in `parity/README.md`, which this task
 also found stale by one whole group and re-derived -- see "Figures found stale"):
 
@@ -3247,7 +3252,7 @@ figures elsewhere in this crate's own documentation that had drifted:
   two binaries.
 - **The WASM artifact's own byte count and export count**, quoted twice in this file (the
   WebAssembly surface section, and the module list), still read 84,856 bytes / 11 exports
-  after `wb_erosion_run` shipped, which is a twelfth export at 117,040 bytes -- both
+  after `wb_erosion_run` shipped, which is a twelfth export at 117,146 bytes -- both
   corrected.
 - **The "Test counts, with their environment" table** read 404/404/406/404/406 in `lib` and
   30 in `wasm_exports.rs`, from before any of this slice's three tasks landed a test --

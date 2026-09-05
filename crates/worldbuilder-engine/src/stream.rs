@@ -329,7 +329,18 @@ impl StreamGraph {
             if !height_m[i].is_finite() {
                 return Err(GraphError::NonFiniteHeight { node: index });
             }
-            if !(area_m2[i] > 0.0) {
+            // `> 0.0` alone admits `+inf`: whole-branch review of slice 5a found that a
+            // world with `radius_m` in roughly `[3.8e153, ~5e307)` overflows
+            // `node_areas_m2`'s `4*pi*r^2` to `+inf`, which this check let straight
+            // through into the graph. `erosion.rs`'s implicit update then divides by
+            // `sqrt(inf)`, produces NaN, and trips its own release-time assertion --
+            // an abort across the `extern "C"` boundary `wb_erosion_run` exposes, and one
+            // this check should have refused before a graph existed for that solver to
+            // run on. `NonPositiveArea` is refused here on the SAME invariant a caller
+            // actually needs -- a finite, positive area -- not on a second, new variant;
+            // `+inf` is not positive-and-finite any more than `0.0` or a NaN reading of
+            // "not positive" is.
+            if !(area_m2[i] > 0.0) || !area_m2[i].is_finite() {
                 return Err(GraphError::NonPositiveArea { node: index });
             }
             flags[i] = if height_m[i] > params.sea_level_m { flag::LAND } else { flag::BOUNDARY };
@@ -1843,6 +1854,58 @@ mod tests {
         )
         .expect_err("a zero area must be refused");
         assert!(matches!(err, GraphError::NonPositiveArea { node: 5 }));
+    }
+
+    /// The abort the whole-branch review found: `> 0.0` alone admits `+inf`, and
+    /// `4*pi*radius_m^2` overflows to `+inf` for `radius_m` above roughly `3.78e153` --
+    /// exactly what a caller reaches through `wb_erosion_run` on a world built with an
+    /// enormous `radius_m` and otherwise-ordinary erosion parameters. This test does not
+    /// go through a `Surface` or a real radius at all -- it plants `f64::INFINITY`
+    /// directly in the area column, which is the one property that matters here (`build`
+    /// cannot distinguish "an enormous sphere overflowed" from "a caller passed infinity
+    /// directly"; both must be refused the same way). `f64::NAN` is checked alongside it
+    /// because `area_m2[i] > 0.0` is already `false` for a NaN reading -- this test pins
+    /// that the OR'd `.is_finite()` clause does not accidentally invert that for infinity
+    /// while leaving NaN's existing refusal alone.
+    #[test]
+    fn build_refuses_an_infinite_or_nan_area() {
+        let field = lattice_field(20_260_904);
+
+        let mut areas = field.area_m2.clone();
+        areas[7] = f64::INFINITY;
+        let err = StreamGraph::build(
+            &params(20_260_904, 0.0),
+            &field.positions,
+            &field.height_m,
+            &areas,
+            &field.neighbours,
+        )
+        .expect_err("an infinite area must be refused, not treated as > 0.0");
+        assert!(matches!(err, GraphError::NonPositiveArea { node: 7 }));
+
+        let mut areas = field.area_m2.clone();
+        areas[9] = f64::NEG_INFINITY;
+        let err = StreamGraph::build(
+            &params(20_260_904, 0.0),
+            &field.positions,
+            &field.height_m,
+            &areas,
+            &field.neighbours,
+        )
+        .expect_err("a negative-infinite area must be refused");
+        assert!(matches!(err, GraphError::NonPositiveArea { node: 9 }));
+
+        let mut areas = field.area_m2.clone();
+        areas[3] = f64::NAN;
+        let err = StreamGraph::build(
+            &params(20_260_904, 0.0),
+            &field.positions,
+            &field.height_m,
+            &areas,
+            &field.neighbours,
+        )
+        .expect_err("a NaN area must still be refused after this check gained an OR clause");
+        assert!(matches!(err, GraphError::NonPositiveArea { node: 3 }));
     }
 
     // ---- the `drop_m > 0.0` filter, on its own ---------------------------------------

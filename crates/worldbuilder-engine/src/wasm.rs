@@ -127,14 +127,17 @@ pub const WB_ERR_SUBSTRATE: u32 = 4;
 /// deeper in the engine is never reached from there.
 pub const WB_ERR_PARAM: u32 = 5;
 /// `stream::sample_nodes` or `StreamGraph::build` refused the sampled node set for a
-/// [`wb_erosion_run`] call whose other parameters already passed validation. Not reachable
-/// by any input this function's own domain checks admit today -- `sample_nodes` only
-/// returns `None` for a count below two or above `stream::MAX_NODES`, both already refused
-/// as [`WB_ERR_PARAM`], and `StreamGraph::build` only reports the remaining `GraphError`
-/// variants for malformed neighbour data this function never constructs. Kept as a status
-/// rather than an `unwrap`, on the same reasoning as every other export in this file: an
-/// internal invariant this function currently guarantees is not a licence to panic if a
-/// later change to `sample_nodes` or `StreamGraph::build` ever makes it false.
+/// [`wb_erosion_run`] call whose other parameters already passed validation. **Measured as
+/// reachable, not merely a defensive status**: the whole-branch review of slice 5a found
+/// that `radius_m` near the tiny end of `wb_world_new`'s domain -- `5e-324` and `1e-300`,
+/// both otherwise finite and strictly positive -- builds a world successfully but returns
+/// this status from `wb_erosion_run`, through the same committed artifact this crate ships.
+/// An earlier version of this doc claimed the opposite ("not reachable by any input this
+/// function's own domain checks admit today"); that was wrong, and this status is doing
+/// real work. Kept as a status rather than an `unwrap`, on the same reasoning as every
+/// other export in this file: an internal invariant this function currently guarantees is
+/// not a licence to panic if a later change to `sample_nodes` or `StreamGraph::build` ever
+/// makes it false -- which, for the tiny-radius case, it already has.
 pub const WB_ERR_GRAPH: u32 = 6;
 
 /// The ceiling on `node_count` for [`wb_erosion_run`]. Not the planetary target -- slice 1p
@@ -145,18 +148,31 @@ pub const WB_ERR_GRAPH: u32 = 6;
 /// for headroom.
 ///
 /// **This ceiling and [`WB_MAX_EROSION_ITERATIONS`] multiply, and the product is not
-/// small.** Timed natively in release (native is the *fast* side; WASM will be slower): a
-/// graph build at `node_count = 200,000` takes ~1.5 s, and each `erode_step` +
+/// small.** Timed natively in release (native is the *fast* side; the browser is slower):
+/// a graph build at `node_count = 200,000` takes ~1.5 s, and each `erode_step` +
 /// `cap_slopes` pass over it costs ~8.5 ms once the build cost is subtracted out (measured
-/// at 2, 20 and 200 iterations). At `max_iterations = 200,000` that is
-/// `8.5 ms * 200,000 ~ 1,700 s`, **about 28 minutes of uninterruptible synchronous work**
-/// for a call this function's own domain checks accept and return `WB_OK` from. Each
-/// ceiling is individually far below the point a *single* dimension alone would hang a
-/// tab; **the pair together is not.** Not exploitable today -- nothing in this crate calls
-/// `wb_erosion_run` at both ceilings but the parity harness, which chooses far smaller
-/// values -- but a future caller that exposes this export to a UI must bound the *product*
-/// (e.g. `node_count * max_iterations`) or lower one ceiling to what a frame or worker
-/// budget actually tolerates; neither ceiling here does that on its own.
+/// at 2, 20 and 200 iterations). At `max_iterations = 200,000` that native estimate is
+/// `8.5 ms * 200,000 ~ 1,700 s`, about 28 minutes of uninterruptible synchronous work --
+/// but **the browser side is the one that matters for this export, and it is worse, not
+/// better.** The whole-branch review of slice 5a timed a single `wb_erosion_run` call
+/// (`node_count = 200,000`, `max_iterations = 1`) through the committed
+/// `viewer/public/wasm/worldbuilder_engine.wasm`, instantiated directly in Node with no
+/// imports, and measured **~14-16 s wall clock for that ONE iteration** (~14.0 s on this
+/// crate's own re-measurement, this host, Node v22.17.0, against the artifact rebuilt for
+/// this fix round; the review's own independent run on its host read ~16 s), graph-build
+/// dominated, at 545 wasm pages (~35.7 MB) of linear memory. Scaled the same naive way as
+/// the native figure -- and just as much an estimate, not a second measured total -- that
+/// is `14 s * 200,000 ~ 2,800,000 s`, well over a month, for a call this function's own
+/// domain checks still accept and return `WB_OK` from. Each ceiling is individually far
+/// below the point a *single* dimension alone would hang a tab; **the pair together is
+/// not, and the browser side is the one a UI caller would actually hit.** Not exploitable
+/// today -- nothing in this crate calls `wb_erosion_run` at both ceilings but the parity
+/// harness, which chooses far smaller values -- but a future caller that exposes this
+/// export to a UI must bound the *product* (e.g. `node_count * max_iterations`) or lower
+/// one ceiling to what a frame or worker budget actually tolerates; neither ceiling here
+/// does that on its own, and the domain-reasoning gap this same review round found in
+/// `radius_m` (see [`WB_MAX_WORLD_RADIUS_M`]) is a reason to trust that reasoning less, not
+/// more, until the product is actually bounded in code.
 pub const WB_MAX_EROSION_NODES: u32 = 200_000;
 /// The ceiling on `max_iterations` for [`wb_erosion_run`]. `erosion_convergence_sweep` caps
 /// its own runs at 200,000; the same number here, chosen for parity with that sweep, **not**
@@ -226,6 +242,29 @@ pub const WB_FEATURE_STRIDE: usize = 8;
 /// own fixtures use 8, 12 and 24. Anything above this is a caller mistake, and the honest
 /// answer to a caller mistake is a refusal rather than a silently different world.
 pub const WB_MAX_PLATE_COUNT: u32 = 4096;
+
+/// The ceiling on `radius_m` for [`wb_world_new`] -- defence in depth alongside
+/// `StreamGraph::build`'s area check, not a replacement for it.
+///
+/// The whole-branch review of slice 5a found that `radius_m` above roughly `3.78e153`
+/// (`sqrt(f64::MAX / (4*pi))`) overflows `4*pi*radius_m^2` to `+inf` inside
+/// `stream::node_areas_m2`, which `StreamGraph::build`'s area check now refuses (it
+/// previously admitted `+inf` as `> 0.0`) -- see that check's own doc for the abort this
+/// closes. **Bounding `radius_m` here catches the same caller mistake one call earlier,
+/// and catches something the area check alone cannot: sampling elevation at a huge-radius
+/// world's own coordinates overflows a completely unrelated `i64` cast in `noise.rs`'s
+/// lattice-cell arithmetic** (`(x as i64) + 1` on a floored coordinate that already
+/// saturated to `i64::MAX`), which panics under the overflow checks Rust's dev/test
+/// profile enables by default -- and panics *before* a caller ever reaches the area
+/// overflow. Measured on this host: `Surface::elevation_m` panics at `noise.rs:95` for
+/// radii from `1e25` upward and returns ordinary finite output through `1e20`; this bound
+/// sits at `1e9` m (roughly 157x Earth's radius, already an absurd "planet" for anything
+/// this generator is meant to produce), eleven orders of magnitude below the lower of the
+/// two hazards and effectively immune to either moving with a future change to the noise
+/// or area arithmetic. This is chosen for margin, not measured as the exact edge of
+/// either hazard -- the same posture `WB_MAX_EROSION_RATE_PER_YR`'s doc already takes for
+/// its own overflow margin.
+pub const WB_MAX_WORLD_RADIUS_M: f64 = 1.0e9;
 
 /// Alignment for every buffer `wb_alloc` hands out: 8, so the same allocation serves an f64
 /// payload (`wb_bottom_at`) and an f32 tile without the host having to think about it.
@@ -479,8 +518,14 @@ pub extern "C" fn wb_dealloc(ptr: *mut u8, bytes: u32) -> u32 {
 ///
 /// # The domains, and why each one is a refusal
 ///
-/// - `radius_m` finite and strictly positive. A NaN radius produces NaN elevations at every
-///   point -- plausible-looking garbage, measured -- rather than failing.
+/// - `radius_m` finite, strictly positive, and no larger than [`WB_MAX_WORLD_RADIUS_M`]. A
+///   NaN radius produces NaN elevations at every point -- plausible-looking garbage,
+///   measured -- rather than failing. The upper bound is new: the whole-branch review of
+///   slice 5a found that an enormous-but-finite `radius_m` reaches two different overflow
+///   hazards downstream (an `i64` cast in `noise.rs`'s lattice arithmetic, and `+inf` in
+///   `stream::node_areas_m2`'s `4*pi*r^2`) that this domain check now closes at the door
+///   both are reached through -- see [`WB_MAX_WORLD_RADIUS_M`]'s own doc for both hazards
+///   and the margin chosen against them.
 /// - `plate_count` in `1..=WB_MAX_PLATE_COUNT`. Zero is refused because it is what an
 ///   uninitialised host variable looks like; measured, plate counts of 0, 1 and 2 give an
 ///   identical field, so accepting 0 would quietly hand back a world nobody asked for.
@@ -512,7 +557,7 @@ pub extern "C" fn wb_world_new(
     features_ptr: *const f64,
     feature_count: u32,
 ) -> u32 {
-    if !radius_m.is_finite() || radius_m <= 0.0 {
+    if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
         return 0;
     }
     if plate_count == 0 || plate_count > WB_MAX_PLATE_COUNT {
@@ -766,9 +811,21 @@ pub extern "C" fn wb_fill_tile_f32(
 }
 
 /// The `sea_level_m` [`wb_erosion_run`] builds its graph at. Not a parameter this task
-/// exposes: `StreamGraph::build`'s classification into land/boundary is slice 5b's concern
-/// (lakes, water), and this slice's own solver reads no flag it produces. `0.0` is a
+/// exposes: `StreamGraph::build`'s classification into land/boundary and the lake/mouth
+/// split for a root are slice 5b's concern to expose as a caller-chosen value. `0.0` is a
 /// datum, not a claim about where any particular world's coastline sits.
+///
+/// **This is not inert, and an earlier version of this doc said it was ("the solver reads
+/// no flag it produces").** The whole-branch review of slice 5a corrected that: `flags[i]`
+/// is `LAND` or `BOUNDARY` depending on `height_m[i] > sea_level_m`
+/// (`stream.rs::StreamGraph::build`), and a `BOUNDARY` node is a root -- `erode_step`
+/// holds every root fixed for the whole run, as the local base level its basin erodes
+/// toward. Moving `sea_level_m` moves the root set, and the root set IS the boundary
+/// condition the solver relaxes toward. The solver's *step* does not read the flag
+/// directly, only `downhill_of`, which the flag decides -- so the narrower claim ("no
+/// per-step flag read") is true and the broader one ("inert") is not. Whoever exposes
+/// lakes and a real sea level in slice 5b needs to revisit this constant with that in
+/// mind, not merely add a parameter alongside it.
 const WB_EROSION_SEA_LEVEL_M: f64 = 0.0;
 /// The `pond_max_drainage_area_m2` [`wb_erosion_run`] builds its graph at -- large enough
 /// that no root this export's node counts can produce is ever classified as a pond, since
@@ -828,10 +885,17 @@ const WB_EROSION_POND_MAX_DRAINAGE_AREA_M2: f64 = 1.0e10;
 /// path this task found into that assertion was `erodibility_per_yr < 0.0` turning `1 + c`
 /// into an amplifying map (see [`WB_MAX_EROSION_RATE_PER_YR`]'s doc) -- found by reasoning
 /// about that one term's sign, confirmed both natively and in the shipped `.wasm`, and
-/// closed by the `>= 0.0` bound above. **No exhaustive search of the remaining in-domain
-/// parameter space (in particular, adversarial combinations of `A_drainage`, `k`, `dt` and
-/// a very small receiver distance `d`) was made**, and finding one reachable band should
-/// raise the prior that others exist rather than lower it.
+/// closed by the `>= 0.0` bound above. **A second, independent path was found by the
+/// whole-branch review that followed: an enormous but finite `radius_m`, entirely outside
+/// this function's own six parameters, overflows `4*pi*radius_m^2` to `+inf` in
+/// `stream::node_areas_m2` and reaches the identical assertion by a different route --
+/// closed at `wb_world_new` and at `StreamGraph::build`'s own area check, not here, because
+/// no bound on this function's parameters could have caught an input that was already
+/// wrong before any of them were read** (see [`WB_MAX_WORLD_RADIUS_M`]'s doc). **No
+/// exhaustive search of the remaining in-domain parameter space (in particular, adversarial
+/// combinations of `A_drainage`, `k`, `dt` and a very small receiver distance `d`) was
+/// made**, and finding two reachable paths into the same assertion by two different reviews
+/// should raise the prior that a third exists rather than lower it.
 ///
 /// # The cap is called, but inert over this crate's own corpus
 ///

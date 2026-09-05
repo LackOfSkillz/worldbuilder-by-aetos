@@ -345,6 +345,15 @@ pub fn receiver_distances_m(graph: &StreamGraph, positions: &[SpherePoint]) -> V
 /// adds no division guard. A guard that silently substituted a value for `d = 0` would hide
 /// exactly the defect the builder already refuses to let through; the well-formed
 /// precondition is enforced upstream, once, rather than defended against redundantly here.
+///
+/// **This is the *uncapped* step.** The thermal-erosion slope cap ([`cap_slopes`]) is not
+/// called from here; it lives one level up, in [`erode_to_convergence`], wired into that
+/// loop immediately after each `erode_step` call (see that function's own "The cap runs
+/// per-iteration, not once at the end" section). A caller that reaches for this function
+/// directly gets the solver's raw implicit update with no cap applied at all -- which is
+/// exactly what this module's own `run_uncapped` test helper does, deliberately, to compare
+/// against the capped path -- and `wb_erosion_run` always calls `erode_to_convergence`, not
+/// this function, so the shipped export never returns an uncapped result.
 pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], params: &ErosionParams) -> Vec<f64> {
     let count = graph.node_count() as usize; // cast-ok: node_count is bounded (stream.rs::MAX_NODES)
     // `assert_eq!`, not `debug_assert_eq!`: the bake runs in release, which is the one build
@@ -1698,7 +1707,17 @@ mod tests {
                 let d = distances_m[idx];
                 let cap_rise = cap * d;
                 let actual_rise = heights[idx] - heights[receiver_idx];
-                let tolerance = 4.0 * f64::EPSILON * cap_rise.abs().max(1.0);
+                // Never `f64::max` -- this module's own doc (`cap_slopes`, `max_abs_height_change`)
+                // spends two paragraphs on why, and the whole-branch review of slice 5a found
+                // this line was the one place that rule was still broken: `f64::max` is
+                // NaN-asymmetric, and here specifically it degrades toward reporting a violated
+                // edge as CLEAN on a NaN `cap_rise` (`.max` would return the non-NaN `1.0`,
+                // producing a small, ordinary tolerance instead of propagating the poison). The
+                // explicit branch is the house form -- `plates.rs::margin_at`'s
+                // `if closest_sine < 1.0 { closest_sine } else { 1.0 }` is the model this
+                // mirrors.
+                let cap_rise_abs = cap_rise.abs();
+                let tolerance = 4.0 * f64::EPSILON * if cap_rise_abs > 1.0 { cap_rise_abs } else { 1.0 };
                 if actual_rise > cap_rise + tolerance {
                     violations.push((node, (actual_rise - cap_rise) / d));
                 }

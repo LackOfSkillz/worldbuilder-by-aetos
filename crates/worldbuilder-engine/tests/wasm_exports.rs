@@ -7,9 +7,10 @@
 //!
 //! **Native-against-WASM parity is a separate, committed harness**, not an assertion made
 //! here and not a figure in a task report: `examples/parity_dump.rs` plus
-//! `parity/parity.mjs` compare 53,251 values through the *shipped* exports -- scattered
-//! open water, inside a placed harbour, and two 65x65 tiles -- against the committed
-//! `.wasm`, with a `--mutate seed` control that must turn them red. See
+//! `parity/parity.mjs` compare 56,254 values through the *shipped* exports -- scattered
+//! open water, inside a placed harbour, two 65x65 tiles, and one `wb_erosion_run` corpus --
+//! against the committed `.wasm`, with `--mutate seed` and `--mutate erosion-k` controls
+//! that must both turn some of it red. See
 //! `parity/README.md` for the populations, the invocation and the recorded output. It is
 //! not a `cargo test` because the only two ways to make it one are a WASM runtime
 //! dev-dependency or a test that skips when `node` is absent; that README says so, and
@@ -193,6 +194,37 @@ fn a_nonpositive_or_nonfinite_radius_is_refused() {
     for bad in [0.0f64, -1.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert_eq!(wb_world_new(SEED, bad, PLATES, LAND, core::ptr::null(), 0), 0, "radius {bad}");
     }
+}
+
+/// The abort the whole-branch review found: an enormous-but-finite `radius_m` used to build
+/// successfully at `wb_world_new` and only fail later, deep inside `wb_erosion_run` --
+/// `4*pi*radius_m^2` overflowing to `+inf` in `stream::node_areas_m2`, which
+/// `StreamGraph::build`'s area check admitted as `> 0.0`, producing a NaN height change that
+/// aborted the module at iteration 1 (`extern "C"` is nounwind). **Independent of every
+/// `wb_erosion_run` parameter** -- including `k = 0.0`, which the crate's own refusal tests
+/// assert is otherwise valid input -- because the overflow happens before any erosion
+/// parameter is read at all.
+///
+/// The review found a second hazard while confirming this fix: the SAME huge-radius door
+/// also overflows an unrelated `i64` cast in `noise.rs`'s lattice arithmetic when elevation
+/// is sampled at such a world's own coordinates, which panics under Rust's dev/test-profile
+/// overflow checks -- and does so at a much smaller radius than the area overflow, so a
+/// naive end-to-end test through this door in a normal (non-`--release`) `cargo test` run
+/// would abort the whole test binary on the WRONG bug before ever exercising the one this
+/// finding is about. `WB_MAX_WORLD_RADIUS_M` closes both hazards at their one shared point
+/// of entry -- this test therefore asserts the refusal happens at `wb_world_new` itself, not
+/// downstream in `wb_erosion_run`, which is what makes it safe to run in every configuration
+/// rather than only under `--release`. `stream::tests::build_refuses_an_infinite_or_nan_area`
+/// covers the area check directly, at the graph level, independent of any radius at all.
+#[test]
+fn a_radius_that_would_overflow_downstream_arithmetic_is_refused_at_world_creation() {
+    for bad in [WB_MAX_WORLD_RADIUS_M * 2.0, 1.0e20, 1.0e100, 1.0e154, 1.0e200, 1.0e300, f64::MAX] {
+        assert_eq!(wb_world_new(SEED, bad, PLATES, LAND, core::ptr::null(), 0), 0, "radius {bad}");
+    }
+    // The bound is inclusive-below: right at the ceiling still builds.
+    let h = wb_world_new(SEED, WB_MAX_WORLD_RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    assert_ne!(h, 0, "radius_m == WB_MAX_WORLD_RADIUS_M is the documented edge and must be accepted");
+    assert_eq!(wb_world_free(h), WB_OK);
 }
 
 #[test]

@@ -227,21 +227,29 @@ mismatch, if they disagree or either is missing:
 
   | configuration | listed | ignored | run (pinned in `gates.yml`) |
   |---|---|---|---|
-  | `--no-default-features` | 458 | 5 | **453** |
-  | default | 458 | 5 | **453** |
-  | `--features python` | 460 | 5 | **455** |
-  | `--features wasm` | 493 | 5 | **488** |
-  | `--features python,wasm` | 495 | 5 | **490** |
+  | `--no-default-features` | 459 | 5 | **454** |
+  | default | 459 | 5 | **454** |
+  | `--features python` | 461 | 5 | **456** |
+  | `--features wasm` | 495 | 5 | **490** |
+  | `--features python,wasm` | 497 | 5 | **492** |
 
   These moved up from 409/409/409/439/439 in the identity slice (`tests/build_fingerprint.rs`,
   new, adding 9 tests to all five configurations, plus 2 more in `lib` for `--features python`
   because `source_fingerprint()` / `source_fingerprint_inputs()` are PyO3 exports whose
-  binding tests only compile with that feature), and again in slice 5a: `erosion.rs` (new,
-  compiles unconditionally) added 35 tests to `lib` across all five rows over that slice's
-  three tasks, and `tests/wasm_exports.rs` gained 5 more for `wb_erosion_run`'s parameter
-  refusals, moving only the two `wasm`-feature rows. Re-derived directly from `cargo test -p
+  binding tests only compile with that feature); to 458/458/460/493/495 listed
+  (453/453/455/488/490 run) in slice 5a proper, where `erosion.rs` (new, compiles
+  unconditionally) added 35 tests to `lib` across all five rows over that slice's three
+  tasks and `tests/wasm_exports.rs` gained 5 more for `wb_erosion_run`'s parameter refusals,
+  moving only the two `wasm`-feature rows; and to the figures above in the whole-branch
+  review's fix round for slice 5a, where `stream.rs` gained one test
+  (`build_refuses_an_infinite_or_nan_area`, pinning the fixed area check that closed the
+  review's HIGH finding) across all five rows, and `tests/wasm_exports.rs` went 35 -> 36
+  net (one test added, one superseded test removed -- not net zero, since a first draft of
+  this fix wrote a test that was itself superseded by `WB_MAX_WORLD_RADIUS_M`, discovered
+  while proving the first fix closed; see `gates.yml`'s own inline commentary for the two
+  attempts). Re-derived directly from `cargo test -p
   worldbuilder-engine <features> -- --list` (and `--list --ignored`) on the current tree, not
-  carried forward from either earlier slice. On a deleted test, the gate fails with
+  carried forward from any earlier slice or round. On a deleted test, the gate fails with
   `COUNT GATE FAILED / expected <N> tests to run, found <M>` even though `cargo test` itself
   exits 0.
 - **Python suite**: `pytest --collect-only -q`'s per-test lines and its `<N> tests collected`

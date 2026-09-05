@@ -86,7 +86,7 @@ throws rather than guess, and this script turns that into a refusal too.
 ## Recorded output
 
 Host: Windows 11 (10.0.26200), x86_64-pc-windows-msvc, cargo 1.98.0, Node v22.17.0.
-Artifact: the committed `worldbuilder_engine.wasm`, 117,040 bytes (12 exports, 0 imports —
+Artifact: the committed `worldbuilder_engine.wasm`, 117,146 bytes (12 exports, 0 imports —
 grew from 84,856 bytes / 11 exports when slice 5a added `wb_erosion_run`). Dump: 41,806
 lines. **Re-run for slice 5a Task 6**, not carried forward from before the erosion group or
 the second control existed.
@@ -95,7 +95,7 @@ the second control existed.
 $ node parity.mjs native.txt
 provenance: the shipped .wasm matches its manifest and current source.
 parity: 56254 values compared through the shipped exports, 0 divergent
-artifact: .../viewer/public/wasm/worldbuilder_engine.wasm (117040 bytes)
+artifact: .../viewer/public/wasm/worldbuilder_engine.wasm (117146 bytes)
   elevation/plain: 10000 compared, 0 divergent
   structural/plain: 10000 compared, 0 divergent
   elevation/harbour: 10800 compared, 0 divergent

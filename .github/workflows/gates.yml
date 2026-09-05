@@ -144,25 +144,46 @@ jobs:
           # `--ignored`) through `assert_counts.py cargo-list` itself, not by counting lines
           # by hand -- the prior revision of this pin block was wrong precisely because it
           # counted the LISTED total and never subtracted the ignored five.
+          #
+          # 2026-09-05, whole-branch review fix round (the HIGH, second abort band):
+          # 453/453/455/488/490 -> 454/454/456/490/492. `stream.rs` gained one test,
+          # `build_refuses_an_infinite_or_nan_area`, pinning the fixed area check (an
+          # infinite `radius_m` overflowed `4*pi*r^2` to `+inf`, which the OLD `> 0.0` check
+          # admitted) -- +1 across all five configurations, since `stream.rs` compiles
+          # unconditionally. `tests/wasm_exports.rs` went 35 -> 36, +1 net: this round first
+          # added `a_world_with_an_overflowing_radius_refuses_erosion_rather_than_aborting`,
+          # then discovered `WB_MAX_WORLD_RADIUS_M` (added in the same round to also close an
+          # unrelated `i64`-overflow panic in `noise.rs`, reachable through the identical
+          # huge-radius door, that a normal debug `cargo test` run would otherwise hit before
+          # ever reaching the area-overflow bug) made that test's premise false -- the world
+          # no longer builds at that radius at all -- so it was deleted and replaced with
+          # `a_radius_that_would_overflow_downstream_arithmetic_is_refused_at_world_creation`,
+          # net +1 rather than net zero. The two wasm rows therefore move by +2 (the shared
+          # `stream.rs` test plus this one), the other three by +1. Re-derived the same way
+          # as every prior entry in this block: the gate's own two `--list` commands per
+          # config, through `assert_counts.py cargo-list` itself, not by hand arithmetic --
+          # which is what caught the wasm_exports.rs miscount above before it reached this
+          # file: an early draft of this comment claimed net zero on that file from arithmetic
+          # alone, and the actual `--list` run (36, not 35) disagreed.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 453
+            expect: 454
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 453
+            expect: 454
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 455
+            expect: 456
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 488
+            expect: 490
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 490
+            expect: 492
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
