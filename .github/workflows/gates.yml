@@ -284,25 +284,45 @@ jobs:
           # single-assertion test. Both files compile unconditionally, so all five rows move
           # by +1 uniformly. `expect_ignored` stays 5. Re-derived the same way, cross-checked
           # through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, Task 4 (the water manifest): 500/500/502/536/538 -> 506/506/508/542/544.
+          # `water.rs` gained the manifest itself (`WaterManifest`, `Body`, `BodyKind`,
+          # `Extent`, `River`, `water_manifest`, `water_manifest_from_graph`) and six
+          # unconditionally-compiled tests (`water_manifest_is_bit_identical_across_two_runs`,
+          # `every_physical_body_appears_exactly_once`,
+          # `every_boundary_root_is_an_ocean_body_at_sea_level`, `no_body_is_two_kinds_at_once`,
+          # `the_river_arm_is_expressible_and_stays_empty`,
+          # `a_pond_appears_when_a_hand_built_fixture_makes_one`) -- no new `#[cfg]`, so all
+          # five rows move by +6 uniformly and `expect_ignored` stays 5 (no `#[ignore]`d test
+          # was added). The pond test is the sharpest of the six -- its own root cause is a
+          # hand-built fixture, since no `Spiral`-sampled graph this generator produces is
+          # small enough to make a real one (task-3-report.md's own finding: smallest real
+          # body 7.9e8 m^2 against a 1.0e5 m^2 threshold) -- and it was verified by mutation
+          # (dropping the `height_m(member) <= lake.level_m` filter in `lake_body_extents`)
+          # rather than merely reasoned about; the mutation moved the pond's own extent to
+          # include its land neighbour and only the extent assertion failed, not the `kind`
+          # assertion beside it, so it is not shadowed by a sibling. Re-derived by `cargo test
+          # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration,
+          # cross-checked through `assert_counts.py cargo-list` itself.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 500
+            expect: 506
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 500
+            expect: 506
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 502
+            expect: 508
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 536
+            expect: 542
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 538
+            expect: 544
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
