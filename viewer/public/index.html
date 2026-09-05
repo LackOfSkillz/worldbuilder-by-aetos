@@ -39,6 +39,14 @@
                                                  path, which is byte-for-byte the world this
                                                  viewer built before relief was reachable.
     ?exaggeration= ?paint=0 ?rampMin= ?rampMax=  what it looks like
+    ?relief=0                                    turn OFF the relief imagery layer, which
+                                                 restores the pre-relief picture exactly --
+                                                 the ElevationRamp material comes back with
+                                                 it, because a globe material composites
+                                                 OVER imagery and the two cannot both show
+    ?reliefSize= ?reliefMaxLevel=                the relief raster's tile edge in texels
+                                                 (default 256) and its refinement cap
+                                                 (default: the terrain's own ground cap)
     ?fly=lat,lon,height                          where to look
     ?workers= ?cache=0 ?cacheTiles=              the Task 5 pool and cache (workers=0 is
                                                  Task 4's synchronous main-thread fill,

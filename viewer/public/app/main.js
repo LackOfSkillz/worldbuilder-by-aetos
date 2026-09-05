@@ -11,6 +11,9 @@
 
 import { Engine } from "./engine.js";
 import { reliefFromParams } from "./relief-params.js";
+import {
+  createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
+} from "./relief-provider.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
 import { createAvailability, FEATURE_CEILING } from "./availability.js";
@@ -186,6 +189,39 @@ async function boot() {
   viewer.terrainProvider = provider;
   viewer.scene.globe.depthTestAgainstTerrain = true;
 
+  // The relief imagery layer.
+  //
+  // **Why an imagery layer rather than terrain lighting**: `CustomHeightmapTerrainProvider`
+  // gives `HeightmapTerrainData`, whose `hasVertexNormals` is `false` -- always, on that
+  // class -- so `GlobeFS` lights the mesh with the *ellipsoid* normal and no amount of
+  // `enableLighting` produces relief. Verified live. A raster is the only surface here that
+  // can carry a normal, and Cesium picks the imagery level from the terrain tile's geometric
+  // error without clamping it to the terrain level, so a 256-texel tile over a 65-post
+  // rectangle is a free 4x of colour resolution.
+  //
+  // Built from `world`, the same handle the terrain provider draws -- a relief layer from a
+  // *different* world would be the `wrong-world` fault arrived at by accident, and it would
+  // look entirely plausible.
+  //
+  // `?relief=0` turns it off. That branch, and the `paint` default below, are the only two
+  // things this block changes about the page, and with `relief=0` both land on exactly the
+  // code that ran before it existed.
+  const reliefOn = reliefLayerEnabled(params);
+  let reliefProvider = null;
+  if (reliefOn) {
+    reliefProvider = createReliefImageryProvider({
+      engine,
+      worldHandle: world,
+      radiusM: spec.radiusM,
+      tileSize: number("reliefSize", RELIEF_TILE_SIZE),
+      // Defaults to the *terrain's* cap, so imagery is never the thing that stops refining
+      // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
+      maximumLevel: number("reliefMaxLevel", maxLevel),
+      credit: `worldbuilder engine relief, generator v${engine.generatorVersion()}`,
+    });
+    viewer.imageryLayers.addImageryProvider(reliefProvider);
+  }
+
   // Two scheduling knobs, neither of which changes a generated height.
   //
   // `tileCacheSize` defaults to 100, which was sized for a networked provider fetching a
@@ -240,7 +276,18 @@ async function boot() {
     viewer.scene.globe.showGroundAtmosphere = false;
   }
 
-  if (params.get("paint") !== "0") {
+  // The `ElevationRamp` material and the relief layer CANNOT both be on, and this is not a
+  // taste call. `GlobeFS`'s `APPLY_MATERIAL` block ends in
+  // `color = alphaBlend(materialColor, color)` -- the material is composited *over* the
+  // imagery, and this material's alpha is 1 everywhere, so the ramp would hide the relief
+  // completely and the layer would look like it had silently failed to load.
+  //
+  // So the *default* becomes "ramp only when there is no relief layer". `?paint` still
+  // forces it either way, and the expression is written so that with `?relief=0` it reduces
+  // to the previous `params.get("paint") !== "0"` for all three of paint absent, `paint=0`
+  // and `paint=1`: `!reliefOn` is `true`, which is what the absent case evaluated to before.
+  const paint = params.has("paint") ? params.get("paint") !== "0" : !reliefOn;
+  if (paint) {
     const material = Cesium.Material.fromType("ElevationRamp");
     material.uniforms.image = elevationRamp();
     // -9000..+6000 spans every height the engine can produce, but this generator's land
@@ -271,12 +318,19 @@ async function boot() {
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
     `workers=${pool ? pool.ready.length : 0} cache=${cache ? cache.capacity : "off"} | ` +
+    `reliefLayer=${
+      reliefProvider
+        ? `${reliefProvider.tileWidth}px cap=${reliefProvider.maximumLevel}`
+        : "off"} paint=${paint ? "ramp" : "off"} | ` +
     `fault=${fault ?? "none"}`;
   if (status) status.textContent = line;
 
   window.__wb = {
     engine, provider, viewer, spec, fault,
     world, reference, pool, cache, availability,
+    /// `null` under `?relief=0`. Its `worldbuilder.stats` is the per-tile cost this task
+    /// reports and Task 4's worker move is measured against.
+    reliefProvider,
     FAULTS,
     /// The engine's own relief presets, read across the boundary at boot. `controls.js`
     /// takes its slider defaults, two of its three travel ends and its preset button from
