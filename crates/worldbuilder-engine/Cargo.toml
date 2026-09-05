@@ -1,0 +1,13 @@
+[package]
+name = "worldbuilder-engine"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "worldbuilder_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libm = "=0.2.11"
+pyo3 = { version = "0.22", features = ["extension-module"] }
