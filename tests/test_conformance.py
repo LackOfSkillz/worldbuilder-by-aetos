@@ -19,19 +19,149 @@ with no Rust.
 
 import math
 import os
+import re
 import struct
+from pathlib import Path
 
 import pytest
 
 from worldbuilder.geometry.sphere import EARTH_RADIUS_M, SpherePoint
 from worldbuilder.geometry.vectors import DEGENERATE, Vec3
 
+# viewer/public/wasm/MANIFEST.txt, relative to this file (tests/test_conformance.py).
+_WASM_MANIFEST_PATH = Path(__file__).resolve().parent.parent / "viewer" / "public" / "wasm" / "MANIFEST.txt"
+
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+
+# Fixture digests for the guard's unit tests. They are the right SHAPE -- 64 lowercase
+# hex characters -- because the reader now validates shape as well as presence, and a
+# test using `abc123` would be asserting against a manifest no build could produce.
+_MATCHING = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_DIFFERENT = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+class EngineFingerprintUnavailable(RuntimeError):
+    """
+    The oracle for "is the engine current" could not be read at all -- missing manifest,
+    unreadable file, or a manifest with no usable `source-fingerprint` line.
+
+    This is its own exception, distinct from a mismatch, because an unavailable oracle
+    must never be read as agreement. This project has already shipped three checks that
+    counted zero work as success and a parser that read a missing section as "unknown";
+    this type exists so that mistake cannot repeat here by accident -- there is no
+    fall-through path from "could not read the oracle" to "fingerprints matched".
+    """
+
+
+class EngineFingerprintStale(RuntimeError):
+    """The engine's embedded fingerprint disagrees with the manifest's."""
+
+
+def _manifest_source_fingerprint(manifest_path):
+    """
+    Read the `source-fingerprint` line out of a wasm build manifest.
+
+    THE COMPOSITION THIS RELIES ON, STATED EXPLICITLY: this is not a second (or third --
+    Task 2 already needed one, Task 3 already gated it) implementation of the digest
+    algorithm, and not a `node viewer/scripts/build-wasm.mjs digest` subprocess (a Node
+    dependency this pytest environment should not require just to run the Python suite).
+    It is a read of the digest the wasm build already computed and wrote down.
+
+    That only answers "what does the tree look like now" because `npm run check:wasm`
+    is a SEPARATE gate asserting the manifest itself is current with the tree. Neither
+    check alone proves the installed engine matches the tree it is being compared
+    against -- this project has been bitten by exactly that shape before, where parity
+    proved shipped bytes matched their stated source while nothing proved that source
+    was current. Together, the two checks close it: if `check:wasm` is ever dropped from
+    CI, this comparison goes back to answering nothing, silently.
+
+    Raises EngineFingerprintUnavailable -- never returns a placeholder -- if the file is
+    missing, unreadable, or has no non-empty `source-fingerprint` value.
+    """
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError, NOT an OSError, so catching OSError alone let
+        # an undecodable manifest escape as a raw traceback instead of this wording. It still
+        # failed the run -- but the docstring promises "unreadable" is handled here, and a
+        # promise that holds for five of six unreadable cases is the kind of gap this project
+        # keeps finding.
+        raise EngineFingerprintUnavailable(
+            f"cannot read {manifest_path} to check whether worldbuilder_engine is "
+            f"current ({exc}). This oracle being unavailable is not the same as the "
+            "engine being current -- it fails the run rather than skip the check. "
+            "Produce the manifest with `npm run build:wasm` in viewer/."
+        ) from exc
+    for line in text.splitlines():
+        if line.startswith("source-fingerprint:"):
+            value = line.split(":", 1)[1].strip()
+            if value:
+                # Shape, not just presence. `assert_fingerprint_parity.py` validates both
+                # sides against this same pattern, and the two must agree about what counts
+                # as a digest at all. Without it a garbled manifest value is reported as
+                # "the engine is STALE" -- which sends a reader off to rebuild an engine
+                # that is fine, when the real problem is the file they were compared to.
+                # An unavailable oracle and a stale engine need different fixes, so they
+                # get different exceptions.
+                if not _DIGEST.fullmatch(value):
+                    raise EngineFingerprintUnavailable(
+                        f"{manifest_path} has a `source-fingerprint` value that is not a "
+                        f"sha256 digest: {value!r}. This oracle being unreadable is not "
+                        "the same as the engine being current, and it is not the same as "
+                        "the engine being stale -- it fails the run rather than guess "
+                        "which. Regenerate it with `npm run build:wasm` in viewer/."
+                    )
+                return value
+            break
+    raise EngineFingerprintUnavailable(
+        f"{manifest_path} has no usable `source-fingerprint` line -- it is missing, "
+        "empty, or the manifest format has changed underneath this reader. Rebuild it "
+        "with `npm run build:wasm` in viewer/, or fix this reader if the format moved."
+    )
+
+
+def _require_current_engine(engine_module, manifest_path):
+    """
+    Raise if `engine_module` was not built from the tree the manifest describes.
+
+    Returns nothing on success. Raises EngineFingerprintUnavailable if the oracle
+    (see `_manifest_source_fingerprint`) cannot be read, and EngineFingerprintStale if
+    it can be read but disagrees with the engine's own embedded fingerprint.
+    """
+    manifest_fingerprint = _manifest_source_fingerprint(manifest_path)
+    engine_fingerprint = engine_module.source_fingerprint()
+    if engine_fingerprint != manifest_fingerprint:
+        raise EngineFingerprintStale(
+            "worldbuilder_engine is STALE: it was built from a different tree than the "
+            "one currently checked out.\n"
+            f"  engine's embedded fingerprint : {engine_fingerprint}\n"
+            f"  manifest ({manifest_path.name}) fingerprint: {manifest_fingerprint}\n"
+            "Rebuild it from the current tree: `maturin develop --release --features "
+            "python` in crates/worldbuilder-engine/. If the manifest fingerprint looks "
+            "wrong instead, the manifest itself may be stale -- `npm run build:wasm` in "
+            "viewer/ regenerates it, and `npm run check:wasm` tells you if it already was."
+        )
+
+
 if os.environ.get("WORLDBUILDER_REQUIRE_ENGINE"):
     # Opt-in escape from importorskip below: on a machine that is supposed to have the
     # engine built (CI, in particular), a missing or stale `worldbuilder_engine` must
     # fail the run loudly rather than skip it -- a skipped conformance suite reports
     # green while comparing nothing at all, which is worse than no suite.
-    import worldbuilder_engine as engine
+    try:
+        import worldbuilder_engine as engine
+    except ImportError as exc:
+        pytest.fail(
+            "WORLDBUILDER_REQUIRE_ENGINE is set but `worldbuilder_engine` did not "
+            f"import ({exc}). Build it: `maturin develop --release --features python` "
+            "in crates/worldbuilder-engine/.",
+            pytrace=False,
+        )
+    try:
+        _require_current_engine(engine, _WASM_MANIFEST_PATH)
+    except (EngineFingerprintUnavailable, EngineFingerprintStale) as exc:
+        pytest.fail(str(exc), pytrace=False)
 else:
     engine = pytest.importorskip(
         "worldbuilder_engine",
@@ -7462,3 +7592,101 @@ def test_surface_honours_the_scalars_it_is_given_rather_than_their_defaults():
         worst = max(worst, abs(want - got))
     assert worst >= SURFACE_SCATTER_MAX_ABS_M / 2.0, (
         "the scatter no longer reaches half its own bound; re-measure", worst)
+
+
+# ---------------------------------------------------------------------------------------
+# WORLDBUILDER_REQUIRE_ENGINE's staleness guard (Task 4). These exercise the pure helper
+# functions directly rather than the module-level gate itself -- the gate runs once, at
+# collection, before any test function exists to assert against it, so a fake engine
+# object and a tmp_path manifest are what "prove it can fail" looks like here without a
+# subprocess per case.
+# ---------------------------------------------------------------------------------------
+
+class _FakeEngine:
+    def __init__(self, fingerprint):
+        self._fingerprint = fingerprint
+
+    def source_fingerprint(self):
+        return self._fingerprint
+
+
+def _write_manifest(tmp_path, body):
+    path = tmp_path / "MANIFEST.txt"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_require_current_engine_accepts_a_matching_fingerprint(tmp_path):
+    manifest = _write_manifest(
+        tmp_path, f"source-fingerprint: {_MATCHING}\nfingerprint-inputs: 29\n"
+    )
+    _require_current_engine(_FakeEngine(_MATCHING), manifest)  # must not raise
+
+
+def test_require_current_engine_rejects_a_stale_engine_naming_both_digests(tmp_path):
+    manifest = _write_manifest(tmp_path, f"source-fingerprint: {_MATCHING}\n")
+    with pytest.raises(EngineFingerprintStale) as excinfo:
+        _require_current_engine(_FakeEngine(_DIFFERENT), manifest)
+    message = str(excinfo.value)
+    assert "STALE" in message
+    assert _MATCHING in message and _DIFFERENT in message
+    assert "maturin develop" in message
+
+
+def test_require_current_engine_fails_on_a_missing_manifest_rather_than_passing(tmp_path):
+    missing = tmp_path / "does-not-exist" / "MANIFEST.txt"
+    with pytest.raises(EngineFingerprintUnavailable):
+        _require_current_engine(_FakeEngine(_MATCHING), missing)
+
+
+def test_require_current_engine_fails_on_a_manifest_with_no_fingerprint_line(tmp_path):
+    manifest = _write_manifest(tmp_path, "bytes: 84856\nbuilt: 2026-09-05T00:00:00.000Z\n")
+    with pytest.raises(EngineFingerprintUnavailable):
+        _require_current_engine(_FakeEngine(_MATCHING), manifest)
+
+
+def test_require_current_engine_fails_on_an_empty_fingerprint_value(tmp_path):
+    manifest = _write_manifest(tmp_path, "source-fingerprint: \nfingerprint-inputs: 29\n")
+    with pytest.raises(EngineFingerprintUnavailable):
+        _require_current_engine(_FakeEngine(_MATCHING), manifest)
+
+
+def test_a_garbled_manifest_digest_is_unavailable_not_stale(tmp_path):
+    # A manifest value that is not a sha256 sends a reader off to rebuild an engine that is
+    # fine, when the real problem is the file it was compared against. Those two need
+    # different fixes, so they get different exceptions -- and the shape check is what tells
+    # them apart. `assert_fingerprint_parity.py` validates both sides against the same
+    # pattern; if these two disagreed about what a digest is, one would accept what the
+    # other rejects.
+    for garbled in ["abc123", "not-a-digest", "A" * 64, "0" * 63, "0" * 65]:
+        manifest = _write_manifest(tmp_path, f"source-fingerprint: {garbled}\n")
+        with pytest.raises(EngineFingerprintUnavailable):
+            _require_current_engine(_FakeEngine(_MATCHING), manifest)
+
+
+def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value(tmp_path):
+    # The signature defect this task exists to close: an oracle that cannot be read must
+    # not be interpretable as "no disagreement". Confirm the unavailable path is a raise,
+    # not a sentinel return value that a caller could accidentally treat as equal to
+    # anything (including itself).
+    # Asserted BEHAVIOURALLY, not by reading the function's source text. An earlier version
+    # of this test grepped `inspect.getsource` for `return None` -- which a regression
+    # written as `return _UNKNOWN` would have sailed straight through. What matters is that
+    # no unreadable manifest can produce a VALUE, whatever that value is spelled.
+    unusable = [
+        "",
+        "artifact-sha256: abc\n",
+        "source-fingerprint:\n",
+        "source-fingerprint:    \n",
+        "Source-Fingerprint: 029396ea\n",
+        "prefixed source-fingerprint: 029396ea\n",
+    ]
+    for i, content in enumerate(unusable):
+        path = tmp_path / f"manifest-{i}.txt"
+        path.write_text(content, encoding="utf-8")
+        with pytest.raises(EngineFingerprintUnavailable):
+            _manifest_source_fingerprint(path)
+
+    # And a missing file, which cannot be written.
+    with pytest.raises(EngineFingerprintUnavailable):
+        _manifest_source_fingerprint(tmp_path / "does-not-exist.txt")

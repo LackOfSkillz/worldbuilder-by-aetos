@@ -9,7 +9,8 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "build:wasm:self-test": "node scripts/build-wasm.mjs self-test",
     "check:wasm": "node scripts/build-wasm.mjs check",
-    "build:wasm:stale-self-test": "node scripts/build-wasm.mjs stale-self-test"
+    "build:wasm:stale-self-test": "node scripts/build-wasm.mjs stale-self-test",
+    "digest:wasm": "node scripts/build-wasm.mjs digest"
   },
   "dependencies": {
     "cesium": "1.145.0"

@@ -35,10 +35,12 @@ the format moved. It cannot go green by matching nothing.
                way that could read "no match" as "nothing wrong".
 
                THE CASE THIS EXISTS FOR: with WORLDBUILDER_REQUIRE_ENGINE unset and no
-               engine built, tests/test_conformance.py skips AT IMPORT. All 150 of its
-               comparisons collapse into a single `1 skipped`, pytest exits 0, and CI
-               reports `240 passed, 1 skipped` -- green, having compared nothing. Asserting
-               the per-file count is what notices.
+               engine built, tests/test_conformance.py skips AT IMPORT. All 157 of its
+               tests collapse into a single `1 skipped` (150 conformance comparisons plus
+               7 guard unit tests -- not all 157 are comparisons; see the identity slice's
+               Task 5 report), pytest exits 0, and CI reports `241 passed, 1 skipped` --
+               green, having compared nothing. Asserting the per-file count is what
+               notices.
 """
 
 import argparse

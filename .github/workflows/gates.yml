@@ -81,8 +81,9 @@ jobs:
   # other; that costs nothing, and the alternative is a sixth job that could drift out of step
   # with the suite it lives in.
   #
-  # Baselines: 409 passed / 0 failed / 5 ignored under no-default-features, default and
-  # python; 439/0/5 under wasm and python+wasm. These ARE asserted, by a second step that
+  # Baselines: 418 passed / 0 failed / 5 ignored under no-default-features and default;
+  # 420/0/5 under python; 448/0/5 under wasm; 450/0/5 under python+wasm. These ARE asserted,
+  # by a second step that
   # reads `cargo test -- --list` -- not by grepping `test result:`, which is how a suite that
   # ran nothing gets called green. See the step's own comment.
   # ---------------------------------------------------------------------------------------
@@ -96,25 +97,33 @@ jobs:
           # `expect` is the number of tests that must RUN in that configuration, and
           # `expect_ignored` the number that must be marked ignored. The wasm configurations
           # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
+          #
+          # 2026-09-04, slice identity: these moved 409/439 -> 418/448 when build.rs and
+          # tests/build_fingerprint.rs landed. The `python` rows are TWO HIGHER than their
+          # non-python neighbours (420 and 450) because source_fingerprint() and Task 3's
+          # source_fingerprint_inputs() are both PyO3 exports whose binding tests only
+          # compile with that feature. Re-derived on this host by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines and
+          # subtracting the 5 ignored: 423/423/425/453/455 listed.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 409
+            expect: 418
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 409
+            expect: 418
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 409
+            expect: 420
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 439
+            expect: 448
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 439
+            expect: 450
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -187,6 +196,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Only for `node scripts/build-wasm.mjs digest` below, which computes the Node half
+      # of Task 3's fingerprint-parity gate. It reads and hashes source files; it builds
+      # nothing and never touches viewer/public/wasm.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Pin the Rust toolchain
         shell: bash
         run: |
@@ -212,34 +228,74 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "maturin==1.15.0" pytest
 
-      # The standing gap, made visible by CI rather than papered over.
+      # The standing gap this used to be (fixed by the identity slice's Task 1, kept here so
+      # the next person can see what it was): pyproject.toml declared setuptools as its build
+      # backend while the extension was built by maturin, and BOTH BACKENDS PRODUCED THE SAME
+      # DISTRIBUTION NAME. maturin walked up to the root pyproject.toml, read
+      # `[project] name = "worldbuilder-by-aetos"`, and built a wheel of that name containing
+      # only `worldbuilder_engine` -- so installing it UNINSTALLED a prior `pip install -e .`
+      # and took the pure-Python `worldbuilder/` package with it. The first CI run did exactly
+      # that and collected 14 `ModuleNotFoundError: No module named 'worldbuilder'` errors.
+      # tests/test_installation.py is the regression test for this: it imports `worldbuilder`
+      # from a subprocess whose cwd is outside the repo, so the "pytest runs from the repo
+      # root and sys.path papers over a missing install" crutch cannot hide the bug returning.
       #
-      # pyproject.toml declares setuptools as its build backend while the extension is built
-      # by maturin. That is already recorded as "the build is not reproducible from project
-      # metadata". CI found it is worse than that: BOTH BACKENDS PRODUCE THE SAME
-      # DISTRIBUTION NAME. maturin walks up to the root pyproject.toml, reads
-      # `[project] name = "worldbuilder-by-aetos"`, and builds
-      # `worldbuilder_by_aetos-0.1.0-cp311-...whl` containing only `worldbuilder_engine` --
-      # so installing it UNINSTALLS a prior `pip install -e .` and takes the pure-Python
-      # `worldbuilder/` package with it. The first CI run did exactly that and collected 14
-      # `ModuleNotFoundError: No module named 'worldbuilder'` errors.
+      # The fix: crates/worldbuilder-engine/pyproject.toml gives the extension its own
+      # distribution name (`worldbuilder-engine`, maturin backend), so the two installs no
+      # longer share a dist-info.
       #
-      # This is not a CI artefact. The same clobber has already happened in the local .venv:
-      # its only worldbuilder_by_aetos-0.1.0.dist-info says `Generator: maturin (1.15.0)`, and
-      # `import worldbuilder` there succeeds ONLY when the interpreter starts in the repo
-      # root. Nobody noticed because pytest is always run from the repo root.
-      #
-      # So this job does not install the reference package at all -- it imports it from the
-      # working tree, which is what has actually been happening all along. `python -m pytest`
-      # rather than `pytest` is load-bearing: `-m` puts the current directory on sys.path.
-      # Fixing the collision properly means giving the extension its own distribution name or
-      # moving the project to maturin outright, and that is its own slice.
-      - name: Build the engine wheel (maturin, not the declared backend)
+      # The order below -- `pip install -e .` first, then maturin -- is the order that was
+      # NECESSARY BEFORE THE SPLIT and is retained deliberately, not because it is still
+      # load-bearing. Once the names differ it should not matter: pip's uninstall-then-install
+      # keys on the project name, the two RECORDs are name-isolated, and the engine's
+      # pyproject.toml declares no `python-source`, so maturin structurally cannot see
+      # `worldbuilder/`. That reasoning is unverified -- reversing the order empirically needs
+      # a `pip uninstall` nobody has run. Keep the order until someone does; do not cite it as
+      # a settled dependency.
+      - name: Install the reference package (editable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e . --no-deps
+          python -c "import worldbuilder; print('reference imported from', worldbuilder.__file__)"
+
+      - name: Build the engine wheel (maturin, its own distribution now)
         shell: bash
         run: |
           set -euo pipefail
           maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
           python -c "import worldbuilder_engine; print('engine imported from', worldbuilder_engine.__file__)"
+
+      # THE FINGERPRINT PARITY GATE. Task 2 gave the Python extension the same source
+      # fingerprint `.wasm` provenance uses, by writing a SECOND implementation of the
+      # digest in Rust (`build.rs` + `bindings.rs::source_fingerprint`), because `maturin
+      # develop` does not run node. The ruling that allowed that duplication was explicit:
+      # "duplication that is checked is not duplication that rots." Nothing asserted the
+      # two implementations agree until this step existed.
+      #
+      # `node scripts/build-wasm.mjs digest` prints ONLY the Node-computed digest and its
+      # input count -- no build, no artifact touched -- as the independent statement this
+      # gate compares against the Rust-embedded `source_fingerprint()` /
+      # `source_fingerprint_inputs()` PyO3 exports the just-built extension carries.
+      - name: Compute the node-side source fingerprint (Task 3's other half)
+        shell: bash
+        working-directory: viewer
+        run: |
+          set -euo pipefail
+          node scripts/build-wasm.mjs digest | tee ../node-fingerprint.out
+
+      # See .github/scripts/assert_fingerprint_parity.py's own docstring for why this does
+      # not simply compare two strings: both sides' digest and input count are validated
+      # on their own terms -- 64-char lowercase hex, positive decimal integer -- before
+      # comparison, and the extension failing to import is treated as the entire Rust side
+      # being absent rather than an unrelated crash. A comparison that could read two
+      # empty/malformed values as "equal" is the exact defect class this project keeps
+      # finding elsewhere.
+      - name: Assert the node and rust source fingerprints agree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/assert_fingerprint_parity.py --node-output node-fingerprint.out
 
       # Collected BEFORE the run, and kept, because it is one of the two independent
       # statements the count gate cross-checks. `-q` prints one node id per test and a
@@ -265,24 +321,37 @@ jobs:
       # THE COUNT GATE, python half. The step above asks "did anything fail". It cannot ask
       # "did anything RUN", and on THIS suite that distinction has already cost a slice:
       # with WORLDBUILDER_REQUIRE_ENGINE unset and no engine built, tests/test_conformance.py
-      # skips AT IMPORT, all 150 of its comparisons collapse into one `1 skipped`, and pytest
-      # exits 0 reporting `240 passed, 1 skipped`. Green, having compared nothing. Nobody
-      # scanning that log finds a suspicious number, because there isn't one.
+      # skips AT IMPORT, all 157 of its tests (150 conformance comparisons plus 7 guard
+      # unit tests Task 4 added) collapse into one `1 skipped`, and pytest exits 0
+      # reporting `241 passed, 1 skipped` (240 in the other thirteen pre-existing files
+      # plus the 1 test_installation.py Task 1 added). Green, having compared nothing.
+      # Nobody scanning that log finds a suspicious number, because there isn't one.
       #
       # So the size is asserted, per file and in total, from two independently-produced
       # statements that must agree -- and the script fails hard if either is absent, rather
       # than matching nothing and calling it clean.
       #
-      # 390 = 150 in test_conformance.py + 240 across the other thirteen files. NOTE: the
-      # Task 2 report reads "390 conformance, 240 elsewhere"; that is a misreading of its own
-      # run -- 390 is the WHOLE suite. Re-derived here from `--collect-only -q`.
-      - name: Assert the suite -- 390 tests, 150 of them conformance
+      # 398 = 157 in test_conformance.py + 240 across the other thirteen pre-existing files +
+      # 1 in tests/test_installation.py (added by the identity slice's Task 1; it needs a
+      # subprocess with a different cwd, so it could not be an ordinary unit test, and it
+      # joins this suite rather than living elsewhere because this count gate is the thing
+      # that would otherwise let it silently stop running). NOTE: the Task 2 report reads
+      # "390 conformance, 240 elsewhere"; that is a misreading of its own run -- 390 was the
+      # WHOLE suite before this file existed. Re-derived here from `--collect-only -q`.
+      #
+      # 157 = the 150 conformance comparisons pinned above, plus 7 unit tests Task 4 added
+      # for `_require_current_engine`/`_manifest_source_fingerprint` (the staleness guard
+      # that makes WORLDBUILDER_REQUIRE_ENGINE=1 reject a stale engine, not just a missing
+      # one). Those 6 exercise the pure helper functions with a fake engine object and a
+      # tmp_path manifest -- the module-level gate itself runs once, at collection, before
+      # any test function exists to assert against it.
+      - name: Assert the suite -- 398 tests, 157 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 390 --expect-file tests/test_conformance.py=150
+            --expect-total 398 --expect-file tests/test_conformance.py=157
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from

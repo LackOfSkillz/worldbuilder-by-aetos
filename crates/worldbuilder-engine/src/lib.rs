@@ -213,6 +213,8 @@ impl World {
 #[pymodule]
 fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::source_fingerprint, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::source_fingerprint_inputs, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::vec3_length, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::vec3_cross, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::vec3_normalised, m)?)?;
