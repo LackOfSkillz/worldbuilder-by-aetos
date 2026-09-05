@@ -369,14 +369,26 @@ The guard is a content hash over every input that can change the artifact, writt
 `public/wasm/MANIFEST.txt` at build time:
 
 * every file under `crates/worldbuilder-engine/src`, recursively;
+* every file under `crates/worldbuilder-engine/examples` and
+  `crates/worldbuilder-engine/tests`, recursively;
 * `crates/worldbuilder-engine/Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`;
 * the compiler version (`rustc -vV` release, commit hash and host);
 * the literal cargo argument list.
 
-24 inputs. Deliberately over-inclusive: `bindings.rs` and `src/bin/` cannot affect a
+28 inputs. Deliberately over-inclusive: `bindings.rs` and `src/bin/` cannot affect a
 `--no-default-features --features wasm` build and will still trip it. A false *rebuild it*
 is a cheap failure; a false *it is current* is the one that costs. The artifact's own
 sha256 is recorded too, so a hand-edited or swapped `.wasm` is caught by the same command.
+
+**It was 24 until 2026-09-04.** `examples/` and `tests/` were outside it, and CI proved that
+mattered: run
+[33916847441](https://github.com/LackOfSkillz/worldbuilder-by-aetos/actions/runs/33916847441)
+shrank the parity corpus from 53,251 values to 52,451 by editing `examples/parity_dump.rs`,
+and this command still said *matches the source that is here now* while parity said *zero
+divergent*. Adding them changed the fingerprint (`cf3a437d…` → `64d7e7c3…`) but **not the
+artifact** — the rebuilt `.wasm` was byte-identical, `60244aec…`, which is the reproducibility
+claim below re-tested for free. The cost is that editing a test now requires
+`npm run build:wasm` to re-bless the manifest.
 
 **A hash over inputs is only sound if the artifact is a function of those inputs**, so that
 was checked rather than assumed: two consecutive rebuilds of identical source produced
@@ -402,7 +414,8 @@ Every arm above was run in the tree the artifact was built in. **A reviewer clon
 and `npm run check:wasm` reported STALE ARTIFACT on the first try**, with no edit to
 anything.
 
-`sourceFingerprint` hashes the **working-tree bytes** of its 24 inputs. The repository had no
+`sourceFingerprint` hashes the **working-tree bytes** of its inputs (24 at the time; 28
+now). The repository had no
 root `.gitattributes`, so those bytes were a property of the machine that checked the tree
 out rather than of the commit: at `core.autocrlf=true` — the Git-for-Windows default — the
 inputs arrive CRLF; at `core.autocrlf=false`, and on every Linux CI runner, LF. The tree this

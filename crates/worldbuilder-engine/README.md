@@ -157,11 +157,21 @@ refuses to report at all when it returns problems. It imports rather than reimpl
 because two copies of a provenance rule drift, and the copy that drifts is the one that
 stops refusing.
 
-The fingerprint covers **24 inputs**: every file under `src/` recursively, this crate's
-`Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`, the `rustc -vV` release, commit hash
-and host, and the literal cargo argument list. It is deliberately over-inclusive --
-`bindings.rs` cannot affect a `--features wasm` build and will still trip it -- because a
-false *rebuild it* is cheap and a false *it is current* is the one that costs.
+The fingerprint covers **28 inputs**: every file under `src/`, `examples/` and `tests/`
+recursively, this crate's `Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`, the
+`rustc -vV` release, commit hash and host, and the literal cargo argument list. It is
+deliberately over-inclusive -- `bindings.rs` cannot affect a `--features wasm` build and will
+still trip it -- because a false *rebuild it* is cheap and a false *it is current* is the one
+that costs.
+
+**`examples/` and `tests/` were added on 2026-09-04, taking the count from 24 to 28**, after
+CI demonstrated the hole: run
+[33916847441](https://github.com/LackOfSkillz/worldbuilder-by-aetos/actions/runs/33916847441)
+cut the parity corpus by a sixth by editing `examples/parity_dump.rs`, and `check:wasm` still
+reported the artifact current while parity reported zero divergent. Neither directory changes
+a byte of the `.wasm`, which is precisely why they were missing and precisely why they now
+count: the fingerprint is a claim about the tree the artifact was blessed in, and the corpus
+and the integration tests are part of what makes the blessing mean anything.
 
 **A consequence to plan for: touching a doc comment in `src/` invalidates the shipped
 artifact.** The fingerprint is over file content, not over anything semantic, so a one-line

@@ -240,7 +240,34 @@ function fingerprintInputs(root) {
       else if (entry.isFile()) files.push(full);
     }
   };
-  walk(join(root, "crates", "worldbuilder-engine", "src"));
+  // Every directory here must contribute at least one file. An empty (or renamed) one would
+  // otherwise contribute nothing and the fingerprint would go on looking healthy -- the
+  // silent-zero failure this repository keeps finding.
+  const walkNonEmpty = (dir, why) => {
+    const before = files.length;
+    walk(dir);
+    if (files.length === before) {
+      throw new Error(`fingerprint input directory is empty: ${dir} (${why})`);
+    }
+  };
+  walkNonEmpty(join(root, "crates", "worldbuilder-engine", "src"), "the engine itself");
+  // examples/ and tests/ were NOT fingerprinted until 2026-09-04, and that was a hole with
+  // a demonstration attached: run 33916847441 cut the parity corpus from 500 points per
+  // world to 400 by editing examples/parity_dump.rs, and `npm run check:wasm` said the
+  // artifact "matches the source that is here now" while parity reported zero divergent out
+  // of a corpus a sixth smaller. Provenance, parity and `cargo test` were all green. The
+  // same held for crates/worldbuilder-engine/tests/: the determinism guard and the wasm
+  // export tests could be deleted outright without provenance noticing.
+  //
+  // Neither directory changes a byte of the .wasm, so including them makes the fingerprint
+  // deliberately over-inclusive -- editing a test now requires `npm run build:wasm` to
+  // re-bless the manifest. That is the intended trade: the fingerprint answers "is the
+  // committed artifact the product of the tree that is here now", and the corpus and the
+  // integration tests are part of what makes an artifact believable.
+  walkNonEmpty(join(root, "crates", "worldbuilder-engine", "examples"),
+               "the parity corpus generator");
+  walkNonEmpty(join(root, "crates", "worldbuilder-engine", "tests"),
+               "the determinism guard and the integration tests");
   for (const extra of [
     join(root, "crates", "worldbuilder-engine", "Cargo.toml"),
     join(root, "Cargo.toml"),
