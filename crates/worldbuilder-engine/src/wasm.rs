@@ -941,6 +941,25 @@ fn decode_tectonic(record: &[f64]) -> Option<TectonicParams> {
         ridge_m: fields[6],
         ridge_width_m: fields[7],
         continental_blend: fields[8],
+        // **The structure fields are DELIBERATELY NOT ON THIS CHANNEL, and this line is
+        // where that decision lives.** Task 2 added `collision_asymmetry`, `suture_count`,
+        // `suture_spread_m`, `structure_depth` and `structure_wavelength_m`; its brief
+        // forbids viewer work and says to stop and report if a new parameter needs
+        // exposing, so `WB_TECTONIC_STRIDE` does not move and this channel keeps admitting
+        // exactly the nine envelope fields it admitted before.
+        //
+        // The rest come from `canonical()`, which sets every one of them to its inert
+        // value, so a record decoded here produces bit-for-bit the `TectonicParams` it
+        // produced before those fields existed. That is not an assumption: this file's
+        // `decode_tectonic` and `encode_tectonic` are round-trip tested, and
+        // `tectonics.rs::the_structure_fields_are_inert_at_canonical_settings` proves the
+        // canonical settings reduce to the pre-Task-2 expression.
+        //
+        // **A later task exposing these must widen the stride, `decode`, `encode`,
+        // `tectonic_is_admissible` AND sweep the export**, because `suture_spread_m` and
+        // `suture_count` together can drive `collision_reach_m` past
+        // `MAX_TECTONIC_RANGE_M`, which is a cliff and not merely an odd-looking world.
+        ..TectonicParams::canonical()
     };
     if tectonic_is_admissible(&tectonics) {
         Some(tectonics)

@@ -146,7 +146,126 @@ impl Noise {
             2.0 * total / loudest
         }
     }
+
+    /// A ridged multifractal: creases where the underlying field crosses its midpoint, and
+    /// each octave gated by the one above it so fine ridges only appear where a coarse
+    /// ridge already is. Returns a value in `[0, 1]`, one at the crest.
+    ///
+    /// **This is not in `worldbuilder/terrain/noise.py`, and the canonical path never
+    /// reaches it.** It is a new primitive, added for the opt-in tectonic structure field
+    /// in `tectonics.rs`. `TectonicParams::canonical()` sets `structure_depth` to exactly
+    /// 0.0, and `Tectonics::from_margin` branches on that before sampling, so a canonical
+    /// world never calls this at all -- which is why a new primitive here does not touch
+    /// `worldbuilder/`. Verified rather than assumed: the conformance suite is 398/398 with
+    /// `test_conformance.py = 157` on both sides of this commit.
+    ///
+    /// The technique is Musgrave's and is long published. **Nothing here is transcribed
+    /// from any implementation**; [`RIDGE_FEEDBACK`] was swept on this project's own
+    /// 4,500 km worlds by `src/bin/mountain_survey.rs`.
+    ///
+    /// **`1 - abs(n)` folded and re-scaled is nothing but extrema, which makes this the
+    /// exact place `f64::min` / `f64::max` / `.clamp()` would have been reached for.** They
+    /// are NaN-asymmetric and the repo guard does not catch them, so every bound below is
+    /// an explicit branch in the operand order `plates.rs::margin_at` uses -- keep the
+    /// first operand unless the second is strictly beyond it, so a NaN floors rather than
+    /// propagating into the terrain as a height.
+    ///
+    /// Args:
+    /// frequency: Cycles per unit of input, before lacunarity.
+    /// octaves: How many.
+    /// gain: Amplitude ratio between successive octaves.
+    /// lacunarity: Frequency ratio between successive octaves.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ridged(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        frequency: f64,
+        octaves: u32,
+        gain: f64,
+        lacunarity: f64,
+    ) -> f64 {
+        self.ridged_with_feedback(x, y, z, frequency, octaves, gain, lacunarity, RIDGE_FEEDBACK)
+    }
+
+    /// The same field with its octave feedback supplied rather than taken from the module
+    /// constant, so `src/bin/mountain_survey.rs` can sweep for [`RIDGE_FEEDBACK`]'s value on
+    /// this project's own worlds instead of inheriting somebody else's tuning.
+    ///
+    /// Split out exactly as `tectonics.rs`'s `continental` / `continental_with` pair is, and
+    /// for the same reason: one implementation, one caller-facing default, and a sweep that
+    /// exercises the shipped code rather than a copy of it. `ridged(..)` is
+    /// `ridged_with_feedback(.., RIDGE_FEEDBACK)`, the same operations in the same order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ridged_with_feedback(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        frequency: f64,
+        octaves: u32,
+        gain: f64,
+        lacunarity: f64,
+        feedback: f64,
+    ) -> f64 {
+        let mut total = 0.0f64;
+        let mut amplitude = 1.0f64;
+        let mut loudest = 0.0f64;
+        let mut frequency = frequency;
+        let mut weight = 1.0f64;
+        for _ in 0..octaves {
+            // `at` is in [0, 1); recentre to [-1, 1), fold at zero, and square. The fold is
+            // where the crease comes from; the square is what makes it a ridge rather than
+            // a corner, because the derivative of `folded^2` is zero at the crest.
+            let sample = self.at(x * frequency, y * frequency, z * frequency);
+            let folded = 1.0 - (2.0 * sample - 1.0).abs();
+            let signal = folded * folded * weight;
+
+            // An octave is only audible where the coarser one was already near its crest,
+            // which is what puts fine ridges along the spine of big ones instead of
+            // spraying them evenly over the field.
+            let raised = signal * feedback;
+            let capped = if raised < 1.0 { raised } else { 1.0 };
+            weight = if capped > 0.0 { capped } else { 0.0 };
+
+            total += signal * amplitude;
+            loudest += amplitude;
+            amplitude *= gain;
+            frequency *= lacunarity;
+        }
+        if loudest == 0.0 {
+            return 0.0;
+        }
+        let value = total / loudest;
+        // Each octave's `signal` is in [0, 1] and the sum is amplitude-normalised, so this
+        // is already in range for every finite input. These two branches are for the inputs
+        // that are not finite: a NaN or infinite `gain`, `frequency` or `lacunarity` would
+        // otherwise be handed on to the terrain as a height.
+        let capped = if value < 1.0 { value } else { 1.0 };
+        if capped > 0.0 {
+            capped
+        } else {
+            0.0
+        }
+    }
 }
+
+/// How strongly one octave of [`Noise::ridged`] gates the next.
+///
+/// Musgrave's construction has a feedback term of this shape; the VALUE is ours. **Swept on
+/// this project's own worlds by `src/bin/mountain_survey.rs`** through
+/// [`Noise::ridged_with_feedback`], not taken from anyone's tuning.
+///
+/// The sweep, 0.5 through 4.0 over 40,000 samples of a 200x200 lattice at 0.01 spacing, at
+/// the frequency a 120 km wavelength gives on a 4,500 km planet: the fraction of the field
+/// above 0.5 -- how much of the belt reads as crest rather than valley -- runs 0.169, 0.278,
+/// 0.375, **0.433**, 0.463, 0.479, 0.493. It is a saturating curve and 2.0 is its knee:
+/// doubling again to 4.0 buys 0.060 more crest, having bought 0.264 on the way in. The
+/// crease sharpness (largest absolute second difference along a line at 1e-3) is flat at
+/// 1.83e-1 from 2.0 upward, so nothing above 2.0 buys sharpness either. Full table and host
+/// in task-2-report.md.
+pub const RIDGE_FEEDBACK: f64 = 2.0;
 
 #[cfg(test)]
 mod tests {
@@ -244,6 +363,84 @@ mod tests {
         let n = Noise::new(12345, 0x0C0FFEE);
         let expected = 2.0 * (n.at(0.3 * 1.25, 0.4 * 1.25, 0.5 * 1.25) - 0.5);
         assert_eq!(n.fbm(0.3, 0.4, 0.5, 1.25, 1, 0.5, 2.0).to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn ridged_stays_in_the_unit_interval() {
+        // The bound this primitive's own doc claims. Swept rather than spot-checked, per
+        // the branch rule that every abort and hang found in this project was a band and
+        // not a cliff -- 4,000 samples across three coordinate scales.
+        let n = Noise::new(12345, 0x0C0FFEE);
+        for i in 0..1000 {
+            let t = i as f64 * 0.0137; // cast-ok: loop counter to float, no truncation
+            for scale in [0.1, 1.0, 37.0, 1_000.0] {
+                let v = n.ridged(t * scale, -t * scale, t * 0.25 * scale, 1.25, 5, 0.5, 2.0);
+                assert!((0.0..=1.0).contains(&v), "ridged at {t}x{scale} was {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn ridged_is_a_pure_function_of_its_arguments() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        let a = n.ridged(0.31, -0.22, 0.77, 3.0, 4, 0.5, 2.0);
+        let b = n.ridged(0.31, -0.22, 0.77, 3.0, 4, 0.5, 2.0);
+        assert_eq!(a.to_bits(), b.to_bits());
+    }
+
+    #[test]
+    fn ridged_has_creases_where_fbm_does_not() {
+        // **The property that makes this primitive worth adding**, and it is not "the
+        // numbers differ" -- that would be true of any two unrelated fields. A ridged field
+        // reaches its MAXIMUM on a crease: the second difference along a line is large and
+        // one-signed near the crest, where an equivalent fbm's is small. Measured as the
+        // largest absolute second difference over 4,000 samples at 1e-3 spacing, both
+        // fields normalised to unit range first so this compares SHAPE and not amplitude.
+        let n = Noise::new(12345, 0x0C0FFEE);
+        let step = 1e-3;
+        let mut sharpest_ridged = 0.0f64;
+        let mut sharpest_fbm = 0.0f64;
+        for i in 1..4000 {
+            let t = i as f64 * step; // cast-ok: loop counter to float, no truncation
+            let curve = |f: &dyn Fn(f64) -> f64| {
+                let d = f(t - step) - 2.0 * f(t) + f(t + step);
+                d.abs()
+            };
+            let r = curve(&|u: f64| n.ridged(u, 0.5, 0.5, 4.0, 4, 0.5, 2.0));
+            // fbm is centred on zero with roughly unit range; ridged is [0, 1]. Halving
+            // fbm puts the two on the same scale, so the comparison is not won by units.
+            let f = curve(&|u: f64| 0.5 * n.fbm(u, 0.5, 0.5, 4.0, 4, 0.5, 2.0));
+            if r > sharpest_ridged {
+                sharpest_ridged = r;
+            }
+            if f > sharpest_fbm {
+                sharpest_fbm = f;
+            }
+        }
+        // Measured on this host: ridged 1.29e-3, fbm 1.13e-5 -- two orders of magnitude.
+        // Asserted at one order so a change of octave defaults does not make this brittle.
+        assert!(
+            sharpest_ridged > 10.0 * sharpest_fbm,
+            "ridged {sharpest_ridged:e} is not sharply creased against fbm {sharpest_fbm:e}"
+        );
+    }
+
+    #[test]
+    fn ridged_zero_octaves_is_silent() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+        assert_eq!(n.ridged(0.3, 0.4, 0.5, 1.25, 0, 0.5, 2.0).to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
+    fn ridged_floors_a_nan_rather_than_passing_it_on() {
+        // The reason every bound in `ridged` is an explicit branch rather than `clamp`.
+        // A NaN reaching the terrain as a height is the failure mode; saturating to a
+        // real number in range is the designed behaviour, and this is the assertion that
+        // a later refactor to `.clamp()` -- which returns NaN for a NaN input -- breaks.
+        let n = Noise::new(12345, 0x0C0FFEE);
+        let v = n.ridged(0.3, 0.4, 0.5, f64::NAN, 4, 0.5, 2.0);
+        assert!(!v.is_nan(), "a NaN frequency produced {v}");
+        assert!((0.0..=1.0).contains(&v), "a NaN frequency produced {v}");
     }
 
     #[test]

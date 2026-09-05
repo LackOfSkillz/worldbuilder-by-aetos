@@ -29,6 +29,7 @@
 use crate::continentality::Continentality;
 use crate::detmath as m;
 use crate::kinematics::{motion_between, ACROSS_ENOUGH};
+use crate::noise::Noise;
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::tangent::TangentFrame;
@@ -106,10 +107,20 @@ pub const RIDGE_WIDTH_M: f64 = 380_000.0;
 pub const RIFT_M: f64 = -350.0;
 pub const RIFT_WIDTH_M: f64 = 70_000.0;
 
-/// The nine values that decide how high, how wide and how readily the plates build
-/// mountains, broken out so a caller who wants a different world can ask for one without
-/// touching what "canonical" means.
+/// The values that decide how high, how wide, how readily and in what SHAPE the plates
+/// build mountains, broken out so a caller who wants a different world can ask for one
+/// without touching what "canonical" means.
 ///
+/// **Nine of these size the envelope; four give it structure, and the second group is what
+/// turns a blade into a range.** The screenshots this slice's Task 2 started from
+/// (`shots/wide-steep-6000m-100km.png` against `shots/wide-canonical.png`) show the same
+/// landform rescaled: a soft swell at canonical, a smooth sharp-edged slab at 6,000 m over
+/// 100 km. The probe measured that slab at a **7.03% flank grade**, and Davis, Suppe &
+/// Dahlen (1983) Table 1 gives the Himalaya at **alpha = 4.0 +- 0.5 deg = a 7.0% grade** --
+/// so the envelope's grade was already a real orogen's and the picture was still not a
+/// range. Steepness was never the missing thing; local shape was.
+///
+
 /// `Tectonics::new` takes `Option<TectonicParams>`, following the house pattern already on
 /// `Detail::new`'s `relief: Option<ReliefParams>` and `Surface::new`'s
 /// `features: Option<FeatureInput>`: **`None` is the canonical path, not an implicit
@@ -154,13 +165,166 @@ pub struct TectonicParams {
     /// the "how many mountains" knob: it governs how much of a margin's response is the
     /// collision profile at all.
     pub continental_blend: f64,
+
+    // ----------------------------------------------------------------- the structure field
+    //
+    // **A FOURTH TECHNIQUE WAS BUILT, MEASURED AND REJECTED, AND THIS SAYS SO SO THAT
+    // NOBODY RE-PROPOSES IT BLIND.** `crest_warp` warped the signed across-margin distance
+    // before its absolute value was taken, bending the crest line off the plate bisector.
+    // It worked -- the survey's de-trended crest-wander measurement moved monotonically
+    // from 49.2 km to 78.8 km of maximum displacement across six settings -- and it bought
+    // NOTHING ELSE: summit count went 2 -> 1, across-range crest count stayed at 1 at every
+    // setting, the flank ratio did not move, the peak lost up to 248 m, and
+    // `collision_reach_m` grew 150%, pushing configurations at the range gate. And
+    // `structure_depth` displaces the crest FURTHER as a side effect (66.2 km at depth 0.5,
+    // from a measurement with no unresolved stations) while also adding twelve summits. A
+    // curved blade is still a blade. Full tables in task-2-report.md.
+    //
+    // Every field below is INERT at `canonical()`, by value and not by convention: the
+    // canonical setting of each is the arithmetic identity for the expression it enters, so
+    // the canonical path performs the same operations on the same numbers in the same order
+    // as it did before these existed. That is what `the_structure_fields_are_inert_at_...`
+    // asserts by bits, and it is why `worldbuilder/terrain/tectonics.py` did not have to
+    // move.
+    /// How much narrower the overriding side of a collision is than the subducting side.
+    /// **One parameter, not two.**
+    ///
+    /// A collisional range is asymmetric by construction. Willett, Beaumont & Fullsack
+    /// (1993): a wedge grown by accretion at its toe (the **pro**-wedge, on the subducting
+    /// side) takes the MINIMUM taper; one grown by material carried across the singularity
+    /// (the **retro**-wedge, on the overriding side) takes the MAXIMUM. That paper contains
+    /// no numbers and says the problem is scale independent, so it is cited here for the
+    /// mechanism only.
+    ///
+    /// The numbers are Naylor & Sinclair (2008), *Basin Research*, verbatim:
+    /// **alpha_pro = 1.5 deg, alpha_retro = 2.5 deg**, giving at H_max = 3 km a **pro-wedge
+    /// 115 km wide and a retro-wedge 69 km wide**. 2.5/1.5 = 1.67 and 115/69 = 1.67 -- the
+    /// widths are the exact inverse of the tangents at equal height, so ONE ratio gives
+    /// both and a second parameter would be a redundant way to disagree with the first.
+    ///
+    /// **The wide side keeps `continent_collision_width_m` and the narrow side is that
+    /// divided by this**, rather than splitting the width about its mean. That choice is
+    /// deliberate: it means raising the asymmetry can only ever make a range NARROWER, so no
+    /// setting of this field can push a profile past [`MAX_TECTONIC_RANGE_M`] and turn the
+    /// range gate into the cliff its own docstring exists to prevent.
+    ///
+    /// 1.0 is canonical and is exactly symmetric: `width / 1.0` is `width` bit-for-bit.
+    /// A value at or below zero is treated as 1.0 rather than producing an infinite or
+    /// negative width -- nothing clamps, but nothing divides by zero either.
+    pub collision_asymmetry: f64,
+    /// How many parallel sutures the collision profile stacks, at hashed inboard offsets.
+    ///
+    /// **The sleeper, and the only one of these that supplies structure ACROSS the range**
+    /// at 50-200 km -- the axis noise does not reach and the axis a real range has. Three
+    /// independent lines of evidence arrive here: reading shipped generator code; terrane
+    /// accretion (over 70% of the North American Cordillera is accreted terranes); and the
+    /// Himalaya carrying at least two sutures of different ages, which is why it has
+    /// internal belt structure rather than one crest.
+    ///
+    /// Pure arithmetic -- a short sum of bumps, no new primitive. 1 is canonical, and the
+    /// first suture's weight is exactly 1.0 and its offset exactly zero, so a count of 1 is
+    /// the single bump this always was.
+    ///
+    /// **HAZARD FOR ANY BOUNDARY THAT LATER ADMITS THIS FROM OUTSIDE.** It is a loop bound.
+    /// A `u32` near its maximum makes every convergent sample walk four billion iterations,
+    /// which is a HANG, not a strange-looking world -- and this project has already found
+    /// one ~2,600-second hang by sweeping an export's inputs and zero by spot-checking them.
+    /// Nothing here clamps, per `MAX_TECTONIC_RANGE_M`'s note that validation belongs at the
+    /// boundary; the survey swept 1 through 4 and nothing above 4 was measured to buy
+    /// anything. `wasm.rs::decode_tectonic` deliberately does not carry this field, and says
+    /// so at the line where it fills it from `canonical()` instead.
+    pub suture_count: u32,
+    /// How far apart the stacked sutures sit, inboard, in metres before hashing.
+    ///
+    /// Ignored when `suture_count` is 1. 0.0 is canonical. **A caller setting both this and
+    /// a large count is responsible for the reach**: see [`TectonicParams::collision_reach_m`],
+    /// which states how far the profile now carries and is what a boundary admitting these
+    /// values should check against [`MAX_TECTONIC_RANGE_M`].
+    pub suture_spread_m: f64,
+    /// How much of the collision amplitude is handed to the structure field -- a ridged
+    /// multifractal times a low-frequency segmentation field, both sampled at the point.
+    ///
+    /// The ridging supplies ridge-and-valley relief ALONG the belt; the segmentation is what
+    /// breaks a continuous welt into separate massifs. It also matches what the field
+    /// measurements say about uplift: ordinary orogens run **1-3 mm/yr** (Kishtwar ~3,
+    /// Western Alps ~2.5, Southern Alps 1-8) while hotspots run **9-13 mm/yr** (Nanga Parbat
+    /// 9-13, Namche Barwa ~9) **and are narrow**. A range's uplift is spiky along its
+    /// length, not a smooth dome.
+    ///
+    /// 0.0 is canonical, and the multiplier is then exactly 1.0 without either noise field
+    /// being sampled -- which is what keeps [`crate::noise::Noise::ridged`], a primitive the
+    /// Python oracle does not have, off the canonical path entirely.
+    pub structure_depth: f64,
+    /// The wavelength of the structure field's coarsest ridge octave, in metres. Inert while
+    /// `structure_depth` is 0.0; the canonical value is a placeholder that is never read on
+    /// that path, and it is stated here rather than left at zero so a caller who turns the
+    /// depth up gets a sane field rather than a division by nothing.
+    pub structure_wavelength_m: f64,
 }
 
+/// The value of [`TectonicParams::collision_asymmetry`] that means "symmetric", and the
+/// canonical setting. Named rather than written as a bare 1.0 because it is the identity
+/// this block's inertness argument rests on.
+pub const COLLISION_SYMMETRIC: f64 = 1.0;
+
+/// How many octaves the structure field's ridged component takes, and its segmentation
+/// component. Both swept by `src/bin/mountain_survey.rs` on this project's own worlds.
+pub const STRUCTURE_OCTAVES: u32 = 4;
+pub const SEGMENTATION_OCTAVES: u32 = 2;
+
+/// How much longer the segmentation field's wavelength is than the ridge field's. The
+/// segmentation is what decides where one massif ends and the next begins, so it has to be
+/// coarse relative to the ridges it is gating or it just adds a second layer of ridges.
+pub const SEGMENTATION_WAVELENGTH_RATIO: f64 = 6.0;
+
+/// Salts, so the three fields this module samples are independent of each other and of
+/// `continentality`'s. ASCII, in the house style of `stream.rs`'s jitter salts.
+pub const STRUCTURE_SALT: u64 = 0x7374_7275_6374_7572; // "structur"
+pub const SEGMENTATION_SALT: u64 = 0x7365_676D_656E_7473; // "segments"
+
+/// The scale a 64-bit hash is divided by to land in `[0, 1)`. 2^64, exactly representable.
+const HASH_SCALE: f64 = 18_446_744_073_709_551_616.0;
+
+/// A stable fraction in `[0, 1)` for an ordered pair of plate indices and a salt.
+///
+/// **The ordering is the point.** A suture offset or a warp sense derived from geometry can
+/// flip when the same margin is sampled from the other side of it, and a sign that flips
+/// across a boundary is a cliff. Sorting the two indices before hashing means both sides of
+/// one margin get the same answer by construction, not by luck.
+///
+/// The avalanche is `stream.rs::node_hash`'s and `noise.rs::lattice`'s, which is this
+/// project's one integer-mixing shape.
+fn pair_fraction(a: usize, b: usize, salt: u64) -> f64 {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let mut h = (lo as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) // cast-ok: plate index to unsigned for hashing, no arithmetic meaning
+        ^ (hi as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) // cast-ok: plate index to unsigned for hashing, no arithmetic meaning
+        ^ salt.wrapping_mul(0x1656_67B1_9E37_79F9);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+    h ^= h >> 33;
+    h as f64 / HASH_SCALE // cast-ok: a u64 hash to f64 over an exact power of two, as `stream.rs::node_fraction` does
+}
+
+/// The smallest weight a stacked suture past the first can carry, and how much of the
+/// remaining range the hash spans. Sutures of unequal size is the observed shape -- one
+/// dominant belt with lesser ones beside it -- rather than a comb of identical crests.
+const SUTURE_WEIGHT_FLOOR: f64 = 0.45;
+
+/// How much the hash may stretch or squeeze a suture's nominal offset, either way. Keeps
+/// the sutures ordered inboard while stopping them landing on an exact arithmetic comb.
+const SUTURE_OFFSET_JITTER: f64 = 0.35;
+
 impl TectonicParams {
-    /// Exactly today's nine values, each traceable to the module constant above it.
+    /// Exactly today's nine envelope values, each traceable to the module constant above
+    /// it, plus the six structure fields at their inert settings.
+    ///
     /// Building a `Tectonics` with `None` and one with `Some(TectonicParams::canonical())`
     /// must produce bit-identical output -- see `surface.rs`'s
-    /// `tectonics_none_matches_tectonics_some_canonical_bit_for_bit`.
+    /// `tectonics_none_matches_tectonics_some_canonical_bit_for_bit` -- and, since Task 1
+    /// found that test cannot prove the params are READ, the structure fields carry their
+    /// own inertness proof in `the_structure_fields_are_inert_at_canonical_settings`.
     pub fn canonical() -> Self {
         Self {
             continent_collision_m: CONTINENT_COLLISION_M,
@@ -172,7 +336,40 @@ impl TectonicParams {
             ridge_m: RIDGE_M,
             ridge_width_m: RIDGE_WIDTH_M,
             continental_blend: CONTINENTAL_BLEND,
+            collision_asymmetry: COLLISION_SYMMETRIC,
+            suture_count: 1,
+            suture_spread_m: 0.0,
+            structure_depth: 0.0,
+            structure_wavelength_m: 120_000.0,
         }
+    }
+
+    /// How far from the margin the collision profile still has something to say, in metres.
+    ///
+    /// The furthest suture's centre plus the collision width -- the wider flank, since
+    /// `collision_asymmetry` can only ever narrow the other one.
+    /// wider of the two flank half-widths. **This is the number a boundary admitting a
+    /// caller-chosen block must check against [`MAX_TECTONIC_RANGE_M`]**, because a profile
+    /// that has not reached zero by the gate is truncated there rather than faded, which is
+    /// exactly the cliff that constant exists to prevent. Nothing here clamps -- validation
+    /// belongs at the boundary that admits a block, per `MAX_TECTONIC_RANGE_M`'s own note.
+    ///
+    /// At `canonical()` this is `continent_collision_width_m` exactly: one suture at offset
+    /// zero and symmetric flanks.
+    pub fn collision_reach_m(&self) -> f64 {
+        let furthest = if self.suture_count > 1 {
+            let last = f64::from(self.suture_count - 1); // cast-ok: a small count to float, exact
+            let stretched = self.suture_spread_m * (1.0 + SUTURE_OFFSET_JITTER);
+            let reach = last * stretched;
+            if reach > 0.0 {
+                reach
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        furthest + self.continent_collision_width_m
     }
 }
 
@@ -234,6 +431,38 @@ pub(crate) fn bump(distance_m: f64, width_m: f64) -> f64 {
     fade * fade * (3.0 - 2.0 * fade)
 }
 
+/// The same hump with two different half-widths meeting at the crest: `width_m` on the
+/// subducting side and `width_m / asymmetry` on the overriding one.
+///
+/// **A doubly-vergent wedge, which is what a collisional range actually is.** See
+/// [`TectonicParams::collision_asymmetry`] for the mechanism and the published angles.
+///
+/// Positive `distance_m` is the overriding side, because `from_margin` evaluates the
+/// profile at `+distance_m` weighted by `toward` -- and `toward` goes to one where the
+/// INBOARD side is the more continental, which is the overriding plate. So the narrow,
+/// steep retro-wedge lands on the side the geology puts it.
+///
+/// Continuous, and smoothly so: both branches are [`bump`], which is one at zero and flat
+/// there, so the two half-profiles meet at the crest with matching value and matching
+/// (zero) derivative. There is no crease at the join, which is the whole reason the
+/// canonical `bump` is a smoothstep rather than a cosine.
+///
+/// Args:
+/// distance_m: Signed across-margin distance; positive is the overriding side.
+/// width_m: The subducting side's half-width -- the wider one.
+/// asymmetry: How many times narrower the overriding side is. At or below zero is treated
+/// as symmetric rather than producing an infinite or negative width.
+pub(crate) fn asymmetric_bump(distance_m: f64, width_m: f64, asymmetry: f64) -> f64 {
+    // `width_m / 1.0` is `width_m` bit-for-bit, so the canonical setting is not merely
+    // close to `bump(distance_m, width_m)` -- it is the identical expression.
+    let width = if distance_m > 0.0 && asymmetry > 0.0 {
+        width_m / asymmetry
+    } else {
+        width_m
+    };
+    bump(distance_m, width)
+}
+
 /// What kind of ground lies either side of a margin, here.
 ///
 /// Attributes:
@@ -292,6 +521,16 @@ pub struct Tectonics {
     land: Continentality,
     radius_m: f64,
     params: TectonicParams,
+    /// The two fields the opt-in structure work samples, built once here so no sample
+    /// pays a constructor. **Built unconditionally and sampled conditionally**: constructing
+    /// a `Noise` is two multiplies and an XOR, and making the FIELDS optional would put an
+    /// `Option` test in the hot path for a saving smaller than the test.
+    ///
+    /// Salted apart from each other and from `continentality`'s `NOISE_SALT`, so the ridges
+    /// and the segmentation are two independent fields on one world rather than one field at
+    /// two amplitudes.
+    structure: Noise,
+    segmentation: Noise,
 }
 
 impl Tectonics {
@@ -306,7 +545,14 @@ impl Tectonics {
         params: Option<TectonicParams>,
     ) -> Self {
         let params = params.unwrap_or_else(TectonicParams::canonical);
-        Self { plates, land, radius_m, params }
+        // `Continentality` kept the world seed for exactly this -- see its `world_seed`
+        // field. Nothing else in the engine gives `Tectonics` a seed, and adding one to
+        // this signature would have moved six call sites including two conformance
+        // bindings for a value the layer next door already holds.
+        let world_seed = land.world_seed();
+        let structure = Noise::new(world_seed, STRUCTURE_SALT);
+        let segmentation = Noise::new(world_seed, SEGMENTATION_SALT);
+        Self { plates, land, radius_m, params, structure, segmentation }
     }
 
     /// What this world's uplift profiles are set to. Read-only: nothing writes these after
@@ -413,6 +659,110 @@ impl Tectonics {
         self.land.base_elevation(point) + self.offset_m(point)
     }
 
+    /// The stacked-suture collision shape at a signed across-margin distance.
+    ///
+    /// **A range is not one crest.** Over 70% of the North American Cordillera is accreted
+    /// terranes and one of its margins took four separate accretion events in 60 Myr; the
+    /// Himalaya carries at least two sutures of different ages, which is why it has internal
+    /// belt structure rather than a single ridge. So the collision profile is a short sum of
+    /// asymmetric bumps at hashed inboard offsets, not a single symmetric one -- and that
+    /// supplies structure ACROSS the range at 50-200 km, the axis a noise field cannot
+    /// reach because noise has no idea where the margin is.
+    ///
+    /// Weights and offsets are hashed from the ORDERED plate pair, so both sides of one
+    /// margin agree about where its sutures are. The first suture is special-cased to weight
+    /// exactly 1.0 at offset exactly 0.0, which is what makes `suture_count == 1` the single
+    /// [`asymmetric_bump`] this profile has always been -- identical expression, not merely
+    /// an equal value.
+    ///
+    /// **Overlapping sutures ADD.** With `suture_spread_m` below the flank width the sum
+    /// is a plateau rather than a comb, and above it the crests separate with saddles
+    /// between. That interaction is real, it means the height knob and the count knob are
+    /// not independent, and `src/bin/mountain_survey.rs` measures the peak at every pair
+    /// rather than hiding it behind a normalisation nobody could justify.
+    ///
+    /// Args:
+    /// across_m: Signed across-margin distance, already warped; positive is inboard.
+    /// near: The plate the point is on.
+    /// far: The plate across the margin.
+    fn sutures(&self, across_m: f64, near: &Plate, far: &Plate) -> f64 {
+        let params = self.params;
+        let mut total = asymmetric_bump(
+            across_m,
+            params.continent_collision_width_m,
+            params.collision_asymmetry,
+        );
+        let mut index = 1u32;
+        while index < params.suture_count {
+            // In [-1, 1), so a suture sits either side of its nominal offset and the belt
+            // does not read as an arithmetic comb.
+            let jitter =
+                2.0 * pair_fraction(near.index, far.index, STRUCTURE_SALT ^ u64::from(index)) - 1.0;
+            let centre = f64::from(index) // cast-ok: a small suture index to float, exact
+                * params.suture_spread_m
+                * (1.0 + SUTURE_OFFSET_JITTER * jitter);
+            let weight = SUTURE_WEIGHT_FLOOR
+                + (1.0 - SUTURE_WEIGHT_FLOOR)
+                    * pair_fraction(near.index, far.index, SEGMENTATION_SALT ^ u64::from(index));
+            total += weight
+                * asymmetric_bump(
+                    across_m - centre,
+                    params.continent_collision_width_m,
+                    params.collision_asymmetry,
+                );
+            index += 1;
+        }
+        total
+    }
+
+    /// The structure multiplier at a point: a ridged multifractal gated by a coarse
+    /// segmentation field, mixed in by `structure_depth`. In `[1 - depth, 1]`.
+    ///
+    /// The ridging is what gives relief ALONG the belt; the segmentation is what breaks a
+    /// continuous welt into separate massifs, which is the difference between a range and a
+    /// wall. Both match what the uplift measurements say: an ordinary orogen runs 1-3 mm/yr
+    /// and its hotspots 9-13 mm/yr, and the hotspots are narrow -- a spiky field, not a dome.
+    ///
+    /// **Multiplied into the collision amplitude, never added.** An added field would move
+    /// ground that is nowhere near a margin and would not fade with the envelope; a
+    /// multiplied one can only carve the range that is already there, which is the whole
+    /// envelope-times-structure argument this task exists for.
+    fn structure_at(&self, point: &SpherePoint) -> f64 {
+        let params = self.params;
+        if params.structure_wavelength_m <= 0.0 {
+            return 1.0;
+        }
+        let frequency = self.radius_m / params.structure_wavelength_m;
+        let v = point.vector;
+        let ridges = self.structure.ridged(
+            v.x * frequency,
+            v.y * frequency,
+            v.z * frequency,
+            1.0,
+            STRUCTURE_OCTAVES,
+            0.5,
+            2.0,
+        );
+        // `fbm` is centred on zero with roughly unit range; recentre to [0, 1] and
+        // smoothstep so a massif's edge is a soft boundary rather than a step. Bounded by
+        // explicit branch: the house form, and `clamp` is NaN-asymmetric.
+        let coarse = self.segmentation.fbm(
+            v.x * frequency / SEGMENTATION_WAVELENGTH_RATIO,
+            v.y * frequency / SEGMENTATION_WAVELENGTH_RATIO,
+            v.z * frequency / SEGMENTATION_WAVELENGTH_RATIO,
+            1.0,
+            SEGMENTATION_OCTAVES,
+            0.5,
+            2.0,
+        );
+        let raw = coarse * 0.5 + 0.5;
+        let capped = if raw < 1.0 { raw } else { 1.0 };
+        let bounded = if capped > 0.0 { capped } else { 0.0 };
+        let segments = bounded * bounded * (3.0 - 2.0 * bounded);
+
+        1.0 - params.structure_depth + params.structure_depth * ridges * segments
+    }
+
     /// One margin's contribution to the ground here.
     ///
     /// Args:
@@ -504,12 +854,37 @@ impl Tectonics {
         // and `subduction`, which are local to this call, and a free function would need
         // all three threaded through as extra parameters for no benefit.
         //
-        // `params` is a copy rather than a borrow of `self.params` so the closure captures
-        // a plain value and never holds a borrow of `self` across the two calls below.
+        // `params` is a copy rather than a borrow of `self.params` so the hot fields are a
+        // plain value in the closure. The closure DOES now hold a shared borrow of `self`,
+        // for `sutures`, which is sound and was not true before this task: nothing here is
+        // mutable and `Tectonics` has no interior mutability -- `noise.rs` dropped the
+        // Python's corner cache precisely so it would not.
         let params = self.params;
+
+        // ------------------------------------------------------- the structure field
+        //
+        // Sampled ONCE per call, outside the closure, for two reasons. It costs: `profile`
+        // is evaluated twice, at `+distance_m` and `-distance_m`, and both are the same
+        // point, so a sample inside would be paid twice for one answer. And it is CORRECT:
+        // it describes where on the belt this point sits, which is a property of the point
+        // and not of which side of the blend is being evaluated.
+        //
+        // Skipped entirely at its canonical setting, which is what keeps `Noise::ridged` --
+        // a primitive `worldbuilder/terrain/noise.py` does not have -- off the canonical
+        // path rather than merely multiplied by zero on it.
+        let structure = if params.structure_depth != 0.0 {
+            self.structure_at(point)
+        } else {
+            1.0
+        };
+
         let profile = |across_m: f64| -> f64 {
-            let collided =
-                params.continent_collision_m * bump(across_m, params.continent_collision_width_m);
+            let collided = params.continent_collision_m
+                * structure
+                * self.sutures(across_m, near, far);
+            // Only the collision term is stacked and modulated. The trench, the arc and
+            // the coastal rise stay anchored to the margin itself, which is where they
+            // belong: a trench IS the plate boundary.
             let trench = TRENCH_M * bump(across_m + TRENCH_OFFSET_M, TRENCH_WIDTH_M);
             let arc =
                 params.island_arc_m * bump(across_m - ISLAND_ARC_OFFSET_M, params.island_arc_width_m);
@@ -902,7 +1277,7 @@ mod tests {
 
     /// Every field of `TectonicParams`, and the one-line accessor that perturbs it.
     #[allow(clippy::type_complexity)]
-    const FIELDS: [(&str, fn(&mut TectonicParams)); 9] = [
+    const FIELDS: [(&str, fn(&mut TectonicParams)); 13] = [
         ("continent_collision_m", |p| p.continent_collision_m = flip_last_bit(p.continent_collision_m)),
         ("continent_collision_width_m", |p| {
             p.continent_collision_width_m = flip_last_bit(p.continent_collision_width_m)
@@ -916,6 +1291,22 @@ mod tests {
         ("ridge_m", |p| p.ridge_m = flip_last_bit(p.ridge_m)),
         ("ridge_width_m", |p| p.ridge_width_m = flip_last_bit(p.ridge_width_m)),
         ("continental_blend", |p| p.continental_blend = flip_last_bit(p.continental_blend)),
+        // The four structure fields. `collision_asymmetry` is canonically 1.0, so a
+        // one-ULP flip is a real change to a real width and it must show up. The other
+        // three are canonically ZERO or canonically unread, so a one-ULP flip of them is
+        // NOT a meaningful perturbation and they are expected to come back BLIND here --
+        // that is the design (they are inert at canonical) and not a hole. What proves
+        // they are wired is `each_structure_field_moves_the_answer_at_a_stated_setting`
+        // below, which perturbs them by an amount the field actually has, and this array
+        // carries them so a reader comparing it against the struct sees no field missing.
+        // `suture_count` is a `u32` and cannot take an ULP flip at all; it is covered by
+        // the stated-setting test only.
+        ("collision_asymmetry", |p| p.collision_asymmetry = flip_last_bit(p.collision_asymmetry)),
+        ("suture_spread_m", |p| p.suture_spread_m = flip_last_bit(p.suture_spread_m)),
+        ("structure_depth", |p| p.structure_depth = flip_last_bit(p.structure_depth)),
+        ("structure_wavelength_m", |p| {
+            p.structure_wavelength_m = flip_last_bit(p.structure_wavelength_m)
+        }),
     ];
 
     /// **The test that makes `TectonicParams` mean anything.**
@@ -1033,6 +1424,7 @@ mod tests {
                 "coastal_uplift_m",
                 "coastal_uplift_width_m",
                 "continental_blend",
+                "collision_asymmetry",
             ],
             "a field that stops moving the answer is a slider that does nothing"
         );
@@ -1080,5 +1472,309 @@ mod tests {
         let world = lopsided_world();
         let contribution = world.from_margin_for_test(419_000.0);
         assert_eq!(contribution, 0.0, "a margin 419 km away must contribute exactly nothing");
+    }
+
+    // ------------------------------------------------------------- the structure field
+
+    /// **The inertness proof the whole slice's safety argument rests on.**
+    ///
+    /// Ruling 1 says `worldbuilder/terrain/tectonics.py` is the conformance oracle for 157
+    /// tests and no default may move. This task added a stacked, asymmetric and
+    /// noise-modulated collision term and a ridged-multifractal primitive the Python does
+    /// not have -- all of which is safe only if the canonical settings reduce to the exact
+    /// expression that was there before, operation for operation.
+    ///
+    /// So this asserts the reduction directly rather than inferring it from a green suite:
+    /// at `canonical()`, `sutures` IS `bump(across_m, continent_collision_width_m)`,
+    /// bit-for-bit, over a sweep from -420 km to +420 km at 500 m. Not "close" -- equal by
+    /// bits, on both sides of zero, because the asymmetric branch is taken on one side and
+    /// not the other and both must reduce.
+    #[test]
+    fn the_structure_fields_are_inert_at_canonical_settings() {
+        let world = lopsided_world();
+        let params = TectonicParams::canonical();
+        let mut across_m = -MAX_TECTONIC_RANGE_M;
+        while across_m <= MAX_TECTONIC_RANGE_M {
+            let structured = world.tectonics.sutures(across_m, &world.near, &world.far);
+            let plain = bump(across_m, params.continent_collision_width_m);
+            assert_eq!(
+                structured.to_bits(),
+                plain.to_bits(),
+                "the canonical collision shape moved at {across_m} m"
+            );
+            across_m += 500.0;
+        }
+        // And the fields whose canonical value IS the arithmetic identity say so.
+        assert_eq!(params.collision_asymmetry.to_bits(), 1.0f64.to_bits());
+        assert_eq!(params.structure_depth.to_bits(), 0.0f64.to_bits());
+        assert_eq!(params.suture_count, 1);
+        assert_eq!(params.suture_spread_m.to_bits(), 0.0f64.to_bits());
+    }
+
+    /// `asymmetric_bump` at a symmetric ratio is `bump`, by bits, on both sides of the sign
+    /// boundary where its branch changes. The discrimination is the second half: at 1.67 it
+    /// must NOT be `bump` inboard, or the first half would pass for a vacuous reason.
+    #[test]
+    fn a_symmetric_asymmetric_bump_is_the_plain_bump() {
+        for i in -1000..=1000 {
+            let d = f64::from(i) * 500.0;
+            assert_eq!(
+                asymmetric_bump(d, 400_000.0, COLLISION_SYMMETRIC).to_bits(),
+                bump(d, 400_000.0).to_bits(),
+                "symmetric asymmetric_bump differs at {d} m"
+            );
+        }
+        let inboard = 100_000.0;
+        assert_ne!(
+            asymmetric_bump(inboard, 400_000.0, 1.67).to_bits(),
+            bump(inboard, 400_000.0).to_bits(),
+            "a 1.67 ratio that changed nothing inboard would make the sweep above vacuous"
+        );
+        assert_eq!(
+            asymmetric_bump(-inboard, 400_000.0, 1.67).to_bits(),
+            bump(-inboard, 400_000.0).to_bits(),
+            "the OUTBOARD side keeps the full width -- that is what bounds the reach"
+        );
+    }
+
+    /// The published shape, checked as a shape and not as arithmetic.
+    ///
+    /// Naylor & Sinclair (2008) give alpha_pro = 1.5 deg and alpha_retro = 2.5 deg, a ratio
+    /// of 1.67, and a pro-wedge of 115 km against a retro-wedge of 69 km -- 115/69 = 1.67,
+    /// the exact inverse. So a profile built from ONE asymmetry ratio must reproduce that
+    /// width ratio at half height.
+    ///
+    /// Measured by bisecting the actual `asymmetric_bump` for its half-height crossing on
+    /// each side to 1 m, not by evaluating the closed form -- an algebraic check here would
+    /// only prove the test author can rearrange a smoothstep.
+    #[test]
+    fn the_asymmetry_ratio_reproduces_the_published_flank_width_ratio() {
+        let width_m = 115_000.0;
+        let ratio = 1.67;
+        let half_width = |sign: f64| -> f64 {
+            let (mut low, mut high) = (0.0f64, width_m);
+            while high - low > 1.0 {
+                let middle = 0.5 * (low + high);
+                if asymmetric_bump(sign * middle, width_m, ratio) > 0.5 {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
+            }
+            0.5 * (low + high)
+        };
+        let pro = half_width(-1.0);
+        let retro = half_width(1.0);
+        let measured = pro / retro;
+        assert!(
+            (measured - ratio).abs() < 0.01,
+            "flank width ratio {measured} is not the published 1.67 (pro {pro} m, retro {retro} m)"
+        );
+        // The widths themselves follow from whatever `continent_collision_width_m` a caller
+        // chooses; only the RATIO is what the paper pins. Half height of a 115 km flank is
+        // 57.5 km, and 115/1.67 = 68.9 km gives 34.4 km.
+        assert!((pro - 57_500.0).abs() < 100.0, "pro half-width {pro} m");
+        assert!((retro - 34_431.0).abs() < 100.0, "retro half-width {retro} m");
+    }
+
+    /// **The complement of `FIELDS`, and the test that actually proves the structure is
+    /// wired.** A one-ULP flip of a field whose canonical value is 0.0 is not a perturbation
+    /// of anything, so those fields come back BLIND from the ULP sweep by design. This
+    /// perturbs each by an amount the field genuinely has and requires the answer to move --
+    /// same population as the ULP sweep (`lopsided_world`, `from_margin` at 1 km steps from
+    /// 0 to `MAX_TECTONIC_RANGE_M`, compared by bits).
+    #[test]
+    fn each_structure_field_moves_the_answer_at_a_stated_setting() {
+        let baseline = lopsided_world();
+        let settings: [(&str, fn(&mut TectonicParams)); 4] = [
+            ("collision_asymmetry = 1.67", |p| p.collision_asymmetry = 1.67),
+            ("suture_count = 3, spread 150 km", |p| {
+                p.suture_count = 3;
+                p.suture_spread_m = 150_000.0;
+            }),
+            ("suture_count = 2, spread 90 km", |p| {
+                p.suture_count = 2;
+                p.suture_spread_m = 90_000.0;
+            }),
+            ("structure_depth = 0.6", |p| p.structure_depth = 0.6),
+        ];
+        for (label, apply) in settings {
+            let mut params = TectonicParams::canonical();
+            apply(&mut params);
+            let probe = lopsided_world_with(Some(params));
+            let mut moved = false;
+            let mut distance_m = 0.0;
+            while distance_m <= MAX_TECTONIC_RANGE_M {
+                if baseline.from_margin_for_test(distance_m).to_bits()
+                    != probe.from_margin_for_test(distance_m).to_bits()
+                {
+                    moved = true;
+                    break;
+                }
+                distance_m += 1_000.0;
+            }
+            assert!(moved, "{label} changed nothing -- a structure knob that does nothing");
+        }
+    }
+
+    /// `structure_wavelength_m` is the one structure field that is unreachable while
+    /// `structure_depth` is zero, and it is asserted BLIND rather than quietly left out --
+    /// the house rule that a probe blind to a stage's arguments should assert the blindness.
+    #[test]
+    fn the_structure_wavelength_is_unreachable_until_the_depth_is_turned_up() {
+        let baseline = lopsided_world();
+        let mut alone = TectonicParams::canonical();
+        alone.structure_wavelength_m = 40_000.0;
+        let blind = lopsided_world_with(Some(alone));
+
+        let mut together = TectonicParams::canonical();
+        together.structure_depth = 0.6;
+        together.structure_wavelength_m = 40_000.0;
+        let mut other = together;
+        other.structure_wavelength_m = 250_000.0;
+        let a = lopsided_world_with(Some(together));
+        let b = lopsided_world_with(Some(other));
+
+        let mut blind_moved = false;
+        let mut wavelength_moved = false;
+        let mut distance_m = 0.0;
+        while distance_m <= MAX_TECTONIC_RANGE_M {
+            if baseline.from_margin_for_test(distance_m).to_bits()
+                != blind.from_margin_for_test(distance_m).to_bits()
+            {
+                blind_moved = true;
+            }
+            if a.from_margin_for_test(distance_m).to_bits()
+                != b.from_margin_for_test(distance_m).to_bits()
+            {
+                wavelength_moved = true;
+            }
+            distance_m += 1_000.0;
+        }
+        assert!(!blind_moved, "the wavelength must be inert while the depth is zero");
+        assert!(wavelength_moved, "the wavelength must bite once the depth is not zero");
+    }
+
+    /// The structure multiplier's stated range, swept rather than spot-checked, and its
+    /// canonical short-circuit asserted as an exact 1.0.
+    #[test]
+    fn the_structure_multiplier_stays_within_one_minus_depth_and_one() {
+        let world = lopsided_world();
+        assert_eq!(
+            world.tectonics.structure_at(&world.point).to_bits(),
+            1.0f64.to_bits(),
+            "at canonical depth the multiplier must be exactly one"
+        );
+        for depth in [0.2, 0.5, 0.8, 1.0] {
+            let mut params = TectonicParams::canonical();
+            params.structure_depth = depth;
+            let probe = lopsided_world_with(Some(params));
+            let mut lat = -85.0;
+            while lat <= 85.0 {
+                let mut lon = -180.0;
+                while lon < 180.0 {
+                    let v = probe.tectonics.structure_at(&SpherePoint::from_latlon(lat, lon));
+                    assert!(
+                        v >= 1.0 - depth - 1e-12 && v <= 1.0 + 1e-12,
+                        "structure {v} outside [1-{depth}, 1] at {lat},{lon}"
+                    );
+                    lon += 11.0;
+                }
+                lat += 7.0;
+            }
+        }
+    }
+
+    /// A margin's sutures must be the same from both sides of it. The hash takes an ORDERED
+    /// pair for exactly this reason, and an unordered one would put a cliff down the middle
+    /// of every stacked range.
+    #[test]
+    fn the_suture_hash_does_not_depend_on_which_plate_is_near() {
+        for salt in [STRUCTURE_SALT, SEGMENTATION_SALT] {
+            for (a, b) in [(0usize, 1usize), (3, 17), (17, 3), (9, 9)] {
+                assert_eq!(
+                    pair_fraction(a, b, salt).to_bits(),
+                    pair_fraction(b, a, salt).to_bits(),
+                    "pair_fraction({a},{b}) flipped with the argument order"
+                );
+            }
+        }
+        // Discrimination: different pairs and different salts must actually differ, or the
+        // loop above passes because the hash is a constant.
+        assert_ne!(
+            pair_fraction(0, 1, STRUCTURE_SALT).to_bits(),
+            pair_fraction(0, 2, STRUCTURE_SALT).to_bits()
+        );
+        assert_ne!(
+            pair_fraction(0, 1, STRUCTURE_SALT).to_bits(),
+            pair_fraction(0, 1, SEGMENTATION_SALT).to_bits()
+        );
+    }
+
+    /// `collision_reach_m` must be the truth about how far the profile carries, because it
+    /// is what a boundary admitting a caller-chosen block has to check against
+    /// `MAX_TECTONIC_RANGE_M`. Verified against the profile itself rather than against the
+    /// formula: past the stated reach, `sutures` is exactly zero on both sides.
+    #[test]
+    fn the_stated_collision_reach_is_where_the_profile_actually_stops() {
+        assert_eq!(
+            TectonicParams::canonical().collision_reach_m().to_bits(),
+            CONTINENT_COLLISION_WIDTH_M.to_bits(),
+            "canonical reach is the canonical width, exactly"
+        );
+        for (count, spread_m, width_m, asymmetry) in [
+            (1u32, 0.0, 400_000.0, 1.0),
+            (2, 90_000.0, 120_000.0, 1.0),
+            (3, 150_000.0, 100_000.0, 1.67),
+            (4, 60_000.0, 80_000.0, 2.5),
+        ] {
+            let mut params = TectonicParams::canonical();
+            params.suture_count = count;
+            params.suture_spread_m = spread_m;
+            params.continent_collision_width_m = width_m;
+            params.collision_asymmetry = asymmetry;
+            let reach = params.collision_reach_m();
+            let world = lopsided_world_with(Some(params));
+            let mut across_m = reach;
+            while across_m <= reach + 200_000.0 {
+                assert_eq!(
+                    world.tectonics.sutures(across_m, &world.near, &world.far),
+                    0.0,
+                    "count {count} spread {spread_m} still has a profile at {across_m} m, \
+                     past its stated reach of {reach} m"
+                );
+                assert_eq!(
+                    world.tectonics.sutures(-across_m, &world.near, &world.far),
+                    0.0,
+                    "count {count} spread {spread_m} reaches past {reach} m outboard"
+                );
+                across_m += 1_000.0;
+            }
+        }
+    }
+
+    /// The one thing a caller can do that turns the range gate into the cliff its own
+    /// docstring exists to prevent: choose a block whose reach exceeds it. Stated here as a
+    /// measurement rather than enforced, because nothing in this layer clamps -- but a
+    /// reader should be able to see that the boundary is real and where it is.
+    #[test]
+    fn a_stacked_block_can_reach_past_the_range_gate_and_this_says_where() {
+        let mut params = TectonicParams::canonical();
+        params.suture_count = 4;
+        params.suture_spread_m = 150_000.0;
+        params.continent_collision_width_m = 100_000.0;
+        assert!(
+            params.collision_reach_m() > MAX_TECTONIC_RANGE_M,
+            "reach {} should exceed the gate at {MAX_TECTONIC_RANGE_M}",
+            params.collision_reach_m()
+        );
+        let mut safe = params;
+        safe.suture_count = 3;
+        safe.suture_spread_m = 100_000.0;
+        assert!(
+            safe.collision_reach_m() <= MAX_TECTONIC_RANGE_M,
+            "reach {} should sit inside the gate",
+            safe.collision_reach_m()
+        );
     }
 }

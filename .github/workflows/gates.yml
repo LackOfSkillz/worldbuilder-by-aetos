@@ -434,25 +434,53 @@ jobs:
           # channel. `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived per
           # configuration through `assert_counts.py cargo-list` itself against fresh
           # `-- --list` / `-- --list --ignored` output. See task-4-report.md.
+          #
+          # 2026-09-05, slice-mountains Task 2 (the structure field): 523/523/525/584/586 ->
+          # 538/538/540/599/601, +15 UNIFORMLY on every row. Every one of the fifteen is in
+          # the crate library and none is feature-gated, which is why the move is the same on
+          # all five. `noise.rs` gains five for the new `ridged` multifractal (the unit-interval
+          # sweep over 4,000 samples at three coordinate scales, purity, zero octaves, a NaN
+          # frequency flooring rather than propagating, and the one that makes the primitive
+          # worth having -- ridged creases measured two orders of magnitude sharper than fbm's
+          # by largest second difference, both normalised to the same scale first).
+          # `continentality.rs` gains one, pinning that the world seed it now records for
+          # `Tectonics` is not read by that module. `tectonics.rs` gains nine for the opt-in
+          # structure fields: the bit-for-bit inertness proof that `canonical()` reduces to the
+          # pre-Task-2 collision expression over a -420..+420 km sweep (Ruling 1's whole safety
+          # argument), symmetric-`asymmetric_bump`-is-`bump` with its discrimination, the
+          # published 1.67 flank-width ratio measured by bisecting the shipped function, each
+          # structure field moving the answer at a STATED setting (the complement of the ULP
+          # sweep, which is structurally blind to fields whose canonical value is 0.0), the
+          # wavelength asserted blind until the depth is raised, the multiplier's range swept
+          # over a global grid, the ordered-pair suture hash, `collision_reach_m` checked
+          # against where the profile actually stops, and the reach that exceeds the range
+          # gate. **`assert_counts.py` now reports TWELVE test binaries rather than eleven:**
+          # `src/bin/mountain_survey.rs` is a new `[[bin]]` and contributes 0 tests, exactly as
+          # `erosion_convergence_sweep.rs`, `relief_survey.rs`, `pond_threshold_survey.rs`,
+          # `mountain_probe.rs` and `streambench.rs` do. `expect_ignored` stays 5; no
+          # `#[ignore]`d test was added. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` /
+          # `-- --list --ignored` output, which reported `count OK` at all five. See
+          # task-2-report.md.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 523
+            expect: 538
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 523
+            expect: 538
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 525
+            expect: 540
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 584
+            expect: 599
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 586
+            expect: 601
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

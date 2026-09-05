@@ -54,12 +54,28 @@ impl Gradient {
 pub struct Continentality {
     pub radius_m: f64,
     pub land_fraction: f64,
+    /// The world seed this field was built from, kept so a LATER layer can salt its own
+    /// noise from the same world.
+    ///
+    /// **Recorded, and never read by anything in this module.** `Tectonics` holds a
+    /// `Continentality` and its opt-in structure field needs a world seed; `Tectonics::new`
+    /// has no seed parameter, and adding one would have moved six call sites including two
+    /// conformance bindings, for a value this struct already receives and today discards.
+    /// Nothing in `continentality.rs` consults it, so no continentality output can depend
+    /// on it -- pinned by `the_recorded_seed_is_not_read_by_this_module` below.
+    world_seed: u64,
     noise: Noise,
     shore: f64,
     spread: f64,
 }
 
 impl Continentality {
+    /// What world this field was built for. See the field's own note: it is a record kept
+    /// for other layers, and this module never reads it.
+    pub fn world_seed(&self) -> u64 {
+        self.world_seed
+    }
+
     pub fn new(world_seed: u64, radius_m: f64, land_fraction: f64) -> Self {
         // Calibration runs before the struct is built, so no partially-built value with
         // placeholder shore/spread can ever exist — mirroring the Python, where
@@ -70,6 +86,7 @@ impl Continentality {
         Self {
             radius_m,
             land_fraction,
+            world_seed,
             noise,
             shore,
             spread,
@@ -304,5 +321,48 @@ mod tests {
         let quarter = c.elevation_from_above(-0.25);
         let half = c.elevation_from_above(-0.5);
         assert!((half - 2.0 * quarter).abs() < 1e-9, "{} vs {}", half, quarter);
+    }
+
+    #[test]
+    fn the_recorded_seed_is_not_read_by_this_module() {
+        // The claim `world_seed`'s own doc makes -- that it is a record for other layers
+        // and nothing here consults it -- asserted rather than trusted. The field is
+        // private, so this test, a child module, is the only place that CAN nudge it after
+        // construction and watch the outputs not move.
+        //
+        // Population: a 400-point Fibonacci spiral, `at` and `base_elevation` at every
+        // point, compared BY BITS. Discriminated by the two assertions at the end: the
+        // nudge is real, and the field is genuinely capable of producing different values
+        // when it is fed in at CONSTRUCTION -- so this passes because the field is unread,
+        // not because the outputs are constant.
+        let a = Continentality::new(20_260_904, EARTH_RADIUS_M, LAND_FRACTION);
+        let mut b = a;
+        b.world_seed = b.world_seed.wrapping_add(1);
+
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        for index in 0..400u32 {
+            let z = 1.0 - 2.0 * (f64::from(index) + 0.5) / 400.0;
+            let inner = 1.0 - z * z;
+            let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+            let angle = golden * f64::from(index);
+            let point = SpherePoint {
+                vector: crate::vectors::Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z),
+            };
+            assert_eq!(a.at(&point).to_bits(), b.at(&point).to_bits(), "at, index {index}");
+            assert_eq!(
+                a.base_elevation(&point).to_bits(),
+                b.base_elevation(&point).to_bits(),
+                "base_elevation, index {index}"
+            );
+        }
+
+        assert_ne!(a.world_seed(), b.world_seed(), "the nudge must be a real change");
+        let elsewhere = Continentality::new(20_260_905, EARTH_RADIUS_M, LAND_FRACTION);
+        let probe = SpherePoint::from_latlon(12.0, 34.0);
+        assert_ne!(
+            a.at(&probe).to_bits(),
+            elsewhere.at(&probe).to_bits(),
+            "a seed passed at construction MUST change the field, or this test proves nothing"
+        );
     }
 }
