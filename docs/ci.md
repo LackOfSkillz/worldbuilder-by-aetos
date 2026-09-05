@@ -13,7 +13,7 @@ nothing ran the check that would have caught it:
 1. **The conformance suite skipped silently and reported green while comparing nothing.**
    `tests/test_conformance.py` falls through to `pytest.importorskip` when
    `worldbuilder_engine` cannot be imported. With no engine built and no guard set,
-   `pytest tests/` exits 0 having compared nothing - all 156 tests in that file collapse into
+   `pytest tests/` exits 0 having compared nothing - all 157 tests in that file collapse into
    one `1 skipped` line. Nobody scanning a green log for a suspicious number finds one,
    because there isn't one. **That is the row the CI slice exists to make impossible**, and
    it is the reason the conformance job sets `WORLDBUILDER_REQUIRE_ENGINE=1`: with the guard
@@ -127,7 +127,7 @@ messages instead of one:
 
    With the guard *unset* and no engine built - the historical, buggy configuration -
    `pytest tests/` still exits 0. Reproduced locally on the current tree by hiding the
-   installed extension: `pytest tests/` prints **`241 passed, 1 skipped`**, all 156 tests in
+   installed extension: `pytest tests/` prints **`241 passed, 1 skipped`**, all 157 tests in
    `tests/test_conformance.py` collapsing into that one line (`241` is the other thirteen
    pre-existing files' 240 tests plus the 1 in `tests/test_installation.py`, added by this
    slice's Task 1). This is the bug the CI slice exists to make impossible, and it is why the
@@ -235,16 +235,19 @@ mismatch, if they disagree or either is missing:
   exits 0.
 - **Python suite**: `pytest --collect-only -q`'s per-test lines and its `<N> tests collected`
   trailer, cross-checked against the real run's `<N> passed in <T>s` summary. Asserts
-  **397 tests in total, 156 of them in `tests/test_conformance.py`** - both re-derived on the
+  **398 tests in total, 157 of them in `tests/test_conformance.py`** - both re-derived on the
   current tree (`pytest tests/ --collect-only -q`, `WORLDBUILDER_REQUIRE_ENGINE=1`), not
-  copied from an earlier report. Of the 156, **150 are conformance comparisons and 6 are
+  copied from an earlier report. Of the 157, **150 are conformance comparisons and 7 are
   guard unit tests** this slice's Task 4 added for `_require_current_engine` /
-  `_manifest_source_fingerprint` - calling all 156 "comparisons" overstates what the file
+  `_manifest_source_fingerprint` - calling all 157 "comparisons" overstates what the file
   does, which is why the wording above says "tests", not "comparisons" (the gate itself still
-  asserts the file-level total of 156; only the prose describing it changed). On the
+  asserts the file-level total of 157; only the prose describing it changed). On the
   historical unguarded configuration it fails with `the run reports outcomes that are not
-  `passed`: 1 skipped ... expected 397 tests in total, found 241 / expected 150 tests in
+  `passed`: 1 skipped ... expected 398 tests in total, found 241 / expected 157 tests in
   tests/test_conformance.py, found 0`.
+  (**157**, not 150: the gate pins the file's total, and seven of those are the guard unit
+  tests named just above. An earlier draft of this line said 150 and contradicted its own
+  preceding bullet.)
 - **Parity corpus**: the total line (`53,251 values compared`) is cross-checked against the
   nine per-group tallies summing to it, so a shrunk corpus fails with `COUNT GATE FAILED /
   expected 53251 values compared, found <M>` even when provenance and parity both report

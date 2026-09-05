@@ -9,7 +9,8 @@
 //! If this logic lived in `src/` instead, editing it would move the digest on the Node side
 //! too (harmless, since both sides would see it) -- but if it lived in `src/` and this
 //! module were ALSO used to explain what changed, it would tempt someone into thinking
-//! `build.rs` itself is one of the 28 inputs. It is not, and must not become one: `build.rs`
+//! `build.rs` itself is one of the fingerprinted inputs. It is not, and must not become
+//! one: `build.rs`
 //! computes the digest, so if `build.rs` fed itself into that same digest the two
 //! independent implementations (this one and the Node script) would disagree by
 //! construction -- the Rust side would always see one more file than the Node side ever

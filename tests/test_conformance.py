@@ -19,6 +19,7 @@ with no Rust.
 
 import math
 import os
+import re
 import struct
 from pathlib import Path
 
@@ -29,6 +30,15 @@ from worldbuilder.geometry.vectors import DEGENERATE, Vec3
 
 # viewer/public/wasm/MANIFEST.txt, relative to this file (tests/test_conformance.py).
 _WASM_MANIFEST_PATH = Path(__file__).resolve().parent.parent / "viewer" / "public" / "wasm" / "MANIFEST.txt"
+
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
+
+# Fixture digests for the guard's unit tests. They are the right SHAPE -- 64 lowercase
+# hex characters -- because the reader now validates shape as well as presence, and a
+# test using `abc123` would be asserting against a manifest no build could produce.
+_MATCHING = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_DIFFERENT = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
 class EngineFingerprintUnavailable(RuntimeError):
@@ -87,6 +97,21 @@ def _manifest_source_fingerprint(manifest_path):
         if line.startswith("source-fingerprint:"):
             value = line.split(":", 1)[1].strip()
             if value:
+                # Shape, not just presence. `assert_fingerprint_parity.py` validates both
+                # sides against this same pattern, and the two must agree about what counts
+                # as a digest at all. Without it a garbled manifest value is reported as
+                # "the engine is STALE" -- which sends a reader off to rebuild an engine
+                # that is fine, when the real problem is the file they were compared to.
+                # An unavailable oracle and a stale engine need different fixes, so they
+                # get different exceptions.
+                if not _DIGEST.fullmatch(value):
+                    raise EngineFingerprintUnavailable(
+                        f"{manifest_path} has a `source-fingerprint` value that is not a "
+                        f"sha256 digest: {value!r}. This oracle being unreadable is not "
+                        "the same as the engine being current, and it is not the same as "
+                        "the engine being stale -- it fails the run rather than guess "
+                        "which. Regenerate it with `npm run build:wasm` in viewer/."
+                    )
                 return value
             break
     raise EngineFingerprintUnavailable(
@@ -7592,36 +7617,51 @@ def _write_manifest(tmp_path, body):
 
 
 def test_require_current_engine_accepts_a_matching_fingerprint(tmp_path):
-    manifest = _write_manifest(tmp_path, "source-fingerprint: abc123\nfingerprint-inputs: 29\n")
-    _require_current_engine(_FakeEngine("abc123"), manifest)  # must not raise
+    manifest = _write_manifest(
+        tmp_path, f"source-fingerprint: {_MATCHING}\nfingerprint-inputs: 29\n"
+    )
+    _require_current_engine(_FakeEngine(_MATCHING), manifest)  # must not raise
 
 
 def test_require_current_engine_rejects_a_stale_engine_naming_both_digests(tmp_path):
-    manifest = _write_manifest(tmp_path, "source-fingerprint: abc123\n")
+    manifest = _write_manifest(tmp_path, f"source-fingerprint: {_MATCHING}\n")
     with pytest.raises(EngineFingerprintStale) as excinfo:
-        _require_current_engine(_FakeEngine("deadbeef"), manifest)
+        _require_current_engine(_FakeEngine(_DIFFERENT), manifest)
     message = str(excinfo.value)
     assert "STALE" in message
-    assert "abc123" in message and "deadbeef" in message
+    assert _MATCHING in message and _DIFFERENT in message
     assert "maturin develop" in message
 
 
 def test_require_current_engine_fails_on_a_missing_manifest_rather_than_passing(tmp_path):
     missing = tmp_path / "does-not-exist" / "MANIFEST.txt"
     with pytest.raises(EngineFingerprintUnavailable):
-        _require_current_engine(_FakeEngine("abc123"), missing)
+        _require_current_engine(_FakeEngine(_MATCHING), missing)
 
 
 def test_require_current_engine_fails_on_a_manifest_with_no_fingerprint_line(tmp_path):
     manifest = _write_manifest(tmp_path, "bytes: 84856\nbuilt: 2026-09-05T00:00:00.000Z\n")
     with pytest.raises(EngineFingerprintUnavailable):
-        _require_current_engine(_FakeEngine("abc123"), manifest)
+        _require_current_engine(_FakeEngine(_MATCHING), manifest)
 
 
 def test_require_current_engine_fails_on_an_empty_fingerprint_value(tmp_path):
     manifest = _write_manifest(tmp_path, "source-fingerprint: \nfingerprint-inputs: 29\n")
     with pytest.raises(EngineFingerprintUnavailable):
-        _require_current_engine(_FakeEngine("abc123"), manifest)
+        _require_current_engine(_FakeEngine(_MATCHING), manifest)
+
+
+def test_a_garbled_manifest_digest_is_unavailable_not_stale(tmp_path):
+    # A manifest value that is not a sha256 sends a reader off to rebuild an engine that is
+    # fine, when the real problem is the file it was compared against. Those two need
+    # different fixes, so they get different exceptions -- and the shape check is what tells
+    # them apart. `assert_fingerprint_parity.py` validates both sides against the same
+    # pattern; if these two disagreed about what a digest is, one would accept what the
+    # other rejects.
+    for garbled in ["abc123", "not-a-digest", "A" * 64, "0" * 63, "0" * 65]:
+        manifest = _write_manifest(tmp_path, f"source-fingerprint: {garbled}\n")
+        with pytest.raises(EngineFingerprintUnavailable):
+            _require_current_engine(_FakeEngine(_MATCHING), manifest)
 
 
 def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value(tmp_path):

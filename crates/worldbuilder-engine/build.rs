@@ -115,7 +115,7 @@ fn main() {
     println!("cargo:rustc-env=WORLDBUILDER_SOURCE_FINGERPRINT={digest}");
     println!("cargo:rustc-env=WORLDBUILDER_SOURCE_FINGERPRINT_INPUTS={input_count}");
 
-    // Rerun on any change to ANY of the 28-or-so fingerprinted inputs, named explicitly and
+    // Rerun on any change to ANY fingerprinted input, named explicitly and
     // individually. This is NOT belt-and-suspenders: the moment a build script emits even
     // one `cargo:rerun-if-changed` line, Cargo drops its default "rerun if anything under
     // the crate directory changes" heuristic entirely and reruns the script ONLY for the
@@ -142,8 +142,15 @@ fn main() {
     // the rebuild finished in 0.04 s with the digest and the input count both unmoved.
     //
     // Watching the directories themselves closes it -- a directory's mtime moves when an
-    // entry is created or removed, which is exactly the event the file list cannot see. Both
-    // forms are needed: directories alone would miss an edit that does not touch the mtime.
+    // entry is created or removed, which is exactly the event the file list cannot see.
+    //
+    // Both forms are needed, but NOT for the reason first written here. That draft claimed
+    // directories alone would miss an edit leaving the mtime untouched; Cargo's directory
+    // watch is recursive and takes the maximum mtime beneath, so it sees ordinary edits
+    // perfectly well. The real reason is duller and does not go away: three inputs -- this
+    // crate's Cargo.toml, the workspace Cargo.toml and Cargo.lock -- live in no watched
+    // directory at all, so without the per-file list a dependency bump would move the node
+    // digest and leave this one behind.
     for dir in ["src", "examples", "tests"] {
         println!(
             "cargo:rerun-if-changed={}",

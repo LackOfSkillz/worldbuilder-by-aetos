@@ -41,7 +41,7 @@ fn cached_continentality(seed: u64, radius_m: f64, land_fraction: f64) -> Contin
         .or_insert_with(|| Continentality::new(seed, radius_m, land_fraction))
 }
 
-/// The digest `build.rs` computed at compile time over the same 28 inputs
+/// The digest `build.rs` computed at compile time over the same inputs
 /// `viewer/scripts/build-wasm.mjs`'s `fingerprintInputs` walks -- baked into the binary via
 /// `cargo:rustc-env` rather than recomputed at call time, because the whole point is to say
 /// "what source built THIS artifact", and a call-time recomputation would answer a
