@@ -32,3 +32,6 @@ chartlook.*
 chart-*.png
 relief.png
 safety*.png
+
+/target/
+crates/*/target/
