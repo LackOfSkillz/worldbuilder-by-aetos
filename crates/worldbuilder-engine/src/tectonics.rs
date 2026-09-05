@@ -850,7 +850,7 @@ mod tests {
         }
     }
 
-    fn lopsided_world() -> LopsidedWorld {
+    fn lopsided_world_with(params: Option<TectonicParams>) -> LopsidedWorld {
         let near = Plate {
             index: 0,
             seed: SpherePoint::from_latlon(0.0, 0.0),
@@ -872,9 +872,156 @@ mod tests {
         // which is what makes the 419 km test meaningful rather than vacuous.
         let land = Continentality::new(20260902, EARTH_RADIUS_M, LAND_FRACTION);
         let plates = PlateSet::new(vec![near, far]);
-        let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M, None);
+        let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M, params);
 
         LopsidedWorld { tectonics, point, near, far, normal }
+    }
+
+    fn lopsided_world() -> LopsidedWorld {
+        lopsided_world_with(None)
+    }
+
+    /// One ULP up, by bits, so a perturbation is the smallest change that still is one.
+    fn flip_last_bit(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() ^ 1)
+    }
+
+    /// Every field of `TectonicParams`, and the one-line accessor that perturbs it.
+    #[allow(clippy::type_complexity)]
+    const FIELDS: [(&str, fn(&mut TectonicParams)); 9] = [
+        ("continent_collision_m", |p| p.continent_collision_m = flip_last_bit(p.continent_collision_m)),
+        ("continent_collision_width_m", |p| {
+            p.continent_collision_width_m = flip_last_bit(p.continent_collision_width_m)
+        }),
+        ("coastal_uplift_m", |p| p.coastal_uplift_m = flip_last_bit(p.coastal_uplift_m)),
+        ("coastal_uplift_width_m", |p| {
+            p.coastal_uplift_width_m = flip_last_bit(p.coastal_uplift_width_m)
+        }),
+        ("island_arc_m", |p| p.island_arc_m = flip_last_bit(p.island_arc_m)),
+        ("island_arc_width_m", |p| p.island_arc_width_m = flip_last_bit(p.island_arc_width_m)),
+        ("ridge_m", |p| p.ridge_m = flip_last_bit(p.ridge_m)),
+        ("ridge_width_m", |p| p.ridge_width_m = flip_last_bit(p.ridge_width_m)),
+        ("continental_blend", |p| p.continental_blend = flip_last_bit(p.continental_blend)),
+    ];
+
+    /// **The test that makes `TectonicParams` mean anything.**
+    ///
+    /// Task 1's bit-identity test cannot catch a field the uplift path never reads: `None`
+    /// resolves through `unwrap_or_else(TectonicParams::canonical)`, so both of its arms
+    /// call the same function and agree no matter what the path ignores. That is a real
+    /// hole and it was found by mutation, not by reading -- the sixth assertion in this
+    /// project to look load-bearing and not be.
+    ///
+    /// So this asserts the complement: perturb ONE field by ONE ULP and the answer must
+    /// move somewhere. Population: `lopsided_world()`, swept at 1 km steps from 0 to
+    /// `MAX_TECTONIC_RANGE_M`, comparing `from_margin` by bits. A field that survives the
+    /// whole sweep unchanged is a field the path does not read, and a slider bound to it
+    /// would be a control that does nothing.
+    fn fields_that_move(baseline: &LopsidedWorld) -> Vec<&'static str> {
+        let mut live = Vec::new();
+        for (name, perturb) in FIELDS {
+            let mut params = TectonicParams::canonical();
+            perturb(&mut params);
+            let probe = lopsided_world_with(Some(params));
+            let mut distance_m = 0.0;
+            while distance_m <= MAX_TECTONIC_RANGE_M {
+                if baseline.from_margin_for_test(distance_m).to_bits()
+                    != probe.from_margin_for_test(distance_m).to_bits()
+                {
+                    live.push(name);
+                    break;
+                }
+                distance_m += 1_000.0;
+            }
+        }
+        live
+    }
+
+    /// A margin the convergent fixture cannot be: plates pulling APART, over ocean.
+    /// `far`'s rotation is reversed, which makes the relative motion extensional and sends
+    /// `from_margin` down the divergent early-return; the land fraction is driven to 0.02
+    /// so both 300 km probes read oceanic and `oceanic` is not ~0.
+    fn spreading_world_with(params: Option<TectonicParams>) -> LopsidedWorld {
+        let near = Plate {
+            index: 0,
+            seed: SpherePoint::from_latlon(0.0, 0.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: 0.01,
+        };
+        let far = Plate {
+            index: 1,
+            seed: SpherePoint::from_latlon(0.0, 10.0),
+            euler_pole: SpherePoint::from_latlon(90.0, 0.0),
+            rate_rad_per_myr: -0.02,
+        };
+        let point = SpherePoint::from_latlon(0.0, 0.0);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        let land = Continentality::new(20260902, EARTH_RADIUS_M, 0.02);
+        let plates = PlateSet::new(vec![near, far]);
+        let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M, params);
+        LopsidedWorld { tectonics, point, near, far, normal }
+    }
+
+    #[test]
+    fn the_divergent_params_move_the_answer() {
+        // The cover the convergent test names for `ridge_*`, which is dead on a
+        // continental convergent margin for structural reasons. Note this fixture cannot
+        // cover `island_arc_*` either: the divergent early-return fires before the arc
+        // term is ever formed.
+        let baseline = spreading_world_with(None);
+        let mut live = Vec::new();
+        for (name, perturb) in FIELDS {
+            let mut params = TectonicParams::canonical();
+            perturb(&mut params);
+            let probe = spreading_world_with(Some(params));
+            let mut distance_m = 0.0;
+            while distance_m <= MAX_TECTONIC_RANGE_M {
+                if baseline.from_margin_for_test(distance_m).to_bits()
+                    != probe.from_margin_for_test(distance_m).to_bits()
+                {
+                    live.push(name);
+                    break;
+                }
+                distance_m += 1_000.0;
+            }
+        }
+        for wanted in ["ridge_m", "ridge_width_m"] {
+            assert!(live.contains(&wanted), "{wanted} is not read on a divergent margin: {live:?}");
+        }
+    }
+
+    #[test]
+    fn the_convergent_continental_params_move_the_answer() {
+        // Every field this fixture's margin can reach must move the answer, and the four
+        // it structurally cannot are asserted BLIND rather than quietly skipped -- a probe
+        // that exercises a stage can be blind to that stage's arguments, and the blindness
+        // is worth an assertion of its own.
+        //
+        // Why those four: `island_arc_*` is multiplied by `oceanic`, which is
+        // `(1 - inboard) * (1 - outboard)` and therefore ~0 on a continental margin; and
+        // `ridge_*` lives on the divergent early-return, which a convergent margin never
+        // takes. `ridge_*` is covered by `the_divergent_params_move_the_answer` below.
+        //
+        // **`island_arc_m` and `island_arc_width_m` HAVE NO COVERAGE, and this is a stated
+        // gap rather than an oversight.** The arc term is multiplied by `oceanic`, so it
+        // needs a convergent margin whose BOTH probe points read oceanic; a synthetic
+        // two-plate fixture at land fraction 0.02 still did not produce one, and the
+        // attempt is recorded rather than deleted. Task 2's survey runs over a real planet
+        // where oceanic convergent margins exist, and is where those two fields should be
+        // proven live. A slider bound to either would today have no evidence behind it --
+        // which is exactly why this slice binds its sliders to the collision fields.
+        let live = fields_that_move(&lopsided_world());
+        assert_eq!(
+            live,
+            vec![
+                "continent_collision_m",
+                "continent_collision_width_m",
+                "coastal_uplift_m",
+                "coastal_uplift_width_m",
+                "continental_blend",
+            ],
+            "a field that stops moving the answer is a slider that does nothing"
+        );
     }
 
     #[test]
