@@ -357,25 +357,29 @@ jobs:
           # / 0 pond), matching the review's own measurement exactly. Re-derived by `cargo test
           # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration,
           # cross-checked through `assert_counts.py cargo-list` itself.
+          # Slice 2026-09-05-slice-relief-amplitude Task 3 added four tests for the
+          # `ReliefParams::hills()` preset (`detail.rs`), +4 uniformly over Task 2's
+          # 513/513/515/549/551 -- re-derived through `assert_counts.py cargo-list` itself,
+          # not by hand arithmetic. See task-3-report.md.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 513
+            expect: 517
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 513
+            expect: 517
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 515
+            expect: 519
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 549
+            expect: 553
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 551
+            expect: 555
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
