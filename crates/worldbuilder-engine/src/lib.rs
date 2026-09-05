@@ -322,7 +322,7 @@ mod world_tests {
                 radius_m,
                 sea_level_m: DATUM_M,
                 sampling_kind: SamplingKind::Spiral,
-                pond_max_drainage_area_m2: 5.0e9,
+                pond_max_surface_area_m2: 5.0e9,
             },
             &sampling.positions,
             &heights,

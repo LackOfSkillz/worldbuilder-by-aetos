@@ -127,7 +127,7 @@ fn build_population(seed: i64, count: u32) -> Population {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: POND_MAX_M2,
+            pond_max_surface_area_m2: POND_MAX_M2,
         },
         &sampling.positions,
         &heights,

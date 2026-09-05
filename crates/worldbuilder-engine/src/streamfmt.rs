@@ -70,7 +70,7 @@
 //! it was handed. Deferred deliberately, all of it
 //! recomputable or slice 5's: the lake super-graph beyond the root, thermal-correction
 //! state, uplift, erodibility, anything derived from receivers, reach geometry, further
-//! flag bits. `pond_max_drainage_area_m2` is a *build parameter with no default* (Task 4
+//! flag bits. `pond_max_surface_area_m2` is a *build parameter with no default* (Task 4
 //! refused to invent one) and is deliberately absent — it produced `LakeKind`, and
 //! `LakeKind` is what is stored.
 
@@ -1058,7 +1058,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: FIXTURE_SEA_LEVEL_M,
             sampling_kind: SamplingKind::Supplied,
-            pond_max_drainage_area_m2: FIXTURE_POND_MAX_M2,
+            pond_max_surface_area_m2: FIXTURE_POND_MAX_M2,
         };
         StreamGraph::build(
             &params,
@@ -1413,7 +1413,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         let graph = StreamGraph::build(
             &params,
@@ -1469,7 +1469,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         let mut graph = StreamGraph::build(
             &params,
@@ -1483,7 +1483,7 @@ mod tests {
         // `fill_and_resolve_water`, not the two separate entry points: it regenerates the
         // neighbour relation once and shares it between Task 1's fill and Task 2's resolve
         // (review Finding 6), which is also the path a real pipeline should take.
-        let _basins = water::fill_and_resolve_water(&mut graph, params.pond_max_drainage_area_m2);
+        let _basins = water::fill_and_resolve_water(&mut graph, params.pond_max_surface_area_m2);
 
         let non_sentinel = graph.lakes().iter().filter(|l| l.outflow_lake != NO_LAKE).count();
         assert!(
@@ -1516,7 +1516,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         StreamGraph::build(
             &params,
@@ -1670,7 +1670,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         let graph = StreamGraph::build(
             &params,
@@ -1881,7 +1881,7 @@ mod tests {
         assert!(datum_offences(innocent).is_empty(), "the scanner flagged carrying the datum");
     }
 
-    /// `pond_max_drainage_area_m2` is required-with-no-default and unmeasured. It must not
+    /// `pond_max_surface_area_m2` is required-with-no-default and unmeasured. It must not
     /// acquire one by being written into a file with a default somewhere.
     #[test]
     fn the_pond_threshold_is_not_a_field_of_the_format() {

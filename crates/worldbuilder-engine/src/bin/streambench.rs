@@ -109,7 +109,7 @@ fn main() {
         radius_m: EARTH_RADIUS_M,
         sea_level_m: DATUM_M,
         sampling_kind: SamplingKind::Spiral,
-        pond_max_drainage_area_m2: POND_MAX_M2,
+        pond_max_surface_area_m2: POND_MAX_M2,
     };
     let t = Instant::now();
     let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)

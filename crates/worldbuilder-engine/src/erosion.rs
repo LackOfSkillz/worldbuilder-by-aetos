@@ -18,7 +18,7 @@
 //! solver's answer depends on belongs in this type -- a constant that instead lives as a
 //! literal inside the solver is a hidden input: two runs that differ only in it look
 //! identical in the record. `StreamGraph::build`'s `BuildParams` sets the house rule for
-//! this already: `pond_max_drainage_area_m2` is a required field with no default, "so that
+//! this already: `pond_max_surface_area_m2` is a required field with no default, "so that
 //! nobody inherits a number nobody chose" (`stream.rs`). `ErosionParams` follows it --
 //! `#[derive(Default)]` is deliberately absent, and every field is populated by the caller.
 //!
@@ -938,7 +938,7 @@ mod tests {
                 radius_m: EARTH_RADIUS_M,
                 sea_level_m: -600.0,
                 sampling_kind: SamplingKind::Spiral,
-                pond_max_drainage_area_m2: 1.0e10,
+                pond_max_surface_area_m2: 1.0e10,
             },
             &sampling.positions,
             &heights,

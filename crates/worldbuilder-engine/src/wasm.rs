@@ -827,11 +827,13 @@ pub extern "C" fn wb_fill_tile_f32(
 /// lakes and a real sea level in slice 5b needs to revisit this constant with that in
 /// mind, not merely add a parameter alongside it.
 const WB_EROSION_SEA_LEVEL_M: f64 = 0.0;
-/// The `pond_max_drainage_area_m2` [`wb_erosion_run`] builds its graph at -- large enough
-/// that no root this export's node counts can produce is ever classified as a pond, since
-/// nothing here reads that classification (see [`WB_EROSION_SEA_LEVEL_M`]'s doc). The same
-/// value `erosion.rs`'s own unit tests use, not independently chosen.
-const WB_EROSION_POND_MAX_DRAINAGE_AREA_M2: f64 = 1.0e10;
+/// The `pond_max_surface_area_m2` [`wb_erosion_run`] builds its graph at. Nothing here
+/// reads `Lake::kind` (see [`WB_EROSION_SEA_LEVEL_M`]'s doc), so which side of this value
+/// `StreamGraph::build`'s own placeholder classification lands on is inert either way --
+/// this is a required field with no default (`BuildParams`'s own doc), not a real
+/// calibration for this export. The same value `erosion.rs`'s own unit tests use, not
+/// independently chosen.
+const WB_EROSION_POND_MAX_SURFACE_AREA_M2: f64 = 1.0e10;
 
 /// Erode an existing world's surface to (or toward) convergence, over a freshly sampled
 /// stream graph, by the Cordonnier implicit stream-power method -- the *capped* path, i.e.
@@ -1018,7 +1020,7 @@ pub extern "C" fn wb_erosion_run(
                 radius_m,
                 sea_level_m: WB_EROSION_SEA_LEVEL_M,
                 sampling_kind: SamplingKind::Spiral,
-                pond_max_drainage_area_m2: WB_EROSION_POND_MAX_DRAINAGE_AREA_M2,
+                pond_max_surface_area_m2: WB_EROSION_POND_MAX_SURFACE_AREA_M2,
             },
             &sampling.positions,
             &heights,

@@ -1,11 +1,12 @@
-//! Measures the distribution `stream.rs::BuildParams::pond_max_drainage_area_m2` has to be
-//! calibrated against, and is the source for task-3-report.md's chosen value.
+//! Measures the distribution `stream.rs::BuildParams::pond_max_surface_area_m2` has to be
+//! calibrated against, and is the source for task-3-report.md's addendum.
 //!
-//! **Nothing before this task ever computed a real lake's drainage area distribution.**
-//! `pond_max_drainage_area_m2` has existed since an earlier slice as a required field with
-//! no default, on record as "the caller's to state and slice 5's to calibrate" (that field's
-//! own doc comment) precisely so that a number would not be inherited before anyone had
-//! looked at what it was choosing between. This binary is that look.
+//! **Owner decision, 2026-09-05: the pond/lake split moved from drainage area to surface
+//! area.** This binary's own first-round measurement (drainage area vs surface area, over
+//! the same bodies) was the evidence: only 17-24% overlap in which bodies either quantity
+//! calls smallest, at every node count tried. That comparison is kept below, alongside the
+//! new primary measurement -- the surface-area distribution this field now calibrates
+//! against.
 //!
 //! ```text
 //! cargo run --release --no-default-features --bin pond_threshold_survey
@@ -14,8 +15,7 @@
 //! This is a `[[bin]]`, not a `cargo test`-visible fixture, for the reason `streambench.rs`
 //! and `erosion_convergence_sweep.rs` already are: three full builds up to 500,000 nodes
 //! plus the whole slice 5b water pipeline over each is a multi-second-per-size, one-machine
-//! measurement, not a property a suite that runs on every push should re-pay (the task-3
-//! brief says so explicitly, quoting slice 5a Task 3's own precedent).
+//! measurement, not a property a suite that runs on every push should re-pay.
 //!
 //! # Method (every figure below names its population, method, and host)
 //!
@@ -25,25 +25,26 @@
 //!   None)::elevation_m` -- the same generator `streambench.rs` and `water.rs`'s own
 //!   `real_graph` fixture use, so this is the crate's one real elevation field, not a
 //!   synthetic fixture built to have lakes.
-//! - **Method:** `StreamGraph::build` (a throwaway `pond_max_drainage_area_m2` -- this
-//!   binary's whole purpose is to choose that value, so the build-time classification it
-//!   produces is discarded), then `water::fill_basins_and_apply` (Task 1) and
-//!   `water::resolve_outflows_and_apply` (Task 2), then `water::lake_body_drainage_totals_m2`
-//!   -- **one figure per physical body**, already folding a merged plateau's several roots
-//!   into its one combined total, not one figure per pre-merge `Lake` row (see that
-//!   function's own doc comment for why a row and a body are not the same count).
-//! - **Node counts:** 30,000 / 100,000 / 500,000, matching Task 2's own re-derivation
-//!   (task-2-report.md: 221 / 1,086 / 8,531 lakes -- re-measured below as *rows*, alongside
-//!   the *body* count this task adds).
+//! - **Method:** `StreamGraph::build` (a throwaway `pond_max_surface_area_m2` -- this
+//!   binary's whole purpose is to choose that value, so the build-time placeholder
+//!   classification it produces is discarded), then `water::fill_basins_and_apply` (Task 1)
+//!   and `water::resolve_outflows_and_apply` (Task 2), then `water::
+//!   lake_body_surface_areas_m2` and `water::lake_body_drainage_totals_m2` -- **one figure
+//!   per physical body**, already folding a merged plateau's several roots into its one
+//!   combined total, not one figure per pre-merge `Lake` row.
+//! - **Node counts:** 30,000 / 100,000 / 500,000, matching Task 2's own re-derivation scale.
 //!
 //! # Reading the table
 //!
-//! For each node count, this prints: the row count (pre-merge `Lake` entries) and the body
-//! count (post-merge physical bodies) from the SAME run, min/median/mean/max body drainage
-//! area, then, for a fixed candidate-threshold ladder, how many bodies fall at-or-below each
-//! (`<=`, the spec's own boundary) and what fraction of all bodies that is.
+//! For each node count: row/body counts, min/median/mean/max for both quantities, the
+//! bottom-decile overlap between them (the evidence for the owner decision), then, for a
+//! fixed candidate-threshold ladder over **surface area**, how many bodies fall at-or-below
+//! each (the spec's own boundary), what fraction of all bodies that is, and how many are
+//! strictly over it (so a reader can see whether the "Lake" side of the split holds a
+//! roughly stable count across `n` while the "Pond" side grows -- the resolution question
+//! task-3-report.md's addendum answers).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use worldbuilder_engine::sphere::{SpherePoint, EARTH_RADIUS_M};
@@ -54,16 +55,16 @@ use worldbuilder_engine::water::{self, Basins};
 const SEED: i64 = 20_260_905;
 const DATUM_M: f64 = 0.0;
 /// Deliberately unused as a real classification -- see the module doc. Large enough that
-/// `StreamGraph::build`'s own build-time pass calls everything a lake, so nothing this
-/// binary reports about *bodies* is contaminated by that pass's pre-merge, per-root answer.
+/// `StreamGraph::build`'s own placeholder pass calls everything a lake, so nothing this
+/// binary reports about *bodies* is contaminated by that pass's pre-fill, per-root answer.
 const THROWAWAY_POND_MAX_M2: f64 = 1.0e30;
 const NODE_COUNTS: &[u32] = &[30_000, 100_000, 500_000];
 /// A log-spaced ladder wide enough to bracket both "everything is a pond" and "nothing is",
 /// so the table itself shows whether a break exists rather than assuming one and hunting
 /// near it.
 const CANDIDATE_THRESHOLDS_M2: &[f64] = &[
-    1.0e5, 1.0e6, 3.0e6, 1.0e7, 3.0e7, 1.0e8, 3.0e8, 1.0e9, 3.0e9, 1.0e10, 3.0e10, 1.0e11,
-    3.0e11, 1.0e12,
+    1.0e4, 3.0e4, 1.0e5, 3.0e5, 1.0e6, 3.0e6, 1.0e7, 3.0e7, 1.0e8, 3.0e8, 1.0e9, 3.0e9, 1.0e10,
+    3.0e10, 1.0e11, 3.0e11, 1.0e12,
 ];
 
 fn build_graph(count: u32) -> StreamGraph {
@@ -78,7 +79,7 @@ fn build_graph(count: u32) -> StreamGraph {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: THROWAWAY_POND_MAX_M2,
+            pond_max_surface_area_m2: THROWAWAY_POND_MAX_M2,
         },
         &sampling.positions,
         &heights,
@@ -132,16 +133,13 @@ fn median_of_sorted(values: &[f64]) -> f64 {
     }
 }
 
-/// The units question the task-3 brief names directly: `pond_max_drainage_area_m2` is a
-/// **catchment**, not the lake's own surface. This groups `graph.lakes()` into the same
-/// physical bodies `water::lake_body_drainage_totals_m2` does (duplicated here rather than
-/// exposed from `water.rs`, deliberately -- this is a one-off measurement question, not
-/// something a caller of the real classification ever needs), and estimates each body's
-/// **surface** area instead: every basin member (`Basins::members_of`, over every lake root
-/// in the body) at or below that root's own filled `level_m` counts its own `area_m2`. An
-/// approximation -- a member at the lake's edge is Voronoi-cell-sized, not shoreline-exact --
-/// but the same granularity `node_areas_m2` already gives every other area figure this crate
-/// prints.
+/// The pairing this binary needs and `water.rs` does not expose (its own accessors return
+/// unordered per-body totals, which is all a real caller needs): every physical body's
+/// member `root_node`s, grouped the same way `water::classify_lake_kinds` groups them
+/// internally (a satellite's `outflow_lake` names another row at a bit-identical
+/// `level_m`). Duplicated here rather than exposed from `water.rs`, deliberately -- this is
+/// a one-off measurement question (which bodies do two quantities each call smallest), not
+/// something a caller of the real classification ever needs.
 fn lake_body_groups(graph: &StreamGraph) -> Vec<Vec<u32>> {
     let lakes = graph.lakes();
     let index_of_root: HashMap<u32, usize> =
@@ -196,23 +194,11 @@ fn main() {
         water::resolve_outflows_and_apply(&mut graph, &basins);
         let water_s = t.elapsed().as_secs_f64();
 
-        let mut totals = water::lake_body_drainage_totals_m2(&graph);
-        totals.sort_by(|a, b| a.partial_cmp(b).expect("no NaN drainage area"));
-        let bodies = totals.len();
-
-        // The units comparison: surface area per the SAME bodies, paired so the two measures
-        // can be compared body-for-body rather than only as two independent distributions.
-        let groups = lake_body_groups(&graph);
-        let paired: Vec<(f64, f64)> = groups
-            .iter()
-            .map(|roots| {
-                let drainage: f64 = roots.iter().map(|&r| graph.drainage_area_m2(r)).sum();
-                let surface = body_surface_area_m2(&graph, &basins, roots);
-                (drainage, surface)
-            })
-            .collect();
-        let mut surfaces: Vec<f64> = paired.iter().map(|&(_, s)| s).collect();
-        surfaces.sort_by(|a, b| a.partial_cmp(b).expect("no NaN surface area"));
+        let mut drainage = water::lake_body_drainage_totals_m2(&graph);
+        drainage.sort_by(|a, b| a.partial_cmp(b).expect("no NaN drainage area"));
+        let mut surface = water::lake_body_surface_areas_m2(&graph, &basins);
+        surface.sort_by(|a, b| a.partial_cmp(b).expect("no NaN surface area"));
+        let bodies = surface.len();
 
         println!();
         println!(
@@ -226,33 +212,38 @@ fn main() {
         }
         println!(
             "  drainage area (m^2): min {:.3e}  median {:.3e}  mean {:.3e}  max {:.3e}",
-            min_of(&totals),
-            median_of_sorted(&totals),
-            mean_of(&totals),
-            max_of(&totals),
+            min_of(&drainage),
+            median_of_sorted(&drainage),
+            mean_of(&drainage),
+            max_of(&drainage),
         );
         println!(
             "  surface area  (m^2): min {:.3e}  median {:.3e}  mean {:.3e}  max {:.3e}",
-            min_of(&surfaces),
-            median_of_sorted(&surfaces),
-            mean_of(&surfaces),
-            max_of(&surfaces),
+            min_of(&surface),
+            median_of_sorted(&surface),
+            mean_of(&surface),
+            max_of(&surface),
         );
 
-        // Do the two quantities agree on which bodies are smallest? Sort `paired` once by
-        // each measure and compare the bottom decile's *membership* (by position in
-        // `paired`, an arbitrary but stable per-body identity for this one comparison) --
-        // the discriminating question the brief asks ("does surface area discriminate
-        // better") is exactly whether these sets overlap or diverge.
+        // The evidence for the owner decision: do the two quantities agree on which bodies
+        // are smallest? Paired body-for-body via `lake_body_groups`, not by independently
+        // sorted rank, so the overlap below is exact membership, not an approximation.
+        let groups = lake_body_groups(&graph);
+        let paired: Vec<(f64, f64)> = groups
+            .iter()
+            .map(|roots| {
+                let d: f64 = roots.iter().map(|&r| graph.drainage_area_m2(r)).sum();
+                let s = body_surface_area_m2(&graph, &basins, roots);
+                (d, s)
+            })
+            .collect();
         let decile = if bodies / 10 == 0 { 1 } else { bodies / 10 };
         let mut by_drainage: Vec<usize> = (0..paired.len()).collect();
         by_drainage.sort_by(|&a, &b| paired[a].0.partial_cmp(&paired[b].0).expect("no NaN"));
         let mut by_surface: Vec<usize> = (0..paired.len()).collect();
         by_surface.sort_by(|&a, &b| paired[a].1.partial_cmp(&paired[b].1).expect("no NaN"));
-        let bottom_drainage: std::collections::HashSet<usize> =
-            by_drainage[..decile].iter().copied().collect();
-        let bottom_surface: std::collections::HashSet<usize> =
-            by_surface[..decile].iter().copied().collect();
+        let bottom_drainage: HashSet<usize> = by_drainage[..decile].iter().copied().collect();
+        let bottom_surface: HashSet<usize> = by_surface[..decile].iter().copied().collect();
         let overlap = bottom_drainage.intersection(&bottom_surface).count();
         let overlap_fraction = (overlap as f64) / (decile as f64); // cast-ok: two body counts to f64 for a printed fraction
         println!(
@@ -260,12 +251,15 @@ fn main() {
              area: {overlap} in common ({overlap_fraction:.2} overlap)"
         );
 
-        println!("  candidate threshold ->  ponds (<= threshold) / bodies   fraction pond");
+        println!(
+            "  candidate threshold (surface) ->  ponds (<=) / lakes (>) / bodies   fraction pond"
+        );
         for &threshold in CANDIDATE_THRESHOLDS_M2 {
-            let ponds = totals.iter().filter(|&&a| a <= threshold).count();
+            let ponds = surface.iter().filter(|&&a| a <= threshold).count();
+            let lakes_over = bodies - ponds;
             let fraction = (ponds as f64) / (bodies as f64); // cast-ok: two body counts to f64 for a printed fraction
             println!(
-                "    {threshold:>10.3e}  ->  {ponds:>6} / {bodies:<6}   {fraction:>6.4}",
+                "    {threshold:>10.3e}  ->  {ponds:>6} / {lakes_over:>6} / {bodies:<6}   {fraction:>6.4}",
             );
         }
     }

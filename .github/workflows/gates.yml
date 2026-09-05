@@ -262,25 +262,47 @@ jobs:
           # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived by
           # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
           # configuration.
+          #
+          # 2026-09-05, Task 3 owner-decision fix round: 499/499/501/535/537 ->
+          # 500/500/502/536/538. Owner decision moved the pond/lake split from drainage area
+          # to surface area (task-3-report.md's addendum has the measurement that drove it:
+          # only 17-24% bottom-decile overlap between the two quantities, over the same
+          # bodies). `BuildParams::pond_max_drainage_area_m2` renamed to
+          # `pond_max_surface_area_m2` (still required, no `Default`); `classify_lake_kinds`
+          # now takes `&Basins` and sums each body's members at or below its own filled
+          # `level_m`, not `drainage_area_m2`; `lake_body_surface_areas_m2` added alongside
+          # the unchanged `lake_body_drainage_totals_m2` (kept -- catchment is still the
+          # right quantity for flow, flooding and foraging). Three `water.rs` tests renamed
+          # to match (`a_lake_whose_surface_area_equals_the_threshold_is_a_pond`,
+          # `a_lake_whose_surface_area_is_strictly_over_the_threshold_is_not_a_pond`,
+          # `a_merged_bodys_kind_is_decided_by_its_combined_surface_area_not_either_roots_own`,
+          # each re-derived against the new quantity, not merely relabelled) and one test
+          # added (`drainage_and_surface_body_totals_agree_on_how_many_bodies_there_are`,
+          # pinning that both accessors still fold the same merge groups into the same body
+          # count). The boundary test was re-verified by the same mutation
+          # (`classify_lake_kinds`'s `<=` to `<`) on the new quantity and is still a
+          # single-assertion test. Both files compile unconditionally, so all five rows move
+          # by +1 uniformly. `expect_ignored` stays 5. Re-derived the same way, cross-checked
+          # through `assert_counts.py cargo-list` itself.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 499
+            expect: 500
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 499
+            expect: 500
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 501
+            expect: 502
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 535
+            expect: 536
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 537
+            expect: 538
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

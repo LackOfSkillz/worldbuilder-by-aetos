@@ -1138,23 +1138,31 @@ pub fn resolve_outflows_and_apply(graph: &mut StreamGraph, basins: &Basins) {
 
 // ---- Task 3: pond/lake classification -----------------------------------------------------
 
-/// Reclassify every `Lake` row's `kind` by its **physical body's** total drainage area,
-/// rather than trusting each row's own pre-merge value.
+/// Reclassify every `Lake` row's `kind` by its **physical body's** total surface area,
+/// rather than trusting each row's own pre-merge, pre-fill value.
 ///
-/// `StreamGraph::build` gives every root an initial `kind` from that root's own
-/// `drainage_area_m2` (stream.rs's build loop) -- correct for a lake that stands alone, but
-/// stale for one that Task 2's `merge_tied_plateaus` folded into a shared physical body,
-/// because a merge does not move `drainage_area_m2`: it only revises `level_m` and points
-/// every non-representative member's `outflow_lake` at the representative (`water.rs`'s own
-/// `merge_tied_plateaus` doc comment, "Finalise"). Each merged root still keeps its own,
-/// individually smaller, drainage figure, so classifying it alone would call one arm of a
-/// genuinely large body a pond merely because the body's water happens to enter it at
-/// several separate points.
+/// **Owner decision, 2026-09-05:** the pond/lake split is decided by surface area, not
+/// drainage area. `BuildParams::pond_max_surface_area_m2`'s own doc comment has the
+/// measurement that drove it: over the same bodies, the bottom decile by drainage area and
+/// the bottom decile by surface area overlapped only 17-24% (task-3-report.md's addendum) --
+/// a catchment-based threshold was naming bodies by something a player cannot see. Drainage
+/// area is not deleted (`lake_body_drainage_totals_m2` still exists below): it remains the
+/// right quantity for flow, flooding and foraging, just not for this classification.
 ///
-/// This does not add a second discovery path (Ruling 4): it classifies the same `Lake` rows
-/// `StreamGraph::build` and `merge_tied_plateaus` already produced, using the union those two
-/// steps already computed, exposed through nothing more than `outflow_lake` and `level_m`
-/// themselves.
+/// `StreamGraph::build` gives every root an initial `kind` from a placeholder (its own
+/// single root cell's `area_m2` -- see the build loop's own comment) -- necessarily a
+/// placeholder, because a real surface needs a *filled* `level_m` and basin membership,
+/// neither of which exist at build time. This function is what makes the classification
+/// real, using `basins` (from `fill_basins`/`fill_basins_and_apply`, already run over this
+/// same graph) to sum every basin member at or below the lake's own filled `level_m`.
+///
+/// A merged plateau's surface is the **union's** surface, not either root's own basin
+/// summed alone: Ruling 7 makes a tied plateau one body of water, so every basin belonging
+/// to any member of a merged group contributes to the same total. A merge does not itself
+/// touch a member's basin membership (only `level_m` and `outflow_lake`), so this still
+/// classifies the same `Lake` rows `StreamGraph::build` and `merge_tied_plateaus` already
+/// produced (Ruling 4: no second discovery path), reading only `outflow_lake` and `level_m`
+/// to find each row's body, plus `basins` and `graph.height_m`/`graph.area_m2` to total it.
 ///
 /// # Finding a body without re-deriving the merge
 ///
@@ -1174,11 +1182,12 @@ pub fn resolve_outflows_and_apply(graph: &mut StreamGraph, basins: &Basins) {
 /// Never, on any table `resolve_outflow_edges`/`apply_outflows` produced -- a lake's own
 /// `outflow_lake`, when it names another lake at all, always names one already present in
 /// `graph.lakes()` (`apply_outflows`'s own acyclicity check already guarantees this).
-pub fn classify_lake_kinds(graph: &mut StreamGraph, pond_max_drainage_area_m2: f64) {
-    let (lakes, body, total_by_body) = lake_bodies(graph);
+pub fn classify_lake_kinds(graph: &mut StreamGraph, basins: &Basins, pond_max_surface_area_m2: f64) {
+    let (lakes, body) = lake_body_index(graph);
+    let surface_by_body = lake_body_surface_totals_m2(graph, basins, &lakes, &body);
     for (i, lake) in lakes.iter().enumerate() {
-        let total = total_by_body[&body[i]];
-        let kind = if total <= pond_max_drainage_area_m2 { LakeKind::Pond } else { LakeKind::Lake };
+        let total = surface_by_body[&body[i]];
+        let kind = if total <= pond_max_surface_area_m2 { LakeKind::Pond } else { LakeKind::Lake };
         let found = graph.set_lake_kind(lake.root_node, kind);
         assert!(
             found,
@@ -1190,27 +1199,38 @@ pub fn classify_lake_kinds(graph: &mut StreamGraph, pond_max_drainage_area_m2: f
 }
 
 /// One entry per physical body (not per `Lake` row -- a merged body's satellites are folded
-/// into their representative's total), its drainage area in square metres. Exposed for
-/// measurement: `classify_lake_kinds` is the only caller that needs the per-row mapping this
-/// builds internally, but calibrating `pond_max_drainage_area_m2` (task-3-report.md) needs
-/// exactly this distribution and nothing else, over graphs a test suite has no business
-/// building at planet scale.
+/// into their representative's total), its **drainage** area in square metres. **Not the
+/// classification's own quantity any more** (see `classify_lake_kinds`'s own doc comment for
+/// the owner decision that moved classification to surface area), kept because catchment
+/// remains the right quantity for flow, flooding and foraging -- Task 4 may want to carry it
+/// on the body alongside `kind` rather than only the quantity that decided `kind`.
 pub fn lake_body_drainage_totals_m2(graph: &StreamGraph) -> Vec<f64> {
-    let (_, _, total_by_body) = lake_bodies(graph);
+    let (lakes, body) = lake_body_index(graph);
+    let mut total_by_body: HashMap<usize, f64> = HashMap::with_capacity(lakes.len());
+    for (i, lake) in lakes.iter().enumerate() {
+        *total_by_body.entry(body[i]).or_insert(0.0) += graph.drainage_area_m2(lake.root_node);
+    }
     total_by_body.into_values().collect()
 }
 
-/// Shared by `classify_lake_kinds` and `lake_body_drainage_totals_m2`: partitions
-/// `graph.lakes()` into physical bodies and totals each body's drainage area. See
-/// `classify_lake_kinds`'s own doc comment for why a merge satellite is recognised by
-/// `outflow_lake` naming another row at a bit-identical `level_m`.
-fn lake_bodies(graph: &StreamGraph) -> (Vec<Lake>, Vec<usize>, HashMap<usize, f64>) {
+/// One entry per physical body, its **surface** area in square metres -- the same quantity
+/// `classify_lake_kinds` classifies by, exposed so a caller (a measurement binary, or a
+/// future manifest task) can see the distribution without re-deriving the body partition.
+pub fn lake_body_surface_areas_m2(graph: &StreamGraph, basins: &Basins) -> Vec<f64> {
+    let (lakes, body) = lake_body_index(graph);
+    lake_body_surface_totals_m2(graph, basins, &lakes, &body).into_values().collect()
+}
+
+/// Shared by every body-total function: partitions `graph.lakes()` into physical bodies.
+/// See `classify_lake_kinds`'s own doc comment for why a merge satellite is recognised by
+/// `outflow_lake` naming another row at a bit-identical `level_m`. `body[i]` is the index
+/// (into the returned `Vec<Lake>`) of the row whose totals row `i`'s own contribution counts
+/// toward -- itself, unless it is a merge satellite.
+fn lake_body_index(graph: &StreamGraph) -> (Vec<Lake>, Vec<usize>) {
     let lakes: Vec<Lake> = graph.lakes().to_vec();
     let index_of_root: HashMap<u32, usize> =
         lakes.iter().enumerate().map(|(i, lake)| (lake.root_node, i)).collect();
 
-    // `body[i]` is the index (into `lakes`) of the row whose total this row's drainage area
-    // counts toward -- itself, unless it is a merge satellite.
     let mut body: Vec<usize> = (0..lakes.len()).collect();
     for (i, lake) in lakes.iter().enumerate() {
         if lake.outflow_lake == NO_LAKE {
@@ -1224,12 +1244,31 @@ fn lake_bodies(graph: &StreamGraph) -> (Vec<Lake>, Vec<usize>, HashMap<usize, f6
         }
     }
 
+    (lakes, body)
+}
+
+/// Every basin member at or below its own lake's filled `level_m` counts its `area_m2`
+/// toward that lake's body -- the union's surface, per `classify_lake_kinds`'s own doc
+/// comment on why a merged plateau's surface is not either root's basin summed alone (every
+/// basin belonging to any member of a merged group contributes to the one shared total,
+/// keyed by `body[i]`, not by each root's own index). An approximation at the granularity
+/// every other area figure in this crate already carries: a member at the lake's edge is
+/// Voronoi-cell-sized, not shoreline-exact.
+fn lake_body_surface_totals_m2(
+    graph: &StreamGraph,
+    basins: &Basins,
+    lakes: &[Lake],
+    body: &[usize],
+) -> HashMap<usize, f64> {
     let mut total_by_body: HashMap<usize, f64> = HashMap::with_capacity(lakes.len());
     for (i, lake) in lakes.iter().enumerate() {
-        *total_by_body.entry(body[i]).or_insert(0.0) += graph.drainage_area_m2(lake.root_node);
+        for &member in basins.members_of(lake.root_node) {
+            if graph.height_m(member) <= lake.level_m {
+                *total_by_body.entry(body[i]).or_insert(0.0) += graph.area_m2(member);
+            }
+        }
     }
-
-    (lakes, body, total_by_body)
+    total_by_body
 }
 
 /// The full slice 5b water pipeline in one call: `basins_of`, `fill_lakes` +
@@ -1248,7 +1287,7 @@ fn lake_bodies(graph: &StreamGraph) -> (Vec<Lake>, Vec<usize>, HashMap<usize, f6
 /// one part (or, for the first two, a caller with a non-`Spiral` graph that supplies its own
 /// neighbour relation).
 ///
-/// `pond_max_drainage_area_m2` must be the same value the graph's own `BuildParams` was built
+/// `pond_max_surface_area_m2` must be the same value the graph's own `BuildParams` was built
 /// with -- classification must run over the same threshold the caller already stated, not a
 /// second, independently chosen one. Passed explicitly, not read back off the graph, because
 /// `StreamGraph` does not retain its `BuildParams` (only `GraphHeader`, which has no room for
@@ -1262,7 +1301,7 @@ fn lake_bodies(graph: &StreamGraph) -> (Vec<Lake>, Vec<usize>, HashMap<usize, f6
 ///
 /// Same restriction as `fill_basins`/`resolve_outflows`: `graph.header().sampling_kind` must
 /// be `Spiral`.
-pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_drainage_area_m2: f64) -> Basins {
+pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_surface_area_m2: f64) -> Basins {
     assert!(
         graph.header().sampling_kind == SamplingKind::Spiral,
         "fill_and_resolve_water regenerates positions from the world seed via \
@@ -1282,7 +1321,7 @@ pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_drainage_area_m2
     let edges = resolve_outflow_edges(graph, &basins, &neighbours);
     apply_outflows(graph, &edges);
 
-    classify_lake_kinds(graph, pond_max_drainage_area_m2);
+    classify_lake_kinds(graph, &basins, pond_max_surface_area_m2);
 
     basins
 }
@@ -1341,7 +1380,7 @@ mod tests {
             sea_level_m: -1.0e6, // far below every height: nothing is BOUNDARY, so both
             // roots are classified as lakes rather than mouths.
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0,
+            pond_max_surface_area_m2: 1.0,
         };
         let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the touching-lakes fixture builds a valid graph");
@@ -1486,7 +1525,7 @@ mod tests {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -1.0e6, // nothing is BOUNDARY: the sole root is a lake, not a mouth
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0,
+            pond_max_surface_area_m2: 1.0,
         };
         let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the whole-graph-is-one-basin fixture builds");
@@ -1517,7 +1556,7 @@ mod tests {
                 radius_m: EARTH_RADIUS_M,
                 sea_level_m: DATUM_M,
                 sampling_kind: crate::stream::SamplingKind::Spiral,
-                pond_max_drainage_area_m2: 5.0e9,
+                pond_max_surface_area_m2: 5.0e9,
             },
             &sampling.positions,
             &heights,
@@ -1713,7 +1752,7 @@ mod tests {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -50.0, // node 4 (-100.0) is BOUNDARY; nodes 0-3 are LAND.
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0,
+            pond_max_surface_area_m2: 1.0,
         };
         let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the ordering-disagreement fixture builds a valid graph");
@@ -1804,7 +1843,7 @@ mod tests {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -50.0, // nodes 8 and 10 are BOUNDARY; nodes 0-7 and 9 are LAND.
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0,
+            pond_max_surface_area_m2: 1.0,
         };
         let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the two-candidate ordering fixture builds a valid graph");
@@ -2066,7 +2105,7 @@ mod tests {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -50.0, // node 6 (-100.0) is BOUNDARY; nodes 0-5 are LAND.
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0,
+            pond_max_surface_area_m2: 1.0,
         };
         let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the merge fixture builds a valid graph");
@@ -2199,7 +2238,7 @@ mod tests {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -50.0, // node 6 (-100.0) is BOUNDARY; every other node is LAND.
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0,
+            pond_max_surface_area_m2: 1.0,
         };
         let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the chained-merge fixture builds a valid graph");
@@ -2409,62 +2448,75 @@ mod tests {
     }
 
     // ---- Task 3: pond/lake classification --------------------------------------------
+    //
+    // Owner decision, 2026-09-05: the pond/lake split moved from drainage area to surface
+    // area (`classify_lake_kinds`'s own doc comment has the measurement that drove it).
+    // Every test below was re-derived against the new quantity, not merely renamed: a
+    // single isolated-root fixture's "surface" and "drainage" happen to be the same number
+    // (its one basin member is the root itself, always at or below its own level), so those
+    // fixtures below transfer unchanged in value; `merge_fixture`'s merged-body test needed
+    // its own re-derivation because a body's surface sums only the members *at or below the
+    // filled level*, not the whole basin -- see that test's own doc comment for why this
+    // particular fixture's numbers come out equal anyway.
 
-    /// A single isolated root -- no neighbours at all, so it is its own entire basin and its
-    /// `drainage_area_m2` is exactly `area_m2`, chosen here to land precisely on the
-    /// threshold every boundary test below uses. Far below `sea_level_m` would make it a
-    /// mouth, not a lake, so `sea_level_m` sits far beneath every height here, mirroring
-    /// `touching_lakes_fixture`'s own reason for the same choice.
-    const SINGLE_LAKE_DRAINAGE_AREA_M2: f64 = 5.0e9;
+    /// A single isolated root -- no neighbours at all, so its only basin member is itself,
+    /// always at or below its own filled `level_m` (`level_m` never drops below the root's
+    /// own height -- `fill_lakes`' own invariant). Its surface area is therefore exactly
+    /// `area_m2[0]`, chosen here to land precisely on the threshold every boundary test
+    /// below uses. Far below `sea_level_m` would make it a mouth, not a lake, so
+    /// `sea_level_m` sits far beneath every height here, mirroring `touching_lakes_fixture`'s
+    /// own reason for the same choice.
+    const SINGLE_LAKE_SURFACE_AREA_M2: f64 = 5.0e9;
 
-    fn single_lake_fixture(pond_max_drainage_area_m2: f64) -> StreamGraph {
+    fn single_lake_fixture(pond_max_surface_area_m2: f64) -> StreamGraph {
         let positions = vec![SpherePoint::from_latlon(0.0, 0.0)];
         let heights = vec![0.0];
-        let areas = vec![SINGLE_LAKE_DRAINAGE_AREA_M2];
+        let areas = vec![SINGLE_LAKE_SURFACE_AREA_M2];
         let neighbours: Vec<Vec<u32>> = vec![vec![]];
         let params = BuildParams {
             world_seed: 2,
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -1.0e6,
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2,
+            pond_max_surface_area_m2,
         };
         StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the single-lake fixture builds a valid graph")
     }
 
-    /// Property 3 and the trap the brief names by name: a lake whose drainage area is
+    /// Property 3 and the trap the brief names by name: a lake whose surface area is
     /// exactly the threshold is a pond ("at or below", `stream.rs::BuildParams::
-    /// pond_max_drainage_area_m2`'s own doc comment), not merely one strictly under it. This
+    /// pond_max_surface_area_m2`'s own doc comment), not merely one strictly under it. This
     /// fixture's one lake has no basin members beyond itself (empty neighbours), so its
-    /// `drainage_area_m2` is exactly `area_m2[0]` -- set to precisely
-    /// `SINGLE_LAKE_DRAINAGE_AREA_M2`, the same value passed as the threshold, so this test
+    /// surface area is exactly `area_m2[0]` -- set to precisely
+    /// `SINGLE_LAKE_SURFACE_AREA_M2`, the same value passed as the threshold, so this test
     /// sits exactly on the boundary rather than near it.
     ///
     /// The whole test is one assertion on purpose: this slice has already shipped three
     /// tests that caught a mutation through a sibling assertion rather than their own
     /// (the brief's own finding). A single-assertion test cannot be shadowed -- verified by
     /// actually making the mutation this test exists to catch: `classify_lake_kinds`'s `<=`
-    /// changed to `<` turns this test red (drainage 5.0e9 is not `< 5.0e9`, so the lake comes
+    /// changed to `<` turns this test red (surface 5.0e9 is not `< 5.0e9`, so the lake comes
     /// out `Lake` instead of `Pond`); reverting the operator turns it back green. Restored
     /// afterwards; this comment records that the mutation was actually run, not merely
     /// reasoned about.
     #[test]
-    fn a_lake_whose_drainage_area_equals_the_threshold_is_a_pond() {
+    fn a_lake_whose_surface_area_equals_the_threshold_is_a_pond() {
         // Built-time threshold deliberately does not match the real one below, so this test
         // cannot pass by accident of `StreamGraph::build`'s own initial classification.
         let mut graph = single_lake_fixture(0.0);
-        classify_lake_kinds(&mut graph, SINGLE_LAKE_DRAINAGE_AREA_M2);
+        let basins = basins_of(&graph);
+        classify_lake_kinds(&mut graph, &basins, SINGLE_LAKE_SURFACE_AREA_M2);
         assert_eq!(graph.lake_at(0).expect("the fixture's one lake").kind, LakeKind::Pond);
     }
 
     /// The mirror boundary case: strictly over the threshold must not be a pond. Paired with
     /// the equals-case test above so the boundary is bracketed on both sides, not asserted
     /// from one side only. A fresh fixture (rather than reusing `single_lake_fixture` at a
-    /// shifted area) so this test's own drainage area is a literal, visible number, not one
+    /// shifted area) so this test's own surface area is a literal, visible number, not one
     /// derived by arithmetic on the other test's constant.
     #[test]
-    fn a_lake_whose_drainage_area_is_strictly_over_the_threshold_is_not_a_pond() {
+    fn a_lake_whose_surface_area_is_strictly_over_the_threshold_is_not_a_pond() {
         let positions = vec![SpherePoint::from_latlon(0.0, 0.0)];
         let heights = vec![0.0];
         let areas = vec![5.000_000_001e9];
@@ -2474,19 +2526,21 @@ mod tests {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: -1.0e6,
             sampling_kind: crate::stream::SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 0.0,
+            pond_max_surface_area_m2: 0.0,
         };
         let mut graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
             .expect("the over-threshold fixture builds a valid graph");
-        classify_lake_kinds(&mut graph, SINGLE_LAKE_DRAINAGE_AREA_M2);
+        let basins = basins_of(&graph);
+        classify_lake_kinds(&mut graph, &basins, SINGLE_LAKE_SURFACE_AREA_M2);
         assert_eq!(graph.lake_at(0).expect("the fixture's one lake").kind, LakeKind::Lake);
     }
 
     /// Property 2: classification is total, and specifically **not** a pass-through of
     /// whatever `StreamGraph::build`'s own initial, pre-merge guess happened to be.
     /// `single_lake_fixture` is built with an enormous throwaway threshold, so `build`'s own
-    /// classification calls the lake a `Pond`; `classify_lake_kinds` is then run with a
-    /// threshold of `0.0`, under which every real (positive) drainage area must be a `Lake`.
+    /// placeholder classification (the root's own single-cell `area_m2` against that
+    /// threshold) calls the lake a `Pond`; `classify_lake_kinds` is then run with a real
+    /// threshold of `0.0`, under which every real (positive) surface area must be a `Lake`.
     /// If `classify_lake_kinds` merely trusted the row `build` had already written, this
     /// would still read `Pond` and the test would fail.
     #[test]
@@ -2498,7 +2552,8 @@ mod tests {
             "fixture drifted: build's own classification must start as Pond for this test to \
              mean anything"
         );
-        classify_lake_kinds(&mut graph, 0.0);
+        let basins = basins_of(&graph);
+        classify_lake_kinds(&mut graph, &basins, 0.0);
         assert_eq!(graph.lake_at(0).expect("the fixture's one lake").kind, LakeKind::Lake);
     }
 
@@ -2519,18 +2574,25 @@ mod tests {
     }
 
     /// The reason this task exists as a whole module addition rather than trusting
-    /// `StreamGraph::build`'s own per-root pass: a merged plateau's total is the **sum** of
-    /// its members' individual drainage areas, and a threshold between the individual and
-    /// the combined figure must classify both members by the combined one.
+    /// `StreamGraph::build`'s own per-root pass: a merged plateau's surface is the union's
+    /// surface (Ruling 7 -- a tied plateau is one body of water), not either root's own
+    /// basin summed alone, and a threshold between the individual and the combined figure
+    /// must classify both members by the combined one.
     ///
-    /// `merge_fixture` ties roots 0 and 3 (basins `{0,1,2}` and `{3,4,5}`, three 1.0e9 m²
-    /// nodes each -- 3.0e9 m² individually) into one physical body with a real outlet
-    /// through node 6. `4.0e9` sits strictly between each root's own total (3.0e9, which
-    /// alone would be a Pond) and the merged body's combined total (6.0e9, which is a Lake)
-    /// -- so this test fails if `classify_lake_kinds` used each row's own
-    /// `drainage_area_m2` instead of its body's.
+    /// `merge_fixture` ties roots 0 and 3 into one physical body with a real outlet through
+    /// node 6, both revised to the union's true spill level of 20.0 m
+    /// (`a_tied_plateau_is_merged_into_one_body_at_its_true_level` pins this exact figure).
+    /// At that level every member of both basins (`{0,1,2}` at heights 0/10/20 and
+    /// `{3,4,5}` at heights 0/10/20, three 1.0e9 m² nodes each) sits at or below 20.0 m, so
+    /// each root's own basin surface comes out to the same 3.0e9 m² its drainage area would
+    /// -- **this fixture's basins are fully submerged at the merged level, which is why its
+    /// numbers do not distinguish surface from drainage; the assertions below pin that this
+    /// is actually true here, not assumed.** What the fixture DOES distinguish is a body's
+    /// combined total (6.0e9) from either root's own total alone (3.0e9): `4.0e9` sits
+    /// strictly between them, so this test fails if `classify_lake_kinds` used each row's
+    /// own basin surface instead of its body's.
     #[test]
-    fn a_merged_bodys_kind_is_decided_by_its_combined_drainage_area_not_either_roots_own() {
+    fn a_merged_bodys_kind_is_decided_by_its_combined_surface_area_not_either_roots_own() {
         let (mut graph, directed) = merge_fixture();
         let symmetric = symmetric_adjacency(&directed);
         let basins = basins_of(&graph);
@@ -2539,27 +2601,39 @@ mod tests {
         let edges = resolve_outflow_edges(&graph, &basins, &symmetric);
         apply_outflows(&mut graph, &edges);
 
+        let surface_of = |root: u32| -> f64 {
+            let level_m = graph.lake_at(root).expect("root names a lake in this table").level_m;
+            let mut total = 0.0;
+            for &member in basins.members_of(root) {
+                if graph.height_m(member) <= level_m {
+                    total += graph.area_m2(member);
+                }
+            }
+            total
+        };
         assert_eq!(
-            graph.drainage_area_m2(0),
+            surface_of(0),
             3.0e9,
-            "fixture drifted: root 0's own basin must total 3.0e9 m^2 for this test's \
-             threshold to sit where this test's doc comment says it does"
+            "fixture drifted: root 0's own basin surface must total 3.0e9 m^2 (fully \
+             submerged at the merged 20.0 m level) for this test's threshold to sit where \
+             this test's doc comment says it does"
         );
         assert_eq!(
-            graph.drainage_area_m2(3),
+            surface_of(3),
             3.0e9,
-            "fixture drifted: root 3's own basin must total 3.0e9 m^2 for this test's \
-             threshold to sit where this test's doc comment says it does"
+            "fixture drifted: root 3's own basin surface must total 3.0e9 m^2 (fully \
+             submerged at the merged 20.0 m level) for this test's threshold to sit where \
+             this test's doc comment says it does"
         );
 
-        classify_lake_kinds(&mut graph, 4.0e9);
+        classify_lake_kinds(&mut graph, &basins, 4.0e9);
 
         assert_eq!(
             graph.lake_at(0).expect("root 0's lake row").kind,
             LakeKind::Lake,
-            "root 0's own drainage (3.0e9) is under the 4.0e9 threshold, but its merged \
-             body's combined total (6.0e9) is over it -- the body's total must decide, not \
-             the row's own figure"
+            "root 0's own basin surface (3.0e9) is under the 4.0e9 threshold, but its \
+             merged body's combined surface (6.0e9) is over it -- the body's total must \
+             decide, not the row's own figure"
         );
         assert_eq!(
             graph.lake_at(3).expect("root 3's lake row (the merge satellite)").kind,
@@ -2567,6 +2641,29 @@ mod tests {
             "the merge satellite must carry the same body-total classification as its \
              representative, not its own smaller pre-merge figure"
         );
+    }
+
+    /// The quantity this classification no longer uses is still exposed and still correct:
+    /// `lake_body_drainage_totals_m2` (drainage) and `lake_body_surface_areas_m2` (surface)
+    /// must partition the same lake table into the same NUMBER of bodies -- both fold
+    /// `merge_fixture`'s two tied roots into one body, so both report exactly one figure,
+    /// not two.
+    #[test]
+    fn drainage_and_surface_body_totals_agree_on_how_many_bodies_there_are() {
+        let (mut graph, directed) = merge_fixture();
+        let symmetric = symmetric_adjacency(&directed);
+        let basins = basins_of(&graph);
+        let filled = fill_lakes(&graph, &basins, &symmetric);
+        apply_levels(&mut graph, &filled);
+        let edges = resolve_outflow_edges(&graph, &basins, &symmetric);
+        apply_outflows(&mut graph, &edges);
+
+        let drainage = lake_body_drainage_totals_m2(&graph);
+        let surface = lake_body_surface_areas_m2(&graph, &basins);
+        assert_eq!(drainage.len(), 1, "the merged pair must fold into exactly one body");
+        assert_eq!(surface.len(), 1, "the merged pair must fold into exactly one body");
+        assert_eq!(drainage[0], 6.0e9);
+        assert_eq!(surface[0], 6.0e9, "fully submerged at the merged level, per the test above");
     }
 }
 
