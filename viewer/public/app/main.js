@@ -166,6 +166,35 @@ async function boot() {
 
   viewer.terrainProvider = provider;
   viewer.scene.globe.depthTestAgainstTerrain = true;
+
+  // Two scheduling knobs, neither of which changes a generated height.
+  //
+  // `tileCacheSize` defaults to 100, which was sized for a networked provider fetching a
+  // handful of tiles. Generation here is local and a whole-planet view already asks for 16
+  // tiles before a single camera move, so a cache that small evicts tiles the camera is
+  // about to want again and pays to regenerate them. `preloadSiblings` is normally a
+  // bandwidth decision and costs nothing when there is no network.
+  //
+  // Deliberately NOT changed here: `scene.fog.screenSpaceErrorFactor`, which subtracts from
+  // the screen-space error and would suppress a level on descent. It is inert already,
+  // because Cesium gates that subtraction on `frameState.fog.enabled` and the block above
+  // disables fog outright. Left alone so the two decisions stay in one place.
+  viewer.scene.globe.tileCacheSize = number("tileCache", 1000);
+  viewer.scene.globe.preloadSiblings = params.get("preloadSiblings") !== "0";
+
+  // The detail knob, and the only honest one.
+  //
+  // Screen-space post density is INVARIANT to heightmap width -- geometric error is
+  // inversely proportional to `tileImageWidth`, so a wider tile lowers level-zero error and
+  // Cesium simply stops refining a level sooner, landing on the same metres per post. A
+  // 257-wide provider stops at level 0 and gives 180/256 = 0.703 deg = 78 km, which is
+  // exactly what 65-wide gives at level 2. Widening tiles is a real batching win and is not
+  // a detail knob; this is.
+  //
+  // Halving it buys one extra level at four times the tiles. Left at Cesium's default so
+  // nothing changes without being asked for, and exposed so the cost can be measured rather
+  // than guessed at.
+  viewer.scene.globe.maximumScreenSpaceError = number("sse", 2);
   viewer.scene.verticalExaggeration = number("exaggeration", 1);
 
   // Sun shading, on by default. Without it the globe is coloured purely by height and every
