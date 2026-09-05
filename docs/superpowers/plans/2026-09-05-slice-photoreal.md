@@ -56,6 +56,82 @@ Every task's requirements implicitly include this section.
 
 ---
 
+## REVISED 2026-09-05 BY RESEARCH. TWO CHANGES, AND ONE OF THEM CORRECTS THIS PLAN'S OWN BRIEF.
+
+### Change 1: land colour runs FIRST, and it does NOT need the climate slice
+
+This plan parked land colour in Tier 3 "needs climate". **That premise is false and the reference
+implementation disproves it.** WorldEngine's `precipitation.py` is **simplex noise times a gamma curve of
+temperature** -- its README advertises rain shadow and *that file does not implement it*. So even the
+reference gets desert, forest and scrub from noise plus latitude, with no simulation behind it.
+
+Its `draw.py::_biome_satellite_colors` is a **41-entry table hand-picked from a high-resolution satellite
+map of Earth** (their comment). Forests sit near luminance 20/255 and deserts near 190 -- **a ~10:1 spread
+inside land alone**, which our green-to-tan ramp cannot produce because both its ends are mid-tone. That
+spread is most of why their land reads as a planet.
+
+**And we already own the grid-free version of their calibration and did not know it.** Their band edges are
+quantiles found by reducing a global array. `continentality.rs::calibrate` is the same routine: a
+`CALIBRATION_SAMPLES = 4000` Fibonacci order statistic, verified in our source at lines 32 and 83-119. The
+same call with a different salt yields temperature and moisture band edges as per-world constants, with no
+grid anywhere.
+
+**Sequencing argument, which is why it goes first rather than merely early: clouds at 40% coverage will hide
+land-colour and coastline defects.** Every land measurement in this slice is taken at `clouds=0`, and that
+must be stated in each task rather than left implied.
+
+**Borrow their non-uniform band spacing too.** Their humidity quantiles are a bell (`humids = [0.941, ...,
+0.002]`) and their comment says it plainly: *"originally evenly spaced at 12.5% each but changing them to a
+bell curve produced better results"*. The approved climate design uses four evenly-spaced moisture bands and
+would produce too much middling terrain and no real desert.
+
+**Keep our three axes.** WorldEngine has two and no landform axis -- no "coastal" at all. Ours is better for
+a MUD. Borrow the colour table and the draw-time modifier, not the classifier.
+
+### Change 2: TASK 5'S BRIEF WAS WRONG IN BOTH DIRECTIONS AND IS REPLACED
+
+**The trap it warns about is already solved.** `Continentality::new` calibrates `shore` and `spread` as
+quantiles of the same fBm *before the struct exists*, so **land fraction is held by construction**. I wrote
+a warning about a problem this codebase fixed years of commits ago.
+
+**And the risk it missed would have made the whole task invisible.** Adding a 5th octave to a gain-0.5
+normalised sum gives the new term **3.23% of total amplitude** -- a sub-pixel wobble, not a fjord. **Task 5
+as originally written could pass every check it specified and produce no visible change**, which is the
+worst possible outcome for a task whose entire purpose is visible.
+
+There is a second, quieter problem: `CALIBRATION_SAMPLES = 4000` gives ~357 km sample spacing against a
+finest-octave wavelength of ~637 km -- already only ~1.8 samples per wavelength, below Nyquist. A 5th octave
+takes it to ~0.9, degrading the land-fraction estimator from quasi-Monte-Carlo to plain Monte-Carlo:
+**standard error +/-0.72 pp at `land=0.29`, +/-0.58 pp at `land=0.16`**.
+
+**The replacement approach: a SEPARATE term windowed by `|above_shore|`, with its own amplitude.** Coast-
+localised roughening by amplitude rather than by extra octaves. It puts the detail exactly where the eye
+looks, leaves plate interiors and abyssal plains untouched, and preserves land fraction to first order for
+free because the window is symmetric about the shore. `above_shore` already exists (`continentality.rs:130`).
+
+## LICENCES: VERIFIED, AND ONE OF THEM CONSTRAINS US
+
+Read from each project's actual LICENSE file, not from badges or READMEs.
+
+- **World Orogen is GPL-3.0.** The owner ranked it first to study. **Read it for technique; copy nothing.**
+  A copied excerpt would place copyleft obligations on this entire codebase.
+- **GPlates is GPL-2.0.** Same rule. It is a scientific reference, not a code donor.
+- **NO LICENCE AT ALL:** Realistic Planet Generation and Simulation, worldGen (Go), nkeenan38's Procedural
+  Planet Generator. **Public on GitHub is not permission granted.** Safe to read; never to copy from.
+- **MIT / Apache-2.0, safe to learn from and to vendor with attribution:** WorldEngine (MIT), Azgaar (MIT,
+  with an added clause explicitly blessing commercial output), PlanetGenerator (MIT), Mapgen4 (Apache-2.0),
+  caseymcc/worldgen (MIT), Worldsmith (MIT).
+
+**The two we most want are both MIT** -- WorldEngine's satellite palette and Azgaar's compositing. That is
+the whole reason this check was worth running before the work rather than after.
+
+**The grey area, stated once:** a single hex value or a single threshold is not protectable and may be
+reused freely. **A whole hand-tuned palette copied verbatim is different** -- from the MIT projects it must
+carry its copyright notice, and from the GPL and unlicensed ones it must be independently re-derived rather
+than copied.
+
+---
+
 ### Task 1: Clouds
 
 **Files:** Create `viewer/public/app/clouds.js`, `viewer/public/app/cloud-provider.js`; modify
