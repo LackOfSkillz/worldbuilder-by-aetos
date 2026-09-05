@@ -2681,3 +2681,259 @@ def test_generation_fraction_and_rate_hold_strictly_over_the_entire_sweep():
             rate_checked += 1
     assert fraction_checked == len(GENERATION_WORLD_SEEDS) * 40 * len(GENERATION_LABELS)
     assert rate_checked == len(GENERATION_WORLD_SEEDS) * py_generation.DEFAULT_PLATE_COUNT
+
+
+# ---------------------------------------------------------------------------
+# Detail: smooth, the band table, amplitude_m, offset_m
+#
+# The simplest contract in the file. `detail.py` contains no transcendental call in any
+# path -- verified by reading it, not assuming it: `math.pi` is a module-level constant,
+# not an operation, and `Noise` (already covered, bit-for-bit, in its own section above)
+# reaches only `floor`, which is exact. So unlike Tectonics just above, there is no
+# measured, disclosed exception here and no `close_enough` anywhere in this section --
+# every comparison uses `same()`. If one of these ever needed a tolerance, that would be
+# a finding about the port, not a reason to add one.
+# ---------------------------------------------------------------------------
+
+from worldbuilder.terrain.detail import Detail as PyDetail
+from worldbuilder.terrain.detail import _smooth as py_smooth
+
+
+class _DetailPoint:
+    """`Detail.amplitude_m` never reads its `point` argument at all (see detail.rs's own
+    doc comment on the method) and `Detail.offset_m` only reads `.vector`; this is the
+    smallest thing that satisfies both without dragging in `SpherePoint` normalisation,
+    the same pattern as `noise_points`' `_Point` above."""
+
+    def __init__(self, x, y, z):
+        self.vector = Vec3(x, y, z)
+
+
+DETAIL_WORLD_SEEDS = [0, 1, 20260831, 2**63 - 1]
+
+# Earth's own radius, plus a radius chosen so the four-operation transcription
+# `2*pi*radius_m/wavelength/(2*pi)` and the simplified `radius_m/wavelength` disagree.
+# Earth's radius does NOT distinguish the two forms for any of the seven configured
+# wavelengths (that is precisely why a simplification could hide there), so it alone
+# would not catch trap 1 -- this second radius is what makes the corpus able to.
+DETAIL_NON_EARTH_RADIUS_M = 32450893.20683292
+DETAIL_RADII = [EARTH_RADIUS_M, DETAIL_NON_EARTH_RADIUS_M]
+
+DETAIL_AMPLITUDE_M = 100.0
+
+# One elevation from each of the five settings amplitude_m's docstring and comments name:
+# abyssal (deep == 1.0), shelf (partway up the deep/high blend), coast (inside the
+# near_shore band, |elevation| < 350), interior (partway up the high blend, positive
+# side), and mountain (high == 1.0).
+DETAIL_ELEVATIONS_M = [-6000.0, -1500.0, 0.0, 500.0, 2000.0]
+DETAIL_SHELF_WEIGHTS = [0.0, 0.5, 1.0]
+DETAIL_TECTONIC_MS = [0.0, 600.0, 1200.0, 5000.0]  # zero to well past the 1200 saturation
+
+# None (canonical -- every band at full strength), 0.0 (must reach the exact same path as
+# None, per Python's `if resolution_m:` falsiness), -0.0 (also falsy in Python, but not
+# for the reason 0.0 is bit-exact-guarded: `wavelength / -0.0` is `-inf`, `smooth(-inf)`
+# clamps to `0.0`, and `visible <= 0.0` breaks the loop, dropping every band -- so a port
+# that collapses only `0.0` and not `-0.0` to the canonical path diverges here even though
+# it agrees on plain zero), a fine spacing that leaves every band's `visible` at 1.0
+# (100.0, far below even the finest band's fade window), one squarely inside the coarsest
+# band's fade window (wavelength 20000.0 fades for resolution_m in [5000.0, 10000.0], so
+# 7500.0 sits in the middle), one coarse enough that even the coarsest band's `visible`
+# clamps to 0.0 on the very first iteration, breaking the loop and dropping every octave
+# (50000.0: 20000.0/50000.0 = 0.4, already below BARELY_M), and NaN (truthy in Python, so
+# it takes the *resolution* branch rather than the canonical one; `wavelength / NaN` is
+# NaN and `smooth(NaN)` must clamp to exactly `1.0` -- the clamp-order trap -- for this to
+# agree with canonical at all).
+DETAIL_RESOLUTIONS_M = [None, 0.0, -0.0, 100.0, 7500.0, 50000.0, float("nan")]
+
+
+def test_detail_smooth_agrees_bit_for_bit():
+    """Purely algebraic: two clamps and a smoothstep. `same()`, not `close_enough()`."""
+    edge_cases = [-1e300, -10.0, -0.0, 0.0, 1e-12, 0.5, 1.0 - 1e-12, 1.0, 1.0 + 1e-12, 10.0, 1e300]
+    checked = 0
+    for fraction in edge_cases:
+        want = py_smooth(fraction)
+        got = engine.detail_smooth(fraction)
+        assert same(want, got), (fraction, want, got)
+        checked += 1
+
+    sample = list(corpus(3000))
+    for x, y, z in sample:
+        for fraction in (x, y * 3.0, z * 0.5):
+            want = py_smooth(fraction)
+            got = engine.detail_smooth(fraction)
+            assert same(want, got), (fraction, want, got)
+            checked += 1
+    assert checked == len(edge_cases) + len(sample) * 3
+
+
+def test_detail_bands_agree_bit_for_bit_across_seeds_and_radii():
+    """The band table: seven octaves, each a `(wavelength_m, frequency, share)` triple,
+    for every world seed crossed with every radius -- including the non-Earth one where
+    trap 1 (a simplified frequency expression) would bite."""
+    checked = 0
+    for seed in DETAIL_WORLD_SEEDS:
+        for radius_m in DETAIL_RADII:
+            want = PyDetail(seed, radius_m)._bands
+            got = engine.detail_bands(seed, radius_m)
+            assert len(want) == len(got) == 7, (seed, radius_m, len(want), len(got))
+            for (want_w, want_f, want_s), (got_w, got_f, got_s) in zip(want, got):
+                assert same(want_w, got_w), (seed, radius_m, "wavelength", want_w, got_w)
+                assert same(want_f, got_f), (seed, radius_m, "frequency", want_f, got_f)
+                assert same(want_s, got_s), (seed, radius_m, "share", want_s, got_s)
+                checked += 1
+    assert checked == len(DETAIL_WORLD_SEEDS) * len(DETAIL_RADII) * 7
+
+
+def test_detail_bands_uses_the_transcribed_frequency_formula_not_the_simplified_one():
+    """
+    Trap 1, named directly. At `DETAIL_NON_EARTH_RADIUS_M`, the band whose wavelength is
+    10000.0 must carry the frequency the Python's four-operation transcription produces
+    (3245.0893206832916), not the value a `radius_m / wavelength` simplification would
+    give (3245.089320683292) -- the two are one ULP apart and agree at Earth's radius for
+    every configured wavelength, which is exactly why a simplification could pass every
+    other test in this file and still be wrong. Checked against the literals directly (so
+    this test cannot pass merely because both languages made the same mistake), and then
+    against the engine.
+    """
+    seed = DETAIL_WORLD_SEEDS[0]
+    want_bands = PyDetail(seed, DETAIL_NON_EARTH_RADIUS_M)._bands
+    want_band = next(b for b in want_bands if b[0] == 10000.0)
+    transcribed = 3245.0893206832916
+    simplified = 3245.089320683292
+    assert same(want_band[1], transcribed), (want_band[1], transcribed)
+    assert not same(want_band[1], simplified), "the reference itself drifted onto the simplified form"
+
+    got_bands = engine.detail_bands(seed, DETAIL_NON_EARTH_RADIUS_M)
+    got_band = next(b for b in got_bands if b[0] == 10000.0)
+    assert same(got_band[1], transcribed), (got_band[1], transcribed)
+    assert same(want_band[1], got_band[1]), (want_band[1], got_band[1])
+
+
+def test_detail_amplitude_m_agrees_bit_for_bit_across_elevation_shelf_and_tectonic():
+    """
+    `amplitude_m` reads none of `point`, `world_seed` or `radius_m` -- its entire
+    behaviour is `elevation_m`, `shelf_weight` and `tectonic_m` (see detail.rs's own doc
+    comment on the method). This is the test that actually exercises that behaviour: one
+    elevation from each of the five settings the docstring names, the three shelf weights
+    the brief calls out, and tectonic contributions from zero to well past the 1200
+    saturation point, crossed with a handful of real points so the binding's
+    otherwise-unused x/y/z arguments still cross the FFI boundary on every comparison.
+    """
+    seed = DETAIL_WORLD_SEEDS[0]
+    radius_m = DETAIL_RADII[0]
+    d = PyDetail(seed, radius_m)
+    points = list(corpus(20))
+    checked = 0
+    for x, y, z in points:
+        point = _DetailPoint(x, y, z)
+        for elevation_m in DETAIL_ELEVATIONS_M:
+            for shelf_weight in DETAIL_SHELF_WEIGHTS:
+                for tectonic_m in DETAIL_TECTONIC_MS:
+                    want = d.amplitude_m(point, elevation_m, shelf_weight, tectonic_m)
+                    got = engine.detail_amplitude_m(
+                        seed, radius_m, x, y, z, elevation_m, shelf_weight, tectonic_m
+                    )
+                    assert same(want, got), (
+                        x, y, z, elevation_m, shelf_weight, tectonic_m, want, got
+                    )
+                    checked += 1
+    assert checked == (
+        len(points) * len(DETAIL_ELEVATIONS_M) * len(DETAIL_SHELF_WEIGHTS) * len(DETAIL_TECTONIC_MS)
+    )
+
+
+def test_detail_amplitude_m_agrees_across_world_seeds_and_radii():
+    """
+    Confirms the `world_seed`/`radius_m`/`point` arguments the binding still requires
+    (even though the formula ignores every one of them) survive the FFI round trip
+    without corrupting anything downstream, for several seeds and both radii.
+    """
+    points = [(0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.3, -0.4, 0.8)]
+    checked = 0
+    for seed in DETAIL_WORLD_SEEDS:
+        for radius_m in DETAIL_RADII:
+            d = PyDetail(seed, radius_m)
+            for x, y, z in points:
+                point = _DetailPoint(x, y, z)
+                want = d.amplitude_m(point, -6000.0, 0.5, 600.0)
+                got = engine.detail_amplitude_m(seed, radius_m, x, y, z, -6000.0, 0.5, 600.0)
+                assert same(want, got), (seed, radius_m, x, y, z, want, got)
+                checked += 1
+    assert checked == len(DETAIL_WORLD_SEEDS) * len(DETAIL_RADII) * len(points)
+
+
+def test_detail_offset_m_agrees_bit_for_bit():
+    """
+    The corpus, every world seed, both radii (including the non-Earth one), and every
+    `resolution_m` this task's brief names: `None`, `0.0`, a fine spacing, one mid-fade,
+    and one coarse enough to drop every band.
+    """
+    points = list(corpus(150))
+    checked = 0
+    for seed in DETAIL_WORLD_SEEDS:
+        for radius_m in DETAIL_RADII:
+            d = PyDetail(seed, radius_m)
+            for x, y, z in points:
+                point = _DetailPoint(x, y, z)
+                for resolution_m in DETAIL_RESOLUTIONS_M:
+                    want = d.offset_m(point, DETAIL_AMPLITUDE_M, resolution_m)
+                    got = engine.detail_offset_m(
+                        seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, resolution_m
+                    )
+                    assert same(want, got), (
+                        seed, radius_m, x, y, z, resolution_m, want, got
+                    )
+                    checked += 1
+    assert checked == (
+        len(DETAIL_WORLD_SEEDS) * len(DETAIL_RADII) * len(points) * len(DETAIL_RESOLUTIONS_M)
+    )
+
+
+def test_detail_offset_m_zero_resolution_matches_omitted_resolution():
+    """
+    Python's `if resolution_m:` is false for `None`, `0.0` and `-0.0`, so a caller passing
+    either zero must get every octave, not a division by zero -- and the binding must
+    carry that through for a caller that omits the argument entirely, not only one that
+    passes `None` explicitly. All four call shapes -- omitted, `None`, `0.0`, and `-0.0`
+    -- must land on the identical bit pattern the Python reference produces for its own
+    default. `-0.0` is the case that actually distinguishes a correct collapse from one
+    that only special-cases plain zero: `wavelength / -0.0` is `-inf`, and an unguarded
+    port would drop every band instead of matching canonical.
+    """
+    seed = DETAIL_WORLD_SEEDS[-1]
+    radius_m = DETAIL_RADII[-1]
+    d = PyDetail(seed, radius_m)
+    points = list(corpus(20))
+    checked = 0
+    for x, y, z in points:
+        point = _DetailPoint(x, y, z)
+        want = d.offset_m(point, DETAIL_AMPLITUDE_M)  # resolution_m omitted -> None
+        got_omitted = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M)
+        got_none = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, None)
+        got_zero = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, 0.0)
+        got_neg_zero = engine.detail_offset_m(seed, radius_m, x, y, z, DETAIL_AMPLITUDE_M, -0.0)
+        assert same(want, got_omitted), (x, y, z, "omitted", want, got_omitted)
+        assert same(want, got_none), (x, y, z, "none", want, got_none)
+        assert same(want, got_zero), (x, y, z, "zero", want, got_zero)
+        assert same(want, got_neg_zero), (x, y, z, "neg_zero", want, got_neg_zero)
+        checked += 4
+    assert checked == len(points) * 4
+
+
+def test_detail_offset_m_returns_exactly_zero_for_non_positive_amplitude():
+    """The early return in both languages: `amplitude_m <= 0.0` skips the band loop
+    entirely and returns exactly `0.0`, never a near-zero float."""
+    seed = DETAIL_WORLD_SEEDS[0]
+    radius_m = DETAIL_RADII[0]
+    d = PyDetail(seed, radius_m)
+    amplitudes = [0.0, -0.0, -1.0, -1e300]
+    points = list(corpus(10))
+    checked = 0
+    for x, y, z in points:
+        point = _DetailPoint(x, y, z)
+        for amplitude_m in amplitudes:
+            want = d.offset_m(point, amplitude_m, None)
+            got = engine.detail_offset_m(seed, radius_m, x, y, z, amplitude_m, None)
+            assert same(want, got) and want == 0.0, (x, y, z, amplitude_m, want, got)
+            checked += 1
+    assert checked == len(points) * len(amplitudes)

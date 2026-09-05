@@ -5,6 +5,7 @@
 //! targets agree bit-for-bit, which is the only reason a studio and a game can be trusted
 //! to be looking at the same world.
 
+pub mod detail;
 pub mod detmath;
 pub mod generation;
 pub mod vectors;
@@ -65,5 +66,9 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::generation_pole, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::generation_rate, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::generation_plates_for, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::detail_smooth, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::detail_bands, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::detail_amplitude_m, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::detail_offset_m, m)?)?;
     Ok(())
 }
