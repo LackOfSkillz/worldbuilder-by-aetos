@@ -24,24 +24,39 @@ editing, no worldfile — **slice 3 owns those**.
 > evidence, and is deliberately left as written: re-stamping it with today's numbers would
 > misrepresent what was true at the time it describes. The authority for the engine's current
 > figures is `crates/worldbuilder-engine/README.md`, `crates/worldbuilder-engine/parity/README.md`
-> and `viewer/public/wasm/MANIFEST.txt`. Bringing the rest of this file's browser-side
-> measurements up to date needs a browser and a person, and is out of scope for a task that
-> could not open one.
+> and `viewer/public/wasm/MANIFEST.txt`.
 >
-> **One panel bug, pre-existing and NOT fixed here**, recorded so this file does not describe
-> the panel as correct: the radius slider in `public/app/controls.js` is built with
-> `min: 1e6, step: 1e5` and a default value of `6371000`. An HTML range input snaps its value
-> to the nearest `min + k*step`, and `(6371000 - 1000000) / 100000 = 53.71` rounds to 54 --
-> so the control reads back **6,400,000 m**, and pressing generate on a clean page silently
-> builds a different planet from the one `main.js`'s `DEFAULT_WORLD` names. The neighbouring
-> sliders were checked the same way and are fine: `land` (`min 0.05, step 0.01`) lands exactly
-> on 0.29, and `plates` (`min 3, step 1`) exactly on 22. Only the radius default is
-> unreachable by its own control.
+> **The browser-side half of that note is now discharged, and this is what a browser said**
+> (relief Task 6, 2026-09-05 at `bbb2108`; Chromium 148 in the agent browser pane, ANGLE
+> Intel UHD D3D11, 32 cores, viewport emulated to 1400x900 or 1000x800, frames driven by hand
+> — see *[Two hosts, and what neither of them can do](#two-hosts-and-what-neither-of-them-can-do)*):
+>
+> | this file says | measured today |
+> |---|---|
+> | "52 requests — 48 same-origin plus 4 `blob:` — 39 resource-timing entries, 0 off-origin" | **86 server requests** for one default page load (85 `200` plus one `404` for `/favicon.ico`), **76 resource-timing entries** over 29 distinct paths, **0 off-origin**. The growth is the relief layer's own modules and the pool's per-worker module graph: 8 x `tile-worker.js` plus 8 copies each of `engine.js`, `relief.js`, `relief-params.js`, `terrain.js`, `pool.js` and the `.wasm`. |
+> | `__wb.check()` 11/0 featureless, 12/0 harbour | **reproduced: 11 passed / 0 failed** on `/`, **12 / 0** on `/?harbour=1`, no console errors |
+> | "nine copies of an 84,856-byte artifact over loopback" | nine copies is right (1 main thread + 8 workers, counted in the server log); the **size is not** — see the row above about 220,452 bytes |
+>
+> **The radius-slider bug this box used to report as open is FIXED**, in `6a07530`: the travel
+> is `step: 1e3` and the panel now reads **6.371 Mm** where it used to print "6.4 Mm" at one
+> decimal for both values. It was not fixed alone — see
+> *[The panel-default family, closed by a check](#the-panel-default-family-closed-by-a-check)*,
+> which found a fourth member of the same family nobody had reported.
+>
+> **What still needs a person and a headed browser**, and is not repaired here: every
+> *frame-time* figure in this file. The agent browser pane reports `document.hidden === true`
+> at every moment, so `requestAnimationFrame` never fires in it and the render loop never
+> runs; frames can only be driven by hand through `scene.render()`. Wall-clock "time to
+> settle" and frames-per-second cannot be measured that way at all.
 
 **New here? Read [The record (Task 7)](#the-record-task-7) first.** It is the consolidated
 statement of what this thing guarantees, what it costs, what it deliberately does not claim,
 and what is still open. Everything between here and there is the working notes of the six
 tasks that built it, kept because the reasoning is the expensive part.
+
+**Then read [The relief imagery layer](#the-relief-imagery-layer) at the end**, which is the
+record of the slice that came after it and which changed what the viewer draws. It is the one
+section that answers *"why does the planet look like that, and how much of it got fixed."*
 
 The sections below begin where the slice did: with a minimal `Viewer` that drew nothing but
 the ellipsoid, and the harness used to **witness** that the page makes no request off its own
@@ -305,12 +320,17 @@ viewer/
   public/app/cesium-base-url.js      CESIUM_BASE_URL, before Cesium.js
   public/app/boot.js                 the Viewer + the net probe
   public/app/viewer.css              the page's own style
-  public/app/engine.js               the wasm loader and the ten extern "C" entry points
+  public/app/engine.js               the wasm loader and the extern "C" entry points
   public/app/terrain.js              CustomHeightmapTerrainProvider, the cap, the faults
   public/app/availability.js         getTileDataAvailable, feature-aware
   public/app/pool.js                 the eight-worker pool and the LRU tile cache
   public/app/tile-worker.js          one module worker: its own engine, its own world
   public/app/main.js                 wiring, the hypsometric ramp, the URL parameters
+  public/app/controls.js             the parameter panel, built from panel-fields.js
+  public/app/panel-fields.js         ONE copy of every default and every slider's travel
+  public/app/relief.js               the shaded-relief raster: hillshade + slope colour
+  public/app/relief-provider.js      the Cesium ImageryProvider over that raster
+  public/app/relief-params.js        the engine's relief presets, across the wasm boundary
   public/app/verify.js               the twelve checks -- window.__wb.check()
   public/app/bench.js                the frame budget -- window.__wb.bench()
   public/vendor/cesium/              the vendored build (committed)
@@ -365,6 +385,21 @@ this value, so the only two settings worth having are 2 and 1. The default is th
 one; **`?sse=1` is what buys the extra imagery level at orbital distance**, and it is worth
 it if you are looking at the planet rather than flying over it. Note that it is a *global*
 knob: it refines the terrain mesh too, so its cost is not confined to the relief layer.
+
+**Both tables above were taken on headed Playwright Chromium with hardware ANGLE/D3D11.**
+They were re-run for the record task on a second host (the agent browser pane, same GPU and
+core count, frames driven by hand). **Everything that is a property of the geometry
+reproduced exactly and everything that is a property of the machine did not**, which is the
+same split this project keeps finding:
+
+| re-run, second host | reproduced exactly | did not reproduce |
+|---|---|---|
+| `?reliefSize=` 128 / 256 / 512 | tiles **244 / 61 / 15**, deepest level **4 / 3 / 2**, texels **4.00 / 4.00 / 3.93 M** | worker CPU 14.1 / 9.9 / 12.3 s against 4.81 / 4.79 / 4.26 s |
+| `?sse=` 2 / 1.5 / 1 | tiles **61 / 83 / 155**, deepest level **3 / 3 / 4**, m/texel **9,811 / 9,811 / 4,906** | worker CPU 9.9 / 17.1 / 26.0 s, i.e. `sse=1` costs **2.6x** rather than 3.1x |
+
+So *"`sse=1` buys one imagery level and costs roughly three times the worker CPU"* is the
+durable claim, and 3.1x is one host's instance of it. The **metres per texel** column is the
+load-bearing one and it is arithmetic, not a measurement.
 
 ## Building the engine .wasm
 
@@ -1261,6 +1296,558 @@ npm run serve
 #                     -> each must FAIL, at its own count above
 ```
 
-All of it was run for this task on Windows 11 (10.0.26200), x86_64-pc-windows-msvc,
+All of it was run for that task on Windows 11 (10.0.26200), x86_64-pc-windows-msvc,
 cargo 1.98.0 / rustc 1.98.0, Node v22.17.0, Chrome 151 (headless). Every command exited 0
 except the fault runs, which are supposed to report failures, and did.
+
+**The relief slice added a node suite and a second provider, so add these** — every line below
+was run for [the relief record](#the-relief-imagery-layer), on this host, and both commands
+exited 0:
+
+```
+cd viewer
+npm test          # 57 tests, 57 pass -- relief.js, relief-provider.js, pool.js,
+                  # tile-worker.js and panel-fields.js. No browser needed.
+npm run check:wasm
+
+# and the pages, which need a browser that actually composites:
+#   /?fly=10,20,9000000            relief on: 61 tiles at level 3, 0 main-thread rasters
+#   /?fly=10,20,9000000&workers=0  the A/B baseline: 61 main-thread rasters, and it fails
+#                                  worker-path, cache-identity and quadtree-depth BY
+#                                  CONSTRUCTION -- it is not a supported configuration
+#   /?fly=10,20,9000000&sse=1      155 tiles at level 4 -- the expensive detail setting
+#   /?relief=0                     must still differ from the relief-on digest, and the
+#                                  pool and ?workers=0 digests must still be identical
+```
+
+
+---
+
+# The relief imagery layer
+
+The slice after slice 2b, and the one that changed what the planet looks like. It is
+**viewer-only**: no engine change, no new wasm export, no rebuild. It adds a second provider
+beside the terrain one — a Cesium `ImageryProvider` that generates a shaded-relief,
+slope-coloured raster per tile from the same engine, in the same worker pool.
+
+It exists because of two sentences from the repository's owner:
+
+> one looks like minecraft (ours) and gpts looks like an actual image from space
+
+> when I zoom in the resolution doesnt increase. it just looks blurry.
+
+Read *[What still does not look like a photograph](#what-still-does-not-look-like-a-photograph)*
+before believing this section solved either one. It moved the second a long way and the first
+only partly, and the reason the first is hard is physical rather than a bug.
+
+**Every figure below was measured while writing this section**, on this host, from the current
+source or from a run performed here — never copied from a task report. Where a run disagreed
+with what an earlier task recorded, both are shown and the disagreement is named. The commands
+and populations are in
+*[Everything this section's figures came from](#everything-this-sections-figures-came-from)*.
+
+## The measurement that motivated it: the coastline is a polygon through 78 km posts
+
+At the whole-planet view the globe draws sixteen terrain tiles at levels 1 and 2. A 65-post
+heightmap tile at level `L` on this world's 6,371,000 m radius samples every
+`π · 6,371,000 / 64 / 2^L` metres — `postSpacingM(level, size, radiusM)` in
+`public/app/terrain.js`, which computes it rather than quoting it:
+
+```
+level 0 -> 312,735.73 m    level 2 ->  78,183.93 m
+level 1 -> 156,367.87 m    level 3 ->  39,091.97 m
+```
+
+**Every coastline in a whole-planet screenshot is a polygon through points 78 km apart.** That
+is the whole of the "low-poly" look, and it is a *resolution* problem rather than a shading
+one — which is why the appearance work that preceded this slice (lighting, sky limb, a ramp
+with depth and snow bands) did not touch it.
+
+Where refinement stops is not a choice either. The live provider reports
+`getLevelMaximumGeometricError(0) = 77,067.34 m` — Cesium's own
+`getEstimatedLevelZeroGeometricErrorForAHeightmap` for a 65-post tile on a two-tile level 0 —
+halving every level, and at orbital distance the level-2 error lands under the default
+screen-space threshold. **Nothing is broken; the picture is exactly what the defaults
+predict.**
+
+**Brute force is not the answer.** Reaching ~1 km detail across a visible hemisphere means
+level 7–8 *terrain*: thousands of meshes to build, upload and draw where there are now sixteen.
+The cost is not in generating heights.
+
+## Why "shade at a different frequency than you tessellate" is the fix
+
+Three facts, each verified on the running viewer rather than restated.
+
+**1. The terrain provider cannot give you relief shading at all — ever.** Measured live on the
+default page:
+
+```
+viewer.terrainProvider instanceof Cesium.CustomHeightmapTerrainProvider   true
+viewer.terrainProvider.hasVertexNormals                                   false
+viewer.scene.globe.enableLighting                                         true
+```
+
+`HeightmapTerrainData` has no normals path anywhere in Cesium; oct-encoded vertex normals exist
+only on `QuantizedMeshTerrainData`. So `GlobeFS` falls back to `czm_geodeticSurfaceNormal` —
+**the ellipsoid normal** — and the mountains are lit as though the planet were a perfect smooth
+sphere. `hasVertexNormals` is `false` *while lighting is on*, which is the whole point: this
+project turned `enableLighting` on expecting relief and got nothing, for this reason. It also
+silently disables Cesium's own `SlopeRamp` and `AspectRamp`, which read
+`czm_octDecode(encodedNormal)`; `ElevationRamp` works only because `v_height` comes straight
+off vertex position, **which is exactly why the picture before this slice was colour-by-height
+and nothing else.**
+
+**That is why the shading is baked into an imagery raster.** It is not the best of several
+options; on this provider it is the only one.
+
+**2. Imagery level equals terrain level — it is not clamped to it.** Measured on the same
+settled page: `globe._surface._debug.maxDepthVisited` and the relief provider's own
+`maxLevelRequested` are **the same number** (2 at the pane's own size, 3 at an emulated
+1400x900). Cesium picks the imagery level from `getLevelWithMaximumTexelSpacing` against the
+*terrain* provider's geometric error with a hardcoded `errorRatio` of 1.0, clamped only to the
+imagery provider's own min/max. One imagery tile per terrain tile — but **256 texels across a
+rectangle the geometry samples with 65 posts**, a free ~4x linear colour resolution over the
+same tile budget. And the raster is sampled from the *true field*, where `Globe.material` only
+ever sees values interpolated across those 78 km posts.
+
+**3. Raster size is a batching knob, not a detail knob — and this is why widening tiles was
+never going to work.** Screen-space post density is invariant to heightmap width, and the
+imagery tile is invariant the same way. Measured here at the default orbital camera
+(`?fly=10,20,9000000`), 8 workers, one flag apart:
+
+| `?reliefSize=` | relief tiles | deepest level | m/texel | total texels |
+| --- | --- | --- | --- | --- |
+| 128 | 244 | 4 | **9,850** | 4.00 M |
+| **256** (default) | 61 | 3 | **9,811** | 4.00 M |
+| 512 | 15 | 2 | **9,792** | 3.93 M |
+
+**A 4x change in tile width moves the tile count by 16x and the metres per texel by 0.6%.** A
+wider tile lowers the geometric error, Cesium refines one level less, and it lands on the same
+ground spacing. There is no quality/cost trade here and it must not be read as one; the only
+knob that moves detail at this camera is `maximumScreenSpaceError`.
+
+So: **keep the mesh coarse — it only has to hold the silhouette — and put the detail in a
+per-pixel raster generated at a higher frequency from the same height function.** Three shipped
+planet renderers (Outerra, Infinity, Elite Dangerous) say publicly that they do exactly this.
+One honesty note carried from the plan's research: no graphics paper appears to quantify
+"shading dominates terrain-shape perception". The nearest rigorous evidence is cartographic —
+the terrain-reversal effect, where illuminating from the lower right makes mountains read as
+valleys **with no change to the elevation model at all**. The practice is well supported; the
+perceptual claim is not measured.
+
+## The layer shipped flat, and the check that shipped before it said so
+
+This is the part worth keeping, because the failure was caught by measurement rather than by a
+person looking at the screen.
+
+The provider went in, `?relief=0` was proved byte-identical, and **the hillshade was invisible
+at every zoom level.** Method: render the same tile twice through `reliefTile` — once normally,
+once with `ambient = 1`, which sets `shade === 1` and leaves the height/slope colour untouched —
+and take the per-texel ratio. That ratio *is* the shade factor. As shipped, it was a
+**near-constant 19% darkening with a spread of about 0.004, flat from level 5 to level 12**. On
+a mid-tone that is well under one luminance unit. A constant darkening is not relief, and it did
+not improve with zoom — so the owner's second complaint was not answered at all.
+
+**The check that shipped one task earlier was honest about not covering that case.** Its
+`hasStructure` threshold (`luminance sd >= 2`) had been reported, with numbers, as catching a
+*blank* raster and not a *weakened* one: a mutant that blended 80% of the relief away still
+cleared it. One task later the shipped raster was exactly that thing — structurally present,
+visually useless — and the threshold refused those tiles from level 8 down while the node suite
+stayed green on a level-2 fixture where colour supplied the spread. **A threshold tuned until it
+looked decisive would have hidden this.**
+
+### And the baseline it was measured against flattered the result
+
+Re-run here, on the tile containing −9, 65 at size 256, levels 5–12, through the identical ratio
+method:
+
+| level | `zFactor` 1 mean | `zFactor` 1 sd | constant-shade control sd | shipped mean | shipped sd |
+| --- | --- | --- | --- | --- | --- |
+| 5 | 0.8094 | 0.0039 | 0.0028 | 0.7998 | **0.0415** |
+| 6 | 0.8086 | 0.0043 | 0.0031 | 0.7759 | **0.0431** |
+| 8 | 0.8078 | 0.0028 | 0.0019 | 0.7416 | **0.0430** |
+| 9 | 0.8074 | 0.0036 | 0.0024 | 0.7280 | **0.0492** |
+| 10 | 0.8072 | 0.0040 | 0.0025 | 0.7256 | **0.0617** |
+| 11 | 0.8069 | 0.0039 | 0.0023 | 0.7075 | **0.0570** |
+| 12 | 0.8073 | 0.0034 | 0.0023 | 0.7087 | **0.0400** |
+| **L5–12 mean** | **0.808** | **0.0037** | **0.0025** | **0.741** | **0.0479** |
+
+0.8096 is `AMBIENT + (1 - AMBIENT) · sin(45°)` **exactly** — the shade of perfectly flat ground.
+The `zFactor: 1` column reproduces the shipped-flat baseline through today's code.
+
+**The middle column is the correction, and it belongs in the record rather than in a ledger.**
+It is a synthetic control: take the *unshaded* raster, multiply every channel by the exact
+constant 0.8096, round to bytes, and measure the ratio the same way. Its true shade spread is
+**zero by construction**, and it still reports **sd 0.0025** — two thirds of the baseline's own
+0.0037. **The original "near-constant 19% darkening" was, if anything, understating how flat it
+was**, because a baseline taken through the same 8-bit path as the result is a baseline that
+flatters the result. The shipped raster clears that quantisation floor by **19x**.
+
+(One trap found while measuring this, worth a line: the `zFactor: 1` and shipped arms must each
+be divided by **their own** unshaded raster. Dividing both by the shipped one reported an
+apparent sd of 0.0313 for the `zFactor: 1` arm — six times too high — because the two arms draw
+different colours and quantisation is a property of the colour, not of the shade.)
+
+## The z-factor, and the lie it tells on purpose
+
+The cause is the terrain, not the shading code. Slope-angle distribution of land texels, from
+`reliefTile`'s own central differences over its own margined grid, three probe tiles, size 256:
+
+| level | spacing | −9,65 p50 | p90 | max | 20,10 p50 | p90 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 19,623 m | 0.033° | 0.129 | 0.90 | 0.016 | 0.093 | 0.41 |
+| 3 | 9,811 m | 0.033° | 0.122 | 0.93 | 0.037 | 0.170 | 0.43 |
+| 5 | 2,453 m | 0.208 | 0.460 | 1.19 | 0.211 | 0.384 | 0.76 |
+| 8 | 307 m | 0.776 | 1.064 | 1.63 | 0.326 | 0.591 | 1.23 |
+| 12 | 19 m | 1.194 | 1.527 | **1.85** | 0.304 | 0.578 | 1.12 |
+
+**Nothing on this planet is steeper than 1.9° at any raster spacing.** A hillshade's response to
+a 1° slope is a 1° tilt of the normal — under half a luminance unit. Every desktop GIS hillshade
+carries a **z-factor** for exactly this reason. `Z_FACTOR = 25` multiplies both gradients before
+the normal is built, and it was chosen by sweep against an assertion that already existed and
+could already fail (`hasStructure`), not by eye.
+
+**It is one constant across every level, on purpose.** A level-dependent z would shade two
+adjacent tiles differently wherever the quadtree straddles a level — which it does constantly
+during a descent — and that is a seam. What legitimately grows with level is the terrain: finer
+sampling resolves steeper local faces. **That is the answer to "when I zoom in it just looks
+blurry", and it is why the spread holds across the range** — sd 0.0400 to 0.0617 over eight
+levels, minimum at level 12, level 5 within 4% of it.
+
+**Say plainly what it is: at level 12 the raster renders a median 1.2° slope as a 27° one.**
+This is a legibility choice and not a realism one, it is the largest single lie `relief.js`
+tells, and it is named in that file's own module doc rather than buried.
+
+## The cost of the default
+
+**Before and after the worker-pool move**, measured on one host, same world, same camera, one
+flag apart — `?workers=0` is the before, the shipped default is the after. Host: the agent
+browser pane, Chromium 148, ANGLE Intel UHD D3D11, 32 logical cores, viewport emulated to
+1400x900, default orbital camera `?fly=10,20,9000000`, **61 relief tiles at levels up to 3**,
+`reliefSize=256`, 8 workers, frames driven by hand.
+
+| | `?workers=0` | default (pool) | |
+| --- | --- | --- | --- |
+| main-thread rasters | **61** | **0** | the counter, not the picture |
+| main-thread rasterisation, per tile | **178.1 ms** | **0.319 ms** | **558x** |
+| main-thread rasterisation, total | **10,864 ms** | **19.3 ms** | |
+| worst single main-thread block from a tile | **346.4 ms** | **0.76 ms** | |
+| worker rasterisation, total | 0 | ~9.9–13.2 s | the cost **moved**, it was not removed |
+
+Eleven seconds of blocked main thread for one orbital view is what "the camera stops
+responding" means quantitatively. **The worker move was a prerequisite for shipping the layer
+on by default, not an optimisation.** On the other host, over a fixed eight-second descent from
+orbit, the same change took the page from **53 long tasks totalling 4,372 ms to zero, and 25.7
+to 46.5 fps** — a frame-time claim this host cannot reproduce and does not repeat as its own
+(see *[two hosts](#two-hosts-and-what-neither-of-them-can-do)*).
+
+**The picture is unchanged across the move, and that is proven by digest rather than by eye.**
+SHA-256 of the rendered PNG after 20 driven frames at a pinned viewport (1000x800), pinned
+camera and **pinned frame time** — `Scene.render()` with no argument defaults its frame time to
+`JulianDate.now()`, so pinning `viewer.clock` alone does nothing and every capture is lit
+differently:
+
+| configuration | SHA-256 |
+| --- | --- |
+| `?relief=0` | `2f6ac98ac10dcdb208d1e8db56dda8f2974be0e57dd18276bb968c874f43e7ed` |
+| relief on, **pool path** | `79f11efe1ea5fab354b2d9dbc0cc4cb3a9b0987e85b3107a2aa3d129c159422c` |
+| relief on, **`?workers=0`** | `79f11efe…` — **identical** |
+| relief on, pool path, second and third capture | `79f11efe…` — repeatable |
+
+Row 1 differs from rows 2–4, which is the **positive control**: the instrument is sensitive to
+exactly the thing being claimed unchanged. (A digest is only comparable to another taken on the
+same GPU at the same viewport; these are this host's.)
+
+### Which default ships, what the other one buys, and how to reach it
+
+**`sse=2` ships, unchanged, and it is the cheap one.** `?sse=1` is the *only* knob that buys
+detail at the whole-planet view — `?reliefSize=` provably cannot, per the invariance above.
+Measured here:
+
+| | relief tiles | deepest level | m/texel | worker CPU |
+| --- | --- | --- | --- | --- |
+| **`sse=2`, shipped** | 61 | 3 | 9,811 | 9.9 s |
+| `sse=1.5` | 83 | 3 | **9,811 — no change** | 17.1 s |
+| `sse=1` | 155 | **4** | **4,906** | 26.0 s |
+
+- **`sse=1` buys one imagery level — 4.9 km per texel instead of 9.8 — for 2.5x the tiles and
+  ~2.6x the worker CPU** (3.1x on the host that chose the default). It is worth turning on if
+  you are *looking at* the planet rather than flying over it.
+- **It is not a relief knob.** `maximumScreenSpaceError` refines the terrain mesh too, so its
+  cost is not confined to the thing it improves. A global rendering default should not be
+  changed from a relief-specific argument.
+- **It costs most on hardware nobody has measured.** 26 s of worker CPU across 8 workers on 32
+  cores is comfortable; the same work on a four-core laptop is not, and a default has to be safe
+  on the machine you did not test.
+- **`sse=1.5` is a dead middle**, and that is a finding: 36% more tiles and **not** one more
+  level, because the level Cesium picks is a step function of this value. The only two settings
+  worth having are 2 and 1.
+
+**A cost setting nobody can find is a setting that does not exist**, so it is in the
+always-visible status line, verbatim as it prints today:
+
+```
+… | reliefLayer=256px cap=12 workers paint=off | sse=2 (?sse=1 for one more level, ~3x cost) | fault=none
+```
+
+Under `?workers=0` that field reads **`MAIN THREAD`** instead of `workers`, so a silent fallback
+to the slow path is visible rather than merely felt. **`?workers=0` is a measurement baseline,
+not a supported configuration** — it fails three browser checks by construction, and
+`verify.js` says so in its own text.
+
+## The panel-default family, closed by a check
+
+Two default bugs were fixed here, and **the check that closed the family was worth more than
+either fix, which is now evidence rather than a preference.**
+
+- The `ElevationRamp` window had been narrowed to −7,000..2,400 m without moving the gradient's
+  stops, so the "strand" stop at 0.60 landed at **−1,360 m**. **The default path had been
+  drawing the coastline 1.4 km below sea level.** The arithmetic explains why it was not
+  careless: `0.60` of the *previous* −9,000..+6,000 window is exactly 0 m. The stops were right
+  until the window moved. So the fix that matters is not re-placing the fraction — that would
+  produce a correct picture with the same shape of bug — but making the placement a function of
+  the datum, which `wb_elevation_m` fixes at 0 by construction.
+- The radius slider's `min: 1e6, step: 1e5` could not express its own default of `6371000`; a
+  range input snaps to `min + k·step`, so the control read back **6,400,000 m** and pressing
+  generate built a different planet. It survived every screenshot ever taken of it because the
+  readout was `(value / 1e6).toFixed(1)` Mm, at which precision both values print "6.4 Mm". It
+  is three decimals now and reads 6.371 Mm.
+
+`public/app/panel-fields.js` now holds **one** table — `DEFAULT_WORLD`, the harbour, the ramp
+window, the ramp stops, and the travel of all nine range inputs — which `controls.js` builds
+sliders from and `main.js` draws its gradient from. Neither restates a default.
+`panelFieldFaults()` asserts, for every range input, that its default is a value the slider can
+actually produce, and **running it immediately found a fourth member nobody had reported**:
+`rampMax`, `min 500 step 250`, cannot express 2,400, so the ramp's top had silently been 2,250
+or 2,500. That is not a thing anyone can see, which is why nobody saw it.
+
+The red proof is **kept as a test**: both as-shipped mis-stepped rows are asserted to be
+refused, by message, so the guard cannot quietly stop being able to fail.
+
+## What still does not look like a photograph
+
+The most valuable section here, and the reason this slice is not "done".
+
+**Say this first: the reference image could not be found.** Nothing in `docs/`, `.superpowers/`
+or any scratchpad is the picture the owner compared against; the plan records it only through
+his words. **So the comparison below is against named qualities, not against pixels, and no
+pixel comparison happened.**
+
+**And this second: the world does not have mountains, and nothing here gave it any.** Mountain
+height on this generator is **tectonic**, not roughness. The engine's own `detail.rs` records
+the measurement: the most extreme corner of an 80-configuration roughness sweep tops out at
+**161.34 m of relief on the peak population and 82.10 m on land** over a 2 km run, where
+Hammond's *low mountains* begin at **300 m**. The roughness spectrum's measured ceiling sits
+inside the *hills* band and never reaches mountains. **No z-factor and no colour ramp changes
+that.** The relief layer makes low hills legible; it does not make mountains, and this write-up
+must not be read as saying it did.
+
+Then, itemised:
+
+1. **The whole-planet view is the weakest case, and the reason is PHYSICAL rather than a bug.**
+   At the default orbital camera Cesium asks for imagery levels 2–3 — **9.8 to 19.6 km per
+   texel**. Measured at exactly those spacings, this planet's **median land slope is 0.033°**
+   (0.033° and 0.037° on the two large-land probes at 9.8 km; 0.091° on a small-island probe
+   with only a thousand land texels). **There is no relief at that scale for any z-factor to
+   recover.** The exaggeration still raises the level-2 spread by an order of magnitude and it
+   *is* visible — but this is the weakest level, and it is the level the original complaint was
+   about. `?sse=1` is the honest answer to it, and that is a cost setting rather than a fix.
+2. **The rock/green boundary drifts with zoom, and it is the largest weakness shipped.** Rock
+   keys on the *exaggerated* slope, and slope grows as sampling gets finer, so the mean rock
+   blend on the −9,65 tile runs **0.000 (L2 and L3), 0.004 (L5), 0.016 (L6), 0.138 (L8), 0.241
+   (L9), 0.369 (L11), 0.552 (L12)** — a mountain that is green from orbit is majority rock at
+   level 12. Per level the change is 10–30%, so it reads as detail appearing rather than as a
+   seam, and real imagery does get rockier as individual faces resolve; but the cumulative hue
+   shift over seven levels is real and is not being called intentional. **The known fix**: read
+   the colour's slope at a fixed ground scale rather than at the tile's own. That needs a second
+   engine fill or a wide stencil, and the wide stencil has to clamp at the tile edge —
+   reintroducing exactly the one-sided-difference bias this module's margin exists to prevent,
+   for **hue**, where a seam is far more visible than in shade. A second fill is much cheaper to
+   consider now than when it was first raised: it is worker-side work, and the pool has seconds
+   of budget in hand at this camera.
+3. **No clouds, and no settlement lights.** Both are out of scope by the plan's own statement,
+   both are confirmed absent, and one of them is a roadmap feature rather than an oversight.
+4. **The vegetation colour is altitude, slope and latitude only.** There is no climate, so no
+   deserts, no rainforest, no tundra belt: a mid-latitude coast and an equatorial one are the
+   same green at the same height. After clouds this is probably the single largest remaining
+   difference from a real image, and it is the "climate + biomes" line the panel already lists
+   as designed-but-not-built.
+5. **The sun is per-tile, not global.** Every tile is lit from its own local north-west
+   (azimuth 315°, altitude 45° — the ArcGIS / QGIS / `gdaldem hillshade` default, so it is a
+   convention a reader's eye is already trained on). There is therefore no terminator and no
+   globally coherent shadow direction. Correct for a cartographic relief map; not what a
+   photograph does.
+6. **No cast shadows, only surface shading.** A ridge does not darken the valley behind it.
+7. **No atmospheric perspective on the ground, and no specular glint on the ocean.** A real
+   orbital photograph has haze thickening toward the limb and a glint lobe over water; this has
+   a hard sky-limb boundary, fully saturated ground colour up to the silhouette, and flat matte
+   blue sea. Ground atmosphere is off by default for a measured reason: it washed the ramp to a
+   uniform pale green from orbit.
+8. **No rivers, lakes or ice shelves.** Water is the datum and nothing else.
+9. **The parallel ridges on the plate-boundary range look regular** at `?sse=1`. Fold mountains
+   along a collision boundary genuinely do look like that, and this is the tectonic term rather
+   than the noise term — but that has not been proved, and it is the thing in these pictures
+   that most reads as procedural.
+
+### A figure this section refuses to inherit: the height of the highest point
+
+Two files in this tree disagree with each other about the same quantity, and a re-run settles it
+against the one that is quoted most often.
+
+| source | says |
+| --- | --- |
+| `public/app/relief.js` (three sites) and `public/app/controls.js` (two sites) | "the highest point on this planet is **1,381 m**", of which 1,378 m is structural |
+| `public/app/panel-fields.js` | "the highest land at **1,979 m** on `DEFAULT_WORLD`" |
+| **measured here** — `wb_fill_tile_f32` over 8x4 tiles of 45° at 361x361 posts, canonical resolution, 4,170,724 samples | **peak 1,978.7 m**, deepest −6,345 m, land p50 421 m, p99.9 1,551 m |
+
+**1,381 m does not reproduce, and it is not a scan-density artefact**: the same scan at grid
+steps of 1°, 0.5°, 0.25°, 0.125° and 0.0625° gives **1,954.8 / 1,954.8 / 1,978.7 / 1,978.7 /
+1,987.5 m**, converging near 1,987 m and never approaching 1,381. The 1,381 m figure comes from
+a sibling slice whose record does not state the population it was measured over, and the engine
+has moved several commits since. **`panel-fields.js` is right; the comment sites in `relief.js`
+and `controls.js` are stale and should be corrected in the files themselves** — this note is
+deliberately not treated as the fix, because *a correction that lands in the write-up and not in
+the code leaves the wrong number where the next reader will actually look*, a lesson recorded
+twice already in this file.
+
+**Nothing above depends on which number is right**, which is why this is a correction rather
+than a retraction: `SNOW_LINE_M` at 3,500 m sits above the peak either way (so the snow band
+really was dead code), the rock band really was unreachable at a 1.9° maximum slope either way,
+and 1,987 m on a 6,371 km sphere is a small fraction of Earth's relief either way. **The
+1,378-of-1,381 structural decomposition was not re-derived here** — it needs a tectonic /
+roughness split the viewer cannot see — so it is quoted as the sibling slice's own, and the
+conclusion it supports is corroborated independently by the `detail.rs` sweep above, which does
+not depend on the peak at all.
+
+## A disagreement recorded rather than resolved
+
+**Main-thread rasterisation cost per relief tile has now been measured three times, at three
+different values, and this record is not picking a winner.**
+
+| measured by | value | host as reported |
+| --- | --- | --- |
+| the task that built the provider | **191.6 ms** mean over 26 tiles | "hardware Chrome", via the browser preview pane |
+| the task that moved it into the pool | **55.7 ms** mean over 61 tiles, 3 reps | headed Playwright Chromium, ANGLE/D3D11, 32 cores |
+| **this section** | **178.1 ms** mean over 61 tiles | agent browser pane, ANGLE/D3D11, 32 cores, frames driven by hand |
+
+Most likely the host and the harness. **No conclusion in any of the three depends on which is
+right** — at 55.7 ms the main thread still blocks for 3.4 s per orbital view, at 178 ms for
+10.9 s, and all three say the same thing about whether the main thread could carry this work.
+**A record that quietly drops one of two disagreeing measurements is worse than one that shows
+both**, and there are now three.
+
+The same split runs through every millisecond figure this slice produced and through none of its
+counts. Tiles, levels, texels, metres per texel and `mainThreadRasters` reproduced **exactly**
+across hosts; worker CPU per tile varied from **162 to 216 ms across three runs on one host in
+one session**. **Quote the ratio with the table it came from, or not at all.**
+
+### And a refusal that survived its own correction
+
+The provider task **declined to publish a frame-time A/B** because the only host on which
+`requestAnimationFrame` fired for it was a software rasteriser whose baseline was already 224 ms
+per frame — the relief work was buried under it. It guessed the callback was silent for one
+reason; the pool task found a different one and got real frame numbers on headed hardware.
+**The refusal was right and the diagnosis was wrong**, and that is the point: declining to
+publish a figure the host invalidates costs nothing when the explanation later changes.
+
+## Two hosts, and what neither of them can do
+
+Every browser figure in this section came from the **agent browser pane** (Chromium 148, ANGLE
+Intel UHD D3D11, 32 logical cores, Windows 11 10.0.26200). Figures attributed to another host
+came from **headed Playwright Chromium** with `--use-gl=angle --use-angle=d3d11` on the same
+machine. Three facts about the pane are worth writing down, because they are harness traps that
+have already produced two wrong diagnoses in this project:
+
+1. **Its viewport is 0x0 by default.** `innerWidth`, `innerHeight`, `canvas.width` and
+   `canvas.height` are all 0 on load, so nothing is ever requested and `globe.tilesLoaded` is
+   **vacuously true with zero tiles**. Emulating a viewport (1400x900 here) fixes the canvas and
+   gives a real hardware WebGL context.
+2. **`requestAnimationFrame` still never fires, and the viewport was not the reason.** With a
+   real 1400x900 canvas the pane reports `document.hidden === true` and
+   `document.visibilityState === "hidden"` at every moment, fronted or not — **0 rAF callbacks
+   over 2.7 s**, and `scene.frameState.frameNumber` stuck at 0. Chrome does not run the
+   animation-frame loop for a hidden document. **So the pane can never produce a frame time, an
+   fps, or a wall-clock time-to-settle**, and none is claimed here. That is a refinement of the
+   earlier diagnosis rather than a contradiction of it: fixing the viewport is necessary and not
+   sufficient.
+3. **A hand-driven render loop must yield, or it measures a globe that drew nothing.** 600
+   consecutive `initializeFrame()` / `render(PIN)` calls with no yield left `tilesVisited = 0`,
+   `maxDepthVisited = 0` and **zero relief tiles requested**, because the worker replies and
+   tile callbacks never got a turn on the event loop. Yielding through a `MessageChannel` every
+   five frames settles the same page in about 1,200 frames. (`setTimeout` is clamped to roughly
+   a second in a hidden document and is the wrong yield here.) **This is broken-verifier #7's
+   exact shape** — a check reporting on a globe that never drew — and the `quadtree-depth`
+   zero-work guard added for that case caught it, by name, on the first run: *"the scene
+   rendered 2,000 frames and the quadtree visited 0 tiles… this is not a pass."* A guard written
+   for one harness caught a different one, four slices later.
+
+## Three lessons this slice produced that outlive its code
+
+1. **Byte-identity proves the picture, never the path.** The first mutation of the worker move —
+   a provider that *ignores the pool* — **passed the byte-identity test**, because a provider
+   that ignores the pool draws exactly the same pixels. Only the `mainThreadRasters` counter
+   catches it. **Three of this slice's tasks found an assertion that looked load-bearing and was
+   not, each by mutating rather than by reading.** One of the others was a byte-identity
+   assertion fully shadowed by a pre-existing mean-equality assertion — found only because a
+   *plausible* mutation was run after an *easy* one had already killed everything unaided, which
+   is the entire reason to run two.
+2. **Dead code looks like a feature.** All three colour blends in `relief.js` had never once been
+   selected against this terrain: `ROCK_SLOPE_LOW_DEG` was 22° against a steepest texel of 1.9°,
+   `SNOW_LINE_M` was 3,500 m against a peak under 2 km, and the top two `LAND_BANDS` stops sat
+   above the 99.9th percentile of land. The `ElevationRamp` on the `?relief=0` path had the same
+   problem: its own snow band had never been drawn, in the very change that added it. **The layer
+   was a two-band green-and-ochre height ramp wearing the vocabulary of a slope-aware one.** Code
+   whose condition is never met is the same family as a verifier that cannot fail. Every band is
+   now placed on measured hypsometry, and a test asserts each stop lies inside the measured range,
+   so widening one again fails loudly.
+3. **A panel default that is not the engine's default was this viewer's characteristic defect** —
+   four instances, the fourth found by the check rather than by a person. The countermeasure is
+   not four fixes; it is one table the panel *reads* rather than restates, plus one assertion
+   that a slider can express its own default.
+
+## Everything this section's figures came from
+
+Run for this section, on this host, in this order. Both exited 0, read from `$?` rather than
+from a summary line.
+
+```
+cd viewer
+npm test                 # 57 tests, 57 pass, 0 fail
+npm run check:wasm       # the shipped .wasm matches its manifest and the source that is here now
+```
+
+Node measurements, against this repository's checked-in
+`viewer/public/wasm/worldbuilder_engine.wasm` on Node v22.17.0, all on `DEFAULT_WORLD`
+(`seed 20260904`, radius 6,371,000 m, 12 plates, land 0.29):
+
+- **shade factor** — the tile containing −9, 65 at levels 2–12, `size = 256`; per-texel ratio of
+  the normal raster to one rendered with `ambient = 1`, skipping denominators under 8.
+- **quantisation floor** — the same, plus a synthetic arm whose shade is the exact constant
+  0.8096 applied to that arm's own unshaded raster through the same 8-bit rounding.
+- **slope distribution** — `reliefTile`'s own central differences over its own margined grid,
+  three probe tiles (−9,65 / 40,−100 / 20,10), land texels only.
+- **hypsometry and the peak** — `wb_fill_tile_f32` over 8x4 tiles of 45° at 361x361 posts,
+  canonical resolution (4,170,724 samples), repeated at 46 / 91 / 181 / 361 / 721 posts per tile
+  for the scan-density arm.
+- **rock blend** — mean rock-blend fraction over land texels, same probe tile, levels 2–12.
+- **post spacing** — `postSpacingM(level, 65, 6371000)` from `public/app/terrain.js` itself.
+
+Browser measurements, agent browser pane as described above, over `npm --prefix viewer run
+serve` on port 8137 (there is an untracked `.claude/launch.json` that starts exactly that;
+it is tooling and is deliberately not committed). Viewport emulated to 1400x900 except the
+digests, which are at 1000x800:
+
+```
+/?fly=10,20,9000000                      61 relief tiles, level 3, 0 main-thread rasters
+/?fly=10,20,9000000&workers=0            61 main-thread rasters, 10,864 ms, worst block 346.4 ms
+/?fly=10,20,9000000&sse=1                155 tiles, level 4, 4,906 m/texel
+/?fly=10,20,9000000&sse=1.5              83 tiles, level 3 -- the dead middle
+/?fly=10,20,9000000&reliefSize=128       244 tiles at L4, 9,850 m/texel
+/?fly=10,20,9000000&reliefSize=512       15 tiles at L2, 9,792 m/texel
+/?fly=10,20,9000000&relief=0             the digest control
+/                                        __wb.check() -- 11 checks, 11 passed, 0 failed
+/?harbour=1                              __wb.check() -- 12 checks, 12 passed, 0 failed
+```
+
+No console errors in any run. **0 off-origin requests in every one**, which remains the number
+that has never moved across every measurement in every task that has touched this viewer.
