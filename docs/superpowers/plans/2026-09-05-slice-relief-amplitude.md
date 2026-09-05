@@ -34,9 +34,75 @@ So a real mountain gets `150 × 0.3 = 45 m`. The stated reason is honest and wor
 
 **That is right for a navigational chart and wrong for a view.** Real uplifted ground is *rougher*, not smoother — it is where erosion has most to cut into.
 
-**3. Amplitude halves per octave**, so the finest band carries 0.79% of the budget: shares run 50.4, 25.2, 12.6, 6.3, 3.2, 1.6, **0.79**%. Halving is a Hurst exponent of 1.0 — the smoothest end of the plausible range; real mountainous terrain sits nearer 0.5-0.8.
+**3. Amplitude halves per octave**, so the finest band carries 0.79% of the budget: shares run 50.4, 25.2, 12.6, 6.3, 3.2, 1.6, **0.79**%.
 
 Compounded: the finest octave on a mountain carries about **35 centimetres**.
+
+## CORRECTED, and it changes what this slice measures
+
+An earlier draft said halving is "the smoothest end of the plausible range" and implied the fix was more
+octaves, on the strength of Infinity's published 16-octave schedule. **The exponent was right and the
+conclusion was wrong.**
+
+**Persistence 0.5 at lacunarity 2 is f⁻³, not 1/f.** Pink noise — constant energy per octave — is persistence
+**1.0**; Brownian f⁻² is **0.707**. This schedule is **two full spectral classes smoother than Brownian
+motion**.
+
+**And at H = 1.0 characteristic slope is scale-invariant**: slope ∝ L^(H−1) = L⁰. Every octave contributes the
+*same* slope, so the series is pinned by the base octave's amplitude-to-wavelength ratio, about **1/500**.
+**Adding fine octaves cannot help.** Proof by absurdity: a realistic 10% slope at 2 km from a single H=1
+series would require 10% slope at 2,000 km too — **100 km of continental relief.** That impossibility is
+what proves H must vary with scale.
+
+**The resolution floor is roughly right.** Perron, Kirchner & Dietrich (2008), from lidar, find real
+landscapes genuinely go quiet below hillslope length (β ≈ 4.5-5.2 above the roll-off). **The amplitude above
+it is wrong by about 25×.**
+
+**Calibration.** FAO/IIASA slope classes run C1 0-0.5% up to C8 >45%. This planet's median 0.23% gradient is
+**C1** and its planetary maximum 0.7% is **C2** — the two flattest of eight, planet-wide, measured at a
+baseline *below* this generator's own floor.
+
+**What real terrain measures**, from Gagnon, Lovejoy & Schertzer (2006), four DEMs, >2×10⁸ pixels: β ≈
+2.04-2.17, giving **H ≈ 0.6-0.71**; by regime **0.46 bathymetry, 0.66 continents, 0.77 margins.** Rougher
+than the repeated "D ≈ 2.1-2.3" folklore, which traces to Burrough (1981) — a paper about heterogeneity,
+flattened by retelling into a constant.
+
+**And 0.5 is the universal library default** — libnoise, FastNoiseLite and Quilez's fbm all ship it. It was
+inherited, not chosen.
+
+### The schedule to measure
+
+| Band | Wavelengths | H | persistence at l=2 |
+|---|---|---|---|
+| Continental | > 10 km | **0.50** | **0.71** |
+| Relief | 100 m - 10 km | **1.0** | **0.50** (today) |
+| Detail | < 100 m | **1.8** | **0.29**, hard-capped in metres |
+
+Anchored at **10 km**, not the base octave. Predicted for median terrain: **~100-140 m over a 2 km transect**
+against today's 4.6 m, with planetary relief still Earth-like. A mountain cell yields ~430 m and a 30% slope,
+saturating near angle of repose. Use lacunarity **1.98 or 2.03** to avoid octave grid alignment.
+
+Validation targets (Hammond via USGS/MoRAP): flat plains 10-25 m over 2 km, hills 80-160 m, low mountains
+300-700 m. **About 50% of Earth's land is steeper than 5.5%** — roughly 40× this generator's median.
+
+### RULING 3: the detail band is a SEPARATE ADDITIVE TERM defaulting to zero
+
+**The shares are normalised, so adding an octave changes the normaliser and therefore every height on the
+planet.** There is no "just adding a finer octave" here.
+
+So the sub-100 m band gets its own term and its own budget, **defaulting to zero amplitude**: at default it
+adds exactly `0.0`, output is bit-identical, and the normaliser is untouched. The geomorphology agrees —
+Perron's above-roll-off exponent is **not reachable by any persistence inside a continuing series** without
+wrecking the middle band. **The physics and the version policy point at the same design.**
+
+Verify the no-op path does not change loop counts or summation order, and watch `-0.0` and NaN on the `+ 0.0`.
+
+### Fixed exponent, spatially varying amplitude
+
+Crooks et al. (~10⁹ points) found the scaling exponent **uncorrelated with regional roughness (r = 0.17)** —
+plains and mountains obey the same exponent and only the amplitude prefactor varies, over three orders of
+magnitude. That is empirical licence for varying amplitude at fixed exponent, which is far cheaper than
+spatially varying H and fits the data at least as well.
 
 ## RULING 1: THE DEFAULT MUST NOT CHANGE. THIS IS THE WHOLE SAFETY ARGUMENT.
 
