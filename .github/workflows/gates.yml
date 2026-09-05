@@ -282,7 +282,10 @@ jobs:
         working-directory: viewer
         run: |
           set -euo pipefail
-          node scripts/build-wasm.mjs digest | sed 's/^source-fingerprint: .*/source-fingerprint: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/' | tee ../node-fingerprint.out
+          node scripts/build-wasm.mjs digest > ../node-fingerprint.out
+          wrong=$(printf 'PROVE: not the real source' | sha256sum | cut -d' ' -f1)
+          sed -i "s/^source-fingerprint: .*/source-fingerprint: $wrong/" ../node-fingerprint.out
+          cat ../node-fingerprint.out
 
       # See .github/scripts/assert_fingerprint_parity.py's own docstring for why this does
       # not simply compare two strings: both sides' digest and input count are validated
