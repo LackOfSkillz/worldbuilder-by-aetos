@@ -25,6 +25,7 @@ pub mod substrate;
 pub mod surface;
 pub mod stream;
 pub mod streamfmt;
+pub mod water;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 

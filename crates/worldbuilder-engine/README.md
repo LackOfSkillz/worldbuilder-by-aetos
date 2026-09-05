@@ -2956,11 +2956,11 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
-| default (the same set -- the crate declares no default features) | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
-| `--features python` | 442 | 4 | 9 | 6 | -- | 461 | 5 | **456** |
-| `--features wasm` | 440 | 4 | 9 | 6 | 35 | 495 | 5 | **490** |
-| `--features python,wasm` | 442 | 4 | 9 | 6 | 35 | 497 | 5 | **492** |
+| `--no-default-features` | 451 | 4 | 9 | 6 | -- | 470 | 5 | **465** |
+| default (the same set -- the crate declares no default features) | 451 | 4 | 9 | 6 | -- | 470 | 5 | **465** |
+| `--features python` | 453 | 4 | 9 | 6 | -- | 472 | 5 | **467** |
+| `--features wasm` | 451 | 4 | 9 | 6 | 36 | 506 | 5 | **501** |
+| `--features python,wasm` | 453 | 4 | 9 | 6 | 36 | 508 | 5 | **503** |
 
 0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
 and 0 doc-tests in every configuration.
@@ -2983,6 +2983,22 @@ full, including the miscount an early draft of it made by arithmetic instead of 
 `--list`). Both deltas match `.github/workflows/gates.yml`'s own inline commentary
 for the engine job matrix, which is pinned to the same run figures (454/454/456/490/492)
 and was independently re-run for this record rather than trusted because it agreed.
+
+**The `wasm_exports.rs` column above read 35 in the row this table has carried since the
+review fix round, and that was already stale then: the fix round's own prose two paragraphs
+up says it moved to 36, but the table cell was never edited to match.** Re-deriving it now
+(slice 5b Task 1, `stream --list` per configuration rather than the arithmetic that produced
+the mismatch) confirms 36 is what actually runs today, independent of anything this task
+added -- `wasm_exports.rs` has no lake-fill tests, this task added none there. **This task
+(slice 5b Task 1, lake basin filling) adds `src/water.rs` unconditionally** -- eleven tests
+over `basins_of`, `symmetric_adjacency` and `fill_lakes`/`fill_basins` -- compiled into `lib`
+in every configuration since `water` carries no feature gate, same as `stream.rs`'s own
+precedent. 440/440/442/440/442 -> 451/451/453/451/453 in `lib`, moving every row's `listed`
+and `run` by +11 uniformly; `expect_ignored` stays 5 (this task added no `#[ignore]`d test).
+Combined with the `wasm_exports.rs` correction above, the table's run figures move
+454/454/456/490/492 -> 465/465/467/501/503. Re-derived the same way as every prior entry in
+this section: `cargo test -p worldbuilder-engine <cfg> -- --list` and the same with
+`--ignored`, per configuration, counted rather than assumed.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read
