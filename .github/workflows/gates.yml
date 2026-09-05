@@ -403,25 +403,56 @@ jobs:
           # `assert_counts.py cargo-list` itself against fresh `-- --list` /
           # `-- --list --ignored` output, which reported `count OK` at all five. See
           # task-1-report.md.
+          # 2026-09-05, slice-mountains Task 4 (the mountain sliders): 521/521/523/570/572 ->
+          # 523/523/525/584/586. TWO SEPARATE MOVEMENTS, and only one of them is this task's.
+          #
+          # +2 UNIFORMLY IS A CORRECTION, NOT AN ADDITION. Re-deriving these numbers against a
+          # CLEAN `git worktree` of 814c689 -- the commit the row above pinned -- lists 528 /
+          # 530 / 577 / 579 with 5 ignored, which is 523/523/525/572/574 run. **The pinned
+          # 521/521/523/570/572 was already two low at that commit, so this count gate was
+          # already red before this task touched anything.** The two tests are in the crate
+          # library and are therefore in every configuration, which is why the shortfall was
+          # uniform; the likeliest source is 814c689's own one-ULP perturbation fixtures,
+          # whose count was derived before that commit was finished. Recorded rather than
+          # quietly folded in, because a pin that is corrected without saying so is a pin that
+          # can be wrong again next slice.
+          #
+          # +12 ON THE TWO WASM ROWS ONLY is this task. `tests/wasm_exports.rs` is
+          # `#![cfg(feature = "wasm")]` in its entirety and gains twelve tests for the tectonic
+          # channel -- `wb_world_new_tectonic`, `wb_tectonic_preset` and `wb_tectonic_check`,
+          # the exports that carry `TectonicParams` to the browser and give the owner the two
+          # sliders they asked for. Seven of the twelve are sweeps rather than spot-checks (a
+          # field-by-field sweep of all nine fields over the hostile set, both bounds and a
+          # ladder; the checker held to the constructor over the same population; every one of
+          # the 96 slider positions the widget can produce; a 6 x 6 x 5 cross product; the four
+          # zero-width profiles; the range-gate ceilings; the blend floor), and the sweep found
+          # a REAL blindness: the six `RELIEF_PROBES` the relief channel samples at are not
+          # within `MAX_TECTONIC_RANGE_M` of a convergent continental margin on this fixture,
+          # so driving the collision profile from 1,500 m / 400 km to 6,000 m / 100 km changes
+          # NOT ONE BIT at any of them. `a_chosen_tectonic_block_actually_moves_the_ground_it_
+          # claims_to` failed on exactly that and three witness points were measured for the
+          # channel. `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived per
+          # configuration through `assert_counts.py cargo-list` itself against fresh
+          # `-- --list` / `-- --list --ignored` output. See task-4-report.md.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 521
+            expect: 523
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 521
+            expect: 523
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 523
+            expect: 525
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 570
+            expect: 584
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 572
+            expect: 586
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

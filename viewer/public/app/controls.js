@@ -25,10 +25,13 @@
 // Served under `default-src 'self'` with no `'unsafe-inline'`, so this is a module file and
 // its styles live in `viewer.css`. See `index.html`'s comment.
 
-import { PANEL_DEFAULTS, PANEL_RANGES } from "./panel-fields.js";
+import { PANEL_DEFAULTS, PANEL_RANGES, panelFieldFaults } from "./panel-fields.js";
 import {
   RELIEF_CONTROLS, RELIEF_PARAM_NAMES, HURST_BAND, hurst, sliderTravel, reliefToParams,
 } from "./relief-params.js";
+import {
+  TECTONIC_CONTROLS, MEASURED_GRADES, tectonicTravel, tectonicPanelFields, tectonicToParams,
+} from "./tectonic-params.js";
 
 const params = new URLSearchParams(location.search);
 
@@ -71,17 +74,22 @@ const FAULT_OPTIONS = [
 
 /// Things the engine or the roadmap can do that this viewer has no path to. Listed so the
 /// panel is not mistaken for the whole product. `state` is deliberately blunt.
+// **Two entries came off this list together**, and their old text is kept here because it was
+// true and is the reason the "mountains" section below exists:
+//
+//   ["mountain height", "tectonic, not relief: roughness tops out at 161 m over 2 km"]
+//   ["mountain count",  "tectonic: plate collisions place them, and no relief knob reaches that"]
+//
+// Both said the same thing -- that a mountain on this planet is a *tectonic* feature and no
+// relief knob could reach it. Ruling 4 of the relief-amplitude slice measured it (the peak is
+// dominated by the structural term, and the roughness spectrum tops out at 161 m on peaks over
+// 2 km), and the mountains slice measured it again on the owner's own world: **1,454.04 m of
+// peak, 1,437.81 m of it structural -- 98.9% tectonic.** They come off together because
+// `wb_tectonic_preset` / `wb_tectonic_check` / `wb_world_new_tectonic` reach the block that
+// carries both, and neither would be honest to remove alone.
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
-  // Ruling 4 of the relief-amplitude slice, and it is a measurement, not a scheduling note.
-  // The highest point on this planet is 1,979 m (4,170,724-sample global fill), and its
-  // height is dominated by the structural (tectonic) term rather than by roughness, so no
-  // relief parameter can move a mountain's height at all; Ruling 6
-  // measured the roughness spectrum topping out at 161 m on peaks and 82 m on land at the
-  // most extreme corner ever swept. `mountainM` below is a roughness budget on high ground,
-  // and labelling it "mountain height" would be the wrong thing wearing the right label.
-  ["mountain height", "tectonic, not relief: roughness tops out at 161 m over 2 km"],
-  ["mountain count", "tectonic: plate collisions place them, and no relief knob reaches that"],
+  ["island arcs", "TectonicParams carries them; Task 1 proved no coverage, so no slider"],
   ["lakes + water", "slice 5b, in progress: no export yet"],
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],
   ["place areas", "slice 3, the studio: not started"],
@@ -281,6 +289,112 @@ function build() {
     paint();
   }
 
+  // === mountains — these rebuild ==========================================================
+  //
+  // **THE SECTION THE OWNER ASKED FOR.** In their words: "1 to raise and lower mountains and
+  // one to make more mountains and less as desired."
+  //
+  // Rebuild-class for the same reason the relief sliders are: `TectonicParams` is an argument
+  // to `Surface::new`, resolved once in `Tectonics::new`, and every worker holds its own
+  // already-built world. There is no uniform to poke.
+  //
+  // **No tectonic number is written in this file** -- not 1500, not 400000, not 0.45. All
+  // three sliders are anchored on `wb_tectonic_preset`'s answer in `wireTectonics` below, and
+  // until the engine answers they are disabled and say so. The panel's ramp defaults drifted
+  // from `main.js`'s once and silently reverted the ramp on every generate; the answer here,
+  // as with relief, is to hold no copy at all rather than a correct copy.
+
+  const mountainSection = section(body, "mountains · rebuilds");
+  const mountainLabels = {
+    continentCollisionM: "height",
+    // Labelled for its EFFECT rather than its unit, because "width" reads as a size and this
+    // is the knob that decides whether a 4 km peak is a mountain or a ramp. The readout still
+    // shows the kilometres.
+    continentCollisionWidthM: "steepness",
+    continentalBlend: "count",
+  };
+  const mountainRows = {};
+  for (const field of TECTONIC_CONTROLS) {
+    mountainRows[field] = row(mountainSection, mountainLabels[field], `wb-tectonic-${field}`,
+      "range", { min: 0, max: 1, step: 1, value: 0, disabled: true });
+    mountainRows[field].out.textContent = "—";
+  }
+  const mountainNote = el("div", "wb-note", "waiting for the engine…");
+  mountainSection.append(mountainNote);
+  const mountainActions = el("div", "wb-actions");
+  const mountainReset = el("button", "wb-mini", "canonical");
+  mountainReset.type = "button";
+  mountainReset.disabled = true;
+  mountainReset.title = "back to the engine's canonical block, which is the untouched world";
+  mountainActions.append(mountainReset);
+  mountainSection.append(mountainActions);
+
+  /// The tectonic block the sliders currently describe, or `null` while the engine has not
+  /// answered. `rebuildFields` closes over this, so it is read at click time, not now.
+  let tectonicState = null;
+  let tectonicCanonical = null;
+
+  /// The measured grade at the two corners of the calibration, as a sentence. Read from
+  /// `MEASURED_GRADES` rather than typed here, so the panel and the probe cannot disagree
+  /// about what was measured.
+  const gradeNote = () => {
+    const gentle = MEASURED_GRADES[0];
+    const steep = MEASURED_GRADES[MEASURED_GRADES.length - 1];
+    return `${gentle.heightM} m over ${gentle.widthKm} km is a ${gentle.grade}% grade; ` +
+      `${steep.heightM} m over ${steep.widthKm} km is ${steep.grade}%. Real ranges run 3–8%.`;
+  };
+
+  /// Fill in the travel, the defaults and the readouts once the engine can be asked.
+  function wireTectonics(presets) {
+    tectonicCanonical = presets.canonical;
+    // **The panel-default family check, run in production and not only in a test.** The
+    // widget carries integer positions, so a mis-stepped default ought to be impossible by
+    // construction -- but "impossible by construction" is what was said about the radius
+    // slider too, and this asks the question in the units the calibration was measured in.
+    // Four instances of this defect have shipped; the fourth was found by this check.
+    const faults = panelFieldFaults(tectonicPanelFields(presets.canonical));
+    if (faults.length > 0) {
+      mountainNote.textContent = `slider travel refused: ${faults.join("; ")}`;
+      return;
+    }
+    const travel = tectonicTravel(presets.canonical);
+    tectonicState = { ...presets.canonical, ...(presets.chosen ?? {}) };
+
+    const paint = () => {
+      for (const field of TECTONIC_CONTROLS) {
+        const value = travel[field].toValue(Number(mountainRows[field].input.value));
+        tectonicState[field] = value;
+        mountainRows[field].out.textContent = travel[field].format(value);
+      }
+      // Which way "count" runs, said in words, because the parameter behind it runs the
+      // opposite way to its name: `collision = inboard * outboard` and each side is a
+      // smoothstep over `value / blend`, so a NARROWER transition is MORE mountains. The
+      // slider is negated for that reason and the note says which end you are at.
+      const position = Number(mountainRows.continentalBlend.input.value);
+      const direction = position > 0 ? "more" : position < 0 ? "fewer" : "canonical";
+      mountainNote.textContent = `${gradeNote()} Count: ${direction}.`;
+    };
+
+    for (const field of TECTONIC_CONTROLS) {
+      const { input } = mountainRows[field];
+      input.min = travel[field].min;
+      input.max = travel[field].max;
+      input.step = 1;
+      input.value = travel[field].toPosition(tectonicState[field]);
+      input.disabled = false;
+      input.addEventListener("input", paint);
+    }
+    mountainReset.disabled = false;
+    // Sends the engine's own record back to the engine; it restates nothing.
+    mountainReset.addEventListener("click", () => {
+      for (const field of TECTONIC_CONTROLS) {
+        mountainRows[field].input.value = travel[field].toPosition(presets.canonical[field]);
+      }
+      paint();
+    });
+    paint();
+  }
+
   // === appearance — live, no reload =======================================================
 
   const look = section(body, "appearance · live");
@@ -371,6 +485,12 @@ function build() {
     // relief parameter at all and the reload takes the `None` path -- Ruling 1, held in the
     // one place a generate can break it.
     ...(reliefState && reliefCanonical ? reliefToParams(reliefState, reliefCanonical) : {}),
+    // And the same for the mountains: every tectonic field still at canonical is dropped, so
+    // an untouched panel writes no tectonic parameter at all and the reload takes the `None`
+    // path -- Ruling 1, held in the one place a generate can break it.
+    ...(tectonicState && tectonicCanonical
+      ? tectonicToParams(tectonicState, tectonicCanonical)
+      : {}),
   });
 
   const actions = el("div", "wb-actions");
@@ -426,7 +546,7 @@ function build() {
   missing.append(list);
 
   document.body.append(panel);
-  return { readout, wireRelief, reliefNote };
+  return { readout, wireRelief, reliefNote, wireTectonics, mountainNote };
 }
 
 /// Camera altitude, cursor position and the terrain height under it.
@@ -477,7 +597,7 @@ function wireReadout(readout) {
 // fallback set of numbers here to fall back to. If boot fails, the sliders stay disabled and
 // the note says why, which is honest; a panel that showed plausible relief defaults over a
 // dead engine would be the drift hazard again, wearing a different hat.
-const { readout, wireRelief, reliefNote } = build();
+const { readout, wireRelief, reliefNote, wireTectonics, mountainNote } = build();
 const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
   ? window.__wbBoot
   : Promise.resolve();
@@ -487,8 +607,12 @@ booted
     const presets = window.__wb && window.__wb.relief;
     if (presets) wireRelief(presets);
     else reliefNote.textContent = "engine unavailable — relief cannot be read or set";
+    const tectonics = window.__wb && window.__wb.tectonics;
+    if (tectonics) wireTectonics(tectonics);
+    else mountainNote.textContent = "engine unavailable — mountains cannot be read or set";
   })
   .catch((error) => {
     wireReadout(readout);
     reliefNote.textContent = `engine unavailable — relief cannot be set (${error})`;
+    mountainNote.textContent = `engine unavailable — mountains cannot be set (${error})`;
   });

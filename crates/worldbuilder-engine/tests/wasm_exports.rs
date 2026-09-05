@@ -25,6 +25,13 @@
 use worldbuilder_engine::features::{Feature, Features, CARVE, RAISE};
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::{FeatureInput, Surface};
+// The three range constants the tectonic width ceilings are DERIVED from. Imported rather
+// than written down again, so the test asserting `WB_MAX_COASTAL_UPLIFT_WIDTH_M` equals
+// `MAX_TECTONIC_RANGE_M - COASTAL_UPLIFT_OFFSET_M` compares the boundary against the engine
+// and not against a third copy of two numbers.
+use worldbuilder_engine::tectonics::{
+    COASTAL_UPLIFT_OFFSET_M, ISLAND_ARC_OFFSET_M, MAX_TECTONIC_RANGE_M,
+};
 use worldbuilder_engine::wasm::*;
 use worldbuilder_engine::{World, GENERATOR_VERSION};
 
@@ -1894,4 +1901,693 @@ fn the_water_manifest_never_enumerates_the_sea() {
         }
     }
     assert_eq!(wb_world_free(world), WB_OK);
+}
+
+// ========================================================================= the tectonic channel
+//
+// Slice `2026-09-05-slice-mountains`, Task 4 -- the task the owner has asked for by name.
+// They asked for two knobs ("1 to raise and lower mountains and one to make more mountains
+// and less as desired") and then, twice, said there were still no mountains. Task 1 built the
+// `TectonicParams` block and was REQUIRED to change nothing; this channel is how a browser
+// reaches one.
+//
+// The relief section above is the template and the reasons are identical, so they are not
+// restated: `extern "C"` is nounwind, a panic here is a dead module and a blank viewer, and
+// this project has found **three real aborts and one ~2,600-second hang** by sweeping export
+// inputs and **zero** by spot-checking -- every one of them a band rather than a cliff, fine
+// on both sides of a bad interior value. So every test below sweeps, every record a sweep
+// produces goes through `wb_tectonic_check` AND `wb_world_new_tectonic`, and every record the
+// boundary accepts is then actually **sampled**, because a bad tectonic block does not fail
+// in the constructor -- `Tectonics::new` only stores it -- it fails, if it fails, the first
+// time `from_margin` walks a profile.
+//
+// Population/method/host for every figure in this section: the world is
+// `Surface::new(20_260_904, 6_371_000, 12, 0.29, ..)` -- the same `SEED`/`RADIUS_M`/
+// `PLATES`/`LAND` fixture the rest of this file uses. The probe points are `TECTONIC_PROBES`,
+// which is the relief channel's six PLUS three witness points measured for this channel --
+// see that constant for why the six alone were not a population. The host is a native
+// `cargo test -p worldbuilder-engine --features wasm` run.
+
+/// Where every accepted tectonic record is sampled.
+///
+/// **`RELIEF_PROBES` alone is not a population for this channel, and that is measured rather
+/// than suspected.** Those six were chosen to cross the five settings `Detail::amplitude_m`
+/// blends between; a tectonic profile is a *margin* effect, and on this fixture not one of the
+/// six lies within `MAX_TECTONIC_RANGE_M` of a convergent continental margin. Driving the
+/// collision profile from 1,500 m / 400 km to 6,000 m / 100 km changes **not one bit** at any
+/// of them -- found by `a_chosen_tectonic_block_actually_moves_the_ground_it_claims_to`
+/// failing, which is the fifth time in this project an assertion has looked load-bearing and
+/// not been, and the first time one was caught by the test that needed it.
+///
+/// So the six are kept -- an abort would still be an abort there, and they cover water and
+/// shelf, which the three below do not -- and three witness points are added. Each is the
+/// **site of the largest change** that one knob makes anywhere on this world, found by
+/// `src/bin/mountain_probe.rs::witness_for` over the same 0.5-degree global grid
+/// (720 x 359 = 258,480 sites, `elevation_m(point, None)` on two worlds differing in exactly
+/// one block, release build, this host):
+///
+/// | knob | site | canonical | moved | delta |
+/// |---|---|---|---|---|
+/// | 6,000 m / 100 km | -7.50, 66.00 | 1,886.798 m | 5,616.919 m | **3,730.122 m** |
+/// | blend 1.00 (fewer) | -3.00, 69.00 | 1,388.596 m | 354.613 m | **1,033.983 m** |
+/// | blend 0.10 (more) | -33.50, -22.00 | -852.556 m | 272.983 m | **1,125.539 m** |
+const TECTONIC_PROBES: &[(f64, f64)] = &[
+    (12.0, 34.0), // the witnessed point
+    (0.0, 0.0),
+    (-18.25, 121.5), // the harbour, near a coast
+    (62.5, -145.0),
+    (-71.0, 25.0),
+    (35.0, 138.0),
+    (-7.5, 66.0),    // the collision profile's own witness
+    (-3.0, 69.0),    // where widening the blend takes the most away
+    (-33.5, -22.0),  // where narrowing it adds the most
+];
+
+fn canonical_tectonic_record() -> [f64; WB_TECTONIC_STRIDE] {
+    let mut record = [0.0; WB_TECTONIC_STRIDE];
+    let status =
+        wb_tectonic_preset(WB_TECTONIC_CANONICAL, record.as_mut_ptr(), WB_TECTONIC_STRIDE as u32);
+    assert_eq!(status, WB_OK, "the canonical tectonic preset must be readable");
+    record
+}
+
+fn world_with_tectonics(record: &[f64; WB_TECTONIC_STRIDE]) -> u32 {
+    wb_world_new_tectonic(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        record.as_ptr(),
+        WB_TECTONIC_STRIDE as u32,
+    )
+}
+
+/// Build the world a tectonic record asks for, walk every probe point, and free it.
+///
+/// **This is where an abort would happen, and that is the point of calling it.** Nothing in
+/// `Tectonics::new` touches a field -- it stores the block -- so a constructor that returned a
+/// handle has proved nothing at all about the record it was given.
+fn sample_tectonics(record: &[f64; WB_TECTONIC_STRIDE], label: &str) -> Vec<f64> {
+    let handle = world_with_tectonics(record);
+    assert_ne!(handle, 0, "accepted record refused by the constructor: {label} {record:?}");
+    let mut heights = Vec::with_capacity(TECTONIC_PROBES.len());
+    for (lat, lon) in TECTONIC_PROBES {
+        let height = wb_elevation_m(handle, *lat, *lon, RES_M);
+        assert!(
+            height.is_finite(),
+            "accepted record produced a non-finite elevation at ({lat}, {lon}): {label} {record:?}",
+        );
+        // `structural_m` is the term a tectonic block actually moves -- 98.9% of the owner's
+        // peak -- so sampling only `elevation_m` would leave the thing under test half
+        // unwatched.
+        let structural = wb_structural_m(handle, *lat, *lon);
+        assert!(
+            structural.is_finite(),
+            "accepted record gave a non-finite structural at ({lat}, {lon}): {label} {record:?}",
+        );
+        heights.push(height);
+    }
+    assert_eq!(wb_world_free(handle), WB_OK);
+    heights
+}
+
+/// The documented domain of each tectonic field, by its index in `WB_TECTONIC_STRIDE`'s
+/// order. **Each width has its own ceiling**, because each profile sits at its own offset
+/// from the margin and therefore reaches a different distance for the same width.
+fn tectonic_field_domain(field: usize) -> (f64, f64) {
+    match field {
+        0 | 2 | 4 | 6 => (-WB_MAX_TECTONIC_AMPLITUDE_M, WB_MAX_TECTONIC_AMPLITUDE_M),
+        1 => (WB_MIN_TECTONIC_WIDTH_M, WB_MAX_CENTRED_TECTONIC_WIDTH_M),
+        3 => (WB_MIN_TECTONIC_WIDTH_M, WB_MAX_COASTAL_UPLIFT_WIDTH_M),
+        5 => (WB_MIN_TECTONIC_WIDTH_M, WB_MAX_ISLAND_ARC_WIDTH_M),
+        7 => (WB_MIN_TECTONIC_WIDTH_M, WB_MAX_CENTRED_TECTONIC_WIDTH_M),
+        8 => (WB_MIN_CONTINENTAL_BLEND, WB_MAX_CONTINENTAL_BLEND),
+        _ => unreachable!("WB_TECTONIC_STRIDE is 9"),
+    }
+}
+
+/// Every value one tectonic field is driven through: `HOSTILE` in full, both documented
+/// bounds and the values immediately either side of each, and a ladder across the admissible
+/// interval -- geometric where the domain spans orders of magnitude (the four widths run
+/// 1e-3 to ~4e5 and the blend 1e-3 to 1e3, where a linear ladder would put its first rung
+/// tens of kilometres above the floor and never sample the small end at all) and linear where
+/// it does not. Identical in construction to `field_sweep`, and deliberately so: an
+/// evenly-spaced sample of a log-scaled domain is a spot-check wearing a sweep name.
+fn tectonic_field_sweep(field: usize) -> Vec<f64> {
+    let (low, high) = tectonic_field_domain(field);
+    let mut values: Vec<f64> = HOSTILE.to_vec();
+    for bound in [low, high] {
+        values.extend_from_slice(&[
+            bound,
+            bound - bound.abs() * 1.0e-12,
+            bound + bound.abs() * 1.0e-12,
+            bound * 0.5,
+            bound * 2.0,
+            -bound,
+        ]);
+    }
+    let steps = 24;
+    let geometric = low > 0.0 && high / low >= 1.0e3;
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        values.push(if geometric { low * (high / low).powf(t) } else { low + (high - low) * t });
+    }
+    values
+}
+
+fn swept_tectonic_records() -> Vec<(String, [f64; WB_TECTONIC_STRIDE])> {
+    let base = canonical_tectonic_record();
+    let mut out = Vec::new();
+    for field in 0..WB_TECTONIC_STRIDE {
+        for value in tectonic_field_sweep(field) {
+            let mut record = base;
+            record[field] = value;
+            out.push((format!("tectonic field {field} = {value:e}"), record));
+        }
+    }
+    out
+}
+
+#[test]
+fn every_tectonic_field_swept_across_its_whole_range_and_beyond_never_aborts() {
+    let records = swept_tectonic_records();
+    // A sweep that refused everything would pass a "nothing aborted" assertion trivially, and
+    // one that accepted everything would prove the validator absent. Both counts are asserted.
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for (label, record) in &records {
+        if wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32) == WB_OK {
+            sample_tectonics(record, label);
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert_eq!(accepted + refused, records.len());
+    assert!(
+        accepted >= 180,
+        "only {accepted} records were accepted; the sweep is not exercising the engine",
+    );
+    assert!(
+        refused >= 100,
+        "only {refused} records were refused; the validator is not doing its job",
+    );
+}
+
+#[test]
+fn the_tectonic_checker_and_the_constructor_agree_on_every_swept_record() {
+    // Two validators would be two chances to disagree, and the disagreement that matters is
+    // "the checker said yes and the constructor aborted". Held to each other over the
+    // identical population the sweep above uses.
+    for (label, record) in swept_tectonic_records() {
+        let status = wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32);
+        let handle = world_with_tectonics(&record);
+        if status == WB_OK {
+            assert_ne!(handle, 0, "checker accepted, constructor refused: {label}");
+            assert_eq!(wb_world_free(handle), WB_OK);
+        } else {
+            assert_eq!(
+                status, WB_ERR_PARAM,
+                "a well-formed buffer refused for a buffer reason: {label}",
+            );
+            assert_eq!(handle, 0, "checker refused, constructor built: {label}");
+        }
+    }
+}
+
+#[test]
+fn a_zero_width_profile_would_be_a_field_that_does_nothing_and_is_refused() {
+    // `tectonics::bump` opens with `if width_m <= 0.0 { return 0.0 }`, which
+    // `a_zero_width_bump_is_nothing_rather_than_a_division_by_zero` pins -- so a zero width is
+    // NOT a division by zero and NOT an abort. It is worse in the way this project keeps
+    // getting bitten by: a parameter present in the record, accepted by the constructor, and
+    // contributing exactly nothing at every point on the planet. That is the
+    // silently-dropping-builder shape, and this boundary refuses it rather than admitting it.
+    //
+    // The engine guard and this refusal are checked against each other here rather than
+    // assumed to agree: every value below is one `bump` answers with 0.0.
+    let base = canonical_tectonic_record();
+    for width_field in [1usize, 3, 5, 7] {
+        for nothing in [0.0, -0.0, -1.0, -400_000.0, f64::NEG_INFINITY] {
+            let mut record = base;
+            record[width_field] = nothing;
+            assert_eq!(
+                wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+                WB_ERR_PARAM,
+                "width field {width_field} = {nothing} is a profile that does nothing",
+            );
+            assert_eq!(world_with_tectonics(&record), 0);
+        }
+    }
+}
+
+#[test]
+fn a_width_the_range_gate_would_truncate_is_refused_rather_than_cut_off_mid_fade() {
+    // `Tectonics::offset_m` asks `margins_within(point, MAX_TECTONIC_RANGE_M, ..)`, so beyond
+    // 420 km a margin is not evaluated at all. A profile still carrying weight there is
+    // truncated to zero rather than faded to it -- a cliff -- and `MAX_TECTONIC_RANGE_M`'s own
+    // doc says the check belongs at the boundary that admits a caller-supplied width. It is
+    // here.
+    //
+    // The two OFFSET profiles are the ones a single shared ceiling would have got wrong:
+    // `bump(across_m - offset, width)` still carries weight out to `offset + width` on the
+    // near side, so a coastal width of 400 km reaches 470 km and is refused, while a collision
+    // width of 400 km reaches exactly 400 km and is the panel gentlest setting.
+    let base = canonical_tectonic_record();
+
+    // Accepted: centred profiles at exactly the gate.
+    for centred in [1usize, 7] {
+        let mut record = base;
+        record[centred] = MAX_TECTONIC_RANGE_M;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_OK,
+            "a centred profile that reaches zero exactly at the gate is inside it",
+        );
+        sample_tectonics(&record, "centred profile at the gate");
+    }
+
+    // Refused: the same width on either offset profile, and past each ceiling.
+    let offsets: [(usize, f64); 2] =
+        [(3, WB_MAX_COASTAL_UPLIFT_WIDTH_M), (5, WB_MAX_ISLAND_ARC_WIDTH_M)];
+    for (field, ceiling) in offsets {
+        assert!(ceiling < MAX_TECTONIC_RANGE_M, "an offset profile ceiling is below the gate");
+        let mut at = base;
+        at[field] = ceiling;
+        assert_eq!(wb_tectonic_check(at.as_ptr(), WB_TECTONIC_STRIDE as u32), WB_OK);
+        sample_tectonics(&at, "offset profile exactly at its own ceiling");
+
+        for past in [ceiling + 1.0, MAX_TECTONIC_RANGE_M, MAX_TECTONIC_RANGE_M + 1.0] {
+            let mut record = base;
+            record[field] = past;
+            assert_eq!(
+                wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+                WB_ERR_PARAM,
+                "field {field} = {past} reaches past the range gate and would be truncated",
+            );
+            assert_eq!(world_with_tectonics(&record), 0);
+        }
+    }
+
+    // And the ceilings are what they are said to be, derived from the module own constants
+    // rather than written down again here.
+    assert_eq!(
+        WB_MAX_COASTAL_UPLIFT_WIDTH_M.to_bits(),
+        (MAX_TECTONIC_RANGE_M - COASTAL_UPLIFT_OFFSET_M).to_bits(),
+    );
+    assert_eq!(
+        WB_MAX_ISLAND_ARC_WIDTH_M.to_bits(),
+        (MAX_TECTONIC_RANGE_M - ISLAND_ARC_OFFSET_M).to_bits(),
+    );
+}
+
+#[test]
+fn a_continental_blend_of_zero_or_less_is_refused_because_it_is_the_hard_test_again() {
+    // `continental_with` is `(value - CONTINENTAL_ENOUGH) / blend * 0.5 + 0.5`, smoothstepped.
+    // At blend 0 the division gives +-inf -- a HARD threshold, which is the exact defect
+    // `CONTINENTAL_BLEND`'s own doc records ("the ground jumped five hundred and fifty metres
+    // wherever a margin crossed it") -- and at a continentality of exactly zero it gives
+    // `0.0 / 0.0`, NaN, which the function `if fraction < 1.0` leaves at 1.0. So a margin
+    // would read *thoroughly continental* for the reason that a NaN compares false.
+    //
+    // Asserted here rather than described: this is the arithmetic, run.
+    let nan_fraction = (0.0f64 / 0.0) * 0.5 + 0.5;
+    assert!(nan_fraction.is_nan());
+    let resolved = if nan_fraction < 1.0 { nan_fraction } else { 1.0 };
+    assert_eq!(resolved, 1.0, "a NaN fraction resolves to thoroughly continental");
+
+    let base = canonical_tectonic_record();
+    for blend in [0.0, -0.0, -0.45, -1.0, f64::NEG_INFINITY, f64::NAN] {
+        let mut record = base;
+        record[8] = blend;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_ERR_PARAM,
+            "continental_blend = {blend} is not a transition width",
+        );
+        assert_eq!(world_with_tectonics(&record), 0);
+    }
+}
+
+/// The exact slider travel Task 4's tables calibrated, at every step the widget can produce.
+///
+/// **Both ends of every one of the three are anchored on the engine own canonical record**,
+/// read through `wb_tectonic_preset`, so nothing here restates 1500, 400,000 or 0.45. The
+/// step sizes and step counts are this task's calibration and are the only numbers written
+/// down -- the same posture `PERSISTENCE_STEPS` takes in `relief-params.js`.
+///
+/// - `continent_collision_m`: canonical up, 100 m a step, 45 steps -> 1,500..6,000 m.
+/// - `continent_collision_width_m`: canonical DOWN, 10 km a step, 30 steps -> 400..100 km.
+///   Down, because canonical is already the widest setting the range gate allows and every
+///   narrower one is steeper.
+/// - `continental_blend`: ninths of canonical, from -11 to +7 -> 1.00 down to 0.10. Written as
+///   `canonical * (9 - position) / 9` rather than `canonical - position * 0.05` for the reason
+///   `quieting_strength` is written as `canonical * n / 14`: both measured ends then land
+///   exactly, and position 0 is canonical bit-for-bit.
+fn tectonic_slider_travel() -> Vec<(usize, Vec<f64>)> {
+    let canonical = canonical_tectonic_record();
+    let mut height = Vec::new();
+    for position in 0..=45 {
+        height.push(canonical[0] + f64::from(position) * 100.0);
+    }
+    let mut width = Vec::new();
+    for position in 0..=30 {
+        width.push(canonical[1] - f64::from(position) * 10_000.0);
+    }
+    let mut blend = Vec::new();
+    for position in -11..=7 {
+        blend.push(canonical[8] * (f64::from(9 - position) / 9.0));
+    }
+    vec![(0, height), (1, width), (8, blend)]
+}
+
+#[test]
+fn the_calibrated_mountain_slider_travel_is_swept_at_every_step_the_widget_can_produce() {
+    let base = canonical_tectonic_record();
+    let travel = tectonic_slider_travel();
+    assert_eq!(travel[0].1.len(), 46, "mountain height travel");
+    assert_eq!(travel[1].1.len(), 31, "mountain width travel");
+    assert_eq!(travel[2].1.len(), 19, "mountain count travel");
+
+    // The measured ends, landed on exactly rather than approached. 6,000 m over 100 km is the
+    // 7.030% grade the probe measured on the owner's world; real ranges run 3-8%, and today's
+    // 1,500 m over 400 km is 1.787%.
+    assert_eq!(travel[0].1[0].to_bits(), base[0].to_bits(), "height position 0 is canonical");
+    assert_eq!(travel[0].1[45], 6_000.0);
+    assert_eq!(travel[1].1[0].to_bits(), base[1].to_bits(), "width position 0 is canonical");
+    assert_eq!(travel[1].1[30], 100_000.0);
+    // Position 0 of the blend travel is its TWELFTH entry: the slider runs -11..+7.
+    assert_eq!(travel[2].1[11].to_bits(), base[8].to_bits(), "blend position 0 is canonical");
+    // The two ENDS are 1.00 and 0.10 to within an ULP and no closer, and that is stated
+    // rather than rounded away: `0.45 * (20 / 9)` is 1.0000000000000002 and `0.45 * (2 / 9)`
+    // is 0.09999999999999999. Only position 0 has to be exact, because position 0 is the one
+    // that must reach the engine as `None` -- `tectonicToParams` drops a field that equals
+    // canonical, and a field one ULP off canonical would be written into every shared link
+    // and take the untouched viewer off the default path. Writing the map as
+    // `canonical * (n / 9)` rather than `canonical * n / 9` is what makes position 0 a
+    // multiplication by exactly 1.0; the second spelling was ONE ULP OUT and the assertion
+    // above is what found it.
+    assert!((travel[2].1[0] - 1.0).abs() < 1.0e-15, "the fewest end is 1.00: {}", travel[2].1[0]);
+    assert!((travel[2].1[18] - 0.1).abs() < 1.0e-15, "the most end is 0.10: {}", travel[2].1[18]);
+
+    for (field, values) in travel {
+        for value in values {
+            let mut record = base;
+            record[field] = value;
+            assert_eq!(
+                wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+                WB_OK,
+                "the panel can produce tectonic field {field} = {value} and the engine refuses it",
+            );
+            sample_tectonics(&record, &format!("slider field {field} = {value}"));
+        }
+    }
+}
+
+#[test]
+fn the_three_exposed_tectonic_parameters_are_swept_together_not_one_at_a_time() {
+    // The same argument the relief cross product makes: a one-axis-at-a-time sweep never
+    // visits the corner where the three multiply, and a band-shaped failure lives exactly
+    // there. Height and width multiply into a grade; the blend multiplies into the weight the
+    // whole collision profile is carried by. 6 x 6 x 5 = 180 combinations, spanning each
+    // slider end to end.
+    let base = canonical_tectonic_record();
+    let travel = tectonic_slider_travel();
+    let (heights, widths, blends) = (&travel[0].1, &travel[1].1, &travel[2].1);
+    let mut built = 0usize;
+    for h in 0..6 {
+        for w in 0..6 {
+            for b in 0..5 {
+                let mut record = base;
+                record[0] = heights[h * (heights.len() - 1) / 5];
+                record[1] = widths[w * (widths.len() - 1) / 5];
+                record[8] = blends[b * (blends.len() - 1) / 4];
+                assert_eq!(
+                    wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+                    WB_OK,
+                    "a corner of the panel own travel is refused: {record:?}",
+                );
+                sample_tectonics(&record, "tectonic cross product");
+                built += 1;
+            }
+        }
+    }
+    assert_eq!(built, 180);
+}
+
+#[test]
+fn the_tectonic_channel_default_path_is_the_untouched_world() {
+    // RULING 1, and the one property this whole slice is not allowed to break: a null pointer
+    // with a length of zero is `None`, not `Some(canonical())`, and the world it builds is
+    // byte-for-byte the world `wb_world_new` builds.
+    //
+    // **This test cannot prove the params are read**, and the slice ledger Ruling 1 says so
+    // explicitly: `None` resolves through `unwrap_or_else(TectonicParams::canonical)`, so the
+    // `None` arm and the `Some(canonical())` arm call the same function and agree no matter
+    // what the uplift path ignores. That proof is `tectonics.rs`'s one-ULP perturbation
+    // fixtures, and `a_chosen_tectonic_block_actually_moves_the_ground_it_claims_to` below is
+    // this channel own version of it. What THIS test proves is the different, still-necessary
+    // thing: that opening the channel did not move the default world.
+    let plain = plain_world();
+    let defaulted = wb_world_new_tectonic(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+    );
+    assert_ne!(defaulted, 0);
+    let explicit_canonical = world_with_tectonics(&canonical_tectonic_record());
+    assert_ne!(explicit_canonical, 0);
+
+    for (lat, lon) in TECTONIC_PROBES {
+        for resolution in [RES_M, -1.0] {
+            let expected = wb_elevation_m(plain, *lat, *lon, resolution);
+            assert_eq!(
+                wb_elevation_m(defaulted, *lat, *lon, resolution).to_bits(),
+                expected.to_bits(),
+                "the null tectonic path moved the world at ({lat}, {lon})",
+            );
+            assert_eq!(
+                wb_elevation_m(explicit_canonical, *lat, *lon, resolution).to_bits(),
+                expected.to_bits(),
+                "an explicit canonical record moved the world at ({lat}, {lon})",
+            );
+        }
+        let expected = wb_structural_m(plain, *lat, *lon);
+        assert_eq!(wb_structural_m(defaulted, *lat, *lon).to_bits(), expected.to_bits());
+        assert_eq!(wb_structural_m(explicit_canonical, *lat, *lon).to_bits(), expected.to_bits());
+    }
+    for handle in [plain, defaulted, explicit_canonical] {
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+}
+
+#[test]
+fn a_chosen_tectonic_block_actually_moves_the_ground_it_claims_to() {
+    // The whole point of the slice, asserted at the boundary rather than only three modules
+    // down: a taller, narrower collision profile has to produce a DIFFERENT planet through
+    // this export. Without this, every test above would pass over a channel that decoded nine
+    // f64 and threw them away -- which is the sixth assertion in this project to look
+    // load-bearing and not be, and the reason the slice ledger Ruling 1 exists.
+    let mut alps = canonical_tectonic_record();
+    alps[0] = 6_000.0;
+    alps[1] = 100_000.0;
+    let steep = sample_tectonics(&alps, "6000 m / 100 km");
+    let canonical = sample_tectonics(&canonical_tectonic_record(), "canonical");
+    assert_eq!(steep.len(), canonical.len());
+    assert!(
+        steep.iter().zip(&canonical).any(|(a, b)| a.to_bits() != b.to_bits()),
+        "a 4x collision amplitude at a quarter of the width changed nothing at six probes",
+    );
+
+    // And the blend, separately, because it reaches a different term -- the profile MIX, not
+    // the profile. Measured on the owner world at 6,000 m / 150 km, the count of 0.5-degree
+    // sites above 1,000 m runs 925 at blend 0.10, 618 at canonical 0.45 and 332 at 1.00.
+    let mut fewer = canonical_tectonic_record();
+    fewer[8] = 1.0;
+    let thinned = sample_tectonics(&fewer, "blend 1.00");
+    assert!(
+        thinned.iter().zip(&canonical).any(|(a, b)| a.to_bits() != b.to_bits()),
+        "more than doubling the continental transition width changed nothing at six probes",
+    );
+}
+
+#[test]
+fn wb_tectonic_preset_hands_back_the_engines_own_canonical_and_nothing_else() {
+    // The preset export exists so no host transcribes a default. It must therefore BE the
+    // default: `TectonicParams::canonical()`, in `WB_TECTONIC_STRIDE` order, and the module
+    // constants it is built from.
+    let record = canonical_tectonic_record();
+    assert_eq!(record[0], 1500.0, "continent_collision_m");
+    assert_eq!(record[1], 400_000.0, "continent_collision_width_m");
+    assert_eq!(record[2], 900.0, "coastal_uplift_m");
+    assert_eq!(record[3], 260_000.0, "coastal_uplift_width_m");
+    assert_eq!(record[4], 700.0, "island_arc_m");
+    assert_eq!(record[5], 110_000.0, "island_arc_width_m");
+    assert_eq!(record[6], 900.0, "ridge_m");
+    assert_eq!(record[7], 380_000.0, "ridge_width_m");
+    assert_eq!(record[8], 0.45, "continental_blend");
+    // Its own checker must accept it, or the panel starting position would be a refused world.
+    assert_eq!(wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32), WB_OK);
+
+    // And there is exactly ONE selector. A named tectonic preset is Task 3's decision against
+    // Task 2's fuller survey; inventing one here would be choosing for the owner before they
+    // can turn the knob themselves.
+    let mut scratch = [0.0; WB_TECTONIC_STRIDE];
+    for unknown in [1u32, 2, 7, u32::MAX] {
+        assert_eq!(
+            wb_tectonic_preset(unknown, scratch.as_mut_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_ERR_PARAM,
+            "selector {unknown} is not a preset this build knows",
+        );
+    }
+}
+
+#[test]
+fn the_tectonic_buffer_channel_refuses_what_it_cannot_read() {
+    let record = canonical_tectonic_record();
+    // Null with a length is a caller mistake, not a request for canonical.
+    assert_eq!(wb_tectonic_check(core::ptr::null(), WB_TECTONIC_STRIDE as u32), WB_ERR_BUFFER);
+    // Non-null with a length of zero is a host that computed a length wrong.
+    assert_eq!(wb_tectonic_check(record.as_ptr(), 0), WB_ERR_BUFFER);
+    // Null with zero IS canonical.
+    assert_eq!(wb_tectonic_check(core::ptr::null(), 0), WB_OK);
+    for length in [1u32, 8, 10, 18, u32::MAX] {
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), length),
+            WB_ERR_BUFFER,
+            "a {length}-word tectonic record is not a tectonic record",
+        );
+    }
+    // Misaligned: one byte into an f64-sized buffer.
+    let mut bytes = [0u8; WB_TECTONIC_STRIDE * 8 + 8];
+    let misaligned = unsafe { bytes.as_mut_ptr().add(1) } as *const f64; // cast-ok: a deliberately misaligned pointer for the alignment check
+    assert_eq!(wb_tectonic_check(misaligned, WB_TECTONIC_STRIDE as u32), WB_ERR_BUFFER);
+
+    // The constructor refuses the same things, with a handle of 0 rather than a status.
+    assert_eq!(
+        wb_world_new_tectonic(
+            SEED,
+            RADIUS_M,
+            PLATES,
+            LAND,
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+            WB_TECTONIC_STRIDE as u32,
+        ),
+        0,
+    );
+    assert_eq!(
+        wb_world_new_tectonic(
+            SEED,
+            RADIUS_M,
+            PLATES,
+            LAND,
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+            0,
+            record.as_ptr(),
+            0,
+        ),
+        0,
+    );
+    assert_eq!(
+        wb_world_new_tectonic(
+            SEED,
+            RADIUS_M,
+            PLATES,
+            LAND,
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+            0,
+            record.as_ptr(),
+            4,
+        ),
+        0,
+    );
+    // A bad buffer for the OUT parameter of the preset export.
+    let mut out = [0.0; WB_TECTONIC_STRIDE];
+    assert_eq!(
+        wb_tectonic_preset(WB_TECTONIC_CANONICAL, core::ptr::null_mut(), WB_TECTONIC_STRIDE as u32),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(wb_tectonic_preset(WB_TECTONIC_CANONICAL, out.as_mut_ptr(), 8), WB_ERR_BUFFER);
+    assert_eq!(wb_tectonic_preset(WB_TECTONIC_CANONICAL, out.as_mut_ptr(), 10), WB_ERR_BUFFER);
+}
+
+#[test]
+fn the_two_channels_are_independent_and_the_third_door_carries_both() {
+    // `wb_world_new_tectonic` takes a relief record AND a tectonic record, and a host that
+    // moves one must not silently lose the other. Four corners: neither, relief only,
+    // tectonics only, both.
+    let relief = hills_record();
+    let mut tectonics = canonical_tectonic_record();
+    tectonics[0] = 6_000.0;
+    tectonics[1] = 100_000.0;
+
+    let build = |r: Option<&[f64; WB_RELIEF_STRIDE]>, t: Option<&[f64; WB_TECTONIC_STRIDE]>| {
+        let (rp, rl) = match r {
+            Some(record) => (record.as_ptr(), WB_RELIEF_STRIDE as u32),
+            None => (core::ptr::null(), 0),
+        };
+        let (tp, tl) = match t {
+            Some(record) => (record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            None => (core::ptr::null(), 0),
+        };
+        let handle = wb_world_new_tectonic(
+            SEED,
+            RADIUS_M,
+            PLATES,
+            LAND,
+            core::ptr::null(),
+            0,
+            rp,
+            rl,
+            tp,
+            tl,
+        );
+        assert_ne!(handle, 0);
+        let heights: Vec<u64> = TECTONIC_PROBES
+            .iter()
+            .map(|(lat, lon)| wb_elevation_m(handle, *lat, *lon, RES_M).to_bits())
+            .collect();
+        assert_eq!(wb_world_free(handle), WB_OK);
+        heights
+    };
+
+    let neither = build(None, None);
+    let relief_only = build(Some(&relief), None);
+    let tectonics_only = build(None, Some(&tectonics));
+    let both = build(Some(&relief), Some(&tectonics));
+
+    assert_ne!(neither, relief_only, "the relief record was dropped by the third door");
+    assert_ne!(neither, tectonics_only, "the tectonic record was dropped by the third door");
+    assert_ne!(both, relief_only, "the tectonic record was dropped when relief was also given");
+    assert_ne!(both, tectonics_only, "the relief record was dropped when tectonics was also given");
+
+    // And the third door with two null blocks is still the untouched world.
+    let plain = plain_world();
+    for (index, (lat, lon)) in TECTONIC_PROBES.iter().enumerate() {
+        assert_eq!(
+            neither[index],
+            wb_elevation_m(plain, *lat, *lon, RES_M).to_bits(),
+            "two null blocks moved the world at ({lat}, {lon})",
+        );
+    }
+    assert_eq!(wb_world_free(plain), WB_OK);
 }

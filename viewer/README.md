@@ -1624,6 +1624,133 @@ or 2,500. That is not a thing anyone can see, which is why nobody saw it.
 The red proof is **kept as a test**: both as-shipped mis-stepped rows are asserted to be
 refused, by message, so the guard cannot quietly stop being able to fail.
 
+## The mountain sliders, and why they are tectonic and not relief
+
+The owner asked for two knobs, in their own words — *"1 to raise and lower mountains and one to
+make more mountains and less as desired"* — and then, looking at the finished relief work,
+*"we still have no mountains. why is it so hard to make mountains?"*
+
+**The answer was that the peak on their own world is 98.9% tectonic.** Measured on seed
+123925603, radius 4,500,000 m, 28 plates, land fraction 0.16 — the world from their screenshot —
+over a 0.5-degree global grid (720 x 359 = 258,480 sites) refined to 0.05 degrees around the
+coarse maximum, through the Python wheel and again natively: **highest point 1,454.04 m,
+structural 1,437.81 m, detail 16.24 m.** No relief parameter could ever have moved it, which is
+what the two `NOT_WIRED` entries that came off the panel had been saying all along.
+
+And the ramp is a constant, not an accident. `CONTINENT_COLLISION_M = 1500` over
+`CONTINENT_COLLISION_WIDTH_M = 400_000` is a **0.375% grade** at the profile's own scale, and a
+**1.787% steepest 2 km step on the flank** on that world. Real ranges run 3–8%. "Wheelchair
+ramps", months of work ago, was an accurate reading of a constant.
+
+### The calibration
+
+Same population and world; grade is the **steepest single 2 km step on the flank**, 12 bearings
+walked out from the peak to 250 km. Measuring across the summit measures the one place a
+mountain is flat, and the first version of the probe did exactly that and reported the opposite
+of the truth. Host: this machine, native release build, `src/bin/mountain_probe.rs`.
+
+| collision x width | peak | grade |
+| --- | --- | --- |
+| **1,500 m / 400 km — canonical** | 1,454.0 m | **1.787%** |
+| 1,500 m / 100 km | 1,377.6 m | 2.575% |
+| 3,000 m / 400 km | 2,500.0 m | 2.677% |
+| 3,000 m / 150 km | 2,441.1 m | 2.852% |
+| 6,000 m / 150 km | 4,551.5 m | 4.936% |
+| **6,000 m / 100 km** | 4,540.5 m | **7.030%** |
+
+**Amplitude alone is not enough, and the table says so**: 3,000 m at the canonical 400 km is
+2.677%, barely above canonical, while the same 3,000 m at 150 km is 2.852% and 6,000 m at 100 km
+is 7.030%. Height comes from amplitude; **steepness comes from the pair.** A panel offering only
+height would let you raise a 4 km peak that still looked like a ramp. That is why there are two
+sliders and not one.
+
+### The count slider had no table, so one was made
+
+`continental_blend` is the width of the oceanic-to-continental transition in `continental_with`,
+and it decides how readily a margin runs the **collision** profile at all. The probe above never
+varied it, so Task 4 measured it the way a count has to be measured — by counting sites, not by
+maximising a peak. Same world, same 0.5-degree grid, at 6,000 m / 150 km:
+
+| blend | 0.01 | 0.05 | **0.10** | 0.20 | 0.30 | **0.45** | 0.60 | 0.80 | **1.00** | 1.50 | 2.00 | 4.00 | 8.00 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sites > 1,000 m | 964 | 949 | **925** | 847 | 757 | **618** | 496 | 402 | **332** | 244 | 212 | 153 | 126 |
+| peak (m) | 5,798 | 5,798 | 5,798 | 5,778 | 5,302 | **4,552** | 3,917 | 3,392 | 3,077 | 2,667 | 2,473 | 2,195 | 2,062 |
+
+**The knob runs the opposite way to its name.** `collision = inboard * outboard` and each side is
+`smoothstep((value / blend) * 0.5 + 0.5)`, so a *narrower* transition lets a genuinely
+continental side saturate to 1 while a wider one drags every margin towards a diluted half. More
+mountains is a **smaller** blend, and the widget's position is negated so that dragging right is
+more.
+
+The travel is **0.10 to 1.00**, and both ends are where the measurement stops being informative.
+Below 0.10 the counts saturate — 925 / 949 / 964 for a tenfold narrowing — into the hard-test
+regime `CONTINENTAL_BLEND`'s own doc records, where *"the ground jumped five hundred and fifty
+metres wherever a margin crossed it"*. Above 1.00 the curve flattens (332 to 212 over the next
+whole unit) as the ramp grows past the `[-1, 1]` range `fbm` can produce at all.
+
+### The three controls
+
+| panel row | field | travel | step |
+| --- | --- | --- | --- |
+| **height** | `continent_collision_m` | canonical 1,500 m **up to** 6,000 m | 100 m, 45 positions |
+| **steepness** | `continent_collision_width_m` | canonical 400 km **down to** 100 km | 10 km, 30 positions |
+| **count** | `continental_blend` | 1.00 (fewest) **through** canonical 0.45 **to** 0.10 (most) | a ninth of canonical, 19 positions |
+
+Both width sliders run *away* from canonical in one direction only, because canonical is already
+the widest a centred profile may be: `MAX_TECTONIC_RANGE_M` is 420 km and beyond it a margin is
+not evaluated at all, so a wider profile would be **truncated rather than faded** — a cliff. The
+boundary refuses those rather than clamping them, and the two *offset* profiles get tighter
+ceilings than the centred ones for the same reason (a bump centred 70 km inboard still carries
+weight out to `70 km + width`, so coastal uplift tops out at 350 km and the island arc at
+360 km).
+
+**No slider is bound to `island_arc_m` or `island_arc_width_m`.** Task 1 proved seven of the nine
+fields are read by perturbing each by one ULP across three fixtures, and its tests state
+explicitly that those two have **no coverage**. A control with no evidence that the path reads it
+is a control that might do nothing.
+
+### Nothing is written down twice, and position 0 is exact
+
+There is **no tectonic default literal anywhere in `viewer/`** — not 1500, not 400000, not 0.45.
+All three sliders are anchored on `wb_tectonic_preset`'s answer, read across the boundary at
+boot, and `viewer/test/tectonic-params.test.mjs` asserts the three literals appear in neither
+`controls.js` nor `main.js`, and appear in none of `tectonic-params.js`'s value-producing
+functions.
+
+Position 0 maps to canonical **bit-for-bit**, and that is load-bearing rather than tidy:
+`tectonicToParams` drops every field still equal to canonical, so an untouched panel writes no
+tectonic parameter and the reload takes the engine's `None` path. A position-0 value one ULP off
+would be written into every shared link and would take the untouched viewer off the default
+path. **`canonical * (n / 9)` is exact at n = 9 and `canonical * n / 9` is one ULP out** — found
+by the engine-side test failing, not by inspection.
+
+### The default path did not move, proved by digest
+
+SHA-256 of the rendered PNG after 20 driven frames at a pinned viewport (1000x800), pinned camera
+(20°E 10°N, 9,000 km) and **pinned frame time** — `Scene.render()` with no argument defaults its
+frame time to `JulianDate.now()`, so pinning `viewer.clock` alone does nothing.
+
+| configuration | SHA-256 |
+| --- | --- |
+| `?relief=0` | `2f6ac98a…` — **the value this file recorded before the mountains slice** |
+| default path (relief on) | `79f11efe…` — **the value this file recorded before the mountains slice** |
+| default path, second capture | `79f11efe…` — repeatable |
+| `?mtnHeight=6000&mtnWidth=100000` | `da0bc39c…` — **moves** |
+| `?mtnCount=0.09999999999999999` | `6d01c824…` — **moves** |
+
+Rows 1–3 are the claim; rows 4 and 5 are the **positive control**, and there are two of them
+because the count slider's travel was chosen by this slice rather than read from a table. A
+digest is only comparable to another taken on the same GPU at the same viewport; these are this
+host's.
+
+**One caveat, recorded because it nearly went unnoticed.** These captures were taken in a working
+tree that another session was committing into. Between the second and a later capture, commit
+`1999313` ("Make shade a colour rather than a brightness") changed `relief.js` and the default
+path's digest became `12f42dd1…`. Reverting *only* `relief.js` to its pre-`1999313` content, with
+every mountain-slice change still in place, returns exactly `79f11efe…` — which is what
+attributes the move to that commit and not to this one. `?relief=0` never moved at all, because
+it does not run `relief.js`'s shader.
+
 ## What still does not look like a photograph
 
 The most valuable section here, and the reason this slice is not "done".

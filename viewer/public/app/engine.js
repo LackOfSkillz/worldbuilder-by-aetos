@@ -22,6 +22,9 @@
 // there is no type error for a shelf amplitude written into the coast slot.
 
 import { RELIEF_STRIDE, RELIEF_PRESET, toRecord, fromRecord } from "./relief-params.js";
+import {
+  TECTONIC_STRIDE, TECTONIC_PRESET, tectonicToRecord, tectonicFromRecord,
+} from "./tectonic-params.js";
 
 /// Status codes, mirrored from `wasm.rs`. Kept as names so a failure reads as a sentence.
 export const WB_OK = 0;
@@ -78,7 +81,8 @@ export class Engine {
     // frames later.
     for (const name of [
       "wb_generator_version", "wb_alloc", "wb_dealloc", "wb_world_new", "wb_world_new_relief",
-      "wb_relief_preset", "wb_relief_check", "wb_world_free",
+      "wb_relief_preset", "wb_relief_check",
+      "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32",
     ]) {
@@ -148,15 +152,72 @@ export class Engine {
     }
   }
 
+  /// The nine f64 of `TectonicParams::canonical()`, as an object keyed by `TECTONIC_FIELDS`.
+  ///
+  /// **The only way the viewer learns a tectonic number.** Nothing in `viewer/` restates
+  /// 1500, 400000 or 0.45; all three of the panel's mountain sliders are anchored here, so
+  /// `tectonics.rs` stays the single place those numbers live. `name` is a key of
+  /// `TECTONIC_PRESET`, and there is only one -- a *named* tectonic preset is Task 3's
+  /// decision, not this task's.
+  tectonicPreset(name = "canonical") {
+    const selector = TECTONIC_PRESET[name];
+    if (selector === undefined) throw new Error(`unknown tectonic preset "${name}"`);
+    const bytes = TECTONIC_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the tectonic preset buffer");
+    try {
+      const status = this.exports.wb_tectonic_preset(selector, ptr, TECTONIC_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_tectonic_preset(${name}) returned ${statusName(status)}`);
+      }
+      // The view is created after the allocation and copied immediately — a view taken
+      // before `wb_alloc` could be detached by heap growth.
+      return tectonicFromRecord(
+        Array.from(new Float64Array(this.memory.buffer, ptr, TECTONIC_STRIDE)),
+      );
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Ask the engine whether a tectonic block would be accepted, **without building a world**.
+  /// Returns a `WB_*` status. `null` is the canonical path and always answers `WB_OK`.
+  checkTectonic(tectonics) {
+    if (tectonics === null || tectonics === undefined) return WB_OK;
+    const bytes = TECTONIC_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the tectonic buffer");
+    try {
+      new Float64Array(this.memory.buffer, ptr, TECTONIC_STRIDE).set(tectonicToRecord(tectonics));
+      return this.exports.wb_tectonic_check(ptr, TECTONIC_STRIDE) >>> 0;
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
   /// `relief` is `null`/absent for the canonical path — a null pointer and a length of zero,
   /// which is the same `None` `wb_world_new` passes and is byte-for-byte today's world. An
   /// object keyed by `RELIEF_FIELDS` asks for a different one.
-  newWorld({ seed, radiusM, plateCount, landFraction, features = [], relief = null }) {
+  /// `tectonics` is the same story: `null`/absent is `None` -- Ruling 1 of the mountains
+  /// slice, which is that the default world cannot move -- and an object keyed by
+  /// `TECTONIC_FIELDS` asks for a different uplift.
+  newWorld({
+    seed, radiusM, plateCount, landFraction, features = [], relief = null, tectonics = null,
+  }) {
     let ptr = 0;
     let bytes = 0;
     let reliefPtr = 0;
     let reliefBytes = 0;
+    let tectonicPtr = 0;
+    let tectonicBytes = 0;
     try {
+      if (tectonics) {
+        tectonicBytes = TECTONIC_STRIDE * 8;
+        tectonicPtr = this.exports.wb_alloc(tectonicBytes);
+        if (tectonicPtr === 0) throw new Error("wb_alloc refused the tectonic buffer");
+        new Float64Array(this.memory.buffer, tectonicPtr, TECTONIC_STRIDE)
+          .set(tectonicToRecord(tectonics));
+      }
       if (relief) {
         reliefBytes = RELIEF_STRIDE * 8;
         reliefPtr = this.exports.wb_alloc(reliefBytes);
@@ -175,19 +236,29 @@ export class Engine {
           ], i * WB_FEATURE_STRIDE);
         });
       }
-      // One constructor for both paths. With `relief` null this is `(null, 0)`, which the
-      // engine reads as `None` — the same world `wb_world_new` builds, which the engine-side
-      // test `the_relief_channel_default_path_is_the_untouched_world` pins bit for bit.
-      const handle = this.exports.wb_world_new_relief(
+      // ONE constructor for all four paths, and `wb_world_new_tectonic` is it. With both
+      // blocks null this is `(null, 0, null, 0)`, which the engine reads as `None` and
+      // `None` — the same world `wb_world_new` builds, which the engine-side tests
+      // `the_relief_channel_default_path_is_the_untouched_world` and
+      // `the_tectonic_channel_default_path_is_the_untouched_world` pin bit for bit.
+      //
+      // Calling the widest door unconditionally rather than choosing between three is
+      // deliberate: a branch here would mean the default path and the chosen path went
+      // through different exports, and the byte-identity those tests assert would stop
+      // covering what the viewer actually calls.
+      const handle = this.exports.wb_world_new_tectonic(
         BigInt(seed), radiusM, plateCount, landFraction, ptr, features.length,
         reliefPtr, relief ? RELIEF_STRIDE : 0,
+        tectonicPtr, tectonics ? TECTONIC_STRIDE : 0,
       ) >>> 0;
       if (handle === 0) {
-        // A refused world is a blank viewer, so the message has to name the reason. The
-        // relief block is the only argument here with a checker that can say which field.
-        const why = relief ? ` relief=${statusName(this.checkRelief(relief))}` : "";
+        // A refused world is a blank viewer, so the message has to name the reason. The two
+        // parameter blocks are the arguments here with checkers that can say which field.
+        const why =
+          (relief ? ` relief=${statusName(this.checkRelief(relief))}` : "") +
+          (tectonics ? ` tectonics=${statusName(this.checkTectonic(tectonics))}` : "");
         throw new Error(
-          `wb_world_new_relief refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
+          `wb_world_new_tectonic refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
           `land=${landFraction} features=${features.length}${why}`,
         );
       }
@@ -195,6 +266,7 @@ export class Engine {
     } finally {
       if (ptr !== 0) this.exports.wb_dealloc(ptr, bytes);
       if (reliefPtr !== 0) this.exports.wb_dealloc(reliefPtr, reliefBytes);
+      if (tectonicPtr !== 0) this.exports.wb_dealloc(tectonicPtr, tectonicBytes);
     }
   }
 

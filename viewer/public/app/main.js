@@ -14,6 +14,7 @@ import {
   DEFAULT_EXAGGERATION, DEFAULT_WORLD, HARBOUR, RAMP_STOPS, RAMP_WINDOW, rampStopFraction,
 } from "./panel-fields.js";
 import { reliefFromParams } from "./relief-params.js";
+import { tectonicFromParams } from "./tectonic-params.js";
 import {
   createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
 } from "./relief-provider.js";
@@ -39,10 +40,12 @@ function worldSpecFromParams() {
     plateCount: number("plates", DEFAULT_WORLD.plateCount),
     landFraction: number("land", DEFAULT_WORLD.landFraction),
     features: params.has("harbour") ? HARBOUR : [],
-    // `relief` is filled in during boot, once the engine can be asked what canonical is.
-    // Absent here on purpose: there is no relief default in this file to drift from the
-    // engine's, which is the shape the ramp defaults got wrong once already.
+    // `relief` and `tectonics` are filled in during boot, once the engine can be asked what
+    // canonical is. Absent here on purpose: there is no relief or tectonic default in this
+    // file to drift from the engine's, which is the shape the ramp defaults got wrong once
+    // already.
     relief: null,
+    tectonics: null,
   };
 }
 
@@ -102,6 +105,23 @@ async function boot() {
   // shape, arrived at by accident.
   const reliefCanonical = engine.reliefPreset("canonical");
   spec.relief = reliefFromParams(params, reliefCanonical);
+
+  // The tectonic block, and RULING 1 of the mountains slice in one more line. Same shape as
+  // the relief block above and for the same reasons -- canonical is read FROM THE ENGINE,
+  // `tectonicFromParams` returns `null` when nothing was asked for, and that `null` reaches
+  // `wb_world_new_tectonic` as a null pointer with a length of zero.
+  //
+  // **This is the block that can actually move a mountain.** The peak on the owner's world is
+  // 98.9% tectonic (1,454.04 m, of which 1,437.81 m is structural), which is why the relief
+  // panel's note says mountain height is tectonic and why this one exists at all.
+  //
+  // Placed beside the relief read and before the pool for the identical reason: the workers
+  // are handed this same `spec` by `structuredClone`, so a tectonic block chosen here reaches
+  // every worker's own constructor and the tiles they fill are the same planet as the main
+  // thread's. Applied on only one side it would be the `stale-worker` fault shape, arrived at
+  // by accident -- and it would look entirely plausible.
+  const tectonicCanonical = engine.tectonicPreset("canonical");
+  spec.tectonics = tectonicFromParams(params, tectonicCanonical);
 
   // Two handles on purpose. `world` is what the provider draws; `reference` is what the
   // checks compare against, and it is always built from the *stated* parameters. Under
@@ -303,6 +323,11 @@ async function boot() {
       spec.relief
         ? `mtn ${spec.relief.mountainM} quiet ${spec.relief.quietingStrength} pers ${
           spec.relief.octavePersistence}`
+        : "canonical"} tectonics=${
+      spec.tectonics
+        ? `mtn ${spec.tectonics.continentCollisionM} m / ${
+          (spec.tectonics.continentCollisionWidthM / 1000).toFixed(0)} km blend ${
+          spec.tectonics.continentalBlend.toFixed(3)}`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -334,6 +359,13 @@ async function boot() {
       canonical: reliefCanonical,
       hills: engine.reliefPreset("hills"),
       chosen: spec.relief,
+    },
+    /// The engine's own tectonic canonical, read across the boundary at boot. `controls.js`
+    /// anchors all three mountain sliders on it -- so the panel cannot drift from
+    /// `tectonics.rs`, because it holds no tectonic number of its own to drift.
+    tectonics: {
+      canonical: tectonicCanonical,
+      chosen: spec.tectonics,
     },
     /// The frame-budget measurement. Populations, not a single number.
     bench: (options = {}) => runBench({ viewer, engine, provider, spec, ...options }),

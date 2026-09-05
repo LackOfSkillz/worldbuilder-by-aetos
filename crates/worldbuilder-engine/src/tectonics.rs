@@ -79,6 +79,19 @@ pub const CONTINENT_COLLISION_WIDTH_M: f64 = 400_000.0;
 
 pub const COASTAL_UPLIFT_M: f64 = 900.0;
 pub const COASTAL_UPLIFT_WIDTH_M: f64 = 260_000.0;
+/// How far inboard of the margin the coastal rise is centred.
+///
+/// **This was a bare literal inside `from_margin`'s `profile` closure, and it is named here
+/// because a boundary that admits a caller-chosen `coastal_uplift_width_m` has to know it.**
+/// A bump centred `offset` inboard reaches `offset + width` on its near side, and
+/// [`MAX_TECTONIC_RANGE_M`] is where margins stop being evaluated at all -- so the widest
+/// admissible coastal width is `MAX_TECTONIC_RANGE_M - COASTAL_UPLIFT_OFFSET_M`, and
+/// `wasm.rs` derives it from these two constants rather than writing a third number down.
+/// The old comment said binding this literal to `RIFT_WIDTH_M` (which it coincidentally
+/// equals) would couple two unrelated profiles; a constant of its own does not.
+///
+/// The value is unchanged, so the canonical path is bit-for-bit what it was.
+pub const COASTAL_UPLIFT_OFFSET_M: f64 = 70_000.0;
 
 pub const TRENCH_M: f64 = -2600.0;
 pub const TRENCH_WIDTH_M: f64 = 120_000.0;
@@ -500,12 +513,13 @@ impl Tectonics {
             let trench = TRENCH_M * bump(across_m + TRENCH_OFFSET_M, TRENCH_WIDTH_M);
             let arc =
                 params.island_arc_m * bump(across_m - ISLAND_ARC_OFFSET_M, params.island_arc_width_m);
-            // The literal below is deliberately bare: it coincidentally equals
-            // `RIFT_WIDTH_M`, but the two are unrelated quantities and binding this one
-            // to that constant would couple two profiles that must be free to vary
-            // independently.
-            let uplift =
-                params.coastal_uplift_m * bump(across_m - 70_000.0, params.coastal_uplift_width_m);
+            // `COASTAL_UPLIFT_OFFSET_M`, which is 70,000 and coincidentally equals
+            // `RIFT_WIDTH_M`. It was a bare literal here for exactly that reason -- binding
+            // it to `RIFT_WIDTH_M` would couple two profiles that must vary independently --
+            // and it now has a constant of its own instead, because the WASM boundary has to
+            // derive this profile's width ceiling from it. Same value, same arithmetic.
+            let uplift = params.coastal_uplift_m
+                * bump(across_m - COASTAL_UPLIFT_OFFSET_M, params.coastal_uplift_width_m);
             collision * collided + oceanic * (arc + trench) + subduction * (uplift + trench)
         };
 

@@ -101,6 +101,9 @@ use crate::sphere::SpherePoint;
 use crate::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use crate::substrate::{MUD, ROCK, SAND};
 use crate::surface::{FeatureInput, Surface};
+use crate::tectonics::{
+    TectonicParams, COASTAL_UPLIFT_OFFSET_M, ISLAND_ARC_OFFSET_M, MAX_TECTONIC_RANGE_M,
+};
 use crate::water;
 use crate::{World, GENERATOR_VERSION};
 
@@ -331,6 +334,155 @@ pub const WB_MIN_QUIETING_SCALE_M: f64 = 1.0e-3;
 /// See [`WB_MIN_QUIETING_SCALE_M`].
 pub const WB_MAX_QUIETING_SCALE_M: f64 = 1.0e9;
 
+// ------------------------------------------------------------------ the tectonic channel
+//
+// The mountains slice, Task 4. The owner asked for two knobs in their own words -- "1 to
+// raise and lower mountains and one to make more mountains and less as desired" -- and then,
+// looking at the finished relief work, "we still have no mountains". The honest reason was
+// that the peak on their own world is **98.9% tectonic** (1,454.04 m, of which 1,437.81 m is
+// structural, measured on seed 123925603 / radius 4,500,000 m / 28 plates / land 0.16), so
+// no relief parameter could ever have moved it. `TectonicParams` is the block that can, and
+// this channel is how a browser reaches one.
+//
+// It is deliberately the same shape as the relief channel above -- a flat f64 record in a
+// documented order, a preset export so no host transcribes a number, a checker that answers
+// *why* rather than only *that*, and a constructor that refuses a record entire rather than
+// admitting it with one field adjusted. Nothing here clamps.
+
+/// f64 words per tectonic record, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `continent_collision_m` |
+/// | 1 | `continent_collision_width_m` |
+/// | 2 | `coastal_uplift_m` |
+/// | 3 | `coastal_uplift_width_m` |
+/// | 4 | `island_arc_m` |
+/// | 5 | `island_arc_width_m` |
+/// | 6 | `ridge_m` |
+/// | 7 | `ridge_width_m` |
+/// | 8 | `continental_blend` |
+///
+/// That is `TectonicParams`'s own declaration order, and [`wb_tectonic_preset`] writes it in
+/// exactly this order so a host never has to transcribe `canonical()`'s nine values.
+pub const WB_TECTONIC_STRIDE: usize = 9;
+
+/// [`wb_tectonic_preset`] selector: `TectonicParams::canonical()`, today's nine values and
+/// the `None` path's exact equivalent. **There is no second selector**, and that is Ruling 1
+/// rather than an omission: a named tectonic preset is Task 3's decision, taken against
+/// Task 2's fuller survey, and inventing one here would be choosing for the owner before
+/// they can turn the knob themselves.
+pub const WB_TECTONIC_CANONICAL: u32 = 0;
+
+/// The magnitude bound on each of the four profile amplitudes (`continent_collision_m`,
+/// `coastal_uplift_m`, `island_arc_m`, `ridge_m`).
+///
+/// **Signed, unlike the relief amplitudes, and that is a statement about the engine rather
+/// than laxity.** `tectonics.rs` ships `TRENCH_M = -2600.0` and `RIFT_M = -350.0` in the same
+/// family of profiles, so a negative uplift is a shape this generator already draws and not a
+/// caller mistake; the relief amplitudes are bounded below at zero for the opposite reason,
+/// because `Detail::offset_m` returns `0.0` for a non-positive one and the field would look
+/// configured while doing nothing.
+///
+/// A hundred kilometres of uplift is about eleven times Everest, and this is **a domain
+/// statement, not a measured hazard**: the profile is a multiplication by a smoothstep in
+/// `[0, 1]`, so no amplitude in this range makes `offset_m` non-finite. That is asserted by
+/// *sampling* every accepted record in the sweep rather than by argument -- the same posture
+/// [`WB_MAX_RELIEF_AMPLITUDE_M`] takes, and for the same reason: the two aborts slice 5a
+/// found were both bands nobody would have picked by hand.
+pub const WB_MAX_TECTONIC_AMPLITUDE_M: f64 = 1.0e5;
+
+/// The floor on all four profile widths.
+///
+/// **Zero does not divide and does not abort** -- `tectonics::bump` opens with
+/// `if width_m <= 0.0 { return 0.0 }`, which `a_zero_width_bump_is_nothing_rather_than_a_
+/// division_by_zero` pins -- so this bound closes a *silence*, not a crash. A width of zero
+/// is a profile that is present in the record, accepted by the constructor, and contributes
+/// exactly nothing at every point on the planet: the silently-dropping-builder shape this
+/// file already refuses in the feature channel, where a world built from five of six
+/// requested features is refused entire.
+///
+/// Negative widths are the same nothing by the same branch, and NaN is refused by `within`
+/// without a separate test. A millimetre is far below any width this generator means (the
+/// narrowest canonical profile is `RIFT_WIDTH_M = 70_000`) and is chosen for margin, not as
+/// the edge of anything.
+pub const WB_MIN_TECTONIC_WIDTH_M: f64 = 1.0e-3;
+
+/// The widest admissible `continent_collision_m` / `ridge_m` profile: the range gate itself.
+///
+/// `Tectonics::offset_m` asks `margins_within(point, MAX_TECTONIC_RANGE_M, ..)`, so **beyond
+/// 420 km a margin is not evaluated at all**. A profile still carrying weight at that
+/// distance is therefore truncated to zero rather than faded to it, which is a cliff in the
+/// terrain -- and `MAX_TECTONIC_RANGE_M`'s own doc says so, and says where the check belongs:
+/// *"Validating a caller-supplied block against this bound belongs at the boundary that
+/// admits one (the WASM export, a later task), not here -- nothing clamps."* This is that
+/// task and this is that boundary.
+///
+/// These two profiles are centred **on** the margin (`bump(across_m, width)`), so their reach
+/// is exactly their width and the ceiling is exactly the gate.
+pub const WB_MAX_CENTRED_TECTONIC_WIDTH_M: f64 = MAX_TECTONIC_RANGE_M;
+
+/// The widest admissible `coastal_uplift_width_m`: the gate, less the offset that profile
+/// sits at.
+///
+/// `from_margin`'s profile evaluates `bump(across_m - COASTAL_UPLIFT_OFFSET_M, width)` at
+/// **both** `+distance_m` and `-distance_m`, so the near side still carries weight out to
+/// `offset + width`. 350 km is what is left of the 420 km gate after the 70 km offset, and
+/// canonical's 260 km reaches 330 km -- inside it, as `MAX_TECTONIC_RANGE_M`'s doc says every
+/// canonical profile is by construction.
+pub const WB_MAX_COASTAL_UPLIFT_WIDTH_M: f64 = MAX_TECTONIC_RANGE_M - COASTAL_UPLIFT_OFFSET_M;
+
+/// The widest admissible `island_arc_width_m`: the gate, less the arc's 60 km offset, by
+/// exactly the reasoning [`WB_MAX_COASTAL_UPLIFT_WIDTH_M`] gives. Canonical's 110 km reaches
+/// 170 km.
+///
+/// **No slider is bound to this field**, and that is deliberate: Task 1's one-ULP
+/// perturbation fixtures proved seven of the nine fields are read and recorded, in the test
+/// itself, that `island_arc_m` and `island_arc_width_m` have **no coverage** -- the arc term
+/// is multiplied by an oceanic weight a synthetic two-plate fixture never produced. The
+/// *channel* carries them, because a record is `TectonicParams` and dropping two fields from
+/// the ABI would be the silently-dropping shape again; the *panel* does not, because a
+/// control with no evidence the path reads it is a control that might do nothing.
+pub const WB_MAX_ISLAND_ARC_WIDTH_M: f64 = MAX_TECTONIC_RANGE_M - ISLAND_ARC_OFFSET_M;
+
+/// The floor on `continental_blend`, the "how many mountains" field.
+///
+/// `continental_with` computes `(value - CONTINENTAL_ENOUGH) / blend * 0.5 + 0.5` and
+/// smoothsteps the result, so this is a **divisor** and a width rather than a threshold.
+///
+/// **Zero is not a crash; it is the defect this parameter was introduced to remove.**
+/// `CONTINENTAL_BLEND`'s own doc records it: the first version used a hard test -- continental
+/// if above zero -- and *"the ground jumped five hundred and fifty metres wherever a margin
+/// crossed it"*. At `blend == 0.0` the division gives `±inf`, both of which the two
+/// comparisons resolve to a hard 1 or 0, and at a continentality of exactly zero it gives
+/// `0.0 / 0.0` -- NaN, which `continental_with`'s `if fraction < 1.0` leaves at **1.0**, so a
+/// margin would read *thoroughly continental* for the reason that a NaN compares false.
+/// Negative values invert the ramp entirely: ocean reads continental and continent reads
+/// oceanic, which is a different mechanism wearing this parameter's name, the same objection
+/// [`WB_MAX_QUIETING_STRENGTH`] makes to a quieting strength past 1.
+///
+/// A thousandth is chosen for margin -- canonical is 0.45 and the panel's most-mountains end
+/// is 0.1 -- not as a measured edge.
+pub const WB_MIN_CONTINENTAL_BLEND: f64 = 1.0e-3;
+
+/// The ceiling on `continental_blend`, and it is **derived, not picked**.
+///
+/// `Setting`'s two sides are `Continentality::at`, which is `Noise::fbm` -- and `fbm`
+/// normalises by `2.0 * total / loudest` over inputs in `[0, 1]` offset by `-0.5`, so its
+/// output is bounded to `[-1, 1]` for every point on every world. The ramp saturates where
+/// `|value| >= blend`, so **at any blend of 2 or more no margin anywhere reaches either end
+/// of the ramp**, and as the blend grows every margin converges on a flat half-continental
+/// reading: at 1e3 every `continental_with` is 0.5 to within 5e-4, the collision, oceanic and
+/// subduction weights are 0.25 / 0.25 / 0.5 planet-wide, and the parameter has stopped
+/// selecting anything.
+///
+/// This is 500x the saturation point, which is the margin, and it is confirmed by
+/// measurement rather than left as algebra: on the owner's world at 6,000 m / 150 km the
+/// count of 0.5-degree sites above 1,000 m runs 925 at blend 0.10, 618 at canonical 0.45, 332
+/// at 1.00 and is still 126 at 8.00 -- a curve that is already flat two orders of magnitude
+/// below this bound. `src/bin/mountain_probe.rs` is that measurement.
+pub const WB_MAX_CONTINENTAL_BLEND: f64 = 1.0e3;
+
 /// The ceiling on `plate_count`, and it is a *refusal*, not a clamp.
 ///
 /// Every sample walks the plate table and `Surface::new` builds it, so a plate count in the
@@ -378,6 +530,9 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_world_new_relief",
     "wb_relief_preset",
     "wb_relief_check",
+    "wb_world_new_tectonic",
+    "wb_tectonic_preset",
+    "wb_tectonic_check",
     "wb_world_free",
     "wb_world_count",
     "wb_elevation_m",
@@ -731,6 +886,144 @@ fn preset_by_selector(preset: u32) -> Option<ReliefParams> {
     }
 }
 
+// ------------------------------------------------------ the tectonic channel, decoded
+
+/// Whether a tectonic block is one this boundary will let reach `Surface::new`.
+///
+/// Every bound is documented on its own constant, with which ones close a real hazard (the
+/// four width ceilings close the **range-gate truncation** `MAX_TECTONIC_RANGE_M`'s own doc
+/// names, and `WB_MIN_TECTONIC_WIDTH_M` closes a field that is accepted and does nothing) and
+/// which are domain statements. **Nothing here clamps**: a record is admitted as the host
+/// wrote it or refused entire, because a silently-adjusted parameter is a world nobody asked
+/// for -- and a caller sweeping this channel needs a refusal to mean refusal, not a quiet
+/// substitution.
+fn tectonic_is_admissible(tectonics: &TectonicParams) -> bool {
+    for amplitude in [
+        tectonics.continent_collision_m,
+        tectonics.coastal_uplift_m,
+        tectonics.island_arc_m,
+        tectonics.ridge_m,
+    ] {
+        if !within(amplitude, -WB_MAX_TECTONIC_AMPLITUDE_M, WB_MAX_TECTONIC_AMPLITUDE_M) {
+            return false;
+        }
+    }
+    // Each width against its own ceiling, because each profile sits at its own offset from
+    // the margin and therefore reaches a different distance for the same width. Writing one
+    // shared ceiling here would admit a coastal profile that the range gate then cuts off
+    // mid-fade -- the cliff, arrived at by tidiness.
+    for (width, ceiling) in [
+        (tectonics.continent_collision_width_m, WB_MAX_CENTRED_TECTONIC_WIDTH_M),
+        (tectonics.coastal_uplift_width_m, WB_MAX_COASTAL_UPLIFT_WIDTH_M),
+        (tectonics.island_arc_width_m, WB_MAX_ISLAND_ARC_WIDTH_M),
+        (tectonics.ridge_width_m, WB_MAX_CENTRED_TECTONIC_WIDTH_M),
+    ] {
+        if !within(width, WB_MIN_TECTONIC_WIDTH_M, ceiling) {
+            return false;
+        }
+    }
+    if !within(tectonics.continental_blend, WB_MIN_CONTINENTAL_BLEND, WB_MAX_CONTINENTAL_BLEND) {
+        return false;
+    }
+    true
+}
+
+/// One tectonic record, decoded and validated, or `None` if this channel refuses it.
+fn decode_tectonic(record: &[f64]) -> Option<TectonicParams> {
+    let fields = <[f64; WB_TECTONIC_STRIDE]>::try_from(record).ok()?;
+    let tectonics = TectonicParams {
+        continent_collision_m: fields[0],
+        continent_collision_width_m: fields[1],
+        coastal_uplift_m: fields[2],
+        coastal_uplift_width_m: fields[3],
+        island_arc_m: fields[4],
+        island_arc_width_m: fields[5],
+        ridge_m: fields[6],
+        ridge_width_m: fields[7],
+        continental_blend: fields[8],
+    };
+    if tectonic_is_admissible(&tectonics) {
+        Some(tectonics)
+    } else {
+        None
+    }
+}
+
+/// The inverse of [`decode_tectonic`]'s field order, in one place so the two cannot drift.
+fn encode_tectonic(tectonics: &TectonicParams) -> [f64; WB_TECTONIC_STRIDE] {
+    [
+        tectonics.continent_collision_m,
+        tectonics.continent_collision_width_m,
+        tectonics.coastal_uplift_m,
+        tectonics.coastal_uplift_width_m,
+        tectonics.island_arc_m,
+        tectonics.island_arc_width_m,
+        tectonics.ridge_m,
+        tectonics.ridge_width_m,
+        tectonics.continental_blend,
+    ]
+}
+
+/// What a host's `(tectonic_ptr, tectonic_len)` pair means. The same three outcomes
+/// [`ReliefArg`] draws, kept as a separate type rather than made generic because the two
+/// strides differ and a shared one would have to carry the length as data.
+enum TectonicArg {
+    /// A null pointer with a length of zero: the canonical path, `None`, byte-for-byte
+    /// today's world. **This is what the viewer sends when nothing was touched** -- Ruling 1,
+    /// held at the door rather than trusted to `canonical()` being equal to `None`.
+    Canonical,
+    /// A decoded, validated block.
+    Chosen(TectonicParams),
+    /// The buffer was unusable, or a field was outside its documented domain.
+    Refused(u32),
+}
+
+/// Read a tectonic argument out of linear memory.
+///
+/// # Safety
+/// If `tectonic_len` is non-zero, `tectonic_ptr` must be a live, 8-aligned allocation of at
+/// least `tectonic_len` f64.
+unsafe fn read_tectonic(tectonic_ptr: *const f64, tectonic_len: u32) -> TectonicArg {
+    if tectonic_len == 0 {
+        // A null pointer is the canonical path. A non-null pointer with a length of zero is a
+        // host that computed a length wrong, not a host asking for canonical.
+        return if tectonic_ptr.is_null() {
+            TectonicArg::Canonical
+        } else {
+            TectonicArg::Refused(WB_ERR_BUFFER)
+        };
+    }
+    if tectonic_ptr.is_null() {
+        return TectonicArg::Refused(WB_ERR_BUFFER);
+    }
+    let address = tectonic_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return TectonicArg::Refused(WB_ERR_BUFFER);
+    }
+    let words = match usize::try_from(tectonic_len) {
+        Ok(words) if words == WB_TECTONIC_STRIDE => words,
+        _ => return TectonicArg::Refused(WB_ERR_BUFFER),
+    };
+    let record = core::slice::from_raw_parts(tectonic_ptr, words);
+    match decode_tectonic(record) {
+        Some(tectonics) => TectonicArg::Chosen(tectonics),
+        None => TectonicArg::Refused(WB_ERR_PARAM),
+    }
+}
+
+/// The tectonic preset a selector names, or `None` for one this build does not know.
+///
+/// **The only place `canonical()`'s nine values are read**, and there is no second copy of
+/// them anywhere -- not in this file, not in the viewer. The panel's slider anchors are this
+/// function's answer, so `tectonics.rs` stays the only place the numbers live.
+fn tectonic_preset_by_selector(preset: u32) -> Option<TectonicParams> {
+    if preset == WB_TECTONIC_CANONICAL {
+        Some(TectonicParams::canonical())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------------- the exports
 
 /// The generator's identity, per VERSION-001. Not the package version and never derived
@@ -832,7 +1125,18 @@ pub extern "C" fn wb_world_new(
     // existing caller's arity for a parameter most of them never want, so
     // `wb_world_new_relief` is a second door onto the same builder rather than a wider one
     // onto this.
-    unsafe { build_world(world_seed, radius_m, plate_count, land_fraction, features_ptr, feature_count, None) }
+    unsafe {
+        build_world(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features_ptr,
+            feature_count,
+            None,
+            None,
+        )
+    }
 }
 
 /// Build a world with a caller-chosen relief block, or **0** if it refused.
@@ -876,8 +1180,151 @@ pub extern "C" fn wb_world_new_relief(
         ReliefArg::Chosen(relief) => Some(relief),
         ReliefArg::Refused(_) => return 0,
     };
+    // `None` -- canonical uplift, exactly what this export did before the tectonic channel
+    // existed. Its arity is frozen for the same reason `wb_world_new`'s was.
     unsafe {
-        build_world(world_seed, radius_m, plate_count, land_fraction, features_ptr, feature_count, relief)
+        build_world(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features_ptr,
+            feature_count,
+            relief,
+            None,
+        )
+    }
+}
+
+/// Build a world with a caller-chosen relief block **and** a caller-chosen tectonic block, or
+/// **0** if it refused.
+///
+/// Exactly [`wb_world_new_relief`] plus a tectonic record, and every one of that function's
+/// domains -- and `wb_world_new`'s before it -- still applies unchanged.
+///
+/// # Why a third door rather than a wider second one
+///
+/// `wb_world_new_relief` already ships in a committed `.wasm` that the parity harness
+/// compares against; widening its arity would break every existing caller for a parameter
+/// most of them never want. This is the same reasoning `wb_world_new_relief` itself records
+/// for not widening `wb_world_new`, and all three doors are one `build_world` behind the
+/// boundary, so there is one `Surface::new` call in this file and not three.
+///
+/// # The tectonic argument
+///
+/// - **`tectonic_ptr` null with `tectonic_len == 0` is the canonical path** -- `None`, not
+///   `Some(canonical())`. Ruling 1 of this slice: the default cannot move, and the viewer's
+///   untouched path must reach the engine as `None`. Held at the door rather than trusted to
+///   `canonical()` agreeing with `None`, because Ruling 1 of the slice ledger records that a
+///   bit-identity test between those two arms **cannot** prove the params are read: both
+///   resolve through `unwrap_or_else(TectonicParams::canonical)` and agree no matter what the
+///   uplift path ignores. What proves it is `tectonics.rs`'s one-ULP perturbation fixtures.
+/// - Otherwise `tectonic_len` must be exactly [`WB_TECTONIC_STRIDE`] and `tectonic_ptr` a
+///   live, 8-aligned buffer of that many f64 in the order that constant documents. Every
+///   field is bounded, and **a single field outside its domain refuses the whole call.**
+///
+/// A host that wants to know *why* a record was refused calls [`wb_tectonic_check`] on the
+/// same buffer.
+///
+/// # Safety
+/// The feature-channel and relief-channel safety requirements of [`wb_world_new_relief`]
+/// apply unchanged. If `tectonic_len` is non-zero, `tectonic_ptr` must be a live, 8-aligned
+/// allocation of at least `tectonic_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_world_new_tectonic(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+) -> u32 {
+    let relief = match unsafe { read_relief(relief_ptr, relief_len) } {
+        ReliefArg::Canonical => None,
+        ReliefArg::Chosen(relief) => Some(relief),
+        ReliefArg::Refused(_) => return 0,
+    };
+    let tectonics = match unsafe { read_tectonic(tectonic_ptr, tectonic_len) } {
+        TectonicArg::Canonical => None,
+        TectonicArg::Chosen(tectonics) => Some(tectonics),
+        TectonicArg::Refused(_) => return 0,
+    };
+    unsafe {
+        build_world(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features_ptr,
+            feature_count,
+            relief,
+            tectonics,
+        )
+    }
+}
+
+/// Write a named tectonic preset's nine f64 into a caller buffer, in
+/// [`WB_TECTONIC_STRIDE`]'s order.
+///
+/// `WB_OK`, or `WB_ERR_PARAM` for a selector this build does not know, or `WB_ERR_BUFFER` for
+/// a null, misaligned, or wrongly-sized buffer. The only selector is
+/// [`WB_TECTONIC_CANONICAL`].
+///
+/// **This export exists so no host ever transcribes a tectonic default.** The panel's three
+/// sliders are anchored on canonical -- every one of them reads its own centre or one of its
+/// ends from here -- so `tectonics.rs` stays the only place `1500.0`, `400_000.0` and `0.45`
+/// are written down. The viewer holds none of the three.
+///
+/// # Safety
+/// `out_ptr` must be a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_tectonic_preset(preset: u32, out_ptr: *mut f64, out_len: u32) -> u32 {
+    let tectonics = match tectonic_preset_by_selector(preset) {
+        Some(tectonics) => tectonics,
+        None => return WB_ERR_PARAM,
+    };
+    if out_ptr.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(words) if words == WB_TECTONIC_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    let values = encode_tectonic(&tectonics);
+    for (offset, value) in values.into_iter().enumerate() {
+        unsafe { out_ptr.add(offset).write(value) };
+    }
+    WB_OK
+}
+
+/// Ask whether a tectonic record would be accepted, **without building a world**.
+///
+/// `WB_OK` for a record [`wb_world_new_tectonic`] would take (including the canonical
+/// null/zero pair), `WB_ERR_BUFFER` for an unusable buffer, `WB_ERR_PARAM` for a field
+/// outside its documented domain.
+///
+/// The constructor answers a refusal with a handle of 0, which says *that* it refused and
+/// never *why*. A panel driving three of these nine fields needs the difference, and so does
+/// a sweep, which must be able to tell "refused" from "accepted and then fatal".
+/// `the_tectonic_checker_and_the_constructor_agree_on_every_swept_record` holds the two to
+/// each other across the whole sweep so this cannot drift into a second, laxer validator.
+///
+/// # Safety
+/// If `tectonic_len` is non-zero, `tectonic_ptr` must be a live, 8-aligned allocation of at
+/// least `tectonic_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_tectonic_check(tectonic_ptr: *const f64, tectonic_len: u32) -> u32 {
+    match unsafe { read_tectonic(tectonic_ptr, tectonic_len) } {
+        TectonicArg::Canonical | TectonicArg::Chosen(_) => WB_OK,
+        TectonicArg::Refused(status) => status,
     }
 }
 
@@ -957,6 +1404,7 @@ unsafe fn build_world(
     features_ptr: *const f64,
     feature_count: u32,
     relief: Option<ReliefParams>,
+    tectonics: Option<TectonicParams>,
 ) -> u32 {
     if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
         return 0;
@@ -1001,13 +1449,11 @@ unsafe fn build_world(
         Some(FeatureInput::Loose(decoded))
     };
 
-    // `relief` arrives already validated -- `read_relief` refuses at the boundary, so
-    // nothing outside the documented domain reaches here. `None` is the canonical path and
-    // is what `wb_world_new` always passes.
-    // tectonics: None -- canonical uplift. Task 4 of the mountains slice decides how a
-    // caller chooses a `TectonicParams` across this boundary.
+    // Both blocks arrive already validated -- `read_relief` and `read_tectonic` refuse at the
+    // boundary, so nothing outside either documented domain reaches here. `None` is the
+    // canonical path for each, and is what `wb_world_new` always passes for both.
     let surface =
-        Surface::new(world_seed, radius_m, plates, land_fraction, features, relief, None);
+        Surface::new(world_seed, radius_m, plates, land_fraction, features, relief, tectonics);
     insert_world(World::new(surface))
 }
 
