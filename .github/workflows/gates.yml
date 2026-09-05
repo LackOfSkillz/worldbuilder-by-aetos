@@ -96,7 +96,7 @@ jobs:
         include:
           # `expect` is the number of tests that must RUN in that configuration, and
           # `expect_ignored` the number that must be marked ignored. The wasm configurations
-          # compile tests/wasm_exports.rs, which is 30 tests the other three never see.
+          # compile tests/wasm_exports.rs, which is 35 tests the other three never see.
           #
           # 2026-09-04, slice 5a Task 2 review fix round: these moved 431/433/461/463 ->
           # 432/434/462/464 when src/erosion.rs gained one test
@@ -133,22 +133,17 @@ jobs:
           # and subtracting the 5 ignored (from the same command with `--ignored` added):
           # 453/453/455/483/485.
           #
-          # 2026-09-05, slice 5a Task 5 (native/WASM erosion parity, the `wb_erosion_run`
-          # export): 453/453/455/483/485 -> 458/458/460/488/490. **This task added zero
-          # `#[test]` functions** -- `wasm.rs` gained one `pub extern "C" fn` and some
-          # `const`s, `erosion.rs` was not touched (the brief forbids changing solver
-          # arithmetic), and `tests/wasm_exports.rs` still lists 30 tests, unchanged. The +5
-          # is uniform across all five configurations, including `no-default-features` and
-          # `default`, which never compile `wasm.rs` at all -- so it cannot be this task's
-          # own change. Re-deriving the previous commit's own count (checking out `86e83fe`
-          # and `0e3acef` and re-listing) shows `erosion.rs`'s and `detmath.rs`'s test counts
-          # already matched their own commit messages exactly (22 -> 35 tests, the
-          # documented "thirteen tests"); the five recorded pins were already six commits
-          # stale before this task touched anything, for a reason this task did not chase
-          # down further because the brief's instruction is to verify the CURRENT count, not
-          # to audit history. Reported as a concern in task-5-report.md rather than silently
-          # folded into "Task 5 added 5 tests", which would misattribute a pre-existing drift
-          # to this change.
+          # 2026-09-05, slice 5a Task 5 review fix (the `wb_erosion_run` refusal tests):
+          # 453/453/455/483/485 -> 453/453/455/488/490. `tests/wasm_exports.rs` gained five
+          # tests for the new export's parameter validation (the negative-`erodibility_per_yr`
+          # refusal that closes the review's reachable abort, the other numeric-domain
+          # refusals, the handle and buffer refusals, and one happy-path check) -- 30 -> 35
+          # tests, so only the two wasm-feature rows move. `expect_ignored` stays 5.
+          # Re-derived by running the gate's own two commands per config
+          # (`cargo test -p worldbuilder-engine <cfg> -- --list` and the same with
+          # `--ignored`) through `assert_counts.py cargo-list` itself, not by counting lines
+          # by hand -- the prior revision of this pin block was wrong precisely because it
+          # counted the LISTED total and never subtracted the ignored five.
           - name: no-default-features
             features: "--no-default-features"
             expect: 453
@@ -163,11 +158,11 @@ jobs:
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 483
+            expect: 488
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 485
+            expect: 490
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

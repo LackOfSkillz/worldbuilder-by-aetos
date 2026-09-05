@@ -19,10 +19,13 @@
 // hit `max_iterations` without converging (see `examples/parity_dump.rs`'s doc): the step
 // count is therefore identical on both sides by construction, and a divergent height is
 // evidence of arithmetic sensitivity to `k`, not of the two runs having taken a different
-// number of steps to get there. Root nodes are held fixed every step regardless of `k`
-// (`erosion.rs`'s module doc, "A root has no receiver"), so this control is expected to
-// leave exactly the root fraction of the erosion group's heights unchanged -- a control
-// that diverged on all of them, or none, would say nothing.
+// number of steps to get there. Measured on this exact corpus: 216 of 3,000 erosion-group
+// heights move (of 2,843 recomputable ones -- 157 of the 3,000 are roots, held fixed every
+// step regardless of `k`, `erosion.rs`'s module doc's "A root has no receiver" -- so 216 of
+// 2,843, 7.6%). That is neither "every recomputable height" nor "none of them": most nodes
+// don't move because a one-ULP nudge at this corpus's `c` (~1.0e-3) does not reach the last
+// mantissa bit of most heights within only 20 steps, not because most nodes are roots. A
+// control that diverged on all of them, or none, would say nothing.
 //
 // PROVENANCE. Before a single value is compared, this script asks the one question the
 // comparison itself cannot: *were these bytes built from the source that is here now?*

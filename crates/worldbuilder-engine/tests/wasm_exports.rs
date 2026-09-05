@@ -207,6 +207,220 @@ fn a_zero_or_absurd_plate_count_is_refused() {
     assert_eq!(wb_world_free(h), WB_OK);
 }
 
+// ------------------------------------------------------------------------------ erosion
+
+/// This crate's own default test constants (`erosion.rs::default_test_params`,
+/// `examples/parity_dump.rs`'s corpus): `node_count`, `uplift_m_per_yr`,
+/// `erodibility_per_yr`, `timestep_yr`, `max_height_change_per_step_m`, `max_iterations`.
+/// A threshold this tight and an iteration cap this low guarantee `NotConverged` on every
+/// call, which is irrelevant to these tests -- they check refusal and survival, not the
+/// solver's arithmetic (`erosion.rs` owns that; untouched by this task).
+fn erosion_defaults() -> (u32, f64, f64, f64, f64, u32) {
+    (3_000, 1.0e-3, 1.0e-6, 1000.0, 1.0e-9, 20)
+}
+
+/// Allocate the three output buffers `wb_erosion_run` needs and call it, returning the
+/// status and (if `WB_OK`) the written heights, iterations and converged flag. Frees its
+/// own scratch allocations either way, so a caller never has to on a refusal.
+fn call_erosion_run(
+    handle: u32,
+    node_count: u32,
+    uplift_m_per_yr: f64,
+    erodibility_per_yr: f64,
+    timestep_yr: f64,
+    max_height_change_per_step_m: f64,
+    max_iterations: u32,
+) -> (u32, Vec<f64>, u32, u32) {
+    // `node_count` itself may be one of the bad values under test (0, 1, over the ceiling)
+    // -- allocate at least one f64's worth regardless, so a deliberately-invalid
+    // `node_count` never collides with `wb_alloc(0)`'s own "null on nothing" contract
+    // (`alloc_of_nothing_is_null_and_dealloc_of_nothing_is_refused`, elsewhere in this
+    // file) and produces a spurious failure in this helper instead of in `wb_erosion_run`.
+    let alloc_bytes = node_count.max(1) * 8;
+    let heights_ptr = wb_alloc(alloc_bytes);
+    let iterations_ptr = wb_alloc(4) as *mut u32;
+    let converged_ptr = wb_alloc(4) as *mut u32;
+    assert!(!heights_ptr.is_null() && !iterations_ptr.is_null() && !converged_ptr.is_null());
+    let status = wb_erosion_run(
+        handle,
+        node_count,
+        uplift_m_per_yr,
+        erodibility_per_yr,
+        timestep_yr,
+        max_height_change_per_step_m,
+        max_iterations,
+        heights_ptr as *mut f64,
+        node_count,
+        iterations_ptr,
+        converged_ptr,
+    );
+    let heights = if status == WB_OK {
+        unsafe { core::slice::from_raw_parts(heights_ptr as *const f64, node_count as usize).to_vec() }
+    } else {
+        Vec::new()
+    };
+    let (iterations, converged) = if status == WB_OK {
+        unsafe { (*iterations_ptr, *converged_ptr) }
+    } else {
+        (0, 0)
+    };
+    wb_dealloc(heights_ptr, alloc_bytes);
+    wb_dealloc(iterations_ptr as *mut u8, 4);
+    wb_dealloc(converged_ptr as *mut u8, 4);
+    (status, heights, iterations, converged)
+}
+
+/// The abort this review found: `erodibility_per_yr < 0.0` makes `c` negative, turns
+/// `1 / (1 + c)` into an amplifying map, and the field overflows to `inf` within about a
+/// hundred iterations -- `-9.0e-4` at this crate's own `u`/`dt` reached `erode_to_convergence`'s
+/// release-time NaN assertion at iteration 95, an abort across this `extern "C"` boundary
+/// both natively and in the shipped `.wasm`. `WB_MAX_EROSION_RATE_PER_YR`'s doc names
+/// `-1.0e-3` as also reachable (iteration 107) and `-1.0e-2`, `-1.0`, `-1.0e-6` as finite --
+/// a band, not a single cliff, which is why this sweeps several negative values rather than
+/// checking one.
+#[test]
+fn a_negative_erodibility_is_refused_rather_than_reaching_the_amplifying_band() {
+    let h = plain_world();
+    let (node_count, uplift, _k, dt, threshold, _max_iter) = erosion_defaults();
+    // A wider iteration budget than the parity corpus's own 20 -- the amplifying band needs
+    // ~95-107 iterations to overflow, so a refusal has to hold even when a caller asks for
+    // enough steps to actually reach it.
+    let max_iterations = 2_000;
+    for bad in [-9.0e-4, -1.0e-3, -1.0e-2, -1.0, -1.0e-6, f64::NEG_INFINITY] {
+        let (status, heights, _iterations, _converged) =
+            call_erosion_run(h, node_count, uplift, bad, dt, threshold, max_iterations);
+        assert_eq!(status, WB_ERR_PARAM, "erodibility_per_yr = {bad} must be refused, not run");
+        assert!(heights.is_empty(), "a refusal must write nothing");
+    }
+    // The same call, `k` flipped positive, must still succeed -- this is a sign refusal,
+    // not a magnitude one that happened to also catch the good values.
+    let (status, heights, _iterations, _converged) =
+        call_erosion_run(h, node_count, uplift, 9.0e-4, dt, threshold, max_iterations);
+    assert_eq!(status, WB_OK);
+    assert!(heights.iter().all(|v| v.is_finite()), "a valid run must not carry an inf or NaN through");
+    assert_eq!(wb_world_free(h), WB_OK);
+}
+
+#[test]
+fn erosion_numeric_parameters_outside_their_domain_are_refused() {
+    let h = plain_world();
+    let (node_count, uplift, k, dt, threshold, max_iterations) = erosion_defaults();
+
+    // node_count: below 2, or above the ceiling.
+    for bad in [0u32, 1, WB_MAX_EROSION_NODES + 1] {
+        let (status, ..) = call_erosion_run(h, bad, uplift, k, dt, threshold, max_iterations);
+        assert_eq!(status, WB_ERR_PARAM, "node_count = {bad}");
+    }
+    // uplift_m_per_yr: non-finite, or magnitude over the ceiling (either sign).
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, WB_MAX_EROSION_RATE_PER_YR * 2.0, -WB_MAX_EROSION_RATE_PER_YR * 2.0] {
+        let (status, ..) = call_erosion_run(h, node_count, bad, k, dt, threshold, max_iterations);
+        assert_eq!(status, WB_ERR_PARAM, "uplift_m_per_yr = {bad}");
+    }
+    // erodibility_per_yr: non-finite, or over the ceiling (negative already covered above).
+    for bad in [f64::NAN, f64::INFINITY, WB_MAX_EROSION_RATE_PER_YR * 2.0] {
+        let (status, ..) = call_erosion_run(h, node_count, uplift, bad, dt, threshold, max_iterations);
+        assert_eq!(status, WB_ERR_PARAM, "erodibility_per_yr = {bad}");
+    }
+    // timestep_yr: non-positive, non-finite, or over the ceiling.
+    for bad in [0.0, -1000.0, f64::NAN, f64::INFINITY, WB_MAX_EROSION_TIMESTEP_YR * 2.0] {
+        let (status, ..) = call_erosion_run(h, node_count, uplift, k, bad, threshold, max_iterations);
+        assert_eq!(status, WB_ERR_PARAM, "timestep_yr = {bad}");
+    }
+    // max_height_change_per_step_m (the threshold): negative or non-finite. `0.0` is valid
+    // (never converges early) so it is not in this refusal list.
+    for bad in [-1.0e-9, f64::NAN, f64::NEG_INFINITY] {
+        let (status, ..) = call_erosion_run(h, node_count, uplift, k, dt, bad, max_iterations);
+        assert_eq!(status, WB_ERR_PARAM, "max_height_change_per_step_m = {bad}");
+    }
+    // max_iterations: zero, or over the ceiling.
+    for bad in [0u32, WB_MAX_EROSION_ITERATIONS + 1] {
+        let (status, ..) = call_erosion_run(h, node_count, uplift, k, dt, threshold, bad);
+        assert_eq!(status, WB_ERR_PARAM, "max_iterations = {bad}");
+    }
+
+    // Every bound is inclusive at its stated edge.
+    let (status, heights, iterations, _converged) =
+        call_erosion_run(h, 2, uplift, 0.0, WB_MAX_EROSION_TIMESTEP_YR, 0.0, WB_MAX_EROSION_ITERATIONS.min(50));
+    assert_eq!(status, WB_OK, "the edges of the domain (node_count=2, k=0.0, dt at its ceiling, threshold=0.0) must be accepted");
+    assert_eq!(heights.len(), 2);
+    assert!(iterations > 0);
+
+    assert_eq!(wb_world_free(h), WB_OK);
+}
+
+#[test]
+fn wb_erosion_run_refuses_an_unknown_or_freed_handle() {
+    let (node_count, uplift, k, dt, threshold, max_iterations) = erosion_defaults();
+    let h = plain_world();
+    assert_eq!(wb_world_free(h), WB_OK);
+    let (status, heights, iterations, converged) =
+        call_erosion_run(h, node_count, uplift, k, dt, threshold, max_iterations);
+    assert_eq!(status, WB_ERR_HANDLE);
+    assert!(heights.is_empty());
+    assert_eq!(iterations, 0);
+    assert_eq!(converged, 0);
+
+    let (status, ..) = call_erosion_run(0, node_count, uplift, k, dt, threshold, max_iterations);
+    assert_eq!(status, WB_ERR_HANDLE, "handle 0 is never valid");
+}
+
+#[test]
+fn wb_erosion_run_refuses_a_null_or_short_output_buffer() {
+    let h = plain_world();
+    let (node_count, uplift, k, dt, threshold, max_iterations) = erosion_defaults();
+    let iterations_ptr = wb_alloc(4) as *mut u32;
+    let converged_ptr = wb_alloc(4) as *mut u32;
+
+    // Null heights buffer.
+    assert_eq!(
+        wb_erosion_run(h, node_count, uplift, k, dt, threshold, max_iterations, core::ptr::null_mut(), node_count, iterations_ptr, converged_ptr),
+        WB_ERR_BUFFER
+    );
+
+    // A heights buffer one element short of node_count.
+    let short = wb_alloc((node_count - 1) * 8) as *mut f64;
+    assert_eq!(
+        wb_erosion_run(h, node_count, uplift, k, dt, threshold, max_iterations, short, node_count - 1, iterations_ptr, converged_ptr),
+        WB_ERR_BUFFER
+    );
+    wb_dealloc(short as *mut u8, (node_count - 1) * 8);
+
+    let heights_ptr = wb_alloc(node_count * 8) as *mut f64;
+
+    // Null iterations / converged out-params.
+    assert_eq!(
+        wb_erosion_run(h, node_count, uplift, k, dt, threshold, max_iterations, heights_ptr, node_count, core::ptr::null_mut(), converged_ptr),
+        WB_ERR_BUFFER
+    );
+    assert_eq!(
+        wb_erosion_run(h, node_count, uplift, k, dt, threshold, max_iterations, heights_ptr, node_count, iterations_ptr, core::ptr::null_mut()),
+        WB_ERR_BUFFER
+    );
+
+    wb_dealloc(heights_ptr as *mut u8, node_count * 8);
+    wb_dealloc(iterations_ptr as *mut u8, 4);
+    wb_dealloc(converged_ptr as *mut u8, 4);
+    assert_eq!(wb_world_free(h), WB_OK);
+}
+
+/// A valid call succeeds, reports the fixed step count this crate's own default test
+/// constants are designed to hit (see `erosion_defaults`'s doc), and every returned height
+/// is finite -- a minimal end-to-end check that the export's happy path actually runs the
+/// capped solver rather than only ever being reached by these refusal tests.
+#[test]
+fn wb_erosion_run_succeeds_on_a_valid_call_and_writes_finite_heights() {
+    let h = plain_world();
+    let (node_count, uplift, k, dt, threshold, max_iterations) = erosion_defaults();
+    let (status, heights, iterations, converged) =
+        call_erosion_run(h, node_count, uplift, k, dt, threshold, max_iterations);
+    assert_eq!(status, WB_OK);
+    assert_eq!(heights.len(), node_count as usize);
+    assert!(heights.iter().all(|v| v.is_finite()), "every height must be finite on a valid run");
+    assert_eq!(iterations, max_iterations, "this fixture is designed to hit the iteration cap, not converge early");
+    assert_eq!(converged, 0);
+    assert_eq!(wb_world_free(h), WB_OK);
+}
+
 // -------------------------------------------------------------------- sampling by point
 
 #[test]

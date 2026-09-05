@@ -1,10 +1,10 @@
 worldbuilder_engine.wasm
-bytes: 116970
+bytes: 117040
 exports (12): memory, wb_alloc, wb_bottom_at, wb_dealloc, wb_elevation_m, wb_erosion_run, wb_fill_tile_f32, wb_generator_version, wb_structural_m, wb_world_count, wb_world_free, wb_world_new
 imports: 0
-built: 2026-09-05T06:09:22.072Z
-artifact-sha256: 76b0aa957275301dc54b07a5952e392b036f0209ec88c6e5a5fc5242b2dce82e
-source-fingerprint: 68322b81f5bcc406b3c90071edffe558018d476b2a8a58fe40895189f39a69ec
+built: 2026-09-05T06:34:24.938Z
+artifact-sha256: 6a24ce6b456f36a8c6e60d398ccda192cfea6343757de4910baf96ded9b3c000
+source-fingerprint: 33342501fa52ae103cac71f3be19953c08a906129b975617a8657e32173c78b6
 toolchain: rustc 1.98.0 88d9e12ae178fab0fb5cc050a94da85685d449ea x86_64-pc-windows-msvc
 build: cargo build -p worldbuilder-engine --release --target wasm32-unknown-unknown --no-default-features --features wasm
 fingerprint-inputs: 31

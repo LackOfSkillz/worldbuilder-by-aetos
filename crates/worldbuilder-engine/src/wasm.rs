@@ -142,21 +142,53 @@ pub const WB_ERR_GRAPH: u32 = 6;
 /// not fit a 32-bit wasm heap under any field arrangement, and this export exists to make
 /// erosion's native/WASM parity testable, not to run a planetary bake through the browser
 /// door. `erosion_convergence_sweep`'s own largest row is 100,000 nodes; this doubles that
-/// for headroom while staying far below the point where a single synchronous call would
-/// hang a tab.
+/// for headroom.
+///
+/// **This ceiling and [`WB_MAX_EROSION_ITERATIONS`] multiply, and the product is not
+/// small.** Timed natively in release (native is the *fast* side; WASM will be slower): a
+/// graph build at `node_count = 200,000` takes ~1.5 s, and each `erode_step` +
+/// `cap_slopes` pass over it costs ~8.5 ms once the build cost is subtracted out (measured
+/// at 2, 20 and 200 iterations). At `max_iterations = 200,000` that is
+/// `8.5 ms * 200,000 ~ 1,700 s`, **about 28 minutes of uninterruptible synchronous work**
+/// for a call this function's own domain checks accept and return `WB_OK` from. Each
+/// ceiling is individually far below the point a *single* dimension alone would hang a
+/// tab; **the pair together is not.** Not exploitable today -- nothing in this crate calls
+/// `wb_erosion_run` at both ceilings but the parity harness, which chooses far smaller
+/// values -- but a future caller that exposes this export to a UI must bound the *product*
+/// (e.g. `node_count * max_iterations`) or lower one ceiling to what a frame or worker
+/// budget actually tolerates; neither ceiling here does that on its own.
 pub const WB_MAX_EROSION_NODES: u32 = 200_000;
 /// The ceiling on `max_iterations` for [`wb_erosion_run`]. `erosion_convergence_sweep` caps
-/// its own runs at 200,000; the same number here, for the same reason `WB_MAX_PLATE_COUNT`
-/// exists -- an iteration count in the millions is not a slow bake, it is a hung tab, and
-/// the honest answer to a caller mistake is a refusal rather than a silently truncated run.
+/// its own runs at 200,000; the same number here, chosen for parity with that sweep, **not**
+/// because it is safe standing alone -- see [`WB_MAX_EROSION_NODES`]'s doc for the measured
+/// joint cost of the two ceilings together, which is the actual bound a caller needs to
+/// respect.
 pub const WB_MAX_EROSION_ITERATIONS: u32 = 200_000;
 /// The magnitude ceiling on `uplift_m_per_yr` and `erodibility_per_yr` for
 /// [`wb_erosion_run`], in each field's own unit. This crate's own fixtures run
-/// `uplift_m_per_yr = 1.0e-3` and `erodibility_per_yr = 1.0e-6` -- twelve and nine orders of
-/// magnitude below this bound respectively -- so the bound is drawn to keep
-/// `c = k * dt * sqrt(A_drainage) / d` (see `erosion.rs::erode_step`'s doc) from
-/// overflowing `f64` when multiplied against [`WB_MAX_EROSION_TIMESTEP_YR`] and a
-/// planetary drainage area, not to constrain any value this crate's own tests use.
+/// `uplift_m_per_yr = 1.0e-3` and `erodibility_per_yr = 1.0e-6` -- nine orders of magnitude
+/// below this bound -- so it is drawn to keep `c = k * dt * sqrt(A_drainage) / d` and
+/// `u * dt` (`erode_step`'s doc) from overflowing `f64` against
+/// [`WB_MAX_EROSION_TIMESTEP_YR`] and a planetary drainage area, not to constrain any value
+/// this crate's own tests use.
+///
+/// **`erodibility_per_yr` additionally requires `>= 0.0`; `uplift_m_per_yr` does not.** A
+/// negative uplift (subsidence) enters the update additively (`h_i + u*dt`) and never
+/// changes the sign of `1 + c`, so it stays a contraction. A negative `erodibility_per_yr`
+/// makes `c` itself negative, and `implicit_receiver_update` divides by `1.0 + c`: for `c`
+/// in `(-2, 0)`, `|1 / (1 + c)| > 1` is a per-iteration *amplifying* map rather than the
+/// contraction the module doc's whole convergence argument assumes, so the height field
+/// grows without bound, overflows to `+/-inf` within roughly a hundred iterations at this
+/// crate's own `dt`, and the next iteration's `inf - inf` trips `erode_to_convergence`'s
+/// release-time `assert!(!change.is_nan())` -- an abort across this boundary. **Measured,
+/// both natively and in the shipped `.wasm`**: `erodibility_per_yr = -9.0e-4`
+/// (`u = 1.0e-3`, `dt = 1000`, threshold `1.0e-9`, 3,000 nodes) aborts at iteration 95
+/// natively and traps with `RuntimeError: unreachable` in the committed artifact,
+/// poisoning the WASM instance for every later call. **This is a band, not a single
+/// cliff** -- `-1.0e-2`, `-1.0` and `-1.0e-6` all stay finite -- so a caller sweeping `k`
+/// through negative values walks into it, and a single spot-check at one negative value
+/// would have missed the others. Negative `k` is also not physical for a stream-power law
+/// in the first place, so refusing the whole sign costs nothing a real caller wants.
 pub const WB_MAX_EROSION_RATE_PER_YR: f64 = 1.0e6;
 /// The magnitude ceiling on `timestep_yr` for [`wb_erosion_run`], in years. See
 /// [`WB_MAX_EROSION_RATE_PER_YR`]'s doc for why this bound exists: it is drawn to keep `c`
@@ -775,24 +807,45 @@ const WB_EROSION_POND_MAX_DRAINAGE_AREA_M2: f64 = 1.0e10;
 ///   (no neighbour relation, no drainage); above the ceiling, `WB_ERR_PARAM` -- see that
 ///   constant's doc for why the ceiling sits far below the 20,000,000-node planetary
 ///   target rather than at it.
-/// - `uplift_m_per_yr`, `erodibility_per_yr`: finite, `abs() <=`
-///   [`WB_MAX_EROSION_RATE_PER_YR`]. See that constant's doc for why the bound is orders of
-///   magnitude above this crate's own fixtures rather than tuned to them.
+/// - `uplift_m_per_yr`: finite, `abs() <=` [`WB_MAX_EROSION_RATE_PER_YR`].
+/// - `erodibility_per_yr`: finite, `>= 0.0`, `<=` [`WB_MAX_EROSION_RATE_PER_YR`]. See that
+///   constant's doc for why the lower bound is `0.0` rather than `-WB_MAX_EROSION_RATE_PER_YR`
+///   like `uplift_m_per_yr`'s -- negative `erodibility_per_yr` is a distinct, measured abort,
+///   not a symmetric extension of the magnitude ceiling.
 /// - `timestep_yr`: finite, strictly positive, `<=` [`WB_MAX_EROSION_TIMESTEP_YR`].
 /// - `max_height_change_per_step_m`: finite, `>= 0.0` (the convergence threshold; `0.0` is
 ///   accepted and simply never converges early).
-/// - `max_iterations`: `1..=`[`WB_MAX_EROSION_ITERATIONS`].
+/// - `max_iterations`: `1..=`[`WB_MAX_EROSION_ITERATIONS`], but see that constant's doc for
+///   why this ceiling is not safe to use at [`WB_MAX_EROSION_NODES`] simultaneously.
 ///
-/// **Every one of these bounds exists so that [`crate::erosion::erode_to_convergence`]'s
-/// own release-time `assert!(!change.is_nan())` (see that function's doc) is never reached
-/// from here.** That assertion is correct inside Rust -- a NaN height change is a real
-/// defect worth failing loudly on -- but `extern "C"` is nounwind, so a panic that reaches
-/// this boundary aborts the whole module rather than returning a status; this file's own
-/// doc records that measured, for `wb_world_new`'s `land_fraction` bound, as
-/// `STATUS_STACK_BUFFER_OVERRUN` taking twenty-seven unrelated tests down with it. These
-/// bounds keep every term of `c = k * dt * sqrt(A_drainage) / d` (`erosion.rs::erode_step`'s
-/// doc) far enough from `f64::MAX` that the multiplication chain inside `erode_step` cannot
-/// overflow to infinity and then poison a height update through `inf * 0.0`.
+/// **These bounds close the one abort this task found, not a proof that none remain.**
+/// [`crate::erosion::erode_to_convergence`]'s release-time `assert!(!change.is_nan())` (see
+/// that function's doc) is correct inside Rust -- a NaN height change is a real defect
+/// worth failing loudly on -- but `extern "C"` is nounwind, so a panic that reaches this
+/// boundary aborts the whole module rather than returning a status; this file's own doc
+/// records that measured, for `wb_world_new`'s `land_fraction` bound, as
+/// `STATUS_STACK_BUFFER_OVERRUN` taking twenty-seven unrelated tests down with it. The one
+/// path this task found into that assertion was `erodibility_per_yr < 0.0` turning `1 + c`
+/// into an amplifying map (see [`WB_MAX_EROSION_RATE_PER_YR`]'s doc) -- found by reasoning
+/// about that one term's sign, confirmed both natively and in the shipped `.wasm`, and
+/// closed by the `>= 0.0` bound above. **No exhaustive search of the remaining in-domain
+/// parameter space (in particular, adversarial combinations of `A_drainage`, `k`, `dt` and
+/// a very small receiver distance `d`) was made**, and finding one reachable band should
+/// raise the prior that others exist rather than lower it.
+///
+/// # The cap is called, but inert over this crate's own corpus
+///
+/// This function always calls the *capped* path (see this doc's opening paragraph), but
+/// calling it is not the same as exercising its arithmetic: `cap_slopes`' clamp branch
+/// binds a slope to `slope_cap_tan()` (`tan(30 degrees)`, a `detmath` transcendental) only
+/// when a slope exceeds it, and Task 4 measured that cap as inert at every node count this
+/// crate has tested -- a 30-degree slope needs more rise than fits between neighbours at
+/// these spacings. Measured directly for this export's own parity fixture (3,000 nodes,
+/// this crate's default test constants, 20 iterations): `ClampStats { total_edges_clamped:
+/// 0, iterations_with_a_clamp: 0 }`. So the native/WASM parity corpus this export feeds is
+/// a genuine test of `sqrt`, `atan2` (via `receiver_distances_m`) and the implicit update --
+/// and is not a test of `cap_slopes`' own clamp arithmetic, which stays untested by parity
+/// until a corpus reaches the node density where the cap can fire at all.
 ///
 /// # Output
 ///
@@ -832,10 +885,18 @@ pub extern "C" fn wb_erosion_run(
     if node_count < 2 || node_count > WB_MAX_EROSION_NODES {
         return WB_ERR_PARAM;
     }
-    for rate in [uplift_m_per_yr, erodibility_per_yr] {
-        if !rate.is_finite() || rate.abs() > WB_MAX_EROSION_RATE_PER_YR {
-            return WB_ERR_PARAM;
-        }
+    if !uplift_m_per_yr.is_finite() || uplift_m_per_yr.abs() > WB_MAX_EROSION_RATE_PER_YR {
+        return WB_ERR_PARAM;
+    }
+    // `erodibility_per_yr` is refused below zero, unlike `uplift_m_per_yr` above -- a
+    // negative `k` makes `c = k * dt * sqrt(A_drainage) / d` negative, which turns
+    // `implicit_receiver_update`'s `1.0 / (1.0 + c)` into an amplifying map instead of a
+    // contraction and overflows to `inf` within about a hundred iterations at this crate's
+    // own `dt`, tripping `erode_to_convergence`'s release-time NaN assertion -- an abort
+    // across this boundary. See `WB_MAX_EROSION_RATE_PER_YR`'s doc for the measured native
+    // and WASM traces this refusal closes.
+    if !erodibility_per_yr.is_finite() || !(erodibility_per_yr >= 0.0) || erodibility_per_yr > WB_MAX_EROSION_RATE_PER_YR {
+        return WB_ERR_PARAM;
     }
     if !timestep_yr.is_finite() || !(timestep_yr > 0.0) || timestep_yr > WB_MAX_EROSION_TIMESTEP_YR {
         return WB_ERR_PARAM;
