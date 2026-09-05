@@ -322,25 +322,60 @@ jobs:
           # failed at the first diverging grid point; reverting turned it green again. Re-
           # derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
           # per configuration, cross-checked through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, Task 4 review-fix round: 508/508/510/544/546 -> 513/513/515/549/551.
+          # Two blocking findings against the water manifest (task-4-review.md). (1) The sea
+          # was enumerated as one `Body` per boundary root -- 86%/81% of all bodies at
+          # n=30,000/100,000, 96% of those boxes mutually overlapping, over a third of real
+          # lakes shadowed by at least one -- which inverted §13.2's own "mapping of named
+          # waters, plus a fallback for the unnamed" architecture. `BodyKind::Ocean` and the
+          # mouth loop in `water_manifest` are gone; the sea is exactly
+          # `WaterManifest::sea_level_m` and nothing else. `every_boundary_root_is_an_ocean_
+          # body_at_sea_level` and `no_body_is_two_kinds_at_once` are renamed
+          # (`no_boundary_root_appears_as_a_body`, `every_body_is_a_lake_root_never_a_mouth`)
+          # and inverted to assert the new invariant -- net zero test count from the rename.
+          # (2) `Extent`'s lat/lon box mishandled the antimeridian at scales already reached
+          # (6/171 lake bodies at n=30,000, 8/799 at n=100,000, one single-node body at
+          # 358.7 degrees of longitude), not only "as a body's scale approaches the planet's
+          # circumference" as the pre-review doc comment reasoned rather than measured.
+          # `lake_body_extents` now collects every member's `(lat, lon)` for a body and
+          # `Extent::from_points` resolves longitude via `smallest_enclosing_longitude_arc`
+          # (widest-gap-on-the-circle construction); `min_longitude_deg > max_longitude_deg`
+          # now denotes a seam-crossing arc, documented on the struct itself. Four new unit
+          # tests on the arc helper plus one hand-built fixture
+          # (`a_lake_straddling_the_antimeridian_gets_the_narrow_arc_not_the_globe_spanning_
+          # one`, two members 0.2 degrees apart on the planet but 359.7 degrees apart in raw
+          # coordinates) are the five new unconditionally-compiled tests. LOW fixes alongside:
+          # `extents[&i]` in `water_manifest` is now a guarded `.get(&i).unwrap_or(EMPTY_
+          # EXTENT)` rather than an unguarded index, and `Extent::from_points`'s doc comment
+          # now states its NaN-drops-silently latitude semantics. No new `#[cfg]`, no new
+          # `#[ignore]`, so all five rows move by +5 uniformly and `expect_ignored` stays 5.
+          # Body counts re-derived directly (temporary `#[ignore]`d measurement test, reverted
+          # before commit, same method task-4-review.md used): at n=30,000, real `Spiral`-
+          # sampled, `SEED=20_260_905`, `sea_level_m=0.0`, `pond_max_surface_area_m2=1.0e5` --
+          # before, 1,232 bodies (1,061 ocean / 171 lake / 0 pond); after, 171 bodies (171 lake
+          # / 0 pond), matching the review's own measurement exactly. Re-derived by `cargo test
+          # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration,
+          # cross-checked through `assert_counts.py cargo-list` itself.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 508
+            expect: 513
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 508
+            expect: 513
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 510
+            expect: 515
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 544
+            expect: 549
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 546
+            expect: 551
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

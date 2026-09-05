@@ -1330,22 +1330,27 @@ pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_surface_area_m2:
 // ---- the water manifest --------------------------------------------------------------------
 //
 // Slice 5b Task 4. §13.2: "Worldbuilder therefore emits a water manifest: named bodies, each
-// with extent, surface level and kind" -- ocean, lake, pond, and "river, an ordered set of
-// reaches". Tasks 1-3 leave `graph.lakes()` fully resolved (filled, merged, classified); this
-// is the module that reads that table (and `graph`'s mouths, which never get a `Lake` row at
-// all) into the artifact maritime actually consumes.
+// with extent, surface level and kind" -- lake, pond, and "river, an ordered set of reaches".
+// Review round (Finding 1): §13.2 also describes the sea as the *complement* of that mapping
+// -- "a mapping of named waters" and "anything unnamed falls back to the sea" are two
+// mechanisms, not one, and the sea is the miss the fallback answers, never a row in the
+// mapping itself. So the sea is not a `BodyKind` and is never enumerated as a `Body` at all;
+// it is exactly the one scalar `WaterManifest::sea_level_m` already carries. Tasks 1-3 leave
+// `graph.lakes()` fully resolved (filled, merged, classified); this is the module that reads
+// that table into the artifact maritime actually consumes. `graph`'s mouths are read only to
+// confirm this (`no_boundary_root_appears_as_a_body`) -- never to build a body from.
 //
-// **Rivers ship with reaches from the start, even though Mark 2 populates only ocean, lake
-// and pond** (§13.2, verbatim) -- so `River` exists and `WaterManifest::rivers` is always
-// empty. And **a manifest that cannot represent a waterfall has failed even though Mark 2
-// produces none** (§13.3): a fall is a property of a reach's `gradient`, not a fourth kind of
-// body, so `BodyKind` has exactly three variants and never gains a `Waterfall` one. Both of
-// those are scope lines, not omissions -- see `River`'s and `BodyKind`'s own doc comments.
+// **Rivers ship with reaches from the start, even though Mark 2 populates only lake and
+// pond** (adapting §13.2, verbatim except for the sea) -- so `River` exists and
+// `WaterManifest::rivers` is always empty. And **a manifest that cannot represent a
+// waterfall has failed even though Mark 2 produces none** (§13.3): a fall is a property of a
+// reach's `gradient`, not a fourth kind of body, so `BodyKind` has exactly two variants and
+// never gains a `Waterfall` one (nor an `Ocean` one -- see above). Both are scope lines, not
+// omissions -- see `River`'s and `BodyKind`'s own doc comments.
 
 /// A body's footprint: the bounding rectangle in geographic coordinates (latitude and
 /// longitude, in degrees) over every node this crate counted as the body's actual water --
-/// not its catchment (see [`water_manifest`]'s own doc comment on why that distinction
-/// matters most for an ocean body).
+/// not its catchment.
 ///
 /// # Why a bounding box, and not a node set or a representative point plus area
 ///
@@ -1371,33 +1376,47 @@ pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_surface_area_m2:
 ///   comparable lookup (`plates.rs::margin_at`'s nearest-plate test, `stream::
 ///   node_neighbours`'s k-NN). It is a conservative over-approximation: a position inside the
 ///   box is not guaranteed inside the body's true shore. That is the right direction to be
-///   wrong in, given the fallback rule §13.2 already states ("anything unnamed falls back to
-///   the sea") -- a false hit on a named body can be refined or rejected by whatever finer
-///   check maritime layers on top of this lookup, but a false miss silently answers with the
-///   sea instead of the lake a position is actually inside, which is worse and is not
-///   recoverable at this layer at all.
+///   wrong in *when the box stays a tight over-approximation of the body's true shape* --
+///   review round (Finding 3): a false hit that is wildly larger than the body itself is not
+///   recoverable downstream either, which is exactly what an un-normalised antimeridian box
+///   (below) would have been.
 ///
-/// # The known limitation, stated rather than hidden
+/// # The antimeridian, measured rather than assumed away
 ///
-/// A latitude/longitude box mishandles the antimeridian: a body whose members straddle
-/// longitude +/-180 degrees would compute a box spanning nearly the whole globe instead of a
-/// narrow sliver. No lake or pond this generator produces is large enough to reach that seam
-/// -- Task 3's own finding puts the smallest body at 7.9e8 m^2, and the antimeridian problem
-/// only bites as a body's own scale approaches the planet's circumference -- and an ocean
-/// body here is bounded by a single mouth's own basin, not the whole sea (`water_manifest`'s
-/// own doc comment gives the reason). If a future body is ever planet-spanning, this box is
-/// the wrong shape for it, and that is a problem for whoever makes one, not a case to guess
-/// at now.
+/// A lat/lon box degenerates when a body's members straddle longitude +/-180 -- not, as an
+/// earlier draft of this doc comment reasoned, only "as a body's own scale approaches the
+/// planet's circumference". `SpherePoint::to_latlon` returns longitude from `atan2` in
+/// `(-180, 180]`, so two nodes 0.2 degrees apart on the actual planet, one at 179.9 and one
+/// at -179.9, are 359.8 degrees apart in raw coordinates regardless of how small the body is.
+/// Review round measurement (real `Spiral`-sampled graphs, `SEED = 20_260_905`): **6 of 171
+/// lake bodies at n = 30,000 nodes and 8 of 799 at n = 100,000** have raw longitude spans over
+/// 180 degrees, including a **single-node** body at 358.7 degrees. That is reachable today,
+/// at resolutions this project already bakes at, not a future concern.
+///
+/// So this type normalises the seam rather than documenting around it: `min_longitude_deg`
+/// and `max_longitude_deg` name the smallest arc on the circle that contains every point
+/// (found by sorting the body's longitudes and taking the complement of the widest gap
+/// between consecutive values -- the standard construction for "smallest enclosing arc on a
+/// circle"). When that arc does not cross the seam, `min_longitude_deg <= max_longitude_deg`,
+/// exactly the plain box a caller would expect. When it does, **`min_longitude_deg >
+/// max_longitude_deg`**, and the arc is understood to run from `min_longitude_deg` up to
+/// +180, wrap to -180, and continue up to `max_longitude_deg`. A containment test against
+/// this box must branch on that comparison; this crate has no such test to write (Finding 13:
+/// `WaterManifest` has no consumer here yet), so the convention is documented for whoever
+/// writes maritime's side rather than encoded in a method this crate does not need.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Extent {
     pub min_latitude_deg: f64,
     pub max_latitude_deg: f64,
+    /// See the struct doc comment's antimeridian section: greater than
+    /// `max_longitude_deg` denotes an arc that wraps through +/-180, not an invalid box.
     pub min_longitude_deg: f64,
     pub max_longitude_deg: f64,
 }
 
-/// The box that contains nothing yet -- inverted so that growing it with any real point
-/// immediately replaces every bound.
+/// The box that contains nothing -- the fallback for a representative row [`water_manifest`]
+/// finds no underwater member for (see [`water_manifest`]'s own guard comment; not reachable
+/// from a real graph today, but the fallback is cheaper than a panic and just as legible).
 const EMPTY_EXTENT: Extent = Extent {
     min_latitude_deg: f64::INFINITY,
     max_latitude_deg: f64::NEG_INFINITY,
@@ -1406,52 +1425,127 @@ const EMPTY_EXTENT: Extent = Extent {
 };
 
 impl Extent {
-    /// Grow the box to include `point`, if it does not already.
+    /// The smallest box containing every point in `points` (latitude, longitude, in degrees).
+    /// Latitude is a plain min/max scan -- it never wraps, since `to_latlon` keeps it in
+    /// [-90, 90]. Longitude is resolved on the circle by [`smallest_enclosing_longitude_arc`];
+    /// see this struct's own doc comment for the wrap convention that returns.
     ///
-    /// House form throughout this crate: an explicit comparison, never `f64::min`,
-    /// `f64::max` or `.clamp(` (`plates.rs::margin_at`'s own comment states the same rule --
-    /// the `no_std_math.rs` build guard does not catch any of the three, so this is enforced
-    /// by convention and by this module's own test coverage, not by the build).
-    fn grow(self, point: &SpherePoint) -> Self {
-        let (lat, lon) = point.to_latlon();
-        let min_latitude_deg = if lat < self.min_latitude_deg { lat } else { self.min_latitude_deg };
-        let max_latitude_deg = if lat > self.max_latitude_deg { lat } else { self.max_latitude_deg };
-        let min_longitude_deg = if lon < self.min_longitude_deg { lon } else { self.min_longitude_deg };
-        let max_longitude_deg = if lon > self.max_longitude_deg { lon } else { self.max_longitude_deg };
+    /// House form throughout this crate for the latitude scan: an explicit comparison, never
+    /// `f64::min`, `f64::max` or `.clamp(` (`plates.rs::margin_at`'s own comment states the
+    /// same rule -- the `no_std_math.rs` build guard does not catch any of the three, so this
+    /// is enforced by convention and by this module's own test coverage, not by the build).
+    /// One consequence of that form, undocumented before review: a NaN latitude leaves both
+    /// bounds untouched (every comparison against it is false), so it silently vanishes from
+    /// the box rather than poisoning it -- unreachable from a real `SpherePoint::to_latlon`,
+    /// but worth naming since this file's other extrema (`fill_lakes`'s spill formula) spell
+    /// their own NaN behaviour out rather than leaving it implicit.
+    ///
+    /// # Panics
+    ///
+    /// If `points` is empty. Every caller only invokes this once at least one point has been
+    /// collected for the body it describes.
+    fn from_points(points: &[(f64, f64)]) -> Self {
+        assert!(!points.is_empty(), "Extent::from_points requires at least one point");
+
+        let mut min_latitude_deg = f64::INFINITY;
+        let mut max_latitude_deg = f64::NEG_INFINITY;
+        let mut longitudes: Vec<f64> = Vec::with_capacity(points.len());
+        for &(lat, lon) in points {
+            min_latitude_deg = if lat < min_latitude_deg { lat } else { min_latitude_deg };
+            max_latitude_deg = if lat > max_latitude_deg { lat } else { max_latitude_deg };
+            longitudes.push(lon);
+        }
+
+        let (min_longitude_deg, max_longitude_deg) =
+            smallest_enclosing_longitude_arc(&mut longitudes);
+
         Extent { min_latitude_deg, max_latitude_deg, min_longitude_deg, max_longitude_deg }
     }
 }
 
-/// §13.2 asks for a body's `kind`, and it is exactly one of three -- **never four.** A fall
-/// is not a body (§13.3): it is a property of a *reach* (the `gradient` field `stream::Reach`
-/// already carries), and to maritime it is a limit -- the upstream end of navigability,
-/// absolute rather than tidal, that belongs on a marks channel rather than in soundings. A
-/// `Waterfall` variant here would put a reach-derived limit where a body's kind belongs,
-/// which is exactly the mistake §13.3 exists to prevent. Mark 2 produces no waterfalls; that
-/// is a fact about this generator's output, not a reason to widen this enum to make room for
-/// one.
+/// The smallest arc on the circle of longitude that contains every value in `lons` (degrees,
+/// each in the `atan2` range `(-180, 180]` `SpherePoint::to_latlon` returns). Sorts `lons` in
+/// place, finds the widest gap between consecutive sorted values (circularly -- the gap from
+/// the last value back around to the first, plus 360, is one of the candidates), and returns
+/// the complement of that gap: the smallest arc cannot contain the widest gap, and the
+/// remaining arc, by construction, contains every point.
+///
+/// Returned as `(start, end)`. When the widest gap is the array's own natural wraparound (the
+/// points do not straddle the seam), `start <= end` and this is exactly the ordinary min/max.
+/// Otherwise the arc crosses the seam and `start > end` -- [`Extent`]'s own doc comment names
+/// this convention for the box built from it.
+fn smallest_enclosing_longitude_arc(lons: &mut [f64]) -> (f64, f64) {
+    lons.sort_by(|a, b| a.partial_cmp(b).expect("a SpherePoint longitude is never NaN"));
+    let n = lons.len();
+    if n == 1 {
+        return (lons[0], lons[0]);
+    }
+
+    let mut widest_gap = f64::NEG_INFINITY;
+    let mut widest_gap_at = 0usize; // the gap immediately after lons[widest_gap_at]
+    for i in 0..n {
+        let next = if i + 1 < n { lons[i + 1] } else { lons[0] + 360.0 };
+        let gap = next - lons[i];
+        if gap > widest_gap {
+            widest_gap = gap;
+            widest_gap_at = i;
+        }
+    }
+
+    if widest_gap_at == n - 1 {
+        // The widest gap is the array's own wraparound: the points cluster away from the
+        // seam, and the plain min/max already is the minimal arc.
+        (lons[0], lons[n - 1])
+    } else {
+        // The minimal arc runs the other way around the widest gap: starting just past it
+        // and wrapping through the seam back down to just before it.
+        (lons[widest_gap_at + 1], lons[widest_gap_at])
+    }
+}
+
+/// §13.2 asks for a body's `kind`, and it is exactly one of two -- **never three, never
+/// four.**
+///
+/// **No `Ocean` variant** (review round, Finding 1). §13.2 names two complementary
+/// mechanisms: "a mapping of named waters" and "anything unnamed falls back to the sea". The
+/// sea is what the mapping's *miss* returns -- it is the complement of the mapping, not a row
+/// in it. A per-mouth `Ocean` body would put the sea into the very mapping it is defined
+/// against, and it is measurably unusable besides: at n = 30,000/100,000 nodes, 86%/81% of
+/// all bodies would be `Ocean`, 96% of their boxes would overlap each other with no rule to
+/// pick one, and over a third of real lakes would sit inside at least one of them. "Ocean --
+/// the datum" is a statement about level semantics, not an instruction to enumerate one row
+/// per mouth: the datum is `WaterManifest::sea_level_m`, once, and that is the whole of the
+/// sea's representation here. A boundary root never appears in [`WaterManifest::bodies`] at
+/// all (see `no_boundary_root_appears_as_a_body`).
+///
+/// **No `Waterfall` variant.** A fall is not a body (§13.3): it is a property of a *reach*
+/// (the `gradient` field `stream::Reach` already carries), and to maritime it is a limit --
+/// the upstream end of navigability, absolute rather than tidal, that belongs on a marks
+/// channel rather than in soundings. A `Waterfall` variant here would put a reach-derived
+/// limit where a body's kind belongs, which is exactly the mistake §13.3 exists to prevent.
+/// Mark 2 produces no waterfalls; that is a fact about this generator's output, not a reason
+/// to widen this enum to make room for one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyKind {
-    /// A boundary root (`stream::flag::MOUTH`). Its `level_m` is always the manifest's own
-    /// `sea_level_m`, never a computed spill point -- the ocean is the datum, not a lake with
-    /// a particularly low level (Property 3).
-    Ocean,
     Lake,
     Pond,
 }
 
 /// One named body of water: `graph.lakes()`'s and `graph.roots()`'s own root-node identity,
-/// plus everything §13.2 asks a body to carry.
+/// plus everything §13.2 asks a body to carry. Never a mouth (a boundary root): see
+/// [`BodyKind`]'s own doc comment for why the sea is never one of these.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Body {
-    /// Identifies the body the way this crate's own tables already do -- a lake's or a
-    /// mouth's root node. Not exposed as anything maritime reads directly; a caller that
-    /// wants to correlate a body across two manifests (or back to `graph.lakes()`) has this,
-    /// same as `Lake::root_node`.
+    /// This body's identity in §13.2's "mapping of named waters" -- the mapping needs a key,
+    /// `Body` carries no separate name field, and this is the only candidate: `graph.lakes()`'s
+    /// own root-node identity, matching `Lake::root_node`. It does leak this crate's own node
+    /// indexing, but no other stable identifier exists, and correlating a body across two
+    /// manifests of the same world (or back to `graph.lakes()`) is a real need the mapping's
+    /// key exists to serve, not an internal detail leaking out.
     pub root_node: u32,
     pub kind: BodyKind,
-    /// Ocean: `sea_level_m`, unconditionally. Lake or pond: the (post-merge) filled
-    /// `Lake::level_m` Task 1 and Task 2 already computed for this body's representative row.
+    /// The (post-merge) filled `Lake::level_m` Task 1 and Task 2 already computed for this
+    /// body's representative row.
     pub level_m: f64,
     pub extent: Extent,
 }
@@ -1476,11 +1570,13 @@ pub struct River {
 /// the datum they were found at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaterManifest {
-    /// The datum every `Body::level_m` of kind [`BodyKind::Ocean`] is fixed to, and the datum
-    /// mouth-versus-lake was decided at for every other body (`GraphHeader::sea_level_m`'s
-    /// own doc comment: "Mouth-versus-lake is a function of it"). The same graph yields a
-    /// different manifest at a different datum, so a manifest that does not name its own
-    /// cannot be checked against the world it describes.
+    /// The sea, in full: not a `Body`, not a `BodyKind`, exactly this one scalar
+    /// (`BodyKind`'s own doc comment argues why). It is both the datum the mapping's fallback
+    /// answers with (§13.2: "anything unnamed falls back to the sea") and the datum
+    /// mouth-versus-lake was decided at for every body that *is* in `bodies`
+    /// (`GraphHeader::sea_level_m`'s own doc comment: "Mouth-versus-lake is a function of
+    /// it"). The same graph yields a different manifest at a different datum, so a manifest
+    /// that does not name its own cannot be checked against the world it describes.
     pub sea_level_m: f64,
     pub bodies: Vec<Body>,
     /// Reserved and always empty at Mark 2. See [`River`]'s own doc comment.
@@ -1490,10 +1586,12 @@ pub struct WaterManifest {
 /// Every basin member across every row folded into physical body `target_body` (Ruling 7's
 /// merge target index, from [`lake_body_index`]), restricted to the ones actually at or below
 /// that body's own filled `level_m` -- the underwater footprint, not the catchment. Mirrors
-/// [`lake_body_surface_totals_m2`]'s own double loop exactly, growing an [`Extent`] instead of
-/// summing an area, for the same reason that function gives: a merged plateau's footprint is
-/// the union's footprint, so every basin belonging to any member of a merged group must
-/// contribute to the same box, keyed by `body[i]`, not by each row's own index.
+/// [`lake_body_surface_totals_m2`]'s own double loop exactly, collecting points for an
+/// [`Extent`] instead of summing an area, for the same reason that function gives: a merged
+/// plateau's footprint is the union's footprint, so every basin belonging to any member of a
+/// merged group must contribute to the same box, keyed by `body[i]`, not by each row's own
+/// index. Points are collected rather than folded incrementally because the antimeridian fix
+/// (`Extent::from_points`'s own doc comment) needs every longitude in the body at once.
 fn lake_body_extents(
     graph: &StreamGraph,
     basins: &Basins,
@@ -1501,21 +1599,22 @@ fn lake_body_extents(
     lakes: &[Lake],
     body: &[usize],
 ) -> HashMap<usize, Extent> {
-    let mut extent_by_body: HashMap<usize, Extent> = HashMap::with_capacity(lakes.len());
+    let mut points_by_body: HashMap<usize, Vec<(f64, f64)>> = HashMap::with_capacity(lakes.len());
     for (i, lake) in lakes.iter().enumerate() {
         for &member in basins.members_of(lake.root_node) {
             if graph.height_m(member) <= lake.level_m {
-                let entry = extent_by_body.entry(body[i]).or_insert(EMPTY_EXTENT);
-                *entry = entry.grow(&positions[member as usize]); // cast-ok: a node index into usize
+                let latlon = positions[member as usize].to_latlon(); // cast-ok: a node index into usize
+                points_by_body.entry(body[i]).or_default().push(latlon);
             }
         }
     }
-    extent_by_body
+    points_by_body.into_iter().map(|(b, points)| (b, Extent::from_points(&points))).collect()
 }
 
-/// Build the water manifest: every ocean (mouth), lake and pond body in `graph`, at the datum
-/// recorded in `graph.header().sea_level_m`, plus an always-empty river arm (see [`River`]'s
-/// own doc comment).
+/// Build the water manifest: every lake and pond body in `graph`, at the datum recorded in
+/// `graph.header().sea_level_m`, plus an always-empty river arm (see [`River`]'s own doc
+/// comment). The sea itself is never one of `bodies` -- see [`BodyKind`]'s own doc comment for
+/// why, and `no_boundary_root_appears_as_a_body` for the property this function upholds.
 ///
 /// `positions` must be the same node positions `graph` was built over -- the same requirement
 /// [`fill_lakes`] and [`resolve_outflow_edges`] already place on their own `neighbours`
@@ -1528,46 +1627,15 @@ fn lake_body_extents(
 /// `basins` must be [`basins_of`]`(graph)` (or an equivalent partition over the same graph),
 /// the same requirement every other function in this module places on it.
 ///
-/// # A mouth's extent is not its catchment
-///
-/// A lake's basin members at or below its own filled `level_m` are the lake -- that is how
-/// [`fill_lakes`] works, and [`classify_lake_kinds`]'s own doc comment already relies on the
-/// same fact for surface area. A mouth's basin is different in kind: most of its members are
-/// the land nodes whose downhill chain drains to it, and those are watershed, not water. The
-/// same filter -- basin members at or below the body's own `level_m` -- still picks out only
-/// the right ones for a mouth, because `level_m` is fixed to `sea_level_m` for every ocean
-/// body (Property 3) and `stream::flag::BOUNDARY` is defined as exactly `height_m <=
-/// sea_level_m` (`StreamGraph::build`'s own loop) -- the filter and the boundary flag select
-/// the identical set, so this function never needs to branch on kind or read flags at all: one
-/// predicate, `height_m(member) <= body_level_m`, is correct for every kind this task emits.
-///
 /// # No new merging
 ///
 /// Ruling 7's merge already folded every tied plateau into one physical body's worth of
 /// `outflow_lake`/`level_m` (`lake_body_index`'s own doc comment); this only reads that result
 /// -- once per physical body, via the same representative test [`classify_lake_kinds`] uses
-/// (`body[i] == i`) -- and never merges further. Mouths are never `Lake` rows at all
-/// (`StreamGraph::build`'s own loop only ever pushes a `Lake` for a non-boundary root), and
-/// this task does not give them one: two mouths that happen to share `sea_level_m` (every pair
-/// of mouths, always, since that is the whole point of Property 3) are still two separate
-/// bodies here, because nothing upstream of this task ties them together and inventing that
-/// tie is exactly the merging this task must not do.
+/// (`body[i] == i`) -- and never merges further.
 pub fn water_manifest(graph: &StreamGraph, basins: &Basins, positions: &[SpherePoint]) -> WaterManifest {
     let sea_level_m = graph.header().sea_level_m;
     let mut bodies = Vec::new();
-
-    for root in graph.roots() {
-        if !graph.has_flag(root, stream::flag::MOUTH) {
-            continue;
-        }
-        let mut extent = EMPTY_EXTENT;
-        for &member in basins.members_of(root) {
-            if graph.height_m(member) <= sea_level_m {
-                extent = extent.grow(&positions[member as usize]); // cast-ok: a node index into usize
-            }
-        }
-        bodies.push(Body { root_node: root, kind: BodyKind::Ocean, level_m: sea_level_m, extent });
-    }
 
     let (lakes, body) = lake_body_index(graph);
     let extents = lake_body_extents(graph, basins, positions, &lakes, &body);
@@ -1582,13 +1650,17 @@ pub fn water_manifest(graph: &StreamGraph, basins: &Basins, positions: &[SphereP
             LakeKind::Pond => BodyKind::Pond,
             LakeKind::Lake => BodyKind::Lake,
         };
-        let extent = extents[&i];
+        // Ruling 2's `level_m >= height_m(root)` invariant means the representative's own
+        // root always passes `lake_body_extents`'s filter, so this row is unreachable today
+        // -- but the invariant it relies on lives in another module (Task 1/2's), not here,
+        // so the dependency is made legible with a fallback rather than an unguarded index
+        // that would panic on the artifact this function ships.
+        let extent = extents.get(&i).copied().unwrap_or(EMPTY_EXTENT);
         bodies.push(Body { root_node: lake.root_node, kind, level_m: lake.level_m, extent });
     }
 
-    // Ascending by root node -- deterministic regardless of how the two loops above
-    // interleaved, and independent of the `HashMap` iteration order `lake_body_extents`
-    // built its intermediate result in.
+    // Ascending by root node -- deterministic regardless of the `HashMap` iteration order
+    // `lake_body_extents` built its intermediate result in.
     bodies.sort_by_key(|b| b.root_node);
 
     WaterManifest { sea_level_m, bodies, rivers: Vec::new() }
@@ -2959,6 +3031,42 @@ mod tests {
 
     // ---- Task 4: the water manifest ----------------------------------------------------
 
+    /// `smallest_enclosing_longitude_arc` on the ordinary case (no seam involved) must
+    /// reproduce plain min/max exactly.
+    #[test]
+    fn smallest_enclosing_longitude_arc_matches_plain_min_max_away_from_the_seam() {
+        let mut lons = vec![10.0, -5.0, 3.0];
+        assert_eq!(smallest_enclosing_longitude_arc(&mut lons), (-5.0, 10.0));
+    }
+
+    /// A single point is its own (degenerate) arc.
+    #[test]
+    fn smallest_enclosing_longitude_arc_handles_a_single_point() {
+        let mut lons = vec![42.0];
+        assert_eq!(smallest_enclosing_longitude_arc(&mut lons), (42.0, 42.0));
+    }
+
+    /// The case Finding 2 named: two points a hair apart on the real planet, on opposite
+    /// sides of the +/-180 seam, must produce the narrow arc across the seam (start > end),
+    /// not the ~359-degree arc a naive min/max would report.
+    #[test]
+    fn smallest_enclosing_longitude_arc_wraps_across_the_antimeridian() {
+        let mut lons = vec![179.5, -179.5];
+        assert_eq!(smallest_enclosing_longitude_arc(&mut lons), (179.5, -179.5));
+    }
+
+    /// Three points, still all near the seam on one side or the other, none of them near the
+    /// 0-degree meridian -- the widest gap must still be found on the far side (near 0), not
+    /// assumed to be at the seam itself just because two points straddle it.
+    #[test]
+    fn smallest_enclosing_longitude_arc_finds_the_widest_gap_wherever_it_falls() {
+        let mut lons = vec![179.0, -179.0, -178.0];
+        // Sorted: [-179.0, -178.0, 179.0]. Gaps: (-179 to -178) = 1, (-178 to 179) = 357,
+        // (179 to -179+360=181) = 2. Widest is the middle one (357, between -178 and 179),
+        // so the arc runs the other way: from 179 up through the seam down to -178.
+        assert_eq!(smallest_enclosing_longitude_arc(&mut lons), (179.0, -178.0));
+    }
+
     /// Property 1: the same graph, manifested twice, must produce a bit-identical result --
     /// not merely a numerically close one. Compared on bits throughout, per this crate's own
     /// convention (`StreamGraph::bit_identical_to`'s doc comment).
@@ -2990,8 +3098,10 @@ mod tests {
     /// Property 2: every physical lake body appears exactly once, and no body's `root_node`
     /// is duplicated -- checked against a count derived independently of `water_manifest`'s
     /// own logic (the same representative test `classify_lake_kinds` and `lake_body_index`
-    /// already use, plus a separate mouth count), so this does not simply re-run the function
-    /// under test on itself.
+    /// already use), so this does not simply re-run the function under test on itself. No
+    /// mouth count is added in (review round, Finding 1): the sea is never enumerated as a
+    /// body at all, so `bodies.len()` is exactly the lake/pond count, not that count plus one
+    /// per mouth.
     #[test]
     fn every_physical_body_appears_exactly_once() {
         let mut graph = real_graph(SEED);
@@ -3007,17 +3117,17 @@ mod tests {
         let (lakes, body) = lake_body_index(&graph);
         assert!(!lakes.is_empty(), "fixture must actually have lakes to test this");
         let distinct_lake_bodies = body.iter().enumerate().filter(|&(i, &b)| b == i).count();
-        let mouth_count =
-            graph.roots().into_iter().filter(|&r| graph.has_flag(r, stream::flag::MOUTH)).count();
-        assert!(mouth_count > 0, "fixture must actually have mouths to test this");
 
-        assert_eq!(manifest.bodies.len(), distinct_lake_bodies + mouth_count);
+        assert_eq!(manifest.bodies.len(), distinct_lake_bodies);
     }
 
-    /// Property 3: every boundary root is an ocean body at `sea_level_m`, never a lake or a
-    /// pond, and never at a computed spill level.
+    /// Property 3 (review round, Finding 1 -- inverted from the pre-review version, which
+    /// asserted the opposite: that every boundary root appeared as an `Ocean` body). The sea
+    /// is the mapping's fallback, not a row in it (`BodyKind`'s own doc comment): no boundary
+    /// root may appear in `bodies` at all, and the one scalar that stands in for the sea,
+    /// `WaterManifest::sea_level_m`, must be bit-identical to the graph's own datum.
     #[test]
-    fn every_boundary_root_is_an_ocean_body_at_sea_level() {
+    fn no_boundary_root_appears_as_a_body() {
         let mut graph = real_graph(SEED);
         let basins = fill_and_resolve_water(&mut graph, 5.0e9);
         let manifest = water_manifest_from_graph(&graph, &basins);
@@ -3026,22 +3136,20 @@ mod tests {
             graph.roots().into_iter().filter(|&r| graph.has_flag(r, stream::flag::MOUTH)).collect();
         assert!(!mouths.is_empty(), "fixture must actually have mouths to test this");
         for root in mouths {
-            let found = manifest
-                .bodies
-                .iter()
-                .find(|b| b.root_node == root)
-                .unwrap_or_else(|| panic!("mouth {root} must appear as a body"));
-            assert_eq!(found.kind, BodyKind::Ocean);
-            assert_eq!(found.level_m.to_bits(), graph.header().sea_level_m.to_bits());
+            assert!(
+                manifest.bodies.iter().all(|b| b.root_node != root),
+                "mouth {root} must not appear in `bodies` -- the sea is the mapping's \
+                 fallback, never a row in it"
+            );
         }
+        assert_eq!(manifest.sea_level_m.to_bits(), graph.header().sea_level_m.to_bits());
     }
 
-    /// Property 4: nothing is two things. A body's `kind` must agree with whichever of
-    /// "mouth" or "lake root" its `root_node` actually is in `graph` -- checked against that
-    /// independent ground truth, not merely against the enum's own inability to hold two
-    /// variants at once.
+    /// Property 4: nothing is two things. Every body's `root_node` must be a lake root and
+    /// never a mouth -- checked against that independent ground truth, not merely against
+    /// `BodyKind` having no variant left to hold a mouth under.
     #[test]
-    fn no_body_is_two_kinds_at_once() {
+    fn every_body_is_a_lake_root_never_a_mouth() {
         let mut graph = real_graph(SEED);
         let basins = fill_and_resolve_water(&mut graph, 5.0e9);
         let manifest = water_manifest_from_graph(&graph, &basins);
@@ -3056,11 +3164,9 @@ mod tests {
                  own validate() already refuses a graph where it is both or neither",
                 found.root_node,
             );
+            assert!(is_lake_root, "every body's root must be a lake root: root {}", found.root_node);
             match found.kind {
-                BodyKind::Ocean => assert!(is_mouth, "an Ocean body's root must be a mouth"),
-                BodyKind::Lake | BodyKind::Pond => {
-                    assert!(is_lake_root, "a Lake/Pond body's root must be a lake root")
-                }
+                BodyKind::Lake | BodyKind::Pond => {}
             }
         }
     }
@@ -3161,9 +3267,86 @@ mod tests {
         assert_eq!(pond.extent.min_longitude_deg, 0.0);
         assert_eq!(pond.extent.max_longitude_deg, 0.0);
 
-        let ocean = manifest.bodies.iter().find(|b| b.root_node == 2).expect("the mouth must appear");
-        assert_eq!(ocean.kind, BodyKind::Ocean);
-        assert_eq!(ocean.level_m, -50.0);
+        // Node 2 is the mouth (BOUNDARY at -100.0 <= sea_level_m -50.0). Review round
+        // (Finding 1): the sea is never enumerated as a body, so it must not appear here at
+        // all, and `sea_level_m` alone carries its datum.
+        assert!(
+            manifest.bodies.iter().all(|b| b.root_node != 2),
+            "the mouth (root 2) must not appear in `bodies` -- the sea is the mapping's \
+             fallback, never a row in it"
+        );
+        assert_eq!(manifest.sea_level_m, -50.0);
+    }
+
+    /// Review round (Finding 2): the antimeridian is reachable at real generator scale, not
+    /// only a possibility to reason about away in a doc comment (6 of 171 lake bodies at
+    /// n = 30,000 nodes; 8 of 799 at n = 100,000), so it needs its own fixture rather than a
+    /// paragraph asserting it unreachable. This lake's two underwater members sit 0.2 degrees
+    /// apart on the actual planet -- one at 179.9, one at -179.8 -- but on opposite sides of
+    /// the +/-180 seam. A plain min/max over raw longitudes would report a ~359.7-degree box,
+    /// almost the entire planet, for a lake that is in truth a sliver; the fix
+    /// (`smallest_enclosing_longitude_arc`) must report the narrow arc instead.
+    #[test]
+    fn a_lake_straddling_the_antimeridian_gets_the_narrow_arc_not_the_globe_spanning_one() {
+        let positions = vec![
+            SpherePoint::from_latlon(0.0, 179.9),
+            SpherePoint::from_latlon(0.0, -179.8),
+            SpherePoint::from_latlon(0.0, 0.0),
+        ];
+        let heights = vec![0.0, 3.0, -100.0];
+        let areas = vec![1.0e9; 3];
+        // Node 1's downhill target is 0 (height drop 3.0, the only candidate in its list).
+        // Node 2 (the mouth) names node 1 in its own raw list: node 1 is *higher* than node 2,
+        // so that drop is negative and never becomes a downhill candidate for node 2 (it stays
+        // a root), but it does give `symmetric_adjacency` the 1--2 rim edge this lake's spill
+        // depends on -- the one-directional trick `a_pond_appears_when_a_hand_built_fixture_
+        // makes_one` uses, reused for the same reason. That rim edge sets the spill (and so
+        // the level) to max(3.0, -100.0) = 3.0, which is exactly node 1's own height, so both
+        // members end up underwater and both longitudes must enter the extent.
+        let neighbours = vec![vec![], vec![0], vec![1]];
+        let params = BuildParams {
+            world_seed: 11,
+            radius_m: EARTH_RADIUS_M,
+            sea_level_m: -50.0, // node 2 (-100.0) is BOUNDARY; nodes 0-1 (0.0, 3.0) are LAND.
+            sampling_kind: crate::stream::SamplingKind::Supplied,
+            pond_max_surface_area_m2: 1.0,
+        };
+        let mut graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)
+            .expect("the antimeridian fixture builds a valid graph");
+        assert_eq!(graph.roots(), vec![0, 2], "fixture drifted: expected roots at 0 and 2");
+
+        let basins = basins_of(&graph);
+        let symmetric = symmetric_adjacency(&neighbours);
+        let filled = fill_lakes(&graph, &basins, &symmetric);
+        apply_levels(&mut graph, &filled);
+        assert_eq!(
+            graph.lake_at(0).expect("lake root 0").level_m,
+            3.0,
+            "fixture drifted: the only crossing out of {{0,1}} is 1--2, max(3.0, -100.0) = 3.0"
+        );
+
+        let manifest = water_manifest(&graph, &basins, &positions);
+        let lake = manifest.bodies.iter().find(|b| b.root_node == 0).expect("the lake must appear");
+
+        assert_eq!(lake.extent.min_latitude_deg, 0.0);
+        assert_eq!(lake.extent.max_latitude_deg, 0.0);
+        assert_eq!(
+            lake.extent.min_longitude_deg, 179.9,
+            "the minimal arc starts just past the widest gap, at this lake's own higher-side \
+             member -- not at -179.8, which is what a plain min() over raw longitudes would \
+             have picked"
+        );
+        assert_eq!(
+            lake.extent.max_longitude_deg, -179.8,
+            "the minimal arc ends at this lake's lower-side member after wrapping through the \
+             seam -- not at 179.9, which is what a plain max() would have picked"
+        );
+        assert!(
+            lake.extent.min_longitude_deg > lake.extent.max_longitude_deg,
+            "a seam-crossing extent must report min > max, exactly the convention `Extent`'s \
+             own doc comment names, so a naive `min <= max` reader cannot mistake this for an \
+             ordinary (and here wildly wrong) 359.7-degree box"
+        );
     }
 }
 
