@@ -132,6 +132,38 @@
 
 import { metresPerDegree } from "./terrain.js";
 
+/// The cool-to-warm shading axis, applied as a multiplier on top of the shade fraction.
+///
+/// `COOL` is skylight -- what reaches ground turned away from the sun -- and is blue-biased.
+/// `WARM` is the direct beam and is yellow-biased. Both are within 10% of neutral so the
+/// effect reads as light rather than as a filter, and their product with `shade` is clamped
+/// because `WARM` is above 1.0 on the red and green channels by design: sunlit ground should
+/// be allowed to brighten, not only to darken.
+export const COOL = [0.90, 0.94, 1.06];
+export const WARM = [1.08, 1.05, 0.96];
+
+/// The per-channel multiplier a given shade fraction contributes, as `[r, g, b]`.
+///
+/// Exported because two tests measure a lit/unlit ratio per channel and compare it to the
+/// flat-ground shade. Before this axis existed that ratio was one scalar for all three
+/// channels; now it is not, and those tests DIVIDE THIS OUT rather than widen their bound.
+/// Exporting it keeps them exact -- a test that loosened its tolerance to absorb a real
+/// change would stop being able to see the thing it was written to see.
+export function shadeTint(shade) {
+  return [
+    COOL[0] + (WARM[0] - COOL[0]) * shade,
+    COOL[1] + (WARM[1] - COOL[1]) * shade,
+    COOL[2] + (WARM[2] - COOL[2]) * shade,
+  ];
+}
+
+/// Channel clamp. `WARM` can push a bright texel past 255, and an unclamped write to a
+/// `Uint8ClampedArray` would silently wrap rather than saturate on some paths.
+function clamp255(v) {
+  if (!(v > 0)) return 0;
+  return v > 255 ? 255 : v;
+}
+
 /// Hillshade default, matching every mainstream GIS tool's default (see the sun-direction
 /// note above).
 export const DEFAULT_SUN_AZIMUTH_DEG = 315;
@@ -421,10 +453,27 @@ export function reliefTile({
 
       const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg);
 
+      // **Shade is a COLOUR, not a brightness**, and this is the largest single change
+      // between a relief map and a photograph.
+      //
+      // Multiplying all three channels equally -- which this file did until now -- says
+      // shadowed ground is the same colour as lit ground, only darker. It is not. Ground
+      // turned away from the sun is lit by SKYLIGHT, which is blue; ground facing the sun
+      // gets the direct beam, which is warm. That is ordinary outdoor optics and every
+      // landscape photograph shows it.
+      //
+      // So the shade term drives a lerp along a cool-to-warm axis instead of scaling
+      // luminance. The endpoints are close to neutral on purpose: this should read as air
+      // and sunlight, not as a colour cast. Confirmed as the same technique a shipped
+      // satellite-texture renderer uses (Azgaar's FMG, MIT); the values here are ours and
+      // are deliberately gentler than a 2D map's, because a globe already carries
+      // atmospheric colour of its own at the limb.
+      const [tr, tg, tb] = shadeTint(shade);
+
       const idx = (row * size + col) * 4;
-      data[idx] = r * shade;
-      data[idx + 1] = gr * shade;
-      data[idx + 2] = b * shade;
+      data[idx] = clamp255(r * shade * tr);
+      data[idx + 1] = clamp255(gr * shade * tg);
+      data[idx + 2] = clamp255(b * shade * tb);
       data[idx + 3] = 255;
     }
   }

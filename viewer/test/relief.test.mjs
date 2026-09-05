@@ -39,6 +39,7 @@ import {
   SNOW_COLOR,
   SNOW_LINE_EQUATOR_M,
   SNOW_LINE_ZERO_LAT_DEG,
+  shadeTint,
   Z_FACTOR,
 } from "../public/app/relief.js";
 
@@ -282,6 +283,11 @@ test("central differences use margin, not one-sided edge differences: interior r
 /// straight up. Derived from the module's own constants rather than restated, so it tracks
 /// them if either moves.
 const FLAT_SHADE = AMBIENT + (1 - AMBIENT) * DEFAULT_SUN.up;
+// The cool-to-warm axis makes the lit/unlit ratio per-CHANNEL rather than one scalar. These
+// two constants let the assertions below divide it out and keep comparing against
+// `FLAT_SHADE` exactly, instead of widening a bound to absorb a real change.
+const FLAT_TINT = shadeTint(FLAT_SHADE);
+const UNLIT_TINT = shadeTint(1);
 
 /// The land point with the most **local relief** on `DEFAULT_WORLD`, found once and memoised.
 ///
@@ -343,7 +349,13 @@ function shadeFactor({ rectangle, level, size = 256, zFactor }) {
     for (let c = 0; c < 3; c += 1) {
       const denominator = flat.data[i * 4 + c];
       if (denominator < 8) continue;
-      const ratio = lit.data[i * 4 + c] / denominator;
+      // The cool-to-warm axis is divided out on BOTH sides, per channel, so this ratio
+      // still measures shading alone. `flat` is rendered at ambient 1 and therefore carries
+      // `shadeTint(1)`; the lit side's own tint depends on its shade, so it is recovered
+      // from the ratio by one fixed-point step -- the tint varies by under 10% across the
+      // whole shade range, so one step is far inside the 0.02 bound this feeds.
+      const raw = (lit.data[i * 4 + c] / denominator) * UNLIT_TINT[c];
+      const ratio = raw / shadeTint(raw)[c];
       n += 1;
       sum += ratio;
       sumSq += ratio * ratio;
@@ -457,7 +469,10 @@ test("water is lit as the flat plane it is, not as its own seabed", () => {
       // Compared in BYTES, not in ratio. Deep water's blue is around 35, so one unit of
       // `Uint8ClampedArray` rounding is 0.029 of the ratio -- three times any tolerance worth
       // asserting, and it would look exactly like a real shading leak.
-      worst = Math.max(worst, Math.abs(lit.data[i * 4 + 2] - denominator * FLAT_SHADE));
+      // `unlit` is rendered at ambient 1, so its own tint is `shadeTint(1)`; dividing that
+      // out recovers the untinted colour before applying the flat-ground expectation.
+      const base = denominator / UNLIT_TINT[2];
+      worst = Math.max(worst, Math.abs(lit.data[i * 4 + 2] - base * FLAT_SHADE * FLAT_TINT[2]));
     }
   }
   assert.ok(waterTexels > 500, `only ${waterTexels} of ${size * size} texels were under water`);
