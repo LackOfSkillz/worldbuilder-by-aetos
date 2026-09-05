@@ -14,6 +14,7 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
     src/sphere.rs    SpherePoint
     src/noise.rs     Noise: 64-bit lattice hash, trilinear sample, fBm
     src/tangent.rs   TangentFrame: at, local_to_sphere, sphere_to_local
+    src/continentality.rs  Continentality: at, calibration, above_shore, base_elevation, gradient
     src/bindings.rs  the PyO3 surface, conversion only
 
 The Python in `worldbuilder/` is still the reference implementation and is unchanged.
@@ -156,6 +157,57 @@ function is exactly how it would silently stop being bit-exact.
 ported, which unblocks `Continentality`, whose `gradient` method walks geodesics through a
 tangent frame.
 
+**`Continentality` splits one strict function from four bounded ones.** `at` is held
+strictly: it is `Noise::fbm` wired straight through and nothing else, so it inherits
+`Noise`'s no-transcendental strict contract rather than earning a bound of its own, and it
+agrees with the Python exactly, 0 ULP, across the corpus. `calibration`, `above_shore`,
+`base_elevation`, and `gradient` are all bounded, because each puts a transcendental in
+its path that `at` does not: `calibration` runs a Fibonacci spiral through `cos`, `sin`,
+and `sqrt` to place its sample points; `above_shore` reads the stored calibration, so it
+inherits that bound; `gradient` reads neither `shore` nor `spread` and is bounded solely
+because it walks a `TangentFrame`; `base_elevation` calls
+`powf` to shape the curve between shore and each extreme. Measured results: `at` exact at
+0 ULP; `above_shore` 0 ULP; `gradient` 0 ULP; `base_elevation` 2 ULP, from `powf`;
+calibration 71 of 72 sampled (seed, land_fraction) pairs exact, with one -- `shore` at
+seed `2**63 - 1`, land_fraction 0.95 -- at 2 ULP.
+
+**The calibration is close, not exact -- say so plainly.** An earlier report in this slice
+described the calibration as an exact match; that was a different claim from what the
+conformance test actually asserts, and the measurement above is what settles it: 71 of 72
+sampled pairs land at 0 ULP, one lands at 2 ULP, and the module as a whole is bounded, not
+strict. This is worth stating without hedging because it is the second time in this
+project that a "matched" has been recorded where a number belonged -- the first cost a
+session tracking down which of two reviewers' blessed constants was wrong (see the FNV
+prime story below). Recording the actual figure here instead of the flattering rounding is
+the cheap way to not pay for that mistake a third time.
+
+**The first module with generated-and-stored state, and the first whose output depends on
+a sort.** Every earlier ported function computes its result directly from its inputs.
+`Continentality::calibration` instead draws `CALIBRATION_SAMPLES` (4,000) points along a
+Fibonacci spiral, evaluates `at` on each, sorts the results, and reads off the `shore` and
+`spread` percentiles the rest of the module depends on. A few-ULP difference between the
+Rust and Python spiral values is expected and harmless on its own -- but sorting means a
+value close enough to a neighbour could in principle land on the other side of it, picking
+a different array slot entirely, which would be a reordered sort masquerading as arithmetic
+drift. `test_continentality_calibration_agreement_is_far_tighter_than_the_sort_gap`
+guards against exactly that: it reproduces the spiral independently in Python, measures the
+gap to the nearest neighbour at the `shore` and `spread` indices, and asserts the observed
+Rust/Python difference is far smaller than that gap -- checked both at the pair that agreed
+exactly (seed 12345, land_fraction 0.29) and at the one pair the wider sweep actually found
+diverging (seed `2**63 - 1`, land_fraction 0.95, where `shore` differs by 2 ULP). At that
+divergent pair the measured difference is on the order of 1e-16 against a neighbour gap of
+roughly 2e-4 -- more than eleven orders of magnitude apart. The smallest gap found anywhere
+in the full sorted sample, on the default seed, is 4.6e-9 -- itself about nine orders of
+magnitude above a ULP at these magnitudes -- which is what protects the sort: a future
+divergence anywhere near that size would mean a sample crossed a neighbour and the sort
+picked a different index, not that a transcendental rounded differently.
+
+**Calibration's cost.** Because it is computed once and cached rather than on every
+lookup, spending more per call than `at` is affordable: the calibration runs in about
+2.9 ms in Rust against roughly 30 ms for the Python -- both driven by the same 4,000-point
+spiral and sort, so the gap is call-overhead and interpreter cost, not a different
+algorithm.
+
 Skips the whole file if `worldbuilder_engine` is not built, so the Python suite still runs
 on a machine with no Rust -- except when `WORLDBUILDER_REQUIRE_ENGINE` is set to anything
 non-empty, in which case a missing or stale engine fails the session instead of skipping
@@ -166,7 +218,7 @@ Run it with:
 
     python -m pytest tests/test_conformance.py -v
 
-261 Python tests and 46 crate tests pass in the full suite. The harness includes a test
+268 Python tests and 58 crate tests pass in the full suite. The harness includes a test
 asserting that `same` can distinguish a one-bit difference and a test asserting that
 `close_enough` rejects a difference past the ULP bound, because a conformance suite that
 cannot fail proves nothing.

@@ -526,3 +526,210 @@ def test_the_projection_error_table_reproduces():
         )
         for w, g in zip(back_py, back_rs):
             assert close_enough(w, g), f"round trip at {metres} m: {w!r} vs {g!r}"
+
+
+# ---------------------------------------------------------------------------
+# Continentality
+#
+# Two things a plausibility-check unit test cannot establish on its own, which this
+# section exists to nail down:
+#
+#   1. The gradient's AXES. `the_gradient_points_uphill` (the Rust unit test) cannot
+#      reliably catch a transposed east/north pair: a transposition is a 90-degree
+#      rotation, and any direction within +/-90 degrees of true uphill still increases
+#      a smooth field to first order, so a rotated gradient often passes at a single
+#      point anyway. Only comparing against the Python, component by component, pins
+#      the axes down.
+#
+#   2. Whether the calibration matches BIT-FOR-BIT or merely closely. The Rust unit
+#      test asserts `< 1e-12`, which is a tolerance, not a proof of exactness. The
+#      calibration spiral runs every sample through cos, sin and sqrt, whose
+#      implementations differ between the pure-Rust `libm` crate and CPython's
+#      platform libm (see MAX_TRANSCENDENTAL_ULPS above), so the sampled *points* are
+#      expected to differ by a few ULP. Whether that propagates into the selected
+#      quantile *values* is what the calibration tests below actually measure.
+#
+# Contract, per code path (mirrors the TangentFrame split above):
+#
+#   at()              is Noise.fbm and nothing else -- Noise already has a passing
+#                     STRICT conformance suite, so this must also be strict. A strict
+#                     failure here is a real defect, most likely in the fbm argument
+#                     wiring, not grounds for loosening the bound.
+#   calibration       (shore, spread) -- bounded, because the spiral uses cos/sin/sqrt.
+#   above_shore       inherits its bound from shore.
+#   base_elevation    bounded -- powf.
+#   gradient          bounded -- TangentFrame projections.
+# ---------------------------------------------------------------------------
+
+from worldbuilder.terrain.continentality import Continentality as PyContinentality
+from worldbuilder.terrain.continentality import LAND_FRACTION as PY_LAND_FRACTION
+
+CONTINENTALITY_SEED = 12345
+
+
+def continentality_corpus(count=1500):
+    """Points on (or extremely near) the unit sphere -- gradient and base_elevation
+    both assume a genuine sphere point, unlike raw fbm which does not care."""
+    yield SpherePoint.from_latlon(90.0, 0.0)
+    yield SpherePoint.from_latlon(-90.0, 0.0)
+    yield SpherePoint.from_latlon(0.0, 0.0)
+    yield SpherePoint.from_latlon(0.0, 180.0)
+    for x, y, z in corpus(count):
+        yield SpherePoint(Vec3(x, y, z).normalised())
+
+
+def test_continentality_at_agrees_exactly():
+    """Strict: `at` is Noise.fbm wired straight through, and Noise already agrees
+    bit-for-bit. A failure here means the fbm arguments (frequency, octaves, gain,
+    lacunarity, or the point itself) are wired differently than the Python, not that
+    the bound needs loosening."""
+    py = PyContinentality(CONTINENTALITY_SEED, EARTH_RADIUS_M, PY_LAND_FRACTION)
+    for point in continentality_corpus():
+        v = point.vector
+        want = py.at(point)
+        got = engine.continentality_at(CONTINENTALITY_SEED, PY_LAND_FRACTION, v.x, v.y, v.z)
+        assert same(want, got), f"at({v.x},{v.y},{v.z}): {want!r} vs {got!r}"
+
+
+def test_continentality_calibration_agrees_within_bound_across_seeds_and_land_fractions():
+    """The calibration pair, for several seeds and several land fractions. Bounded,
+    not strict: the spiral that produces it runs through cos, sin and sqrt."""
+    for seed in (0, 1, 12345, 99999, 2**31, 2**63 - 1):
+        for land_fraction in (0.05, 0.2, PY_LAND_FRACTION, 0.5, 0.71, 0.95):
+            py = PyContinentality(seed, EARTH_RADIUS_M, land_fraction)
+            want = (py._shore, py._spread)
+            got = engine.continentality_calibration(seed, land_fraction)
+            for label, w, g in zip(("shore", "spread"), want, got):
+                assert close_enough(w, g), (
+                    f"seed={seed} land_fraction={land_fraction} {label}: "
+                    f"{w!r} vs {g!r}, {ulps_apart(w, g)} ULP"
+                )
+
+
+def test_continentality_above_shore_agrees_within_bound():
+    py = PyContinentality(CONTINENTALITY_SEED, EARTH_RADIUS_M, PY_LAND_FRACTION)
+    for point in continentality_corpus():
+        v = point.vector
+        want = py.above_shore(point)
+        got = engine.continentality_above_shore(
+            CONTINENTALITY_SEED, PY_LAND_FRACTION, v.x, v.y, v.z
+        )
+        assert close_enough(want, got), (
+            f"above_shore({v.x},{v.y},{v.z}): {want!r} vs {got!r}, {ulps_apart(want, got)} ULP"
+        )
+
+
+def test_continentality_base_elevation_agrees_within_bound():
+    py = PyContinentality(CONTINENTALITY_SEED, EARTH_RADIUS_M, PY_LAND_FRACTION)
+    for point in continentality_corpus():
+        v = point.vector
+        want = py.base_elevation(point)
+        got = engine.continentality_base_elevation(
+            CONTINENTALITY_SEED, PY_LAND_FRACTION, v.x, v.y, v.z
+        )
+        assert close_enough(want, got), (
+            f"base_elevation({v.x},{v.y},{v.z}): {want!r} vs {got!r}, {ulps_apart(want, got)} ULP"
+        )
+
+
+def test_continentality_gradient_agrees_within_bound():
+    py = PyContinentality(CONTINENTALITY_SEED, EARTH_RADIUS_M, PY_LAND_FRACTION)
+    for point in continentality_corpus():
+        v = point.vector
+        want = py.gradient(point)
+        got_east, got_north = engine.continentality_gradient(
+            CONTINENTALITY_SEED, PY_LAND_FRACTION, EARTH_RADIUS_M, v.x, v.y, v.z
+        )
+        for label, w, g in zip(("east", "north"), (want.east, want.north), (got_east, got_north)):
+            assert close_enough(w, g), (
+                f"gradient({v.x},{v.y},{v.z}) {label}: {w!r} vs {g!r}, {ulps_apart(w, g)} ULP"
+            )
+
+
+def test_continentality_gradient_agrees_at_the_poles():
+    """`gradient` builds a tangent frame at the point it is called on, and a frame at
+    the poles takes a fallback path the ordinary corpus above brushes past almost by
+    accident. Pin it down explicitly."""
+    py = PyContinentality(CONTINENTALITY_SEED, EARTH_RADIUS_M, PY_LAND_FRACTION)
+    for lat, lon in [(90.0, 0.0), (-90.0, 0.0), (90.0, 37.0), (-90.0, -113.0)]:
+        point = SpherePoint.from_latlon(lat, lon)
+        v = point.vector
+        want = py.gradient(point)
+        got_east, got_north = engine.continentality_gradient(
+            CONTINENTALITY_SEED, PY_LAND_FRACTION, EARTH_RADIUS_M, v.x, v.y, v.z
+        )
+        for label, w, g in zip(("east", "north"), (want.east, want.north), (got_east, got_north)):
+            assert close_enough(w, g), (
+                f"gradient at pole ({lat},{lon}) {label}: {w!r} vs {g!r}, {ulps_apart(w, g)} ULP"
+            )
+
+
+def test_continentality_calibration_agreement_is_far_tighter_than_the_sort_gap():
+    """
+    Whether the calibration matches bit-for-bit or merely closely is genuinely open
+    going in: the spiral's sample points are expected to differ from Python's by a few
+    ULP (cos/sin/sqrt are not bit-identical between libm and CPython's platform libm),
+    but whether that survives being sorted and indexed into a quantile is a separate
+    question -- a few-ULP difference in the *values themselves* could in principle
+    tip a value across its neighbour in the sort and select a different array slot
+    entirely, which would be a reordered sort, not arithmetic drift, and would show up
+    as a divergence far larger than a few ULP.
+
+    This measures the actual local gap between neighbouring sorted samples at the
+    shore and spread indices (by reproducing the calibration spiral independently in
+    Python) and asserts that the measured Rust/Python agreement is a small fraction of
+    that gap, not merely under some fixed constant. The gap itself is expected to be on
+    the order of 1e-9 -- far above the calibration's own ULP-level agreement, and far
+    below anything that would matter to the elevation curve -- so a future divergence
+    anywhere near that gap's size would mean a sample landed on the other side of a
+    neighbour and the sort picked a different index, not that arithmetic drifted.
+    """
+    # The calibration pair that agreed exactly (0 ULP) and the one pair the wider
+    # sweep above actually found diverging (shore differs by 2 ULP: Python
+    # -0.3543061605914575 vs Rust -0.3543061605914576). Checking only the exact
+    # pair would make the "not a reordered sort" conclusion an extrapolation from
+    # a case with nothing to explain -- the divergent pair is the one that needs
+    # the gap measured against it.
+    for seed, land_fraction in (
+        (CONTINENTALITY_SEED, PY_LAND_FRACTION),
+        (2**63 - 1, 0.95),
+    ):
+        py = PyContinentality(seed, EARTH_RADIUS_M, land_fraction)
+
+        golden = math.pi * (3.0 - math.sqrt(5.0))
+        n = 4000
+        values = []
+        for index in range(n):
+            z = 1.0 - 2.0 * (index + 0.5) / n
+            ring = math.sqrt(max(0.0, 1.0 - z * z))
+            angle = golden * index
+            point = SpherePoint(Vec3(math.cos(angle) * ring, math.sin(angle) * ring, z))
+            values.append(py.at(point))
+        values.sort()
+
+        shore_index = int((1.0 - land_fraction) * (n - 1))
+        spread_index = int(0.84 * (n - 1))
+
+        def neighbour_gap(i):
+            gaps = []
+            if i > 0:
+                gaps.append(abs(values[i] - values[i - 1]))
+            if i < n - 1:
+                gaps.append(abs(values[i + 1] - values[i]))
+            return min(gaps)
+
+        shore_gap = neighbour_gap(shore_index)
+        spread_gap = neighbour_gap(spread_index)
+
+        got_shore, got_spread = engine.continentality_calibration(seed, land_fraction)
+        shore_diff = abs(py._shore - got_shore)
+        spread_diff = abs(py._spread - got_spread)
+
+        assert shore_diff < shore_gap / 100, (
+            f"seed={seed} land_fraction={land_fraction} shore diff {shore_diff!r} "
+            f"is not far below the neighbour gap {shore_gap!r}"
+        )
+        assert spread_diff < spread_gap / 100, (
+            f"seed={seed} land_fraction={land_fraction} spread diff {spread_diff!r} "
+            f"is not far below the neighbour gap {spread_gap!r}"
+        )
