@@ -133,4 +133,21 @@ fn main() {
     {
         println!("cargo:rerun-if-changed={}", input.full.display());
     }
+
+    // Naming the files individually covers a CHANGED input and misses an ADDED one. A file
+    // appearing under any of the three walked directories is a new fingerprint input, but it
+    // is not on the watch list precisely because it did not exist when the list was built, so
+    // Cargo replays the cached output and the digest silently stays at its old value while
+    // the node script would already have moved. Demonstrated by adding `src/reviewer_probe.txt`:
+    // the rebuild finished in 0.04 s with the digest and the input count both unmoved.
+    //
+    // Watching the directories themselves closes it -- a directory's mtime moves when an
+    // entry is created or removed, which is exactly the event the file list cannot see. Both
+    // forms are needed: directories alone would miss an edit that does not touch the mtime.
+    for dir in ["src", "examples", "tests"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join("crates").join("worldbuilder-engine").join(dir).display()
+        );
+    }
 }
