@@ -12,6 +12,7 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
     src/detmath.rs   the only place a transcendental is called
     src/vectors.rs   Vec3
     src/sphere.rs    SpherePoint
+    src/noise.rs     Noise: 64-bit lattice hash, trilinear sample, fBm
     src/bindings.rs  the PyO3 surface, conversion only
 
 The Python in `worldbuilder/` is still the reference implementation and is unchanged.
@@ -75,6 +76,27 @@ worst-ULP-per-function, asserts zero unmeasurable comparisons (NaN, infinity, or
 sign-straddle) for each, and names the function in its failure message so a regression
 says which one moved.
 
+**Strict, bit-for-bit, for `Noise` too -- no ULP bound anywhere in it.** `noise_at` and
+`noise_fbm` are held to the strict contract in full, the same one `Vec3` gets, not the
+4-ULP bound `sphere.rs` needs. That is not an oversight: `Noise` contains no
+transcendentals at all. Its lattice hash is 64-bit integer arithmetic, cell selection is
+a floor, and interpolation is a smoothstep built from multiplies and adds -- nothing that
+routes through `sin`, `cos`, or any other platform-dependent function. There is no
+libm-versus-libm discrepancy for it to absorb, so no tolerance is warranted, and if a
+future change to this module ever seems to need one, that is a sign something in the port
+is wrong, not a sign the standard is wrong. The noise conformance tests make roughly
+15,075 individual bit-for-bit comparisons.
+
+**The cache is gone, deliberately.** `worldbuilder/terrain/noise.py` memoises each cell's
+eight lattice corners in a dict, because its own comment records 2.9 million such calls in
+a single chart redraw -- at that volume, the cost of a Python-level function call exceeds
+the cost of the arithmetic it would otherwise avoid. `noise.rs` does not carry that cache
+forward. The memoised value is a pure function of three integers and a seed; recomputing
+it returns exactly what the cache would have returned, and Rust's per-call cost does not
+carry the same penalty that motivated the Python's dict in the first place. Dropping it
+also makes `Noise` immutable and `Sync`, which both the WebAssembly build and any future
+parallel bake want and which a cache would have complicated.
+
 **What this means for generator identity.** The Rust core is not a bit-exact
 reimplementation of the Python; it is a new generator version under VERSION-001. Mark
 1's measured world figures describe the Python generator and will need re-measuring once
@@ -86,11 +108,55 @@ Windows versus Linux. This has not been measured -- it would require running the
 suite on Linux and comparing against a Windows run -- so treat it as a hypothesis, not a
 finding.
 
+Skips the whole file if `worldbuilder_engine` is not built, so the Python suite still runs
+on a machine with no Rust -- except when `WORLDBUILDER_REQUIRE_ENGINE` is set to anything
+non-empty, in which case a missing or stale engine fails the session instead of skipping
+it. Set that variable in CI, where a silent skip would report green while comparing
+nothing.
+
 Run it with:
 
     python -m pytest tests/test_conformance.py -v
 
-252 tests pass in the full suite (240 pre-existing plus 12 conformance tests). The
-harness includes a test asserting that `same` can distinguish a one-bit difference and a
-test asserting that `close_enough` rejects a difference past the ULP bound, because a
-conformance suite that cannot fail proves nothing.
+256 Python tests and 34 crate tests pass in the full suite. The harness includes a test
+asserting that `same` can distinguish a one-bit difference and a test asserting that
+`close_enough` rejects a difference past the ULP bound, because a conformance suite that
+cannot fail proves nothing.
+
+## Constants transcribed from Python: a rule learned the hard way
+
+The noise port's seed multiplier -- the FNV-1a 64-bit prime, `0x100000001B3` in the
+Python -- was transcribed into the plan as `0x0000_0001_0000_01B3`. Grouping the hex
+digits into underscored nibbles moved a digit and silently produced a different number:
+4,294,967,731 instead of 1,099,511,628,211. An implementer checked that constant against
+the plan and confirmed it was right. A reviewer checked it independently and confirmed it
+was right. Both were looking at the wrong number and agreed with each other about it.
+Only running the conformance suite against the Python -- comparing actual output, not the
+literal -- caught the discrepancy.
+
+Two rules follow from this, for every future module port:
+
+1. **Transcribe constants without underscore separators, character-identical to their
+   Python source.** `0x100000001B3`, not `0x0000_0001_0000_01B3`. A separator that groups
+   digits differently than the source is itself a transcription error waiting to happen,
+   and a literal that matches the Python character-for-character can be compared by eye
+   without doing arithmetic in your head.
+2. **Constants are verified by conformance, never by review -- but only for the path the
+   corpus actually reaches.** Do not ask a reviewer to certify a hex or decimal literal by
+   reading it next to another one -- two people did exactly that here and both blessed the
+   wrong value, because eyeballing a long constant is a task human review is bad at, not a
+   matter of carelessness. The conformance harness compares computed output against the
+   Python end to end, which exercises every constant in the path whether or not anyone
+   thought to check it by hand. That is what caught this one after two reviews had already
+   passed it. `Noise`'s eight constants all sit on its one unconditional hot path, so any
+   corpus that calls `at` or `fbm` at all reaches every one of them -- that is what makes
+   conformance a complete substitute for review here. That guarantee does not carry over to
+   a constant reached only conditionally -- a per-biome coefficient, a threshold crossed
+   only above some latitude, one row of a lookup table -- because conformance only verifies
+   what the corpus happens to hit. For a constant like that, either show that the corpus
+   exercises the branch it lives on, or give it its own test pinning it against the
+   Python's value, the way `the_seed_multiplier_is_the_fnv_prime` now pins this module's
+   multiplier by observing `Noise::new`'s effect rather than restating the literal. This
+   matters most for the modules still to be ported -- continentality, tectonics, and the
+   shelf all carry far more constants than this one, and far more of them sit behind a
+   branch.

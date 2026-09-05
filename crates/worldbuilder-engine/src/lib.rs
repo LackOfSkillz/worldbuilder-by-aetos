@@ -9,6 +9,7 @@ pub mod detmath;
 pub mod vectors;
 pub mod sphere;
 pub mod bindings;
+pub mod noise;
 
 use pyo3::prelude::*;
 
@@ -28,5 +29,7 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bindings::sphere_to_latlon, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::sphere_angle_to, m)?)?;
     m.add_function(wrap_pyfunction!(bindings::sphere_distance_to, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::noise_at, m)?)?;
+    m.add_function(wrap_pyfunction!(bindings::noise_fbm, m)?)?;
     Ok(())
 }
