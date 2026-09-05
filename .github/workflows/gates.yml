@@ -321,9 +321,11 @@ jobs:
       # THE COUNT GATE, python half. The step above asks "did anything fail". It cannot ask
       # "did anything RUN", and on THIS suite that distinction has already cost a slice:
       # with WORLDBUILDER_REQUIRE_ENGINE unset and no engine built, tests/test_conformance.py
-      # skips AT IMPORT, all 156 of its comparisons collapse into one `1 skipped`, and pytest
-      # exits 0 reporting `240 passed, 1 skipped`. Green, having compared nothing. Nobody
-      # scanning that log finds a suspicious number, because there isn't one.
+      # skips AT IMPORT, all 156 of its tests (150 conformance comparisons plus 6 guard
+      # unit tests Task 4 added) collapse into one `1 skipped`, and pytest exits 0
+      # reporting `241 passed, 1 skipped` (240 in the other thirteen pre-existing files
+      # plus the 1 test_installation.py Task 1 added). Green, having compared nothing.
+      # Nobody scanning that log finds a suspicious number, because there isn't one.
       #
       # So the size is asserted, per file and in total, from two independently-produced
       # statements that must agree -- and the script fails hard if either is absent, rather

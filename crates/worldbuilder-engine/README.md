@@ -157,7 +157,7 @@ refuses to report at all when it returns problems. It imports rather than reimpl
 because two copies of a provenance rule drift, and the copy that drifts is the one that
 stops refusing.
 
-The fingerprint covers **28 inputs**: every file under `src/`, `examples/` and `tests/`
+The fingerprint covers **29 inputs**: every file under `src/`, `examples/` and `tests/`
 recursively, this crate's `Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`, the
 `rustc -vV` release, commit hash and host, and the literal cargo argument list. It is
 deliberately over-inclusive -- `bindings.rs` cannot affect a `--features wasm` build and will
@@ -172,6 +172,17 @@ reported the artifact current while parity reported zero divergent. Neither dire
 a byte of the `.wasm`, which is precisely why they were missing and precisely why they now
 count: the fingerprint is a claim about the tree the artifact was blessed in, and the corpus
 and the integration tests are part of what makes the blessing mean anything.
+
+**28 became 29 in the identity slice**, when `tests/build_fingerprint.rs` landed as a new
+file under one of the three walked directories -- adding a fingerprinted input is exactly as
+much a digest-moving event as editing one of the existing 28, which is why this number is
+re-derived here rather than left at 28. Re-run: `node viewer/scripts/build-wasm.mjs digest`
+(from `viewer/`) prints `fingerprint-inputs: 29` alongside the digest, and
+`worldbuilder_engine.source_fingerprint_inputs()` -- the PyO3 export the identity slice's
+Task 2 added -- returns the same `"29"` from the just-built extension. The two are meant to
+agree: see the top-level README's CI section for the gate that checks it and the ruling that
+allows this crate to compute the same digest twice, once in the Node build script and once
+in `build.rs`.
 
 **A consequence to plan for: touching a doc comment in `src/` invalidates the shipped
 artifact.** The fingerprint is over file content, not over anything semantic, so a one-line
@@ -2927,19 +2938,28 @@ ships regions.
 
 **Read from a run, never from a report.** There are **five** configurations to run, not
 three: the two feature flags are independent, and `wasm` adds a whole test file that the
-other three configurations never compile. Every number below is from a run of
-`cargo test -p worldbuilder-engine <flags>`, exit 0 in all five.
+other three configurations never compile. Every number below is re-derived for this report
+from `cargo test -p worldbuilder-engine <flags> -- --list` (listed, and separately
+`--list --ignored`), the same two-format cross-check `.github/scripts/assert_counts.py`
+applies in CI -- never from a `test result:` line, and never from an earlier report.
 
-| configuration | lib | `blake2_bytes.rs` | `no_std_math.rs` | `wasm_exports.rs` | total |
-|---|---|---|---|---|---|
-| `--no-default-features` | 399 | 4 | 6 | -- | **409** |
-| default (the same set -- the crate declares no default features) | 399 | 4 | 6 | -- | **409** |
-| `--features python` | 399 | 4 | 6 | -- | **409** |
-| `--features wasm` | 399 | 4 | 6 | 30 | **439** |
-| `--features python,wasm` | 399 | 4 | 6 | 30 | **439** |
+| configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
+|---|---|---|---|---|---|---|---|---|
+| `--no-default-features` | 404 | 4 | 9 | 6 | -- | 423 | 5 | **418** |
+| default (the same set -- the crate declares no default features) | 404 | 4 | 9 | 6 | -- | 423 | 5 | **418** |
+| `--features python` | 406 | 4 | 9 | 6 | -- | 425 | 5 | **420** |
+| `--features wasm` | 404 | 4 | 9 | 6 | 30 | 453 | 5 | **448** |
+| `--features python,wasm` | 406 | 4 | 9 | 6 | 30 | 455 | 5 | **450** |
 
-0 from the `streambench` bin target and 0 doc-tests in every configuration, plus 5
-`#[ignore]`d measurement tests that are compiled but not run.
+0 from the `streambench` bin target and 0 doc-tests in every configuration.
+
+**`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
+walking/hashing logic `build.rs` calls, none of them present when this table last read
+409/409/409/439/439. **The `python` rows are two higher in `lib` than their non-python
+neighbours** (406 vs 404) because `source_fingerprint()` and `source_fingerprint_inputs()`
+are PyO3 exports whose binding tests only compile with `--features python`. These five
+numbers are pinned verbatim in `.github/workflows/gates.yml`'s `engine` job matrix and
+asserted there by the same `assert_counts.py cargo-list` check, not merely quoted here.
 
 **Running only the first three is how a stale count survives.** This section said **405**
 (395 lib) for several commits and named only three configurations, so the 30 tests that
