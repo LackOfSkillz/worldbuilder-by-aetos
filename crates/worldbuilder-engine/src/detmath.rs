@@ -38,6 +38,13 @@ pub fn asin(x: f64) -> f64 {
     libm::asin(x)
 }
 
+/// Used by `erosion.rs`'s slope cap to compute `tan(30 degrees)` once, at startup, rather
+/// than comparing against an angle per edge (which would need `atan` per edge instead of a
+/// single division-free comparison against a precomputed slope threshold).
+pub fn tan(x: f64) -> f64 {
+    libm::tan(x)
+}
+
 pub fn tanh(x: f64) -> f64 {
     libm::tanh(x)
 }
@@ -72,6 +79,7 @@ mod tests {
         assert!(hypot(3.0, 4.0).is_finite());
         assert!(atan2(1.0, 2.0).is_finite());
         assert!(asin(0.5).is_finite());
+        assert!(tan(0.5).is_finite());
         assert!(tanh(0.5).is_finite());
         assert!(powf(2.0, 0.5).is_finite());
         assert!(floor(-2.3).is_finite());

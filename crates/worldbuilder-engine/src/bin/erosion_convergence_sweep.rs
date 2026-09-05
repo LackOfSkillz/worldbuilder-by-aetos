@@ -73,7 +73,7 @@
 //! `c` exists.
 
 use worldbuilder_engine::detmath;
-use worldbuilder_engine::erosion::{erode_to_convergence, receiver_distances_m, ErosionParams, ErosionRun};
+use worldbuilder_engine::erosion::{erode_to_convergence_with_clamp_counts, receiver_distances_m, ClampStats, ErosionParams, ErosionRun};
 use worldbuilder_engine::sphere::EARTH_RADIUS_M;
 use worldbuilder_engine::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use worldbuilder_engine::surface::Surface;
@@ -164,7 +164,15 @@ fn c_stats(pop: &Population, erodibility_per_yr: f64, timestep_yr: f64) -> (f64,
     (median, max)
 }
 
-fn run_one(pop: &Population, erodibility_per_yr: f64, threshold_m: f64) -> ErosionRun {
+/// Calls [`erode_to_convergence_with_clamp_counts`], never the plain `erode_to_convergence`
+/// wrapper -- Task 4 added a slope cap INSIDE this same loop (see `erosion.rs::erode_to_convergence`'s
+/// "The cap runs per-iteration, not once at the end" section), and a sweep whose whole point
+/// is measuring whether Task 3's counts moved cannot answer "did the cap ever fire" from the
+/// iteration count alone: a count that stayed the same is consistent with either "the cap
+/// never bound at this `(u, k)`" or "the cap bound but coincidentally left the count
+/// unchanged", and those are different findings. `ClampStats` (returned alongside the
+/// `ErosionRun`, printed by `print_row`) is what tells the two apart.
+fn run_one(pop: &Population, erodibility_per_yr: f64, threshold_m: f64) -> (ErosionRun, ClampStats) {
     let params = ErosionParams {
         uplift_m_per_yr: UPLIFT_M_PER_YR,
         erodibility_per_yr,
@@ -172,17 +180,23 @@ fn run_one(pop: &Population, erodibility_per_yr: f64, threshold_m: f64) -> Erosi
         max_height_change_per_step_m: threshold_m,
         max_iterations: MAX_ITERATIONS,
     };
-    erode_to_convergence(&pop.graph, &pop.heights, &pop.distances_m, &params)
+    erode_to_convergence_with_clamp_counts(&pop.graph, &pop.heights, &pop.distances_m, &params)
 }
 
-fn print_row(count: u32, label: &str, c_median: f64, c_max: f64, result: &ErosionRun) {
+fn print_row(count: u32, label: &str, c_median: f64, c_max: f64, result: &ErosionRun, clamps: &ClampStats) {
+    // "clamped: 0" is printed explicitly rather than left blank on a zero count -- a blank
+    // column and an omitted one look identical to a reader, and this project has already
+    // shipped more than one check where a zero that looked like agreement was actually "this
+    // never ran." Printing it unconditionally means a reader sees the zero, not the absence
+    // of a number.
+    let clamp_note = format!("clamped: {} edges over {} iterations", clamps.total_edges_clamped, clamps.iterations_with_a_clamp);
     match result {
         ErosionRun::Converged { iterations, .. } => {
-            println!("{count:>10}  {label:>14}  {c_median:>10.3e}  {c_max:>10.3e}  {iterations:>10} c");
+            println!("{count:>10}  {label:>14}  {c_median:>10.3e}  {c_max:>10.3e}  {iterations:>10} c  {clamp_note}");
         }
         ErosionRun::NotConverged { iterations, .. } => {
             println!(
-                "{count:>10}  {label:>14}  {c_median:>10.3e}  {c_max:>10.3e}  {iterations:>8} NC  <- hit the {MAX_ITERATIONS} cap"
+                "{count:>10}  {label:>14}  {c_median:>10.3e}  {c_max:>10.3e}  {iterations:>8} NC  <- hit the {MAX_ITERATIONS} cap  {clamp_note}"
             );
         }
     }
@@ -203,8 +217,8 @@ fn main() {
         let pop = build_population(SEED, count);
         let (c_median, c_max) = c_stats(&pop, ERODIBILITY_PER_YR, TIMESTEP_YR);
         for &threshold_m in &THRESHOLDS_M {
-            let result = run_one(&pop, ERODIBILITY_PER_YR, threshold_m);
-            print_row(count, &format!("{threshold_m}"), c_median, c_max, &result);
+            let (result, clamps) = run_one(&pop, ERODIBILITY_PER_YR, threshold_m);
+            print_row(count, &format!("{threshold_m}"), c_median, c_max, &result, &clamps);
         }
     }
 
@@ -219,12 +233,15 @@ fn main() {
         for &multiplier in &ERODIBILITY_MULTIPLIERS {
             let k = ERODIBILITY_PER_YR * multiplier;
             let (c_median, c_max) = c_stats(&pop, k, TIMESTEP_YR);
-            let result = run_one(&pop, k, THRESHOLDS_M[1]);
-            print_row(count, &format!("{k:.1e}"), c_median, c_max, &result);
+            let (result, clamps) = run_one(&pop, k, THRESHOLDS_M[1]);
+            print_row(count, &format!("{k:.1e}"), c_median, c_max, &result, &clamps);
         }
     }
 
     println!();
     println!("'c' = converged at that iteration count. 'NC' = hit the cap without converging.");
-    println!("See this crate's task-3-report.md for the corrected verdict on both halves of §14.3's claim.");
+    println!("'clamped' = ClampStats from Task 4's slope cap, wired into this same loop -- edges");
+    println!("corrected summed over every iteration, and how many iterations corrected at least one.");
+    println!("See this crate's task-3-report.md for the corrected verdict on both halves of §14.3's claim,");
+    println!("and task-4-report.md for whether the cap changed any of these counts.");
 }

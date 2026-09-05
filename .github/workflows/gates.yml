@@ -116,33 +116,41 @@ jobs:
           # entirely, per the task-3 brief's "keep CI fast" instruction, so it contributes 0
           # tests to every configuration's count here).
           #
-          # 2026-09-05, slice 5a Task 3 review fix round: 439/439/441/469/471 ->
-          # 440/440/442/470/472 when `erosion.rs` gained one more test
-          # (`erode_to_convergence_panics_loudly_on_a_nan_poisoned_height_change`, review
-          # finding 4 -- a NaN-poisoned height change now panics loudly instead of being
-          # silently reported as `ErosionRun::Converged`). `expect_ignored` stays 5; no
-          # `#[ignore]`d test was added. Re-derived on this host by `cargo test
-          # -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines and subtracting
-          # the 5 ignored (from the same command with `--ignored` added): 440/440/442/470/472.
+          # 2026-09-05, slice 5a Task 4 (the thermal-erosion slope cap): 440/440/442/470/472
+          # -> 453/453/455/483/485. Task 4 added thirteen tests to `erosion.rs`: the slope-cap
+          # constant pin, the §14.1 pathology demonstration (a low-drainage-area node grows
+          # past the cap without correction), seven covering `cap_slopes` itself (binds every
+          # edge, idempotent, never raises a node, deterministic, finite, does not launder a
+          # NaN), the end-to-end `erode_to_convergence_output_never_exceeds_the_slope_cap`,
+          # and four more once the coordinator asked for `ClampStats` instrumentation so a
+          # reader could see whether the cap actually fired rather than inferring it from an
+          # unchanged iteration count (`slope_cap_clamped_count_counts_exactly_the_changed_bit_patterns`,
+          # `erode_to_convergence_with_clamp_counts_agrees_with_the_plain_wrapper`,
+          # `erode_to_convergence_clamps_nothing_at_this_crates_default_test_constants`,
+          # `erode_to_convergence_with_clamp_counts_is_nonzero_under_the_pathology`).
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived on this host
+          # by `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines
+          # and subtracting the 5 ignored (from the same command with `--ignored` added):
+          # 453/453/455/483/485.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 440
+            expect: 453
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 440
+            expect: 453
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 442
+            expect: 455
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 470
+            expect: 483
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 472
+            expect: 485
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

@@ -117,6 +117,8 @@
 //! not a bug in this one, and a later task that wants a rising sea floor or a filling lake
 //! should change this decision explicitly rather than inherit it by accident.
 
+use std::sync::OnceLock;
+
 use crate::detmath;
 use crate::sphere::SpherePoint;
 use crate::stream::StreamGraph;
@@ -398,6 +400,148 @@ pub fn erode_step(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], par
     next
 }
 
+/// The thermal-erosion slope cap: `tan(30 degrees)`, computed once and cached, cited to
+/// §14.1 ("A thermal-erosion correction caps slopes at 30 degrees, to stop the equation
+/// growing spikes where drainage area is small.").
+///
+/// **The comparison this is for is on slope (`rise/run`, dimensionless -- the same `s` in
+/// `erode_step`'s `s = (h_i - h_r) / d`), not on an angle.** Comparing a per-edge angle
+/// against 30 degrees would need `detmath::atan` (or `atan2`) once per edge per iteration,
+/// on top of the `atan2` [`receiver_distances_m`] already pays once per node per bake --
+/// for a bake that already runs 100-300 iterations over millions of nodes, that is a real
+/// cost paid for nothing: converting `s` to an angle and back buys no additional
+/// information a direct comparison against `tan(30 degrees)` doesn't already have.
+///
+/// **`OnceLock`, not a `const fn`.** `detmath::tan` is not `const` -- it is not even
+/// `f64::tan`, since this crate's whole `detmath` module exists so that every
+/// transcendental call is routed through `libm` instead of the platform's own math library
+/// (see that module's doc: native and WASM disagree on `f64::sin` in 2,441 of 100,000
+/// samples at a single bit each) -- so this value cannot be a compile-time constant the way
+/// [`STREAM_POWER_AREA_EXPONENT`] is. `bindings.rs` already has the precedent for "compute a
+/// derived value once, lazily, and reuse it" (`OnceLock<ContinentalityCache>`,
+/// `OnceLock<SurfaceCache>`), which is what "one constant, computed once" (this task's
+/// brief) means in a language where `tan` is not `const`. This module's own
+/// `slope_cap_tan_is_computed_once_and_matches_tan_30_degrees` test pins the numeric value
+/// this evaluates to, so a future change to `detmath::tan` (or to the 30-degree figure)
+/// fails loudly here rather than silently drifting.
+pub fn slope_cap_tan() -> f64 {
+    static SLOPE_CAP_TAN: OnceLock<f64> = OnceLock::new();
+    *SLOPE_CAP_TAN.get_or_init(|| detmath::tan(detmath::to_radians(30.0)))
+}
+
+/// Corrects every edge whose slope exceeds [`slope_cap_tan`] by lowering the **upstream**
+/// (higher) node to `receiver_height + cap * distance` -- never by raising the downstream
+/// (lower) one. See "Which node moves" below for why that direction, not the other.
+///
+/// # Traversal direction: the same reason `erode_step` walks root-to-leaves
+///
+/// This walks [`root_to_leaves`], exactly like [`erode_step`]: a node's correction reads its
+/// receiver's height as `next[receiver_idx]`, which is the receiver's **already-corrected**
+/// value only because root-to-leaves visits every receiver before the node draining into it
+/// (see the module doc's "traversal direction" section, which `erode_step` already relies on
+/// for the same reason). This matters here specifically because lowering a node changes what
+/// "the receiver's height" means for every node still upstream of it in the same tree --
+/// walking `peel().order` (leaves-to-roots) instead would let an upstream node compare
+/// itself against a receiver height that has not been corrected yet, silently
+/// under-correcting depending on visit order rather than depending on the actual slope.
+///
+/// # Which node moves: the lower one is never raised
+///
+/// A slope violation between an upstream node and its receiver can be fixed two ways --
+/// lower the upstream node to `receiver + cap * d`, or raise the receiver to
+/// `upstream - cap * d`. This function does only the first. Raising the receiver instead
+/// would be a different physical claim: per the module doc's "held fixed" section, a root is
+/// the local base level its whole basin erodes toward, and raising it to satisfy an upstream
+/// slope constraint would mean this correction -- not the uplift/erosion balance
+/// `erode_to_convergence` actually models -- is doing the work of raising land. Lowering the
+/// upstream node instead matches what "thermal erosion" describes physically: material moves
+/// downslope away from a point that got too steep; the valley floor does not rise to meet
+/// it. `a_capped_field_never_raises_any_node` (below) asserts this directly, comparing every
+/// node's post-cap height against its pre-cap height.
+///
+/// # Never `f64::min`
+///
+/// The corrected height is computed as `if slope > cap { receiver_h + cap * d } else { raw_h }`
+/// -- an explicit branch, the same house form `plates.rs::margin_at` and this module's own
+/// `max_abs_height_change` use, never `raw_h.min(receiver_h + cap * d)`. `f64::min` is
+/// NaN-asymmetric (`x.min(NaN)` and `NaN.min(x)` disagree), which matters concretely here: a
+/// NaN `raw_h` run through `.min()` could silently resolve to either the poisoned value or
+/// the finite cap depending on argument order. The explicit branch instead lets a NaN
+/// `raw_h` fail the `>` comparison (NaN compares `false` against everything) and fall
+/// through to `else raw_h` unchanged -- so a NaN height stays exactly NaN rather than being
+/// silently replaced by a finite, cap-derived number. That is the property
+/// `erode_to_convergence`'s NaN assertion (see [`max_abs_height_change`]'s doc) depends on
+/// this function not routing around: `the_cap_does_not_launder_a_nan_height` (below) checks
+/// it directly.
+///
+/// A root has no receiver, no slope, and nothing to check -- `next[idx]` already carries
+/// `heights[idx]` through unchanged from the initial `to_vec()`, exactly like `erode_step`'s
+/// own root branch.
+pub fn cap_slopes(graph: &StreamGraph, heights: &[f64], distances_m: &[f64]) -> Vec<f64> {
+    let count = graph.node_count() as usize; // cast-ok: node_count is bounded (stream.rs::MAX_NODES)
+    assert_eq!(heights.len(), count, "heights must be exactly as long as the graph has nodes");
+    assert_eq!(
+        distances_m.len(),
+        count,
+        "distances_m must be exactly as long as the graph has nodes"
+    );
+    let cap = slope_cap_tan();
+    let mut next = heights.to_vec();
+
+    for node in root_to_leaves(graph) {
+        let idx = node as usize; // cast-ok: a node index into usize
+        if let Some(receiver) = graph.downhill_of(node) {
+            let receiver_idx = receiver as usize; // cast-ok: a node index into usize
+            // Already corrected by this same pass -- sound only because root_to_leaves
+            // visits every receiver before the node that drains into it, exactly the
+            // precondition erode_step's own receiver read relies on.
+            let receiver_h_new = next[receiver_idx];
+            let raw_h = heights[idx];
+            let d = distances_m[idx];
+            // Compared as a RISE (`raw_h - receiver_h_new` against `cap * d`), not as a
+            // slope (dividing by `d` first): the two are mathematically the same
+            // inequality for `d > 0` (guaranteed for every non-root node -- see
+            // `erode_step`'s own "d can only be zero if two nodes coincide" note), but
+            // comparing rises means the branch below reads `receiver_h_new + cap * d`
+            // straight off the same `cap * d` product used in the check, with no division
+            // anywhere in this loop at all -- cheaper than divide-then-reconstruct, and it
+            // sidesteps the ULP-level rounding a caller would hit by inverting a division
+            // to re-derive a slope afterward (this module's own tests measure that
+            // separately; see `slope_cap_violations`'s doc).
+            let cap_rise = cap * d;
+            next[idx] = if (raw_h - receiver_h_new) > cap_rise { receiver_h_new + cap_rise } else { raw_h };
+        }
+        // else: a root, held through unchanged -- see this function's doc.
+    }
+
+    next
+}
+
+/// How many nodes differ, by exact bit pattern, between `before` and `after` --
+/// specifically meant for a `before`/`after` pair straddling one [`cap_slopes`] call, where
+/// it counts exactly the edges that call corrected.
+///
+/// **Bit comparison, not `!=`, and not "moved by more than epsilon":** a node `cap_slopes`
+/// left alone carries its input value through the `else` branch with no arithmetic
+/// performed on it at all (see that function's doc), so an uncorrected node is bit-identical
+/// to its input, never merely close. Comparing bits therefore draws an exact line between
+/// "this node was touched" and "this node was not," with no threshold to tune and no risk of
+/// a real, tiny correction being missed by too loose a numeric tolerance. It also handles a
+/// NaN input correctly where `!=` would not: `NaN != NaN` is `true` in IEEE-754, so a NaN
+/// carried through unchanged would be miscounted as "clamped" by a naive `!=` scan; comparing
+/// `to_bits()` instead sees the identical bit pattern and correctly reports no change.
+///
+/// This exists for measurement, not correctness -- see [`erode_to_convergence_with_clamp_counts`]
+/// and `src/bin/erosion_convergence_sweep.rs`, which uses it to report how many edges the
+/// cap actually corrected on a given run rather than leaving that to be inferred from an
+/// iteration count that could move for either "the cap never fired" or "the cap fired and it
+/// didn't matter" -- two very different findings that look identical from the outside if
+/// nobody counts.
+pub fn slope_cap_clamped_count(before: &[f64], after: &[f64]) -> usize {
+    debug_assert_eq!(before.len(), after.len(), "clamp count must compare same-length height arrays");
+    before.iter().zip(after.iter()).filter(|(b, a)| b.to_bits() != a.to_bits()).count()
+}
+
 /// The outcome of [`erode_to_convergence`]. Deliberately **not** a bare `Vec<f64>`: this
 /// project has already shipped checks that counted zero work as success and fingerprints
 /// that could not notice a change (see the module doc and `erode_to_convergence`'s own
@@ -422,6 +566,33 @@ pub enum ErosionRun {
     /// though it were is exactly the mistake this enum exists to make impossible to make
     /// silently.
     NotConverged { heights: Vec<f64>, iterations: u32 },
+}
+
+/// How much work [`cap_slopes`] actually did over a whole [`erode_to_convergence_with_clamp_counts`]
+/// run -- summed across every iteration, not just the last one (by the time a run has
+/// converged or hit its cap, the *last* iteration's own field is by definition already
+/// compliant, so counting only that iteration would report zero regardless of how much
+/// correction happened earlier in the run).
+///
+/// **Why this exists at all:** wiring the cap into the loop (this task's chosen ordering,
+/// see `erode_to_convergence`'s doc) does not by itself prove the cap ever does anything at
+/// any given `(u, k, dt)` -- a run whose slopes never approach 30 degrees converges to
+/// bit-identical heights whether or not `cap_slopes` is even called. A count of zero and a
+/// count that was never taken look the same from the outside; this type exists so the
+/// distinction is a number in the record rather than an inference from an unchanged
+/// iteration count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClampStats {
+    /// The number of (node, iteration) pairs `cap_slopes` corrected, summed over every
+    /// iteration this run executed. Not "distinct nodes corrected at least once" -- a node
+    /// pinned at the cap for 50 consecutive iterations because its uncorrected slope keeps
+    /// re-exceeding it counts 50 times here, which is the true amount of correction work
+    /// done, not the size of some final set.
+    pub total_edges_clamped: u64,
+    /// How many of this run's iterations corrected at least one edge. Together with
+    /// `total_edges_clamped` this distinguishes "the cap fired occasionally, briefly" from
+    /// "the cap fired on every single iteration" at the same total count.
+    pub iterations_with_a_clamp: u32,
 }
 
 /// The maximum absolute per-node height change between two same-length height arrays --
@@ -500,7 +671,53 @@ fn max_abs_height_change(before: &[f64], after: &[f64]) -> f64 {
 /// Every step in this loop is exactly one `erode_step` call over `distances_m` (computed
 /// once by the caller via [`receiver_distances_m`] and reused across every iteration, per
 /// the module doc's "Distances are computed once per step" section) -- there is no second
-/// copy of the implicit update here for the two logic paths to drift apart on.
+/// copy of the implicit update here for the two logic paths to drift apart on. It is
+/// followed by exactly one [`cap_slopes`] call over the same step's output -- see the next
+/// section for why that call sits *inside* this loop rather than after it.
+///
+/// # The cap runs per-iteration, not once at the end
+///
+/// This was the one real design fork in Task 4 (see that task's brief): [`cap_slopes`] could
+/// have run once, after this loop returns, on whichever variant's `heights` it produced.
+/// This function instead calls it every iteration, immediately after `erode_step` and before
+/// the convergence check reads `next`. Both are legitimate solvers; they are not the same
+/// solver, and the choice made here changes what "converged" means:
+///
+/// - **Per-iteration (chosen here).** §14.1's own phrasing is "to stop the equation growing
+///   spikes" -- present continuous, describing something happening *while* the equation
+///   runs, not a spike that is allowed to fully form and then trimmed off afterward. A spike
+///   at a low-`A` node does not stay local: `implicit_receiver_update` reads a node's
+///   *receiver's* new height, so an uncorrected spike one iteration becomes an input to
+///   every node upstream of it on the next -- exactly the compounding this loop's own
+///   root-to-leaves order exists to avoid in the other direction (stale receivers).
+///   Capping every iteration means the height fed into the *next* `erode_step` call is
+///   always a physically bounded one, so an already-steep node cannot use its own
+///   unphysical steepness as the seed for a worse one on the following step. This also
+///   means the criterion `max_abs_height_change` measures is the change in a
+///   **cap-corrected** field, so "converged" means "the corrected field stopped moving" --
+///   consistent with `a_converged_run_is_a_fixed_point`, which is still true of the
+///   returned heights because the loop's own fixed point now *is* the capped one.
+/// - **Once at the end (the alternative, not chosen).** Cheaper: one `cap_slopes` call
+///   total instead of one per iteration -- for a 100-300 iteration bake that is a real
+///   saving, since `cap_slopes` is a second full `O(nodes)` pass over the graph on top of
+///   `erode_step`'s own. But the field this loop iterates would then be the *uncapped*
+///   one throughout every step, and `erode_step`'s implicit update reads a node's
+///   receiver's new height -- so the uncapped solver could spend its whole iteration
+///   budget converging a low-`A` node toward an uncapped, unphysically steep steady state
+///   (§14.1's whole reason for wanting a cap in the first place), and only *afterward*
+///   silently overwrite that steady state with something the solver never actually
+///   converged to. `a_converged_run_is_a_fixed_point`'s claim -- one more `erode_step` from
+///   the returned heights does not move any node past the threshold -- would then no
+///   longer hold for the *returned* (capped) heights, only for the discarded uncapped
+///   ones: the brief calls this out directly (the returned field stops being "a fixed
+///   point of the thing that was iterated"). That silent loss of a tested property, not
+///   the extra `O(nodes)` pass, is why this function does not take the cheaper path.
+///
+/// **Consequence for Task 3's convergence figures:** capping every iteration means Task 3's
+/// `erosion_convergence_sweep` numbers are measured against a solver this task modified, not
+/// the one Task 3 measured. That sweep has been re-run against this version -- see
+/// `src/bin/erosion_convergence_sweep.rs`'s own doc and this crate's `task-4-report.md` for
+/// the before/after counts and whether they moved.
 ///
 /// # Iterations-to-convergence is measured, not assumed -- and it is a function of `c`, not of "this implementation"
 ///
@@ -527,9 +744,42 @@ pub fn erode_to_convergence(
     distances_m: &[f64],
     params: &ErosionParams,
 ) -> ErosionRun {
+    erode_to_convergence_with_clamp_counts(graph, heights, distances_m, params).0
+}
+
+/// Identical algorithm to [`erode_to_convergence`] -- this IS its implementation, not a
+/// second copy of it; `erode_to_convergence` is a thin wrapper that discards the second
+/// return value -- but also reports [`ClampStats`] for the run: how much work
+/// [`cap_slopes`] actually did, summed over every iteration.
+///
+/// See [`ClampStats`]'s own doc for why this is worth a whole return value rather than
+/// something a caller could infer from the iteration count: wiring the cap into this loop
+/// does not by itself guarantee it ever corrects anything at a given `(u, k, dt)`, and a
+/// run whose slopes never approach the cap converges to bit-identical heights with or
+/// without `cap_slopes` in the loop at all. `src/bin/erosion_convergence_sweep.rs` calls
+/// this (not the plain wrapper) specifically so its own report can say how many edges were
+/// clamped in each row, rather than leaving "did the cap do anything here" to be guessed
+/// from whether the iteration count moved.
+pub fn erode_to_convergence_with_clamp_counts(
+    graph: &StreamGraph,
+    heights: &[f64],
+    distances_m: &[f64],
+    params: &ErosionParams,
+) -> (ErosionRun, ClampStats) {
     let mut current = heights.to_vec();
+    let mut total_edges_clamped: u64 = 0;
+    let mut iterations_with_a_clamp: u32 = 0;
     for iteration in 1..=params.max_iterations {
-        let next = erode_step(graph, &current, distances_m, params);
+        let stepped = erode_step(graph, &current, distances_m, params);
+        // The thermal cap runs INSIDE this loop, on every iteration's output, before the
+        // convergence check -- see this function's "The cap runs per-iteration, not once at
+        // the end" section below for why, and for what the alternative would have cost.
+        let next = cap_slopes(graph, &stepped, distances_m);
+        let clamped_this_iteration = slope_cap_clamped_count(&stepped, &next);
+        if clamped_this_iteration > 0 {
+            total_edges_clamped += clamped_this_iteration as u64; // cast-ok: a node count widened, never negative
+            iterations_with_a_clamp += 1;
+        }
         let change = max_abs_height_change(&current, &next);
         // `assert!`, not `debug_assert!`: this loop runs in release, same reasoning as
         // `erode_step`'s own slice-length checks. `change.is_nan()` here means SOME node's
@@ -551,10 +801,22 @@ pub fn erode_to_convergence(
         );
         current = next;
         if change <= params.max_height_change_per_step_m {
-            return ErosionRun::Converged { heights: current, iterations: iteration };
+            return (
+                ErosionRun::Converged { heights: current, iterations: iteration },
+                ClampStats { total_edges_clamped, iterations_with_a_clamp },
+            );
         }
     }
-    ErosionRun::NotConverged { heights: current, iterations: params.max_iterations }
+    // `max_iterations == 0` falls straight through to here without the loop body ever
+    // running (`1..=0` is an empty range) -- matching `erode_to_convergence`'s
+    // pre-instrumentation behaviour of returning `NotConverged` with `iterations: 0` and
+    // the input heights untouched (see this crate's Task 3 report, "concerns"). The
+    // `ClampStats` for that case is honestly `{0, 0}`, not a placeholder: zero iterations
+    // ran, so the cap had no opportunity to do anything.
+    (
+        ErosionRun::NotConverged { heights: current, iterations: params.max_iterations },
+        ClampStats { total_edges_clamped, iterations_with_a_clamp },
+    )
 }
 
 /// The closed form itself, isolated from graph traversal so it can be tested against exact
@@ -1226,5 +1488,428 @@ mod tests {
         let params = convergence_test_params(1.0e-3, 20_000);
 
         let _ = erode_to_convergence(&graph, &heights, &distances, &params);
+    }
+
+    // ---- the slope cap: the constant --------------------------------------------------
+
+    #[test]
+    fn slope_cap_tan_is_computed_once_and_matches_tan_30_degrees() {
+        // §14.1: "A thermal-erosion correction caps slopes at 30 degrees". Computed once
+        // via `detmath::tan` (never `f64::tan` -- see that module's doc) and cached in a
+        // `OnceLock` -- calling it twice must return the exact same bits, and that value
+        // must equal an independently-computed `detmath::tan(detmath::to_radians(30.0))`
+        // right here, not merely "close to" it.
+        let cached = slope_cap_tan();
+        let recomputed = crate::detmath::tan(crate::detmath::to_radians(30.0));
+        assert_eq!(cached.to_bits(), recomputed.to_bits(), "the cached value must match a fresh detmath::tan call exactly");
+        assert_eq!(slope_cap_tan().to_bits(), cached.to_bits(), "a second call must return the identical cached bits, not recompute");
+        // The well-known value of tan(30 degrees) is 1/sqrt(3) ~= 0.5773502691896257.
+        // Measured on this build via `detmath::tan(detmath::to_radians(30.0))`:
+        // 0.57735026918962573 (bit pattern 4603375528459645724) -- pinned as a literal so a
+        // future change to `detmath::tan`'s libm backend, or an accidental switch to a
+        // different angle, fails loudly here rather than drifting silently.
+        assert_eq!(cached.to_bits(), 4603375528459645724u64, "slope_cap_tan() drifted from its measured, pinned value");
+        assert!((0.57..0.585).contains(&cached), "slope_cap_tan() = {cached} is not in the right ballpark for tan(30 degrees)");
+    }
+
+    // ---- fixture helper: a real node this fixture can build the §14.1 pathology on --------
+
+    /// A node from `small_graph` that drains directly into a root, chosen with the smallest
+    /// drainage area of any such node. Draining into a root matters because a root's height
+    /// never moves (module doc's "held fixed" section) regardless of how many `erode_step`
+    /// calls run -- so this node's receiver is a fixed base level for the whole test, and
+    /// the smallest area gives it the smallest `sqrt(A)` in the fixture, hence (per
+    /// `erode_step`'s `c = k * dt * sqrt(A) / d` doc) the smallest relaxation rate for any
+    /// given `k` -- quantitatively what "barely erodes" (§14.1) means.
+    fn lowest_area_root_adjacent_node(graph: &StreamGraph, distances_m: &[f64]) -> (u32, u32, f64, f64) {
+        (0..graph.node_count())
+            .filter_map(|node| {
+                let receiver = graph.downhill_of(node)?;
+                if graph.downhill_of(receiver).is_some() {
+                    return None; // receiver is not itself a root
+                }
+                let area = graph.drainage_area_m2(node);
+                let distance = distances_m[node as usize]; // cast-ok: a node index into usize
+                Some((node, receiver, area, distance))
+            })
+            .min_by(|a, b| a.2.partial_cmp(&b.2).expect("area is never NaN on a built graph"))
+            .expect("fixture must contain at least one node draining directly into a root")
+    }
+
+    /// `u` and `k` for the pathology tests below, derived analytically from the target
+    /// node's own `area_m2` and `distance_m` rather than guessed. With a root-fixed
+    /// receiver, `erode_step`'s closed form is a contraction toward a steady-state slope
+    /// `s_eq = u / (k * sqrt(A))` (set `dh/dt = 0` in `dh/dt = u - k * sqrt(A) * s`),
+    /// approached at rate `c = k * dt * sqrt(A) / d` per step (`erode_step`'s "dimensionless
+    /// number" section: each step closes a fraction `c / (1 + c)` of the remaining gap).
+    /// Solving for `u` and `k` so that `s_eq` is `SAFETY_FACTOR_OVER_CAP` times the cap, and
+    /// `c` is `TARGET_RELAXATION_RATE`:
+    ///
+    /// ```text
+    /// s_eq = u / (k * sqrt(A)) = SAFETY_FACTOR_OVER_CAP * cap
+    /// c    = k * dt * sqrt(A) / d = TARGET_RELAXATION_RATE
+    /// =>  u = TARGET_RELAXATION_RATE * SAFETY_FACTOR_OVER_CAP * cap * d / dt
+    ///     k = TARGET_RELAXATION_RATE * d / (dt * sqrt(A))
+    /// ```
+    ///
+    /// With `TARGET_RELAXATION_RATE = 0.05`, reaching even 1/3 of the way to `s_eq`
+    /// (already past the cap, since `s_eq` is `SAFETY_FACTOR_OVER_CAP = 3` times it) needs
+    /// only `ln(2/3) / ln(1 - 0.05) ~= 7.9` iterations -- comfortably inside the
+    /// `PATHOLOGY_ITERATIONS = 60` these tests run, with margin if the fixture ever
+    /// changes slightly.
+    const SAFETY_FACTOR_OVER_CAP: f64 = 3.0;
+    const TARGET_RELAXATION_RATE: f64 = 0.05;
+    const PATHOLOGY_DT_YR: f64 = 1000.0;
+    const PATHOLOGY_ITERATIONS: u32 = 60;
+
+    fn pathology_params(area_m2: f64, distance_m: f64) -> ErosionParams {
+        let cap = slope_cap_tan();
+        let uplift_m_per_yr = TARGET_RELAXATION_RATE * SAFETY_FACTOR_OVER_CAP * cap * distance_m / PATHOLOGY_DT_YR;
+        let erodibility_per_yr = TARGET_RELAXATION_RATE * distance_m / (PATHOLOGY_DT_YR * crate::detmath::sqrt(area_m2));
+        ErosionParams {
+            uplift_m_per_yr,
+            erodibility_per_yr,
+            timestep_yr: PATHOLOGY_DT_YR,
+            // Not exercised by the tests that only drive `erode_step`/`cap_slopes`
+            // directly, but `ErosionParams` has no `Default`, so something must be chosen.
+            max_height_change_per_step_m: 1.0e-6,
+            max_iterations: PATHOLOGY_ITERATIONS,
+        }
+    }
+
+    /// Runs raw, UNCAPPED `erode_step` `PATHOLOGY_ITERATIONS` times. Deliberately not
+    /// `erode_to_convergence`, whose loop (after this task) calls `cap_slopes` every
+    /// iteration -- this is the "before" half of the before/after pair the brief asks for.
+    fn run_uncapped(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], params: &ErosionParams) -> Vec<f64> {
+        let mut current = heights.to_vec();
+        for _ in 0..PATHOLOGY_ITERATIONS {
+            current = erode_step(graph, &current, distances_m, params);
+        }
+        current
+    }
+
+    // ---- demonstrate the pathology BEFORE demonstrating its removal -----------------------
+
+    #[test]
+    fn a_low_drainage_area_node_grows_past_the_cap_without_correction() {
+        // The brief: "a test that merely shows 'no edge exceeds 30 degrees afterwards'
+        // proves the cap ran, not that it was needed... Demonstrate the pathology first."
+        // §14.1 says spikes appear "where drainage area is small", because the erosion term
+        // carries sqrt(A) (STREAM_POWER_AREA_EXPONENT) -- a low-A node barely erodes while
+        // its uplift keeps adding height every step. This picks the fixture's own
+        // smallest-area, root-adjacent node, derives u and k analytically so its
+        // steady-state slope is 3x the cap, and runs the UNCORRECTED solver -- no
+        // `cap_slopes` anywhere in this test -- to show the slope it actually produces
+        // exceeds tan(30 degrees).
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (target, receiver, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let params = pathology_params(area, distance);
+
+        let spiked = run_uncapped(&graph, &heights, &distances, &params);
+
+        let target_idx = target as usize; // cast-ok: a node index into usize
+        let receiver_idx = receiver as usize; // cast-ok: a node index into usize
+        assert_eq!(
+            spiked[receiver_idx].to_bits(),
+            heights[receiver_idx].to_bits(),
+            "the receiver is a root and must be held fixed regardless of the spike upstream of it"
+        );
+
+        let cap = slope_cap_tan();
+        let slope = (spiked[target_idx] - spiked[receiver_idx]) / distance;
+        assert!(
+            slope > cap,
+            "node {target} (area {area:.3e} m^2, distance {distance:.1} m to root {receiver}) reached slope \
+             {slope:.4} after {PATHOLOGY_ITERATIONS} uncapped steps -- expected it to exceed the cap {cap:.4} \
+             (tan(30 degrees)), which is the pathology this task's correction exists to stop. If this fails, \
+             the derivation in `pathology_params`'s doc no longer matches this fixture."
+        );
+    }
+
+    // ---- the correction: cap_slopes fixes exactly that pathology --------------------------
+
+    /// Every edge whose height difference exceeds `cap * distance` by more than a few ULPs
+    /// of that product. Returns `(node, excess_slope)` for each violation.
+    ///
+    /// **Why this compares rises (`h_i - h_r` against `cap * d`) rather than re-deriving
+    /// `(h_i - h_r) / d` and comparing that to `cap` with a bare `>`:** `cap_slopes` assigns
+    /// a corrected height as the SUM `receiver_h + cap * d`. Recomputing a slope from the
+    /// result by inverting that sum -- a separate subtraction, then a separate division --
+    /// is NOT guaranteed bit-exact by IEEE-754 (`(a + b) - a == b` does not hold in
+    /// general). Measured on this fixture: at the magnitudes involved (`cap * d` on the
+    /// order of 1.0e5-1.0e6 m against receiver heights only in the thousands), that
+    /// round-trip lands the recomputed slope 1-2 ULPs above `cap` even on a height
+    /// `cap_slopes` assigned EXACTLY as `receiver_h + cap * d` -- an absolute height error
+    /// around 1.0e-10 m, meaningless against a planetary bake and nothing like the RAW,
+    /// uncorrected pathology this task demonstrates (there the slope exceeds the cap by a
+    /// factor of `SAFETY_FACTOR_OVER_CAP = 3`, i.e. by whole units of slope, not a fraction
+    /// of an Angstrom). This function instead checks the same SUM `cap_slopes` itself
+    /// computed, with a 4-ULP allowance on that comparison -- measured, not assumed: the
+    /// worst violation actually observed by the naive re-derivation was 2 ULPs, so 4 leaves
+    /// a real margin without being loose enough to hide anything the pathology test above
+    /// would recognise as a genuine spike.
+    fn slope_cap_violations(graph: &StreamGraph, heights: &[f64], distances_m: &[f64], cap: f64) -> Vec<(u32, f64)> {
+        let mut violations = Vec::new();
+        for node in 0..graph.node_count() {
+            if let Some(receiver) = graph.downhill_of(node) {
+                let idx = node as usize; // cast-ok: a node index into usize
+                let receiver_idx = receiver as usize; // cast-ok: a node index into usize
+                let d = distances_m[idx];
+                let cap_rise = cap * d;
+                let actual_rise = heights[idx] - heights[receiver_idx];
+                let tolerance = 4.0 * f64::EPSILON * cap_rise.abs().max(1.0);
+                if actual_rise > cap_rise + tolerance {
+                    violations.push((node, (actual_rise - cap_rise) / d));
+                }
+            }
+        }
+        violations
+    }
+
+    #[test]
+    fn cap_slopes_binds_every_edge_to_the_cap() {
+        // The "after" half: apply the correction to the SAME pathological field the test
+        // above produced, and check EVERY edge, not a sample.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (_target, _receiver, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let params = pathology_params(area, distance);
+        let spiked = run_uncapped(&graph, &heights, &distances, &params);
+
+        let corrected = cap_slopes(&graph, &spiked, &distances);
+        let cap = slope_cap_tan();
+
+        let edges_checked = (0..graph.node_count()).filter(|&n| graph.downhill_of(n).is_some()).count();
+        assert!(edges_checked > 0, "a graph with no downhill edges is not a meaningful fixture");
+
+        let violations = slope_cap_violations(&graph, &corrected, &distances, cap);
+        assert!(violations.is_empty(), "edges still exceeding the cap after correction: {violations:?}");
+    }
+
+    #[test]
+    fn cap_slopes_is_idempotent() {
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (_target, _receiver, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let params = pathology_params(area, distance);
+        let spiked = run_uncapped(&graph, &heights, &distances, &params);
+
+        let once = cap_slopes(&graph, &spiked, &distances);
+        let twice = cap_slopes(&graph, &once, &distances);
+
+        assert_eq!(once.len(), twice.len());
+        for i in 0..once.len() {
+            assert_eq!(
+                once[i].to_bits(),
+                twice[i].to_bits(),
+                "node {i} changed on a second cap_slopes pass over an already-corrected field"
+            );
+        }
+    }
+
+    #[test]
+    fn cap_slopes_never_raises_a_node() {
+        // Brief item 6: whichever node this correction moves, it must never RAISE one --
+        // lowering the upstream node is a different physical claim than raising the
+        // receiver, and cap_slopes's own doc says it always does the former. Checked
+        // against the pathological field, where a real correction actually happens --
+        // against an already-compliant field "never raises" would be trivially true
+        // because nothing moves at all.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (_target, _receiver, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let params = pathology_params(area, distance);
+        let spiked = run_uncapped(&graph, &heights, &distances, &params);
+
+        let corrected = cap_slopes(&graph, &spiked, &distances);
+
+        let mut any_lowered = false;
+        for i in 0..spiked.len() {
+            assert!(
+                corrected[i] <= spiked[i],
+                "node {i} was RAISED by cap_slopes ({} -> {}), which is a different correction than the one this function documents",
+                spiked[i],
+                corrected[i]
+            );
+            if corrected[i] < spiked[i] {
+                any_lowered = true;
+            }
+        }
+        assert!(any_lowered, "the pathological fixture must produce at least one real correction, or this test proves nothing");
+    }
+
+    #[test]
+    fn cap_slopes_is_bit_identical_across_two_independent_runs() {
+        let (graph_a, positions_a, heights_a) = small_graph_and_positions();
+        let (graph_b, positions_b, heights_b) = small_graph_and_positions();
+        let distances_a = receiver_distances_m(&graph_a, &positions_a);
+        let distances_b = receiver_distances_m(&graph_b, &positions_b);
+        let (_t, _r, area, distance) = lowest_area_root_adjacent_node(&graph_a, &distances_a);
+        let params = pathology_params(area, distance);
+
+        let spiked_a = run_uncapped(&graph_a, &heights_a, &distances_a, &params);
+        let spiked_b = run_uncapped(&graph_b, &heights_b, &distances_b, &params);
+
+        let corrected_a = cap_slopes(&graph_a, &spiked_a, &distances_a);
+        let corrected_b = cap_slopes(&graph_b, &spiked_b, &distances_b);
+
+        assert_eq!(corrected_a.len(), corrected_b.len());
+        for i in 0..corrected_a.len() {
+            assert_eq!(
+                corrected_a[i].to_bits(),
+                corrected_b[i].to_bits(),
+                "node {i} disagreed bit-for-bit between two independent builds"
+            );
+        }
+    }
+
+    #[test]
+    fn cap_slopes_output_is_finite_everywhere() {
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (_t, _r, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let params = pathology_params(area, distance);
+        let spiked = run_uncapped(&graph, &heights, &distances, &params);
+
+        let corrected = cap_slopes(&graph, &spiked, &distances);
+        let non_finite: Vec<usize> = corrected.iter().enumerate().filter(|(_, h)| !h.is_finite()).map(|(i, _)| i).collect();
+        assert!(non_finite.is_empty(), "non-finite output at node indices {non_finite:?}");
+    }
+
+    #[test]
+    fn cap_slopes_does_not_launder_a_nan_height() {
+        // `erode_to_convergence`'s NaN assertion depends on a NaN height change surviving
+        // through to `max_abs_height_change`, not being silently replaced by a finite,
+        // cap-corrected value along the way. Checked on `cap_slopes` in isolation: a NaN
+        // fed in at a draining node must come out NaN, not some finite `receiver + cap * d`.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let draining_node = (0..graph.node_count())
+            .find(|&n| graph.downhill_of(n).is_some())
+            .expect("fixture must contain at least one draining node");
+        let mut poisoned = heights.clone();
+        poisoned[draining_node as usize] = f64::NAN; // cast-ok: a node index into usize
+
+        let corrected = cap_slopes(&graph, &poisoned, &distances);
+        let idx = draining_node as usize; // cast-ok: a node index into usize
+        assert!(
+            corrected[idx].is_nan(),
+            "cap_slopes replaced a NaN height with a finite value ({}), which would let a poisoned run \
+             report success instead of the loud panic erode_to_convergence's NaN check expects",
+            corrected[idx]
+        );
+    }
+
+    // ---- the loop: erode_to_convergence never returns a slope above the cap ---------------
+
+    #[test]
+    fn erode_to_convergence_output_never_exceeds_the_slope_cap() {
+        // The end-to-end claim: running the SAME pathological configuration through the
+        // real convergence loop (which now caps every iteration, not just once at the end)
+        // must not return a field with any edge above the cap, converged or not.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (_t, _r, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let mut params = pathology_params(area, distance);
+        // Unlike the raw pathology test above, this drives the real convergence loop, so
+        // it needs a real threshold and an iteration cap generous enough to either converge
+        // or report NotConverged honestly -- either is an acceptable result for this test,
+        // which checks the CAP invariant, not convergence itself.
+        params.max_height_change_per_step_m = 1.0e-3;
+        params.max_iterations = 20_000;
+
+        let (ErosionRun::Converged { heights: result, .. } | ErosionRun::NotConverged { heights: result, .. }) =
+            erode_to_convergence(&graph, &heights, &distances, &params);
+
+        let cap = slope_cap_tan();
+        // See `slope_cap_violations`'s doc for why this compares rises rather than
+        // re-deriving `(h_i - h_r) / d` with a bare `>` against `cap`.
+        let violations = slope_cap_violations(&graph, &result, &distances, cap);
+        assert!(violations.is_empty(), "erode_to_convergence returned edges above the cap: {violations:?}");
+
+        let non_finite: Vec<usize> = result.iter().enumerate().filter(|(_, h)| !h.is_finite()).map(|(i, _)| i).collect();
+        assert!(non_finite.is_empty(), "non-finite output at node indices {non_finite:?}");
+    }
+
+    // ---- ClampStats: the cap's own activity is a reported number, not an inference ---------
+
+    #[test]
+    fn slope_cap_clamped_count_counts_exactly_the_changed_bit_patterns() {
+        let before = vec![1.0, 2.0, 3.0, f64::NAN];
+        let mut after = before.clone();
+        after[1] = 2.5; // a real change
+                        // after[3] stays the exact same NaN bit pattern as before[3] -- must NOT be
+                        // counted, since `!=` would wrongly count it (`NaN != NaN` is `true`).
+        assert_eq!(slope_cap_clamped_count(&before, &after), 1);
+
+        let unchanged = before.clone();
+        assert_eq!(
+            slope_cap_clamped_count(&before, &unchanged),
+            0,
+            "a NaN carried through unchanged must not be miscounted as clamped"
+        );
+    }
+
+    #[test]
+    fn erode_to_convergence_with_clamp_counts_agrees_with_the_plain_wrapper() {
+        // `erode_to_convergence` must be exactly `erode_to_convergence_with_clamp_counts`
+        // with the second element dropped -- not a second implementation that could drift
+        // from it. Checked by running both on the same inputs and comparing the `ErosionRun`
+        // half bit-for-bit.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = convergence_test_params(1.0e-3, 20_000);
+
+        let plain = erode_to_convergence(&graph, &heights, &distances, &params);
+        let (instrumented, _stats) = erode_to_convergence_with_clamp_counts(&graph, &heights, &distances, &params);
+        assert_eq!(plain, instrumented);
+    }
+
+    #[test]
+    fn erode_to_convergence_clamps_nothing_at_this_crates_default_test_constants() {
+        // This is the answer to a question the sweep binary's own numbers raise but cannot
+        // settle on their own: at `u = 1.0e-3 m/yr`, `k = 1.0e-6 /yr`, `dt = 1000 yr` (this
+        // crate's own `default_test_params`/`convergence_test_params`), is Task 3's
+        // convergence count UNCHANGED by this task because the cap runs and never binds, or
+        // because it is not actually being exercised? Answered directly here: zero edges
+        // clamped, over the entire run, on the same 300-node fixture the rest of this module
+        // tests against. A steady-state slope of `u / (k * sqrt(A))` at these constants is
+        // far below `tan(30 degrees)` for every node in this graph (see
+        // `lowest_area_root_adjacent_node`'s doc and the pathology test above, which needs a
+        // deliberately exaggerated `k` to ever reach the cap) -- this is the quantitative
+        // reason, not a coincidence of this one run.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let params = convergence_test_params(1.0e-3, 20_000);
+
+        let (result, stats) = erode_to_convergence_with_clamp_counts(&graph, &heights, &distances, &params);
+        assert!(matches!(result, ErosionRun::Converged { .. }), "this fixture and cap are expected to converge");
+        assert_eq!(
+            stats,
+            ClampStats { total_edges_clamped: 0, iterations_with_a_clamp: 0 },
+            "the cap fired at this crate's own default test constants -- if this is now failing, the constants moved \
+             into a regime where the cap actually matters, which is worth its own report, not a quiet test update"
+        );
+    }
+
+    #[test]
+    fn erode_to_convergence_with_clamp_counts_is_nonzero_under_the_pathology() {
+        // The complementary case: under the SAME exaggerated (u, k) this module's pathology
+        // test uses -- where the cap demonstrably needs to do something -- `ClampStats` must
+        // say so with a nonzero count, not just report a plausible-looking `Converged`.
+        let (graph, positions, heights) = small_graph_and_positions();
+        let distances = receiver_distances_m(&graph, &positions);
+        let (_t, _r, area, distance) = lowest_area_root_adjacent_node(&graph, &distances);
+        let mut params = pathology_params(area, distance);
+        params.max_height_change_per_step_m = 1.0e-3;
+        params.max_iterations = 20_000;
+
+        let (_result, stats) = erode_to_convergence_with_clamp_counts(&graph, &heights, &distances, &params);
+        assert!(
+            stats.total_edges_clamped > 0,
+            "expected the cap to have corrected at least one edge under the pathological configuration, got {stats:?}"
+        );
+        assert!(stats.iterations_with_a_clamp > 0);
     }
 }
