@@ -1,8 +1,12 @@
 //! Dump a native corpus for the native-against-WASM parity harness.
 //!
 //! Every value crosses the *shipped* `extern "C"` surface -- `wb_world_new`,
-//! `wb_elevation_m`, `wb_structural_m`, `wb_bottom_at`, `wb_fill_tile_f32` -- never an
-//! internal function, because the claim under test is about what the browser calls.
+//! `wb_elevation_m`, `wb_structural_m`, `wb_bottom_at`, `wb_fill_tile_f32`,
+//! `wb_erosion_run` -- never an internal function, because the claim under test is about
+//! what the browser calls. `wb_erosion_run` (Task 5) is the only one of these that reaches
+//! `erosion.rs`: before it existed, that module's own claim of native/WASM agreement was
+//! unfalsifiable, because nothing in the WASM export surface touched `StreamGraph` or
+//! erosion at all.
 //!
 //! The output is the corpus *and* its answers: every f64 is written as its 16-hex-digit
 //! bit pattern, so the replaying side parses no decimal text and the comparison is exact.
@@ -172,6 +176,68 @@ fn main() {
             cells.join(" ")
         );
     }
+
+    // --- erosion: one capped bake over a real graph, through wb_erosion_run -----------
+    //
+    // Task 5's corpus. `erosion.rs`'s module doc claims native and WASM agree bit-for-bit;
+    // before this export existed nothing could check that (erosion was unreachable from
+    // any WASM export). 3,000 nodes exercises every arithmetic path `erode_step` has --
+    // sqrt, atan2 via SpherePoint::distance_to, the implicit receiver update -- the same
+    // way a 20,000,000-node planetary bake would, because bit-equality does not depend on
+    // size; only the planetary bake's *memory footprint* does (slice 1p: 1.45 GB of arrays,
+    // does not fit a 32-bit wasm heap), which is not what this corpus is testing.
+    //
+    // `EROSION_THRESHOLD_M` is deliberately far tighter than this graph reaches in
+    // `EROSION_MAX_ITERATIONS` steps at these constants (c ~ 1.0e-3, see
+    // `erosion.rs::erode_step`'s doc): the run is designed to hit the iteration cap on
+    // every invocation, native and WASM alike, so the number of `erode_step` calls is fixed
+    // by construction rather than a side effect of whichever constant a mutation touches.
+    // The two `assert_eq!`s below hold that design to its own claim -- if either ever
+    // fires, the corpus's "same step count regardless of perturbation" property (which
+    // `parity.mjs --mutate erosion-k` depends on to isolate arithmetic divergence from
+    // step-count divergence) no longer holds and the control's own doc is wrong.
+    const EROSION_NODES: u32 = 3_000;
+    const EROSION_UPLIFT_M_PER_YR: f64 = 1.0e-3;
+    const EROSION_ERODIBILITY_PER_YR: f64 = 1.0e-6;
+    const EROSION_TIMESTEP_YR: f64 = 1000.0;
+    const EROSION_THRESHOLD_M: f64 = 1.0e-9;
+    const EROSION_MAX_ITERATIONS: u32 = 20;
+
+    let mut erosion_heights = vec![0.0f64; EROSION_NODES as usize];
+    let mut erosion_iterations: u32 = 0;
+    let mut erosion_converged: u32 = 0;
+    let erosion_status = wb_erosion_run(
+        plain,
+        EROSION_NODES,
+        EROSION_UPLIFT_M_PER_YR,
+        EROSION_ERODIBILITY_PER_YR,
+        EROSION_TIMESTEP_YR,
+        EROSION_THRESHOLD_M,
+        EROSION_MAX_ITERATIONS,
+        erosion_heights.as_mut_ptr(),
+        EROSION_NODES,
+        &mut erosion_iterations,
+        &mut erosion_converged,
+    );
+    assert_eq!(erosion_status, WB_OK, "the erosion run must succeed for the parity corpus");
+    assert_eq!(
+        erosion_iterations, EROSION_MAX_ITERATIONS,
+        "the corpus is designed to hit the iteration cap on every run, not converge early -- \
+         a different count here means EROSION_THRESHOLD_M is no longer tight enough for this \
+         claim, and parity.mjs's erosion-k control can no longer assume a fixed step count"
+    );
+    assert_eq!(erosion_converged, 0, "see erosion_iterations above");
+    let erosion_hex: Vec<String> = erosion_heights.iter().map(|v| hex(*v)).collect();
+    println!(
+        "R erosion {SEED} {} {PLATES} {} {EROSION_NODES} {} {} {} {} {EROSION_MAX_ITERATIONS} {erosion_status} {erosion_iterations} {erosion_converged} {}",
+        hex(RADIUS_M),
+        hex(LAND),
+        hex(EROSION_UPLIFT_M_PER_YR),
+        hex(EROSION_ERODIBILITY_PER_YR),
+        hex(EROSION_TIMESTEP_YR),
+        hex(EROSION_THRESHOLD_M),
+        erosion_hex.join(" ")
+    );
 
     println!("version {}", wb_generator_version());
 }

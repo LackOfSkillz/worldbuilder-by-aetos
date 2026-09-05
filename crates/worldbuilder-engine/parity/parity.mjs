@@ -6,11 +6,23 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
 // be made to fail has not been shown to be able to notice anything.
+//
+// `--mutate erosion-k` is the second control, Task 5's: it bumps `erodibility_per_yr` by
+// exactly one ULP before replaying the `R` (erosion) record, and touches nothing else --
+// `world`/`E`/`S`/`B`/`T`/`version` records are unaffected, so only the erosion group can
+// diverge. The corpus is built so both the recorded native run and this perturbed replay
+// hit `max_iterations` without converging (see `examples/parity_dump.rs`'s doc): the step
+// count is therefore identical on both sides by construction, and a divergent height is
+// evidence of arithmetic sensitivity to `k`, not of the two runs having taken a different
+// number of steps to get there. Root nodes are held fixed every step regardless of `k`
+// (`erosion.rs`'s module doc, "A root has no receiver"), so this control is expected to
+// leave exactly the root fraction of the erosion group's heights unchanged -- a control
+// that diverged on all of them, or none, would say nothing.
 //
 // PROVENANCE. Before a single value is compared, this script asks the one question the
 // comparison itself cannot: *were these bytes built from the source that is here now?*
@@ -51,8 +63,8 @@ if (!dumpPath) {
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-if (mutate !== null && mutate !== 'seed') {
-  console.error(`unknown mutation "${mutate}"; the only control is --mutate seed`);
+if (mutate !== null && mutate !== 'seed' && mutate !== 'erosion-k') {
+  console.error(`unknown mutation "${mutate}"; the controls are --mutate seed and --mutate erosion-k`);
   process.exit(2);
 }
 const noProvenance = args.includes('--no-provenance');
@@ -119,6 +131,15 @@ const bitsOf = (value) => {
 const bits32Of = (value) => {
   scratch.setFloat32(0, value, true);
   return scratch.getUint32(0, true).toString(16).padStart(8, '0');
+};
+// One ULP toward +infinity -- the smallest perturbation `--mutate erosion-k` can make to a
+// positive finite value, so the control demonstrates bit-level sensitivity rather than
+// gross, obviously-different-planet divergence (`--mutate seed`'s own shape).
+const bumpUlp = (value) => {
+  scratch.setFloat64(0, value, true);
+  const bits = scratch.getBigUint64(0, true) + 1n;
+  scratch.setBigUint64(0, bits, true);
+  return scratch.getFloat64(0, true);
 };
 
 const lines = readFileSync(dumpPath, 'utf8').split('\n');
@@ -224,6 +245,59 @@ for (const raw of lines) {
         if (got !== cells[i]) note(`tile ${f[1]}[${i}]`, cells[i], got);
       }
       wb.wb_dealloc(out, width * height * 4);
+      break;
+    }
+    case 'R': {
+      // R <name> <seed> <radius_hex> <plates> <land_hex> <node_count> <uplift_hex>
+      //   <erodibility_hex> <timestep_hex> <threshold_hex> <max_iterations> <status>
+      //   <iterations> <converged> <height f64 hex>...
+      //
+      // A world is built fresh here (not reused from the `world` records above) because
+      // `wb_erosion_run` takes a world handle, and this record carries everything needed
+      // to build the exact one `examples/parity_dump.rs` erodes -- no feature records, so
+      // `records.length` is always 0 for this world.
+      const [
+        , name, seedText, radiusHex, platesText, landHex, nodeCountText,
+        upliftHex, erodibilityHex, timestepHex, thresholdHex, maxIterText,
+        statusText, iterText, convergedText, ...heights
+      ] = f;
+      const seed = BigInt(seedText) + (mutate === 'seed' ? 1n : 0n);
+      const nodeCount = Number(nodeCountText);
+      if (heights.length !== nodeCount) throw new Error('erosion line is the wrong length');
+      const worldHandle = wb.wb_world_new(seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0);
+      if (worldHandle === 0) throw new Error(`erosion world ${name} did not build in wasm`);
+
+      let erodibility = f64of(erodibilityHex);
+      if (mutate === 'erosion-k') erodibility = bumpUlp(erodibility);
+
+      const outHeights = wb.wb_alloc(nodeCount * 8);
+      const outIterations = wb.wb_alloc(4);
+      const outConverged = wb.wb_alloc(4);
+      if (outHeights === 0 || outIterations === 0 || outConverged === 0) {
+        throw new Error('wb_alloc refused an erosion output buffer');
+      }
+      const status = wb.wb_erosion_run(
+        worldHandle, nodeCount, f64of(upliftHex), erodibility, f64of(timestepHex),
+        f64of(thresholdHex), Number(maxIterText), outHeights, nodeCount, outIterations, outConverged);
+      const view = mem();
+      group = `erosion/${name}`;
+      tally(String(status) === statusText);
+      if (String(status) !== statusText) note(`erosion status ${name}`, statusText, String(status));
+      const gotIterations = view.getUint32(outIterations, true);
+      tally(String(gotIterations) === iterText);
+      if (String(gotIterations) !== iterText) note(`erosion iterations ${name}`, iterText, String(gotIterations));
+      const gotConverged = view.getUint32(outConverged, true);
+      tally(String(gotConverged) === convergedText);
+      if (String(gotConverged) !== convergedText) note(`erosion converged ${name}`, convergedText, String(gotConverged));
+      for (let i = 0; i < nodeCount; i += 1) {
+        const got = bitsOf(view.getFloat64(outHeights + i * 8, true));
+        tally(got === heights[i]);
+        if (got !== heights[i]) note(`erosion height ${name}[${i}]`, heights[i], got);
+      }
+      wb.wb_dealloc(outHeights, nodeCount * 8);
+      wb.wb_dealloc(outIterations, 4);
+      wb.wb_dealloc(outConverged, 4);
+      wb.wb_world_free(worldHandle);
       break;
     }
     case 'version': {

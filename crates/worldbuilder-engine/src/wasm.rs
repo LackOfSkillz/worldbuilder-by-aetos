@@ -93,9 +93,11 @@ use std::alloc as sys;
 use std::alloc::Layout;
 use std::cell::RefCell;
 
+use crate::erosion::{erode_to_convergence, receiver_distances_m, ErosionParams, ErosionRun};
 use crate::features::Feature;
 use crate::features::{CARVE, RAISE, SHAPE};
 use crate::sphere::SpherePoint;
+use crate::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use crate::substrate::{MUD, ROCK, SAND};
 use crate::surface::{FeatureInput, Surface};
 use crate::{World, GENERATOR_VERSION};
@@ -114,6 +116,52 @@ pub const WB_ERR_GRID: u32 = 3;
 /// the engine's own `UnknownSubstrate` forwarded rather than swallowed -- Python raises
 /// `KeyError` at the same input, and both languages decline to answer at the same place.
 pub const WB_ERR_SUBSTRATE: u32 = 4;
+/// A `wb_erosion_run` numeric parameter (node count, uplift, erodibility, timestep,
+/// convergence threshold, or iteration cap) is non-finite or outside the documented domain
+/// [`wb_erosion_run`] declares for it. See that function's doc for why each bound is drawn
+/// where it is: every one of these values is multiplied together inside `erode_step`
+/// (`c = k * dt * sqrt(A_drainage) / d`), and `erode_to_convergence` **asserts** a NaN
+/// height change rather than returning a status -- correct inside Rust, an abort across
+/// this `extern "C"` boundary. This refusal exists so that assertion is never reached from
+/// here, the same way `wb_world_new`'s `land_fraction` bound exists so a different panic
+/// deeper in the engine is never reached from there.
+pub const WB_ERR_PARAM: u32 = 5;
+/// `stream::sample_nodes` or `StreamGraph::build` refused the sampled node set for a
+/// [`wb_erosion_run`] call whose other parameters already passed validation. Not reachable
+/// by any input this function's own domain checks admit today -- `sample_nodes` only
+/// returns `None` for a count below two or above `stream::MAX_NODES`, both already refused
+/// as [`WB_ERR_PARAM`], and `StreamGraph::build` only reports the remaining `GraphError`
+/// variants for malformed neighbour data this function never constructs. Kept as a status
+/// rather than an `unwrap`, on the same reasoning as every other export in this file: an
+/// internal invariant this function currently guarantees is not a licence to panic if a
+/// later change to `sample_nodes` or `StreamGraph::build` ever makes it false.
+pub const WB_ERR_GRAPH: u32 = 6;
+
+/// The ceiling on `node_count` for [`wb_erosion_run`]. Not the planetary target -- slice 1p
+/// measured a 20,000,000-node graph at 1.45 GB of arrays and 2.16 GB peak RSS, which does
+/// not fit a 32-bit wasm heap under any field arrangement, and this export exists to make
+/// erosion's native/WASM parity testable, not to run a planetary bake through the browser
+/// door. `erosion_convergence_sweep`'s own largest row is 100,000 nodes; this doubles that
+/// for headroom while staying far below the point where a single synchronous call would
+/// hang a tab.
+pub const WB_MAX_EROSION_NODES: u32 = 200_000;
+/// The ceiling on `max_iterations` for [`wb_erosion_run`]. `erosion_convergence_sweep` caps
+/// its own runs at 200,000; the same number here, for the same reason `WB_MAX_PLATE_COUNT`
+/// exists -- an iteration count in the millions is not a slow bake, it is a hung tab, and
+/// the honest answer to a caller mistake is a refusal rather than a silently truncated run.
+pub const WB_MAX_EROSION_ITERATIONS: u32 = 200_000;
+/// The magnitude ceiling on `uplift_m_per_yr` and `erodibility_per_yr` for
+/// [`wb_erosion_run`], in each field's own unit. This crate's own fixtures run
+/// `uplift_m_per_yr = 1.0e-3` and `erodibility_per_yr = 1.0e-6` -- twelve and nine orders of
+/// magnitude below this bound respectively -- so the bound is drawn to keep
+/// `c = k * dt * sqrt(A_drainage) / d` (see `erosion.rs::erode_step`'s doc) from
+/// overflowing `f64` when multiplied against [`WB_MAX_EROSION_TIMESTEP_YR`] and a
+/// planetary drainage area, not to constrain any value this crate's own tests use.
+pub const WB_MAX_EROSION_RATE_PER_YR: f64 = 1.0e6;
+/// The magnitude ceiling on `timestep_yr` for [`wb_erosion_run`], in years. See
+/// [`WB_MAX_EROSION_RATE_PER_YR`]'s doc for why this bound exists: it is drawn to keep `c`
+/// from overflowing, not to match any realistic geological timestep.
+pub const WB_MAX_EROSION_TIMESTEP_YR: f64 = 1.0e9;
 
 /// `compose` codes for a feature record. They are f64 because a record is a flat f64 array;
 /// the comparison is exact equality, and `-0.0` reads as `RAISE` for the same reason.
@@ -166,6 +214,7 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_structural_m",
     "wb_bottom_at",
     "wb_fill_tile_f32",
+    "wb_erosion_run",
 ];
 
 // -------------------------------------------------------------------- the handle table
@@ -682,4 +731,196 @@ pub extern "C" fn wb_fill_tile_f32(
         Some(()) => WB_OK,
         None => WB_ERR_HANDLE,
     }
+}
+
+/// The `sea_level_m` [`wb_erosion_run`] builds its graph at. Not a parameter this task
+/// exposes: `StreamGraph::build`'s classification into land/boundary is slice 5b's concern
+/// (lakes, water), and this slice's own solver reads no flag it produces. `0.0` is a
+/// datum, not a claim about where any particular world's coastline sits.
+const WB_EROSION_SEA_LEVEL_M: f64 = 0.0;
+/// The `pond_max_drainage_area_m2` [`wb_erosion_run`] builds its graph at -- large enough
+/// that no root this export's node counts can produce is ever classified as a pond, since
+/// nothing here reads that classification (see [`WB_EROSION_SEA_LEVEL_M`]'s doc). The same
+/// value `erosion.rs`'s own unit tests use, not independently chosen.
+const WB_EROSION_POND_MAX_DRAINAGE_AREA_M2: f64 = 1.0e10;
+
+/// Erode an existing world's surface to (or toward) convergence, over a freshly sampled
+/// stream graph, by the Cordonnier implicit stream-power method -- the *capped* path, i.e.
+/// [`crate::erosion::erode_to_convergence`], which is what the engine actually ships (Task
+/// 4 wired the thermal slope cap inside this function, not inside the uncapped
+/// `erode_step`; see `erosion.rs`'s module doc).
+///
+/// # Why this takes a world handle rather than building its own `Surface`
+///
+/// `the_surface_is_built_once_per_world_and_never_per_sample` (`tests/wasm_exports.rs`)
+/// holds this whole file to exactly one `Surface::new` call, inside `wb_world_new` -- for
+/// the ~10^3x reason that test's doc gives. This function therefore samples height from an
+/// **already-built** world's surface (`wb_world_new` first, same as every other export
+/// here) rather than constructing a second one, which is also the only way a caller could
+/// ever compare an eroded and an unerorded reading of the *same* planet.
+///
+/// # What this does NOT do
+///
+/// It does not store the resulting graph back onto the world (`World::attach_streams`
+/// exists but this function never calls it), does not touch lakes, water, or `Surface`
+/// itself, and does not change the solver's arithmetic -- `erosion.rs` is untouched by this
+/// task. It exists to make erosion's native/WASM parity claim testable at all (see
+/// `erosion.rs`'s module doc, "native against WASM... both hold bit-for-bit"), which
+/// nothing could exercise before this export existed.
+///
+/// # Parameters and their domains
+///
+/// - `handle`: an existing world from `wb_world_new`. `WB_ERR_HANDLE` if stale or unknown.
+/// - `node_count`: `2..=`[`WB_MAX_EROSION_NODES`]. Below 2, `stream::sample_nodes` refuses
+///   (no neighbour relation, no drainage); above the ceiling, `WB_ERR_PARAM` -- see that
+///   constant's doc for why the ceiling sits far below the 20,000,000-node planetary
+///   target rather than at it.
+/// - `uplift_m_per_yr`, `erodibility_per_yr`: finite, `abs() <=`
+///   [`WB_MAX_EROSION_RATE_PER_YR`]. See that constant's doc for why the bound is orders of
+///   magnitude above this crate's own fixtures rather than tuned to them.
+/// - `timestep_yr`: finite, strictly positive, `<=` [`WB_MAX_EROSION_TIMESTEP_YR`].
+/// - `max_height_change_per_step_m`: finite, `>= 0.0` (the convergence threshold; `0.0` is
+///   accepted and simply never converges early).
+/// - `max_iterations`: `1..=`[`WB_MAX_EROSION_ITERATIONS`].
+///
+/// **Every one of these bounds exists so that [`crate::erosion::erode_to_convergence`]'s
+/// own release-time `assert!(!change.is_nan())` (see that function's doc) is never reached
+/// from here.** That assertion is correct inside Rust -- a NaN height change is a real
+/// defect worth failing loudly on -- but `extern "C"` is nounwind, so a panic that reaches
+/// this boundary aborts the whole module rather than returning a status; this file's own
+/// doc records that measured, for `wb_world_new`'s `land_fraction` bound, as
+/// `STATUS_STACK_BUFFER_OVERRUN` taking twenty-seven unrelated tests down with it. These
+/// bounds keep every term of `c = k * dt * sqrt(A_drainage) / d` (`erosion.rs::erode_step`'s
+/// doc) far enough from `f64::MAX` that the multiplication chain inside `erode_step` cannot
+/// overflow to infinity and then poison a height update through `inf * 0.0`.
+///
+/// # Output
+///
+/// `out_heights[0..node_count]` is the height field after the run -- the *last* step's
+/// result whether or not it converged, exactly as [`crate::erosion::ErosionRun`] carries it.
+/// `*out_iterations` is how many `erode_step` calls ran; `*out_converged` is `1` if the run
+/// reached [`ErosionRun::Converged`] and `0` for [`ErosionRun::NotConverged`] -- a caller
+/// that only reads `out_heights` cannot silently mistake a capped, unconverged run for a
+/// settled one, the same reason `ErosionRun` is an enum and not a bare `Vec<f64>` at all.
+///
+/// # Returns
+///
+/// `WB_OK`, `WB_ERR_HANDLE` for an unknown world, `WB_ERR_PARAM` for a numeric argument
+/// outside the domains above, `WB_ERR_BUFFER` for a null, misaligned or short output
+/// buffer, or `WB_ERR_GRAPH` if the sampled node set could not be built into a graph (see
+/// that constant's doc for why this is believed unreachable today and kept as a status
+/// anyway). Nothing is written to any output buffer on a refusal.
+///
+/// # Safety
+/// `out_heights` must be null, or a live 8-aligned allocation of at least `out_len` f64
+/// with `out_len >= node_count`. `out_iterations` and `out_converged` must each be null, or
+/// a live 4-aligned allocation of at least one `u32`.
+#[no_mangle]
+pub extern "C" fn wb_erosion_run(
+    handle: u32,
+    node_count: u32,
+    uplift_m_per_yr: f64,
+    erodibility_per_yr: f64,
+    timestep_yr: f64,
+    max_height_change_per_step_m: f64,
+    max_iterations: u32,
+    out_heights: *mut f64,
+    out_len: u32,
+    out_iterations: *mut u32,
+    out_converged: *mut u32,
+) -> u32 {
+    if node_count < 2 || node_count > WB_MAX_EROSION_NODES {
+        return WB_ERR_PARAM;
+    }
+    for rate in [uplift_m_per_yr, erodibility_per_yr] {
+        if !rate.is_finite() || rate.abs() > WB_MAX_EROSION_RATE_PER_YR {
+            return WB_ERR_PARAM;
+        }
+    }
+    if !timestep_yr.is_finite() || !(timestep_yr > 0.0) || timestep_yr > WB_MAX_EROSION_TIMESTEP_YR {
+        return WB_ERR_PARAM;
+    }
+    if !max_height_change_per_step_m.is_finite() || max_height_change_per_step_m < 0.0 {
+        return WB_ERR_PARAM;
+    }
+    if max_iterations == 0 || max_iterations > WB_MAX_EROSION_ITERATIONS {
+        return WB_ERR_PARAM;
+    }
+
+    let count = match usize::try_from(node_count) {
+        Ok(count) => count,
+        Err(_) => return WB_ERR_PARAM,
+    };
+
+    if out_heights.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let heights_address = out_heights as usize; // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+    if heights_address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(len) if len >= count => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    if out_iterations.is_null() || out_converged.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    for address in [out_iterations as usize, out_converged as usize] {
+        // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        if address % core::mem::align_of::<u32>() != 0 {
+            return WB_ERR_BUFFER;
+        }
+    }
+
+    let params = ErosionParams {
+        uplift_m_per_yr,
+        erodibility_per_yr,
+        timestep_yr,
+        max_height_change_per_step_m,
+        max_iterations,
+    };
+
+    let outcome = with_world(handle, |world| {
+        let world_seed = world.surface().world_seed as u64; // cast-ok: two's-complement reinterpretation, the same one wb_world_new already makes for Noise
+        let radius_m = world.surface().radius_m;
+        let sampling = sample_nodes(world_seed, node_count, radius_m).ok_or(WB_ERR_GRAPH)?;
+        let heights: Vec<f64> =
+            sampling.positions.iter().map(|point| world.surface().elevation_m(point, None)).collect();
+        let graph = StreamGraph::build(
+            &BuildParams {
+                world_seed,
+                radius_m,
+                sea_level_m: WB_EROSION_SEA_LEVEL_M,
+                sampling_kind: SamplingKind::Spiral,
+                pond_max_drainage_area_m2: WB_EROSION_POND_MAX_DRAINAGE_AREA_M2,
+            },
+            &sampling.positions,
+            &heights,
+            &sampling.area_m2,
+            &sampling.neighbours,
+        )
+        .map_err(|_| WB_ERR_GRAPH)?;
+        let distances_m = receiver_distances_m(&graph, &sampling.positions);
+        Ok(erode_to_convergence(&graph, &heights, &distances_m, &params))
+    });
+
+    let run = match outcome {
+        None => return WB_ERR_HANDLE,
+        Some(Err(code)) => return code,
+        Some(Ok(run)) => run,
+    };
+
+    let (result_heights, iterations, converged) = match run {
+        ErosionRun::Converged { heights, iterations } => (heights, iterations, 1u32),
+        ErosionRun::NotConverged { heights, iterations } => (heights, iterations, 0u32),
+    };
+    debug_assert_eq!(result_heights.len(), count, "erode_to_convergence must return one height per node");
+
+    unsafe {
+        core::slice::from_raw_parts_mut(out_heights, count).copy_from_slice(&result_heights);
+        *out_iterations = iterations;
+        *out_converged = converged;
+    }
+    WB_OK
 }

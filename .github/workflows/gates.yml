@@ -132,25 +132,42 @@ jobs:
           # by `cargo test -p worldbuilder-engine <cfg> -- --list`, counting `: test$` lines
           # and subtracting the 5 ignored (from the same command with `--ignored` added):
           # 453/453/455/483/485.
+          #
+          # 2026-09-05, slice 5a Task 5 (native/WASM erosion parity, the `wb_erosion_run`
+          # export): 453/453/455/483/485 -> 458/458/460/488/490. **This task added zero
+          # `#[test]` functions** -- `wasm.rs` gained one `pub extern "C" fn` and some
+          # `const`s, `erosion.rs` was not touched (the brief forbids changing solver
+          # arithmetic), and `tests/wasm_exports.rs` still lists 30 tests, unchanged. The +5
+          # is uniform across all five configurations, including `no-default-features` and
+          # `default`, which never compile `wasm.rs` at all -- so it cannot be this task's
+          # own change. Re-deriving the previous commit's own count (checking out `86e83fe`
+          # and `0e3acef` and re-listing) shows `erosion.rs`'s and `detmath.rs`'s test counts
+          # already matched their own commit messages exactly (22 -> 35 tests, the
+          # documented "thirteen tests"); the five recorded pins were already six commits
+          # stale before this task touched anything, for a reason this task did not chase
+          # down further because the brief's instruction is to verify the CURRENT count, not
+          # to audit history. Reported as a concern in task-5-report.md rather than silently
+          # folded into "Task 5 added 5 tests", which would misattribute a pre-existing drift
+          # to this change.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 453
+            expect: 458
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 453
+            expect: 458
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 455
+            expect: 460
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 483
+            expect: 488
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 485
+            expect: 490
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -482,18 +499,22 @@ jobs:
       # 2026-09-04 -- run 33916847441 shrank the corpus by a sixth with provenance, parity
       # and `cargo test` all green, and this gate was the only thing that noticed. It is a
       # fingerprint input now, so provenance refuses too; the two are independent and both
-      # are kept. 53,251 is the recorded population; the script also checks the nine
-      # per-group tallies sum to it, so a format change fails loudly instead of matching
-      # nothing.
-      - name: Assert the corpus -- 53,251 values, 0 divergent
+      # are kept. 56,254 is the recorded population -- 53,251 from the Surface-level corpus
+      # plus 3,003 from Task 5's erosion group (a 3,000-node capped `erode_to_convergence`
+      # bake through `wb_erosion_run`, plus its status/iterations/converged trio; see
+      # `examples/parity_dump.rs` for why 3,000 nodes exercises every arithmetic path a
+      # planetary bake would, and task-5-report.md for why size does not matter to a
+      # bit-equality claim). The script also checks the ten per-group tallies sum to it, so
+      # a format change fails loudly instead of matching nothing.
+      - name: Assert the corpus -- 56,254 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 53251 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 56254 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
-      # `--mutate seed` moves the world seed by one and 50,778 of 53,251 values diverge. A
+      # `--mutate seed` moves the world seed by one and 53,778 of 56,254 values diverge. A
       # parity run whose harness cannot fail is not evidence, and this is the cheapest place
       # in the project to keep proving that it can.
       - name: Parity -- the control (a harness that cannot fail is not evidence)
@@ -504,12 +525,42 @@ jobs:
           node parity.mjs native.txt --mutate seed 2>&1 | tee control.out
 
       # The control's own count. "the harness can be made to fail" is satisfied by ONE
-      # divergent value; the recorded figure is 50,778 of 53,251, and a control that
+      # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 50,778 of 53,251 divergent
+      - name: Assert the control -- 53,778 of 56,254 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 53251 --expect-divergent 50778
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 56254 --expect-divergent 53778
+
+      # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
+      # entirely different planet" (95.6% of values move -- every group, gross). It does not
+      # by itself prove the harness is sensitive to the erosion solver's own arithmetic
+      # specifically, and a control that only ever diverges on everything is nearly as
+      # uninformative as one that never diverges at all (task-5-brief.md). `--mutate
+      # erosion-k` bumps `erodibility_per_yr` by exactly one ULP and touches nothing else --
+      # only the `erosion/erosion` group can move. The corpus is built so both the native
+      # run and this perturbed replay hit `max_iterations` without converging (see
+      # `examples/parity_dump.rs`), so the two runs take the identical number of steps by
+      # construction: a divergent height here is evidence of arithmetic sensitivity to `k`,
+      # not of a different iteration count.
+      - name: Parity -- the erosion control (a harness that cannot fail is not evidence)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate erosion-k 2>&1 | tee erosion-control.out
+
+      # The erosion control's own count: 216 of the erosion group's 3,000 heights move from
+      # a single ULP on `k` (7.2%) -- status, iterations and converged are unaffected (fixed
+      # step count, see above), and every non-erosion group is untouched (216 of 56,254
+      # overall). Neither zero nor "every non-root node" -- a plausible fraction, which is
+      # the property this control exists to demonstrate.
+      - name: Assert the erosion control -- 216 of 56,254 divergent
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 56254 --expect-divergent 216
