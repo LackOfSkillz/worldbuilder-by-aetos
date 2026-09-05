@@ -735,3 +735,139 @@ report: 103 Rust lib tests plus the 6-test `no_std_math` guard (both unchanged -
 Python suite (319 minus the 6 tests deleted with `test_hypot_ulps.py`), and 73 in
 `test_conformance.py` (unchanged -- those 6 tests never lived there). `cargo test -p
 worldbuilder-engine`, run unfiltered, exits 0.
+
+## `generation.rs`: the one step with no tolerance at all
+
+Every module so far in this port has asked how far Rust and Python may drift before the
+divergence stops being rounding and starts being a bug. `generation.rs` is the first place
+that question does not apply. `_fraction` seeds a plate's position, pole and rate from a
+BLAKE2 digest, and a digest is either identical or it is not -- there is no bounded-ULP
+fallback for a hash. One differing bit does not nudge a coastline; it produces a `u64` from
+a completely unrelated part of the digest space, and therefore an unrelated planet. So the
+crate pins `blake2 = "=0.10.6"` exactly, in the same style as `libm`: a floating version
+requirement would make world generation depend on which day the crate happened to be
+built, since a routine dependency bump could silently reseed every world that has ever been
+generated.
+
+**Two traps, with the measurement that shows why each one matters.** Python's
+`hashlib.blake2b(key, digest_size=8)` names its first argument `key`, but that argument is
+BLAKE2's **message**, not its key parameter -- passing it to `Blake2bVar`'s actual keying
+API would hash something else entirely while looking identical at every call site. And
+`digest_size=8` is a real, freestanding 8-byte BLAKE2b, not the first 8 bytes of the
+ordinary 64-byte digest truncated down, because BLAKE2 mixes the requested output length
+into its initial state before the first block is compressed. The measurement makes this
+concrete rather than asserted: the first 8 bytes of the full 64-byte BLAKE2b digest of
+`"20260831|plate|7|pole-z"` are `fe33b7b6e9e16221`; the genuine 8-byte digest of the same
+message is `2d729d257c6a1550`. Those two hex strings share no structure at all, which is
+exactly the point -- `Blake2bVar::new(8)` is not a truncation with a different name, and
+substituting one for the other would not fail loudly, it would just generate a different
+universe.
+
+**The hazard that did not materialise.** The obvious worry about hashing a joined string is
+Python's and Rust's `str()`/`Display` disagreeing on some float's decimal representation --
+the trap slice 1h and others spent real effort guarding against. It does not arise here,
+because no float ever reaches `joined_key`: every part passed to `_fraction` is an `i64` or
+a short string label (`"plate"`, `"pole-z"`, `"sense"`, and so on), and integers format
+identically in both languages. Worth recording precisely because it is the first thing
+anyone familiar with this port's history would fear, and precisely why it never comes up.
+
+**The contract split, and it is unusually clean for this crate.** `fraction` and `rate` are
+**strict, bit-for-bit** -- a digest, a little-endian `u64`, a division by `2**64` (an exact
+power of two), and pure arithmetic on the result, with no transcendental anywhere in
+either path. `test_conformance.py` holds both to `same()` rather than `close_enough()` and
+they held across all four seeds (`0`, a negative seed, `20260831`, and `i64::MAX`), 40
+plate indices, and all six labels `_fraction` is ever called with, with zero exceptions.
+`spread` and `pole`, by contrast, are bounded: both end their computation in `cos`/`sin`.
+
+**Why `turning = fraction < 0.5` is safe.** This is a discrete decision on a continuous
+quantity -- the exact shape that has caused trouble everywhere else in this port, from the
+550-metre cliff in `tectonics.rs` to `ACROSS_ENOUGH`'s classification threshold. Here it is
+safe, but for a better reason than "the corpus happens not to land on the boundary": the
+quantity being thresholded is *exactly* reproducible. It comes from a byte-identical BLAKE2
+digest through an integer-to-float conversion and a division by an exact power of two, with
+no transcendental anywhere in the path, so Rust and Python are comparing identical bit
+patterns against `0.5`, not two independently-rounded approximations that could land on
+opposite sides of it.
+
+**Why the degeneracy guard is unreachable, derived rather than asserted.** Python's `_spread`
+falls back to a second cross product if `sideways.length() < 1e-9`. `sideways` is
+`(0, 0, 1).cross(point)`, so its length is exactly the spiral's ring radius. With
+`z = 1 - 2u` for `u = (index + 0.5) / count`, `1 - z^2 = 4u(1-u)`, so
+`ring = 2*sqrt(u(1-u))`, smallest at `index = 0`, where it approaches `sqrt(2/count)` for
+large `count`. Firing the `1e-9` guard needs `count > 2e18` -- not a realistic plate count
+by any margin. Measured, not just derived: the minimum ring across counts up to 100,000 is
+`0.004472`, about 4.5 million times the guard threshold. The guard is ported anyway, because
+removing it would change behaviour for an absurd count and a future reader should not have
+to re-derive why it never fires in practice.
+
+**The constructor distinction, and it is now guarded.** `spread_impl` ends with the
+normalising `SpherePoint::from_vector`, because its nudged point is not unit by
+construction. `pole` ends with the direct, non-normalising `SpherePoint { vector }`
+constructor, because its vector -- built from `cos`/`sin` of an angle and a ring computed to
+make the whole thing unit -- already is unit, and normalising it would look like a tidy-up
+while quietly moving every pole's bits. **The conformance suite cannot catch a swap of the
+two.** Swapping in `from_vector` for `pole` moves values by about 2 ULP (measured at pole
+6), which hides inside the 4 ULP bound `pole` already earns for going through `cos`/`sin` --
+`test_conformance.py` compares Python's reference against whatever the Rust side currently
+does, so both constructors pass. The guard is a Rust unit test instead:
+`pole_uses_the_non_normalising_constructor` rebuilds the vector by hand, without
+normalising, and requires bit equality against what `pole` actually returns. It was observed
+to fail when the swap was made deliberately, which is the only way to trust that a test like
+this actually tests anything.
+
+**`plates_for` is what makes `index == position` true.** Its loop assigns
+`index: index` for `index in 0..count`, both together, in the same iteration. Slices 1e,
+1f and 1g all address the bisector table and the seed/pole tables by *position*, and that
+only agrees with a plate's `.index` field because this one line assigns them together. If
+this line ever assigned anything else to `index` -- a shuffled order, a filtered subset --
+those earlier slices would silently address the wrong rows. No error, just a different
+planet.
+
+**The `spread` bound, stated the honest way round.** Lead with the reassuring number: at
+`DEFAULT_PLATE_COUNT` (22, the only count any world this project actually builds uses),
+`spread`'s divergence from Python is **3 ULP** -- inside the ordinary 4-ULP
+`MAX_TRANSCENDENTAL_ULPS` bound with no special allowance needed at all.
+`GENERATION_SPREAD_BOUNDED_MAX_ULPS = 32` exists only because `test_conformance.py`'s sweep
+deliberately reaches count 137, far past any real world.
+
+32 is scoped to the counts the sweep actually tests, not a property of `spread` itself, and
+that has to be said plainly: measured divergence grows with count -- 3 ULP at 22, 6 ULP at
+137, 8 ULP at 500, 16 ULP at 1000, and up to **131 ULP at 5000**. A larger plate count needs
+its own measurement, not an extrapolation of this one. Two mechanisms compound to produce
+that growth. First, `angle = golden * index` grows without bound as `index` grows, so the
+trig range reduction `cos`/`sin` need becomes more demanding, and CPython's range reduction
+does not agree bit-for-bit with `libm`'s -- `pole`'s angle, by contrast, is bounded to a
+single turn (0 to 2*pi), needs no such reduction, and shows only 2 ULP. Second, ULP is a
+*relative* measure that gets very fine near zero, so an ordinary small absolute rounding
+difference in a near-zero vector component reads as a large ULP count on its own, with
+nothing wrong in the arithmetic -- this is the same effect the Tectonics section above
+documents at much larger scale, so it is described consistently with that section here
+rather than in new words.
+
+`test_generation_spread_agrees_within_the_measured_bound` ties the bound to the range it
+was measured over: an assertion checks `GENERATION_COUNTS` has not grown past
+`GENERATION_SPREAD_MEASURED_MAX_COUNT` (137) before it trusts the bound at all, and fires
+first, with a message explaining why, if the sweep is ever widened without a fresh
+measurement.
+
+**The scaffolding is gone.** Task 1's throwaway cross-language harness,
+`tests/test_blake2_bytes.py`, is deleted as of this section -- its job was proving the
+`blake2` crate matched CPython before anything in the port depended on the answer, and
+`test_conformance.py` now covers `_fraction` and friends directly against the built engine.
+`crates/worldbuilder-engine/tests/blake2_bytes.rs` **stays**, permanently, even though
+`test_conformance.py`'s `_fraction` comparison would itself catch a future `blake2` crate
+version bump: the Python side of that comparison is `hashlib`, not the Rust `blake2`
+crate, so the two are already independent, and a digest change on the Rust side would
+break the 960-case bit-for-bit `same()` assertion loudly. `blake2_bytes.rs` earns its
+keep for other reasons -- it is Rust-only, so it fails without the Python extension
+needing to be built at all; it pins specific vectors sourced independently against CPython
+rather than comparing two live computations; and it localises a failure to the dependency
+itself, instead of surfacing as a whole-generation-chain mismatch that someone would have
+to diagnose back to its root.
+
+Every count in this section was verified by running the suites, not copied from an earlier
+report: 133 Rust tests (123 lib plus the 4-test `blake2_bytes.rs` plus the 6-test
+`no_std_math` guard -- unchanged from before this task, since `generation.rs` and its tests
+already existed going in), 319 in the full Python suite (324 minus the 5 tests deleted with
+`tests/test_blake2_bytes.py`), and 79 in `test_conformance.py` (unchanged -- those 5 tests
+never lived there). `cargo test -p worldbuilder-engine`, run unfiltered, exits 0.
