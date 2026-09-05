@@ -230,6 +230,30 @@ was chosen on; and **what still does not look like a mountain**.
 
 ---
 
+## OWNER REQUIREMENT, 2026-09-05: two mountain sliders, and calibration
+
+Asked for directly, and they do not both land on `ReliefParams`. Worth separating before Task 4 wires a
+panel, because one of them reaches a part of the engine this slice was not scoped to touch.
+
+**"Raise and lower mountains"** — how *tall* they are. Measured, the highest point on the planet is 1,381 m
+and **1,378 m of that is the structural (tectonic) term**, not roughness. So a height slider is a **tectonic
+amplitude** control, and it lives in the plates/margins path rather than in `detail.rs`. It is not reachable
+from `ReliefParams` at all.
+
+**"More and fewer mountains"** — how *many*. Partly served today by the `plates` control, since margins are
+where uplift concentrates, but plate count changes the whole world's shape rather than mountain density
+specifically. A genuine density control is a separate parameter on the same tectonic path.
+
+**Ruling 4: both are tectonic-side parameters and are OUT OF SCOPE for this slice**, which is about the
+roughness spectrum. They get their own slice, following the same safety argument: **new parameters, opt-in,
+defaults byte-identical**, because `worldbuilder/` holds the tectonic reference too and it is the same
+conformance oracle. Recorded here so Task 4 does not silently invent a half-version of them from the
+roughness constants, which would move a mountain's *texture* while the owner asked for its *height*.
+
+**Slider calibration is in scope for Task 4** and should be driven by Task 2's measurements rather than by
+taste: a slider whose useful range is a tenth of its travel is a slider nobody can aim. Ranges come from the
+sweep, and where a control is logarithmic in effect it should be logarithmic in the widget.
+
 ## What this slice must NOT do
 
 - **Change any default, or touch `worldbuilder/`.** Ruling 1.
