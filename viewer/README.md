@@ -6,6 +6,38 @@ generator, a pool of eight workers with an LRU tile cache, feature-aware refinem
 in-page checks and a `?fault=` switch that makes them fail on demand. No placement, no
 editing, no worldfile — **slice 3 owns those**.
 
+> **STALE FIGURES, NAMED RATHER THAN SILENTLY WRONG (slice 5b Task 6 / relief Task 5,
+> 2026-09-05, at `1004f4d`).** This file's *current-tense* engine and parity numbers were
+> written in slice 2b and have not moved since; several slices have landed on top of them.
+> Rather than leave a reader to trust them, here is what the same commands actually print
+> today, re-run on this host while writing this note:
+>
+> | this file says | measured today |
+> |---|---|
+> | the artifact is 84,856 bytes, 11 exports (`memory` + 10 functions) | **220,452 bytes, 16 exports** (`memory` + 15 functions), 0 imports |
+> | parity is 53,251 values, 0 divergent | **71,596 values, 0 divergent** |
+> | `--mutate seed` diverges 50,778 | **68,457 of 71,596** -- and there are now two further, narrower controls: `--mutate erosion-k` (216) and `--mutate water-pond` (60) |
+> | "There is no CI" | there is: `.github/workflows/gates.yml`, six gates plus two count gates, on every push. See `docs/ci.md`. |
+>
+> The *historical* narrative in this file -- the staleness-guard investigation, the
+> `?fault=` evidence, the frame budgets -- describes specific past commits and their
+> evidence, and is deliberately left as written: re-stamping it with today's numbers would
+> misrepresent what was true at the time it describes. The authority for the engine's current
+> figures is `crates/worldbuilder-engine/README.md`, `crates/worldbuilder-engine/parity/README.md`
+> and `viewer/public/wasm/MANIFEST.txt`. Bringing the rest of this file's browser-side
+> measurements up to date needs a browser and a person, and is out of scope for a task that
+> could not open one.
+>
+> **One panel bug, pre-existing and NOT fixed here**, recorded so this file does not describe
+> the panel as correct: the radius slider in `public/app/controls.js` is built with
+> `min: 1e6, step: 1e5` and a default value of `6371000`. An HTML range input snaps its value
+> to the nearest `min + k*step`, and `(6371000 - 1000000) / 100000 = 53.71` rounds to 54 --
+> so the control reads back **6,400,000 m**, and pressing generate on a clean page silently
+> builds a different planet from the one `main.js`'s `DEFAULT_WORLD` names. The neighbouring
+> sliders were checked the same way and are fine: `land` (`min 0.05, step 0.01`) lands exactly
+> on 0.29, and `plates` (`min 3, step 1`) exactly on 22. Only the radius default is
+> unreachable by its own control.
+
 **New here? Read [The record (Task 7)](#the-record-task-7) first.** It is the consolidated
 statement of what this thing guarantees, what it costs, what it deliberately does not claim,
 and what is still open. Everything between here and there is the working notes of the six

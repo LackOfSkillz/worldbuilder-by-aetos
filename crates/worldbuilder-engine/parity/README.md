@@ -55,6 +55,23 @@ The last four rows are slice 5b Task 5's, and each closes a hole rather than add
   the calibrated value; a corpus that moved the threshold until ponds appeared would be hiding
   that finding rather than testing it.
 
+**One number in this corpus is a MEASUREMENT of the world, and its gate must be RE-DERIVED
+rather than merely re-run.** Every other row above is a count this harness chose: 10,000
+points because the corpus asks for 10,000, 65×65 because a tile is 65×65. **156 is not.** It
+is how many lake bodies seed 20260904 happens to produce at 30,000 nodes with datum 0.0, and
+it enters the total twice over — `156 × 7 + 3 = 1,095` in the `water/plain` row, and `60 of
+156` in the water control's own gate. Change the mesh, the sampler, the seed, the node count
+or the datum and **both pins move**, along with `gates.yml`'s `--expect-compared 71596` and
+`--expect-divergent 60`.
+
+The correct response when that happens is to re-derive the corpus arithmetic from its
+definition — line by line, the way `gates.yml`'s own inline commentary sets it out — measure
+the new body count natively, and *then* check the run against the derivation. Pasting in
+whatever number the new run printed turns a gate into a rubber stamp: the pin exists precisely
+so that a corpus which quietly shrank cannot pass. This is the most brittle gate here and the
+only one whose value nothing in the source constrains, which is why it is called out where the
+next person to change the mesh will meet it.
+
 A scattered corpus never lands inside a placed feature, and that gap has survived every
 earlier probe in this project — hence the second world and the second tile.
 

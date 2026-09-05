@@ -235,13 +235,23 @@ mismatch, if they disagree or either is missing:
 
   | configuration | listed | ignored | run (pinned in `gates.yml`) |
   |---|---|---|---|
-  | `--no-default-features` | 459 | 5 | **454** |
-  | default | 459 | 5 | **454** |
-  | `--features python` | 461 | 5 | **456** |
-  | `--features wasm` | 495 | 5 | **490** |
-  | `--features python,wasm` | 497 | 5 | **492** |
+  | `--no-default-features` | 522 | 5 | **517** |
+  | default | 522 | 5 | **517** |
+  | `--features python` | 524 | 5 | **519** |
+  | `--features wasm` | 571 | 5 | **566** |
+  | `--features python,wasm` | 573 | 5 | **568** |
 
-  These moved up from 409/409/409/439/439 in the identity slice (`tests/build_fingerprint.rs`,
+  Re-derived for slice 5b Task 6 / relief Task 5, on that host, at `1004f4d`, by running the
+  two `--list` forms per configuration before reading `gates.yml` -- and they match its
+  `expect:` / `expect_ignored:` values exactly. The table had been left at
+  459/459/461/495/497 listed (454/454/456/490/492 run) while slice 5b and the whole
+  relief-amplitude slice landed: **+63 in `lib` across all five rows** (`stream.rs`,
+  `streamfmt.rs`, all of `water.rs`, and `detail.rs`'s `ReliefParams` / `hills()`) and **+13
+  in `tests/wasm_exports.rs`** (36 -> 49: the relief exports and `wb_water_run`), which only
+  the two `wasm` rows compile. The per-task attribution is in `gates.yml`'s own inline
+  commentary, task by task.
+
+  The figures before that moved up from 409/409/409/439/439 in the identity slice (`tests/build_fingerprint.rs`,
   new, adding 9 tests to all five configurations, plus 2 more in `lib` for `--features python`
   because `source_fingerprint()` / `source_fingerprint_inputs()` are PyO3 exports whose
   binding tests only compile with that feature); to 458/458/460/493/495 listed
