@@ -89,16 +89,19 @@ belongs *here* is the shape of the door and the evidence that both sides of it a
     npm run check:wasm      # is the SHIPPED artifact built from the source that is here now?
 
 **The artifact, read from `public/wasm/MANIFEST.txt` and from the file (re-derived for
-slice 5a Task 6, which found the byte count and export count here stale by one export --
-`wb_erosion_run` had landed without this figure moving):** 117,146 bytes, **12 exports**
-(`memory` plus the eleven functions below), **0 imports**. Zero imports is the design, not
-an accident: `WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS
-runtime to keep in step, and a worker gets its own instance and therefore its own linear
-memory for free.
+slice 5b Task 5. This figure has now been found stale TWICE by the task that re-derived it --
+slice 5a Task 6 found it a whole export behind after `wb_erosion_run` landed, and it was four
+behind again by 5b Task 5, the relief slice's three exports having landed the same way. A
+number nobody's gate reads is a number that goes stale; treat this paragraph as one to
+re-derive rather than to trust):** 220,452 bytes, **16 exports** (`memory` plus the fifteen
+functions below), **0 imports**. Zero imports is the design, not an accident:
+`WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS runtime to keep in
+step, and a worker gets its own instance and therefore its own linear memory for free.
 
-    wb_generator_version   wb_alloc      wb_dealloc     wb_world_new   wb_world_free
-    wb_world_count         wb_elevation_m  wb_structural_m  wb_bottom_at  wb_fill_tile_f32
-    wb_erosion_run
+    wb_generator_version   wb_alloc         wb_dealloc       wb_world_new   wb_world_free
+    wb_world_count         wb_elevation_m   wb_structural_m  wb_bottom_at   wb_fill_tile_f32
+    wb_erosion_run         wb_world_new_relief   wb_relief_preset   wb_relief_check
+    wb_water_run
 
 `WB_EXPORTS` in `wasm.rs` is that list, declared. A test holds this crate's source to it and
 the build script holds the built module's export section (id 7) to it, because a forgotten
@@ -152,11 +155,24 @@ Re-run in this task, on the committed artifact:
     cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
     node crates/worldbuilder-engine/parity/parity.mjs native.txt
     node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate erosion-k
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate water-pond
 
-**53,251 values compared, 0 divergent.** The control -- `--mutate seed`, one seed away and
-nothing else -- moves **50,778 of them**, and every group carrying a continuous height moves
-entirely. The control is the half that matters: a harness that has never reported a
-disagreement is not known to be able to.
+**71,596 values compared, 0 divergent** (slice 5b Task 5's re-run: the corpus now carries the
+relief channel and the water manifest as well). **The controls are the half that matters** --
+a harness that has never reported a disagreement is not known to be able to -- and there are
+three, deliberately at three different scales:
+
+| control | what it perturbs | divergent |
+|---|---|---:|
+| `--mutate seed` | the world seed, by one | 68,457 of 71,596 |
+| `--mutate erosion-k` | `erodibility_per_yr`, by one ULP | **216**, all in `erosion/erosion` |
+| `--mutate water-pond` | `pond_max_surface_area_m2`, one threshold | **60**, all of them `Body::kind` |
+
+A control that moves everything is nearly as uninformative as one that moves nothing, which is
+why the second and third exist. The third's count is **predicted natively before the run**,
+from an independently summed surface-area distribution, and `parity.mjs` fails if any group
+moves by a different amount. See `parity/README.md`.
 
 **Parity alone cannot tell you the artifact is current, and for several commits of this
 project it did not.** The committed `.wasm` predated a change to `wasm.rs`; the two differed
@@ -3226,17 +3242,19 @@ Two consequences follow, stated rather than left to be inferred from an unchange
 `wb_erosion_run` (slice 5a Task 5) is a real, shipped export -- re-checked here rather than
 reported from Task 5's own record. Re-run for this task (`cargo run --release -p
 worldbuilder-engine --example parity_dump --features wasm`, replayed by `parity/parity.mjs`
-against the committed `viewer/public/wasm/worldbuilder_engine.wasm`, 117,146 bytes, on the
-same host as the sweep above; full corpus and method in `parity/README.md`, which this task
-also found stale by one whole group and re-derived -- see "Figures found stale"):
+against the committed `viewer/public/wasm/worldbuilder_engine.wasm`; full corpus and method in
+`parity/README.md`, which this task also found stale by one whole group and re-derived -- see
+"Figures found stale"). **Figures below re-run for slice 5b Task 5**, against the current
+220,452-byte artifact and the corpus that task grew to 71,596 values:
 
 | run | values compared | divergent |
 |---|---:|---:|
-| parity | 56,254 | **0** |
-| `--mutate seed` (a different planet) | 56,254 | 53,778 |
-| `--mutate erosion-k` (`erodibility_per_yr` bumped one ULP) | 56,254 | **216** |
+| parity | 71,596 | **0** |
+| `--mutate seed` (a different planet) | 71,596 | 68,457 |
+| `--mutate erosion-k` (`erodibility_per_yr` bumped one ULP) | 71,596 | **216** |
+| `--mutate water-pond` (`pond_max_surface_area_m2`, one threshold) | 71,596 | **60** |
 
-The plain run is bit-for-bit across all 56,254 values, 3,003 of which are the erosion
+The plain run is bit-for-bit across all 71,596 values, 3,003 of which are the erosion
 group's own corpus (3,000 heights from one `wb_erosion_run` call, 3,000 nodes, this crate's
 default test constants, capped at 20 iterations so it exercises the not-yet-converged path
 deliberately, plus status/iterations/converged). The seed control shows the harness can
@@ -3250,6 +3268,15 @@ moves 216 of the 3,000 heights and *nothing else in the record* -- both `iterati
 harness can catch a one-ULP divergence in the implicit update's own arithmetic, with the
 possibility that "the two sides just ran a different number of steps" excluded by the same
 comparison. Confirmed by re-running it for this task, not assumed from Task 5's report.
+**And its count did not move when slice 5b Task 5 grew the corpus by 15,342 values** -- which
+is the right outcome, since none of the three added groups is downstream of `k`.
+
+**Slice 5b added a third control on the same principle, one level narrower.**
+`--mutate water-pond` moves `pond_max_surface_area_m2` alone; that parameter reaches exactly
+one field of the water manifest, so 60 of 156 `Body::kind` codes move while every
+`root_node`, `level_m`, extent bound, the body count and the datum compare equal -- the same
+shape as `iterations` and `converged` comparing equal here. Its 60 is predicted from
+`water::lake_body_surface_areas_m2` before the replay runs, and checked against it.
 
 **What this parity claim does not cover.** `cap_slopes`'s own clamp branch is called by
 `wb_erosion_run` (it always runs the capped path) but, per section 2 above, is inert at this
@@ -3378,3 +3405,10 @@ hardcoded inside `wb_erosion_run`** (`WB_EROSION_SEA_LEVEL_M = 0.0`) and is **no
 it is what decides which nodes the graph classifies as roots, and therefore which nodes this
 slice's solver holds fixed as local base levels. Lakes and water will need to revisit that
 constant, not merely add parameters alongside it.
+
+**Slice 5b Task 5 answered the datum half of that note, at a second door rather than at this
+one.** `wb_water_run` takes `sea_level_m` as a caller parameter, bounded by the world's own
+radius, and moving it moves every body in the manifest. `wb_erosion_run`'s own constant is
+untouched -- changing it would change what that export computes, which is not a parity task's
+business -- so the two exports still build their graphs at different datums unless a caller
+passes 0.0. That is stated on `WB_EROSION_SEA_LEVEL_M` and remains open.

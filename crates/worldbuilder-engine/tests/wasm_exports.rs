@@ -7,10 +7,11 @@
 //!
 //! **Native-against-WASM parity is a separate, committed harness**, not an assertion made
 //! here and not a figure in a task report: `examples/parity_dump.rs` plus
-//! `parity/parity.mjs` compare 56,254 values through the *shipped* exports -- scattered
-//! open water, inside a placed harbour, two 65x65 tiles, and one `wb_erosion_run` corpus --
-//! against the committed `.wasm`, with `--mutate seed` and `--mutate erosion-k` controls
-//! that must both turn some of it red. See
+//! `parity/parity.mjs` compare 71,596 values through the *shipped* exports -- scattered
+//! open water, inside a placed harbour, three 65x65 tiles, one `wb_erosion_run` corpus, both
+//! relief presets, a world built from a non-canonical relief block, and one `wb_water_run`
+//! water manifest -- against the committed `.wasm`, with `--mutate seed`, `--mutate erosion-k`
+//! and `--mutate water-pond` controls that must all three turn some of it red. See
 //! `parity/README.md` for the populations, the invocation and the recorded output. It is
 //! not a `cargo test` because the only two ways to make it one are a WASM runtime
 //! dev-dependency or a test that skips when `node` is absent; that README says so, and
@@ -1479,4 +1480,417 @@ fn the_relief_buffer_channel_refuses_what_it_cannot_read() {
         0,
     );
     assert_eq!(wb_world_count(), before);
+}
+
+// ---- the water channel (slice 5b Task 5) -------------------------------------------------
+//
+// `wb_water_run` is the first export that reaches `water.rs` at all. Before it existed, that
+// module's native-against-WASM agreement was unfalsifiable for exactly the reason
+// `wb_erosion_run`'s own doc gives about `erosion.rs`: nothing in the export surface touched
+// it, so the parity harness could not compare a single value it produced.
+//
+// The sweeps below are sweeps rather than spot-checks because `extern "C"` is nounwind and
+// **two** of `water.rs`'s no-rim panics are reachable from this export's own parameters. Both
+// were found here by sweeping, not by reasoning; see `a_planet_with_no_outlet_...` for the
+// second one's measured trace.
+
+/// One water run through the export, sized generously so the count-only query is not needed.
+/// `node_count * WB_WATER_BODY_STRIDE` is always enough: no body holds fewer than one node.
+fn water_run(handle: u32, node_count: u32, sea_level_m: f64, pond_max_m2: f64) -> (u32, Vec<f64>, f64) {
+    let mut rows = vec![0.0f64; node_count as usize * WB_WATER_BODY_STRIDE];
+    let capacity = rows.len() as u32;
+    let mut body_count: u32 = 0;
+    let mut sea_out: f64 = 0.0;
+    let status = wb_water_run(
+        handle,
+        node_count,
+        sea_level_m,
+        pond_max_m2,
+        rows.as_mut_ptr(),
+        capacity,
+        &mut body_count,
+        &mut sea_out,
+    );
+    rows.truncate(body_count as usize * WB_WATER_BODY_STRIDE);
+    (status, rows, sea_out)
+}
+
+/// Every property a manifest row must satisfy, asserted on every accepted record of every
+/// sweep -- because a bad water record does not fail in the export's domain checks, it fails
+/// (or worse, silently succeeds) in what it writes.
+fn assert_rows_are_a_manifest(rows: &[f64], sea_level_m: f64, sea_out: f64, label: &str) {
+    assert_eq!(sea_out.to_bits(), sea_level_m.to_bits(), "{label}: the datum was not echoed back");
+    assert_eq!(rows.len() % WB_WATER_BODY_STRIDE, 0, "{label}: a partial row");
+    let mut previous_root = -1.0f64;
+    for row in rows.chunks_exact(WB_WATER_BODY_STRIDE) {
+        assert!(row[0] > previous_root, "{label}: rows must ascend by root_node, strictly");
+        previous_root = row[0];
+        assert!(
+            row[1] == WB_BODY_KIND_LAKE || row[1] == WB_BODY_KIND_POND,
+            "{label}: kind {} is neither code",
+            row[1],
+        );
+        assert!(row[2].is_finite(), "{label}: a non-finite surface level");
+        assert!(row[3] >= -90.0 && row[3] <= 90.0, "{label}: min latitude {} off the sphere", row[3]);
+        assert!(row[4] >= -90.0 && row[4] <= 90.0, "{label}: max latitude {} off the sphere", row[4]);
+        assert!(row[3] <= row[4], "{label}: latitude bounds inverted");
+        // Longitude may run min > max: that is `Extent`'s documented antimeridian wrap, not
+        // an invalid box, and 6 of 171 bodies at n=30,000 already take it (Task 4's own
+        // measurement). So only the range is asserted, never the ordering.
+        for k in [5usize, 6] {
+            assert!(row[k] >= -180.0 && row[k] <= 180.0, "{label}: longitude {} off the circle", row[k]);
+        }
+    }
+}
+
+/// The hostile set every numeric field of every sweep is driven through, plus a geometric
+/// ladder in both signs and a linear one across the band a real datum lives in. An evenly
+/// spaced sample of a domain that spans orders of magnitude is a spot-check wearing a
+/// sweep's name -- the same reasoning the relief sweep records for its own ladders.
+fn sea_level_sweep() -> Vec<f64> {
+    let mut values = vec![
+        0.0,
+        -0.0,
+        f64::NAN,
+        -f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MIN_POSITIVE,
+        -f64::MIN_POSITIVE,
+        5e-324,
+        -5e-324,
+        f64::EPSILON,
+        -f64::EPSILON,
+        f64::MAX,
+        f64::MIN,
+        RADIUS_M,
+        -RADIUS_M,
+        RADIUS_M + RADIUS_M * 1e-12,
+        -RADIUS_M - RADIUS_M * 1e-12,
+    ];
+    for exponent in -6..=9 {
+        let magnitude = 10f64.powi(exponent);
+        values.push(magnitude);
+        values.push(-magnitude);
+    }
+    for step in -60..=60 {
+        values.push(f64::from(step) * 250.0);
+    }
+    values
+}
+
+#[test]
+fn every_water_parameter_is_swept_across_its_whole_range_and_beyond_and_never_aborts() {
+    // 3,000 nodes: the same size `wb_erosion_run`'s parity corpus uses, and large enough
+    // that the graph has real basins (13 bodies at the datum) while a 171-record sweep still
+    // runs in seconds. Every accepted record is *read back*, not merely built: the relief
+    // sweep's sharpest lesson was that a NaN-permissive validator passed every
+    // construction-only assertion and was caught only by sampling the world it admitted.
+    const NODES: u32 = 3_000;
+    let world = wb_world_new(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    assert!(world != 0);
+
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for sea_level_m in sea_level_sweep() {
+        let (status, rows, sea_out) = water_run(world, NODES, sea_level_m, 1.0e5);
+        match status {
+            WB_OK => {
+                accepted += 1;
+                assert_rows_are_a_manifest(&rows, sea_level_m, sea_out, &format!("sea {sea_level_m}"));
+            }
+            WB_ERR_PARAM | WB_ERR_GRAPH => refused += 1,
+            other => panic!("sea {sea_level_m}: unexpected status {other}"),
+        }
+    }
+    assert!(accepted > 0 && refused > 0, "a sweep that accepts everything or nothing is not a sweep");
+
+    // The threshold is only ever the right-hand side of a `<=`, so its own hostile set is
+    // small -- but a NaN there would classify every body as a lake in silence, which is the
+    // silently-dropping-builder shape, so it is refused and the refusal is asserted.
+    for pond_max_m2 in
+        [0.0, -0.0, 5e-324, 1.0e5, 1.0e10, 1.0e20, f64::MAX, f64::MIN_POSITIVE]
+    {
+        let (status, rows, sea_out) = water_run(world, NODES, 0.0, pond_max_m2);
+        assert_eq!(status, WB_OK, "pond threshold {pond_max_m2} should be admissible");
+        assert_rows_are_a_manifest(&rows, 0.0, sea_out, &format!("pond {pond_max_m2}"));
+    }
+    for pond_max_m2 in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -1.0e-300] {
+        let (status, _, _) = water_run(world, NODES, 0.0, pond_max_m2);
+        assert_eq!(status, WB_ERR_PARAM, "pond threshold {pond_max_m2} should be refused");
+    }
+
+    // The node-count ladder, both ends and every power of two between. `2` is refused for a
+    // measured reason (see the no-outlet test); the ceiling and one past it are the domain.
+    for node_count in [2u32, 3, 4, 5, 8, 16, 32, 64, 128, 256, 1_000, 3_000] {
+        let (status, rows, sea_out) = water_run(world, node_count, 0.0, 1.0e5);
+        assert!(
+            status == WB_OK || status == WB_ERR_GRAPH,
+            "node_count {node_count}: unexpected status {status}",
+        );
+        if status == WB_OK {
+            assert_rows_are_a_manifest(&rows, 0.0, sea_out, &format!("n {node_count}"));
+        }
+    }
+    for node_count in [0u32, 1, WB_MAX_WATER_NODES + 1, u32::MAX] {
+        let (status, _, _) = water_run(world, node_count.min(4), 0.0, 1.0e5);
+        let _ = status; // the tiny stand-in above is only to keep the allocation small
+        let mut count: u32 = 0;
+        let mut sea_out: f64 = 0.0;
+        let refusal = wb_water_run(
+            world,
+            node_count,
+            0.0,
+            1.0e5,
+            core::ptr::null_mut(),
+            0,
+            &mut count,
+            &mut sea_out,
+        );
+        assert_eq!(refusal, WB_ERR_PARAM, "node_count {node_count} should be refused");
+    }
+
+    assert_eq!(wb_world_free(world), WB_OK);
+}
+
+#[test]
+fn a_planet_with_no_outlet_would_panic_in_water_rs_and_is_refused_before_it_can() {
+    // THE ABORT THIS EXPORT'S SWEEP FOUND, and it is the second no-rim panic in `water.rs`
+    // rather than the obvious first one. At `sea_level_m` below the world's own lowest
+    // sampled point there is no BOUNDARY node, so no mouth, so every basin is a lake and
+    // their union is the entire graph. Measured before `every_component_has_an_outlet`
+    // existed, this host, native release, seed 20260904, n = 3,000, sea = -1.0e4:
+    //
+    //   merge_tied_plateaus: the union of 157 lakes ([2423, 2279, ...]) has no rim
+    //   thread caused non-unwinding panic. aborting.
+    //   exit code: 0xc0000409 (STATUS_STACK_BUFFER_OVERRUN)
+    //
+    // In wasm that is a dead module and a blank viewer. **A band, not a cliff**, which is
+    // why the ladder below brackets it from both sides rather than checking one value: the
+    // transition on this world sits at the minimum sampled elevation, bisected to
+    // -5698.763334509833 m, and every datum above it is fine.
+    const NODES: u32 = 3_000;
+    let world = wb_world_new(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    assert!(world != 0);
+
+    for sea_level_m in [0.0, -1.0, -1.0e2, -1.0e3, -5.0e3, -5_698.0] {
+        let (status, _, _) = water_run(world, NODES, sea_level_m, 1.0e5);
+        assert_eq!(status, WB_OK, "sea {sea_level_m} is above the floor and must be accepted");
+    }
+    for sea_level_m in [-5_699.0, -1.0e4, -1.0e5, -1.0e6, -RADIUS_M] {
+        let (status, _, _) = water_run(world, NODES, sea_level_m, 1.0e5);
+        assert_eq!(status, WB_ERR_GRAPH, "sea {sea_level_m} leaves the planet no outlet");
+    }
+
+    // Two nodes are one basin covering everything -- `fill_lakes`' own no-rim panic, the
+    // first of the two, reached without any unusual datum at all.
+    let (status, _, _) = water_run(world, 2, 0.0, 1.0e5);
+    assert_eq!(status, WB_ERR_GRAPH, "a two-node world is one rimless basin");
+
+    assert_eq!(wb_world_free(world), WB_OK);
+}
+
+#[test]
+fn the_pond_threshold_moves_kind_and_nothing_else() {
+    // The property `parity.mjs --mutate water-pond` rests on, asserted here so the control's
+    // claim is not carried only by the harness that makes it. `pond_max_surface_area_m2`
+    // reaches exactly one field: `classify_lake_kinds` compares it against a summed surface
+    // area and writes `LakeKind`. If it ever reached a level, an extent or the body
+    // partition, the control would be measuring something other than what it says.
+    const NODES: u32 = 10_000;
+    let world = wb_world_new(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    assert!(world != 0);
+
+    let (status, base, _) = water_run(world, NODES, 0.0, 1.0e5);
+    assert_eq!(status, WB_OK);
+    let bodies = base.len() / WB_WATER_BODY_STRIDE;
+    assert_eq!(bodies, 56, "the corpus world's body count at n=10,000 moved");
+    assert_eq!(
+        base.chunks_exact(WB_WATER_BODY_STRIDE).filter(|r| r[1] == WB_BODY_KIND_POND).count(),
+        0,
+        "Task 3's calibrated 1.0e5 threshold produces no ponds on this mesh -- a recorded \
+         finding about the mesh, not a threshold to tune until something falls on each side",
+    );
+
+    // 5.0e10 m^2 splits this population; 1.0e5 does not, and neither would a value chosen to
+    // move everything. A control that moves all of them says as little as one that moves none.
+    let (status, moved, _) = water_run(world, NODES, 0.0, 5.0e10);
+    assert_eq!(status, WB_OK);
+    assert_eq!(moved.len(), base.len(), "the body count must not move with the threshold");
+    let ponds = moved.chunks_exact(WB_WATER_BODY_STRIDE).filter(|r| r[1] == WB_BODY_KIND_POND).count();
+    assert_eq!(ponds, 9, "9 of 56 bodies at n=10,000, seed 20260904, threshold 5.0e10 m^2");
+    assert!(ponds > 0 && ponds < bodies, "neither none nor all");
+
+    let mut kind_moved = 0usize;
+    for (a, b) in base.chunks_exact(WB_WATER_BODY_STRIDE).zip(moved.chunks_exact(WB_WATER_BODY_STRIDE))
+    {
+        for field in [0usize, 2, 3, 4, 5, 6] {
+            assert_eq!(
+                a[field].to_bits(),
+                b[field].to_bits(),
+                "field {field} moved with the pond threshold, which reaches only `kind`",
+            );
+        }
+        if a[1].to_bits() != b[1].to_bits() {
+            kind_moved += 1;
+        }
+    }
+    assert_eq!(kind_moved, ponds, "every moved field is a kind, and every pond is a moved field");
+
+    assert_eq!(wb_world_free(world), WB_OK);
+}
+
+#[test]
+fn the_water_buffer_channel_refuses_what_it_cannot_read() {
+    const NODES: u32 = 3_000;
+    let world = wb_world_new(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    assert!(world != 0);
+    let mut count: u32 = 0;
+    let mut sea_out: f64 = 0.0;
+
+    // The count-only query: null with a length of zero writes the two scalars and no row.
+    assert_eq!(
+        wb_water_run(world, NODES, 0.0, 1.0e5, core::ptr::null_mut(), 0, &mut count, &mut sea_out),
+        WB_OK,
+    );
+    let expected_bodies = count;
+    assert!(expected_bodies > 0, "the fixture world must have bodies for this test to say anything");
+    assert_eq!(sea_out.to_bits(), 0.0f64.to_bits());
+
+    // A null pointer *with* a length is a host that computed a length wrong, not a host
+    // asking for the count -- the distinction `read_relief` already draws for relief.
+    assert_eq!(
+        wb_water_run(world, NODES, 0.0, 1.0e5, core::ptr::null_mut(), 8, &mut count, &mut sea_out),
+        WB_ERR_BUFFER,
+    );
+
+    // A buffer one element short is refused and writes NOTHING -- all-or-nothing, which is
+    // why the count-only query exists at all.
+    let needed = expected_bodies as usize * WB_WATER_BODY_STRIDE;
+    let mut short = vec![f64::NAN; needed - 1];
+    let mut untouched_count = u32::MAX;
+    let mut untouched_sea = f64::NAN;
+    assert_eq!(
+        wb_water_run(
+            world,
+            NODES,
+            0.0,
+            1.0e5,
+            short.as_mut_ptr(),
+            (needed - 1) as u32,
+            &mut untouched_count,
+            &mut untouched_sea,
+        ),
+        WB_ERR_BUFFER,
+    );
+    assert!(short.iter().all(|v| v.is_nan()), "a refusal wrote into the row buffer");
+    assert_eq!(untouched_count, u32::MAX, "a refusal wrote the count");
+    assert!(untouched_sea.is_nan(), "a refusal wrote the datum");
+
+    // Exactly enough is enough.
+    let mut exact = vec![0.0f64; needed];
+    assert_eq!(
+        wb_water_run(
+            world,
+            NODES,
+            0.0,
+            1.0e5,
+            exact.as_mut_ptr(),
+            needed as u32,
+            &mut count,
+            &mut sea_out,
+        ),
+        WB_OK,
+    );
+
+    // A deliberately misaligned address, refused on the address itself -- before any slice is
+    // formed over it, because forming one would be UB rather than a status.
+    let mut bytes = vec![0u8; needed * 8 + 8];
+    let misaligned = unsafe { bytes.as_mut_ptr().add(1) } as *mut f64;
+    assert_eq!(
+        wb_water_run(world, NODES, 0.0, 1.0e5, misaligned, needed as u32, &mut count, &mut sea_out),
+        WB_ERR_BUFFER,
+    );
+    let misaligned_u32 = unsafe { bytes.as_mut_ptr().add(1) } as *mut u32;
+    assert_eq!(
+        wb_water_run(
+            world,
+            NODES,
+            0.0,
+            1.0e5,
+            exact.as_mut_ptr(),
+            needed as u32,
+            misaligned_u32,
+            &mut sea_out,
+        ),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(
+        wb_water_run(
+            world,
+            NODES,
+            0.0,
+            1.0e5,
+            exact.as_mut_ptr(),
+            needed as u32,
+            &mut count,
+            core::ptr::null_mut(),
+        ),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(
+        wb_water_run(
+            world,
+            NODES,
+            0.0,
+            1.0e5,
+            exact.as_mut_ptr(),
+            needed as u32,
+            core::ptr::null_mut(),
+            &mut sea_out,
+        ),
+        WB_ERR_BUFFER,
+    );
+
+    // An unknown handle, and a freed one.
+    assert_eq!(
+        wb_water_run(u32::MAX, NODES, 0.0, 1.0e5, core::ptr::null_mut(), 0, &mut count, &mut sea_out),
+        WB_ERR_HANDLE,
+    );
+    assert_eq!(wb_world_free(world), WB_OK);
+    assert_eq!(
+        wb_water_run(world, NODES, 0.0, 1.0e5, core::ptr::null_mut(), 0, &mut count, &mut sea_out),
+        WB_ERR_HANDLE,
+    );
+    assert_eq!(wb_world_count(), 0, "a refused water run must not leak a world");
+}
+
+#[test]
+fn the_water_manifest_never_enumerates_the_sea() {
+    // Slice 5b's Ruling 6, held at the export rather than only in `water.rs`: the sea is the
+    // mapping's miss, not a row in it. Task 4 measured what enumerating it cost -- 1,061 of
+    // 1,232 rows were ocean, 96.3% of ocean boxes overlapped another, and 61 of 171 lakes had
+    // boxes hit by one -- so a regression here would not look like an error, it would look
+    // like a manifest with eight times as many entries and no way to tell them apart.
+    //
+    // The property with teeth: every row's `level_m` is strictly above the datum. A mouth
+    // sits at or below it by construction (`StreamGraph::build` flags a node BOUNDARY on
+    // `height_m > sea_level_m`), so an ocean row could not satisfy this, and the assertion
+    // fails on the shape of the defect rather than on a count that a different world moves.
+    const NODES: u32 = 3_000;
+    let world = wb_world_new(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    assert!(world != 0);
+    for sea_level_m in [0.0, -1.0e3, 1.0e2, 5.0e2] {
+        let (status, rows, _) = water_run(world, NODES, sea_level_m, 1.0e5);
+        assert_eq!(status, WB_OK);
+        for row in rows.chunks_exact(WB_WATER_BODY_STRIDE) {
+            assert!(
+                row[2] > sea_level_m,
+                "a body at level {} is at or below the datum {sea_level_m} -- that is the sea, \
+                 and the sea is never a row",
+                row[2],
+            );
+        }
+    }
+    assert_eq!(wb_world_free(world), WB_OK);
 }

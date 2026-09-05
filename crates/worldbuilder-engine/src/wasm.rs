@@ -101,6 +101,7 @@ use crate::sphere::SpherePoint;
 use crate::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use crate::substrate::{MUD, ROCK, SAND};
 use crate::surface::{FeatureInput, Surface};
+use crate::water;
 use crate::{World, GENERATOR_VERSION};
 
 // ---------------------------------------------------------------- the declared contract
@@ -384,6 +385,7 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_bottom_at",
     "wb_fill_tile_f32",
     "wb_erosion_run",
+    "wb_water_run",
 ];
 
 // -------------------------------------------------------------------- the handle table
@@ -1450,6 +1452,342 @@ pub extern "C" fn wb_erosion_run(
         core::slice::from_raw_parts_mut(out_heights, count).copy_from_slice(&result_heights);
         *out_iterations = iterations;
         *out_converged = converged;
+    }
+    WB_OK
+}
+
+// ------------------------------------------------------------------- the water channel
+
+/// The ceiling on `node_count` for [`wb_water_run`], chosen **below**
+/// [`WB_MAX_EROSION_NODES`] rather than at it, and for a reason that is about memory rather
+/// than time.
+///
+/// [`crate::water::fill_and_resolve_water`] regenerates the neighbour relation from the world
+/// seed and then holds a *second*, symmetric copy of it beside the directed one
+/// ([`crate::water::symmetric_adjacency`], measured by slice 5b's Task 1 review to add
+/// 1.6-3.4% of entries and to raise the maximum degree from 8 to 12). This export therefore
+/// holds three neighbour structures at once at its peak -- `sample_nodes`' own, and the
+/// directed and symmetric pair inside `fill_and_resolve_water` -- against
+/// `wb_erosion_run`'s one. The 5b ledger records ~2.2 GB of live neighbour copies at
+/// 20,000,000 nodes; **wasm32's linear memory is 4 GiB at the absolute limit and far less in
+/// practice**, so a ceiling that is merely survivable natively is not the same as one a
+/// browser can meet.
+///
+/// `100_000` is where this crate's own measurements stop being extrapolations: Task 1
+/// measured neighbour regeneration at 3.982 s for 500,000 nodes and 9.038 s for 1,000,000
+/// (native, release, k = 8, **superlinear** -- 2x the nodes cost 2.27x the time), and the
+/// Task 1 review re-derived the exponent at ~1.13 over three points. Nothing in that series
+/// justifies a ceiling at 20,000,000, and this export is not the door to a planetary bake;
+/// it is the door that makes slice 5b's water path reachable from a browser and therefore
+/// checkable by the native-against-WASM parity harness at all, which nothing could do before
+/// it existed.
+pub const WB_MAX_WATER_NODES: u32 = 100_000;
+
+/// f64 words per body row [`wb_water_run`] writes, **and the order is the contract**:
+///
+/// | index | field | note |
+/// |---:|---|---|
+/// | 0 | `root_node` | `crate::water::Body::root_node`, widened to f64 (lossless below 2^53) |
+/// | 1 | `kind` | [`WB_BODY_KIND_LAKE`] or [`WB_BODY_KIND_POND`] |
+/// | 2 | `level_m` | the body's filled surface level |
+/// | 3 | `extent.min_latitude_deg` | |
+/// | 4 | `extent.max_latitude_deg` | |
+/// | 5 | `extent.min_longitude_deg` | **may exceed index 6** -- see [`crate::water::Extent`] |
+/// | 6 | `extent.max_longitude_deg` | |
+///
+/// That is `Body`'s own declaration order with `Extent` flattened in place. Rows arrive
+/// ascending by `root_node`, which is the order `crate::water::water_manifest` already sorts
+/// them into -- a host does not re-sort, and a harness comparing two runs row by row is
+/// comparing the same body on both sides by construction.
+///
+/// **The sea is not one of these rows.** Slice 5b's Ruling 6: the spec defines a mapping of
+/// *named* waters and a fallback for the unnamed, and the sea is the mapping's miss rather
+/// than an entry in it. The datum is carried once, in `out_sea_level_m`. That is not a
+/// simplification made here: it is what `water_manifest` emits, and this export dumps the
+/// shipped manifest rather than an intermediate.
+pub const WB_WATER_BODY_STRIDE: usize = 7;
+
+/// `kind` code for `crate::water::BodyKind::Lake` in a [`WB_WATER_BODY_STRIDE`] row. f64
+/// because a row is a flat f64 array, and the comparison is exact equality -- the same
+/// reason `WB_COMPOSE_RAISE` is an f64.
+pub const WB_BODY_KIND_LAKE: f64 = 0.0;
+/// `kind` code for `crate::water::BodyKind::Pond`. See [`WB_BODY_KIND_LAKE`].
+///
+/// **No code this generator currently emits at its calibrated threshold.** Slice 5b Task 3
+/// calibrated `pond_max_surface_area_m2` at 1.0e5 m^2 on external ground (a shoreline a
+/// person could walk in about fifteen minutes) and then measured that the *smallest* body
+/// this mesh produces is 7.9e8 m^2 -- nearly four orders of magnitude larger -- at every
+/// resolution tested. So at that threshold this value never appears. That is a recorded
+/// finding about the mesh rather than a threshold to tune until something falls on each
+/// side, and it is stated here so a reader does not conclude the code is dead.
+pub const WB_BODY_KIND_POND: f64 = 1.0;
+
+/// Whether every connected component of the symmetric neighbour relation holds at least one
+/// node that is **not** in a lake basin -- i.e. at least one outlet to the sea.
+///
+/// **Not an export**, and the whole of [`wb_water_run`]'s no-rim defence. See that function's
+/// doc for the two panics this closes and the measured input that reached the second one.
+///
+/// The argument, stated once so a later reader does not have to reconstruct it: a node set
+/// `U` has no rim exactly when no edge leaves it, which is exactly when `U` is a union of
+/// connected components. `water.rs`'s two panics both fire on a rimless union of *lake*
+/// basins (one basin in `fill_lakes`, a tied group in `merge_tied_plateaus`). So if no
+/// component consists entirely of lake-basin nodes, neither panic can fire, whichever groups
+/// the merge forms -- which is why this is checked over components rather than over the
+/// basins themselves, and why it does not need to predict the merge.
+///
+/// `neighbours` is the *directed* relation `stream::sample_nodes` returns; this symmetrises
+/// it exactly as `water::fill_and_resolve_water` will, so the two look at the same edges.
+/// Conservative in one direction only: it can refuse a graph whose merge would not in fact
+/// have formed the offending union, and it can never admit one that would.
+fn every_component_has_an_outlet(graph: &StreamGraph, neighbours: &[Vec<u32>]) -> bool {
+    let symmetric = water::symmetric_adjacency(neighbours);
+    let node_count = symmetric.len();
+    let partition = water::basins_of(graph);
+
+    let mut root_is_a_lake = vec![false; node_count];
+    for lake in graph.lakes() {
+        root_is_a_lake[lake.root_node as usize] = true; // cast-ok: a node index into usize
+    }
+
+    let mut seen = vec![false; node_count];
+    let mut stack: Vec<u32> = Vec::new();
+    for start in 0..node_count {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start as u32); // cast-ok: a node index bounded by the graph's own node count
+        let mut has_outlet = false;
+        while let Some(node) = stack.pop() {
+            if !root_is_a_lake[partition.root_of(node) as usize] { // cast-ok: a node index into usize
+                has_outlet = true;
+            }
+            for &next in &symmetric[node as usize] { // cast-ok: a node index into usize
+                if !seen[next as usize] { // cast-ok: a node index into usize
+                    seen[next as usize] = true; // cast-ok: a node index into usize
+                    stack.push(next);
+                }
+            }
+        }
+        if !has_outlet {
+            return false;
+        }
+    }
+    true
+}
+
+/// Resolve one world's water and write the shipped water manifest.
+///
+/// Samples a stream graph over `handle`'s surface exactly as [`wb_erosion_run`] does, runs
+/// [`crate::water::fill_and_resolve_water`] (fill, overflow resolution, Ruling 7's
+/// tied-plateau merge, and pond/lake classification -- the whole shipped path, not a step of
+/// it), and writes [`crate::water::water_manifest_from_graph`]'s result.
+///
+/// # What this does NOT do
+///
+/// It does not erode first. The graph is built from the world's *own* surface heights, the
+/// same field `wb_erosion_run` starts from, so the two exports describe the same planet at
+/// the same moment and neither depends on the other having run. It does not store the graph
+/// back onto the world, does not populate rivers (`WaterManifest::rivers` is empty at Mark 2
+/// by slice 5b's Ruling 2 -- schema only), and changes no arithmetic in `water.rs`.
+///
+/// # Parameters and their domains
+///
+/// - `handle`: an existing world from [`wb_world_new`] or [`wb_world_new_relief`].
+///   `WB_ERR_HANDLE` if stale or unknown.
+/// - `node_count`: `2..=`[`WB_MAX_WATER_NODES`]. See that constant for why its ceiling sits
+///   below `wb_erosion_run`'s.
+/// - `sea_level_m`: finite, and `abs() <=` the world's own `radius_m`. **A datum outside the
+///   planet is not a datum**, and this is the parameter `WB_EROSION_SEA_LEVEL_M`'s doc asks
+///   slice 5b to expose rather than hardcode: `StreamGraph::build` flags a node `LAND` or
+///   `BOUNDARY` on `height_m > sea_level_m`, a `BOUNDARY` node is a root, and the root set is
+///   what separates a mouth from a lake. Moving it moves every body in the manifest.
+/// - `pond_max_surface_area_m2`: finite and `>= 0.0`. **No upper bound**, and deliberately:
+///   the value is only ever the right-hand side of a `<=` against a summed surface area
+///   (`crate::water::classify_lake_kinds`) and never enters arithmetic, so a threshold above
+///   the planet's own area is the meaningful statement "every body is a pond" rather than an
+///   overflow hazard. NaN *is* refused: every comparison against it is false, so a NaN
+///   threshold would silently classify every body as a lake -- a parameter that looks
+///   configured and does nothing, which is the shape this project has been bitten by.
+///
+/// # The rimless-union refusal, which closes two measured aborts
+///
+/// `water.rs` carries **two** no-rim panics, and a sweep of this export's own parameters
+/// reaches both:
+///
+/// - `crate::water::fill_lakes` panics when one basin's members are the whole graph.
+///   Reachable at `node_count = 2`: two nodes above `sea_level_m` are one basin covering
+///   everything.
+/// - `crate::water::merge_tied_plateaus` panics when the *union* of a tied group's basins is
+///   the whole graph. Reached here at `sea_level_m = -1.0e4`, `node_count = 3,000`, seed
+///   20260904 -- every node then sits above the datum, so there is no boundary node, no
+///   mouth, and no outlet anywhere on the planet. Measured before this guard existed:
+///   `merge_tied_plateaus: the union of 157 lakes ... has no rim`, taken through `extern
+///   "C"` as `thread caused non-unwinding panic. aborting.`, exit `0xc0000409`. **A band, not
+///   a cliff:** `0.0`, `-1.0`, `+1.0e3`, `-1.0e3` and `+1.0e4` all return `WB_OK`.
+///
+/// `extern "C"` is nounwind, so either would abort the module rather than return a status --
+/// in a browser, a dead instance and a blank viewer. Both are closed by
+/// [`every_component_has_an_outlet`], which is the exact precondition rather than a proxy: a
+/// node set is rimless in the symmetric adjacency exactly when it is a union of that graph's
+/// connected components, so if every component holds at least one node outside every lake
+/// basin, **no** union of lake basins -- including a single basin, and including whichever
+/// tied group the merge happens to form -- can be rimless. Refused as [`WB_ERR_GRAPH`].
+///
+/// A world with no outlet is not a bug in the caller's arithmetic; it is a datum below the
+/// planet's own lowest point, which leaves the water nowhere to go and the manifest with
+/// nothing to say. Refusing says so; aborting does not.
+///
+/// # Output
+///
+/// `*out_body_count` is how many bodies the manifest holds, and `*out_sea_level_m` is
+/// `WaterManifest::sea_level_m` -- the datum, echoed back rather than assumed, because the
+/// same graph yields a different manifest at a different one. `out_bodies` receives
+/// `body_count * `[`WB_WATER_BODY_STRIDE`] f64 in that constant's documented order.
+///
+/// **Sizing.** Pass `out_bodies` null with `out_len == 0` for a count-only query: the two
+/// scalars are written and no row is. Otherwise `out_len` must be at least
+/// `body_count * WB_WATER_BODY_STRIDE`, and a buffer shorter than that is `WB_ERR_BUFFER`
+/// with **nothing written anywhere** -- the same all-or-nothing contract `wb_erosion_run`
+/// keeps, and the reason the count-only query exists at all. A caller that would rather not
+/// pay for the resolution twice can size at `node_count * WB_WATER_BODY_STRIDE`, which is
+/// always sufficient: no body holds fewer than one node.
+///
+/// # Returns
+///
+/// `WB_OK`, `WB_ERR_HANDLE`, `WB_ERR_PARAM` for a numeric argument outside the domains above,
+/// `WB_ERR_BUFFER` for a null, misaligned or short output buffer, or [`WB_ERR_GRAPH`] if the
+/// node set could not be sampled or built into a graph, or produced a rimless basin.
+///
+/// # Safety
+/// `out_bodies` must be null, or a live 8-aligned allocation of at least `out_len` f64.
+/// `out_body_count` must be a live 4-aligned `u32`, and `out_sea_level_m` a live 8-aligned
+/// `f64`.
+#[no_mangle]
+pub extern "C" fn wb_water_run(
+    handle: u32,
+    node_count: u32,
+    sea_level_m: f64,
+    pond_max_surface_area_m2: f64,
+    out_bodies: *mut f64,
+    out_len: u32,
+    out_body_count: *mut u32,
+    out_sea_level_m: *mut f64,
+) -> u32 {
+    if node_count < 2 || node_count > WB_MAX_WATER_NODES {
+        return WB_ERR_PARAM;
+    }
+    if !sea_level_m.is_finite() {
+        return WB_ERR_PARAM;
+    }
+    // Explicit comparisons, never `f64::min`/`f64::max`/`.clamp(` -- `plates.rs::margin_at`'s
+    // house form. A NaN threshold is refused by `is_finite` for the reason this function's
+    // doc gives, and the negated `>=` is the NaN-safe shape `wb_erosion_run` already uses.
+    if !pond_max_surface_area_m2.is_finite() || !(pond_max_surface_area_m2 >= 0.0) {
+        return WB_ERR_PARAM;
+    }
+
+    if out_body_count.is_null() || out_sea_level_m.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    if (out_body_count as usize) % core::mem::align_of::<u32>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        return WB_ERR_BUFFER;
+    }
+    if (out_sea_level_m as usize) % core::mem::align_of::<f64>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        return WB_ERR_BUFFER;
+    }
+    let capacity = if out_bodies.is_null() {
+        if out_len != 0 {
+            // A null pointer with a length is a host that computed a length wrong, not a host
+            // asking for the count -- the same distinction `read_relief` draws.
+            return WB_ERR_BUFFER;
+        }
+        0usize
+    } else {
+        if (out_bodies as usize) % core::mem::align_of::<f64>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+            return WB_ERR_BUFFER;
+        }
+        match usize::try_from(out_len) {
+            Ok(len) => len,
+            Err(_) => return WB_ERR_BUFFER,
+        }
+    };
+
+    let outcome = with_world(handle, |world| {
+        let radius_m = world.surface().radius_m;
+        if !(sea_level_m.abs() <= radius_m) {
+            return Err(WB_ERR_PARAM);
+        }
+        let world_seed = world.surface().world_seed as u64; // cast-ok: two's-complement reinterpretation, the same one wb_world_new already makes for Noise
+        let sampling = sample_nodes(world_seed, node_count, radius_m).ok_or(WB_ERR_GRAPH)?;
+        let heights: Vec<f64> =
+            sampling.positions.iter().map(|point| world.surface().elevation_m(point, None)).collect();
+        let mut graph = StreamGraph::build(
+            &BuildParams {
+                world_seed,
+                radius_m,
+                sea_level_m,
+                sampling_kind: SamplingKind::Spiral,
+                pond_max_surface_area_m2,
+            },
+            &sampling.positions,
+            &heights,
+            &sampling.area_m2,
+            &sampling.neighbours,
+        )
+        .map_err(|_| WB_ERR_GRAPH)?;
+
+        // The rimless-union refusal, before anything can panic. See this function's doc.
+        if !every_component_has_an_outlet(&graph, &sampling.neighbours) {
+            return Err(WB_ERR_GRAPH);
+        }
+
+        let basins = water::fill_and_resolve_water(&mut graph, pond_max_surface_area_m2);
+        Ok(water::water_manifest_from_graph(&graph, &basins))
+    });
+
+    let manifest = match outcome {
+        None => return WB_ERR_HANDLE,
+        Some(Err(code)) => return code,
+        Some(Ok(manifest)) => manifest,
+    };
+
+    let needed = manifest.bodies.len().saturating_mul(WB_WATER_BODY_STRIDE);
+    if !out_bodies.is_null() && capacity < needed {
+        // All-or-nothing: nothing is written on a refusal, which is why the count-only query
+        // exists. See this function's doc, "Sizing".
+        return WB_ERR_BUFFER;
+    }
+
+    let body_count = match u32::try_from(manifest.bodies.len()) {
+        Ok(body_count) => body_count,
+        Err(_) => return WB_ERR_BUFFER,
+    };
+
+    if !out_bodies.is_null() {
+        for (row, body) in manifest.bodies.iter().enumerate() {
+            let kind = match body.kind {
+                water::BodyKind::Lake => WB_BODY_KIND_LAKE,
+                water::BodyKind::Pond => WB_BODY_KIND_POND,
+            };
+            let fields = [
+                f64::from(body.root_node),
+                kind,
+                body.level_m,
+                body.extent.min_latitude_deg,
+                body.extent.max_latitude_deg,
+                body.extent.min_longitude_deg,
+                body.extent.max_longitude_deg,
+            ];
+            for (offset, value) in fields.into_iter().enumerate() {
+                unsafe { out_bodies.add(row * WB_WATER_BODY_STRIDE + offset).write(value) };
+            }
+        }
+    }
+    unsafe {
+        *out_body_count = body_count;
+        *out_sea_level_m = manifest.sea_level_m;
     }
     WB_OK
 }

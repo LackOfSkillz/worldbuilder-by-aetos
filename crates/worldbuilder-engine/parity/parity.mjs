@@ -6,7 +6,7 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
@@ -26,6 +26,27 @@
 // don't move because a one-ULP nudge at this corpus's `c` (~1.0e-3) does not reach the last
 // mantissa bit of most heights within only 20 steps, not because most nodes are roots. A
 // control that diverged on all of them, or none, would say nothing.
+//
+// `--mutate water-pond` is the third control, Task 5's (slice 5b): it replays the `W`
+// (water manifest) record with `pond_max_surface_area_m2` moved from Task 3's calibrated
+// 1.0e5 m^2 to 2.0e10 m^2, and touches nothing else. Its claim is narrower than either of the
+// other two and is CHECKED RATHER THAN REPORTED.
+//
+// `pond_max_surface_area_m2` reaches exactly one field of the manifest: `water::classify_lake_kinds`
+// compares it against a body's summed surface area and writes `LakeKind`. So under this
+// mutation every `root_node`, every `level_m`, all four extent bounds, the body count and the
+// datum must compare EQUAL -- the same discipline slice 5a's erosion control kept when it
+// required iterations and convergence to compare equal while 216 heights moved.
+//
+// How many `kind` fields move is not read off this run. `examples/parity_dump.rs` predicts it
+// natively from `water::lake_body_surface_areas_m2` -- the summed surface area per physical
+// body, a different quantity from the classifier being perturbed -- and writes the prediction
+// into the corpus as a `WCTL` record, after asserting that the classifier agrees with the area
+// distribution. This script then checks EVERY group's tally against that prediction (the water
+// group must move exactly that many, every other group exactly zero) and exits 1 otherwise.
+// Measured on this exact corpus: 60 of 156 bodies, i.e. 60 of the water group's 1,095 values
+// and 60 of 71,596 overall. Neither none nor all: 2.0e10 m^2 sits near the median of this
+// mesh's measured body-surface distribution, chosen for that reason.
 //
 // PROVENANCE. Before a single value is compared, this script asks the one question the
 // comparison itself cannot: *were these bytes built from the source that is here now?*
@@ -60,14 +81,14 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed] [--no-provenance]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-if (mutate !== null && mutate !== 'seed' && mutate !== 'erosion-k') {
-  console.error(`unknown mutation "${mutate}"; the controls are --mutate seed and --mutate erosion-k`);
+if (mutate !== null && mutate !== 'seed' && mutate !== 'erosion-k' && mutate !== 'water-pond') {
+  console.error(`unknown mutation "${mutate}"; the controls are --mutate seed, --mutate erosion-k and --mutate water-pond`);
   process.exit(2);
 }
 const noProvenance = args.includes('--no-provenance');
@@ -147,6 +168,12 @@ const bumpUlp = (value) => {
 
 const lines = readFileSync(dumpPath, 'utf8').split('\n');
 const worlds = new Map();
+// `WCTL` carries the water control's threshold AND the number of bodies the native side
+// predicts will flip to `Pond` at it -- derived there from `water::lake_body_surface_areas_m2`,
+// i.e. from the summed surface areas rather than from the classifier this control perturbs.
+// A gate read off the control's own run is a rubber stamp; this one is a prediction made on
+// the other side of the boundary and checked here.
+let waterControl = null;
 let compared = 0;
 let divergent = 0;
 const samples = [];
@@ -303,6 +330,121 @@ for (const raw of lines) {
       wb.wb_world_free(worldHandle);
       break;
     }
+    case 'P': {
+      // P <selector> <status> <ten f64 hex>
+      //
+      // `wb_relief_preset` itself, compared field by field. This is the export that exists so
+      // that no host ever transcribes a preset's numbers, which makes it the one export whose
+      // whole value is that both sides read the SAME ten f64 -- so it is also the one the
+      // parity harness has the most business checking. A seed cannot move these, the same way
+      // it cannot move `version`, and the seed control's per-group tally says so.
+      const selector = Number(f[1]);
+      const out = wb.wb_alloc(80);
+      if (out === 0) throw new Error('wb_alloc refused the preset buffer');
+      const status = wb.wb_relief_preset(selector, out, 10);
+      const view = mem();
+      group = `preset/${selector}`;
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`preset status ${selector}`, f[2], String(status));
+      for (let k = 0; k < 10; k += 1) {
+        const got = bitsOf(view.getFloat64(out + k * 8, true));
+        tally(got === f[3 + k]);
+        if (got !== f[3 + k]) note(`preset ${selector}[${k}]`, f[3 + k], got);
+      }
+      wb.wb_dealloc(out, 80);
+      break;
+    }
+    case 'worldr': {
+      // worldr <name> <seed> <radius_hex> <plates> <land_hex> <ten relief f64 hex>
+      //
+      // A world through `wb_world_new_relief`, carrying a NON-canonical block. The relief
+      // slice's Task 4 changed the export surface for the first time and flagged that parity
+      // had not been re-run against it; this record is that re-run. The block travels to the
+      // tile workers in the viewer, so the `T hills` record below is the one that exercises
+      // the path a worker actually takes.
+      const [, name, seedText, radiusHex, platesText, landHex] = f;
+      const seed = BigInt(seedText) + (mutate === 'seed' ? 1n : 0n);
+      const relief = f.slice(6);
+      if (relief.length !== 10) throw new Error('a relief record must be ten f64');
+      const ptr = wb.wb_alloc(80);
+      if (ptr === 0) throw new Error('wb_alloc refused the relief buffer');
+      const view = mem();
+      relief.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      const handle = wb.wb_world_new_relief(
+        seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0, ptr, 10);
+      if (handle === 0) throw new Error(`relief world ${name} did not build in wasm`);
+      wb.wb_dealloc(ptr, 80);
+      worlds.set(name, handle);
+      break;
+    }
+    case 'WCTL': {
+      // WCTL <threshold_hex> <predicted flips>
+      //
+      // Configuration and prediction, not a compared value: nothing here goes through
+      // `tally`. See `waterControl`'s own comment for why the prediction is made natively.
+      waterControl = { threshold: f64of(f[1]), predicted: Number(f[2]) };
+      break;
+    }
+    case 'W': {
+      // W <world> <node_count> <sea_level_hex> <pond_max_hex> <status> <body_count>
+      //   <sea_level_out_hex> <seven f64 hex per body>...
+      //
+      // The shipped water manifest, through `wb_water_run`. `water.rs` was unreachable from
+      // the export surface until that export existed, exactly as `erosion.rs` was until
+      // `wb_erosion_run` did -- its native/WASM claim was unfalsifiable, not merely unchecked.
+      //
+      // The world is one of the `world` records above, by name: unlike the erosion record,
+      // this export takes the same handle every other record already samples, so building a
+      // second one would be describing a different planet for no reason.
+      const h = worlds.get(f[1]);
+      const nodeCount = Number(f[2]);
+      const bodyCount = Number(f[6]);
+      const rows = f.slice(8);
+      if (rows.length !== bodyCount * 7) throw new Error('water line is the wrong length');
+
+      let pondMax = f64of(f[4]);
+      if (mutate === 'water-pond') {
+        if (waterControl === null) throw new Error('--mutate water-pond needs a WCTL record');
+        pondMax = waterControl.threshold;
+      }
+
+      // `node_count * 7` is always enough: no body holds fewer than one node, so the
+      // count-only query is not needed and the resolution is paid for once.
+      const capacity = nodeCount * 7;
+      const outRows = wb.wb_alloc(capacity * 8);
+      const outCount = wb.wb_alloc(4);
+      const outSea = wb.wb_alloc(8);
+      if (outRows === 0 || outCount === 0 || outSea === 0) {
+        throw new Error('wb_alloc refused a water output buffer');
+      }
+      const status = wb.wb_water_run(
+        h, nodeCount, f64of(f[3]), pondMax, outRows, capacity, outCount, outSea);
+      const view = mem();
+      group = `water/${f[1]}`;
+      tally(String(status) === f[5]);
+      if (String(status) !== f[5]) note(`water status ${f[1]}`, f[5], String(status));
+      const gotCount = view.getUint32(outCount, true);
+      tally(String(gotCount) === f[6]);
+      if (String(gotCount) !== f[6]) note(`water body count ${f[1]}`, f[6], String(gotCount));
+      const gotSea = bitsOf(view.getFloat64(outSea, true));
+      tally(gotSea === f[7]);
+      if (gotSea !== f[7]) note(`water sea level ${f[1]}`, f[7], gotSea);
+      // Rows are compared position by position because both sides sort ascending by
+      // `root_node` (`WB_WATER_BODY_STRIDE`'s own doc), so row i is the same body on both
+      // sides by construction rather than by luck.
+      const fieldNames = ['root_node', 'kind', 'level_m', 'min_lat', 'max_lat', 'min_lon', 'max_lon'];
+      for (let i = 0; i < rows.length; i += 1) {
+        const got = bitsOf(view.getFloat64(outRows + i * 8, true));
+        tally(got === rows[i]);
+        if (got !== rows[i]) {
+          note(`water ${f[1]} body[${Math.floor(i / 7)}].${fieldNames[i % 7]}`, rows[i], got);
+        }
+      }
+      wb.wb_dealloc(outRows, capacity * 8);
+      wb.wb_dealloc(outCount, 4);
+      wb.wb_dealloc(outSea, 8);
+      break;
+    }
     case 'version': {
       const got = String(wb.wb_generator_version());
       group = 'version';
@@ -330,6 +472,41 @@ if (mutate) {
   if (divergent === 0) {
     console.error('FAIL: the control mutation changed nothing -- this harness cannot notice a divergence');
     process.exit(1);
+  }
+  // THE WATER CONTROL CHECKS ITS OWN PREDICTION, and this is the difference between a control
+  // and a shrug. `--mutate seed` is allowed to move nearly everything and `--mutate erosion-k`
+  // is allowed to move a fraction nobody can state in advance; this one is not. The native
+  // side predicted, from the summed surface areas and NOT from the classifier, exactly how
+  // many bodies fall under the control threshold. Every one of those must move here, nothing
+  // else in the water group may move, and no other group may move at all -- because
+  // `pond_max_surface_area_m2` reaches exactly one field of one export.
+  if (mutate === 'water-pond') {
+    if (waterControl === null) {
+      console.error('FAIL: --mutate water-pond ran with no WCTL record in the corpus');
+      process.exit(1);
+    }
+    let bad = false;
+    for (const [name, g] of groups) {
+      const isWater = name.startsWith('water/');
+      const expected = isWater ? waterControl.predicted : 0;
+      if (g.divergent !== expected) {
+        console.error(
+          `FAIL: group ${name} moved ${g.divergent} values; the native side predicted ${expected}`);
+        bad = true;
+      }
+    }
+    if (bad) {
+      console.error('  The water control perturbs pond_max_surface_area_m2 by itself, which');
+      console.error('  reaches only Body::kind. A count other than the prediction means either');
+      console.error('  the two sides classify differently, or that parameter now reaches');
+      console.error('  something else -- and either is a finding, not a tolerance to widen.');
+      process.exit(1);
+    }
+    console.log(
+      `control OK: ${waterControl.predicted} of ${groups.get('water/plain')?.compared ?? '?'} ` +
+      'water values moved, exactly the bodies the native surface-area distribution predicted, ' +
+      'and no value outside the water group moved at all');
+    process.exit(0);
   }
   console.log('control OK: the harness can be made to fail');
   process.exit(0);

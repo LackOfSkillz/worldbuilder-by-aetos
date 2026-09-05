@@ -50,7 +50,7 @@ import sys
 TEST_LINE = re.compile(r"^\S.*: test$")
 TRAILER = re.compile(r"^(\d+) tests, (\d+) benchmarks$")
 PARITY_TOTAL = re.compile(
-    r"^(parity|CONTROL \(--mutate (?:seed|erosion-k)\)): (\d+) values compared through the "
+    r"^(parity|CONTROL \(--mutate (?:seed|erosion-k|water-pond)\)): (\d+) values compared through the "
     r"shipped exports, (\d+) divergent$"
 )
 PARITY_GROUP = re.compile(r"^\s+(\S+): (\d+) compared, (\d+) divergent$")

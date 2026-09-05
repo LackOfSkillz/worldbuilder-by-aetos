@@ -1,10 +1,10 @@
 worldbuilder_engine.wasm
-bytes: 118964
-exports (15): memory, wb_alloc, wb_bottom_at, wb_dealloc, wb_elevation_m, wb_erosion_run, wb_fill_tile_f32, wb_generator_version, wb_relief_check, wb_relief_preset, wb_structural_m, wb_world_count, wb_world_free, wb_world_new, wb_world_new_relief
+bytes: 220452
+exports (16): memory, wb_alloc, wb_bottom_at, wb_dealloc, wb_elevation_m, wb_erosion_run, wb_fill_tile_f32, wb_generator_version, wb_relief_check, wb_relief_preset, wb_structural_m, wb_water_run, wb_world_count, wb_world_free, wb_world_new, wb_world_new_relief
 imports: 0
-built: 2026-09-05T15:28:23.988Z
-artifact-sha256: 8c0288513d36e4cb275d7f97479dd519da149e37700a7ee5abb94b4efca60eba
-source-fingerprint: 5f173eb6a082081f78c20f412132a500a3873859490254c57be6835bd998d288
+built: 2026-09-05T16:08:59.241Z
+artifact-sha256: abde0f3129b101b8726511c26a4af18ca7eb03dc2e64ab245ffb9d187a5a88a6
+source-fingerprint: 07cabfe7ee6f6613dac12405a86f45caa9284673378bb215a1c79a2e829f6525
 toolchain: rustc 1.98.0 88d9e12ae178fab0fb5cc050a94da85685d449ea x86_64-pc-windows-msvc
 build: cargo build -p worldbuilder-engine --release --target wasm32-unknown-unknown --no-default-features --features wasm
 fingerprint-inputs: 34

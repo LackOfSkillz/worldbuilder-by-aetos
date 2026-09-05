@@ -372,6 +372,22 @@ jobs:
           # the count did. Re-derived per configuration through `assert_counts.py cargo-list`
           # itself against fresh `-- --list` / `-- --list --ignored` output, not by hand
           # arithmetic and never by grepping `test result:`. See task-4-report.md.
+          # 2026-09-05, slice 5b Task 5 (parity, and a negative control): 561/563 -> 566/568
+          # on the two wasm rows only, and 517/517/519 unchanged on the other three. Task 5
+          # added `wb_water_run` -- the first export that reaches `water.rs` at all, which is
+          # what makes slice 5b's water path comparable native-against-WASM rather than merely
+          # unchecked -- and five tests for it in `tests/wasm_exports.rs`, a file that is
+          # `#![cfg(feature = "wasm")]` in its entirety. Four of the five are sweeps rather
+          # than spot-checks (171 sea-level records driven through the export and read back, a
+          # pond-threshold hostile set, a node-count ladder, the buffer channel), and the sweep
+          # found a REAL abort: at a datum below the world's own lowest sampled point there is
+          # no boundary node anywhere, so the union of every lake basin is the whole graph and
+          # `water::merge_tied_plateaus` panics through a nounwind `extern "C"` boundary --
+          # measured as exit 0xc0000409 before `every_component_has_an_outlet` closed it.
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived per
+          # configuration through `assert_counts.py cargo-list` itself against fresh
+          # `-- --list` / `-- --list --ignored` output, which reported `count OK` at all five.
+          # See task-5-report.md.
           - name: no-default-features
             features: "--no-default-features"
             expect: 517
@@ -386,11 +402,11 @@ jobs:
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 561
+            expect: 566
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 563
+            expect: 568
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -726,20 +742,58 @@ jobs:
       # plus 3,003 from Task 5's erosion group (a 3,000-node capped `erode_to_convergence`
       # bake through `wb_erosion_run`, plus its status/iterations/converged trio; see
       # `examples/parity_dump.rs` for why 3,000 nodes exercises every arithmetic path a
-      # planetary bake would, and task-5-report.md for why size does not matter to a
-      # bit-equality claim). The script also checks the ten per-group tallies sum to it, so
-      # a format change fails loudly instead of matching nothing.
-      - name: Assert the corpus -- 56,254 values, 0 divergent
+      # planetary bake would, and slice 5a's task-5-report.md for why size does not matter to
+      # a bit-equality claim).
+      #
+      # 2026-09-05, slice 5b Task 5: 56,254 -> 71,596. RE-DERIVED FROM THE CORPUS DEFINITION,
+      # not read off the run, and the run was then checked against it:
+      #
+      #   56,254  everything above, unchanged
+      #   +   22  `wb_relief_preset` itself: 2 selectors x (1 status + 10 f64)
+      #   +5,000  `wb_elevation_m` on a world built from a NON-canonical relief block
+      #   +5,000  `wb_structural_m` on the same world
+      #   +4,225  one 65x65 `wb_fill_tile_f32` on it -- the path the viewer's tile workers
+      #           actually take with a relief block attached to the spec
+      #   +1,095  `wb_water_run`: 1 status + 1 body count + 1 datum + 156 bodies x 7 fields
+      #   =71,596
+      #
+      # The relief entries close the gap relief Task 4 flagged itself: that slice changed the
+      # export surface for the first time and parity had not been re-run against it. The water
+      # entry closes a larger one -- `water.rs` was UNREACHABLE from the export surface, so its
+      # native/WASM agreement was unfalsifiable rather than unverified, exactly as `erosion.rs`
+      # was before `wb_erosion_run`.
+      #
+      # 156 bodies is a measured property of this world (seed 20260904, 30,000 nodes, datum
+      # 0.0, `pond_max_surface_area_m2 = 1.0e5`), so this pin moves if the mesh or the seed
+      # does -- which is the point: a corpus whose size nothing constrains can shrink silently.
+      # ALL 156 ARE LAKES AND NONE IS A POND, and `examples/parity_dump.rs` asserts that
+      # directly: slice 5b Task 3 calibrated the threshold on external ground and then measured
+      # that this generator's smallest body is nearly four orders of magnitude larger. That is
+      # a recorded finding about the mesh; a corpus that quietly "fixed" it by moving the
+      # threshold would be hiding the finding rather than testing it.
+      #
+      # The script also checks the sixteen per-group tallies sum to the total, so a format
+      # change fails loudly instead of matching nothing.
+      - name: Assert the corpus -- 71,596 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 56254 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 71596 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
-      # `--mutate seed` moves the world seed by one and 53,778 of 56,254 values diverge. A
+      # `--mutate seed` moves the world seed by one and 68,457 of 71,596 values diverge. A
       # parity run whose harness cannot fail is not evidence, and this is the cheapest place
       # in the project to keep proving that it can.
+      #
+      # 2026-09-05, slice 5b Task 5: 53,778 -> 68,457, and the arithmetic is stated rather
+      # than adjusted. The three new groups add 14,679 divergent values (5,000 elevation and
+      # 4,225 tile cells on the relief world move outright; 4,516 of its 5,000 structural
+      # readings move, the residue being the same open-ocean floor that leaves 942 of the
+      # `plain` world's structural readings equal; 938 of the water group's 1,095 move). The
+      # 22 preset values do NOT move, and that is a property worth having in the tally rather
+      # than a gap: `wb_relief_preset` hands back `detail.rs`'s own constants, which no world
+      # seed can reach -- the same reason `version` has always sat at 0 divergent here.
       - name: Parity -- the control (a harness that cannot fail is not evidence)
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -751,12 +805,12 @@ jobs:
       # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 53,778 of 56,254 divergent
+      - name: Assert the control -- 68,457 of 71,596 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 56254 --expect-divergent 53778
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 71596 --expect-divergent 68457
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -778,12 +832,61 @@ jobs:
 
       # The erosion control's own count: 216 of the erosion group's 3,000 heights move from
       # a single ULP on `k` (7.2%) -- status, iterations and converged are unaffected (fixed
-      # step count, see above), and every non-erosion group is untouched (216 of 56,254
+      # step count, see above), and every non-erosion group is untouched (216 of 71,596
       # overall). Neither zero nor "every non-root node" -- a plausible fraction, which is
-      # the property this control exists to demonstrate.
-      - name: Assert the erosion control -- 216 of 56,254 divergent
+      # the property this control exists to demonstrate. The divergent count is UNCHANGED at
+      # 216 across slice 5b Task 5's corpus growth, and that is the expected outcome: the
+      # three groups Task 5 added are downstream of neither `k` nor erosion, so a control
+      # whose count had moved with them would have been reaching something it does not name.
+      - name: Assert the erosion control -- 216 of 71,596 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 56254 --expect-divergent 216
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 71596 --expect-divergent 216
+
+      # THE THIRD CONTROL, slice 5b Task 5's own, and the one with the sharpest claim.
+      #
+      # `--mutate seed` proves the harness notices an entirely different planet (95.6% of
+      # values move -- gross, every group). `--mutate erosion-k` proves it notices one ULP in
+      # one physical parameter of one export, at a fraction nobody can state in advance.
+      # Neither touches the water path at all, so neither says anything about `water.rs` --
+      # which is the module slice 5b built, and which no export reached until Task 5.
+      #
+      # `--mutate water-pond` replays the `W` record with `pond_max_surface_area_m2` moved from
+      # Task 3's calibrated 1.0e5 m^2 to 2.0e10 m^2, and touches nothing else -- so only the
+      # `water/plain` group can move. THE PREDICTION IS STATED BEFORE THE RUN AND CHECKED
+      # AGAINST IT, which is what separates this from a gate adjusted to whatever appeared:
+      #
+      #   - `pond_max_surface_area_m2` reaches exactly ONE field, `Body::kind`
+      #     (`water::classify_lake_kinds` compares it against a summed surface area and writes
+      #     `LakeKind`). So `root_node`, `level_m`, all four extent bounds, the body count and
+      #     the datum must ALL compare equal, on both sides, exactly as slice 5a's erosion
+      #     control required its iteration count and convergence flag to.
+      #   - How many `kind` fields move is predicted NATIVELY, from
+      #     `water::lake_body_surface_areas_m2` -- the summed surface area per physical body,
+      #     which is a different quantity from the classifier being perturbed. A body flips
+      #     exactly when its area is at or below the threshold: 60 of 156.
+      #     `examples/parity_dump.rs` asserts that the classifier agrees with the area
+      #     distribution before writing the prediction into the corpus, so a disagreement fails
+      #     there rather than being absorbed into a divergent count here.
+      #   - `parity.mjs` then checks its own per-group tallies against that prediction and
+      #     exits 1 if any group -- water or not -- moved by a different amount. The number
+      #     below is therefore asserted twice, by two scripts, from two directions.
+      #
+      # 60 of 156 is deliberately neither none nor all: a control that moves everything is as
+      # uninformative as one that moves nothing, and 2.0e10 m^2 sits near the median of this
+      # mesh's measured body-surface distribution for that reason.
+      - name: Parity -- the water control (one field of one export, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate water-pond 2>&1 | tee water-control.out
+
+      - name: Assert the water control -- 60 of 71,596 divergent, all of them `kind`
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 71596 --expect-divergent 60
