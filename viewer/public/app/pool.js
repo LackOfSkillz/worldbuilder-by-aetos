@@ -359,7 +359,7 @@ export class TilePool {
     return {
       workers: this.ready.length,
       staleWorkers: this.ready.filter((r) => r.stale).map((r) => r.index),
-      /// `undefined` until the first live swap; an array of eight `wb_world_count` readings
+      /// `null` until the first live swap; an array of eight `wb_world_count` readings
       /// afterwards. Each must stay at 1: a worker holding two worlds is a worker leaking one
       /// per slider release.
       worldCounts: this.worldCounts,
