@@ -37,6 +37,7 @@ const {
 } = await import("../public/app/clouds.js");
 const {
   cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider,
+  CloudRasterCache, DEFAULT_CLOUD_CACHE_TILES,
 } = await import("../public/app/cloud-provider.js");
 const { MAX_LEVEL } = await import("../public/app/terrain.js");
 
@@ -225,6 +226,145 @@ function fakePool({ fillMs = 17, reject = null } = {}) {
     },
   };
 }
+
+// =========================================================================================
+// The raster cache -- 72 byte-identical tiles per live swap, and the counter that proves it
+// =========================================================================================
+//
+// **The measurement this exists for.** Owner's world, orbital camera, three levels: a live
+// swap re-requested 72 cloud tiles whose output could not have changed, at 12.0-14.9 s of
+// worker CPU each. `main.js` already declined to rebuild the cloud PROVIDER for exactly this
+// reason and was defeated one level down -- assigning `viewer.terrainProvider` discards
+// Cesium's quadtree, and every replacement `QuadtreeTile` re-requests imagery from every layer.
+//
+// **A cache that silently misses looks exactly like no cache**, so every test below reads
+// `poolRasters` -- what was actually rasterised -- rather than `tiles`, which is only what
+// Cesium asked for. And the two directions are tested separately, because a broken key fails
+// in only one of them: a key that drops the x gives MORE hits, not fewer.
+
+test("the same tile asked for twice is rasterised ONCE", async () => {
+  const pool = fakePool();
+  const provider = makeProvider({ pool, tileSize: 8 });
+  const first = await provider.requestImage(3, 1, 2);
+  const second = await provider.requestImage(3, 1, 2);
+  const { stats } = provider.worldbuilder;
+  assert.equal(pool.requests.length, 1,
+    "the pool was asked twice for a raster that cannot have changed -- this is the whole cost");
+  assert.equal(stats.poolRasters, 1, "poolRasters counts rasterisations, not requests");
+  assert.equal(stats.tiles, 2, "tiles counts what Cesium asked for, and it asked twice");
+  assert.equal(stats.cacheHits, 1);
+  assert.equal(stats.cacheMisses, 1);
+  assert.deepEqual(Array.from(second.data), Array.from(first.data),
+    "a hit must return the same texels, or the cache is a second rasteriser");
+});
+
+test("two tiles that differ only in x are NOT the same cache entry", async () => {
+  // **This is the assertion the test above cannot make.** `pool.js`'s `cache-key` fault is a
+  // key that drops the x so every tile in a row collides with its neighbours, and under that
+  // fault the test above passes MORE convincingly, not less. Level, x and y each get their own
+  // pair here, so a key missing any one of the three fails.
+  const provider = makeProvider({ pool: fakePool(), tileSize: 8 });
+  const { stats } = provider.worldbuilder;
+  const a = await provider.requestImage(3, 1, 2);
+  const b = await provider.requestImage(4, 1, 2);
+  assert.equal(stats.poolRasters, 2, "x is not in the key: two different tiles collided");
+  assert.notDeepEqual(Array.from(a.data), Array.from(b.data),
+    "two neighbouring tiles came back with identical texels, which is what a collision looks " +
+    "like from the picture's side");
+  await provider.requestImage(3, 2, 2);
+  assert.equal(stats.poolRasters, 3, "y is not in the key");
+  await provider.requestImage(3, 1, 3);
+  assert.equal(stats.poolRasters, 4, "level is not in the key");
+  assert.equal(stats.cacheHits, 0, "none of these four is a repeat of another");
+});
+
+test("cacheTiles=0 turns the cache off, and that is the A/B baseline", async () => {
+  const pool = fakePool();
+  const provider = makeProvider({ pool, tileSize: 8, cacheTiles: 0 });
+  await provider.requestImage(3, 1, 2);
+  await provider.requestImage(3, 1, 2);
+  assert.equal(pool.requests.length, 2, "with the cache off, the second ask must re-rasterise");
+  assert.equal(provider.worldbuilder.stats.poolRasters, 2);
+  assert.equal(provider.worldbuilder.cache, null);
+  assert.equal(provider.worldbuilder.stats.cacheHits, 0);
+});
+
+test("two requests for one tile in one frame collapse into ONE pool job", async () => {
+  // Cesium asks for a burst of tiles in one turn and the two halves of a reprojection can ask
+  // for the same one. The cache stores the PROMISE, so the second ask waits on the first job
+  // rather than starting a second -- which a cache storing the resolved raster would not do.
+  const pool = fakePool();
+  const provider = makeProvider({ pool, tileSize: 8 });
+  const [a, b] = await Promise.all([
+    provider.requestImage(3, 1, 2), provider.requestImage(3, 1, 2),
+  ]);
+  assert.equal(pool.requests.length, 1, "two concurrent asks started two rasterisations");
+  assert.deepEqual(Array.from(a.data), Array.from(b.data));
+});
+
+test("a hit gets its OWN canvas, never the one Cesium already holds", async () => {
+  // `toImage` runs on every request. Handing the same element back twice would give two
+  // ImageryLayer textures one upload source; the identity conversion this suite uses would hide
+  // that, so it is replaced here with a counting one.
+  let made = 0;
+  const provider = makeProvider({
+    pool: fakePool(),
+    tileSize: 8,
+    toImage: (imageData) => { made += 1; return { imageData, id: made }; },
+  });
+  const first = await provider.requestImage(3, 1, 2);
+  const second = await provider.requestImage(3, 1, 2);
+  assert.equal(made, 2, "toImage must run on a hit as well as a miss");
+  assert.notEqual(first, second, "Cesium was handed the same image object twice");
+  assert.equal(first.imageData, second.imageData, "and the raster underneath is the shared one");
+});
+
+test("a rejected raster is evicted, so a transient failure is retried not cached", async () => {
+  let attempts = 0;
+  const flaky = {
+    requests: [],
+    cloud(request) {
+      this.requests.push(request);
+      attempts += 1;
+      if (attempts === 1) return Promise.reject(new Error("worker 2: boom"));
+      const imageData = cloudTile(request);
+      return Promise.resolve({
+        data: imageData.data, width: imageData.width, height: imageData.height,
+        fillMs: 3, worker: 2,
+      });
+    },
+  };
+  const provider = makeProvider({ pool: flaky, tileSize: 8 });
+  await assert.rejects(provider.requestImage(3, 1, 2), /boom/);
+  const image = await provider.requestImage(3, 1, 2);
+  assert.equal(image.width, 8, "the retry must produce a real raster");
+  assert.equal(flaky.requests.length, 2, "a cached rejection would fail this tile forever");
+});
+
+test("the cache is bounded and evicts least-recently-used", () => {
+  const cache = new CloudRasterCache({ capacity: 2 });
+  const make = (tag) => () => Promise.resolve(tag);
+  cache.get(0, 0, 0, make("a"));
+  cache.get(1, 0, 0, make("b"));
+  cache.get(0, 0, 0, make("a2")); // a is now the most recent
+  cache.get(2, 0, 0, make("c")); // evicts b
+  assert.equal(cache.size, 2);
+  assert.equal(cache.evictions, 1);
+  cache.get(0, 0, 0, make("a3"));
+  assert.equal(cache.hits, 2, "a survived; it was used more recently than b");
+  cache.get(1, 0, 0, make("b2"));
+  assert.equal(cache.misses, 4, "b was evicted and had to be produced again");
+});
+
+test("the default capacity covers the measured working set with room over", () => {
+  // 72 tiles per swap at the orbital camera, 148 on the profile's descent. A capacity below the
+  // working set is a cache that thrashes and reports hits while still re-rasterising, which is
+  // exactly the shape of check this project has shipped before and been misled by.
+  assert.ok(DEFAULT_CLOUD_CACHE_TILES >= 148,
+    `${DEFAULT_CLOUD_CACHE_TILES} tiles is below the 148 the profile measured on a descent`);
+  assert.ok(DEFAULT_CLOUD_CACHE_TILES * CLOUD_TILE_SIZE * CLOUD_TILE_SIZE * 4 < 32 * 1024 * 1024,
+    "the masters must stay well under the ~40 MB the whole capped page was measured at");
+});
 
 test("with a pool, NOTHING rasterises on the main thread", async () => {
   // The counter, not the picture: a provider that ignored the pool would render exactly the same

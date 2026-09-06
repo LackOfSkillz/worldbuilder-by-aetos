@@ -23,9 +23,12 @@
 // `Float32Array` is detached by the transfer, which is correct: it was a copy off the wasm
 // heap made by `fillTileF32` and the worker has no further use for it.
 //
-// # Three jobs: heights, relief, and clouds -- but only two of them are about the world
+// # Four jobs: heights, relief, clouds and water -- and only three are about the world
 //
 // `cloud` is the third and it takes no world handle. See its own comment below.
+//
+// `water` is the fourth and it is **not a tile at all**: one call, tens of seconds, one manifest
+// back. It was on the main thread and it was the whole cold load. See its own comment below.
 //
 // # Two jobs, one world: heights and relief
 //
@@ -152,6 +155,47 @@ function cloud(message) {
   };
 }
 
+/// **Solve the water manifest against THIS worker's own world.**
+///
+/// # The fourth job, and the only one that is not a tile
+///
+/// `wb_water_run` was called on the main thread and measured 33.9--44.8 s at boot and
+/// 45.4--53.4 s per live swap, recorded by the browser's own `longtask` observer as a single
+/// task each time. Moving it here is a message type rather than an algorithm: the export
+/// already existed, and this worker already holds a world built from the same spec.
+///
+/// **The world handle is supplied HERE and not sent, exactly as `fill` and `relief` do it**,
+/// and here the reason has teeth: the main thread is about to draw lakes it did not compute,
+/// so the only thing making the answer right is that `world` was built from the spec the main
+/// thread built its own world from. `pool.rebuild` is awaited before this job is dispatched,
+/// which is what makes that true. The `stale-worker` fault deliberately breaks it, and
+/// `main.js` therefore keeps the main-thread solve whenever a fault is selected.
+///
+/// **No world is built and none is freed**, so `wb_world_count` must read exactly what it read
+/// before. It is sent back with the manifest because that is the only place a per-worker count
+/// can be taken from -- the handle table lives in this instance's linear memory -- and because
+/// "a worker that solves water must not leak a world" is a claim that needs a number rather
+/// than a reading of this function.
+///
+/// **Nothing is transferred.** The reply is a plain array of small objects, which
+/// `structuredClone` copies; there is no `ArrayBuffer` here to move. 963 bodies on the owner's
+/// world is a copy measured in single-digit milliseconds against a solve measured in tens of
+/// seconds.
+function water(message) {
+  const started = performance.now();
+  const result = engine.waterRun({ ...message.request, handle: world });
+  const fillMs = performance.now() - started;
+  return {
+    type: "water",
+    id: message.id,
+    index,
+    fillMs,
+    bodies: result.bodies,
+    seaLevelM: result.seaLevelM,
+    worldCount: engine.worldCount(),
+  };
+}
+
 self.onmessage = async (event) => {
   const message = event.data;
   try {
@@ -172,6 +216,13 @@ self.onmessage = async (event) => {
     if (message.type === "cloud") {
       const { message: reply, buffer } = cloud(message);
       self.postMessage(reply, [buffer]);
+      return;
+    }
+    // No transfer list: see `water` above. A transfer list naming a buffer this reply does not
+    // have would throw, and one naming nothing is what a reader would copy from the branches
+    // above without noticing the difference.
+    if (message.type === "water") {
+      self.postMessage(water(message));
       return;
     }
     // **The live swap's worker half.** Each worker holds its own world in its own linear memory,

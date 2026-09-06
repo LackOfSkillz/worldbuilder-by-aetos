@@ -104,6 +104,68 @@ test("each job's duration lands in ITS OWN sample, not the other's", async () =>
   assert.equal(stats.fillMs.median, 4);
 });
 
+// =========================================================================================
+// The water job -- the pool's fourth consumer, and the only one that is not a tile
+// =========================================================================================
+
+test("water() posts type 'water' with its request, and keeps its own sample", async () => {
+  const pool = makePool(1);
+  const waterPromise = pool.water({ nodeCount: 4000 });
+  const cloudPromise = pool.cloud({ size: 2 });
+  const [waterId, cloudId] = pool.workers[0].sent.map((m) => m.id);
+  assert.deepEqual(
+    pool.workers[0].sent.map((m) => m.type), ["water", "cloud"],
+    "the worker matches on message.type; a wrong name falls through to the unknown-type error " +
+    "and the manifest never arrives, which hangs installWorld forever",
+  );
+  assert.deepEqual(pool.workers[0].sent[0].request, { nodeCount: 4000 });
+  pool.receive({
+    type: "water", id: waterId, index: 0, fillMs: 31418,
+    bodies: [{ rootNode: 7, kind: 0, levelM: 12.5 }], seaLevelM: -3.25, worldCount: 1,
+  });
+  pool.receive({
+    type: "cloud", id: cloudId, index: 0, fillMs: 74,
+    data: new Uint8ClampedArray(4), width: 1, height: 1,
+  });
+  await Promise.all([waterPromise, cloudPromise]);
+  // **One solve is 31,418 ms and one cloud tile is 74 ms.** A shared sample would produce a
+  // median describing neither, and a "median tile cost" of fifteen seconds would be believed by
+  // nobody -- which is the good case. The bad case is the one where it looks plausible.
+  assert.deepEqual(pool.waterMs, [31418], "the solve's duration belongs to waterMs");
+  assert.deepEqual(pool.cloudMs, [74], "the cloud duration belongs to cloudMs");
+  const stats = pool.stats();
+  assert.equal(stats.waters, 1);
+  assert.equal(stats.clouds, 1);
+  assert.equal(stats.waterMs.median, 31418);
+  assert.equal(stats.cloudMs.median, 74);
+});
+
+test("a water reply's manifest, datum and world count all survive the dispatcher", async () => {
+  // **The dispatcher rebuilds every reply from a fixed key set and discards the rest.** That is
+  // how the relief lake counters arrived as zero: right at the worker, right at the provider,
+  // dropped in between, with a correct picture throughout. All four of these are that shape.
+  // `seaLevelM` is the worst of them -- it only shows as lake colour at a depth, so a manifest
+  // that arrived with `undefined` would draw an entirely plausible planet.
+  const pool = makePool(1);
+  const promise = pool.water({ nodeCount: 8000 });
+  const id = pool.workers[0].sent[0].id;
+  const bodies = [
+    { rootNode: 3, kind: 0, levelM: 1204.5, minLatitudeDeg: 1, maxLatitudeDeg: 2,
+      minLongitudeDeg: 3, maxLongitudeDeg: 4 },
+    { rootNode: 9, kind: 0, levelM: -55.25, minLatitudeDeg: -2, maxLatitudeDeg: -1,
+      minLongitudeDeg: -4, maxLongitudeDeg: -3 },
+  ];
+  pool.receive({
+    type: "water", id, index: 5, fillMs: 2310, bodies, seaLevelM: -12.5, worldCount: 1,
+  });
+  const result = await promise;
+  assert.deepEqual(result.bodies, bodies, "the manifest itself was dropped or reshaped");
+  assert.equal(result.seaLevelM, -12.5, "the datum was dropped by the pool");
+  assert.equal(result.worldCount, 1, "the worker's wb_world_count was dropped by the pool");
+  assert.equal(result.fillMs, 2310);
+  assert.equal(result.worker, 5, "which worker answered is what the status line reports");
+});
+
 test("an error reply rejects the right promise and frees the worker slot", async () => {
   const pool = makePool(1);
   const promise = pool.relief({ size: 2 });

@@ -22,6 +22,7 @@ import {
 } from "./relief-provider.js";
 import {
   cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider,
+  DEFAULT_CLOUD_CACHE_TILES,
 } from "./cloud-provider.js";
 import { CLOUD_MAX_LEVEL, CLOUD_TILE_SIZE } from "./clouds.js";
 import {
@@ -218,6 +219,74 @@ async function boot() {
   /// The tiling scheme availability is computed against. One per page: it holds no world state.
   const tilingSchemeForAvailability = new Cesium.GeographicTilingScheme();
 
+  /// **Start the water solve, off the main thread, and return a promise of the manifest.**
+  ///
+  /// # Why this is a scheduling change and not an algorithm change
+  ///
+  /// `wb_water_run` on the main thread measured **33,925 / 42,947 / 43,467 / 44,804 ms** at boot
+  /// on the owner's world at 86,000 nodes, and the browser's own `longtask` observer recorded
+  /// each as a **single task**: the tab was unresponsive for the whole of it. Per live swap it
+  /// was **45,428 and 53,436 ms of a 45,428/53,436 ms swap -- 99.5%.** That is 55-77% of a cold
+  /// load, and it is all one call.
+  ///
+  /// `wb_water_run` is already an export and every pool worker already holds a world built from
+  /// this same spec, so moving it is a message type. **`pool.rebuild(nextSpec)` above is awaited
+  /// before this is called**, which is what makes "the same world" true rather than hopeful:
+  /// same seed, same radius, same plate count, same land fraction, same `features`, and the same
+  /// four opt-in blocks (relief, tectonic, coast), because the worker is sent the whole spec
+  /// object. `nodeCount` is not part of the spec and rides in the request.
+  ///
+  /// # When it stays on the main thread, and why that is not a hedge
+  ///
+  /// - **`?workers=0`.** There is no pool. This is the existing escape hatch and the A/B
+  ///   baseline every figure in the report is measured against.
+  /// - **Any `?fault=`.** The faults are the whole point of `verify.js`, and two of them make a
+  ///   worker's world deliberately *different* from this one: `stale-worker` moves exactly one
+  ///   worker's seed, so dispatching the solve would make the manifest wrong or right depending
+  ///   on which worker `pick()` chose -- a fault that expressed itself differently run to run,
+  ///   which is worse than either answer. The faulted paths keep the behaviour they were
+  ///   checked with.
+  /// - **`?waterWorker=0`**, and this one exists because of a measurement rather than a
+  ///   principle. **The same call is 1.8x slower in a worker on this host**, and it is not
+  ///   contention: on a settled, idle page, back to back in one session, the owner's world at
+  ///   86,000 nodes solved in **36,910 ms on the main thread and 67,330 ms in a worker**
+  ///   (worker-side `fillMs` 67,325, so none of it is queueing). Repeated at boot across three
+  ///   runs: 68,970 / 70,481 / 77,003 ms in a worker against 37,117 / 39,636 / 41,450 ms on the
+  ///   main thread. **The trade is therefore real and it is a trade**: the 34-45 s single long
+  ///   task becomes 0.2-5.0 s and the tab stays alive, and the wall clock to a drawn planet
+  ///   gets *longer*. Chromium on this host is a 13th-gen Intel with 8 performance and 16
+  ///   efficiency cores and it schedules a dedicated worker at a lower thread priority than the
+  ///   renderer's main thread; that is the obvious suspect and it has **not** been proved, so
+  ///   it is named as a suspect. This flag is how an owner, or a different host, gets the other
+  ///   side of the trade without editing a file.
+  ///
+  /// The solve is deterministic -- `live-swap.js`'s control measured an identical rebuild
+  /// bit-identical -- so the worker's manifest is the main thread's manifest.
+  /// `tile-worker.test.mjs` proves that against the real wasm, field by field, rather than
+  /// resting on this paragraph.
+  async function startWaterSolve(nextState) {
+    const request = { nodeCount: nextState.waterNodes };
+    const started = performance.now();
+    if (!pool || fault || params.get("waterWorker") === "0") {
+      const water = engine.waterRun({ handle: installed.world, ...request });
+      return { ...water, ms: performance.now() - started, worker: null };
+    }
+    const result = await pool.water(request);
+    return {
+      bodies: result.bodies,
+      seaLevelM: result.seaLevelM,
+      /// **Wall clock, not the worker's own `fillMs`.** They differ by whatever the job spent
+      /// queued behind tiles, and the number the status line has always quoted is what the
+      /// owner waited for. `pool.stats().waterMs` carries the worker-side figure beside it.
+      ms: performance.now() - started,
+      /// Which worker answered, and its `wb_world_count` AFTER the solve. A solve builds no
+      /// world, so this must be 1; it is the only place a per-worker count can be read.
+      worker: result.worker,
+      workerWorldCount: result.worldCount,
+      workerMs: result.fillMs,
+    };
+  }
+
   /// **Build the world, resolve its water, build the providers, and put them on the globe.**
   ///
   /// Called once at boot with `plan === null`, which means "everything", and again for every live
@@ -257,28 +326,23 @@ async function boot() {
     // level, because `wb_water_run` samples its stream graph off this world's own surface. The
     // control -- an identical rebuild -- is bit-identical, so re-solving is deterministic and
     // skipping is what would be unsound. `waterSolveIsOptional` is the one place that rule lives.
-    if (resolveWater) {
-      const waterStarted = performance.now();
-      const water = engine.waterRun({
-        handle: installed.world, nodeCount: nextState.waterNodes,
-      });
-      const waterMs = performance.now() - waterStarted;
-      const facts = waterDiagnostics(water.bodies);
-      installed.water = {
-        enabled: true, nodeCount: nextState.waterNodes, ms: waterMs,
-        seaLevelM: water.seaLevelM, bodies: water.bodies,
-        // **The boxes bound node CENTRES, so they are grown by one node cell before anything
-        // draws them.** See `dilateBodyExtents` for the whole argument; `facts` is deliberately
-        // taken on the RAW rows, because it is a statement about what the manifest carries and
-        // dilating first would make it report a fact about this file instead.
-        drawnBodies: dilateBodyExtents(water.bodies, nextState.waterNodes), facts,
-      };
-    } else if (!nextState.waterEnabled) {
-      installed.water = {
-        enabled: false, nodeCount: nextState.waterNodes, ms: 0, seaLevelM: null,
-        bodies: [], drawnBodies: [], facts: waterDiagnostics([]),
-      };
-    }
+    // # It is started HERE and awaited BELOW, and the gap is the whole scheduling fix
+    //
+    // The solve is dispatched to a pool worker and NOT awaited yet, so the terrain provider
+    // installs and the mesh paints while it runs. Nothing about a heightmap needs the manifest:
+    // only the relief rasteriser's lake texels and the water overlay consume it, and both are
+    // below the await.
+    //
+    // **What the viewer does while it solves is a choice, not an accident.** Between here and
+    // the await the globe shows the terrain mesh and no imagery at all; the relief and cloud
+    // layers are added only after the manifest is complete. Lakes are therefore never
+    // half-drawn and no relief tile is ever rasterised against a partial manifest -- which
+    // matters because `ImageryLayer` caches the texture it is given, so a tile drawn early
+    // would be a permanently lake-free tile in a world that has lakes. The rejected
+    // alternative was to install the relief layer with an empty manifest and replace it when
+    // the solve landed: that draws every relief tile twice, and a relief tile is 66,564 engine
+    // samples.
+    const waterJob = resolveWater ? startWaterSolve(nextState) : null;
 
     if (rebuildTerrain) {
       // Feature-aware availability. With no features this is exactly the Task 4 cap: the
@@ -351,22 +415,22 @@ async function boot() {
     // their boxes overlapping another, so re-adding them would be re-adding the noise that
     // removal deleted.
     //
-    // # It is resolved SYNCHRONOUSLY, at boot, and that costs four seconds
+    // # It IS resolved in a worker now, and it is still complete before the first relief tile
     //
-    // Measured on the owner's world through this repository's checked-in wasm: **4.21 s at
-    // 30,000 nodes**, 0.98 s at 8,000, 9.32 s at 60,000. That is a real cost and it is named in
-    // the status line rather than hidden.
+    // **This paragraph used to say the opposite, and the reasoning it gave was sound but the
+    // conclusion was wrong.** It said the solve could not move off the main thread because the
+    // manifest has to be complete before the first relief tile rasterises -- Cesium caches the
+    // texture it is given, so a tile drawn against a half-arrived manifest is a permanently
+    // lake-free tile in a world that has lakes. All of that is still true. What it missed is
+    // that "complete before the first relief tile" and "computed on the main thread" are
+    // different requirements: `startWaterSolve` above dispatches it to a pool worker and the
+    // relief layer is not constructed until the promise resolves, so the ordering is unchanged
+    // and the 34-45 s freeze is gone. Measured on the owner's world at 86,000 nodes, this
+    // repository's checked-in wasm: 4.21 s at 30,000 nodes, 0.98 s at 8,000, 9.32 s at 60,000,
+    // and 33.9-44.8 s at 86,000.
     //
-    // It is not moved into a worker, and the reason is correctness rather than effort. The
-    // manifest has to be complete *before* the first relief tile rasterises: Cesium caches the
-    // texture it is given, so any tile drawn while the manifest was still arriving would be a
-    // permanently lake-free tile in a world that has lakes, scattered wherever the camera
-    // happened to be looking first. That is the `stale-worker` fault shape arrived at by
-    // accident, and it would also make the screenshot digests a race. `?lakes=0` is the escape
-    // hatch and it skips the resolution entirely rather than resolving and discarding.
-    // (The resolution itself now lives in `installWorld` above, so a swap and a boot resolve it
-    // through the same call. `?lakes=0` still skips it entirely rather than resolving and
-    // discarding, and it is still complete before the first relief tile rasterises.)
+    // `?lakes=0` is still the escape hatch and still skips the resolution entirely rather than
+    // resolving and discarding. `?workers=0` and any `?fault=` keep the main-thread call.
     // What the manifest cannot say, counted rather than left to be rediscovered: bodies whose
     // box is a single point (undrawable -- no footprint, no radius, and `rootNode` cannot be
     // turned into a position by any export), boxes wider than half the planet (polar, not
@@ -386,6 +450,26 @@ async function boot() {
     // `waterFacts` above is deliberately taken on the RAW rows: it is a statement about what the
     // manifest carries, and dilating first would make it report a fact about this file instead.
     // (`dilateBodyExtents` is applied in `installWorld`, on this world's own manifest.)
+
+    // **The manifest, awaited at last.** Everything below this line reads it.
+    if (waterJob) {
+      const water = await waterJob;
+      const facts = waterDiagnostics(water.bodies);
+      installed.water = {
+        enabled: true, nodeCount: nextState.waterNodes, ms: water.ms, worker: water.worker,
+        seaLevelM: water.seaLevelM, bodies: water.bodies,
+        // **The boxes bound node CENTRES, so they are grown by one node cell before anything
+        // draws them.** See `dilateBodyExtents` for the whole argument; `facts` is deliberately
+        // taken on the RAW rows, because it is a statement about what the manifest carries and
+        // dilating first would make it report a fact about this file instead.
+        drawnBodies: dilateBodyExtents(water.bodies, nextState.waterNodes), facts,
+      };
+    } else if (!nextState.waterEnabled) {
+      installed.water = {
+        enabled: false, nodeCount: nextState.waterNodes, ms: 0, seaLevelM: null, worker: null,
+        bodies: [], drawnBodies: [], facts: waterDiagnostics([]),
+      };
+    }
 
     if (reliefOn) {
       // **The old layer is removed and a new one added**, rather than the provider being mutated.
@@ -484,6 +568,14 @@ async function boot() {
         // The same pool the mesh and the relief layer use. One pool and not three: the contention
         // that matters is engine instances per core.
         pool,
+        // **The raster cache that makes "built once and survives every swap" actually save
+        // anything.** The paragraph above was already true and was already defeated one level
+        // down: assigning `viewer.terrainProvider` discards Cesium's whole quadtree, and every
+        // replacement `QuadtreeTile` re-requests imagery from every layer -- so this provider
+        // was re-rasterising 72 byte-identical cloud tiles per slider release, 12.0--14.9 s of
+        // worker CPU each. `?cloudCacheTiles=0` restores that, which is what the A/B is
+        // measured against.
+        cacheTiles: number("cloudCacheTiles", DEFAULT_CLOUD_CACHE_TILES),
       });
       installed.cloudLayer = viewer.imageryLayers.addImageryProvider(installed.cloudProvider);
     }
@@ -742,6 +834,10 @@ async function boot() {
         ? `${water.drawnBodies.length}/${water.facts.bodies} drawn (${water.facts.pointBoxes} ` +
           `point boxes drawn as a node-cell cap) @${water.nodeCount} nodes ` +
           `datum ${water.seaLevelM} m in ${(water.ms / 1000).toFixed(2)}s` +
+          // WHERE it was solved, on the screenshot itself. The whole of this task's first fix
+          // is that this says `w<n>` rather than `main`, and a status line that did not say
+          // which would leave the one visible difference invisible.
+          ` on ${water.worker === null || water.worker === undefined ? "main" : `w${water.worker}`}` +
           `${water.facts.wideBoxes > 0 ? ` WIDE=${water.facts.wideBoxes}` : ""}` +
           `${water.facts.overlappingPairs > 0 ? ` overlap=${water.facts.overlappingPairs}` : ""}` +
           `${reliefOn ? "" : " (NOT DRAWN: relief layer off)"}`

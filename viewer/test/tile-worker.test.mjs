@@ -306,6 +306,134 @@ test("a cloud request that throws comes back as an error reply carrying its id",
   assert.match(message.message, /calibrateClouds/);
 });
 
+// =========================================================================================
+// The water branch -- the fourth job, and the one the whole cold load was
+// =========================================================================================
+//
+// **This is the proof that moving the solve off the main thread did not move the answer.**
+// The brief's rule is "prove the manifest matches, do not assume it", and the assumption
+// available to be made here is a large one: the worker solves against a world IT built, from a
+// spec it was posted, in a different linear memory, and hands back rows that crossed a
+// `structuredClone`. Every one of those is a place the answer could change while the globe
+// still looked like a globe -- a lake in the wrong place is a lake.
+//
+// `referenceWorld` is built in THIS process from the same `DEFAULT_WORLD` the worker was
+// `init`ed with, so the comparison is main-thread against worker, not worker against itself.
+// 4,000 nodes rather than the owner's 86,000: the node count is what the solve is affine in
+// (2,310 ms at 8,000 against 31,418 ms at 86,000), and nothing about the transport changes
+// with it.
+
+const WATER_NODES = 4000;
+
+test("the water branch is REACHED, and answers with a manifest", async () => {
+  const { message, transfer } = await send({
+    type: "water", id: 31, request: { nodeCount: WATER_NODES },
+  });
+  assert.equal(
+    message.type, "water",
+    "the worker answered something other than a manifest -- if this is 'error' the branch " +
+    `exists but throws: ${message.message}`,
+  );
+  assert.equal(message.id, 31, "the id must come back or pool.js can never settle the promise");
+  assert.equal(message.index, 3, "the reply carries the worker's own index");
+  assert.ok(Array.isArray(message.bodies) && message.bodies.length > 0,
+    "a 4,000-node solve of this world has bodies; an empty manifest here would draw a lakeless " +
+    "planet and raise nothing");
+  assert.ok(Number.isFinite(message.seaLevelM), "the datum must cross the wire as a number");
+  assert.ok(Number.isFinite(message.fillMs) && message.fillMs >= 0,
+    `fillMs must be a real duration; got ${message.fillMs}`);
+  assert.equal(transfer, undefined,
+    "there is no ArrayBuffer in this reply; a transfer list naming one would throw, and the " +
+    "three branches above all pass one, so copying them is the easy mistake");
+});
+
+test("the worker's manifest is IDENTICAL to a main-thread solve of the same world", async () => {
+  // **The datum is requested NON-ZERO on purpose, and that is a correction rather than a
+  // flourish.** Written with the default `seaLevelM: 0`, this test could not fail on the datum:
+  // a worker replying with a hard-coded `0` passed it, because 0 is what this world's manifest
+  // comes back at anyway. That is the fifteenth assertion in this project to look load-bearing
+  // and not be, and it was caught by mutating the worker to reply `seaLevelM: 0` and watching
+  // the suite stay green. -250 m also moves the manifest itself (6 bodies at 0, 7 at -250), so
+  // the same argument proves the whole request crosses rather than only the node count.
+  const request = { nodeCount: WATER_NODES, seaLevelM: -250 };
+  const truth = reference.waterRun({ handle: referenceWorld, ...request });
+  assert.notEqual(truth.seaLevelM, 0,
+    "the datum under comparison is 0, so an implementation that returned a constant 0 would " +
+    "pass this test; the request is what makes the comparison able to fail");
+  const { message } = await send({ type: "water", id: 32, request });
+  assert.equal(
+    message.bodies.length, truth.bodies.length,
+    "a different body COUNT means the worker solved a different world, not a rounding " +
+    "difference -- check that init's spec reached engine.newWorld intact",
+  );
+  assert.ok(Object.is(message.seaLevelM, truth.seaLevelM),
+    `the datum differs: worker ${message.seaLevelM}, main thread ${truth.seaLevelM}`);
+  // Field by field and `Object.is`, not `deepEqual` on the arrays: a bare deepEqual would pass
+  // on two empty arrays, and the failure message from one would name neither the row nor the
+  // field. Every field the export writes is compared -- there are seven and the stride says so.
+  const FIELDS = ["rootNode", "kind", "levelM",
+    "minLatitudeDeg", "maxLatitudeDeg", "minLongitudeDeg", "maxLongitudeDeg"];
+  let compared = 0;
+  for (let i = 0; i < truth.bodies.length; i += 1) {
+    for (const field of FIELDS) {
+      assert.ok(
+        Object.is(message.bodies[i][field], truth.bodies[i][field]),
+        `body ${i} field ${field}: worker ${message.bodies[i][field]}, ` +
+        `main thread ${truth.bodies[i][field]}`,
+      );
+      compared += 1;
+    }
+  }
+  assert.equal(compared, truth.bodies.length * FIELDS.length);
+  assert.ok(compared > 0, "nothing was compared, so this test asserted nothing");
+});
+
+test("the request's nodeCount is HONOURED, not defaulted", async () => {
+  // **A stage can be exercised and its arguments ignored.** If `water()` dropped
+  // `message.request` and called `waterRun` with some constant, the test above would still pass
+  // -- the reference call would be the constant too only by luck, and here it would not be. Two
+  // node counts, two different manifests, each matching its own main-thread solve.
+  const coarse = reference.waterRun({ handle: referenceWorld, nodeCount: 2000 });
+  const fine = reference.waterRun({ handle: referenceWorld, nodeCount: 6000 });
+  assert.notEqual(
+    coarse.bodies.length, fine.bodies.length,
+    "the two node counts must give different manifests or this test cannot fail",
+  );
+  const a = await send({ type: "water", id: 33, request: { nodeCount: 2000 } });
+  const b = await send({ type: "water", id: 34, request: { nodeCount: 6000 } });
+  assert.equal(a.message.bodies.length, coarse.bodies.length);
+  assert.equal(b.message.bodies.length, fine.bodies.length);
+});
+
+test("solving water builds no world and frees none", async () => {
+  // **The live-slider work proved no leak across 30 swaps with `wb_world_count` constant, and a
+  // fourth consumer that took a world to solve in would undo that invisibly** -- the render
+  // stays perfect right up to the allocation that fails. The count is read from inside the
+  // worker's own linear memory, which is the only place the per-worker figure exists.
+  const before = await send({ type: "water", id: 35, request: { nodeCount: 1000 } });
+  const after = await send({ type: "water", id: 36, request: { nodeCount: 1000 } });
+  assert.equal(before.message.worldCount, 1,
+    "this worker holds exactly one world; anything else means the solve built one");
+  assert.equal(after.message.worldCount, before.message.worldCount,
+    "wb_world_count grew across two solves -- that is one leaked world per slider release");
+  // And the world is still usable afterwards, which a free-then-solve would break silently.
+  const filled = await send({
+    type: "fill", id: 37,
+    request: { lat0Deg: 45, lat1Deg: 0, lon0Deg: -45, lon1Deg: 0, width: 8, height: 8, resolutionM: null },
+  });
+  assert.equal(filled.message.type, "tile");
+  assert.ok(filled.message.heights.every((h) => Number.isFinite(h)),
+    "a fill after a solve returned NaN, which is what handle 0 answers with");
+});
+
+test("a water request that throws comes back as an error reply carrying its id", async () => {
+  // `WB_MAX_WATER_NODES` is 100,000; the export refuses more, and a refusal has to reach the
+  // pool as an error rather than as a promise that never settles.
+  const { message } = await send({ type: "water", id: 38, request: { nodeCount: 10_000_000 } });
+  assert.equal(message.type, "error");
+  assert.equal(message.id, 38);
+});
+
 test("an unknown message type is refused rather than silently ignored", async () => {
   const { message } = await send({ type: "rasterise", id: 14 });
   assert.equal(message.type, "error");

@@ -460,7 +460,26 @@ test("the boot path resolves the manifest before the provider exists, and can be
   // now a branch on the state's own `waterEnabled` rather than a ternary. Every property this test
   // was written to hold is unchanged; only the spelling is.
   const main = appFile("main.js");
-  assert.match(main, /engine\.waterRun\(\{\s*handle: installed\.world, nodeCount: nextState\.waterNodes,/);
+  // **The literals moved a second time**, when the solve went off the main thread, and the
+  // assertions moved with them again. What the solve is called with is now assembled in
+  // `startWaterSolve` -- `{ nodeCount: nextState.waterNodes }` as the request, and the
+  // main-thread fallback spreading it over `installed.world` -- so the one match this test used
+  // to make is now these three. The property is unchanged: the export is called, with THIS
+  // world's handle and THIS state's node count.
+  assert.match(main, /const request = \{ nodeCount: nextState\.waterNodes \};/);
+  assert.match(main, /engine\.waterRun\(\{ handle: installed\.world, \.\.\.request \}\)/,
+    "the main-thread fallback must still solve against the world that is drawn");
+  assert.match(main, /await pool\.water\(request\)/,
+    "the pooled path must send the same request rather than assembling a second one");
+  // **The three conditions that keep the solve on the main thread, named in one place.** Two are
+  // correctness (`?workers=0` has no pool; a `?fault=` deliberately gives a worker a different
+  // world), and the third is a measured trade the owner is allowed to take the other side of --
+  // the same call is 1.8x slower in a worker on the measuring host. A flag that stopped being
+  // read would silently remove the escape hatch and nothing about the picture would say so.
+  assert.match(
+    main, /if \(!pool \|\| fault \|\| params\.get\("waterWorker"\) === "0"\) \{/,
+    "the main-thread fallback's conditions changed; ?waterWorker=0 may no longer be honoured",
+  );
   assert.match(main, /lakes: installed\.water\.drawnBodies/,
     "the manifest never reaches the relief provider");
   // ...and what reaches it is the DILATED manifest, because the raw boxes bound node centres and
@@ -481,15 +500,45 @@ test("the boot path resolves the manifest before the provider exists, and can be
   // `waterEnabled: false`, `installWorld`'s `resolveWater` is that flag, and the else-branch
   // installs an empty manifest without calling the export at all.
   assert.match(main, /const resolveWater = plan === null \? nextState\.waterEnabled : plan\.resolveWater;/);
-  assert.match(main, /if \(resolveWater\) \{/);
+  assert.match(main, /const waterJob = resolveWater \? startWaterSolve\(nextState\) : null;/);
   assert.match(main, /bodies: \[\], drawnBodies: \[\], facts: waterDiagnostics\(\[\]\)/);
-  // And it must be resolved BEFORE the provider is constructed: a manifest that arrived later
-  // would leave Cesium holding cached lake-free textures for whatever the camera saw first. This
-  // is now load-bearing on a second path as well -- a live swap re-runs the same ordering, and a
+  // **And it must be COMPLETE before the relief provider is constructed.** A manifest that
+  // arrived later would leave Cesium holding cached lake-free textures for whatever the camera
+  // saw first -- `ImageryLayer` caches the uploaded texture per tile and has no public
+  // invalidate. This is load-bearing on two paths: a live swap re-runs the same ordering, and a
   // swap that built the relief provider first would cache the previous manifest's tiles forever.
+  //
+  // **The old spelling of this assertion has stopped being able to fail and is replaced rather
+  // than kept.** It compared the position of `engine.waterRun(`, which now sits inside
+  // `startWaterSolve` above `installWorld` and is therefore before everything -- it would pass
+  // no matter where the await went. `await waterJob` is where the manifest actually becomes
+  // complete, so that is what is compared.
+  //
+  // **Both ends are asserted present first, and that is not belt-and-braces.** `indexOf` answers
+  // -1 for a string that is not there, and -1 is less than every real index, so an ordering
+  // assertion written on two `indexOf` calls PASSES whenever the left-hand literal stops
+  // existing -- a rename would silently retire the check. This project has shipped several
+  // assertions that could not fail; this is the shape of one.
+  const awaitAt = main.indexOf("const water = await waterJob;");
+  const reliefAt = main.indexOf("createReliefImageryProvider(");
+  assert.notEqual(awaitAt, -1, "the await moved or was renamed; this ordering check went vacuous");
+  assert.notEqual(reliefAt, -1, "the relief provider call moved; this ordering check went vacuous");
   assert.ok(
-    main.indexOf("engine.waterRun(") < main.indexOf("createReliefImageryProvider("),
-    "the manifest is resolved after the provider is built; early tiles would cache without lakes",
+    awaitAt < reliefAt,
+    "the relief provider is built before the manifest lands; early tiles would cache without lakes",
+  );
+  // **And it must be STARTED before the terrain provider is installed**, which is the whole of
+  // the scheduling fix: the solve measured 33.9-44.8 s at boot and 45.4-53.4 s per swap as a
+  // single main-thread task, and nothing about a heightmap needs the manifest. If the dispatch
+  // moved back below the terrain install, the tab would stop freezing and the mesh would still
+  // wait forty seconds for a picture -- a regression no timing of the long task would show.
+  const dispatchAt = main.indexOf("const waterJob = resolveWater");
+  const terrainAt = main.indexOf("viewer.terrainProvider = installed.provider");
+  assert.notEqual(dispatchAt, -1, "the dispatch moved or was renamed; check went vacuous");
+  assert.notEqual(terrainAt, -1, "the terrain install moved; check went vacuous");
+  assert.ok(
+    dispatchAt < terrainAt,
+    "the water solve is started after the terrain provider is installed, so the mesh waits on it",
   );
   // **The rule the live swap turned into a correctness bar**, asserted where the boot path can see
   // it: the water solve is re-run whenever the SURFACE moved, not merely when a water knob moved.
