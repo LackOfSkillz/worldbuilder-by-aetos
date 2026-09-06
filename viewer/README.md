@@ -318,11 +318,15 @@ viewer/
   scripts/vendor-cesium.mjs          node_modules -> public/vendor/cesium
   scripts/serve.mjs                  loopback static server, CSP + COOP/COEP, logs every request
   scripts/build-wasm.mjs             builds + verifies + fingerprints + copies the engine .wasm
+  scripts/shoot.mjs                  headless-Chromium capture: `shoot`, `digest`, `measure`
+  scripts/probe.mjs                  headless-Chromium pixel probe: rendered colour against the
+                                     height the ENGINE reports at the point each pixel sees
   public/index.html                  the page. No inline script or style: the CSP forbids it
   public/app/cesium-base-url.js      CESIUM_BASE_URL, before Cesium.js
   public/app/boot.js                 the Viewer + the net probe
   public/app/viewer.css              the page's own style
   public/app/engine.js               the wasm loader and the extern "C" entry points
+  public/app/atmosphere-params.js    atmosphere, limb and tone from the query string
   public/app/terrain.js              CustomHeightmapTerrainProvider, the cap, the faults
   public/app/availability.js         getTileDataAvailable, feature-aware
   public/app/pool.js                 the eight-worker pool and the LRU tile cache
@@ -350,7 +354,12 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 ?clouds= ?cloudSize= ?cloudMaxLevel=           the cloud layer -- see below
 ?reliefPreset= ?mountainM= ?quietingStrength= ?octavePersistence=   the relief channel
 ?sse=                                          THE detail knob -- see below
-?exaggeration= ?paint=0 ?atmosphere=1 ?rampMin= ?rampMax=   what it looks like
+?exaggeration= ?paint=0 ?rampMin= ?rampMax=    what it looks like
+?atmosphere=0                                  ground atmosphere OFF (it is ON by default)
+?limb= ?limbMie= ?limbLight= ?limbSmooth=1     the sky limb's scale heights, in metres
+?atmosLight= ?atmosScale= ?atmosSun=1          the ground haze
+?atmosSaturation= ?atmosBrightness=
+?hdr=1 ?tonemap=NAME ?exposure=                the tone grade -- off by default, see below
 ?fly=lat,lon,height                            where to look
 ?trace=N                                       record N frame deltas from boot
 ?fault=<one of seven>                          a deliberate wrong implementation
@@ -650,7 +659,7 @@ one; there is no bundler and none is needed).
 http://127.0.0.1:8137/
   ?seed= ?radius= ?plates= ?land= ?harbour=1   the world
   ?maxLevel= ?size=                            the tiling
-  ?exaggeration= ?paint=0 ?atmosphere=1        what it looks like
+  ?exaggeration= ?paint=0 ?atmosphere=0        what it looks like
   ?fly=lat,lon,height                          where to look
   ?fault=flip-latitude|shift-tile|wrong-world  a deliberate wrong implementation
 ```
@@ -1943,9 +1952,24 @@ Then, itemised:
 6. **No cast shadows, only surface shading.** A ridge does not darken the valley behind it.
 7. **No atmospheric perspective on the ground, and no specular glint on the ocean.** A real
    orbital photograph has haze thickening toward the limb and a glint lobe over water; this has
-   a hard sky-limb boundary, fully saturated ground colour up to the silhouette, and flat matte
-   blue sea. Ground atmosphere is off by default for a measured reason: it washed the ramp to a
-   uniform pale green from orbit.
+   a hard sky-limb boundary and a glint lobe over water this has no equivalent of.
+
+   **Ground atmosphere is now ON by default, and the change is a re-measurement rather than a
+   change of mind.** It was off because it washed the ocean to `(122, 172, 137)`, the colour of
+   land 500 m up — a real measurement, taken against the ocean as it was *before* the depth
+   retune that raised its contrast 2.45x. Re-run against the retuned sea by `scripts/probe.mjs`
+   (owner's world, `?clouds=0`, orbital camera, 17,931 ocean and 9,671 land pixels ray-picked and
+   their heights asked of the engine), the ocean's mean pixel is `(18.5, 57.3, 78.7)` — still
+   blue-dominant — its sd rises 18.58 → 21.31 and the land/ocean chromaticity distance falls only
+   0.2439 → 0.2315, where a wash would be near zero. It costs the land's darkest tone
+   (p99/p01 15.02 → 12.03) and it costs nothing at all below about 2,000 km, where the digests are
+   byte-identical with it on and off. `?atmosphere=0` restores the previous picture exactly.
+
+   The limb is still a thin, warm, hard-edged ring: measured at the whole-planet camera it peaks
+   in the lowest 10 km at luminance 164.5, chromaticity r 0.367 / b 0.284, and is at half that by
+   40 km. `?limb=24000` turns it into a blue-cyan halo standing off at 60 km (luminance 219.6,
+   r 0.300 / b 0.345) at the cost of a dark gap right at the silhouette. That is taste, so it is a
+   parameter and not a default.
 8. **No rivers, lakes or ice shelves.** Water is the datum and nothing else.
 9. **The parallel ridges on the plate-boundary range look regular** at `?sse=1`. Fold mountains
    along a collision boundary genuinely do look like that, and this is the tectonic term rather

@@ -16,6 +16,7 @@ import {
 import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
 import { coastFromParams } from "./coast-params.js";
+import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
 } from "./relief-provider.js";
@@ -370,19 +371,70 @@ async function boot() {
   viewer.scene.globe.enableLighting = params.get("flat") !== "1";
 
   // GROUND atmosphere and SKY atmosphere are different effects and only one of them was
-  // ever the problem. The measured objection stands and is preserved: ground atmosphere
-  // washes the ramp to a uniform pale green from orbit -- a deep-ocean point at 15,000 km
-  // read (122,172,137), the same colour as land 500 m up -- so it stays off unless
-  // `?atmosphere=1` asks for it.
+  // ever the problem.
   //
-  // The sky atmosphere is the blue limb outside the silhouette. It touches no ground
-  // fragment, so it cannot wash anything, and it is most of what makes a render read as a
-  // planet rather than a textured ball. On by default; `?flat=1` turns it off with the rest.
-  viewer.scene.skyAtmosphere.show = params.get("flat") !== "1";
+  // # The ground atmosphere is ON, and the measurement that turned it on is below
+  //
+  // It was off for a **measured** reason: it washed the ocean to `(122, 172, 137)` from
+  // orbit -- the same colour as land 500 m up. That was a real measurement and switching it
+  // off was right at the time. **It was taken against the ocean as it was before the depth
+  // retune**, whose contrast is 2.45x what it was, so the finding's basis had moved and it
+  // was re-measured rather than inherited.
+  //
+  // **Re-measured, it does not hold.** Owner's world, `?clouds=0`, orbital camera, 17,931
+  // ocean pixels and 9,671 land pixels ray-picked against the ellipsoid and their heights
+  // asked of the engine (`scripts/probe.mjs`, which is committed for this reason):
+  //
+  //   mean ocean pixel   off (13.9, 46.2, 65.9)   on (18.5, 57.3, 78.7)   still blue-dominant
+  //   mean land pixel    off (36.2, 38.7, 24.7)   on (44.2, 47.9, 31.2)
+  //   ocean sd           off 18.58                on 21.31                +14.7 %
+  //   ocean p5-p95       off 56.57                on 63.64                +12.5 %
+  //   land/ocean chromaticity distance   off 0.2439   on 0.2315           -5.1 %
+  //
+  // The sea and the land are 0.2315 apart in chromaticity with it on -- **the wash it was
+  // switched off for would be a distance near zero** -- and the ocean's own contrast rises
+  // rather than falls. Repeated at 15,000 km and on the `?relief=0` ramp path, where the
+  // original objection was actually written ("washes the RAMP to a uniform pale green"): same
+  // sign, same conclusion.
+  //
+  // **The one cost, stated rather than buried:** the land's luminance ratio p99/p01 falls
+  // 15.02 -> 12.03. The haze lifts the darkest land, so the deepest forest shadow is 20 % less
+  // deep. The land's absolute spread rises (sd 27.76 -> 31.22) and its top end rises with it;
+  // what is lost is the very bottom of the range.
+  //
+  // **And it costs nothing where a coastline lives.** Cesium fades the ground atmosphere out
+  // with camera distance, so at 2,000 km and at 220 km the probe returns figures identical to
+  // three decimals over 15,012 ocean and 9,026 land pixels, and the digests are byte-identical.
+  // The effect exists only from far orbit, which is the one view it was wanted for.
+  //
+  // `?atmosphere=0` restores the previous picture exactly, which is what a like-for-like
+  // comparison needs, and `?flat=1` still turns everything off together.
+  //
+  // # The sky atmosphere is the blue limb outside the silhouette
+  //
+  // It touches no ground fragment, so it cannot wash anything -- measured: `?limb=24000` moves
+  // no ocean or land figure past the third decimal -- and it is most of what makes a render read
+  // as a planet rather than a textured ball. On by default; `?flat=1` turns it off with the rest.
+  //
+  // # Everything else here is OFFERED, not shipped, and the reason is the difference between
+  // # a measurement and a preference
+  //
+  // The limb's thickness is taste. Cesium's scale heights are Earth's real ones over an
+  // Earth-sized ellipsoid, so our ring is thin because it is CORRECT; the reference
+  // illustration's thick blue haze is an illustrator's convention. Measured at the whole-planet
+  // camera, `?limb=24000` moves the lit band's peak from the silhouette itself (0-10 km,
+  // luminance 164.5, chromaticity r 0.367 / b 0.284 -- a warm-white RIM) out to 60 km
+  // (luminance 219.6, r 0.300 / b 0.345 -- a blue-cyan HALO). That is the gap analysis's
+  // difference #10 in numbers, and it is still a preference, because it also opens a dark gap
+  // at the silhouette that some eyes will like less than the rim. **A measured finding may
+  // overturn a measured finding; a preference may not**, so it is a parameter and the report
+  // carries the screenshot of it.
+  //
+  // Everything this block reads is applied by `atmosphere-params.js`, whose defaults are read
+  // off the live `Scene` rather than restated -- so with none of these parameters the picture is
+  // byte-for-byte Cesium's own, and a Cesium upgrade moves with it.
   viewer.scene.fog.enabled = false;
-  if (params.get("atmosphere") !== "1") {
-    viewer.scene.globe.showGroundAtmosphere = false;
-  }
+  const atmosphereApplied = applyAtmosphere(viewer.scene, params, Cesium);
 
   // The `ElevationRamp` material and the relief layer CANNOT both be on, and this is not a
   // taste call. `GlobeFS`'s `APPLY_MATERIAL` block ends in
@@ -492,6 +544,12 @@ async function boot() {
     // The cost knob, named where it can be found. `?sse=1` buys one more imagery level at
     // the whole-planet view for ~3x the tile cost -- measured above -- and a cost setting
     // nobody can find is a setting that does not exist.
+    // Atmosphere and tone, named with the numbers that decide them. A screenshot carries this
+    // line as its own caption, and "atmosphere=on" would say nothing about an effect whose whole
+    // argument is a set of scale heights -- so the ground switch, the limb's two scale heights,
+    // the two light intensities and whether the haze follows the sun are all here, and so is
+    // whether this host can tonemap at all rather than merely whether it was asked to.
+    `${formatAtmosphere(atmosphereApplied)} | ` +
     `sse=${sse}${sse === 2 ? " (?sse=1 for one more level, ~3x cost)" : ""} | ` +
     `fault=${fault ?? "none"}`;
   if (status) status.textContent = line;
@@ -507,6 +565,10 @@ async function boot() {
     /// than recalibrated, so a check cannot arrive at a different threshold and compare against
     /// that -- and its `worldbuilder.stats` is the per-tile cost the report quotes.
     cloudProvider,
+    /// What `atmosphere-params.js` actually applied to the scene, read back rather than
+    /// re-derived, so a driver asking "is the ground atmosphere on" gets the answer from the same
+    /// call that set it. A second derivation is a second chance to disagree.
+    atmosphere: atmosphereApplied,
     FAULTS,
     /// The engine's own relief presets, read across the boundary at boot. `controls.js`
     /// takes its slider defaults, two of its three travel ends and its preset button from

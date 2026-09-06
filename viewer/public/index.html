@@ -47,6 +47,22 @@
     ?reliefSize= ?reliefMaxLevel=                the relief raster's tile edge in texels
                                                  (default 256) and its refinement cap
                                                  (default: the terrain's own ground cap)
+    ?atmosphere=0                                turn OFF the ground atmosphere, which is ON
+                                                 by default since the ocean retune made the
+                                                 measured objection to it stale. `=0` restores
+                                                 the previous picture byte-for-byte.
+    ?limb= ?limbMie= ?limbLight= ?limbSmooth=1   the sky atmosphere's Rayleigh and Mie scale
+                                                 heights in metres, its light intensity, and
+                                                 per-fragment scattering. All default to
+                                                 Cesium's own values, read off the Scene.
+    ?atmosLight= ?atmosScale= ?atmosSun=1        the ground atmosphere's intensity, Rayleigh
+    ?atmosSaturation= ?atmosBrightness=          scale height, whether the haze follows the sun,
+                                                 and two colour shifts. Cesium defaults.
+    ?hdr=1 ?tonemap=NAME ?exposure=              the tone grade. NAME is a Cesium Tonemapper --
+                                                 PBR_NEUTRAL, FILMIC, ACES, REINHARD,
+                                                 MODIFIED_REINHARD. Off by default: measured,
+                                                 and PBR_NEUTRAL buys contrast by eating the
+                                                 limb, which is a trade for the owner to make.
     ?fly=lat,lon,height                          where to look
     ?workers= ?cache=0 ?cacheTiles=              the Task 5 pool and cache (workers=0 is
                                                  Task 4's synchronous main-thread fill,
