@@ -16,6 +16,7 @@ import {
 import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
 import { coastFromParams } from "./coast-params.js";
+import { gullyFromParams } from "./gully-params.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
@@ -58,6 +59,7 @@ function worldSpecFromParams() {
     relief: null,
     tectonics: null,
     coast: null,
+    gully: null,
   };
 }
 
@@ -152,6 +154,26 @@ async function boot() {
   // look like.
   const coastCanonical = engine.coastPreset("canonical");
   spec.coast = coastFromParams(params, coastCanonical);
+
+  // The gully block, and RULING 1 a fifth time. Same shape as the three above -- canonical is read
+  // FROM THE ENGINE, `gullyFromParams` returns `null` when nothing was asked for, and that `null`
+  // reaches `wb_world_new_gully` as a null pointer with a length of zero.
+  //
+  // **This is the block that puts branching valleys on a mountain flank.** The owner compared our
+  // ranges to satellite photographs and said ours look "painted in with a knife"; what the
+  // photographs have is dendritic V-notched valleys with snow following the ridge lines, and the
+  // stream graph is 661x too coarse to ever carry them. `GullyParams` is the term that can, and
+  // until this line existed it shipped in the artifact and was unreachable.
+  //
+  // **The `null` here is stronger than the other three.** `Surface::with_gully(None)` builds no
+  // steering lattice and `elevation_m` takes a different branch, so the default path is
+  // structurally the pre-gully one rather than the gully one adding zero.
+  //
+  // Placed beside the other three reads and before the pool for the identical reason: the workers
+  // are handed this same `spec` by `structuredClone`, so a gully block chosen here reaches every
+  // worker's own constructor and the tiles they fill are the same planet as the main thread's.
+  const gullyCanonical = engine.gullyPreset("canonical");
+  spec.gully = gullyFromParams(params, gullyCanonical);
 
   const size = number("size", HEIGHTMAP_SIZE);
   const maxLevel = number("maxLevel", MAX_LEVEL);
@@ -815,6 +837,15 @@ async function boot() {
         ? `amp ${s.coast.amplitude.toFixed(2)} band ${
           s.coast.windowSpreads} freq ${s.coast.frequency} oct ${
           s.coast.octaves} gain ${s.coast.gain} lac ${s.coast.lacunarity}`
+        : "canonical"} gully=${
+      s.gully
+        // The amplitude AND the shape. A caption naming the amplitude alone would say nothing
+        // about a block whose crest exponent or gate had moved, and the SLOPE REFERENCE is here
+        // because it is the number that decides whether this term bites on this planet at all.
+        ? `amp ${s.gully.amplitudeM} m cell ${s.gully.cellM} m slope ${
+          s.gully.slopeReference} crest ${s.gully.crestSharpness} gate ${
+          s.gully.gateElevationM}/${s.gully.gateElevationSpanM} m floor ${
+          s.gully.flatEnergyFloor} steer ${s.gully.steerLatticeM} m`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -988,6 +1019,22 @@ async function boot() {
       /// is a product of three fields -- so a panel re-deriving them in JavaScript would be a
       /// second copy of a bound and a second chance to disagree with it.
       check: (block) => engine.checkCoast(block) === 0,
+    },
+    /// The engine's own gully presets, read across the boundary at boot. `controls.js` anchors
+    /// its one slider on `canonical` and fills the whole block from `drainage` when the preset
+    /// button is pressed -- so the panel cannot drift from `detail.rs`, because it holds no gully
+    /// number of its own to drift. **Above all it holds no `slope_reference`**: that field is a
+    /// measurement of this generator's flanks, and a transcribed measurement is a measurement with
+    /// two answers.
+    gully: {
+      canonical: gullyCanonical,
+      drainage: engine.gullyPreset("drainage"),
+      get chosen() { return installed.state.spec.gully; },
+      /// Whether the engine would accept a block, asked of `wb_gully_check` itself. Three of this
+      /// channel's lengths become a lattice index as `radius / length`, and the crest exponent has
+      /// a floor that closes an infinite-height hazard rather than stating a domain -- so a panel
+      /// re-deriving any of that in JavaScript would be a second copy of a bound.
+      check: (block) => engine.checkGully(block) === 0,
     },
     tectonics: {
       canonical: tectonicCanonical,

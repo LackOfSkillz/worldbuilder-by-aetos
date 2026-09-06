@@ -59,6 +59,12 @@
 /// never the same object.
 export const WORLD_FIELDS = [
   "seed", "radiusM", "plateCount", "landFraction", "features", "relief", "tectonics", "coast",
+  // The fifth block. It is a term inside `elevation_m` and `Surface::with_gully` resolves it once
+  // at construction, so it is surface-class exactly as the four before it: nine new worlds, a new
+  // terrain provider and a cold cache. **And the water solve moves with it** for the reason this
+  // module's own measurement gives -- the stream graph samples the surface, so a term that carves
+  // 85.8 m of spread into a flank moves the drainage the lakes are resolved from.
+  "gully",
 ];
 
 /// The fields that decide the WATER manifest and nothing else. Deliberately short: everything

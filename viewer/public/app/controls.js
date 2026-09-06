@@ -54,6 +54,10 @@ import {
   COAST_SLIDERS, MEASURED_COAST, USEFUL_BAND, coastReadoutFields, coastTravel, coastPanelFields,
   coastToParams, coastFromParams,
 } from "./coast-params.js";
+import {
+  GULLY_SLIDERS, MEASURED_CREST, MEASURED_RELIEF, MEASURED_SLOPE, CARVE_BAND,
+  gullyReadoutFields, gullyTravel, gullyPanelFields, gullyToParams, gullyFromParams,
+} from "./gully-params.js";
 import { debounceLatest, nextQueryString, RELOAD_ONLY, SWAP_DEBOUNCE_MS } from "./live-swap.js";
 import { waterNodeCountFromParams } from "./water.js";
 
@@ -150,8 +154,28 @@ const FAULT_OPTIONS = [
 // **What did NOT come off is "rivers", deliberately.** `WaterManifest` carries `reaches` and
 // slice 5b's Ruling 2 leaves them unpopulated at Mark 2 -- schema only. Drawing an empty
 // collection is not a feature, so that entry stays exactly as it was.
+//
+// **A SIXTH ENTRY WAS WRONG, AND IT SAID TWO THINGS AT ONCE.** It read:
+//
+//   ["climate + biomes", "designed, approved for after 5b: not built"]
+//
+// Both halves are false, in different ways, and a list that is wrong about the project is worse
+// than no list. **Biomes are built and are the default land colour on this page**: `biome.js`
+// classifies every land texel on three axes and `relief.js` takes its land base colour from it,
+// so the entry claimed a shipped, drawn, visible feature did not exist. And **climate is built
+// too** -- `crates/worldbuilder-engine/src/climate.rs` carries `ClimateParams` and
+// `Surface::temperature_c` -- it simply has **no wasm export**, which is a narrower and truer
+// sentence and is the one entry that survives. That is the same correction the water entry got:
+// name what is actually missing rather than what looks missing.
+//
+// **The gully channel was never on this list**, for the same reason the coastline never was: it
+// did not exist when the list was last touched. `GullyParams` shipped with `wb_world_new_gully`,
+// `wb_gully_preset` and `wb_gully_check` in the committed artifact and no viewer path at all --
+// exactly `CoastParams`' story -- and the "drainage" section below is what turns it.
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
+  ["climate", "climate.rs ships ClimateParams and Surface::temperature_c; there is no wasm "
+    + "export, so the viewer cannot reach it — biome.js's temperature is a curve of its own"],
   ["island arcs", "TectonicParams carries them; Task 1 proved no coverage, so no slider"],
   ["lake shorelines", "the box bounds NODE CENTRES, so it is grown by one cell; 21% of a body's "
     + "boundary is still a straight cut, because no true footprint is exported"],
@@ -159,7 +183,6 @@ const NOT_WIRED = [
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],
   ["place areas", "slice 3, the studio: not started"],
   ["export to Evennia", "slice 2a apply: not started"],
-  ["climate + biomes", "designed, approved for after 5b: not built"],
   ["cartography", "own slice after the studio: not started"],
 ];
 
@@ -735,6 +758,188 @@ function build() {
     paint();
   }
 
+  // === drainage — these rebuild ===========================================================
+  //
+  // **THE SECTION THAT PUTS VALLEYS ON A MOUNTAIN FLANK.** The owner held our ranges up against
+  // satellite photographs of real ones: *"our mountains look like they were painted in with a
+  // knife... they should look more like the 3rd and 4th image"*. What those photographs have is
+  // dendritic V-notched valleys branching down the flanks with snow following the ridge lines, and
+  // `erosion-architecture-spike.md` measured that the stream graph is **661x too coarse** to carry
+  // them at any interpolation. `GullyParams` is the term that can, it shipped in the committed
+  // artifact, and until this section existed **nothing in the viewer sent a gully block, so the
+  // owner saw no change at all**.
+  //
+  // Rebuild-class for the same reason the relief, mountain and coast sliders are: `GullyParams` is
+  // an argument to `Surface::with_gully`, resolved once at construction -- it builds the steering
+  // lattice -- and every worker holds its own already-built world. There is no uniform to poke.
+  //
+  // **No gully number is written in this file**, and one of them matters more than any number on
+  // any previous channel: `slope_reference` is a measurement of *this generator's flanks*, roughly
+  // a hundredth of what the published technique assumes. A transcribed measurement is a
+  // measurement with two answers, so the slider, both buttons and the readout are all anchored on
+  // `wb_gully_preset`'s own record in `wireGully` below, and until the engine answers they are
+  // disabled and say so.
+
+  const gullySection = section(body, "drainage · live");
+  const gullyLabels = {
+    // Labelled for its EFFECT, not its exponent. "crest sharpness" means nothing to somebody
+    // looking at a hillside; what the measured sweep actually moves is whether the term carves
+    // valleys or blankets the whole flank.
+    crestSharpness: "carve vs blanket",
+  };
+  const gullyRows = {};
+  for (const field of GULLY_SLIDERS) {
+    gullyRows[field] = row(gullySection, gullyLabels[field], `wb-gully-${field}`,
+      "range", { min: 0, max: 1, step: 1, value: 0, disabled: true });
+    gullyRows[field].out.textContent = "—";
+  }
+  // The nine fields with no widget, SHOWN -- and on this channel that includes the amplitude, the
+  // field that turns the whole term on. `GULLY_SLIDERS`' own comment gives the measured reason
+  // each one is here rather than on a slider: the kernel's report contains exactly one table of a
+  // field's value against a measured effect, and it sweeps the crest exponent. A slider whose
+  // travel nobody has measured is a slider nobody can aim, and this viewer has shipped one. But
+  // the preset carries all ten and the query string carries all ten, so a preset that changed
+  // something the panel never mentioned would be a parameter the owner cannot see.
+  const gullyScheduleNote = el("div", "wb-note", "—");
+  gullySection.append(gullyScheduleNote);
+  // And whether the engine would take the block, before generate rather than after. This channel
+  // has a bound that closes a hazard rather than stating a domain -- a non-positive crest exponent
+  // makes `0^s` infinite and turns **every gully crest in the world into an infinite height**,
+  // which crosses the boundary as an f64 that looks like an f64 -- and three of its lengths become
+  // a lattice index as `radius / length`. Asked of `wb_gully_check` through the engine, which is
+  // the same validator the record will meet, rather than by re-deriving any of it in JavaScript.
+  const gullyAdmissibleNote = el("div", "wb-note", "");
+  gullySection.append(gullyAdmissibleNote);
+  const gullyNote = el("div", "wb-note", "waiting for the engine…");
+  gullySection.append(gullyNote);
+  const gullyActions = el("div", "wb-actions");
+  const drainageButton = el("button", "wb-mini", "drainage preset");
+  drainageButton.type = "button";
+  drainageButton.disabled = true;
+  drainageButton.title =
+    "GullyParams::drainage(), read from the engine — all ten of its numbers, on the slider and in "
+    + "the readout above";
+  const gullyReset = el("button", "wb-mini", "canonical");
+  gullyReset.type = "button";
+  gullyReset.disabled = true;
+  gullyReset.title =
+    "back to the engine's canonical block, which builds no steering lattice at all — today's "
+    + "picture, byte for byte";
+  gullyActions.append(drainageButton, gullyReset);
+  gullySection.append(gullyActions);
+
+  /// The gully block the panel currently describes, or `null` while the engine has not answered.
+  let gullyState = null;
+  let gullyCanonical = null;
+
+  /// What the swept table says about the exponent the slider is on. Read from `MEASURED_CREST`
+  /// rather than typed here, so the panel and the sweep cannot disagree about what was measured.
+  const crestRowFor = (exponent) => {
+    let best = MEASURED_CREST[0];
+    for (const r of MEASURED_CREST) {
+      if (Math.abs(r.crestSharpness - exponent) < Math.abs(best.crestSharpness - exponent)) best = r;
+    }
+    return best;
+  };
+
+  /// Fill in the travel, the defaults and the readouts once the engine can be asked.
+  function wireGully(presets) {
+    gullyCanonical = presets.canonical;
+    // **The panel-default family check, run in production and not only in a test.** It is a
+    // sharper question on this channel than on the coast one: there the canonical value was the
+    // slider's own minimum, so `min + 0 * step` answered it for free, and here canonical sits in
+    // the MIDDLE of the travel and has to land on the lattice by arithmetic.
+    const faults = panelFieldFaults(gullyPanelFields(presets.canonical));
+    if (faults.length > 0) {
+      gullyNote.textContent = `slider travel refused: ${faults.join("; ")}`;
+      return;
+    }
+    const travel = gullyTravel(presets.canonical);
+    if (!travel.crestSharpness.holdsCanonical) {
+      gullyNote.textContent =
+        "slider travel refused: the engine's canonical crest exponent is not on this lattice";
+      return;
+    }
+    gullyState = { ...presets.canonical, ...(presets.chosen ?? {}) };
+
+    const paint = () => {
+      for (const field of GULLY_SLIDERS) {
+        const value = travel[field].toValue(Number(gullyRows[field].input.value));
+        gullyState[field] = value;
+        gullyRows[field].out.textContent = travel[field].format(value);
+      }
+      // The other nine, read out of the state the preset button writes rather than from literals.
+      // Asserted rather than trusted -- `gully-params.test.mjs` checks that the union of
+      // `GULLY_SLIDERS` and the fields named on this line is `GULLY_CONTROLS`, so an eleventh
+      // field added to the channel cannot arrive silently.
+      const shown = gullyReadoutFields().map((f) => `${f} ${gullyState[f]}`).join(" · ");
+      gullyScheduleNote.textContent = shown;
+      const exponent = gullyState.crestSharpness;
+      const measured = crestRowFor(exponent);
+      // **The off switch is the amplitude, not the slider**, and a panel that let that go unsaid
+      // would have a control that appears to do nothing on a fresh page. Said first, because it is
+      // the first thing an owner sliding this will notice.
+      const off = !(gullyState.amplitudeM > 0);
+      const where = exponent >= CARVE_BAND.high
+        ? "at the blanket end — the kernel is symmetric here and adds roughness everywhere "
+          + "rather than carving valleys"
+        : exponent <= CARVE_BAND.low
+          ? "at the lowering end — this removes mean height from every gated flank rather than "
+            + "texturing it"
+          : "inside the carving band — valleys cut, crests left as spines";
+      gullyNote.textContent = off
+        ? "the kernel is OFF: canonical zeroes the amplitude, so no slider here changes a pixel. "
+          + "Press the drainage preset to turn it on."
+        : `${where}. At ${measured.crestSharpness.toFixed(2)} the term's mean over 16,000 samples `
+          + `on 400 flank points is ${measured.mean.toFixed(2)} m `
+          + `(p05 ${measured.p05.toFixed(1)}, p95 ${measured.p95.toFixed(1)}); a symmetric kernel `
+          + `would read ${MEASURED_CREST[MEASURED_CREST.length - 1].mean.toFixed(2)} m. `
+          + `At ${MEASURED_RELIEF.amplitudeM} m of amplitude the gated flanks measure `
+          + `${MEASURED_RELIEF.onP50} m of local relief over a 2 km run against `
+          + `${MEASURED_RELIEF.offP50} m with the term off — inside Hammond's `
+          + `${MEASURED_RELIEF.hammondHills.low}-${MEASURED_RELIEF.hammondHills.high} m hills `
+          + `band, and nowhere near the ${MEASURED_RELIEF.hammondMountainFloor} m mountain floor. `
+          + `This is texture on a generator whose mountains are tectonic; it is not a claim to `
+          + `have made mountains. The steering bites at a slope of ${gullyState.slopeReference} `
+          + `m/m (${MEASURED_SLOPE.degrees}°), measured on this generator — the published `
+          + `technique assumes about ${MEASURED_SLOPE.publishedAssumption}, `
+          + `${Math.round(MEASURED_SLOPE.publishedAssumption / MEASURED_SLOPE.reference)}x steeper.`;
+      if (typeof presets.check === "function") {
+        gullyAdmissibleNote.textContent = presets.check(gullyState)
+          ? ""
+          : "the engine will refuse this block — check the gully fields in the query string.";
+      }
+    };
+
+    for (const field of GULLY_SLIDERS) {
+      const { input } = gullyRows[field];
+      input.min = travel[field].min;
+      input.max = travel[field].max;
+      input.step = 1;
+      input.value = travel[field].toPosition(gullyState[field]);
+      input.disabled = false;
+      input.addEventListener("input", paint);
+    }
+    gullyReset.disabled = false;
+    drainageButton.disabled = false;
+    // **Both buttons send the ENGINE'S OWN record back to the engine and restate nothing.**
+    // `setAllGully` writes every field of a preset -- the one that has a slider onto its slider,
+    // and the nine that do not straight into the state the readout and the query string both
+    // read. That second half is what makes the drainage button work at all: the field that turns
+    // the kernel on has no widget, so a button that only moved widgets would change nine readouts
+    // and not one pixel. That is the silently-dropping-builder shape exactly.
+    const setAllGully = (block) => {
+      gullyState = { ...block };
+      for (const field of GULLY_SLIDERS) {
+        gullyRows[field].input.value = travel[field].toPosition(block[field]);
+      }
+      paint();
+    };
+    drainageButton.addEventListener("click", () => setAllGully(presets.drainage));
+    gullyReset.addEventListener("click", () => setAllGully(presets.canonical));
+    paint();
+  }
+
   // === clouds — these rebuild =============================================================
   //
   // **Rebuild-class, not live**, and for the same reason the relief sliders are: the coverage
@@ -917,6 +1122,11 @@ function build() {
     // untouched panel writes no coast parameter at all and the reload takes the `None` path --
     // RULING 1, held in the one place a generate can break it.
     ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
+    // And the same for the drainage: every gully field still at canonical is dropped, so an
+    // untouched panel writes no gully parameter at all and the reload takes the `None` path --
+    // RULING 1, held in the one place a generate can break it. On this channel `None` is not
+    // "the term adding zero": it is a `Surface` with no steering lattice built at all.
+    ...(gullyState && gullyCanonical ? gullyToParams(gullyState, gullyCanonical) : {}),
   });
 
   // === the live swap ======================================================================
@@ -935,6 +1145,7 @@ function build() {
       ? tectonicToParams(tectonicState, tectonicCanonical)
       : {}),
     ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
+    ...(gullyState && gullyCanonical ? gullyToParams(gullyState, gullyCanonical) : {}),
     lakeNodes: lakeNodes.input.value,
   });
 
@@ -959,6 +1170,7 @@ function build() {
     const spec = {};
     if (tectonicCanonical) spec.tectonics = tectonicFromParams(nextParams, tectonicCanonical);
     if (coastCanonical) spec.coast = coastFromParams(nextParams, coastCanonical);
+    if (gullyCanonical) spec.gully = gullyFromParams(nextParams, gullyCanonical);
     generate.disabled = true;
     swapNote.textContent = "swapping…";
     try {
@@ -988,11 +1200,14 @@ function build() {
   }
   for (const field of TECTONIC_SLIDERS) wireLive(mountainRows[field].input);
   for (const field of COAST_SLIDERS) wireLive(coastRows[field].input);
+  for (const field of GULLY_SLIDERS) wireLive(gullyRows[field].input);
   wireLive(lakeNodes.input);
   // The preset buttons move several sliders at once and fire no `change` at all, so they ask for
   // the swap themselves. A "ranges preset" that changed six readouts and left the planet alone
   // would look exactly like a broken preset.
-  for (const button of [rangesButton, mountainReset, fractalButton, coastReset]) {
+  for (const button of [
+    rangesButton, mountainReset, fractalButton, coastReset, drainageButton, gullyReset,
+  ]) {
     button.addEventListener("click", () => { if (liveOn()) runSwap(); });
   }
 
@@ -1051,6 +1266,7 @@ function build() {
   document.body.append(panel);
   return {
     readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
+    wireGully, gullyNote,
     /// Repainted once boot has published `window.__wb`, so the water note can state what THIS
     /// page actually resolved rather than only what the slider asks for.
     paintWater,
@@ -1106,7 +1322,8 @@ function wireReadout(readout) {
 // the note says why, which is honest; a panel that showed plausible relief defaults over a
 // dead engine would be the drift hazard again, wearing a different hat.
 const {
-  readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote, paintWater,
+  readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
+  wireGully, gullyNote, paintWater,
 } = build();
 const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
   ? window.__wbBoot
@@ -1123,6 +1340,9 @@ booted
     const coast = window.__wb && window.__wb.coast;
     if (coast) wireCoast(coast);
     else coastNote.textContent = "engine unavailable — the coastline cannot be read or set";
+    const gully = window.__wb && window.__wb.gully;
+    if (gully) wireGully(gully);
+    else gullyNote.textContent = "engine unavailable — the drainage cannot be read or set";
     paintWater();
   })
   .catch((error) => {
@@ -1130,4 +1350,5 @@ booted
     reliefNote.textContent = `engine unavailable — relief cannot be set (${error})`;
     mountainNote.textContent = `engine unavailable — mountains cannot be set (${error})`;
     coastNote.textContent = `engine unavailable — the coastline cannot be set (${error})`;
+    gullyNote.textContent = `engine unavailable — the drainage cannot be set (${error})`;
   });

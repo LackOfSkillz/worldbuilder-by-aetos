@@ -28,6 +28,9 @@ import {
 import {
   COAST_STRIDE, COAST_PRESET, coastToRecord, coastFromRecord,
 } from "./coast-params.js";
+import {
+  GULLY_STRIDE, GULLY_PRESET, gullyToRecord, gullyFromRecord,
+} from "./gully-params.js";
 
 /// Status codes, mirrored from `wasm.rs`. Kept as names so a failure reads as a sentence.
 export const WB_OK = 0;
@@ -109,7 +112,8 @@ export class Engine {
       "wb_generator_version", "wb_alloc", "wb_dealloc", "wb_world_new", "wb_world_new_relief",
       "wb_relief_preset", "wb_relief_check",
       "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check",
-      "wb_world_new_coast", "wb_coast_preset", "wb_coast_check", "wb_world_free",
+      "wb_world_new_coast", "wb_coast_preset", "wb_coast_check",
+      "wb_world_new_gully", "wb_gully_preset", "wb_gully_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32", "wb_water_run",
     ]) {
@@ -267,6 +271,54 @@ export class Engine {
     }
   }
 
+  /// The ten f64 of a named gully preset, as an object keyed by `GULLY_FIELDS`.
+  ///
+  /// **The only way the viewer learns a gully number**, and it matters more on this channel than
+  /// on any before it: `slope_reference` is 0.005 m/m, a *measurement of this generator's flanks*
+  /// rather than a preference, and a viewer that transcribed it would be a second copy of a
+  /// measurement. `name` is a key of `GULLY_PRESET`.
+  gullyPreset(name = "canonical") {
+    const selector = GULLY_PRESET[name];
+    if (selector === undefined) throw new Error(`unknown gully preset "${name}"`);
+    const bytes = GULLY_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the gully preset buffer");
+    try {
+      const status = this.exports.wb_gully_preset(selector, ptr, GULLY_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_gully_preset(${name}) returned ${statusName(status)}`);
+      }
+      // The view is created after the allocation and copied immediately — a view taken before
+      // `wb_alloc` could be detached by heap growth.
+      return gullyFromRecord(Array.from(new Float64Array(this.memory.buffer, ptr, GULLY_STRIDE)));
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Ask the engine whether a gully block would be accepted, **without building a world**.
+  /// Returns a `WB_*` status. `null` is the canonical path and always answers `WB_OK`.
+  ///
+  /// One of this channel's bounds closes a real hazard rather than stating a domain: the edge
+  /// shaping is `1 - 2 * folded^crest_sharpness` and `folded` is exactly zero at a crest, so a
+  /// single non-positive f64 in word 5 would turn **every gully crest in the world into an
+  /// infinite height** and hand it across a nounwind boundary into a vertex buffer. And three
+  /// fields are jointly constrained -- `cell_m`, `steer_lattice_m` and `slope_reference` all
+  /// become a lattice index as `radius / length` -- so the panel asks the real validator rather
+  /// than re-deriving the quotient in JavaScript.
+  checkGully(gully) {
+    if (gully === null || gully === undefined) return WB_OK;
+    const bytes = GULLY_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the gully buffer");
+    try {
+      new Float64Array(this.memory.buffer, ptr, GULLY_STRIDE).set(gullyToRecord(gully));
+      return this.exports.wb_gully_check(ptr, GULLY_STRIDE) >>> 0;
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
   /// `relief` is `null`/absent for the canonical path — a null pointer and a length of zero,
   /// which is the same `None` `wb_world_new` passes and is byte-for-byte today's world. An
   /// object keyed by `RELIEF_FIELDS` asks for a different one.
@@ -276,9 +328,13 @@ export class Engine {
   /// `coast` is the same story again: `null`/absent is `None` -- RULING 1 of the fractal-coastline
   /// slice, which is that the default coastline cannot move -- and an object keyed by
   /// `COAST_FIELDS` asks for a roughened one.
+  /// `gully` is the fifth and last: `null`/absent is `None`, which in this channel means
+  /// `Surface::with_gully` builds **no steering lattice at all** and `elevation_m` takes a
+  /// different branch -- so the canonical path is structurally the old one rather than the new one
+  /// plus zero. An object keyed by `GULLY_FIELDS` asks for the drainage texture.
   newWorld({
     seed, radiusM, plateCount, landFraction, features = [], relief = null, tectonics = null,
-    coast = null,
+    coast = null, gully = null,
   }) {
     let ptr = 0;
     let bytes = 0;
@@ -288,7 +344,15 @@ export class Engine {
     let tectonicBytes = 0;
     let coastPtr = 0;
     let coastBytes = 0;
+    let gullyPtr = 0;
+    let gullyBytes = 0;
     try {
+      if (gully) {
+        gullyBytes = GULLY_STRIDE * 8;
+        gullyPtr = this.exports.wb_alloc(gullyBytes);
+        if (gullyPtr === 0) throw new Error("wb_alloc refused the gully buffer");
+        new Float64Array(this.memory.buffer, gullyPtr, GULLY_STRIDE).set(gullyToRecord(gully));
+      }
       if (coast) {
         coastBytes = COAST_STRIDE * 8;
         coastPtr = this.exports.wb_alloc(coastBytes);
@@ -320,22 +384,26 @@ export class Engine {
           ], i * WB_FEATURE_STRIDE);
         });
       }
-      // ONE constructor for all EIGHT paths, and `wb_world_new_coast` is it. With all three
-      // blocks null this is `(null, 0, null, 0, null, 0)`, which the engine reads as `None`,
-      // `None` and `None` — the same world `wb_world_new` builds, which the engine-side tests
+      // ONE constructor for all SIXTEEN paths, and `wb_world_new_gully` is now it. With all four
+      // blocks null this is `(null, 0, null, 0, null, 0, null, 0)`, which the engine reads as four
+      // `None`s — the same world `wb_world_new` builds, which the engine-side tests
       // `the_relief_channel_default_path_is_the_untouched_world`,
-      // `the_tectonic_channel_default_path_is_the_untouched_world` and
-      // `the_coast_channel_default_path_is_the_untouched_world` pin bit for bit.
+      // `the_tectonic_channel_default_path_is_the_untouched_world`,
+      // `the_coast_channel_default_path_is_the_untouched_world` and
+      // `gully_none_matches_gully_some_canonical_bit_for_bit` pin bit for bit.
       //
-      // Calling the widest door unconditionally rather than choosing between four is
+      // Calling the widest door unconditionally rather than choosing between five is
       // deliberate: a branch here would mean the default path and the chosen path went
       // through different exports, and the byte-identity those tests assert would stop
-      // covering what the viewer actually calls.
-      const handle = this.exports.wb_world_new_coast(
+      // covering what the viewer actually calls. **This line moving from `wb_world_new_coast` to
+      // `wb_world_new_gully` is the whole of the wiring**, and it is the line the digest control
+      // exists to hold: the default picture must not move because of it.
+      const handle = this.exports.wb_world_new_gully(
         BigInt(seed), radiusM, plateCount, landFraction, ptr, features.length,
         reliefPtr, relief ? RELIEF_STRIDE : 0,
         tectonicPtr, tectonics ? TECTONIC_STRIDE : 0,
         coastPtr, coast ? COAST_STRIDE : 0,
+        gullyPtr, gully ? GULLY_STRIDE : 0,
       ) >>> 0;
       if (handle === 0) {
         // A refused world is a blank viewer, so the message has to name the reason. The three
@@ -343,9 +411,10 @@ export class Engine {
         const why =
           (relief ? ` relief=${statusName(this.checkRelief(relief))}` : "") +
           (tectonics ? ` tectonics=${statusName(this.checkTectonic(tectonics))}` : "") +
-          (coast ? ` coast=${statusName(this.checkCoast(coast))}` : "");
+          (coast ? ` coast=${statusName(this.checkCoast(coast))}` : "") +
+          (gully ? ` gully=${statusName(this.checkGully(gully))}` : "");
         throw new Error(
-          `wb_world_new_coast refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
+          `wb_world_new_gully refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
           `land=${landFraction} features=${features.length}${why}`,
         );
       }
@@ -355,6 +424,7 @@ export class Engine {
       if (reliefPtr !== 0) this.exports.wb_dealloc(reliefPtr, reliefBytes);
       if (tectonicPtr !== 0) this.exports.wb_dealloc(tectonicPtr, tectonicBytes);
       if (coastPtr !== 0) this.exports.wb_dealloc(coastPtr, coastBytes);
+      if (gullyPtr !== 0) this.exports.wb_dealloc(gullyPtr, gullyBytes);
     }
   }
 
