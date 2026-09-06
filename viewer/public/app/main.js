@@ -32,6 +32,7 @@ import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./poo
 import { createAvailability, FEATURE_CEILING } from "./availability.js";
 import { runChecks, formatChecks } from "./verify.js";
 import { runBench, formatBench, frameTrace } from "./bench.js";
+import { WorldSwapper, swapPlan } from "./live-swap.js";
 
 const params = new URLSearchParams(location.search);
 const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
@@ -151,14 +152,6 @@ async function boot() {
   const coastCanonical = engine.coastPreset("canonical");
   spec.coast = coastFromParams(params, coastCanonical);
 
-  // Two handles on purpose. `world` is what the provider draws; `reference` is what the
-  // checks compare against, and it is always built from the *stated* parameters. Under
-  // `?fault=wrong-world` they are different planets, and the checks have to notice.
-  const reference = engine.newWorld(spec);
-  const world = fault === FAULTS.wrongWorld
-    ? engine.newWorld({ ...spec, seed: BigInt(spec.seed) + 1n })
-    : reference;
-
   const size = number("size", HEIGHTMAP_SIZE);
   const maxLevel = number("maxLevel", MAX_LEVEL);
 
@@ -169,173 +162,10 @@ async function boot() {
   const pool = workerCount > 0
     ? await TilePool.start({ count: workerCount, spec, fault })
     : null;
-  const cache = params.get("cache") === "0"
-    ? null
-    : new TileCache({ capacity: number("cacheTiles", DEFAULT_CACHE_TILES), fault });
-
-  // Feature-aware availability. With no features this is exactly the Task 4 cap: the
-  // footprint list is empty, `featureMaxLevel` equals the ground cap, and every level past
-  // it answers `false`.
-  const tilingSchemeForAvailability = new Cesium.GeographicTilingScheme();
-  const availability = createAvailability({
-    radiusM: spec.radiusM,
-    size,
-    groundMaxLevel: maxLevel,
-    features: spec.features,
-    ceiling: number("featureCeiling", FEATURE_CEILING),
-    tilingScheme: tilingSchemeForAvailability,
-    fault,
-  });
-
-  const provider = createTerrainProvider({
-    engine,
-    world,
-    radiusM: spec.radiusM,
-    size,
-    maxLevel,
-    fault,
-    pool,
-    cache,
-    availability,
-    credit: `worldbuilder engine, generator v${engine.generatorVersion()}`,
-  });
-
-  viewer.terrainProvider = provider;
-  viewer.scene.globe.depthTestAgainstTerrain = true;
-
-  // The relief imagery layer.
-  //
-  // **Why an imagery layer rather than terrain lighting**: `CustomHeightmapTerrainProvider`
-  // gives `HeightmapTerrainData`, whose `hasVertexNormals` is `false` -- always, on that
-  // class -- so `GlobeFS` lights the mesh with the *ellipsoid* normal and no amount of
-  // `enableLighting` produces relief. Verified live. A raster is the only surface here that
-  // can carry a normal, and Cesium picks the imagery level from the terrain tile's geometric
-  // error without clamping it to the terrain level, so a 256-texel tile over a 65-post
-  // rectangle is a free 4x of colour resolution.
-  //
-  // Built from `world`, the same handle the terrain provider draws -- a relief layer from a
-  // *different* world would be the `wrong-world` fault arrived at by accident, and it would
-  // look entirely plausible.
-  //
-  // `?relief=0` turns it off. That branch, and the `paint` default below, are the only two
-  // things this block changes about the page, and with `relief=0` both land on exactly the
-  // code that ran before it existed.
-  // The water manifest -- **slice 5b, drawn at last.**
-  //
-  // `wb_water_run` has shipped in the artifact since that slice and nothing called it. This is
-  // the call. It runs the whole shipped water path over a stream graph sampled from this
-  // world's own surface -- basin fill, overflow resolution, the tied-plateau merge,
-  // classification -- and hands back the manifest: one row per body, carrying a **surface
-  // level** and a bounding box. `relief.js` draws each body as a flat sheet at its own level,
-  // in the ocean's own colour table read at the depth below that level.
-  //
-  // **The sea is deliberately not in it.** Slice 5b's Ruling 6: §13.2 defines a mapping of
-  // *named* waters and a fallback for the unnamed, and the sea is the mapping's miss rather
-  // than a row in it -- the datum is carried once, in `sea_level_m`, which is echoed back here
-  // rather than assumed. Ocean bodies were measured to be 86.1% of the manifest with 96.3% of
-  // their boxes overlapping another, so re-adding them would be re-adding the noise that
-  // removal deleted.
-  //
-  // # It is resolved SYNCHRONOUSLY, at boot, and that costs four seconds
-  //
-  // Measured on the owner's world through this repository's checked-in wasm: **4.21 s at
-  // 30,000 nodes**, 0.98 s at 8,000, 9.32 s at 60,000. That is a real cost and it is named in
-  // the status line rather than hidden.
-  //
-  // It is not moved into a worker, and the reason is correctness rather than effort. The
-  // manifest has to be complete *before* the first relief tile rasterises: Cesium caches the
-  // texture it is given, so any tile drawn while the manifest was still arriving would be a
-  // permanently lake-free tile in a world that has lakes, scattered wherever the camera
-  // happened to be looking first. That is the `stale-worker` fault shape arrived at by
-  // accident, and it would also make the screenshot digests a race. `?lakes=0` is the escape
-  // hatch and it skips the resolution entirely rather than resolving and discarding.
-  const lakesOn = waterEnabled(params);
-  const waterNodes = waterNodeCountFromParams(params);
-  const waterStarted = performance.now();
-  const water = lakesOn
-    ? engine.waterRun({ handle: world, nodeCount: waterNodes })
-    : { seaLevelM: null, bodies: [] };
-  const waterMs = performance.now() - waterStarted;
-  // What the manifest cannot say, counted rather than left to be rediscovered: bodies whose
-  // box is a single point (undrawable -- no footprint, no radius, and `rootNode` cannot be
-  // turned into a position by any export), boxes wider than half the planet (polar, not
-  // antimeridian -- see `water.js`), and pairs of boxes that overlap and therefore make
-  // `lakeLevelAt` choose.
-  const waterFacts = waterDiagnostics(water.bodies);
-
-  // **The boxes bound node CENTRES, so they are grown by one node cell before anything draws
-  // them.** `water.rs::lake_body_extents` takes `Extent::from_points` over the submerged members'
-  // positions, and a node stands for `4 * pi * R^2 / nodeCount` of sphere; the box is therefore
-  // one cell radius short on every side, and a one-node body's box is a point rather than a cell.
-  // **One cell radius is an ANGULAR radius, so the shape it grows the box into is a disc on the
-  // great circle and not a bigger rectangle** -- which is why a point body draws as a spherical
-  // cap and why the picture stopped being full of straight lines.
-  // `dilateBodyExtents` carries the whole argument and the calibration -- including the one piece
-  // of ground truth available here, that a one-node body cannot hold more than one cell of water.
-  // `waterFacts` above is deliberately taken on the RAW rows: it is a statement about what the
-  // manifest carries, and dilating first would make it report a fact about this file instead.
-  const drawnBodies = dilateBodyExtents(water.bodies, waterNodes);
-
   const reliefOn = reliefLayerEnabled(params);
-  let reliefProvider = null;
-  if (reliefOn) {
-    reliefProvider = createReliefImageryProvider({
-      engine,
-      worldHandle: world,
-      radiusM: spec.radiusM,
-      tileSize: number("reliefSize", RELIEF_TILE_SIZE),
-      // `undefined` means "calibrate this world's own band edges"; `null` is the height
-      // ramp the layer drew before the land-colour work. See `biomeColourEnabled`.
-      biome: biomeColourEnabled(params) ? undefined : null,
-      // The bodies, resolved above. `[]` under `?lakes=0`, which is the picture this task
-      // started from.
-      lakes: drawnBodies,
-      // Defaults to the *terrain's* cap, so imagery is never the thing that stops refining
-      // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
-      maximumLevel: number("reliefMaxLevel", maxLevel),
-      credit: `worldbuilder engine relief, generator v${engine.generatorVersion()}`,
-      // The same pool the terrain mesh uses, and the same `?workers=0` escape hatch. One
-      // pool and not two: the contention that matters is engine instances per core, and a
-      // second pool of eight would double the workers without doubling the cores.
-      pool,
-    });
-    viewer.imageryLayers.addImageryProvider(reliefProvider);
-  }
+  const cloudCover = cloudCoverFromParams(params);
+  const lakesOn = waterEnabled(params);
 
-  // The cloud layer -- **difference #1 of 12 in the gap analysis**, and the element a viewer's
-  // eye reads first as "photograph of a planet" rather than "diagram of a planet".
-  //
-  // # It is added AFTER the relief layer, and the order is the composite
-  //
-  // `ImageryLayerCollection` composites in index order, so the last layer added is drawn over
-  // the ones before it. Clouds must be last: they are a translucent deck and the ground is what
-  // shows through them. Adding them first would have Cesium blend the (opaque) relief layer over
-  // them and the whole layer would silently do nothing -- the same failure shape as the
-  // `ElevationRamp` material hiding the relief imagery, which is documented a few lines below
-  // and was a real bug here.
-  //
-  // # Altitude and parallax: what was chosen, and what it costs
-  //
-  // An `ImageryLayer` is DRAPED ON THE TERRAIN. There is no altitude option on it and no
-  // parallax: a cloud texel is painted at the ground point beneath it. The alternative -- a
-  // second, slightly larger textured ellipsoid primitive floating above the globe -- is the only
-  // thing in this stack that would give real parallax, and it would need its own tiling, its own
-  // level-of-detail and its own request path, none of which the worker pool and provider
-  // machinery this task was told to reuse would serve.
-  //
-  // **What that costs, computed rather than waved at:** for a deck at altitude `h` on a planet
-  // of radius `R`, the ground point directly under a cloud and the ground point the cloud
-  // appears over differ by an arc that is zero at the sub-camera point and grows towards the
-  // limb. At the owner's radius of 4,500 km and a 10 km deck, the displacement reaches ~10 km
-  // near the disc centre-to-mid and diverges only in the last few percent of the disc radius,
-  // where the surface is edge-on. At the orbital camera used for this task's screenshots the
-  // disc is ~700 px across, so 10 km is under a pixel over most of the disc. The visible
-  // consequence is at the limb, where a real cloud deck would overhang the silhouette and this
-  // one stops exactly at it. That is the honest limitation of the choice and it is named here
-  // rather than discovered later.
-  //
-  // `?clouds=0` turns the layer off, and it is not constructed at all in that case -- see
-  // `cloudLayerEnabled` for why "constructed but transparent" is not good enough.
   // # Why `paint` is decided HERE, above the cloud layer rather than below it
   //
   // The `ElevationRamp` material composites OVER all imagery (see the block further down: the
@@ -352,28 +182,327 @@ async function boot() {
   // one flat colour, and it would have moved the `?relief=0` picture that Task 1 recorded digests
   // for.
   const paint = params.has("paint") ? params.get("paint") !== "0" : !reliefOn;
-  const cloudCover = cloudCoverFromParams(params);
-  let cloudProvider = null;
-  if (cloudLayerEnabled(params) && !paint) {
-    cloudProvider = createCloudImageryProvider({
-      radiusM: spec.radiusM,
-      // The same seed the world was built from. Weather from a different seed would be a second
-      // planet's, on a layer where nothing about the picture would give it away.
-      seed: spec.seed,
-      cover: cloudCover,
-      tileSize: number("cloudSize", CLOUD_TILE_SIZE),
-      // **Deliberately NOT the terrain's cap.** The relief layer follows `maxLevel` because
-      // colour must not stop refining before geometry does; the cloud field's finest structure is
-      // 41 km and it is already oversampled twelve times over at level 5, so following the
-      // terrain to level 12 would ask the pool for seven levels of tiles carrying no new content.
-      maximumLevel: number("cloudMaxLevel", CLOUD_MAX_LEVEL),
-      credit: "worldbuilder cloud layer",
-      // The same pool the mesh and the relief layer use. One pool and not three: the contention
-      // that matters is engine instances per core.
-      pool,
-    });
-    viewer.imageryLayers.addImageryProvider(cloudProvider);
+
+  /// **The live-swap record**, and everything in it is replaced together or not at all.
+  ///
+  /// A swap that replaced the terrain provider and kept the old relief layer, or kept the old
+  /// water manifest, would be the `wrong-world` fault arrived at by accident -- two halves of one
+  /// picture drawn from two planets, with nothing about the render to give it away. So this is one
+  /// object, `installWorld` writes all of it, and every reader below reads from here rather than
+  /// from a `const` captured at boot.
+  const installed = {
+    state: null, world: 0, reference: 0, provider: null, cache: null, availability: null,
+    reliefProvider: null, reliefLayer: null, cloudProvider: null, cloudLayer: null,
+    water: null, swaps: 0, lastSwap: null,
+  };
+
+  /// The two world handles, owned. `reference` is what the checks compare against and is always
+  /// built from the *stated* parameters; `world` is what the provider draws, and under
+  /// `?fault=wrong-world` they are different planets, which the checks have to notice.
+  ///
+  /// **Two swappers and not one.** They are two handles with two lifetimes; a single owner would
+  /// have to special-case the no-fault path where they are the same number, and the failure mode
+  /// of getting that wrong is a double free.
+  ///
+  /// **This is a real change and it is stated rather than buried:** before the live swap the
+  /// no-fault path built ONE world and used it as both, so `wb_world_count` on the main thread
+  /// read 1 and now reads 2. What that costs is one extra `Surface::new` -- 8 to 13 ms on the
+  /// owner's world -- and one world's worth of linear memory; the whole engine heap after thirty
+  /// swaps measures 39 wasm pages (2.56 MB) and does not move across them. What it buys is that
+  /// `swap` is the same three lines whether or not a fault is selected. Nothing in `verify.js`
+  /// compares the two by handle: every check compares VALUES, and two worlds built from one spec
+  /// are bit-identical, which the engine's determinism makes an identity rather than a hope.
+  const worldSwapper = new WorldSwapper(engine);
+  const referenceSwapper = new WorldSwapper(engine);
+
+  /// The tiling scheme availability is computed against. One per page: it holds no world state.
+  const tilingSchemeForAvailability = new Cesium.GeographicTilingScheme();
+
+  /// **Build the world, resolve its water, build the providers, and put them on the globe.**
+  ///
+  /// Called once at boot with `plan === null`, which means "everything", and again for every live
+  /// swap with a plan from `swapPlan`. **One function for both paths on purpose**: a swap that
+  /// went through different code than the boot it has to agree with would be a second
+  /// construction of the picture, and the digest control this task is measured by would then be
+  /// comparing two implementations rather than two ways of reaching one.
+  ///
+  /// **The camera is never read and never written here.** That is the whole feature.
+  async function installWorld(nextState, plan) {
+    const nextSpec = nextState.spec;
+    const rebuildWorld = plan === null || plan.rebuildWorld;
+    const rebuildTerrain = plan === null || plan.rebuildTerrain;
+    const resolveWater = plan === null ? nextState.waterEnabled : plan.resolveWater;
+
+    if (rebuildWorld) {
+      // Built before the old one is freed -- `WorldSwapper.swap`'s own rule -- so a refused block
+      // throws with the previous world still owned and still drawn.
+      referenceSwapper.swap(nextSpec);
+      worldSwapper.swap(fault === FAULTS.wrongWorld
+        ? { ...nextSpec, seed: (BigInt(nextSpec.seed) + 1n).toString() }
+        : nextSpec);
+      installed.reference = referenceSwapper.handle;
+      installed.world = worldSwapper.handle;
+      // **Every worker, before a single tile is requested.** Eight workers still holding the
+      // previous planet IS the `stale-worker` fault: a scattered eighth of the tiles would come
+      // from the world the slider moved away from, and the globe would still look like a globe.
+      if (pool) await pool.rebuild(nextSpec);
+    }
+
+    // **The water manifest, re-resolved whenever the surface moved -- measured, not assumed.**
+    //
+    // The tempting optimisation is to skip this for a mountain slider, on the reasoning that
+    // mountains are terrain and lakes are water. `live-swap.js`'s module doc holds the measurement
+    // that refutes it: on the owner's world at 8,000 nodes, raising `continentCollisionM` by half
+    // creates two lake bodies that did not exist and moves three more by up to 43.19 m of surface
+    // level, because `wb_water_run` samples its stream graph off this world's own surface. The
+    // control -- an identical rebuild -- is bit-identical, so re-solving is deterministic and
+    // skipping is what would be unsound. `waterSolveIsOptional` is the one place that rule lives.
+    if (resolveWater) {
+      const waterStarted = performance.now();
+      const water = engine.waterRun({
+        handle: installed.world, nodeCount: nextState.waterNodes,
+      });
+      const waterMs = performance.now() - waterStarted;
+      const facts = waterDiagnostics(water.bodies);
+      installed.water = {
+        enabled: true, nodeCount: nextState.waterNodes, ms: waterMs,
+        seaLevelM: water.seaLevelM, bodies: water.bodies,
+        // **The boxes bound node CENTRES, so they are grown by one node cell before anything
+        // draws them.** See `dilateBodyExtents` for the whole argument; `facts` is deliberately
+        // taken on the RAW rows, because it is a statement about what the manifest carries and
+        // dilating first would make it report a fact about this file instead.
+        drawnBodies: dilateBodyExtents(water.bodies, nextState.waterNodes), facts,
+      };
+    } else if (!nextState.waterEnabled) {
+      installed.water = {
+        enabled: false, nodeCount: nextState.waterNodes, ms: 0, seaLevelM: null,
+        bodies: [], drawnBodies: [], facts: waterDiagnostics([]),
+      };
+    }
+
+    if (rebuildTerrain) {
+      // Feature-aware availability. With no features this is exactly the Task 4 cap: the
+      // footprint list is empty, `featureMaxLevel` equals the ground cap, and every level past
+      // it answers `false`.
+      installed.availability = createAvailability({
+        radiusM: nextSpec.radiusM,
+        size,
+        groundMaxLevel: maxLevel,
+        features: nextSpec.features,
+        ceiling: number("featureCeiling", FEATURE_CEILING),
+        tilingScheme: tilingSchemeForAvailability,
+        fault,
+      });
+      // **A NEW cache, not a cleared one.** `TileCache`'s key is `level/x/y` and carries no world
+      // identity -- its own comment says so, and says why: there is exactly one world per page.
+      // That was true until this task. A cache carried across a swap would serve the previous
+      // planet's heights under the new planet's tile ids, which is exactly the `cache-key` fault.
+      installed.cache = params.get("cache") === "0"
+        ? null
+        : new TileCache({ capacity: number("cacheTiles", DEFAULT_CACHE_TILES), fault });
+      installed.provider = createTerrainProvider({
+        engine,
+        world: installed.world,
+        radiusM: nextSpec.radiusM,
+        size,
+        maxLevel,
+        fault,
+        pool,
+        cache: installed.cache,
+        availability: installed.availability,
+        credit: `worldbuilder engine, generator v${engine.generatorVersion()}`,
+      });
+      // Assigning the provider is what makes Cesium drop every terrain tile and re-request it.
+      // The camera is not touched by this line, which is the whole reason a swap is possible.
+      viewer.terrainProvider = installed.provider;
+      viewer.scene.globe.depthTestAgainstTerrain = true;
+    }
+
+    // The relief imagery layer.
+    //
+    // **Why an imagery layer rather than terrain lighting**: `CustomHeightmapTerrainProvider`
+    // gives `HeightmapTerrainData`, whose `hasVertexNormals` is `false` -- always, on that
+    // class -- so `GlobeFS` lights the mesh with the *ellipsoid* normal and no amount of
+    // `enableLighting` produces relief. Verified live. A raster is the only surface here that
+    // can carry a normal, and Cesium picks the imagery level from the terrain tile's geometric
+    // error without clamping it to the terrain level, so a 256-texel tile over a 65-post
+    // rectangle is a free 4x of colour resolution.
+    //
+    // Built from `world`, the same handle the terrain provider draws -- a relief layer from a
+    // *different* world would be the `wrong-world` fault arrived at by accident, and it would
+    // look entirely plausible.
+    //
+    // `?relief=0` turns it off. That branch, and the `paint` default below, are the only two
+    // things this block changes about the page, and with `relief=0` both land on exactly the
+    // code that ran before it existed.
+    // The water manifest -- **slice 5b, drawn at last.**
+    //
+    // `wb_water_run` has shipped in the artifact since that slice and nothing called it. This is
+    // the call. It runs the whole shipped water path over a stream graph sampled from this
+    // world's own surface -- basin fill, overflow resolution, the tied-plateau merge,
+    // classification -- and hands back the manifest: one row per body, carrying a **surface
+    // level** and a bounding box. `relief.js` draws each body as a flat sheet at its own level,
+    // in the ocean's own colour table read at the depth below that level.
+    //
+    // **The sea is deliberately not in it.** Slice 5b's Ruling 6: §13.2 defines a mapping of
+    // *named* waters and a fallback for the unnamed, and the sea is the mapping's miss rather
+    // than a row in it -- the datum is carried once, in `sea_level_m`, which is echoed back here
+    // rather than assumed. Ocean bodies were measured to be 86.1% of the manifest with 96.3% of
+    // their boxes overlapping another, so re-adding them would be re-adding the noise that
+    // removal deleted.
+    //
+    // # It is resolved SYNCHRONOUSLY, at boot, and that costs four seconds
+    //
+    // Measured on the owner's world through this repository's checked-in wasm: **4.21 s at
+    // 30,000 nodes**, 0.98 s at 8,000, 9.32 s at 60,000. That is a real cost and it is named in
+    // the status line rather than hidden.
+    //
+    // It is not moved into a worker, and the reason is correctness rather than effort. The
+    // manifest has to be complete *before* the first relief tile rasterises: Cesium caches the
+    // texture it is given, so any tile drawn while the manifest was still arriving would be a
+    // permanently lake-free tile in a world that has lakes, scattered wherever the camera
+    // happened to be looking first. That is the `stale-worker` fault shape arrived at by
+    // accident, and it would also make the screenshot digests a race. `?lakes=0` is the escape
+    // hatch and it skips the resolution entirely rather than resolving and discarding.
+    // (The resolution itself now lives in `installWorld` above, so a swap and a boot resolve it
+    // through the same call. `?lakes=0` still skips it entirely rather than resolving and
+    // discarding, and it is still complete before the first relief tile rasterises.)
+    // What the manifest cannot say, counted rather than left to be rediscovered: bodies whose
+    // box is a single point (undrawable -- no footprint, no radius, and `rootNode` cannot be
+    // turned into a position by any export), boxes wider than half the planet (polar, not
+    // antimeridian -- see `water.js`), and pairs of boxes that overlap and therefore make
+    // `lakeLevelAt` choose.
+    // (`waterDiagnostics` is called in `installWorld`, on the RAW rows, for the reason below.)
+
+    // **The boxes bound node CENTRES, so they are grown by one node cell before anything draws
+    // them.** `water.rs::lake_body_extents` takes `Extent::from_points` over the submerged members'
+    // positions, and a node stands for `4 * pi * R^2 / nodeCount` of sphere; the box is therefore
+    // one cell radius short on every side, and a one-node body's box is a point rather than a cell.
+    // **One cell radius is an ANGULAR radius, so the shape it grows the box into is a disc on the
+    // great circle and not a bigger rectangle** -- which is why a point body draws as a spherical
+    // cap and why the picture stopped being full of straight lines.
+    // `dilateBodyExtents` carries the whole argument and the calibration -- including the one piece
+    // of ground truth available here, that a one-node body cannot hold more than one cell of water.
+    // `waterFacts` above is deliberately taken on the RAW rows: it is a statement about what the
+    // manifest carries, and dilating first would make it report a fact about this file instead.
+    // (`dilateBodyExtents` is applied in `installWorld`, on this world's own manifest.)
+
+    if (reliefOn) {
+      // **The old layer is removed and a new one added**, rather than the provider being mutated.
+      // `ImageryLayer` caches the uploaded texture per tile and there is no public "invalidate";
+      // keeping the layer and swapping its provider's world handle would leave every already-drawn
+      // tile showing the previous planet's colour over the new planet's mesh, indefinitely.
+      const previousLayer = installed.reliefLayer;
+      installed.reliefProvider = createReliefImageryProvider({
+        engine,
+        worldHandle: installed.world,
+        radiusM: nextSpec.radiusM,
+        tileSize: number("reliefSize", RELIEF_TILE_SIZE),
+        // `undefined` means "calibrate this world's own band edges"; `null` is the height
+        // ramp the layer drew before the land-colour work. See `biomeColourEnabled`.
+        // **Recalibrated per swap, not carried over**: the band edges are this world's own
+        // hypsometry, and reusing the previous world's would colour the new one by the old one's
+        // heights -- a difference no counter would show and no exception would report.
+        biome: biomeColourEnabled(params) ? undefined : null,
+        // The bodies, resolved above. `[]` under `?lakes=0`, which is the picture this task
+        // started from.
+        lakes: installed.water.drawnBodies,
+        // Defaults to the *terrain's* cap, so imagery is never the thing that stops refining
+        // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
+        maximumLevel: number("reliefMaxLevel", maxLevel),
+        credit: `worldbuilder engine relief, generator v${engine.generatorVersion()}`,
+        // The same pool the terrain mesh uses, and the same `?workers=0` escape hatch. One
+        // pool and not two: the contention that matters is engine instances per core, and a
+        // second pool of eight would double the workers without doubling the cores.
+        pool,
+      });
+      installed.reliefLayer = viewer.imageryLayers.addImageryProvider(installed.reliefProvider);
+      // **Order is the composite, and `addImageryProvider` appends.** On a swap the cloud deck is
+      // already in the collection, so a freshly-added relief layer would land ON TOP of it and the
+      // (opaque) ground would hide the weather completely -- the same failure shape the block below
+      // describes for the reverse order, and it would look like the cloud layer had silently
+      // stopped working. `lowerToBottom` puts it back under everything, which is where the boot
+      // path had it.
+      viewer.imageryLayers.lowerToBottom(installed.reliefLayer);
+      if (previousLayer) viewer.imageryLayers.remove(previousLayer, true);
+    }
+
+    // The cloud layer -- **difference #1 of 12 in the gap analysis**, and the element a viewer's
+    // eye reads first as "photograph of a planet" rather than "diagram of a planet".
+    //
+    // # It is added AFTER the relief layer, and the order is the composite
+    //
+    // `ImageryLayerCollection` composites in index order, so the last layer added is drawn over
+    // the ones before it. Clouds must be last: they are a translucent deck and the ground is what
+    // shows through them. Adding them first would have Cesium blend the (opaque) relief layer over
+    // them and the whole layer would silently do nothing -- the same failure shape as the
+    // `ElevationRamp` material hiding the relief imagery, which is documented a few lines below
+    // and was a real bug here.
+    //
+    // # Altitude and parallax: what was chosen, and what it costs
+    //
+    // An `ImageryLayer` is DRAPED ON THE TERRAIN. There is no altitude option on it and no
+    // parallax: a cloud texel is painted at the ground point beneath it. The alternative -- a
+    // second, slightly larger textured ellipsoid primitive floating above the globe -- is the only
+    // thing in this stack that would give real parallax, and it would need its own tiling, its own
+    // level-of-detail and its own request path, none of which the worker pool and provider
+    // machinery this task was told to reuse would serve.
+    //
+    // **What that costs, computed rather than waved at:** for a deck at altitude `h` on a planet
+    // of radius `R`, the ground point directly under a cloud and the ground point the cloud
+    // appears over differ by an arc that is zero at the sub-camera point and grows towards the
+    // limb. At the owner's radius of 4,500 km and a 10 km deck, the displacement reaches ~10 km
+    // near the disc centre-to-mid and diverges only in the last few percent of the disc radius,
+    // where the surface is edge-on. At the orbital camera used for this task's screenshots the
+    // disc is ~700 px across, so 10 km is under a pixel over most of the disc. The visible
+    // consequence is at the limb, where a real cloud deck would overhang the silhouette and this
+    // one stops exactly at it. That is the honest limitation of the choice and it is named here
+    // rather than discovered later.
+    //
+    // `?clouds=0` turns the layer off, and it is not constructed at all in that case -- see
+    // `cloudLayerEnabled` for why "constructed but transparent" is not good enough.
+    //
+    // **The cloud layer is built ONCE and survives every swap.** Its field is a point function of
+    // seed and position -- `tile-worker.js`'s `cloud` job takes no world handle at all -- and seed
+    // and coverage are both on `RELOAD_ONLY`. Rebuilding it per swap would re-rasterise every cloud
+    // tile in the pool to produce byte-identical texels, which is the third pool consumer's whole
+    // cost paid for nothing.
+    if (cloudLayerEnabled(params) && !paint && installed.cloudProvider === null) {
+      installed.cloudProvider = createCloudImageryProvider({
+        radiusM: nextSpec.radiusM,
+        // The same seed the world was built from. Weather from a different seed would be a second
+        // planet's, on a layer where nothing about the picture would give it away.
+        seed: nextSpec.seed,
+        cover: cloudCover,
+        tileSize: number("cloudSize", CLOUD_TILE_SIZE),
+        // **Deliberately NOT the terrain's cap.** The relief layer follows `maxLevel` because
+        // colour must not stop refining before geometry does; the cloud field's finest structure is
+        // 41 km and it is already oversampled twelve times over at level 5, so following the
+        // terrain to level 12 would ask the pool for seven levels of tiles carrying no new content.
+        maximumLevel: number("cloudMaxLevel", CLOUD_MAX_LEVEL),
+        credit: "worldbuilder cloud layer",
+        // The same pool the mesh and the relief layer use. One pool and not three: the contention
+        // that matters is engine instances per core.
+        pool,
+      });
+      installed.cloudLayer = viewer.imageryLayers.addImageryProvider(installed.cloudProvider);
+    }
+
+    installed.state = nextState;
+    installed.swaps += plan === null ? 0 : 1;
+    return installed;
   }
+
+  // The first install: the boot path, and the only one that passes `null` for a plan.
+  const bootState = {
+    spec,
+    waterNodes: waterNodeCountFromParams(params),
+    waterEnabled: lakesOn,
+    size,
+    maxLevel,
+    featureCeiling: number("featureCeiling", FEATURE_CEILING),
+  };
+  await installWorld(bootState, null);
 
   // Two scheduling knobs, neither of which changes a generated height.
   //
@@ -550,37 +679,50 @@ async function boot() {
     });
   }
 
-  const line =
-    `Cesium ${Cesium.VERSION} | generator v${engine.generatorVersion()} | ` +
-    `seed=${spec.seed} plates=${spec.plateCount} land=${spec.landFraction} ` +
-    `features=${spec.features.length} relief=${
-      spec.relief
-        ? `mtn ${spec.relief.mountainM} quiet ${spec.relief.quietingStrength} pers ${
-          spec.relief.octavePersistence}`
+  /// **The status line, rebuilt after every swap.**
+  ///
+  /// It used to be a `const` computed once. That cannot survive this task: a caption that still
+  /// described the world before the slider moved would be worse than no caption, because every
+  /// screenshot in this project's reports carries this line as its own proof of what it is a
+  /// picture of. Everything it names is read out of `installed` or off the live scene.
+  function statusLine() {
+    const s = installed.state.spec;
+    const provider = installed.provider;
+    const availability = installed.availability;
+    const cache = installed.cache;
+    const reliefProvider = installed.reliefProvider;
+    const cloudProvider = installed.cloudProvider;
+    const water = installed.water;
+    return `Cesium ${Cesium.VERSION} | generator v${engine.generatorVersion()} | ` +
+    `seed=${s.seed} plates=${s.plateCount} land=${s.landFraction} ` +
+    `features=${s.features.length} relief=${
+      s.relief
+        ? `mtn ${s.relief.mountainM} quiet ${s.relief.quietingStrength} pers ${
+          s.relief.octavePersistence}`
         : "canonical"} tectonics=${
-      spec.tectonics
+      s.tectonics
         // The envelope AND the structure. The structure half was added when the channel
         // widened to carry it: a diagnostic line that named three of eight fields would have
         // said "canonical" about a block whose whole shape had changed, and this line is what
         // a screenshot carries as its own caption.
-        ? `mtn ${spec.tectonics.continentCollisionM} m / ${
-          (spec.tectonics.continentCollisionWidthM / 1000).toFixed(0)} km blend ${
-          spec.tectonics.continentalBlend.toFixed(3)} verg ${
-          spec.tectonics.collisionAsymmetry.toFixed(2)} belts ${
-          spec.tectonics.sutureCount}x${
-          (spec.tectonics.sutureSpreadM / 1000).toFixed(0)}km struct ${
-          spec.tectonics.structureDepth.toFixed(2)}@${
-          (spec.tectonics.structureWavelengthM / 1000).toFixed(0)}km wander ${
-          (spec.tectonics.marginWarpM / 1000).toFixed(0)}@${
-          (spec.tectonics.marginWarpWavelengthM / 1000).toFixed(0)}km`
+        ? `mtn ${s.tectonics.continentCollisionM} m / ${
+          (s.tectonics.continentCollisionWidthM / 1000).toFixed(0)} km blend ${
+          s.tectonics.continentalBlend.toFixed(3)} verg ${
+          s.tectonics.collisionAsymmetry.toFixed(2)} belts ${
+          s.tectonics.sutureCount}x${
+          (s.tectonics.sutureSpreadM / 1000).toFixed(0)}km struct ${
+          s.tectonics.structureDepth.toFixed(2)}@${
+          (s.tectonics.structureWavelengthM / 1000).toFixed(0)}km wander ${
+          (s.tectonics.marginWarpM / 1000).toFixed(0)}@${
+          (s.tectonics.marginWarpWavelengthM / 1000).toFixed(0)}km`
         : "canonical"} coast=${
-      spec.coast
+      s.coast
         // The amplitude AND the schedule. A diagnostic line that named the amplitude alone would
         // say nothing about a block whose octaves or frequency had moved, and this line is what a
         // screenshot carries as its own caption.
-        ? `amp ${spec.coast.amplitude.toFixed(2)} band ${
-          spec.coast.windowSpreads} freq ${spec.coast.frequency} oct ${
-          spec.coast.octaves} gain ${spec.coast.gain} lac ${spec.coast.lacunarity}`
+        ? `amp ${s.coast.amplitude.toFixed(2)} band ${
+          s.coast.windowSpreads} freq ${s.coast.frequency} oct ${
+          s.coast.octaves} gain ${s.coast.gain} lac ${s.coast.lacunarity}`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -596,12 +738,12 @@ async function boot() {
     // because a single-node body's extent is a point. Both, plus the resolution's cost and the
     // datum the engine echoed back, are here.
     `lakes=${
-      lakesOn
-        ? `${drawnBodies.length}/${waterFacts.bodies} drawn (${waterFacts.pointBoxes} point ` +
-          `boxes drawn as a node-cell cap) @${waterNodes} nodes ` +
-          `datum ${water.seaLevelM} m in ${(waterMs / 1000).toFixed(2)}s` +
-          `${waterFacts.wideBoxes > 0 ? ` WIDE=${waterFacts.wideBoxes}` : ""}` +
-          `${waterFacts.overlappingPairs > 0 ? ` overlap=${waterFacts.overlappingPairs}` : ""}` +
+      water.enabled
+        ? `${water.drawnBodies.length}/${water.facts.bodies} drawn (${water.facts.pointBoxes} ` +
+          `point boxes drawn as a node-cell cap) @${water.nodeCount} nodes ` +
+          `datum ${water.seaLevelM} m in ${(water.ms / 1000).toFixed(2)}s` +
+          `${water.facts.wideBoxes > 0 ? ` WIDE=${water.facts.wideBoxes}` : ""}` +
+          `${water.facts.overlappingPairs > 0 ? ` overlap=${water.facts.overlappingPairs}` : ""}` +
           `${reliefOn ? "" : " (NOT DRAWN: relief layer off)"}`
         : "off"} | ` +
     // The cloud layer, named with the number that decides its look. A screenshot carries this
@@ -627,15 +769,80 @@ async function boot() {
     // whether this host can tonemap at all rather than merely whether it was asked to.
     `${formatAtmosphere(atmosphereApplied)} | ` +
     `sse=${sse}${sse === 2 ? " (?sse=1 for one more level, ~3x cost)" : ""} | ` +
+    // **What the swap has cost so far**, on the line every screenshot carries. A live swap that
+    // silently did nothing and a live swap that worked are the same picture when the parameters
+    // barely moved; this counter is what tells them apart, and the milliseconds are the
+    // release-to-provider-installed figure the report quotes rather than an estimate of it.
+    `swaps=${installed.swaps}${
+      installed.lastSwap
+        ? ` last ${installed.lastSwap.kind} ${(installed.lastSwap.ms / 1000).toFixed(2)}s`
+        : ""} | ` +
     `fault=${fault ?? "none"}`;
+  }
+
+  const line = statusLine();
   if (status) status.textContent = line;
 
+  /// **Swap the drawn world in place.** The entry point `controls.js` calls on slider release.
+  ///
+  /// `next` is a partial world state -- typically one of `{ tectonics }`, `{ coast }` or
+  /// `{ waterNodes }` -- merged over what is currently installed. The plan decides what is
+  /// rebuilt; `live-swap.js` holds the rules and the measurement behind them.
+  ///
+  /// Returns `{ kind, ms, changed, reason, line }`. `ms` is release-to-installed: the world
+  /// build, the eight worker rebuilds, the water solve and the provider swap. **It is not
+  /// time-to-repaint** -- the tiles are requested by the assignment and arrive afterwards, and
+  /// conflating the two is how a swap that hangs for twenty seconds gets reported as fast. A
+  /// driver measuring repaint waits on Cesium's own tile-load queue, which is what
+  /// `scripts/shoot.mjs measure` already does.
+  async function swap(next) {
+    const previous = installed.state;
+    const nextState = {
+      ...previous,
+      ...next,
+      spec: { ...previous.spec, ...(next.spec ?? {}) },
+    };
+    const plan = swapPlan(previous, nextState);
+    if (plan.kind === "none") return { ...plan, ms: 0, line: statusLine() };
+    const started = performance.now();
+    await installWorld(nextState, plan);
+    installed.lastSwap = { kind: plan.kind, ms: performance.now() - started, changed: plan.changed };
+    const swapped = statusLine();
+    if (status) status.textContent = swapped;
+    window.__wbReady = { ok: true, line: swapped };
+    return { ...plan, ms: installed.lastSwap.ms, line: swapped };
+  }
+
   window.__wb = {
-    engine, provider, viewer, spec, fault,
-    world, reference, pool, cache, availability,
+    engine, viewer, fault, pool, FAULTS,
+    /// **Everything world-shaped is a getter**, because a live swap replaces all of it and a
+    /// captured `const` would leave a driver, the panel and `verify.js` reading the world that
+    /// was on screen before the slider moved -- which is the `wrong-world` fault wearing the
+    /// costume of a stale variable.
+    get spec() { return installed.state.spec; },
+    get provider() { return installed.provider; },
+    get world() { return installed.world; },
+    get reference() { return installed.reference; },
+    get cache() { return installed.cache; },
+    get availability() { return installed.availability; },
+    /// The live swap itself, plus what it has cost. `swaps` counts the swaps that did work;
+    /// `worldCount` is the engine's own live-world count on the MAIN thread, and
+    /// `pool.stats().worldCounts` is the same figure inside each worker. Both are the leak
+    /// evidence this design needs: a swapper that forgot to free would show them climbing while
+    /// the picture stayed perfect.
+    swap,
+    get swaps() { return installed.swaps; },
+    get lastSwap() { return installed.lastSwap; },
+    worldCount: () => engine.worldCount(),
+    swapCounters: () => ({
+      main: engine.worldCount(),
+      builtWorlds: worldSwapper.built + referenceSwapper.built,
+      freedWorlds: worldSwapper.freed + referenceSwapper.freed,
+      workers: pool ? pool.worldCounts : null,
+    }),
     /// `null` under `?relief=0`. Its `worldbuilder.stats` is the per-tile cost this task
     /// reports and Task 4's worker move is measured against.
-    reliefProvider,
+    get reliefProvider() { return installed.reliefProvider; },
     /// **The water manifest as the engine handed it over**, plus what it cannot say.
     ///
     /// `bodies` is `wb_water_run`'s own rows, unsorted and unfiltered -- ascending by
@@ -647,20 +854,16 @@ async function boot() {
     /// `facts` is `waterDiagnostics`: the counts of what the box representation cannot express.
     /// `ms` is what the resolution cost, so a report quotes the measurement rather than an
     /// estimate.
-    water: {
-      enabled: lakesOn, nodeCount: waterNodes, ms: waterMs,
-      seaLevelM: water.seaLevelM, bodies: water.bodies, drawnBodies, facts: waterFacts,
-    },
+    get water() { return installed.water; },
     /// `null` under `?clouds=0` and under any configuration where the ramp material would cover
     /// it. Its `worldbuilder.clouds` is the calibration the layer is drawing with -- read rather
     /// than recalibrated, so a check cannot arrive at a different threshold and compare against
     /// that -- and its `worldbuilder.stats` is the per-tile cost the report quotes.
-    cloudProvider,
+    get cloudProvider() { return installed.cloudProvider; },
     /// What `atmosphere-params.js` actually applied to the scene, read back rather than
     /// re-derived, so a driver asking "is the ground atmosphere on" gets the answer from the same
     /// call that set it. A second derivation is a second chance to disagree.
     atmosphere: atmosphereApplied,
-    FAULTS,
     /// The engine's own relief presets, read across the boundary at boot. `controls.js`
     /// takes its slider defaults, two of its three travel ends and its preset button from
     /// here -- so the panel cannot drift from `detail.rs`, because it holds no relief number
@@ -668,7 +871,7 @@ async function boot() {
     relief: {
       canonical: reliefCanonical,
       hills: engine.reliefPreset("hills"),
-      chosen: spec.relief,
+      get chosen() { return installed.state.spec.relief; },
     },
     /// The engine's own tectonic presets, read across the boundary at boot. `controls.js`
     /// anchors all six mountain sliders on `canonical` and fills them from `ranges` when the
@@ -683,7 +886,7 @@ async function boot() {
     coast: {
       canonical: coastCanonical,
       fractal: engine.coastPreset("fractal"),
-      chosen: spec.coast,
+      get chosen() { return installed.state.spec.coast; },
       /// Whether the engine would accept a block, asked of `wb_coast_check` itself. Two of this
       /// channel's bounds are joint -- the octave count is a loop bound and the finest frequency
       /// is a product of three fields -- so a panel re-deriving them in JavaScript would be a
@@ -693,7 +896,7 @@ async function boot() {
     tectonics: {
       canonical: tectonicCanonical,
       ranges: engine.tectonicPreset("ranges"),
-      chosen: spec.tectonics,
+      get chosen() { return installed.state.spec.tectonics; },
       /// Whether the engine would accept a block, asked of `wb_tectonic_check` itself.
       ///
       /// Task 5's `marginWarpM` is the first panel control whose travel can combine with
@@ -705,10 +908,21 @@ async function boot() {
       check: (block) => engine.checkTectonic(block) === 0,
     },
     /// The frame-budget measurement. Populations, not a single number.
-    bench: (options = {}) => runBench({ viewer, engine, provider, spec, ...options }),
-    /// The whole verification, callable from the console or from a driver.
+    bench: (options = {}) => runBench({
+      viewer, engine, provider: installed.provider, spec: installed.state.spec, ...options,
+    }),
+    /// The whole verification, callable from the console or from a driver. **Read out of
+    /// `installed` at call time**, so a check run after a swap checks the world that is drawn
+    /// rather than the one that booted -- which is the property that makes "a slid world equals a
+    /// loaded world" checkable at all.
     check: (options = {}) => runChecks({
-      viewer, engine, provider, world: provider.worldbuilder.world, reference, spec, ...options,
+      viewer,
+      engine,
+      provider: installed.provider,
+      world: installed.provider.worldbuilder.world,
+      reference: installed.reference,
+      spec: installed.state.spec,
+      ...options,
     }),
     formatChecks,
     formatBench,

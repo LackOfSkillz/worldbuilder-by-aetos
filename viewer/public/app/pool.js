@@ -117,6 +117,9 @@ export class TilePool {
     this.outstanding = workers.map(() => 0);
     this.dispatched = workers.map(() => 0);
     this.cursor = 0;
+    /// Per-worker `wb_world_count`, filled by `rebuild`. `null` until a live swap has happened;
+    /// see `rebuild` for why the main thread's own count cannot stand in for it.
+    this.worldCounts = null;
     /// Every worker-side fill duration, in order. The population the report quotes.
     this.fillMs = [];
     /// Main-thread time from `fill()` call to promise settle, per tile. Wall clock, so it
@@ -294,6 +297,59 @@ export class TilePool {
     return this.dispatch("cloud", request, this.cloudMs, this.cloudWallMs);
   }
 
+  /// **Rebuild every worker's world from a new spec, reusing the engine instances.**
+  ///
+  /// This is the pool's half of the live swap. It is not `terminate()` plus `start()`: that would
+  /// re-fetch and re-instantiate the wasm once per worker, which is the expensive half of boot
+  /// and is exactly what a live swap exists to stop paying again.
+  ///
+  /// **All of them, and it waits for all of them** -- the same rule `start` follows and for the
+  /// same reason. A pool that resolved after the first reply would have the main thread install a
+  /// provider while seven workers were still filling tiles from the previous planet, which is the
+  /// `stale-worker` fault arrived at by accident. Every reply is matched by its own id, so a tile
+  /// reply landing mid-rebuild cannot be mistaken for one.
+  ///
+  /// The `rebuilt` reply carries each worker's own `wb_world_count`, and it is kept because it is
+  /// the only place that figure exists: a world handle is an index into a table inside one
+  /// instance's linear memory, so the main thread's count says nothing at all about the workers'.
+  rebuild(spec) {
+    this.spec = spec;
+    const replies = this.workers.map((worker, index) => new Promise((resolve, reject) => {
+      const id = this.nextId;
+      this.nextId += 1;
+      const onMessage = (event) => {
+        const message = event.data;
+        if (!message || message.id !== id) return;
+        worker.removeEventListener("message", onMessage);
+        if (message.type === "rebuilt") resolve(message);
+        else reject(new Error(`worker ${index} rebuild: ${message.message}`));
+      };
+      worker.addEventListener("message", onMessage);
+      worker.postMessage({ type: "rebuild", id, spec });
+    }));
+    return Promise.all(replies).then((rebuilt) => {
+      // `ready` is what `stats()` and the status line report the pool from, so it has to describe
+      // the world the workers are on NOW rather than the one they booted with. `stale` comes back
+      // FROM the worker rather than being carried over here: the worker is the only side that
+      // knows whether it applied the fault, and re-deriving it would be a second copy of that
+      // decision.
+      const previous = this.ready ?? [];
+      this.ready = rebuilt.map((r) => ({
+        type: "ready",
+        index: r.index,
+        world: r.world,
+        stale: r.stale,
+        generatorVersion: previous[r.index] ? previous[r.index].generatorVersion : undefined,
+        buildMs: r.buildMs,
+      }));
+      /// Per-worker live-world counts after the swap. **This is the leak evidence for eight
+      /// ninths of the wasm memory this feature touches** -- the main thread's `wb_world_count`
+      /// cannot see any of it.
+      this.worldCounts = rebuilt.map((r) => r.worldCount);
+      return rebuilt;
+    });
+  }
+
   terminate() {
     for (const worker of this.workers) worker.terminate();
     this.workers = [];
@@ -303,6 +359,10 @@ export class TilePool {
     return {
       workers: this.ready.length,
       staleWorkers: this.ready.filter((r) => r.stale).map((r) => r.index),
+      /// `undefined` until the first live swap; an array of eight `wb_world_count` readings
+      /// afterwards. Each must stay at 1: a worker holding two worlds is a worker leaking one
+      /// per slider release.
+      worldCounts: this.worldCounts,
       buildMs: this.ready.map((r) => r.buildMs),
       dispatched: this.dispatched.slice(),
       fills: this.fillMs.length,

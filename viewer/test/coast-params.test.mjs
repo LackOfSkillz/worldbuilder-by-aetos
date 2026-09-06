@@ -335,7 +335,8 @@ test("the panel's not-wired list is honest about the two entries this task touch
   // The coastline is wired now, and there is a section for it.
   assert.ok(!list.includes('["coastline"'), "the coastline is listed as not wired");
   assert.ok(!list.includes('["fractal coast'), "the coastline is listed as not wired");
-  assert.match(controls, /coastline · rebuilds/);
+  // The section is now titled `· live` rather than `· rebuilds`: the coast slider swaps in place.
+  assert.match(controls, /coastline · live/);
   // **And the water entry was WRONG, not merely stale.** It said `no export yet`, which has been
   // false since slice 5b: `wb_water_run` ships in the committed artifact, as this test proves by
   // asking the artifact rather than the comment. What was missing was a viewer that calls it.
@@ -352,7 +353,7 @@ test("the panel's not-wired list is honest about the two entries this task touch
     "the water entry still says nothing calls wb_water_run, but main.js does",
   );
   assert.match(appFile("main.js"), /engine\.waterRun\(/, "main.js must call the water export");
-  assert.match(controls, /water · rebuilds/);
+  assert.match(controls, /water · live/);
   // The two narrower entries that replaced it are real limitations, not a relabelling: a body
   // arrives as a level and a box, and no body is ever classified a pond on this mesh.
   assert.ok(list.includes('["lake shorelines"'), "the box limitation must stay on the list");

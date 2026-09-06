@@ -7,15 +7,32 @@
 // the engine or the roadmap and have **no viewer path at all**, listed rather than omitted
 // so the panel does not read as a complete account of what the project does.
 //
-// ## Why changing a world knob reloads the page
+// ## Why changing a world knob USED to reload the page, and what replaced it
 //
-// The world is built once, at boot: `main.js` calls `engine.newWorld(...)` and hands the
-// handle to a terrain provider, a worker pool and a tile cache that all close over it.
-// Rebuilding in place would mean tearing down the pool, invalidating every cached tile and
-// swapping the provider under a camera mid-flight -- three things with their own failure
-// modes, none of which this panel needs. Setting `location.search` reuses the boot path the
-// verification harness already covers. It costs a reload; it cannot leave the viewer in a
-// state no test has seen.
+// This comment used to read, correctly: *"the world is built once, at boot... rebuilding in place
+// would mean tearing down the pool, invalidating every cached tile and swapping the provider
+// under a camera mid-flight -- three things with their own failure modes, none of which this
+// panel needs."* The owner asked for the thing it declined to build: *"a slider for more
+// mountains, and taller mountains, and I can watch them redraw on the planet I have."*
+//
+// So the three failure modes are handled rather than avoided. `main.js`'s `installWorld` rebuilds
+// the world on the main thread and in every worker, resolves the water again, builds fresh
+// providers and a fresh tile cache, and swaps them under a camera it never touches;
+// `live-swap.js` decides what may be skipped and holds the measurement behind every rule.
+// **The mountain, coastline and water sliders swap live. Everything else still reloads**, and
+// `RELOAD_ONLY` names each one with the reason rather than leaving it to silently do nothing.
+//
+// Three properties this panel is responsible for, none of them optional:
+//
+// - **The picture a slider reaches must equal the picture its URL loads.** The swapped spec is
+//   built by round-tripping through the SAME `*FromParams` readers the boot path uses, over the
+//   SAME query string this file writes -- so "equal" is structural rather than hoped for.
+// - **The URL keeps up.** `history.replaceState`, not a navigation: a permalink that no longer
+//   describes the picture is worse than a reload.
+// - **Release, not drag.** Every terrain change invalidates every visible tile, so there is no
+//   smooth-dragging story here and this file does not pretend there is one: the listener is
+//   `change` (which fires on release), through a debounce that drops intermediate asks rather
+//   than queueing them.
 //
 // View and appearance knobs that Cesium can change live do so without a reload, and are
 // marked as such. The readouts never reload.
@@ -31,11 +48,14 @@ import {
 } from "./relief-params.js";
 import {
   TECTONIC_SLIDERS, MEASURED_GRADES, tectonicTravel, tectonicPanelFields, tectonicToParams,
+  tectonicFromParams,
 } from "./tectonic-params.js";
 import {
   COAST_SLIDERS, MEASURED_COAST, USEFUL_BAND, coastReadoutFields, coastTravel, coastPanelFields,
-  coastToParams,
+  coastToParams, coastFromParams,
 } from "./coast-params.js";
+import { debounceLatest, nextQueryString, RELOAD_ONLY, SWAP_DEBOUNCE_MS } from "./live-swap.js";
+import { waterNodeCountFromParams } from "./water.js";
 
 const params = new URLSearchParams(location.search);
 
@@ -205,6 +225,41 @@ function build() {
     toggle.textContent = hidden ? "–" : "+";
   });
 
+  // === live update ========================================================================
+  //
+  // On by default, because it is the thing that was asked for. Off restores this panel exactly as
+  // it was: every slider waits for `generate`, and `generate` still reloads.
+  //
+  // **The note under it says the honest thing about cost**, because the alternative is an owner
+  // discovering it by waiting. A mountain release re-solves the water, and the water solve is the
+  // dominant cost at a high node count -- the reason is measured in `live-swap.js` and is not a
+  // choice this panel is free to make differently.
+
+  const liveSection = section(body, "live update");
+  const liveLine = el("label", "wb-row wb-check");
+  const live = document.createElement("input");
+  live.type = "checkbox";
+  live.id = "wb-live";
+  live.checked = params.get("live") !== "0";
+  liveLine.append(live, el("span", null, "swap in place on release (no reload)"));
+  liveSection.append(liveLine);
+  const swapNote = el("div", "wb-note", "");
+  liveSection.append(swapNote);
+  liveSection.append(el("div", "wb-note",
+    "Mountains, coastline and water swap in place; the camera stays where you left it and the "
+    + "address bar keeps up. A terrain change invalidates every visible tile, so this fires on "
+    + "release rather than while you drag. Moving the surface also re-resolves the water — the "
+    + "lake bodies are read off the surface, so a mountain move creates and deletes lakes."));
+  const reloadNote = el("ul", "wb-missing");
+  for (const [name, why] of RELOAD_ONLY) {
+    const item = document.createElement("li");
+    item.append(el("span", "wb-missing-name", name));
+    item.append(el("span", "wb-missing-why", why));
+    reloadNote.append(item);
+  }
+  liveSection.append(el("div", "wb-note", "still reloads:"));
+  liveSection.append(reloadNote);
+
   // === the world — these rebuild ==========================================================
 
   const world = section(body, "world · rebuilds");
@@ -355,7 +410,7 @@ function build() {
   // into separate massifs -- and stopped at the WASM boundary, so for a whole task none of it
   // was reachable from here. `WB_TECTONIC_STRIDE` went 9 -> 14 and these are what it carries.
 
-  const mountainSection = section(body, "mountains · rebuilds");
+  const mountainSection = section(body, "mountains · live");
   const mountainLabels = {
     continentCollisionM: "height",
     // Labelled for its EFFECT rather than its unit, because "width" reads as a size and this
@@ -541,7 +596,7 @@ function build() {
   // `wb_coast_preset`'s answer in `wireCoast` below, and until the engine answers they are
   // disabled and say so.
 
-  const coastSection = section(body, "coastline · rebuilds");
+  const coastSection = section(body, "coastline · live");
   const coastLabels = {
     // Labelled for its EFFECT, not its unit. The parameter is "how far the coast may be pushed,
     // in multiples of the field's own spread", which means nothing to someone looking at a bay.
@@ -727,12 +782,17 @@ function build() {
   // contain — 55 bodies on the owner's world at the default, of which 17 can be drawn. The live
   // figures are read off `window.__wb.water`, which is what the boot path actually resolved,
   // rather than recomputed here.
-  const waterSection = section(body, "water · rebuilds");
+  const waterSection = section(body, "water · live");
   const lakeNodes = row(waterSection, "graph nodes", "wb-lake-nodes", "range", travelFor("lakeNodes"));
   const waterNote = el("div", "wb-note", "");
   waterSection.append(waterNote);
-  const resolved = window.__wb && window.__wb.water;
+  // **Read at paint time, not at build time.** This used to be a `const` taken while the panel
+  // was being constructed -- which is *before* `main.js` publishes `window.__wb`, so it was
+  // always `undefined` and the live half of this note never once appeared. A live swap makes the
+  // defect matter twice over: after a swap the figures are new, and a cached `undefined` would
+  // report the resolution's cost as blank forever.
   const paintWater = () => {
+    const resolved = window.__wb && window.__wb.water;
     const n = Number(lakeNodes.input.value);
     lakeNodes.out.textContent = n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
     const live = resolved && resolved.nodeCount === n && resolved.enabled
@@ -859,6 +919,83 @@ function build() {
     ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
   });
 
+  // === the live swap ======================================================================
+  //
+  // **The three sections above that no longer reload**, and the whole of the owner's request.
+  //
+  // Only the fields those three sections own are sent. A live swap deliberately does NOT carry
+  // whatever else is sitting on the panel: an owner who slid `plates` without pressing generate
+  // has not asked for a new plate count, and applying it because they then nudged a mountain
+  // would be the panel doing something nobody asked for.
+
+  /// The query fields the live sections own, in the form `apply` would have written them.
+  /// Canonical-valued fields are dropped by `nextQueryString`, exactly as `apply` drops them.
+  const liveFields = () => ({
+    ...(tectonicState && tectonicCanonical
+      ? tectonicToParams(tectonicState, tectonicCanonical)
+      : {}),
+    ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
+    lakeNodes: lakeNodes.input.value,
+  });
+
+  /// **The swap, and the one line that makes "slid equals loaded" structural rather than hoped
+  /// for.**
+  ///
+  /// The panel does not hand its slider state to the engine. It writes the query string it would
+  /// have navigated to, and then reads the parameter blocks back out of that query string with
+  /// `tectonicFromParams` / `coastFromParams` / `waterNodeCountFromParams` -- **the same readers
+  /// `main.js`'s boot path calls, on the same string.** So a swapped world is by construction the
+  /// world that URL loads, including the canonical-is-`null` path (Ruling 1): a block back at
+  /// canonical is dropped from the query, and the reader then returns `null`, which reaches the
+  /// engine as a null pointer rather than as a block that merely equals canonical.
+  ///
+  /// Rebuilding the panel's own numbers from the URL would be the drift hazard this file exists
+  /// to avoid; reading the ENGINE's numbers from the URL is the opposite of it.
+  const runSwap = debounceLatest(async () => {
+    const wb = window.__wb;
+    if (!wb || typeof wb.swap !== "function") return;
+    const query = nextQueryString(location.search, liveFields(), DEFAULTS);
+    const nextParams = new URLSearchParams(query);
+    const spec = {};
+    if (tectonicCanonical) spec.tectonics = tectonicFromParams(nextParams, tectonicCanonical);
+    if (coastCanonical) spec.coast = coastFromParams(nextParams, coastCanonical);
+    generate.disabled = true;
+    swapNote.textContent = "swapping…";
+    try {
+      const result = await wb.swap({ spec, waterNodes: waterNodeCountFromParams(nextParams) });
+      // **The URL, after the swap rather than before it.** A `replaceState` that ran first would
+      // leave the address bar describing a world the engine had refused.
+      history.replaceState(null, "", query ? `?${query}` : location.pathname);
+      swapNote.textContent = result.kind === "none"
+        ? "nothing to swap — the sliders are where the drawn world already is"
+        : `${result.kind} swap in ${(result.ms / 1000).toFixed(2)} s (${result.reason}). ` +
+          "Tiles redraw after this; the camera has not moved.";
+      paintWater();
+    } catch (error) {
+      // A refused block leaves the previous world drawn -- `WorldSwapper` builds before it frees
+      // -- so the honest thing to say is that nothing changed, not that the viewer is broken.
+      swapNote.textContent = `the engine refused this world; the drawn one is unchanged (${error})`;
+    } finally {
+      generate.disabled = false;
+    }
+  }, SWAP_DEBOUNCE_MS);
+
+  /// Every live slider release goes through here. `change` and not `input`: a range input fires
+  /// `change` when the drag ends, which is the event this feature can afford.
+  const liveOn = () => live.checked;
+  function wireLive(input) {
+    input.addEventListener("change", () => { if (liveOn()) runSwap(); });
+  }
+  for (const field of TECTONIC_SLIDERS) wireLive(mountainRows[field].input);
+  for (const field of COAST_SLIDERS) wireLive(coastRows[field].input);
+  wireLive(lakeNodes.input);
+  // The preset buttons move several sliders at once and fire no `change` at all, so they ask for
+  // the swap themselves. A "ranges preset" that changed six readouts and left the planet alone
+  // would look exactly like a broken preset.
+  for (const button of [rangesButton, mountainReset, fractalButton, coastReset]) {
+    button.addEventListener("click", () => { if (liveOn()) runSwap(); });
+  }
+
   const actions = el("div", "wb-actions");
   const generate = el("button", "wb-go", "generate");
   generate.type = "button";
@@ -912,7 +1049,12 @@ function build() {
   missing.append(list);
 
   document.body.append(panel);
-  return { readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote };
+  return {
+    readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
+    /// Repainted once boot has published `window.__wb`, so the water note can state what THIS
+    /// page actually resolved rather than only what the slider asks for.
+    paintWater,
+  };
 }
 
 /// Camera altitude, cursor position and the terrain height under it.
@@ -964,7 +1106,7 @@ function wireReadout(readout) {
 // the note says why, which is honest; a panel that showed plausible relief defaults over a
 // dead engine would be the drift hazard again, wearing a different hat.
 const {
-  readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
+  readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote, paintWater,
 } = build();
 const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
   ? window.__wbBoot
@@ -981,6 +1123,7 @@ booted
     const coast = window.__wb && window.__wb.coast;
     if (coast) wireCoast(coast);
     else coastNote.textContent = "engine unavailable — the coastline cannot be read or set";
+    paintWater();
   })
   .catch((error) => {
     wireReadout(readout);

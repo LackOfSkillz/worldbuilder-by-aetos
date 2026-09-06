@@ -174,6 +174,45 @@ self.onmessage = async (event) => {
       self.postMessage(reply, [buffer]);
       return;
     }
+    // **The live swap's worker half.** Each worker holds its own world in its own linear memory,
+    // so a main-thread swap that did not reach here would leave eight workers filling tiles from
+    // the previous planet -- which is precisely the `stale-worker` fault, arrived at by accident
+    // and looking entirely plausible.
+    //
+    // The engine instance is REUSED: `Engine.load` is the expensive half of `init` (a fetch and a
+    // `WebAssembly.instantiate` per worker) and nothing about it depends on the spec. Rebuilding
+    // is `Surface::new`, measured at 2.2--3.2 ms.
+    //
+    // **The old world is freed after the new one is built, not before.** A refused spec then
+    // leaves this worker able to keep answering with the world it already had, instead of holding
+    // handle 0 and returning NaN at every post. Same ordering, same reason, as
+    // `live-swap.js::WorldSwapper`.
+    //
+    // `stale` is re-applied rather than re-decided: a `stale-worker` fault chosen at boot must
+    // survive a swap, or the fault would quietly heal itself the first time a slider moved.
+    if (message.type === "rebuild") {
+      if (!engine) throw new Error("rebuild before init");
+      const spec = { ...message.spec };
+      if (stale) spec.seed = seedPlusOne(spec.seed);
+      const started = performance.now();
+      const next = engine.newWorld(spec);
+      const previous = world;
+      world = next;
+      if (previous) engine.freeWorld(previous);
+      self.postMessage({
+        type: "rebuilt",
+        id: message.id,
+        index,
+        world,
+        stale,
+        // The engine's own live-world count, read after the free. A worker that leaked a world
+        // per swap shows this climbing, and it is the only place the per-worker figure can be
+        // taken from -- each worker's handle table lives in its own linear memory.
+        worldCount: engine.worldCount(),
+        buildMs: performance.now() - started,
+      });
+      return;
+    }
     if (message.type === "free") {
       if (engine && world) engine.freeWorld(world);
       world = 0;

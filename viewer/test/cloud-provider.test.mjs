@@ -378,10 +378,19 @@ test("the cloud layer is added AFTER the relief layer, or it does nothing", () =
   // would blend the opaque relief layer over them and the whole layer would silently vanish --
   // the same failure shape as the `ElevationRamp` material hiding the relief imagery, which was a
   // real bug in this file.
-  const relief = mainSource.indexOf("addImageryProvider(reliefProvider)");
-  const cloud = mainSource.indexOf("addImageryProvider(cloudProvider)");
+  const relief = mainSource.indexOf("addImageryProvider(installed.reliefProvider)");
+  const cloud = mainSource.indexOf("addImageryProvider(installed.cloudProvider)");
   assert.ok(relief > 0 && cloud > 0, "both layers must be added through addImageryProvider");
   assert.ok(cloud > relief, "the cloud layer must be added after the relief layer, or it is hidden");
+  // **Add-order is no longer sufficient, because the relief layer is now re-added on every live
+  // swap and `addImageryProvider` APPENDS.** On the second install the freshly-added relief layer
+  // would land on top of the cloud deck and hide it completely -- the same silent vanishing this
+  // test was written for, reached by a path that did not exist when it was written. `lowerToBottom`
+  // is what restores the boot-path order after each swap, and it is asserted rather than assumed.
+  assert.match(
+    mainSource, /lowerToBottom\(installed\.reliefLayer\)/,
+    "a swapped-in relief layer must be lowered under the clouds, or it hides them",
+  );
 });
 
 test("the cloud layer is not built when the ramp material would cover it", () => {
@@ -389,7 +398,7 @@ test("the cloud layer is not built when the ramp material would cover it", () =>
   // imagery, so with the ramp painting a cloud layer would be constructed, rasterised in the
   // pool, uploaded -- and invisible. Dead code looks like a feature.
   assert.match(
-    mainSource, /if \(cloudLayerEnabled\(params\) && !paint\)/,
+    mainSource, /if \(cloudLayerEnabled\(params\) && !paint(?: &&[^)]*)?\)/,
     "the cloud layer's construction must be gated on the ramp material not painting",
   );
   assert.ok(

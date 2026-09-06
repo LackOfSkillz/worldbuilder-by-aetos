@@ -452,14 +452,22 @@ test("the boot path resolves the manifest before the provider exists, and can be
   // to the coast channel: there is no DOM and no Cesium here, so what can be checked is that the
   // boot path calls the export, hands the result to the layer that draws it, and skips both under
   // the off switch.
+  //
+  // **The literals moved when the live swap landed**, and the assertions moved with them rather
+  // than being deleted. `main.js`'s world construction is now one `installWorld` that both the
+  // boot path and every slider release go through, so the identifiers are `installed.world` and
+  // `nextState.waterNodes` where they used to be `world` and `waterNodes` -- and the OFF switch is
+  // now a branch on the state's own `waterEnabled` rather than a ternary. Every property this test
+  // was written to hold is unchanged; only the spelling is.
   const main = appFile("main.js");
-  assert.match(main, /engine\.waterRun\(\{ handle: world, nodeCount: waterNodes \}\)/);
-  assert.match(main, /lakes: drawnBodies/, "the manifest never reaches the relief provider");
+  assert.match(main, /engine\.waterRun\(\{\s*handle: installed\.world, nodeCount: nextState\.waterNodes,/);
+  assert.match(main, /lakes: installed\.water\.drawnBodies/,
+    "the manifest never reaches the relief provider");
   // ...and what reaches it is the DILATED manifest, because the raw boxes bound node centres and
   // 38 of this world's 55 bodies have a box of zero measure. `main.js` handing over `water.bodies`
   // would pass every other assertion in this file and draw two thirds of nothing.
   assert.match(
-    main, /dilateBodyExtents\(water\.bodies, waterNodes\)/,
+    main, /dilateBodyExtents\(water\.bodies, nextState\.waterNodes\)/,
     "the boxes reach the provider undilated; the point-box bodies would draw nothing",
   );
   // The diagnostics are deliberately taken on the RAW rows -- they are a statement about the
@@ -469,16 +477,25 @@ test("the boot path resolves the manifest before the provider exists, and can be
     "the diagnostics are counted after the dilation, so they no longer describe the manifest",
   );
   // **Off means NOT RESOLVED, not resolved-and-ignored.** Four seconds of boot spent on an answer
-  // that is then discarded is the shape this line refuses; the ternary is what makes `?lakes=0`
-  // restore the previous boot cost as well as the previous picture.
-  assert.match(main, /lakesOn\s*\?\s*\n?\s*engine\.waterRun/);
-  assert.match(main, /\{ seaLevelM: null, bodies: \[\] \}/);
+  // that is then discarded is the shape this line refuses. Under `?lakes=0` the boot state carries
+  // `waterEnabled: false`, `installWorld`'s `resolveWater` is that flag, and the else-branch
+  // installs an empty manifest without calling the export at all.
+  assert.match(main, /const resolveWater = plan === null \? nextState\.waterEnabled : plan\.resolveWater;/);
+  assert.match(main, /if \(resolveWater\) \{/);
+  assert.match(main, /bodies: \[\], drawnBodies: \[\], facts: waterDiagnostics\(\[\]\)/);
   // And it must be resolved BEFORE the provider is constructed: a manifest that arrived later
-  // would leave Cesium holding cached lake-free textures for whatever the camera saw first.
+  // would leave Cesium holding cached lake-free textures for whatever the camera saw first. This
+  // is now load-bearing on a second path as well -- a live swap re-runs the same ordering, and a
+  // swap that built the relief provider first would cache the previous manifest's tiles forever.
   assert.ok(
     main.indexOf("engine.waterRun(") < main.indexOf("createReliefImageryProvider("),
     "the manifest is resolved after the provider is built; early tiles would cache without lakes",
   );
+  // **The rule the live swap turned into a correctness bar**, asserted where the boot path can see
+  // it: the water solve is re-run whenever the SURFACE moved, not merely when a water knob moved.
+  // `live-swap.js` holds the measurement; this line holds `main.js` to using it rather than
+  // deciding for itself.
+  assert.match(main, /swapPlan/, "installWorld must take its plan from live-swap.js");
 });
 
 // ------------------------------------------------------------------------------------------
