@@ -5,8 +5,11 @@
 //! constants, the `smooth` helper, and the band table that plans the octaves — the noise
 //! sampling and evaluation come in a later task.
 
+use crate::detmath as m;
 use crate::noise::Noise;
 use crate::sphere::SpherePoint;
+use crate::tangent::TangentFrame;
+use crate::vectors::Vec3;
 
 /// The finest ground truth this generator has. Physics sees detail down to here and no
 /// further; there is no finer octave to add without changing what canonical means.
@@ -147,6 +150,174 @@ impl ReliefParams {
     }
 }
 
+/// How far a pivot may be nudged off its lattice node, in cells.
+///
+/// A module constant rather than an eleventh field of [`GullyParams`], because it is not a
+/// dial: it is what stops the pivot lattice reading as a lattice. At zero the kernel is a
+/// regular grid of wave sources and the eye finds the grid immediately; at half a cell the
+/// sources are anywhere in their own cell and the grid is gone. The published kernel this
+/// reimplements uses the same half-cell figure for the same reason, and it is one of the few
+/// of its numbers that is a statement about lattices rather than about its own terrain.
+///
+/// **The jitter moves the PHASE, never the WEIGHT.** A jittered pivot could leave the
+/// eight-corner window, and then the window would truncate a non-zero contribution and the
+/// height field would step along a lattice plane. The weight is therefore taken from the
+/// unjittered node, which is what makes
+/// `the_gully_term_is_continuous_across_a_pivot_cell_boundary` hold exactly rather than
+/// approximately.
+pub const GULLY_PIVOT_JITTER_CELLS: f64 = 0.5;
+
+/// Two turns of a circle, for the plane-wave phase.
+const TAU: f64 = 2.0 * std::f64::consts::PI;
+
+/// The drainage texture: what turns a smooth flank into a branching set of gullies.
+///
+/// **Opt-in, and `None` is canonical -- Ruling 1.** The fifth block of this kind, after
+/// `ReliefParams` here, `TectonicParams`, `CoastParams` and `ClimateParams`; the convention
+/// is theirs and nothing new is invented. [`GullyParams::canonical()`] carries an
+/// `amplitude_m` of exactly zero, and `Detail::gully_offset_m` returns before it can add
+/// anything -- so a world built with `Some(canonical())` is bit-identical to one built with
+/// `None`, held by an early return rather than by trusting `x + 0.0 == x`, which is false
+/// for `x = -0.0`.
+///
+/// # The mechanism, and the one number without which it is a no-op
+///
+/// Stripe direction is the steering gradient **rotated ninety degrees**, so the wave's
+/// phase varies along the contour and its crests run down the fall line: gullies, not
+/// terraces. Stripe frequency scales with slope, which is what makes steep faces finely
+/// dissected and leaves flat ground alone.
+///
+/// The published form leaves that direction vector *unnormalised* and lets the slope itself
+/// set the frequency. **On this generator that is a planet-wide no-op**, and it was measured
+/// before any of this was written rather than discovered in a render:
+/// `.superpowers/sdd/notes/gradient-probe.md` section 3 puts the steepest decile of high
+/// ground at **0.0052 m/m -- 0.30 degrees**, against real mountain flanks at 20-35 degrees,
+/// and `viewer/public/app/relief.js:75` independently records "the steepest texel found
+/// anywhere in the probe set is 1.9 deg". Handed 0.005 where the technique assumes ~0.5,
+/// every cosine of a direction-dot-displacement is the cosine of nearly nothing -- a
+/// constant, everywhere, which is the kernel's documented flat-ground fade applied to the
+/// whole planet.
+///
+/// So [`GullyParams::slope_reference`] exists, and it is a property of this generator rather
+/// than of the technique. See its own doc for the population it was measured on. This
+/// project has shipped a very careful no-op before -- three colour blends in `relief.js` were
+/// dead against this terrain until a slice measured them, and nine of thirty-three palette
+/// colours were unreachable because a noise field's real standard deviation was a fifth of
+/// its nominal one -- which is why the scale is a named, bounded field and not a literal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GullyParams {
+    /// How deep the drainage texture cuts, in metres, at full gate. Zero is off, and off is
+    /// canonical.
+    pub amplitude_m: f64,
+    /// The pivot lattice's pitch in metres -- the spacing of the wave sources, and the
+    /// stripe wavelength at exactly one stripe per cell.
+    pub cell_m: f64,
+    /// **The slope scale.** The steering slope, in m/m, at which the kernel reaches its
+    /// nominal [`stripes_per_cell`](Self::stripes_per_cell) and its full erosion energy.
+    /// Below it the pattern coarsens and fades; above it the frequency keeps rising until
+    /// [`max_stripes_per_cell`](Self::max_stripes_per_cell) caps it.
+    ///
+    /// Measured, not chosen: see `.superpowers/sdd/notes/gully-kernel.md` for the three
+    /// worlds, the population and the quantiles.
+    pub slope_reference: f64,
+    /// Stripes across one cell at exactly the reference slope.
+    pub stripes_per_cell: f64,
+    /// The ceiling on stripes per cell, so that a steep site cannot ask for a wavelength
+    /// finer than the field can carry.
+    pub max_stripes_per_cell: f64,
+    /// The crest-versus-floor asymmetry, as the exponent of the edge-shaping curve. Below
+    /// one it sharpens crests and broadens floors, which is what leaves snow on ridge lines
+    /// instead of blanketing the flank; at exactly one the term is symmetric and the
+    /// asymmetry is off.
+    pub crest_sharpness: f64,
+    /// Where the gate opens, in metres of structural ground.
+    pub gate_elevation_m: f64,
+    /// Over how many metres it opens.
+    pub gate_elevation_span_m: f64,
+    /// The fraction of full energy kept on dead-flat gated ground, so that a valley floor
+    /// inside the gate is quieted rather than switched off, which would put a visible edge
+    /// along a contour.
+    pub flat_energy_floor: f64,
+    /// The steering lattice's spacing **and** its central-differencing step, in metres. Both
+    /// at once on purpose: `gradient-probe.md` section 2.4 measured `grad(structural_m)`'s
+    /// direction invariant to the step to a p95 of 0.02 degrees across a 26x range, so a step
+    /// finer than the lattice buys nothing and costs four `structural_m` calls a node.
+    pub steer_lattice_m: f64,
+}
+
+impl GullyParams {
+    /// The block, switched off. `amplitude_m` is exactly zero and every other field carries
+    /// [`drainage()`](Self::drainage)'s value, so `canonical()` reads as "the drainage
+    /// kernel, not running" rather than as a second set of numbers to keep in step.
+    ///
+    /// **This is the `None` path's exact equivalent and it must stay that way** -- see
+    /// `surface.rs`'s `gully_none_matches_gully_some_canonical_bit_for_bit`.
+    pub fn canonical() -> Self {
+        Self { amplitude_m: 0.0, ..Self::drainage() }
+    }
+
+    /// The measured preset: the drainage texture, on.
+    ///
+    /// Every value here is either measured on this generator or derived from a constant this
+    /// crate already owns. None of them is transcribed from the published kernel, whose own
+    /// constants are calibrated against a display surface two orders of magnitude steeper
+    /// than this one.
+    ///
+    /// - **`slope_reference: 0.005`** m/m (0.286 degrees). Measured over 500,000 spiral
+    ///   points on each of three worlds at a 2 km step. It is the p90 of high ground
+    ///   (>800 m) on the default world (0.005206), the p95 of high ground on the owner's
+    ///   4,500 km world (0.005290), and sits between the p95 and p99 of high ground on the
+    ///   erosion-sweep world (0.003787 / 0.005323). On all three it lies between the p99 of
+    ///   *all* land (0.00375-0.0066) and its maximum. So the steepest tenth of high ground
+    ///   is at or above the reference on the world the viewer draws, and no world in the set
+    ///   is either saturated or dead.
+    /// - **`cell_m: 1000.0`**. The branching V-notches in the reference photographs are a
+    ///   0.5-2 km feature -- `.superpowers/sdd/notes/erosion-architecture-spike.md` section 1
+    ///   is what measured that the stream graph cannot reach them, and it is the whole reason
+    ///   this kernel exists. One kilometre is the middle of that band.
+    /// - **`max_stripes_per_cell: 4.0`**, which is not a taste: `cell_m / 4` is **250 m**,
+    ///   exactly [`CANONICAL_WAVELENGTH_M`]. The cap is set so the finest stripe this kernel
+    ///   can produce anywhere is the generator's own resolution floor -- a stripe below it
+    ///   is a stripe that aliases in every grid, which is the argument `offset_m` already
+    ///   makes for the octaves.
+    /// - **`stripes_per_cell: 1.0`**. One stripe per cell at the reference slope, so the
+    ///   reference wavelength is `cell_m` and the two numbers mean the same thing there.
+    /// - **`gate_elevation_m: 200.0` / `gate_elevation_span_m: 900.0`.** Not new numbers:
+    ///   this is `amplitude_m`'s own `high` curve, `smooth((elevation - 200) / 900)`, which
+    ///   is where this file already draws the line between ordinary land and the tops. A
+    ///   second, differently-calibrated definition of "high" would be two answers to one
+    ///   question.
+    /// - **`flat_energy_floor: 0.25`.** The published kernel keeps half. A quarter is chosen
+    ///   because this generator's flat ground is a much larger share of its gated land than
+    ///   that kernel's is -- the median land slope is 0.0004-0.0008 m/m, a tenth of the
+    ///   reference -- so half would spread a visible texture over ground with no fall line
+    ///   to organise it. It is deliberately not zero: a hard cut-off would draw an edge along
+    ///   a contour line, which is the artefact the smooth gates in this file exist to avoid.
+    /// - **`crest_sharpness: 0.7`.** Below one, so crests sharpen and floors round.
+    /// - **`amplitude_m: 60.0`.** Chosen against a published band rather than for being the
+    ///   largest number that renders: Hammond's landform classification puts hills at
+    ///   80-160 m of local relief over a 2 km run and low mountains at 300 m. Measured on the
+    ///   gated flank population, this amplitude delivers local relief inside the hills band --
+    ///   the same target and the same posture `ReliefParams::hills()` took, and for the same
+    ///   reason: this is texture on a generator whose mountains are tectonic.
+    /// - **`steer_lattice_m: 2000.0`.** `gradient-probe.md` section 1.3's measured
+    ///   recommendation.
+    pub fn drainage() -> Self {
+        Self {
+            amplitude_m: 60.0,
+            cell_m: 1000.0,
+            slope_reference: 0.005,
+            stripes_per_cell: 1.0,
+            max_stripes_per_cell: 4.0,
+            crest_sharpness: 0.7,
+            gate_elevation_m: 200.0,
+            gate_elevation_span_m: 900.0,
+            flat_energy_floor: 0.25,
+            steer_lattice_m: 2_000.0,
+        }
+    }
+}
+
 /// `max(0.0, min(1.0, fraction))` then the smoothstep `x * x * (3.0 - 2.0 * x)`, in the
 /// Python's operand order.
 pub fn smooth(fraction: f64) -> f64 {
@@ -166,11 +337,18 @@ pub struct Band {
 
 /// Roughness, scaled to what is being roughened and to what can be seen.
 pub struct Detail {
-    #[allow(dead_code)]
     radius_m: f64,
     noise: Noise,
     bands: Vec<Band>,
     relief: ReliefParams,
+    /// `None` is the canonical path -- no drainage term at all. See [`GullyParams`].
+    gully: Option<GullyParams>,
+    /// The two pivot-jitter fields. Two rather than one because a pivot needs two
+    /// independent offsets and this crate has exactly one hash; salting it twice is how
+    /// `Noise::new`'s own doc says to get two independent fields from one seed, and is what
+    /// `Continentality` and `Detail` already do to each other.
+    jitter_x: Noise,
+    jitter_y: Noise,
 }
 
 impl Detail {
@@ -179,10 +357,39 @@ impl Detail {
     /// for a caller-chosen block. Resolved once here rather than re-checked on every call,
     /// so `amplitude_m` and `plan` never see the `Option` at all.
     pub fn new(world_seed: u64, radius_m: f64, relief: Option<ReliefParams>) -> Self {
+        Self::with_gully(world_seed, radius_m, relief, None)
+    }
+
+    /// The same roughness, plus an opt-in drainage texture.
+    ///
+    /// `gully`: `None` for today's ground, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen [`GullyParams`]. A second constructor rather than a fourth parameter on
+    /// [`Detail::new`], for the reason `Surface::with_coast` gives for being a second
+    /// constructor: what Ruling 1 requires is a property of the parameter, not of where it
+    /// is spelled, and `new` has call sites that want none of this.
+    pub fn with_gully(
+        world_seed: u64,
+        radius_m: f64,
+        relief: Option<ReliefParams>,
+        gully: Option<GullyParams>,
+    ) -> Self {
         let relief = relief.unwrap_or_else(ReliefParams::canonical);
         let noise = Noise::new(world_seed, 0x5EABED);
         let bands = Self::plan(radius_m, &relief);
-        Self { radius_m, noise, bands, relief }
+        Self {
+            radius_m,
+            noise,
+            bands,
+            relief,
+            gully,
+            jitter_x: Noise::new(world_seed, 0x6011E1),
+            jitter_y: Noise::new(world_seed, 0x6011E2),
+        }
+    }
+
+    /// The drainage block this `Detail` was built with, or `None` for the canonical path.
+    pub fn gully(&self) -> Option<GullyParams> {
+        self.gully
     }
 
     pub fn bands(&self) -> &[Band] {
@@ -326,7 +533,225 @@ impl Detail {
         }
         total * amplitude_m
     }
+
+    /// The drainage texture, in metres, at one point.
+    ///
+    /// Returns exactly `0.0` -- and, more to the point, is never reached at all by
+    /// `Surface::elevation_m` -- on the canonical path. See [`GullyParams`] for why the
+    /// off switch is an early return rather than an addition of zero.
+    ///
+    /// # Arguments
+    ///
+    /// - `frame`: the tangent frame at `point`. Passed in rather than built here because
+    ///   `Surface::elevation_m` already has one and building a second is the same six
+    ///   transcendentals twice.
+    /// - `steer`: `grad(structural_m)` at `point`, in `frame`'s basis, in m/m. From
+    ///   `steer::SteerLattice`, which is where every word about *why* it is the structural
+    ///   gradient lives.
+    /// - `shaped`: the structural, feature-composed ground at `point`. What the gate reads.
+    /// - `resolution_m`: the caller's sample spacing, on the same contract as
+    ///   [`Detail::offset_m`]'s.
+    ///
+    /// # The kernel
+    ///
+    /// A sum of plane waves, one per pivot, over the eight corners of the containing cell of
+    /// a cubic lattice in unit-sphere space -- the same lattice geometry `noise.rs` uses, and
+    /// for its stated reason: a two-dimensional field cannot be wrapped onto a sphere without
+    /// a seam down one meridian and a pinch at each pole.
+    ///
+    /// **The window is exactly the eight corners and that is not an approximation.** The
+    /// weight is `smooth(1 - r)` in lattice units, which is zero for `r >= 1` and has zero
+    /// derivative there. Any lattice node that is *not* a corner of the containing cell
+    /// differs from the query point by at least one whole unit in some coordinate, so it is
+    /// at a distance of at least 1 and its weight is exactly zero. The eight-corner sum is
+    /// therefore the sum over every node with a non-zero weight, and the field is continuous
+    /// everywhere rather than to within a truncated tail. The published kernel this
+    /// reimplements uses a Gaussian over a 4x4 window instead, which leaves a real (if small)
+    /// step at the window edge; a compact, C1 weight costs half the pivots and none of the
+    /// continuity.
+    ///
+    /// **The phase is what makes it drainage.** `dir` is the steering gradient rotated
+    /// ninety degrees and divided by [`GullyParams::slope_reference`], so the phase varies
+    /// along the contour, the crests run down the fall line, and the frequency rises with
+    /// slope until the cap. Divided, not left unnormalised: see [`GullyParams`] for the
+    /// measurement that makes the difference between a texture and a planet-wide constant.
+    ///
+    /// **The asymmetry is what puts snow on ridges.** A symmetric wave blankets a flank
+    /// evenly. Raising the folded signal to a power below one sharpens the crests into
+    /// narrow spines and broadens the floors, so the mean of the term is negative -- the
+    /// kernel carves valleys out of the flank rather than piling ridges on top of it, which
+    /// is also what keeps it from raising the summit it is decorating.
+    pub fn gully_offset_m(
+        &self,
+        point: &SpherePoint,
+        frame: &TangentFrame,
+        steer: (f64, f64),
+        shaped: f64,
+        resolution_m: Option<f64>,
+    ) -> f64 {
+        let gully = match self.gully {
+            Some(gully) => gully,
+            None => return 0.0,
+        };
+        // Ruling 1's hinge: `Some(canonical())` leaves here, having touched nothing.
+        if gully.amplitude_m == 0.0 {
+            return 0.0;
+        }
+
+        // The gate. `smooth` clamps, so a point below the gate elevation gives exactly zero
+        // and a NaN steer gives exactly zero too -- `smooth`'s clamp order sends a NaN to
+        // the upper bound, and the `<= 0.0` tests below are written as they are so a NaN
+        // leaves by the refusing door rather than the accepting one.
+        let land = smooth((shaped - gully.gate_elevation_m) / gully.gate_elevation_span_m);
+        if !(land > 0.0) {
+            return 0.0;
+        }
+        let slope = m::hypot(steer.0, steer.1);
+        let energy = gully.flat_energy_floor
+            + (1.0 - gully.flat_energy_floor) * smooth(slope / gully.slope_reference);
+        let gate = land * energy;
+        if !(gate > 0.0) {
+            return 0.0;
+        }
+
+        // Stripes per cell, scaled by the measured slope reference and capped so the finest
+        // wavelength this kernel can ask for is the generator's own resolution floor.
+        let mut stripes = slope / gully.slope_reference * gully.stripes_per_cell;
+        if stripes > gully.max_stripes_per_cell {
+            stripes = gully.max_stripes_per_cell;
+        }
+
+        // **The caller's sampling caps the frequency too, and the first cut of this got it
+        // wrong in a way the parity corpus caught.**
+        //
+        // The obvious rule -- fade the whole term out once one stripe wavelength is finer
+        // than twice the sample spacing -- deletes the kernel entirely on exactly the ground
+        // it is for: at `resolution_m = 250`, a flank steep enough to ask for 2.7 stripes has
+        // a 270 m wavelength, which is below that floor, so a steep flank rendered at the
+        // scalar exports' own resolution got NOTHING. The corpus's witness assertion refused
+        // to write a corpus in which the drainage block moved the ground by 0 m, which is that
+        // guard doing what it exists for.
+        //
+        // The rule that is actually the module's own is the one `offset_m` uses: **an octave
+        // finer than the sampling is DROPPED, and the ones above it are still drawn.** So a
+        // coarse caller does not lose the gully, it gets a coarser one -- generalised ground
+        // rather than shimmer, which is the sentence `offset_m`'s doc already makes. The
+        // ceiling is `cell_m / (CLEARLY_M * resolution_m)`: the finest stripe that is still
+        // *clearly* representable at the caller's spacing.
+        let ceiling = match resolution_m {
+            Some(r) if r != 0.0 => gully.cell_m / (CLEARLY_M * r),
+            _ => f64::INFINITY,
+        };
+        if stripes > ceiling {
+            stripes = ceiling;
+        }
+        // Negated so a NaN takes this door too, and lands on a frequency of zero rather than
+        // poisoning every phase below. A NaN `resolution_m` leaves `stripes` untouched here
+        // (`stripes > NaN` is false) and gives `visible = 1.0` below, so it behaves exactly
+        // as the canonical path does -- the same equivalence `offset_m`'s doc works through.
+        if !(stripes > 0.0) {
+            stripes = 0.0;
+        }
+
+        // What remains once the stripes have been capped is the pivot lattice itself, at
+        // `cell_m`, and that is what the two-to-four-samples fade is applied to. Below two
+        // samples per cell there is no structure left to draw and the term goes to zero.
+        let visible = match resolution_m {
+            Some(r) if r != 0.0 => smooth((gully.cell_m / r - BARELY_M) / (CLEARLY_M - BARELY_M)),
+            _ => 1.0,
+        };
+        if !(visible > 0.0) {
+            return 0.0;
+        }
+
+        // The stripe direction: the steering gradient rotated ninety degrees, in stripes per
+        // cell. At zero slope `stripes` is zero, so this vanishes continuously and the whole
+        // pattern degenerates to the pivot lattice's own blobs rather than to a discontinuity
+        // in an undefined direction.
+        let (dir_x, dir_y) = if slope > 0.0 {
+            (steer.1 / slope * stripes, -steer.0 / slope * stripes)
+        } else {
+            (0.0, 0.0)
+        };
+
+        let cell = gully.cell_m / self.radius_m;
+        let v = point.vector;
+        let (fx, fy, fz) = (v.x / cell, v.y / cell, v.z / cell);
+        let (bx, by, bz) = (m::floor(fx), m::floor(fy), m::floor(fz));
+        // The same saturation `Noise::at` documents and refuses: `as i64` saturates and the
+        // very next line asks for `+ 1`. Unreachable on any record the C ABI admits, and
+        // guarded anyway, because behind `extern "C"` an overflow is an abort.
+        if !(bx.abs() < GULLY_LATTICE_LIMIT
+            && by.abs() < GULLY_LATTICE_LIMIT
+            && bz.abs() < GULLY_LATTICE_LIMIT)
+        {
+            return 0.0;
+        }
+        let (ix, iy, iz) = (bx as i64, by as i64, bz as i64); // cast-ok: guarded on the line above against the saturation `Noise::at` documents; each is finite and below 9e18
+
+        let mut accumulated = 0.0;
+        let mut weight_total = 0.0;
+        for corner in 0..8u32 {
+            let (sx, sy, sz) = (corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+            let node = (ix + sx as i64, iy + sy as i64, iz + sz as i64); // cast-ok: a 0-or-1 corner selector widened for lattice arithmetic
+            // Distance from the query point to the UNJITTERED node, in lattice units. This
+            // is what decides the weight, and it is why the eight-corner window is exact.
+            let (ox, oy, oz) = (
+                node.0 as f64 - fx, // cast-ok: a lattice coordinate to a float; bounded by GULLY_LATTICE_LIMIT above, far below 2^53
+                node.1 as f64 - fy, // cast-ok: as above
+                node.2 as f64 - fz, // cast-ok: as above
+            );
+            let weight = smooth(1.0 - m::sqrt(ox * ox + oy * oy + oz * oz));
+            if !(weight > 0.0) {
+                continue;
+            }
+            // The pivot's displacement from the query point, projected onto the query
+            // point's own tangent plane and measured in cells. Projected rather than
+            // walked along a geodesic: a pivot is at most one cell away, and over a
+            // kilometre on a planet of thousands the two differ by less than a millimetre,
+            // for four transcendentals a pivot.
+            let pivot = Vec3::new(
+                node.0 as f64 * cell, // cast-ok: as above
+                node.1 as f64 * cell, // cast-ok: as above
+                node.2 as f64 * cell, // cast-ok: as above
+            );
+            let offset = pivot.sub(&v);
+            let along = offset.dot(&frame.east) / cell
+                + (self.jitter_x.lattice_at(node.0, node.1, node.2) - 0.5)
+                    * GULLY_PIVOT_JITTER_CELLS;
+            let across = offset.dot(&frame.north) / cell
+                + (self.jitter_y.lattice_at(node.0, node.1, node.2) - 0.5)
+                    * GULLY_PIVOT_JITTER_CELLS;
+            accumulated += weight * m::cos(TAU * (along * dir_x + across * dir_y));
+            weight_total += weight;
+        }
+        // The nearest corner of a containing cell is at most sqrt(3)/2 lattice units away,
+        // so at least one weight is always positive and this cannot divide by zero. Guarded
+        // rather than argued, because a NaN here would reach a height.
+        if !(weight_total > 0.0) {
+            return 0.0;
+        }
+        let signal = accumulated / weight_total;
+
+        // Crest against floor. `folded` is 0 at a crest and 1 at a floor; an exponent below
+        // one pushes the bulk of the field towards the floor, so crests survive as narrow
+        // spines and the mean of the term is negative.
+        let mut folded = (1.0 - signal) * 0.5;
+        if !(folded > 0.0) {
+            folded = 0.0;
+        }
+        if folded > 1.0 {
+            folded = 1.0;
+        }
+        let shaped_signal = 1.0 - 2.0 * m::powf(folded, gully.crest_sharpness);
+
+        gully.amplitude_m * gate * visible * shaped_signal
+    }
 }
+
+/// The largest pivot-lattice coordinate this kernel will name, mirroring `noise.rs`'s
+/// `LATTICE_LIMIT` and drawn at the same round number for the same reason.
+const GULLY_LATTICE_LIMIT: f64 = 9.0e18;
 
 #[cfg(test)]
 mod tests {
@@ -376,6 +801,176 @@ mod tests {
     // point will do for these tests.
     fn anywhere() -> SpherePoint {
         SpherePoint::from_latlon(0.0, 0.0)
+    }
+
+
+    /// **The assertion this whole slice turns on, and it is written as a comparison because
+    /// an absolute would not fail.**
+    ///
+    /// The published kernel leaves its direction vector unnormalised, so stripe frequency is
+    /// the slope itself. This generator's steepest flanks are 0.005 m/m -- about a hundredth
+    /// of what that assumes -- so handing the kernel the raw slope makes every cosine the
+    /// cosine of nearly nothing, and the term becomes a constant multiple of the gate: a very
+    /// careful no-op, planet-wide.
+    ///
+    /// This walks 5 km across a flank at a slope this generator actually produces, once with
+    /// the measured `slope_reference` and once at `1.0` -- which is the unnormalised form,
+    /// spelled as a parameter. The scaled kernel must vary by a large fraction of its
+    /// amplitude; the unscaled one must be flat.
+    ///
+    /// **Proved red by mutation**: setting `slope_reference` in `drainage()` to `1.0` turns
+    /// this red on the first assertion, and only this one -- which is the point, because it
+    /// is the mutation that produces a render nobody can tell from a broken build.
+    #[test]
+    fn the_slope_scale_is_what_stops_the_kernel_being_a_constant() {
+        let spread_at = |reference: f64| -> f64 {
+            let detail = Detail::with_gully(
+                20260831,
+                EARTH_RADIUS_M,
+                None,
+                Some(GullyParams { slope_reference: reference, ..GullyParams::drainage() }),
+            );
+            let origin = SpherePoint::from_latlon(24.0, 71.0);
+            let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+            // 0.005 m/m: the steepest decile of high ground on the default world, measured.
+            let steer = (0.005, 0.0);
+            let mut low = f64::INFINITY;
+            let mut high = f64::NEG_INFINITY;
+            for step in 0..100 {
+                // cast-ok: a loop counter to a float for a distance in metres
+                let point = frame.local_to_sphere(step as f64 * 50.0, 0.0);
+                let value = detail.gully_offset_m(&point, &frame, steer, 1_200.0, None);
+                if value < low {
+                    low = value;
+                }
+                if value > high {
+                    high = value;
+                }
+            }
+            high - low
+        };
+        let scaled = spread_at(GullyParams::drainage().slope_reference);
+        let unscaled = spread_at(1.0);
+        assert!(
+            scaled > 20.0,
+            "at the measured slope reference the kernel must vary by a large fraction of its \
+             60 m amplitude across a flank; spread was {scaled} m"
+        );
+        assert!(
+            unscaled < 0.5,
+            "the unnormalised form is the no-op this slice exists to avoid and must be shown \
+             to be one; spread was {unscaled} m"
+        );
+        assert!(
+            scaled > 40.0 * unscaled,
+            "the scaled kernel must be at least a factor of forty livelier than the \
+             unnormalised one; {scaled} against {unscaled}"
+        );
+    }
+
+    /// The eight-corner pivot window is exact rather than truncated, so the term is continuous
+    /// everywhere -- including exactly on a lattice plane, which is where a truncated window
+    /// would leave a step and the eye would read a cliff.
+    ///
+    /// **Proved red by mutation**: taking the weight from the JITTERED displacement instead of
+    /// the unjittered node -- which is what the published kernel does -- turns this red.
+    #[test]
+    fn the_gully_term_is_continuous_across_a_pivot_cell_boundary() {
+        let detail =
+            Detail::with_gully(20260831, EARTH_RADIUS_M, None, Some(GullyParams::drainage()));
+        let origin = SpherePoint::from_latlon(-13.0, 155.0);
+        let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+        let steer = (0.004, 0.002);
+        let mut previous: Option<f64> = None;
+        let mut worst: f64 = 0.0;
+        // Half-metre steps over 3 km: several 1,000 m pivot cells, sampled two thousand times
+        // finer than the cell, so any step at a cell face is far larger than the smooth
+        // variation either side of it.
+        for step in 0..6_000 {
+            // cast-ok: a loop counter to a float for a distance in metres
+            let point = frame.local_to_sphere(step as f64 * 0.5, 0.0);
+            let value = detail.gully_offset_m(&point, &frame, steer, 1_200.0, None);
+            if let Some(before) = previous {
+                let jump = (value - before).abs();
+                if jump > worst {
+                    worst = jump;
+                }
+            }
+            previous = Some(value);
+        }
+        assert!(
+            worst < 0.5,
+            "a half-metre step must never move a 60 m amplitude term by half a metre; worst \
+             jump {worst} m"
+        );
+    }
+
+    /// `canonical()` is off, and off means the function returns before it computes anything --
+    /// not that it computes zero. Ruling 1's hinge at this level; `surface.rs` holds the same
+    /// claim over the whole pipeline.
+    #[test]
+    fn the_canonical_gully_block_is_exactly_off() {
+        let detail =
+            Detail::with_gully(20260831, EARTH_RADIUS_M, None, Some(GullyParams::canonical()));
+        let origin = SpherePoint::from_latlon(7.0, -33.0);
+        let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+        for step in 0..50 {
+            // cast-ok: a loop counter to a float for a distance in metres
+            let point = frame.local_to_sphere(step as f64 * 137.0, 0.0);
+            let value = detail.gully_offset_m(&point, &frame, (0.01, -0.004), 1_500.0, None);
+            assert_eq!(value.to_bits(), 0.0f64.to_bits(), "canonical must be exactly +0.0");
+        }
+        assert_eq!(GullyParams::canonical().amplitude_m, 0.0);
+        // Every other field is `drainage()`'s, so there is one set of numbers and not two.
+        assert_eq!(
+            GullyParams { amplitude_m: GullyParams::drainage().amplitude_m, ..GullyParams::canonical() },
+            GullyParams::drainage()
+        );
+    }
+
+    /// The crest-versus-floor asymmetry is what puts snow on ridge lines rather than
+    /// blanketing a flank, and it is a property of `crest_sharpness` being below one. At
+    /// exactly one the kernel is symmetric and its mean is nearly zero; below one the mean
+    /// must be negative, because the term carves valleys rather than piling ridges.
+    ///
+    /// Measured on the flank population (see `.superpowers/sdd/notes/gully-kernel.md` section
+    /// 5): mean -20.4 / -10.8 / -4.8 / +0.3 m at 0.5 / 0.7 / 0.85 / 1.0.
+    ///
+    /// **Proved red by mutation**: `crest_sharpness: 1.0` in `drainage()` turns this red.
+    #[test]
+    fn the_crest_asymmetry_carves_rather_than_blankets() {
+        let mean_at = |sharpness: f64| -> f64 {
+            let detail = Detail::with_gully(
+                20260831,
+                EARTH_RADIUS_M,
+                None,
+                Some(GullyParams { crest_sharpness: sharpness, ..GullyParams::drainage() }),
+            );
+            let origin = SpherePoint::from_latlon(41.0, -119.0);
+            let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+            let mut total = 0.0;
+            let mut count = 0.0;
+            for row in 0..40 {
+                for column in 0..40 {
+                    // cast-ok: loop counters to floats for distances in metres
+                    let point =
+                        frame.local_to_sphere(column as f64 * 97.0, row as f64 * 97.0);
+                    total += detail.gully_offset_m(&point, &frame, (0.005, 0.0), 1_200.0, None);
+                    count += 1.0;
+                }
+            }
+            total / count
+        };
+        let symmetric = mean_at(1.0);
+        let sharpened = mean_at(GullyParams::drainage().crest_sharpness);
+        assert!(
+            symmetric.abs() < 2.0,
+            "at an exponent of one the term must be near-symmetric; mean {symmetric} m"
+        );
+        assert!(
+            sharpened < -4.0,
+            "the shipped exponent must carve: mean {sharpened} m against a 60 m amplitude"
+        );
     }
 
     #[test]

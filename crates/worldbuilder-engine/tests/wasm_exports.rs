@@ -901,24 +901,26 @@ fn the_surface_is_built_once_per_world_and_never_per_sample() {
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    // **The constructor is `Surface::with_coast` and not `Surface::new`, and BOTH halves are
-    // asserted.** Task 6 moved the one call when the coast channel opened -- `new` delegates to
-    // `with_coast` with a `None`, so the canonical path is the same code either way and the
-    // widest door is the only one that reaches the constructor. Counting only `with_coast` would
-    // let a second, `new`-shaped build reappear beside it without this noticing; counting both is
+    // **The constructor is `Surface::with_gully`, and EVERY name is asserted.** The one call
+    // has now moved twice -- to `with_coast` when the coast channel opened, and to `with_gully`
+    // when the gully channel did. Each time the previous widest door delegates to the new one
+    // with a `None`, so the canonical path is the same code either way and the widest door is
+    // the only one that reaches the constructor. Counting only the current name would let a
+    // second, older-shaped build reappear beside it without this noticing; counting all three is
     // the property this test actually means, which is that `wasm.rs` builds a `Surface` exactly
     // once, anywhere, by any name.
-    let builds = code.matches("Surface::with_coast").count();
-    let legacy = code.matches("Surface::new").count();
+    let builds = code.matches("Surface::with_gully").count();
+    let legacy =
+        code.matches("Surface::with_coast").count() + code.matches("Surface::new").count();
     assert_eq!(
         builds, 1,
         "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs ~10^3x"
     );
     assert_eq!(legacy, 0, "a second Surface constructor appeared beside the one in build_world");
-    let before = &code[..code.find("Surface::with_coast").expect("one build")];
+    let before = &code[..code.find("Surface::with_gully").expect("one build")];
     assert!(
         before.contains("fn wb_world_new"),
-        "the one Surface::with_coast is not inside the wb_world_new family"
+        "the one Surface::with_gully is not inside the wb_world_new family"
     );
 }
 
@@ -4296,4 +4298,431 @@ fn a_nan_in_the_coastal_term_surfaces_as_a_nan_instead_of_drowning_the_world() {
         let elevation = ordinary.elevation_m(&point, Some(RES_M));
         assert!(elevation.is_finite(), "the canonical world is not finite at {lat},{lon}");
     }
+}
+
+// ---------------------------------------------------------------- the gully channel
+//
+// The fifth block channel, and the first that ADDS a term to `elevation_m`. Everything below
+// is the coast channel's shape: a preset read across the boundary rather than transcribed, a
+// per-field ladder over the documented domain and past both ends of it, a checker held to the
+// constructor over the identical population, and a CROSS-PRODUCT sweep -- because this
+// project has already had one abort that was reachable only through the product of three
+// individually-admissible fields while a one-field-at-a-time sweep stayed green.
+
+/// Where the gully gate is open on the fixture world, so the sweep exercises the kernel
+/// rather than an early return.
+///
+/// **A scatter over a planet does not land on a flank.** These are the sites the steepest
+/// decile of high ground actually occupies on `SEED` at 12 plates -- printed by a throwaway
+/// that walked 400,000 spiral points and rounded to a quarter degree, with the rounded site's
+/// own `structural_m` re-checked so each literal is the value the test will meet. Every one is
+/// far above `GullyParams::drainage()`'s 200 m gate, so a record that reaches the kernel is
+/// evaluated by it. The last three are deliberately NOT gated -- open ocean, the harbour, and
+/// the equator -- because a validator that only ever saw open-gate ground would not exercise
+/// the shut-gate early return at all.
+const GULLY_PROBES: &[(f64, f64)] = &[
+    (-9.00, 65.25),  // structural 1,256 m, 2 km slope 0.01602
+    (-8.75, 64.75),  // 1,260 m, 0.01555
+    (-8.50, 64.50),  // 1,366 m, 0.01376
+    (-8.75, 65.00),  // 1,482 m, 0.01356
+    (-9.00, 65.75),  // 1,351 m, 0.01327
+    (-8.75, 65.50),  // 1,685 m, 0.01143
+    (-8.25, 64.50),  // 1,585 m, 0.00928
+    (-9.25, 66.00),  // 1,059 m, 0.00915
+    (0.0, 0.0),
+    (12.0, 34.0),
+    (-18.25, 121.5), // the harbour
+];
+
+/// A named preset, read across the boundary exactly as a host reads it. **Nothing in this file
+/// writes a gully value down** -- above all not `slope_reference`, the one number in the record
+/// that is a measurement of this generator rather than a preference.
+fn gully_preset_record(selector: u32) -> [f64; WB_GULLY_STRIDE] {
+    let mut record = [0.0; WB_GULLY_STRIDE];
+    let status = wb_gully_preset(selector, record.as_mut_ptr(), WB_GULLY_STRIDE as u32);
+    assert_eq!(status, WB_OK, "gully preset {selector} must be readable");
+    record
+}
+
+fn world_with_gully(record: &[f64; WB_GULLY_STRIDE]) -> u32 {
+    wb_world_new_gully(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        record.as_ptr(),
+        WB_GULLY_STRIDE as u32,
+    )
+}
+
+/// Build the world a gully record asks for, walk every probe point, and free it.
+///
+/// **This is where an abort would happen, and that is the point of calling it.**
+/// `Surface::with_gully` merely stores the block and builds a lattice; it is `elevation_m`
+/// that reads it, once per sample. A constructor that returned a handle has proved nothing
+/// about the record it was given -- the lattice index, the pivot window, the cosine's argument
+/// and `powf`'s exponent are all reached here and nowhere earlier.
+fn sample_gully(record: &[f64; WB_GULLY_STRIDE], label: &str) {
+    let handle = world_with_gully(record);
+    assert_ne!(handle, 0, "accepted record refused by the constructor: {label} {record:?}");
+    for (lat, lon) in GULLY_PROBES {
+        for resolution in [RES_M, 76.35, 5_000.0] {
+            let height = wb_elevation_m(handle, *lat, *lon, resolution);
+            assert!(
+                height.is_finite(),
+                "accepted record produced a non-finite elevation at ({lat}, {lon}) at \
+                 resolution {resolution}: {label} {record:?}",
+            );
+        }
+        // The gully term must not have reached `structural_m`: it is detail, and detail is
+        // defined as the thing structure does not see. A record that moved this would be a
+        // term that had escaped its layer.
+        let structural = wb_structural_m(handle, *lat, *lon);
+        assert!(
+            structural.is_finite(),
+            "accepted record gave a non-finite structural at ({lat}, {lon}): {label} {record:?}",
+        );
+    }
+    assert_eq!(wb_world_free(handle), WB_OK);
+}
+
+/// The documented domain of each gully field, by its index in `WB_GULLY_STRIDE`'s order.
+/// Written as the constants rather than as numbers: a test that restates a bound cannot
+/// notice it moving.
+fn gully_field_domain(field: usize) -> (f64, f64) {
+    match field {
+        0 => (0.0, WB_MAX_GULLY_AMPLITUDE_M),
+        1 => (WB_MIN_GULLY_LENGTH_M, WB_MAX_GULLY_LENGTH_M),
+        2 => (WB_MIN_GULLY_SLOPE_REFERENCE, WB_MAX_GULLY_SLOPE_REFERENCE),
+        3 => (0.0, WB_MAX_GULLY_STRIPES),
+        4 => (0.0, WB_MAX_GULLY_STRIPES),
+        5 => (WB_MIN_GULLY_SHARPNESS, WB_MAX_GULLY_SHARPNESS),
+        6 => (-WB_MAX_GULLY_GATE_ELEVATION_M, WB_MAX_GULLY_GATE_ELEVATION_M),
+        7 => (WB_MIN_GULLY_GATE_SPAN_M, WB_MAX_GULLY_GATE_SPAN_M),
+        8 => (0.0, 1.0),
+        9 => (WB_MIN_GULLY_LENGTH_M, WB_MAX_GULLY_LENGTH_M),
+        _ => unreachable!("WB_GULLY_STRIDE is 10"),
+    }
+}
+
+/// Every value one gully field is driven through: `HOSTILE` in full, both documented bounds
+/// and the values immediately either side of each, and a ladder across the admissible
+/// interval -- geometric where the domain spans orders of magnitude and linear where it does
+/// not. Same construction as `coast_field_sweep`, and for the same stated reason: **every
+/// hazard this project has found was a band, not a cliff.**
+fn gully_field_sweep(field: usize) -> Vec<f64> {
+    let (low, high) = gully_field_domain(field);
+    let mut values: Vec<f64> = HOSTILE.to_vec();
+    for bound in [low, high] {
+        values.extend_from_slice(&[
+            bound,
+            bound - bound.abs() * 1.0e-12,
+            bound + bound.abs() * 1.0e-12,
+            bound * 0.5,
+            bound * 2.0,
+            -bound,
+        ]);
+    }
+    let steps = 24;
+    let geometric = low > 0.0 && high / low >= 1.0e3;
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        values.push(if geometric { low * (high / low).powf(t) } else { low + (high - low) * t });
+    }
+    values
+}
+
+/// The two bases every gully field is swept around.
+///
+/// **One base is not a sweep of this channel**, and the reason is the sharpest of the four
+/// channels: `GullyParams::canonical()` carries `amplitude_m = 0.0`, and both
+/// `Surface::with_gully` (which then builds no lattice) and `Detail::gully_offset_m` branch on
+/// exactly that before anything else is read. Around canonical, **nine of the ten fields are
+/// swept with the code that reads them switched off**. Around `drainage()` every one is live.
+///
+/// The canonical base is kept anyway: it is the base a host reaches by moving the amplitude
+/// slider off zero, and the validator is exercised there even where the kernel is not.
+fn gully_sweep_bases() -> [(&'static str, [f64; WB_GULLY_STRIDE]); 2] {
+    [
+        ("canonical", gully_preset_record(WB_GULLY_CANONICAL)),
+        ("drainage", gully_preset_record(WB_GULLY_DRAINAGE)),
+    ]
+}
+
+fn swept_gully_records() -> Vec<(String, [f64; WB_GULLY_STRIDE])> {
+    let mut out = Vec::new();
+    for (base_name, base) in gully_sweep_bases() {
+        for field in 0..WB_GULLY_STRIDE {
+            for value in gully_field_sweep(field) {
+                let mut record = base;
+                record[field] = value;
+                out.push((format!("{base_name} + gully field {field} = {value:e}"), record));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_gully_field_swept_across_its_whole_range_and_beyond_never_aborts() {
+    let records = swept_gully_records();
+    // A sweep that refused everything would pass a "nothing aborted" assertion trivially, and
+    // one that accepted everything would prove the validator absent. Both counts are asserted.
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for (label, record) in &records {
+        if wb_gully_check(record.as_ptr(), WB_GULLY_STRIDE as u32) == WB_OK {
+            sample_gully(record, label);
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert_eq!(accepted + refused, records.len());
+    assert!(
+        accepted >= 100,
+        "only {accepted} records were accepted; the sweep is not exercising the engine",
+    );
+    assert!(
+        refused >= 100,
+        "only {refused} records were refused; the validator is not doing its job",
+    );
+}
+
+#[test]
+fn the_gully_checker_and_the_constructor_agree_on_every_swept_record() {
+    // Two validators would be two chances to disagree, and the disagreement that matters is
+    // "the checker said yes and the constructor aborted".
+    for (label, record) in swept_gully_records() {
+        let status = wb_gully_check(record.as_ptr(), WB_GULLY_STRIDE as u32);
+        let handle = world_with_gully(&record);
+        if status == WB_OK {
+            assert_ne!(handle, 0, "checker accepted, constructor refused: {label}");
+            assert_eq!(wb_world_free(handle), WB_OK);
+        } else {
+            assert_eq!(
+                status, WB_ERR_PARAM,
+                "a well-formed buffer refused for a buffer reason: {label}",
+            );
+            assert_eq!(handle, 0, "checker refused, constructor built: {label}");
+        }
+    }
+}
+
+#[test]
+fn a_non_positive_crest_sharpness_would_return_an_infinite_height_and_is_refused() {
+    // **The one bound on this channel that closes a hazard rather than stating a domain, and
+    // the mechanism is written out because a test that only checked the refusal would not say
+    // why the refusal matters.**
+    //
+    // The edge shaping is `1 - 2 * folded^crest_sharpness`, and `folded` is EXACTLY zero at a
+    // crest. `0^s` is `+inf` for every negative `s`, so one negative f64 in word 5 turns every
+    // gully crest in the world into an infinite height -- across a nounwind boundary, into a
+    // host's vertex buffer, as a plausible-looking f64 that is not one.
+    //
+    // The refusal is asserted here; the arithmetic behind it is demonstrated directly below,
+    // on the engine side where the exponent can still be applied, so this test cannot become a
+    // tautology if the hazard ever stops being one.
+    let base = gully_preset_record(WB_GULLY_DRAINAGE);
+    for hostile in [-0.5, -1.0, 0.0, -0.0, -f64::MIN_POSITIVE, f64::NAN, f64::NEG_INFINITY] {
+        let mut record = base;
+        record[5] = hostile;
+        assert_eq!(
+            wb_gully_check(record.as_ptr(), WB_GULLY_STRIDE as u32),
+            WB_ERR_PARAM,
+            "a crest sharpness of {hostile} must be refused",
+        );
+        assert_eq!(world_with_gully(&record), 0, "and the constructor must refuse it too");
+    }
+    // The hazard, demonstrated: at a crest the folded signal is zero, and zero to a negative
+    // power is an infinity. This is arithmetic rather than a claim about the kernel, and it is
+    // what the bound above is protecting a host from.
+    assert!(worldbuilder_engine::detmath::powf(0.0, -0.5).is_infinite());
+    assert!(worldbuilder_engine::detmath::powf(0.0, WB_MIN_GULLY_SHARPNESS).is_finite());
+}
+
+#[test]
+fn the_lattice_lengths_are_swept_as_a_cross_product_because_the_index_is_a_quotient() {
+    // **A one-field-at-a-time sweep is blind to a product by construction**, and this file
+    // already carries one abort that was reachable only that way: `WB_MAX_COAST_FINEST_FREQUENCY`
+    // exists because three individually-admissible coastal fields compounded past `Noise::at`'s
+    // `i64` lattice index.
+    //
+    // This channel has the same shape twice over. Both `cell_m` and `steer_lattice_m` become a
+    // lattice index as `radius / length`, and `slope_reference` sets how large the phase that
+    // index feeds can get. So the three are swept TOGETHER, at both ends of each and at the
+    // interior values between them, and every accepted combination is sampled on gated ground
+    // where all three are live. 7 x 7 x 6 = 294 records.
+    let base = gully_preset_record(WB_GULLY_DRAINAGE);
+    let lengths = [
+        WB_MIN_GULLY_LENGTH_M,
+        WB_MIN_GULLY_LENGTH_M * 10.0,
+        250.0,
+        1_000.0,
+        100_000.0,
+        WB_MAX_GULLY_LENGTH_M * 0.5,
+        WB_MAX_GULLY_LENGTH_M,
+    ];
+    let references = [
+        WB_MIN_GULLY_SLOPE_REFERENCE,
+        1.0e-6,
+        1.0e-3,
+        0.005,
+        1.0,
+        WB_MAX_GULLY_SLOPE_REFERENCE,
+    ];
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    let mut records = 0usize;
+    for cell in lengths {
+        for steer in lengths {
+            for reference in references {
+                let mut record = base;
+                record[1] = cell;
+                record[2] = reference;
+                record[9] = steer;
+                records += 1;
+                let label =
+                    format!("cell {cell:e} x steer {steer:e} x reference {reference:e}");
+                if wb_gully_check(record.as_ptr(), WB_GULLY_STRIDE as u32) == WB_OK {
+                    sample_gully(&record, &label);
+                    accepted += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(records, 7 * 7 * 6, "the cross product changed size");
+    assert_eq!(accepted + refused, records);
+    // Every one of these combinations is inside every per-field domain, so all of them are
+    // expected to be accepted -- and every one of them is then SAMPLED, which is where an
+    // abort would happen. The assertion is that none did, and the count says how many.
+    assert_eq!(accepted, records, "{refused} combinations were refused; each is in-domain");
+}
+
+#[test]
+fn the_gully_sweep_is_the_size_it_claims_to_be() {
+    // The size and shape of the gully sweep, stated as a number rather than left implicit: a
+    // threshold assertion says nothing about how far above the threshold the run actually was,
+    // and a sweep that quietly halved would still pass at 101.
+    let records = swept_gully_records();
+    let mut accepted = 0usize;
+    for (_, record) in &records {
+        if wb_gully_check(record.as_ptr(), WB_GULLY_STRIDE as u32) == WB_OK {
+            accepted += 1;
+        }
+    }
+    // 2 bases x 10 fields x (20 hostile + 2 bounds x 6 + 25 ladder rungs) = 2 x 10 x 57.
+    assert_eq!(records.len(), 2 * 10 * 57, "the sweep changed size");
+    assert_eq!(records.len(), 1_140, "and the arithmetic above says 1,140");
+    assert_eq!(
+        accepted, GULLY_SWEEP_ACCEPTED,
+        "the accepted/refused split moved: {accepted} of {}",
+        records.len()
+    );
+}
+
+/// The accepted half of the gully sweep, pinned. Re-derived on this host by running the sweep.
+const GULLY_SWEEP_ACCEPTED: usize = 738;
+
+#[test]
+fn the_gully_preset_is_the_engines_own_numbers_and_the_canonical_one_is_off() {
+    // Ruling 7 of the relief slice, for the fifth channel: a host asks the engine for a preset
+    // and never restates a measured constant. The two selectors differ in exactly one word --
+    // the amplitude -- which is what `GullyParams::canonical()` means.
+    let canonical = gully_preset_record(WB_GULLY_CANONICAL);
+    let drainage = gully_preset_record(WB_GULLY_DRAINAGE);
+    assert_eq!(canonical[0], 0.0, "canonical is the kernel switched off");
+    assert!(drainage[0] > 0.0, "drainage is the kernel switched on");
+    for word in 1..WB_GULLY_STRIDE {
+        assert_eq!(
+            canonical[word].to_bits(),
+            drainage[word].to_bits(),
+            "the two presets must differ in the amplitude alone; word {word} differs"
+        );
+    }
+    // A selector this build does not know is refused rather than answered with a default.
+    let mut out = [0.0; WB_GULLY_STRIDE];
+    assert_eq!(wb_gully_preset(2, out.as_mut_ptr(), WB_GULLY_STRIDE as u32), WB_ERR_PARAM);
+    assert_eq!(wb_gully_preset(WB_GULLY_DRAINAGE, out.as_mut_ptr(), 9), WB_ERR_BUFFER);
+    assert_eq!(wb_gully_preset(WB_GULLY_DRAINAGE, core::ptr::null_mut(), WB_GULLY_STRIDE as u32), WB_ERR_BUFFER);
+}
+
+#[test]
+fn the_fifth_door_carries_all_four_earlier_blocks_and_the_canonical_pair_is_still_canonical() {
+    // The gully door is the widest, so it is the one that must still answer exactly what
+    // `wb_world_new` answers when every block is the canonical null/zero pair. Ruling 1, held
+    // at the boundary rather than inside.
+    let plain = wb_world_new(SEED, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    let widest = wb_world_new_gully(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+    );
+    assert_ne!(plain, 0);
+    assert_ne!(widest, 0);
+    let mut compared = 0u32;
+    for (lat, lon) in GULLY_PROBES {
+        for resolution in [RES_M, 76.35] {
+            let a = wb_elevation_m(plain, *lat, *lon, resolution);
+            let b = wb_elevation_m(widest, *lat, *lon, resolution);
+            assert_eq!(a.to_bits(), b.to_bits(), "the canonical pair moved at ({lat}, {lon})");
+            compared += 1;
+        }
+        assert_eq!(
+            wb_structural_m(plain, *lat, *lon).to_bits(),
+            wb_structural_m(widest, *lat, *lon).to_bits(),
+        );
+    }
+    assert_eq!(compared, (GULLY_PROBES.len() as u32) * 2);
+    // A non-canonical gully record through the same door must move the ground, or the
+    // comparison above is comparing a parameter nothing reads.
+    let drainage = gully_preset_record(WB_GULLY_DRAINAGE);
+    let gullied = world_with_gully(&drainage);
+    assert_ne!(gullied, 0);
+    let mut moved = 0u32;
+    for (lat, lon) in GULLY_PROBES {
+        if wb_elevation_m(plain, *lat, *lon, 76.35).to_bits()
+            != wb_elevation_m(gullied, *lat, *lon, 76.35).to_bits()
+        {
+            moved += 1;
+        }
+    }
+    assert!(moved >= 8, "only {moved} of the gated probes moved under drainage()");
+    assert_eq!(wb_world_free(plain), WB_OK);
+    assert_eq!(wb_world_free(widest), WB_OK);
+    assert_eq!(wb_world_free(gullied), WB_OK);
+}
+
+#[test]
+fn a_wrongly_sized_or_misaligned_gully_buffer_is_refused_rather_than_read() {
+    let record = gully_preset_record(WB_GULLY_DRAINAGE);
+    // A non-null pointer with a zero length is a host that computed a length wrong, not a host
+    // asking for canonical.
+    assert_eq!(wb_gully_check(record.as_ptr(), 0), WB_ERR_BUFFER);
+    assert_eq!(wb_gully_check(core::ptr::null(), 1), WB_ERR_BUFFER);
+    assert_eq!(wb_gully_check(record.as_ptr(), 9), WB_ERR_BUFFER);
+    assert_eq!(wb_gully_check(record.as_ptr(), 11), WB_ERR_BUFFER);
+    // The canonical pair.
+    assert_eq!(wb_gully_check(core::ptr::null(), 0), WB_OK);
 }

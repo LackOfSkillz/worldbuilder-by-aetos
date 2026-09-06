@@ -94,7 +94,7 @@ use std::alloc::Layout;
 use std::cell::RefCell;
 
 use crate::continentality::CoastParams;
-use crate::detail::ReliefParams;
+use crate::detail::{GullyParams, ReliefParams};
 use crate::erosion::{erode_to_convergence, receiver_distances_m, ErosionParams, ErosionRun};
 use crate::features::Feature;
 use crate::features::{CARVE, RAISE, SHAPE};
@@ -895,6 +895,121 @@ pub const WB_MAX_WORLD_RADIUS_M: f64 = 1.0e9;
 /// payload (`wb_bottom_at`) and an f32 tile without the host having to think about it.
 const WB_ALIGN: usize = 8;
 
+// -------------------------------------------------------------------- the gully channel
+//
+// The fifth block of this kind, and the first that ADDS A TERM to `elevation_m` rather than
+// changing one that was already there. Same shape as the four above it: a flat f64 record in
+// linear memory, decoded through a raw pointer, bounds-checked field by field, refused entire
+// if any one field is outside its documented domain. It is a fifth instance of one convention
+// and not a fifth convention.
+
+/// f64 words per gully record, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `amplitude_m` |
+/// | 1 | `cell_m` |
+/// | 2 | `slope_reference` |
+/// | 3 | `stripes_per_cell` |
+/// | 4 | `max_stripes_per_cell` |
+/// | 5 | `crest_sharpness` |
+/// | 6 | `gate_elevation_m` |
+/// | 7 | `gate_elevation_span_m` |
+/// | 8 | `flat_energy_floor` |
+/// | 9 | `steer_lattice_m` |
+///
+/// That is `GullyParams`'s own declaration order, and [`wb_gully_preset`] writes it in exactly
+/// this order so a host never transcribes a preset's numbers.
+pub const WB_GULLY_STRIDE: usize = 10;
+
+/// [`wb_gully_preset`] selector: `GullyParams::canonical()` -- the drainage kernel switched
+/// off, and the `None` path's exact equivalent.
+pub const WB_GULLY_CANONICAL: u32 = 0;
+/// [`wb_gully_preset`] selector: `GullyParams::drainage()`, the measured preset.
+pub const WB_GULLY_DRAINAGE: u32 = 1;
+
+/// The ceiling on `amplitude_m`. The floor is `0.0` and `0.0` is the off switch, exactly as
+/// it is for the five relief amplitudes: `Detail::gully_offset_m` returns before it can add
+/// anything, so a negative amplitude would be a field that looks configured and inverts the
+/// term -- the silently-dropping-builder shape this file refuses elsewhere. Set to
+/// [`WB_MAX_RELIEF_AMPLITUDE_M`]'s value because it is the same kind of quantity: metres of
+/// vertical displacement.
+pub const WB_MAX_GULLY_AMPLITUDE_M: f64 = WB_MAX_RELIEF_AMPLITUDE_M;
+
+/// The floor and ceiling on `cell_m` and on `steer_lattice_m`, the two lengths in this
+/// record. Both are divisors of the planet's radius on their way to a lattice index, and
+/// both therefore have the same failure at zero: `radius / 0` is an infinity, `floor(inf)`
+/// is an infinity, and `as i64` saturates onto the `+ 1` that `Noise::at`'s own guard
+/// documents as an abort behind a nounwind boundary.
+///
+/// **Both are guarded twice**, and deliberately: this pair refuses the record at the door,
+/// and `Detail::gully_offset_m` and `SteerLattice::at` each re-check the resulting lattice
+/// index against 9e18 and answer a flat, zero term rather than indexing. First line and
+/// second line, the same posture `WB_MAX_COAST_GAIN` takes beside
+/// `Continentality::elevation_from_above`'s NaN guard. With this floor at one metre and
+/// [`WB_MAX_WORLD_RADIUS_M`] at 1e9, the largest index either lattice can be asked for is
+/// 1e9 -- nine orders below the guard.
+pub const WB_MIN_GULLY_LENGTH_M: f64 = 1.0;
+/// See [`WB_MIN_GULLY_LENGTH_M`]. Set to [`WB_MAX_RELIEF_WAVELENGTH_M`]'s value for the same
+/// reason that one was: a length larger than the largest admissible planet is a caller
+/// mistake.
+pub const WB_MAX_GULLY_LENGTH_M: f64 = WB_MAX_RELIEF_WAVELENGTH_M;
+
+/// The floor and ceiling on `slope_reference`, which is a divisor of a slope and is the one
+/// field in this record whose value was measured rather than chosen (`GullyParams::drainage`
+/// carries the population). Zero does not abort -- the quotient is an infinity or a NaN, and
+/// every downstream comparison is written negated so a NaN leaves by the refusing door -- so
+/// this pair is a domain statement rather than a closed hazard. The floor is far below any
+/// slope this or any plausible generator produces; the ceiling is a slope of 1,000 m/m, which
+/// is 89.94 degrees.
+pub const WB_MIN_GULLY_SLOPE_REFERENCE: f64 = 1.0e-9;
+/// See [`WB_MIN_GULLY_SLOPE_REFERENCE`].
+pub const WB_MAX_GULLY_SLOPE_REFERENCE: f64 = 1.0e3;
+
+/// The ceiling on `stripes_per_cell` and on `max_stripes_per_cell`; the floor on both is
+/// `0.0`, at which the kernel degenerates to the pivot lattice's own blobs rather than
+/// misbehaving.
+///
+/// **This is a bound on a PHASE, not on a loop.** The kernel has no loop a host can lengthen
+/// -- the pivot window is always the eight corners of one cell -- so an unbounded frequency
+/// is not a hung tab. What it is instead is a cosine of an argument large enough that its
+/// argument reduction carries no information: at 1e3 stripes per cell the phase is at most
+/// about 1e4 radians, where `detmath::cos` is still exact to the last few bits, and past
+/// about 1e16 it would be a deterministic function of nothing in particular. A thousand
+/// stripes across a cell is already 250 times finer than the finest the measured preset asks
+/// for, so nothing this refuses is anything a caller could want.
+pub const WB_MAX_GULLY_STRIPES: f64 = 1.0e3;
+
+/// The floor and ceiling on `crest_sharpness`, **and this floor closes a real hazard rather
+/// than stating a domain.**
+///
+/// The edge shaping is `1 - 2 * folded^crest_sharpness`, with `folded` in `[0, 1]` and
+/// **exactly `0` at a crest**. At a non-positive exponent `0^s` is `+inf` (or `1` at exactly
+/// zero), so a single negative f64 in word 5 turns every crest in the world into an infinite
+/// height, which crosses this boundary as a non-finite elevation and into a host's vertex
+/// buffer. Measured on this host: `wb_elevation_m` with `crest_sharpness = -0.5` returns
+/// `-inf` on gated ground. A NaN or an infinity in a height is the plausible-value failure
+/// this crate has now found several times, one level worse.
+///
+/// The ceiling is a domain statement: at 100 the term is a flat floor with needle crests, and
+/// nothing above it is a different shape.
+pub const WB_MIN_GULLY_SHARPNESS: f64 = 1.0e-3;
+/// See [`WB_MIN_GULLY_SHARPNESS`].
+pub const WB_MAX_GULLY_SHARPNESS: f64 = 1.0e2;
+
+/// The magnitude bound on `gate_elevation_m`, which is signed because a caller may legitimately
+/// want the gate open below datum. Same magnitude as the amplitude ceiling, and for the same
+/// reason: it is metres of ground.
+pub const WB_MAX_GULLY_GATE_ELEVATION_M: f64 = WB_MAX_RELIEF_AMPLITUDE_M;
+
+/// The floor and ceiling on `gate_elevation_span_m`, which is a divisor. Zero does not abort
+/// -- `smooth` clamps an infinity and a NaN alike to `1.0`, which `detail.rs` documents -- so
+/// this pair is a domain statement. Set to [`WB_MIN_QUIETING_SCALE_M`]'s and
+/// [`WB_MAX_QUIETING_SCALE_M`]'s values, which are the same kind of quantity in the same file.
+pub const WB_MIN_GULLY_GATE_SPAN_M: f64 = WB_MIN_QUIETING_SCALE_M;
+/// See [`WB_MIN_GULLY_GATE_SPAN_M`].
+pub const WB_MAX_GULLY_GATE_SPAN_M: f64 = WB_MAX_QUIETING_SCALE_M;
+
 /// **The export list, declared.** A native test run cannot see the artifact's export
 /// section, and a forgotten no-mangle attribute is invisible in a build that exits 0 -- so
 /// this list is checked against this file's own source by a test, and the built `.wasm` is
@@ -913,6 +1028,9 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_world_new_coast",
     "wb_coast_preset",
     "wb_coast_check",
+    "wb_world_new_gully",
+    "wb_gully_preset",
+    "wb_gully_check",
     "wb_world_free",
     "wb_world_count",
     "wb_elevation_m",
@@ -1729,6 +1847,150 @@ fn coast_preset_by_selector(preset: u32) -> Option<CoastParams> {
     }
 }
 
+
+// ------------------------------------------------------- the gully channel, decoded
+
+/// Whether a gully block is one this boundary will let reach `Surface::with_gully`.
+///
+/// Every bound is documented on its own constant, and the one that closes a hazard rather
+/// than stating a domain is [`WB_MIN_GULLY_SHARPNESS`] -- a non-positive exponent turns every
+/// crest into an infinite height. **Nothing here clamps**: a record is admitted as the host
+/// wrote it or refused entire.
+fn gully_is_admissible(gully: &GullyParams) -> bool {
+    fn within(value: f64, low: f64, high: f64) -> bool {
+        // Negated comparisons so a NaN leaves by the refusing door.
+        value.is_finite() && value >= low && value <= high
+    }
+    if !within(gully.amplitude_m, 0.0, WB_MAX_GULLY_AMPLITUDE_M) {
+        return false;
+    }
+    for length in [gully.cell_m, gully.steer_lattice_m] {
+        if !within(length, WB_MIN_GULLY_LENGTH_M, WB_MAX_GULLY_LENGTH_M) {
+            return false;
+        }
+    }
+    if !within(gully.slope_reference, WB_MIN_GULLY_SLOPE_REFERENCE, WB_MAX_GULLY_SLOPE_REFERENCE) {
+        return false;
+    }
+    for stripes in [gully.stripes_per_cell, gully.max_stripes_per_cell] {
+        if !within(stripes, 0.0, WB_MAX_GULLY_STRIPES) {
+            return false;
+        }
+    }
+    if !within(gully.crest_sharpness, WB_MIN_GULLY_SHARPNESS, WB_MAX_GULLY_SHARPNESS) {
+        return false;
+    }
+    if !within(
+        gully.gate_elevation_m,
+        -WB_MAX_GULLY_GATE_ELEVATION_M,
+        WB_MAX_GULLY_GATE_ELEVATION_M,
+    ) {
+        return false;
+    }
+    if !within(gully.gate_elevation_span_m, WB_MIN_GULLY_GATE_SPAN_M, WB_MAX_GULLY_GATE_SPAN_M) {
+        return false;
+    }
+    if !within(gully.flat_energy_floor, 0.0, 1.0) {
+        return false;
+    }
+    true
+}
+
+/// One gully record, decoded and validated, or `None` if this channel refuses it.
+fn decode_gully(record: &[f64]) -> Option<GullyParams> {
+    let fields = <[f64; WB_GULLY_STRIDE]>::try_from(record).ok()?;
+    let gully = GullyParams {
+        amplitude_m: fields[0],
+        cell_m: fields[1],
+        slope_reference: fields[2],
+        stripes_per_cell: fields[3],
+        max_stripes_per_cell: fields[4],
+        crest_sharpness: fields[5],
+        gate_elevation_m: fields[6],
+        gate_elevation_span_m: fields[7],
+        flat_energy_floor: fields[8],
+        steer_lattice_m: fields[9],
+    };
+    if gully_is_admissible(&gully) {
+        Some(gully)
+    } else {
+        None
+    }
+}
+
+/// The inverse of [`decode_gully`]'s field order, in one place so the two cannot drift.
+fn encode_gully(gully: &GullyParams) -> [f64; WB_GULLY_STRIDE] {
+    [
+        gully.amplitude_m,
+        gully.cell_m,
+        gully.slope_reference,
+        gully.stripes_per_cell,
+        gully.max_stripes_per_cell,
+        gully.crest_sharpness,
+        gully.gate_elevation_m,
+        gully.gate_elevation_span_m,
+        gully.flat_energy_floor,
+        gully.steer_lattice_m,
+    ]
+}
+
+/// What a host's `(gully_ptr, gully_len)` pair means. Three outcomes, kept as a type for the
+/// same reason [`ReliefArg`] is.
+enum GullyArg {
+    /// A null pointer with a length of zero: the canonical path, `None`, byte-for-byte
+    /// today's world -- **and here that means no steering lattice is built at all**, which is
+    /// what makes Ruling 1 hold structurally rather than by an addition of zero. See
+    /// `Surface`'s `steer` field.
+    Canonical,
+    Chosen(GullyParams),
+    Refused(u32),
+}
+
+/// Read a gully argument out of linear memory.
+///
+/// # Safety
+/// If `gully_len` is non-zero, `gully_ptr` must be a live, 8-aligned allocation of at least
+/// `gully_len` f64.
+unsafe fn read_gully(gully_ptr: *const f64, gully_len: u32) -> GullyArg {
+    if gully_len == 0 {
+        return if gully_ptr.is_null() {
+            GullyArg::Canonical
+        } else {
+            GullyArg::Refused(WB_ERR_BUFFER)
+        };
+    }
+    if gully_ptr.is_null() {
+        return GullyArg::Refused(WB_ERR_BUFFER);
+    }
+    let address = gully_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return GullyArg::Refused(WB_ERR_BUFFER);
+    }
+    let words = match usize::try_from(gully_len) {
+        Ok(words) if words == WB_GULLY_STRIDE => words,
+        _ => return GullyArg::Refused(WB_ERR_BUFFER),
+    };
+    let record = core::slice::from_raw_parts(gully_ptr, words);
+    match decode_gully(record) {
+        Some(gully) => GullyArg::Chosen(gully),
+        None => GullyArg::Refused(WB_ERR_PARAM),
+    }
+}
+
+/// The gully preset a selector names, or `None` for one this build does not know.
+///
+/// **The only place `GullyParams::canonical()`'s and `drainage()`'s values are read.** Ruling
+/// 7 of the relief slice, for the fifth channel: no host restates a measured constant.
+fn gully_preset_by_selector(preset: u32) -> Option<GullyParams> {
+    if preset == WB_GULLY_CANONICAL {
+        Some(GullyParams::canonical())
+    } else if preset == WB_GULLY_DRAINAGE {
+        Some(GullyParams::drainage())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------------- the exports
 
 /// The generator's identity, per VERSION-001. Not the package version and never derived
@@ -1843,6 +2105,9 @@ pub extern "C" fn wb_world_new(
             // `None` -- today's coastline, byte-for-byte, unchanged by the coast channel Task
             // 6 added beside this export as a fourth door.
             None,
+            // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
         )
     }
 }
@@ -1901,6 +2166,9 @@ pub extern "C" fn wb_world_new_relief(
             relief,
             None,
             // `None` -- today's coastline. Its arity is frozen for the reason above.
+            None,
+            // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
             None,
         )
     }
@@ -1975,6 +2243,9 @@ pub extern "C" fn wb_world_new_tectonic(
             tectonics,
             // `None` -- today's coastline, exactly what this export did before the coast
             // channel existed. Its arity is frozen for the same reason the two above it are.
+            None,
+            // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
             None,
         )
     }
@@ -2063,6 +2334,9 @@ pub extern "C" fn wb_world_new_coast(
             relief,
             tectonics,
             coast,
+            // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
         )
     }
 }
@@ -2124,6 +2398,151 @@ pub extern "C" fn wb_coast_check(coast_ptr: *const f64, coast_len: u32) -> u32 {
     match unsafe { read_coast(coast_ptr, coast_len) } {
         CoastArg::Canonical | CoastArg::Chosen(_) => WB_OK,
         CoastArg::Refused(status) => status,
+    }
+}
+
+
+/// Build a world with a caller-chosen relief block, tectonic block, coast block **and** gully
+/// block, or **0** if it refused.
+///
+/// Exactly [`wb_world_new_coast`] plus a gully record, and every one of that function's
+/// domains -- and the three doors before it -- still applies unchanged.
+///
+/// # Why a fifth door rather than a wider fourth one
+///
+/// The same reason the fourth gives for not widening the third: `wb_world_new_coast` already
+/// ships in a committed `.wasm` that the parity harness compares against, and widening its
+/// arity would break every existing caller for a parameter most of them never want. All five
+/// doors are one `build_world` behind the boundary, so there is one `Surface::with_gully` call
+/// in this file and not five.
+///
+/// # The gully argument
+///
+/// - **`gully_ptr` null with `gully_len == 0` is the canonical path** -- `None`, not
+///   `Some(canonical())`. Ruling 1, held at the door. This channel is the one where that
+///   distinction has teeth: `None` builds no steering lattice, so the canonical world does not
+///   merely add zero, it does not evaluate the term at all.
+/// - Otherwise `gully_len` must be exactly [`WB_GULLY_STRIDE`] and `gully_ptr` a live,
+///   8-aligned buffer of that many f64 in the order that constant documents. Every field is
+///   bounded, and **a single field outside its domain refuses the whole call.**
+///
+/// **One of those bounds is not politeness.** [`WB_MIN_GULLY_SHARPNESS`] refuses an exponent
+/// at or below zero, which would raise the crest of every gully in the world to an infinite
+/// height and hand a host a non-finite vertex.
+///
+/// A host that wants to know *why* a record was refused calls [`wb_gully_check`] on the same
+/// buffer.
+///
+/// # Safety
+/// The feature-, relief-, tectonic- and coast-channel safety requirements of
+/// [`wb_world_new_coast`] apply unchanged. If `gully_len` is non-zero, `gully_ptr` must be a
+/// live, 8-aligned allocation of at least `gully_len` f64.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn wb_world_new_gully(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+    coast_ptr: *const f64,
+    coast_len: u32,
+    gully_ptr: *const f64,
+    gully_len: u32,
+) -> u32 {
+    let relief = match unsafe { read_relief(relief_ptr, relief_len) } {
+        ReliefArg::Canonical => None,
+        ReliefArg::Chosen(relief) => Some(relief),
+        ReliefArg::Refused(_) => return 0,
+    };
+    let tectonics = match unsafe { read_tectonic(tectonic_ptr, tectonic_len) } {
+        TectonicArg::Canonical => None,
+        TectonicArg::Chosen(tectonics) => Some(tectonics),
+        TectonicArg::Refused(_) => return 0,
+    };
+    let coast = match unsafe { read_coast(coast_ptr, coast_len) } {
+        CoastArg::Canonical => None,
+        CoastArg::Chosen(coast) => Some(coast),
+        CoastArg::Refused(_) => return 0,
+    };
+    let gully = match unsafe { read_gully(gully_ptr, gully_len) } {
+        GullyArg::Canonical => None,
+        GullyArg::Chosen(gully) => Some(gully),
+        GullyArg::Refused(_) => return 0,
+    };
+    unsafe {
+        build_world(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features_ptr,
+            feature_count,
+            relief,
+            tectonics,
+            coast,
+            gully,
+        )
+    }
+}
+
+/// Write a named gully preset's ten f64 into a caller buffer, in [`WB_GULLY_STRIDE`]'s order.
+///
+/// `WB_OK`, or `WB_ERR_PARAM` for a selector this build does not know, or `WB_ERR_BUFFER` for
+/// a null, misaligned, or wrongly-sized buffer. The selectors are [`WB_GULLY_CANONICAL`] and
+/// [`WB_GULLY_DRAINAGE`].
+///
+/// **This export exists so no host ever transcribes the slope scale.** It is the one number in
+/// this record that is a measurement of this generator rather than a preference, and a second
+/// copy of it in a panel would be a second answer to "how steep is steep here".
+///
+/// # Safety
+/// `out_ptr` must be a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_gully_preset(preset: u32, out_ptr: *mut f64, out_len: u32) -> u32 {
+    let gully = match gully_preset_by_selector(preset) {
+        Some(gully) => gully,
+        None => return WB_ERR_PARAM,
+    };
+    if out_ptr.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(words) if words == WB_GULLY_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    let values = encode_gully(&gully);
+    for (offset, value) in values.into_iter().enumerate() {
+        unsafe { out_ptr.add(offset).write(value) };
+    }
+    WB_OK
+}
+
+/// Ask whether a gully record would be accepted, **without building a world**.
+///
+/// `WB_OK` for a record [`wb_world_new_gully`] would take (including the canonical null/zero
+/// pair), `WB_ERR_BUFFER` for an unusable buffer, `WB_ERR_PARAM` for a field outside its
+/// documented domain. Same contract as [`wb_coast_check`], and held to the constructor by
+/// `the_gully_checker_and_the_constructor_agree_on_every_swept_record` so this cannot drift
+/// into a second, laxer validator.
+///
+/// # Safety
+/// If `gully_len` is non-zero, `gully_ptr` must be a live, 8-aligned allocation of at least
+/// `gully_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_gully_check(gully_ptr: *const f64, gully_len: u32) -> u32 {
+    match unsafe { read_gully(gully_ptr, gully_len) } {
+        GullyArg::Canonical | GullyArg::Chosen(_) => WB_OK,
+        GullyArg::Refused(status) => status,
     }
 }
 
@@ -2267,6 +2686,7 @@ unsafe fn build_world(
     relief: Option<ReliefParams>,
     tectonics: Option<TectonicParams>,
     coast: Option<CoastParams>,
+    gully: Option<GullyParams>,
 ) -> u32 {
     if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
         return 0;
@@ -2311,13 +2731,14 @@ unsafe fn build_world(
         Some(FeatureInput::Loose(decoded))
     };
 
-    // All THREE blocks arrive already validated -- `read_relief`, `read_tectonic` and
-    // `read_coast` refuse at the boundary, so nothing outside any documented domain reaches
-    // here. `None` is the canonical path for each, and is what `wb_world_new` always passes for
-    // all three. `with_coast` rather than `new` so this file still holds exactly ONE `Surface`
-    // constructor call behind four doors; `new` delegates to `with_coast` with `None`, so the
-    // canonical path is the same code either way.
-    let surface = Surface::with_coast(
+    // All FOUR blocks arrive already validated -- `read_relief`, `read_tectonic`,
+    // `read_coast` and `read_gully` refuse at the boundary, so nothing outside any documented
+    // domain reaches here. `None` is the canonical path for each, and is what `wb_world_new`
+    // always passes for all four. `with_gully` rather than `new` so this file still holds
+    // exactly ONE `Surface` constructor call behind five doors; `new` delegates to
+    // `with_coast`, which delegates to `with_gully` with `None`, so the canonical path is the
+    // same code either way.
+    let surface = Surface::with_gully(
         world_seed,
         radius_m,
         plates,
@@ -2326,6 +2747,7 @@ unsafe fn build_world(
         relief,
         tectonics,
         coast,
+        gully,
     );
     insert_world(World::new(surface))
 }

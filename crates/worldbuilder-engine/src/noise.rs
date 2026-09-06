@@ -69,6 +69,9 @@ impl Noise {
     /// An integer avalanche rather than a cryptographic digest. A real digest would be just
     /// as deterministic and about thirty times slower, and this is called eight times per
     /// octave per sample.
+    ///
+    /// Exposed to the crate as [`Noise::lattice_at`] for the gully kernel's pivot jitter,
+    /// which wants one deterministic number per lattice node and not an interpolated field.
     fn lattice(&self, ix: i64, iy: i64, iz: i64) -> f64 {
         let h = (ix as u64).wrapping_mul(0x9E3779B97F4A7C15)  // cast-ok: convert signed lattice coordinate to unsigned for hash
             ^ (iy as u64).wrapping_mul(0xC2B2AE3D27D4EB4F)   // cast-ok: convert signed lattice coordinate to unsigned for hash
@@ -80,6 +83,16 @@ impl Noise {
         h = h.wrapping_mul(0xC4CEB9FE1A85EC53);
         h ^= h >> 33;
         h as f64 / SCALE
+    }
+
+    /// One lattice node's hash, in `[0, 1)`, without any interpolation.
+    ///
+    /// `Noise::at` blends eight of these; the gully kernel wants the raw value at a named
+    /// node, because its pivots ARE lattice nodes and what it needs from each is a fixed
+    /// per-node jitter rather than a field. Same function, same seed mixing, same bits --
+    /// there is deliberately no second hash in this crate.
+    pub(crate) fn lattice_at(&self, ix: i64, iy: i64, iz: i64) -> f64 {
+        self.lattice(ix, iy, iz)
     }
 
     /// Trilinear between the eight surrounding lattice values, with each fraction put

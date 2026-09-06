@@ -6,7 +6,7 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
@@ -81,13 +81,13 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude] [--no-provenance]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude'];
+const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude', 'gully-steer'];
 if (mutate !== null && !MUTATIONS.includes(mutate)) {
   console.error(`unknown mutation "${mutate}"; the controls are ${MUTATIONS.map((m) => `--mutate ${m}`).join(', ')}`);
   process.exit(2);
@@ -188,6 +188,12 @@ let tectonicControl = null;
 // is a rubber stamp, so the number is made on the other side of the boundary and checked here.
 let coastAmplitude = null;
 let coastControl = null;
+// `GSTEER` carries the value `--mutate gully-steer` writes into word 9 of every `worldg`
+// block, and `GCTL` carries the per-group prediction it must produce. Both are read out of
+// the corpus rather than written here, for the reason `TWARP`/`TCTL` are.
+let gullySteer = null;
+let gullyControl = null;
+
 let compared = 0;
 let divergent = 0;
 const samples = [];
@@ -671,6 +677,118 @@ for (const raw of lines) {
       };
       break;
     }
+    case 'GP': {
+      // GP <selector> <status> <ten f64 hex>
+      //
+      // `wb_gully_preset` itself, field by field, at both selectors. Same argument as the `P`
+      // (relief) and `CP` (coast) preset records: this export exists so that no host ever
+      // transcribes a preset, and on this channel the preset carries `slope_reference` -- the
+      // one number in the record that is a MEASUREMENT of this generator rather than a
+      // preference. A second copy of it in a panel would be a second answer to "how steep is
+      // steep here". So "both sides read the same ten f64" is the whole of this export's
+      // value and therefore the thing a parity harness has most business checking.
+      //
+      // A world seed cannot move these, so this group sits at zero under `--mutate seed`.
+      const selector = Number(f[1]);
+      const out = wb.wb_alloc(10 * 8);
+      if (out === 0) throw new Error('wb_alloc refused the gully preset buffer');
+      const status = wb.wb_gully_preset(selector, out, 10);
+      const view = mem();
+      group = `gpreset/${selector}`;
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`gully preset status ${selector}`, f[2], String(status));
+      for (let k = 0; k < 10; k += 1) {
+        const got = bitsOf(view.getFloat64(out + k * 8, true));
+        tally(got === f[3 + k]);
+        if (got !== f[3 + k]) note(`gully preset ${selector}[${k}]`, f[3 + k], got);
+      }
+      wb.wb_dealloc(out, 10 * 8);
+      break;
+    }
+    case 'GC': {
+      // GC <name> <status> <ten f64 hex>
+      //
+      // `wb_gully_check`, the export that answers *why* a record was refused. Only the status
+      // is compared, because the status is all it produces -- but a status is exactly where
+      // the two sides could part company, and one of these six records is the crest-height
+      // infinity that `WB_MIN_GULLY_SHARPNESS` exists to refuse. Three accepted and three
+      // refused, asserted on the native side, so a checker stuck at either answer cannot pass.
+      const record = f.slice(3);
+      if (record.length !== 10) throw new Error('a gully record must be ten f64');
+      const ptr = wb.wb_alloc(10 * 8);
+      if (ptr === 0) throw new Error('wb_alloc refused the gully check buffer');
+      const view = mem();
+      record.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      const status = wb.wb_gully_check(ptr, 10);
+      group = 'gcheck';
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`gully check ${f[1]}`, f[2], String(status));
+      wb.wb_dealloc(ptr, 10 * 8);
+      break;
+    }
+    case 'GSTEER': {
+      // GSTEER <steer_lattice_m_hex>
+      //
+      // The control's value for `steer_lattice_m`, carried rather than written here so the one
+      // number the mutation substitutes comes from the corpus like every other input. It
+      // arrives BEFORE the `worldg` records because that is where it is used; the prediction it
+      // belongs to is `GCTL`, which cannot be written until the corpus has been sampled. Not a
+      // compared value.
+      gullySteer = f64of(f[1]);
+      break;
+    }
+    case 'worldg': {
+      // worldg <name> <seed> <radius_hex> <plates> <land_hex> <ten gully f64 hex>
+      //
+      // A world through `wb_world_new_gully`, carrying a NON-canonical block --
+      // `GullyParams::drainage()`, the measured preset. Two records name the same
+      // configuration under two names so the scattered points and the flank points tally
+      // separately: that is what lets the control's own output say the flank moved and the
+      // rest of the planet did not.
+      //
+      // `--mutate gully-steer` rewrites word 9, `steer_lattice_m`, and nothing else.
+      const [, name, seedText, radiusHex, platesText, landHex] = f;
+      const seed = BigInt(seedText) + (mutate === 'seed' ? 1n : 0n);
+      const block = f.slice(6);
+      if (block.length !== 10) throw new Error('a gully record must be ten f64');
+      const ptr = wb.wb_alloc(10 * 8);
+      if (ptr === 0) throw new Error('wb_alloc refused the gully buffer');
+      const view = mem();
+      block.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      if (mutate === 'gully-steer') {
+        if (gullySteer === null) throw new Error('--mutate gully-steer needs a GSTEER record');
+        view.setFloat64(ptr + 9 * 8, gullySteer, true);
+      }
+      const handle = wb.wb_world_new_gully(
+        seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0, 0, 0, 0, 0, 0, 0, ptr, 10);
+      if (handle === 0) throw new Error(`gully world ${name} did not build in wasm`);
+      wb.wb_dealloc(ptr, 10 * 8);
+      worlds.set(name, handle);
+      break;
+    }
+    case 'GCTL': {
+      // GCTL <elevation/drainage> <structural/drainage> <elevation/flank> <structural/flank>
+      //      <tile/flank>
+      //
+      // Prediction, not a compared value. The five counts are computed natively in
+      // `examples/parity_dump.rs` -- through the exports AND, as a second derivation, through
+      // the library's own `Surface` with a block read from `detail.rs` rather than from the ten
+      // words that crossed the boundary -- and this script requires every one of these groups
+      // to move exactly the predicted amount and every other group to move zero.
+      //
+      // **Two of the five predictions are ZERO on purpose.** The gully term is detail, and
+      // `structural_m` is the signal its steering lattice reads. A structural value that moved
+      // under this control would mean the term had escaped its layer and was steering on
+      // itself.
+      gullyControl = {
+        'elevation/drainage': Number(f[1]),
+        'structural/drainage': Number(f[2]),
+        'elevation/flank': Number(f[3]),
+        'structural/flank': Number(f[4]),
+        'tile/flank': Number(f[5]),
+      };
+      break;
+    }
     case 'version': {
       const got = String(wb.wb_generator_version());
       group = 'version';
@@ -771,6 +889,48 @@ if (mutate) {
       `control OK: ${named} moved, exactly as the native side predicted, and every other ` +
       'group -- both tectonic presets, the checker, and every world without a tectonic ' +
       'block -- moved nothing at all');
+    process.exit(0);
+  }
+  // THE GULLY CONTROL CHECKS ITS OWN PREDICTION TOO, group by group, and the groups it
+  // requires to stay EQUAL are the informative half -- more so here than on any other channel.
+  // `steer_lattice_m` is one word of a world's gully block: it cannot reach `wb_gully_preset`
+  // (which hands back `detail.rs`'s own constants), it cannot reach `wb_gully_check` (whose
+  // records this mutation does not touch), it cannot reach any world built without a gully
+  // block, and -- the claim worth making -- **it cannot reach `structural_m` at all**, because
+  // the gully term is detail and `structural_m` is the signal its lattice reads. Two of the
+  // five predictions are therefore zero, and they are assertions rather than absences.
+  if (mutate === 'gully-steer') {
+    if (gullyControl === null) {
+      console.error('FAIL: --mutate gully-steer ran with no GCTL record in the corpus');
+      process.exit(1);
+    }
+    let bad = false;
+    for (const [name, g] of groups) {
+      const expected = gullyControl[name] ?? 0;
+      if (g.divergent !== expected) {
+        console.error(
+          `FAIL: group ${name} moved ${g.divergent} values; the native side predicted ${expected}`);
+        bad = true;
+      }
+    }
+    if (bad) {
+      console.error('  The gully control moves the steering lattice and touches nothing else.');
+      console.error('  It reaches the drainage displacement of a world built from a gully');
+      console.error('  block, and nothing else in this corpus -- not the presets, not the');
+      console.error('  checker, not a world without a block, and above all not structural_m,');
+      console.error('  which is the field the lattice READS. A count other than the prediction');
+      console.error('  means either the two sides decode the block differently or that the');
+      console.error('  term has escaped detail, and either is a finding rather than a');
+      console.error('  tolerance to widen.');
+      process.exit(1);
+    }
+    const named = Object.entries(gullyControl)
+      .map(([name, n]) => `${name} ${n}/${groups.get(name)?.compared ?? '?'}`)
+      .join(', ');
+    console.log(
+      `control OK: ${named} moved, exactly as the native side predicted, and every other ` +
+      'group -- both gully presets, the checker, every world without a gully block, and ' +
+      'every structural value anywhere -- moved nothing at all');
     process.exit(0);
   }
   // THE COAST CONTROL CHECKS ITS OWN PREDICTION TOO, group by group, and the groups it

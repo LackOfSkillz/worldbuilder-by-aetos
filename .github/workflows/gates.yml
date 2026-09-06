@@ -734,25 +734,102 @@ jobs:
           # `assert_counts.py cargo-list` AFTER the last source edit; the `4991055` baseline
           # (577/577/579/664/666, 5 ignored, 14 binaries) was re-derived the same way BEFORE
           # the first edit and `gates.yml` was CORRECT at it.
+          # THE GULLY SLICE (2026-09-06) takes these to 608/608/610/703/705, 5 ignored.
+          # `assert_counts.py` still reports FOURTEEN test binaries -- no new one was added.
+          #
+          # WHAT IT IS. The owner compared this generator's mountains to satellite photographs:
+          # they want dendritic V-notched valleys branching down the flanks with snow following
+          # the ridge lines. That is drainage, and two spikes cleared the ground for it. The
+          # erosion-architecture spike measured the stream graph at **661x too coarse** to carry
+          # a 0.5-2 km valley (2-8 billion nodes and 148 GB to reach one) and recommended a
+          # point-evaluable displacement term instead. The gradient probe then said GO with a
+          # redirect: steer on `grad(structural_m)`, never `grad(elevation_m)`.
+          #
+          # THE ONE NUMBER WITHOUT WHICH THIS WOULD HAVE BEEN A VERY CAREFUL NO-OP. The
+          # published kernel leaves its direction vector unnormalised so stripe frequency IS the
+          # slope, which assumes a slope of order 0.5 m/m. **This generator's steepest-decile
+          # flanks are 0.005 m/m -- 0.29 degrees, about a hundredth of that** -- so the raw form
+          # produces `cos(~0)`, a constant multiple of the gate, planet-wide. `slope_reference`
+          # is measured rather than chosen: 500,000 spiral points on each of three worlds
+          # (DEFAULT_WORLD, the owner's 4,500 km planet, and the erosion sweep's), at a 2 km
+          # step, put 0.005 at the p90/p95 of high ground on all three and between the p99 of
+          # all land and its maximum. This project has shipped a careful no-op before -- three
+          # colour blends in `relief.js` were dead against this terrain until a slice measured
+          # them -- so the scale is asserted, not just documented: one test walks a flank at the
+          # measured reference and again at 1.0, which IS the unnormalised form spelled as a
+          # parameter, and requires the second to be flat.
+          #
+          # THE STEERING LATTICE IS SPHERICAL AND ITS ERROR IS MEASURED. The gradient probe
+          # priced a TANGENT-PLANE lattice and said the spherical case was unmeasured. What
+          # ships is a cubic lattice in unit-sphere space -- `noise.rs`'s geometry, for
+          # `noise.rs`'s stated reason -- rather than the lat/lon lattice that probe floated,
+          # because a constant longitude step makes a fixed-size tile cross 570x more cells at
+          # 89.9 degrees than at the equator. Against the EXACT per-texel `grad(structural_m)`
+          # over three 66,564-texel level-12 tiles it reproduces the direction to a p95 of
+          # **0.0011 degrees** and a worst case of 0.0022, about forty times better than the
+          # tangent-plane figure.
+          #
+          # COST, STATED AS A WITHIN-RUN RATIO because absolutes on this host do not reconcile
+          # (the same tile's fill reads 124-603 ms across nine measurements). The naive
+          # four-calls-per-texel gradient was REFUSED, per the probe's 2.0-4.6x. The steering as
+          # built is 0.085-0.37x the fill and the whole term takes a level-12 tile to 1.11-2.95x
+          # -- and the honest reading of the probe's "0.4-1.3%" is that it priced the NODE BUILD
+          # (165 containing cells serve 66,564 texels) and not the per-texel interpolation. The
+          # dominant term is eight `detmath::cos` calls per texel, which is the price of the
+          # determinism contract rather than of this kernel. A coarse tile pays nothing: the term
+          # fades out on the same two-to-four-samples rule the octaves use.
+          #
+          # THE FADE RULE WAS WRONG THE FIRST TIME AND THE CORPUS CAUGHT IT. Fading the whole
+          # term once one stripe wavelength fell below twice the sample spacing deleted it
+          # entirely at `resolution_m = 250` on exactly the steep ground it exists for -- the
+          # dump's witness assertion refused to write a corpus in which the drainage block moved
+          # the ground by 0 m. The rule that is actually this module's own is `offset_m`'s: the
+          # finer structure is DROPPED and the coarser is still drawn, so a coarse caller gets a
+          # coarser gully rather than none.
+          #
+          # RULING 1 HELD, AND ON THIS CHANNEL IT IS STRUCTURAL RATHER THAN ARITHMETIC.
+          # `GullyParams` is the FIFTH opt-in block after `ReliefParams`, `TectonicParams`,
+          # `CoastParams` and `ClimateParams` -- a fifth instance of one convention, not a fifth
+          # convention. `None` builds no steering lattice at all and takes a different branch of
+          # `elevation_m`, because adding an exactly-zero offset is bit-identical for every value
+          # of `shaped` EXCEPT `-0.0`, and "every value except one" is not what Ruling 1 asks
+          # for. `worldbuilder/` untouched, 398/398 with `test_conformance.py` = 157.
+          #
+          # THE BOUND THAT CLOSES A HAZARD. `WB_MIN_GULLY_SHARPNESS` refuses a crest exponent at
+          # or below zero: the edge shaping is `1 - 2 * folded^s` and `folded` is EXACTLY zero at
+          # a crest, so one negative f64 in word 5 turns every gully crest in the world into an
+          # infinite height across a nounwind boundary. The two lattice lengths and the slope
+          # reference are swept as a CROSS PRODUCT (7 x 7 x 6, every combination sampled at three
+          # resolutions on gated ground), because this file already carries one abort that a
+          # one-field-at-a-time sweep was blind to by construction.
+          #
+          # TWELVE MUTATIONS, each reverted; every new assertion has one that turns it red. TWO
+          # ARE FINDINGS IN THEMSELVES. Substituting `grad(elevation_m)` for `grad(structural_m)`
+          # **does not terminate** -- the gradient probe's architectural argument that the term
+          # would steer on itself, demonstrated rather than argued -- so the mutation that ships
+          # unrolls the recursion once. And dropping a coordinate from the steering cache's hash
+          # stays GREEN, which is a property of a direct-mapped cache that verifies its key
+          # rather than a hole in the test; the load-bearing line is the comparison, and the
+          # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 598
+            expect: 608
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 598
+            expect: 608
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 600
+            expect: 610
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 685
+            expect: 703
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 687
+            expect: 705
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -1134,6 +1211,29 @@ jobs:
       #           tectonic block lands in the browser, exactly as a relief block does
       #   =89,861
       #
+      # THE GULLY SLICE ADDS 18,253, taking the corpus to 126,359:
+      #      +22  `wb_gully_preset` at both selectors -- status + ten f64 each
+      #       +6  `wb_gully_check` on six records, three accepted and three refused
+      #   +5,000  `wb_elevation_m` on a uniform global scatter through `wb_world_new_gully`
+      #           carrying `GullyParams::drainage()`
+      #   +5,000  `wb_structural_m` on the same points
+      #   +2,000  `wb_elevation_m` in a 20-degree box on the flank belt the gate opens over
+      #   +2,000  `wb_structural_m` on the same points
+      #   +4,225  one 65x65 `wb_fill_tile_f32` across the same box
+      #   =126,359
+      #
+      # **The gully channel is the first that ADDS a term to `elevation_m` rather than changing
+      # one**, and it was written in the same commit as these rows for the reason the coast
+      # channel was: a new crossing value with no corpus coverage is a crossing value nothing
+      # compares. Ten f64 cross, are read back through a raw pointer and bounds-checked field by
+      # field, and one of those bounds is not politeness -- `WB_MIN_GULLY_SHARPNESS` refuses an
+      # exponent at or below zero, and `0^s` at a gully crest is an INFINITE HEIGHT crossing a
+      # nounwind boundary into a host's vertex buffer. The `GC` records carry that case.
+      #
+      # The tile row earns its place twice over here: this is also the only block in the corpus
+      # whose term is FADED BY RESOLUTION, so a scalar corpus at one resolution cannot see the
+      # branch the tiles take.
+      #
       # THREE TASKS FLAGGED THIS GAP AND NONE OWNED IT (mountains Task 4 concern 4, Task 3
       # concern 1, Task 5 concern 6). The corpus watched 71,596 values and not one of them
       # went through a tectonic export, while `ranges()` is a preset the owner presses on the
@@ -1151,12 +1251,12 @@ jobs:
       #
       # The script also checks the twenty-four per-group tallies sum to the total, so a format
       # change fails loudly instead of matching nothing.
-      - name: Assert the corpus -- 89,861 values, 0 divergent
+      - name: Assert the corpus -- 126,359 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 108106 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 126359 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
       # `--mutate seed` moves the world seed by one and 68,457 of 71,596 values diverge. A
@@ -1193,12 +1293,12 @@ jobs:
       # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 86,190 of 108,106 divergent
+      - name: Assert the control -- 121,682 of 126,359 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 108106 --expect-divergent 103931
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 126359 --expect-divergent 121682
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -1228,12 +1328,12 @@ jobs:
       # of neither `k` nor erosion, so a control whose count had moved with them would have
       # been reaching something it does not name. The water control's 60 is unchanged for the
       # same reason.
-      - name: Assert the erosion control -- 216 of 108,106 divergent
+      - name: Assert the erosion control -- 216 of 126,359 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 108106 --expect-divergent 216
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 126359 --expect-divergent 216
 
       # THE THIRD CONTROL, slice 5b Task 5's own, and the one with the sharpest claim.
       #
@@ -1274,12 +1374,12 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate water-pond 2>&1 | tee water-control.out
 
-      - name: Assert the water control -- 60 of 108,106 divergent, all of them `kind`
+      - name: Assert the water control -- 60 of 126,359 divergent, all of them `kind`
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 108106 --expect-divergent 60
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 126359 --expect-divergent 60
 
       # THE FOURTH CONTROL, slice mountains Task 6's own, and the first that says anything
       # about the tectonic channel at all.
@@ -1317,12 +1417,12 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate tectonic-warp 2>&1 | tee tectonic-control.out
 
-      - name: Assert the tectonic control -- 6,186 of 108,106 divergent, all on the belt
+      - name: Assert the tectonic control -- 6,186 of 126,359 divergent, all on the belt
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 108106 --expect-divergent 6186
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 126359 --expect-divergent 6186
 
       # THE FIFTH CONTROL, the photoreal slice's Task 6, and the first that exercises the coast
       # channel at all.
@@ -1373,9 +1473,60 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate coast-amplitude 2>&1 | tee coast-control.out
 
-      - name: Assert the coast control -- 13,128 of 108,106 divergent, all on the coast world
+      - name: Assert the coast control -- 13,128 of 126,359 divergent, all on the coast world
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 108106 --expect-divergent 13128
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 126359 --expect-divergent 13128
+
+      # THE SIXTH CONTROL (the gully slice). `--mutate gully-steer` replays the two `worldg`
+      # records with word 9, `steer_lattice_m`, moved from the shipped 2,000 m to 500 m -- a
+      # value INSIDE the domain rather than outside it, because the point of this control is
+      # that a plausible number a host could send moves the ground, not that a refused one
+      # does. It touches nothing else. The prediction is stated before the run, per group:
+      #
+      #   MOVES -- 1,235 of 5,000 scattered elevations; 993 of 2,000 in a 20-degree box on the
+      #     flank belt; 962 of 4,225 cells of a tile across the same box. 3,190 in total.
+      #
+      #     **24.7% of a uniform global scatter is the right shape here.** The gate is
+      #     `smooth((structural - 200) / 900)`, and 29.15% of this world is land whose median
+      #     is 441 m -- so about a quarter of a global scatter is gated ground, and the rest is
+      #     sea and shore where the kernel does not run at all.
+      #
+      #     The first cut of the box was four degrees, exactly as the tectonic control's is
+      #     two, and it moved 2,000 of 2,000: a four-degree box on this witness sits entirely
+      #     inside the landmass. The dump's own both-ends-refused guard caught it and refused
+      #     to write the corpus, which is the second time that guard has done this job.
+      #
+      #   STAYS EQUAL -- both `wb_gully_preset` groups, the `wb_gully_check` group, every group
+      #     of every world built without a gully block, and **every `wb_structural_m` value in
+      #     the gully world itself**, which is 0 of 5,000 and 0 of 2,000.
+      #
+      # **THOSE TWO ZEROS ARE THE CLAIM, NOT AN ABSENCE OF EVIDENCE**, and this is the one
+      # control in the file whose predicted zeros are load-bearing. The gully term is DETAIL,
+      # and `structural_m` is the very signal its steering lattice reads
+      # (`.superpowers/sdd/notes/gradient-probe.md` section 2.4: a term inside `elevation_m`
+      # steering on `grad(elevation_m)` steers on itself). A structural value that moved here
+      # would mean the term had escaped its layer and was feeding its own input -- and that
+      # substitution, tried as a mutation on the Rust side, DOES NOT TERMINATE.
+      #
+      # The counts are computed NATIVELY in `examples/parity_dump.rs` and checked here, not
+      # read off this run, and they are derived twice on that side: once through the exports
+      # and once through the library's own `Surface`, with the block read from `detail.rs`
+      # rather than from the ten words that crossed the boundary.
+      - name: Parity -- the gully control (one word of the block, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate gully-steer 2>&1 | tee gully-control.out
+
+      - name: Assert the gully control -- 3,190 of 126,359 divergent, none of them structural
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
+            --output gully-control.out --expect-label "CONTROL (--mutate gully-steer)" \
+            --expect-compared 126359 --expect-divergent 3190

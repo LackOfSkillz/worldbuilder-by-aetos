@@ -44,8 +44,13 @@ Population, per run (`SEED = 20260904`, `radius = 6_371_000 m`, `plate_count = 1
 | **a non-canonical coast world** (photoreal slice) | 5,000 scattered points through `wb_world_new_coast` carrying `CoastParams::fractal()`, `wb_elevation_m` + `wb_structural_m` | 10,000 |
 | **its shore box** | 2,000 points in a 20° box on the largest mover, same two exports | 4,000 |
 | **its tile** | one 65×65 `wb_fill_tile_f32` across the same box — the path the viewer's tile workers take with a coast block on the spec | 4,225 |
+| **the gully presets** (gully slice) | `wb_gully_preset` at both selectors -- status + ten f64 each | 22 |
+| **the gully checker** (gully slice) | `wb_gully_check` on six records, three accepted and three refused -- status each | 6 |
+| **a world with a drainage block** (gully slice) | 5,000 scattered points through `wb_world_new_gully` carrying `GullyParams::drainage()`, `wb_elevation_m` + `wb_structural_m` | 10,000 |
+| **its flank belt** | 2,000 points in a 20-degree box on the ground the gate opens over, same two exports | 4,000 |
+| **its tile** | one 65x65 `wb_fill_tile_f32` across the same box -- and the only block here whose term is FADED BY RESOLUTION, so a scalar corpus at one resolution cannot see the branch a tile takes | 4,225 |
 | identity | `wb_generator_version` | 1 |
-| | | **108,106** |
+| | | **126,359** |
 
 The last four rows are slice 5b Task 5's, and each closes a hole rather than adding volume:
 
@@ -66,6 +71,16 @@ The last four rows are slice 5b Task 5's, and each closes a hole rather than add
   this generator's smallest body is nearly four orders of magnitude larger. The corpus carries
   the calibrated value; a corpus that moved the threshold until ponds appeared would be hiding
   that finding rather than testing it.
+
+**The gully control's five counts are measurements too.** 1,235 of 5,000 scattered
+elevations, 0 of 5,000 scattered structurals, 993 of 2,000 in the flank box, 0 of 2,000 flank
+structurals, and 962 of 4,225 tile cells -- `--expect-divergent 3190`. The 24.7% on a uniform
+global scatter is the right shape: the gate is `smooth((structural - 200) / 900)` and 29.15% of
+this world is land whose median is 441 m, so about a quarter of a scatter is gated ground and
+the rest is sea and shore where the kernel does not run. **The first cut of the flank box was
+four degrees and it moved 2,000 of 2,000** -- a four-degree box on that witness sits entirely
+inside the landmass -- and the dump's own both-ends-refused guard caught it and refused to write
+the corpus, for the second time in this file's life.
 
 **Two numbers in this corpus are MEASUREMENTS of the world, and their gates must be
 RE-DERIVED rather than merely re-run.** Every other row above is a count this harness chose:
@@ -194,6 +209,20 @@ whose records it does not touch; not any world built without a block. So it prov
 notices one word of one channel **while 83,675 values stay equal**. Like the water control, its
 counts are predicted before the run rather than reported after it — see "the fourth control"
 below.
+
+`--mutate gully-steer` replays the two `worldg` records with word 9, `steer_lattice_m`, moved
+from the shipped 2,000 m to 500 m -- a value **inside** the domain rather than outside it,
+because the point of this control is that a plausible number a host could send moves the
+ground, not that a refused one does. It touches nothing else. Its counts are predicted before
+the run, and **two of the five predictions are zero on purpose**: the gully term is *detail*,
+and `structural_m` is the very signal its steering lattice reads. A structural value that moved
+under this control would mean the term had escaped its layer and was feeding its own input --
+and that substitution, tried as a source mutation on the Rust side, **does not terminate**.
+
+```sh
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate coast-amplitude # control 5 (photoreal)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate gully-steer      # control 6 (gully)
+```
 
 `--wasm <path>` overrides the artifact; the default is the committed
 `viewer/public/wasm/worldbuilder_engine.wasm`, i.e. the bytes a browser loads.

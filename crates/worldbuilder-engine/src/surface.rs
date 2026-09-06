@@ -30,7 +30,7 @@
 
 use crate::climate::{self, ClimateParams, MoistureParams};
 use crate::continentality::{Continentality, CoastParams};
-use crate::detail::{Detail, ReliefParams};
+use crate::detail::{Detail, GullyParams, ReliefParams};
 use crate::features::{Feature, Features};
 use crate::generation::plates_for;
 use crate::plates::PlateSet;
@@ -106,6 +106,15 @@ pub struct Surface {
     pub shelf: Shelf,
     pub detail: Detail,
     pub features: Features,
+    /// The gully kernel's steering gradient, or `None` on the canonical path.
+    ///
+    /// **`None` is the off switch, and it is structural rather than arithmetic.** A block
+    /// whose `amplitude_m` is zero -- which is exactly `GullyParams::canonical()` -- builds
+    /// no lattice at all, so `elevation_m` below takes the same branch it took before this
+    /// field existed and returns the same bits. Adding an exactly-zero offset instead would
+    /// be bit-identical for every value of `shaped` except `-0.0`, and "every value except
+    /// one" is not what Ruling 1 asks for.
+    steer: Option<crate::steer::SteerLattice>,
 }
 
 impl Surface {
@@ -188,6 +197,43 @@ impl Surface {
         tectonics: Option<TectonicParams>,
         coast: Option<CoastParams>,
     ) -> Self {
+        Self::with_gully(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features,
+            relief,
+            tectonics,
+            coast,
+            None,
+        )
+    }
+
+    /// The same world, with an opt-in drainage texture reaching `Detail`.
+    ///
+    /// `gully`: `None` for today's ground, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen `GullyParams`. **The fifth opt-in parameter of the same kind**, after
+    /// `features`, `relief`, `tectonics` and `coast`, and a third constructor for the reason
+    /// `with_coast` gives for being a second one: `Surface::new` has seventy call sites in
+    /// this crate, the C ABI already ships four separate doors for exactly this, and what
+    /// Ruling 1 requires is a property of the parameter rather than of where it is spelled.
+    ///
+    /// **This is the only parameter of the five that adds a term to `elevation_m` rather
+    /// than changing one**, which is why the `None` path is held by not building the
+    /// steering lattice at all. See the `steer` field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_gully(
+        world_seed: i64,
+        radius_m: f64,
+        plate_count: usize,
+        land_fraction: f64,
+        features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+        coast: Option<CoastParams>,
+        gully: Option<GullyParams>,
+    ) -> Self {
         let plates = plates_for(world_seed, plate_count);
         // `Noise::new` mixes first and masks second (`noise.py:38`, `h = (h ^ (seed * K)) &
         // MASK`), so only the low 64 bits of the mixed value survive and a negative seed's
@@ -202,7 +248,14 @@ impl Surface {
         // on the name means the built layer, as it did before this parameter existed.
         let tectonics = Tectonics::new(plates.clone(), land, radius_m, tectonics);
         let shelf = Shelf::new(tectonics.clone(), land, radius_m);
-        let detail = Detail::new(noise_seed, radius_m, relief);
+        let detail = Detail::with_gully(noise_seed, radius_m, relief, gully);
+        // Built only for a block that will actually draw something. See the `steer` field.
+        let steer = match gully {
+            Some(gully) if gully.amplitude_m != 0.0 => {
+                Some(crate::steer::SteerLattice::new(radius_m, gully.steer_lattice_m))
+            }
+            _ => None,
+        };
         // Transcribed from `surface.py`'s three-way branch, and the last arm is the one
         // worth reading twice: a pre-built `Features` is adopted **exactly as it stands,
         // including its own `radius_m`**. Python does not re-place it and does not
@@ -216,6 +269,7 @@ impl Surface {
             Some(FeatureInput::Built(built)) => built,
         };
         Self {
+            steer,
             world_seed,
             radius_m,
             plates,
@@ -346,7 +400,29 @@ impl Surface {
                 .amplitude_m(point, shaped, reading.weight, reading.tectonic_m);
         // Where somebody stated a shape, roughness defers to it.
         amplitude *= 1.0 - authority;
-        shaped + self.detail.offset_m(point, amplitude, resolution_m)
+        let roughened = shaped + self.detail.offset_m(point, amplitude, resolution_m);
+        // **Four lines, and the canonical path does not execute any of them.** `steer` is
+        // `None` unless somebody asked for a drainage block with a non-zero amplitude, so
+        // this `match` is the whole of what Ruling 1 costs the default world.
+        //
+        // The gully term is damped by `1 - authority` for the same reason the roughness
+        // above it is, and it is measured to matter for the same reason: a harbour dredged
+        // flat that still carries a gully is not dredged. It is sized off `shaped` --
+        // structure with features composed, before any texture -- and steered off
+        // `structural_m`, which is defined before detail exists. Neither reads the value
+        // this line is computing, so nothing here steers on itself.
+        match &self.steer {
+            None => roughened,
+            Some(steer) => {
+                let frame = TangentFrame::at(point, self.radius_m);
+                let gradient = steer.at(point, &frame, &|probe| self.structural_m(probe));
+                roughened
+                    + (1.0 - authority)
+                        * self
+                            .detail
+                            .gully_offset_m(point, &frame, gradient, shaped, resolution_m)
+            }
+        }
     }
 
     /// Mean annual surface temperature at a point, in degrees C.
@@ -955,6 +1031,222 @@ mod tests {
             found_divergence,
             "a one-ULP relief perturbation must be visible in elevation_m somewhere on the \
              planet, or the bit-identity test above cannot be trusted to fail"
+        );
+    }
+
+    /// Ruling 1 for the gully channel, and the strongest form of it in the crate: `None` does
+    /// not merely add zero here, it builds no steering lattice at all and takes a different
+    /// branch of `elevation_m`.
+    ///
+    /// **Population**: the same 37 x 73 lat/lon grid the relief and coast pairs use, every 5
+    /// degrees of latitude and every 5 of longitude, at two resolutions -- 2,701 sites, 5,402
+    /// comparisons per pair.
+    ///
+    /// **Discriminated by its last block**: the identical grid under `GullyParams::drainage()`
+    /// is required to diverge at a substantial number of points. Without that, a `with_gully`
+    /// that ignored its argument entirely would pass this test perfectly -- which is exactly
+    /// the shape of failure this project keeps finding.
+    #[test]
+    fn gully_none_matches_gully_some_canonical_bit_for_bit() {
+        let built_by_new = plain(None);
+        let explicit_none = Surface::with_gully(
+            SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None, None, None, None,
+        );
+        let explicit_canonical = Surface::with_gully(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::canonical()),
+        );
+        let drainage = Surface::with_gully(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::drainage()),
+        );
+
+        let mut compared = 0u32;
+        let mut moved = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(76.35_f64)] {
+                    let a = built_by_new.elevation_m(&p, resolution);
+                    let b = explicit_none.elevation_m(&p, resolution);
+                    let c = explicit_canonical.elevation_m(&p, resolution);
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "new() and with_gully(None) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {b}"
+                    );
+                    assert_eq!(
+                        a.to_bits(),
+                        c.to_bits(),
+                        "None and Some(canonical()) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {c}"
+                    );
+                    if a.to_bits() != drainage.elevation_m(&p, resolution).to_bits() {
+                        moved += 1;
+                    }
+                    compared += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 5_402, "the grid is 37 x 73 sites at two resolutions");
+        assert!(
+            moved > 200,
+            "drainage() must move a substantial share of this grid or the canonical \
+             comparison above is comparing a parameter nothing reads; moved {moved} of \
+             {compared}"
+        );
+    }
+
+    /// **The probe's central ruling, as an executable assertion: the kernel steers on
+    /// `grad(structural_m)` and not on `grad(elevation_m)`.**
+    ///
+    /// `.superpowers/sdd/notes/gradient-probe.md` section 2.5 measured that on
+    /// `ReliefParams::hills()` -- a preset this crate already ships -- the full gradient is
+    /// **13.7x** the structural one and points a median **83.66 degrees** away from it. A
+    /// kernel steered on the full gradient therefore works on the default world and produces
+    /// noise-following stripes the moment somebody presses a preset button.
+    ///
+    /// `structural_m` is identical between the two relief worlds (relief reaches detail only,
+    /// pinned by `relief_only_moves_detail` above), so the gully displacement must be
+    /// identical between them too. It is compared as a difference of elevations rather than
+    /// bit-for-bit because `(a + g) - a` is not `g` in floating point; the tolerance is
+    /// 1e-6 m against a term whose amplitude is 60 m and against a mutant that would move it
+    /// by tens of metres.
+    ///
+    /// **Proved red by mutation, and the first attempt at that mutation is itself the
+    /// finding**: substituting `|probe| self.elevation_m(probe, None)` for
+    /// `|probe| self.structural_m(probe)` **does not terminate**. That is
+    /// `gradient-probe.md` section 2.4's fourth ground -- "a term inside `elevation_m`
+    /// steering on `grad(elevation_m)` steers on itself... an infinite regress" -- demonstrated
+    /// rather than argued, and it is why this steer is architecturally settled and not a
+    /// tuning choice. The mutation that halts unrolls the recursion exactly once, so it is
+    /// `grad(elevation)` as that probe measured it; it turns this red and nothing else in the
+    /// suite.
+    #[test]
+    fn the_gully_steer_is_structural_and_survives_a_relief_preset() {
+        let with_gully = |relief: Option<crate::detail::ReliefParams>, gully| {
+            Surface::with_gully(
+                SEED,
+                EARTH_RADIUS_M,
+                DEFAULT_PLATE_COUNT,
+                LAND_FRACTION,
+                None,
+                relief,
+                None,
+                None,
+                gully,
+            )
+        };
+        let canonical_plain = with_gully(None, None);
+        let canonical_gully = with_gully(None, Some(GullyParams::drainage()));
+        let hills_plain = with_gully(Some(crate::detail::ReliefParams::hills()), None);
+        let hills_gully =
+            with_gully(Some(crate::detail::ReliefParams::hills()), Some(GullyParams::drainage()));
+
+        let mut compared = 0u32;
+        let mut nonzero = 0u32;
+        let mut worst: f64 = 0.0;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a = canonical_gully.elevation_m(&p, None) - canonical_plain.elevation_m(&p, None);
+                let b = hills_gully.elevation_m(&p, None) - hills_plain.elevation_m(&p, None);
+                let gap = (a - b).abs();
+                if gap > worst {
+                    worst = gap;
+                }
+                if a != 0.0 {
+                    nonzero += 1;
+                }
+                compared += 1;
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert!(
+            nonzero > 100,
+            "the term must be non-zero somewhere or this test compares two zeros; {nonzero} \
+             of {compared}"
+        );
+        assert!(
+            worst < 1.0e-6,
+            "the gully displacement must not depend on the relief block, because the signal \
+             it steers on is defined before detail exists; worst gap {worst} m over \
+             {compared} sites"
+        );
+    }
+
+    /// The gate is a real gate: below `gate_elevation_m` the ground is bit-identical to the
+    /// canonical world, and above it, it is not.
+    ///
+    /// This is what stops a drainage texture appearing on the sea floor and on flat coastal
+    /// plain, and it is asserted from both ends because a gate that is always open and a gate
+    /// that is always shut both pass a one-sided version of it.
+    #[test]
+    fn the_drainage_gate_opens_on_high_ground_and_nowhere_else() {
+        let plain_world = plain(None);
+        let drainage = Surface::with_gully(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::drainage()),
+        );
+        let gate = GullyParams::drainage().gate_elevation_m;
+        let mut below_and_equal = 0u32;
+        let mut above_and_moved = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let structural = plain_world.structural_m(&p);
+                let a = plain_world.elevation_m(&p, None);
+                let b = drainage.elevation_m(&p, None);
+                if structural <= gate {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "the gate is shut at {structural} m (lat {lat} lon {lon}) and the \
+                         ground must be untouched: {a} vs {b}"
+                    );
+                    below_and_equal += 1;
+                } else if a.to_bits() != b.to_bits() {
+                    above_and_moved += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert!(below_and_equal > 2_000, "most of a planet is below 200 m; {below_and_equal}");
+        assert!(
+            above_and_moved > 100,
+            "the gate must actually open somewhere; {above_and_moved} sites moved"
         );
     }
 

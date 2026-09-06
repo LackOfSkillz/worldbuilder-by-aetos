@@ -13,6 +13,7 @@ pub mod features;
 pub mod generation;
 pub mod vectors;
 pub mod sphere;
+pub mod steer;
 #[cfg(feature = "python")]
 pub mod bindings;
 pub mod noise;
@@ -393,8 +394,19 @@ mod world_tests {
         assert!(!world.has_streams());
     }
 
-    /// `Surface` gains no field, and this is the executable form of that promise: the
-    /// eight fields the port settled on, by name, and nothing about streams among them.
+    /// `Surface` grows no *graph* field, and this is the executable form of that promise:
+    /// the eight fields the port settled on, by name, and nothing about streams among them.
+    ///
+    /// **The count moved from eight to nine, and that is a deliberate edit rather than a
+    /// weakening.** The gully slice added `steer: Option<SteerLattice>`: a lattice of
+    /// `grad(structural_m)`, which is a scalar field's derivative sampled on a fixed
+    /// world-anchored lattice and interpolated -- not a graph, not a node array, and not
+    /// anything the erosion solver produces. What this test exists to stop is the thing
+    /// CORE-001 warned about, "retrofitting a graph into an engine built only for scalar
+    /// fields", and every one of the six banned words below is still banned. `drainage` in
+    /// particular stays on the list: the gully kernel's own prose calls itself a drainage
+    /// texture, and the field's doc comment is worded around that word on purpose so this
+    /// guard keeps its teeth.
     #[test]
     fn the_surface_is_not_modified_by_this_slice() {
         let source = include_str!("surface.rs");
@@ -414,7 +426,12 @@ mod world_tests {
         ] {
             assert!(body.contains(field), "Surface lost the field {field}");
         }
-        assert_eq!(body.matches("pub ").count(), 8, "Surface must still have eight fields");
+        assert!(
+            body.contains("steer: Option<crate::steer::SteerLattice>,"),
+            "the gully slice's steering lattice is the ninth field and is named here so a \
+             TENTH cannot arrive without this test being edited again"
+        );
+        assert_eq!(body.matches("pub ").count(), 8, "Surface must still have eight public fields");
         for banned in ["stream", "Stream", "graph", "Graph", "drainage", "downhill"] {
             assert!(!body.contains(banned), "Surface grew a graph field: {banned}");
         }

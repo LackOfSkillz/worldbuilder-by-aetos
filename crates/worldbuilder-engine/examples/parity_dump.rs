@@ -41,6 +41,7 @@
 //! Run: `cargo run --release --example parity_dump --features wasm > native.txt`
 
 use worldbuilder_engine::continentality::CoastParams;
+use worldbuilder_engine::detail::GullyParams;
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use worldbuilder_engine::surface::Surface;
@@ -1320,6 +1321,372 @@ fn main() {
     println!(
         "CCTL {control_elevation_fractal} {control_structural_fractal} \
          {control_elevation_shore} {control_structural_shore} {control_tile_shore}"
+    );
+
+    // --- the gully channel: presets, checker, a world built from one, and its control ----
+    //
+    // **A new crossing value with no corpus coverage is a crossing value nothing compares**,
+    // which is the sentence the coast rows were written under and is why these rows are in the
+    // same commit as the exports they watch, not a slice later.
+    //
+    // What is not shared between the two sides is the DECODE: ten f64 in linear memory, read
+    // back through a raw pointer, bounds-checked field by field, and only then a
+    // `GullyParams`. One of those bounds is not politeness -- `WB_MIN_GULLY_SHARPNESS` refuses
+    // an exponent at or below zero, and `0^s` at a gully crest is an INFINITE HEIGHT crossing
+    // this boundary into a host's vertex buffer. The `GC` records below carry that case.
+    let mut gully_canonical = [0.0f64; WB_GULLY_STRIDE];
+    let mut gully_drainage = [0.0f64; WB_GULLY_STRIDE];
+    let gully_canonical_status = wb_gully_preset(
+        WB_GULLY_CANONICAL,
+        gully_canonical.as_mut_ptr(),
+        WB_GULLY_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    let gully_drainage_status = wb_gully_preset(
+        WB_GULLY_DRAINAGE,
+        gully_drainage.as_mut_ptr(),
+        WB_GULLY_STRIDE as u32, // cast-ok: as above
+    );
+    assert_eq!(gully_canonical_status, WB_OK, "the canonical gully preset must be readable");
+    assert_eq!(gully_drainage_status, WB_OK, "the drainage gully preset must be readable");
+    for (selector, status, record) in [
+        (WB_GULLY_CANONICAL, gully_canonical_status, &gully_canonical),
+        (WB_GULLY_DRAINAGE, gully_drainage_status, &gully_drainage),
+    ] {
+        let encoded: Vec<String> = record.iter().map(|v| hex(*v)).collect();
+        println!("GP {selector} {status} {}", encoded.join(" "));
+    }
+
+    // The control's substitute for word 9, `steer_lattice_m`. **A quarter of the shipped
+    // 2,000 m, and inside the domain rather than outside it**: the point of this control is
+    // that a plausible value a host could send moves the ground, not that a refused one does.
+    // It is carried in the corpus rather than written in `parity.mjs`, so the one number the
+    // mutation substitutes arrives like every other input.
+    const GULLY_CONTROL_STEER_M: f64 = 500.0;
+    const GULLY_STEER_INDEX: usize = 9;
+
+    // Six checker records, three accepted and three refused, asserted here so a checker stuck
+    // at either answer cannot pass that group.
+    let mut gully_infinite_crest = gully_drainage;
+    gully_infinite_crest[5] = -0.5; // the crest-height infinity
+    let mut gully_zero_cell = gully_drainage;
+    gully_zero_cell[1] = 0.0; // the lattice index the `as i64` saturation lives behind
+    let mut gully_negative_amplitude = gully_drainage;
+    gully_negative_amplitude[0] = -gully_drainage[0]; // a field that looks configured and inverts the term
+    let mut gully_control_record = gully_drainage;
+    gully_control_record[GULLY_STEER_INDEX] = GULLY_CONTROL_STEER_M;
+    let gully_check_records = [
+        ("canonical", gully_canonical),
+        ("drainage", gully_drainage),
+        ("control", gully_control_record),
+        ("infinite-crest", gully_infinite_crest),
+        ("zero-cell", gully_zero_cell),
+        ("negative-amplitude", gully_negative_amplitude),
+    ];
+    let mut gully_accepted = 0usize;
+    let mut gully_refused = 0usize;
+    for (name, record) in &gully_check_records {
+        let status = wb_gully_check(
+            record.as_ptr(),
+            WB_GULLY_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+        );
+        if status == WB_OK {
+            gully_accepted += 1;
+        } else {
+            gully_refused += 1;
+        }
+        let encoded: Vec<String> = record.iter().map(|v| hex(*v)).collect();
+        println!("GC {name} {status} {}", encoded.join(" "));
+    }
+    assert_eq!(gully_accepted, 3, "three of the six gully check records are meant to be accepted");
+    assert_eq!(gully_refused, 3, "three of the six gully check records are meant to be refused");
+
+    println!("GSTEER {}", hex(GULLY_CONTROL_STEER_M));
+    let gully_encoded: Vec<String> = gully_drainage.iter().map(|v| hex(*v)).collect();
+    for name in ["drainage", "flank"] {
+        println!(
+            "worldg {name} {SEED} {} {PLATES} {} {}",
+            hex(RADIUS_M),
+            hex(LAND),
+            gully_encoded.join(" ")
+        );
+    }
+    let gully_world = wb_world_new_gully(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        gully_drainage.as_ptr(),
+        WB_GULLY_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    assert!(gully_world != 0, "the drainage gully world must build");
+    let gully_control_world = wb_world_new_gully(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        gully_control_record.as_ptr(),
+        WB_GULLY_STRIDE as u32, // cast-ok: as above
+    );
+    assert!(gully_control_world != 0, "the gully control world must build");
+
+    // WHERE THE GATE IS OPEN, AND WHY IT IS NOT A ROUND NUMBER.
+    //
+    // A uniform scatter over a planet does not land on a flank. `GullyParams::drainage()`'s
+    // gate opens over 200-1,100 m of structural ground, and 0.9% of this world is above 800 m.
+    // These coordinates are the steepest decile of that -- found by walking 400,000 spiral
+    // points on this exact fixture and rounding to a quarter degree, with the rounded site's
+    // own `structural_m` re-checked. The concentrated group is what makes the control's report
+    // readable; the scattered group is the evidence that the block does NOT reach the rest of
+    // the planet.
+    const GULLY_LAT: f64 = -8.75;
+    const GULLY_LON: f64 = 65.0;
+    // **Twenty degrees, not four, and the first attempt at four is why.** A four-degree box on
+    // this witness is entirely inside the landmass the flank belongs to, and every one of its
+    // 2,000 points moved under the control -- this file's own both-ends-refused guard caught
+    // that and refused to write the corpus, exactly as it caught the coast control's first
+    // two-degree cut. A group that moves everything is as uninformative as one that moves
+    // nothing. Twenty degrees straddles the gate: the high ground, the low ground around it,
+    // and the sea beyond that.
+    const GULLY_SPAN_DEG: f64 = 20.0;
+    {
+        let point_on = wb_elevation_m(gully_world, GULLY_LAT, GULLY_LON, RES_M);
+        let point_off = wb_elevation_m(plain, GULLY_LAT, GULLY_LON, RES_M);
+        let moved = if point_on > point_off { point_on - point_off } else { point_off - point_on };
+        assert!(
+            moved > 1.0,
+            "the flank site must be somewhere the drainage block actually moves the ground; \
+             it moved {moved} m, so either the witness is stale or the gate no longer opens \
+             there",
+        );
+    }
+
+    let mut gully_scattered = Vec::with_capacity(5_000);
+    for _ in 0..5_000 {
+        let latitude_deg = rng.unit() * 180.0 - 90.0;
+        let longitude_deg = rng.unit() * 360.0 - 180.0;
+        gully_scattered.push((latitude_deg, longitude_deg));
+        println!(
+            "E drainage {} {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(RES_M),
+            hex(wb_elevation_m(gully_world, latitude_deg, longitude_deg, RES_M))
+        );
+        println!(
+            "S drainage {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(wb_structural_m(gully_world, latitude_deg, longitude_deg))
+        );
+    }
+
+    let mut gully_flank = Vec::with_capacity(2_000);
+    for _ in 0..2_000 {
+        let latitude_deg = GULLY_LAT + (rng.unit() - 0.5) * GULLY_SPAN_DEG;
+        let longitude_deg = GULLY_LON + (rng.unit() - 0.5) * GULLY_SPAN_DEG;
+        gully_flank.push((latitude_deg, longitude_deg));
+        println!(
+            "E flank {} {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(RES_M),
+            hex(wb_elevation_m(gully_world, latitude_deg, longitude_deg, RES_M))
+        );
+        println!(
+            "S flank {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(wb_structural_m(gully_world, latitude_deg, longitude_deg))
+        );
+    }
+
+    // And a tile across the flank, because the tile worker is where a gully block lands in the
+    // browser -- and because this is the only block in the corpus whose term is FADED BY
+    // RESOLUTION. `Detail::gully_offset_m` drops the whole term when the caller's spacing is
+    // coarser than half a stripe wavelength, so a scalar corpus at one resolution cannot see
+    // the branch the tiles take.
+    let flank_tile = {
+        let half = GULLY_SPAN_DEG / 2.0;
+        let (lat0, lat1) = (GULLY_LAT + half, GULLY_LAT - half);
+        let (lon0, lon1) = (GULLY_LON - half, GULLY_LON + half);
+        let (width, height) = (65u32, 65u32);
+        let mut tile = vec![0.0f32; 65 * 65];
+        let status = wb_fill_tile_f32(
+            gully_world,
+            lat0,
+            lat1,
+            lon0,
+            lon1,
+            width,
+            height,
+            RES_M,
+            tile.as_mut_ptr(),
+            width * height,
+        );
+        assert_eq!(status, WB_OK, "flank: the tile must fill");
+        let cells: Vec<String> = tile.iter().map(|v| hex32(*v)).collect();
+        println!(
+            "T flank {} {} {} {} {width} {height} {} {}",
+            hex(lat0),
+            hex(lat1),
+            hex(lon0),
+            hex(lon1),
+            hex(RES_M),
+            cells.join(" ")
+        );
+        (lat0, lat1, lon0, lon1, width, height, tile)
+    };
+
+    // THE GULLY CONTROL'S PREDICTION, PER GROUP, MADE HERE AND CHECKED ON THE OTHER SIDE.
+    //
+    // `--mutate gully-steer` replays the `worldg` records with word 9, `steer_lattice_m`, set
+    // to 500 m and touches nothing else. That word reaches ONE thing: the world-anchored
+    // lattice the gully kernel takes its steering gradient from. It cannot reach
+    // `wb_gully_preset` (which hands back `detail.rs`'s own constants), it cannot reach
+    // `wb_gully_check` (whose records it does not touch), and it cannot reach any world built
+    // without a gully block.
+    //
+    // **THE STRUCTURAL GROUPS ARE PREDICTED AT EXACTLY ZERO, AND THAT IS THE CLAIM WORTH
+    // MAKING.** The gully term is detail; `structural_m` is defined before detail exists and
+    // is the very signal the steering lattice reads. If a structural value moved here, the
+    // term would have escaped its layer and would be steering on itself -- the recursion
+    // `.superpowers/sdd/notes/gradient-probe.md` section 2.4 settled architecturally. So this
+    // control's zeros are not an absence of evidence; they are the assertion.
+    let (
+        control_elevation_drainage,
+        control_structural_drainage,
+        control_elevation_flank,
+        control_structural_flank,
+        control_tile_flank,
+    ) = {
+        // The library side reads its block from `detail.rs` rather than from the ten words
+        // that crossed the boundary, which is what makes this a second derivation rather than
+        // the same one twice: if `encode_gully` and `decode_gully` disagreed anywhere, the two
+        // counts below would part company.
+        let on = Surface::with_gully(
+            SEED,
+            RADIUS_M,
+            PLATES as usize, // cast-ok: a corpus-fixed plate count widened to usize
+            LAND,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::drainage()),
+        );
+        let off = Surface::with_gully(
+            SEED,
+            RADIUS_M,
+            PLATES as usize, // cast-ok: as above
+            LAND,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams {
+                steer_lattice_m: GULLY_CONTROL_STEER_M,
+                ..GullyParams::drainage()
+            }),
+        );
+
+        let mut moved = [0usize; 4];
+        let mut moved_lib = [0usize; 4];
+        for (slot, points) in [(0usize, &gully_scattered), (2, &gully_flank)] {
+            for (latitude_deg, longitude_deg) in points {
+                let e_on = wb_elevation_m(gully_world, *latitude_deg, *longitude_deg, RES_M);
+                let e_off =
+                    wb_elevation_m(gully_control_world, *latitude_deg, *longitude_deg, RES_M);
+                let s_on = wb_structural_m(gully_world, *latitude_deg, *longitude_deg);
+                let s_off = wb_structural_m(gully_control_world, *latitude_deg, *longitude_deg);
+                if e_on.to_bits() != e_off.to_bits() {
+                    moved[slot] += 1;
+                }
+                if s_on.to_bits() != s_off.to_bits() {
+                    moved[slot + 1] += 1;
+                }
+                let point = SpherePoint::from_latlon(*latitude_deg, *longitude_deg);
+                if on.elevation_m(&point, Some(RES_M)).to_bits()
+                    != off.elevation_m(&point, Some(RES_M)).to_bits()
+                {
+                    moved_lib[slot] += 1;
+                }
+                if on.structural_m(&point).to_bits() != off.structural_m(&point).to_bits() {
+                    moved_lib[slot + 1] += 1;
+                }
+            }
+        }
+        assert_eq!(
+            moved, moved_lib,
+            "the exports and the library disagree about how many values the steering lattice \
+             moves; the ten words that crossed the boundary and `GullyParams::drainage()` \
+             itself are describing different worlds",
+        );
+
+        let (lat0, lat1, lon0, lon1, width, height, on_cells) = flank_tile;
+        let mut control_tile = vec![0.0f32; (width * height) as usize]; // cast-ok: a compile-time 65x65 back to a length
+        let status = wb_fill_tile_f32(
+            gully_control_world,
+            lat0,
+            lat1,
+            lon0,
+            lon1,
+            width,
+            height,
+            RES_M,
+            control_tile.as_mut_ptr(),
+            width * height,
+        );
+        assert_eq!(status, WB_OK, "flank: the control's tile must fill");
+        let tile_moved = on_cells
+            .iter()
+            .zip(control_tile.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+
+        (moved[0], moved[1], moved[2], moved[3], tile_moved)
+    };
+
+    for (label, moved, total) in [
+        ("elevation/drainage", control_elevation_drainage, 5_000usize),
+        ("elevation/flank", control_elevation_flank, 2_000),
+        ("tile/flank", control_tile_flank, 65 * 65),
+    ] {
+        assert!(
+            moved > 0 && moved < total,
+            "{label}: the control moved {moved} of {total}. A control that moves everything is \
+             as uninformative as one that moves nothing, and this corpus refuses to write \
+             either",
+        );
+    }
+    // The containment claim, asserted rather than observed. See the comment above.
+    assert_eq!(
+        control_structural_drainage, 0,
+        "a gully block moved structural_m on the scattered points; the term has escaped detail",
+    );
+    assert_eq!(
+        control_structural_flank, 0,
+        "a gully block moved structural_m on the flank points; the term has escaped detail",
+    );
+
+    println!(
+        "GCTL {control_elevation_drainage} {control_structural_drainage} \
+         {control_elevation_flank} {control_structural_flank} {control_tile_flank}"
     );
 
     println!("version {}", wb_generator_version());
