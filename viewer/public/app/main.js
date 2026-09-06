@@ -408,10 +408,31 @@ async function boot() {
     viewer.scene.globe.material = material;
   }
 
+  // `?fly=lat,lon,height[,heading,pitch]`.
+  //
+  // **The two optional fields are why this task touched this file.** With three fields the camera
+  // looks straight down, and straight down is the one angle at which a *depth* gradient cannot be
+  // judged against anything: there is no horizon and no land above the waterline in frame, so a
+  // shelf-to-abyss transition is a wash with nothing to read it against. A low-angle view across a
+  // shelf into deep water is what the ocean brief asks to be photographed, and the alternative was
+  // a fourth private camera hack in the capture harness -- which is the file the last task
+  // committed specifically to stop being rebuilt.
+  //
+  // Absent heading and pitch reduce to exactly the previous behaviour: `Camera.setView`'s own
+  // orientation default is heading 0, pitch -90, roll 0, which is the straight-down view every
+  // earlier screenshot was taken at, so no existing URL moves.
   if (params.has("fly")) {
-    const [lat, lon, height] = params.get("fly").split(",").map(Number);
+    const [lat, lon, height, headingDeg, pitchDeg] = params.get("fly").split(",").map(Number);
+    const orientation = Number.isFinite(headingDeg) || Number.isFinite(pitchDeg)
+      ? {
+        heading: Cesium.Math.toRadians(Number.isFinite(headingDeg) ? headingDeg : 0),
+        pitch: Cesium.Math.toRadians(Number.isFinite(pitchDeg) ? pitchDeg : -90),
+        roll: 0,
+      }
+      : undefined;
     viewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(lon, lat, height ?? 200000),
+      ...(orientation ? { orientation } : {}),
     });
   }
 
