@@ -22,6 +22,7 @@
 //! see an empty test binary rather than a missing symbol.
 #![cfg(feature = "wasm")]
 
+use worldbuilder_engine::continentality::CoastParams;
 use worldbuilder_engine::features::{Feature, Features, CARVE, RAISE};
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::{FeatureInput, Surface};
@@ -900,15 +901,24 @@ fn the_surface_is_built_once_per_world_and_never_per_sample() {
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    let builds = code.matches("Surface::new").count();
+    // **The constructor is `Surface::with_coast` and not `Surface::new`, and BOTH halves are
+    // asserted.** Task 6 moved the one call when the coast channel opened -- `new` delegates to
+    // `with_coast` with a `None`, so the canonical path is the same code either way and the
+    // widest door is the only one that reaches the constructor. Counting only `with_coast` would
+    // let a second, `new`-shaped build reappear beside it without this noticing; counting both is
+    // the property this test actually means, which is that `wasm.rs` builds a `Surface` exactly
+    // once, anywhere, by any name.
+    let builds = code.matches("Surface::with_coast").count();
+    let legacy = code.matches("Surface::new").count();
     assert_eq!(
         builds, 1,
         "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs ~10^3x"
     );
-    let before = &code[..code.find("Surface::new").expect("one build")];
+    assert_eq!(legacy, 0, "a second Surface constructor appeared beside the one in build_world");
+    let before = &code[..code.find("Surface::with_coast").expect("one build")];
     assert!(
         before.contains("fn wb_world_new"),
-        "the one Surface::new is not inside wb_world_new"
+        "the one Surface::with_coast is not inside the wb_world_new family"
     );
 }
 
@@ -3215,5 +3225,1019 @@ fn the_tectonic_sweep_is_the_size_it_claims_to_be() {
         accepted, 1_044,
         "the accepted/refused split moved: {accepted} of {}",
         records.len()
+    );
+}
+
+// ============================================================== the coastal channel, Task 6
+//
+// `wb_world_new_coast`, `wb_coast_preset` and `wb_coast_check`: the fourth door onto
+// `build_world`, and the one that carries Task 5's `CoastParams` to a browser.
+//
+// **This channel is swept rather than spot-checked, and the sweep is the whole reason these
+// tests are long.** This project has found three aborts and one ~2,600-second hang by sweeping
+// export inputs and ZERO by spot-checking, and every one was a **band, not a cliff**. Two of
+// this channel's bounds close such a band: `WB_MAX_COAST_OCTAVES` is a per-sample loop bound,
+// and `WB_MAX_COAST_FINEST_FREQUENCY` holds a PRODUCT that three individually-admissible fields
+// compound into and that no per-field ceiling can see.
+
+/// Where the coastal term actually acts, on this file's fixture world.
+///
+/// **These are witnesses, not a scatter.** The term is windowed by `|above_shore|`, so a probe
+/// set chosen for the tectonic channel -- or one scattered uniformly over a sphere that is 71%
+/// open ocean -- would sit outside the coastal band and every coast test above would pass over a
+/// channel that decoded six f64 and threw them away. That is the sixth assertion in this
+/// project to look load-bearing and not be, and the reason the slice ledger's Ruling 1 exists.
+///
+/// **Derived, not picked.** A 0.5-degree global scan of the fixture world (`SEED`, `RADIUS_M`,
+/// 12 plates, land 0.29) compares `Surface::with_coast(.., None)` against
+/// `Some(CoastParams::fractal())` at `resolution_m = 250`: **162,159 of 258,480 sites move**,
+/// and the eight below are the largest movers subject to a 25-degree separation so they are not
+/// eight samples of one bay. The three after them are this file's own existing probes, kept so
+/// the set is not exclusively coastal and a term that leaked into the deep interior would show
+/// up as a *failure* of `the_coastal_term_is_not_a_global_one`.
+const COAST_PROBES: &[(f64, f64)] = &[
+    (-71.5, 38.0),    // 1,267 m of movement under `fractal()`
+    (-73.0, -132.0),  // 1,197 m
+    (3.0, -107.5),    // 1,177 m
+    (-14.5, -20.5),   // 1,155 m
+    (17.5, 57.5),     // 1,140 m
+    (11.5, -174.5),   // 1,122 m
+    (66.0, -82.5),    // 1,066 m
+    (71.5, 141.5),    // 1,062 m
+    (12.0, 34.0),     // the witnessed point
+    (0.0, 0.0),
+    (-18.25, 121.5),  // the harbour
+];
+
+/// A named preset, read across the boundary exactly as the viewer reads it. **Nothing in this
+/// file writes a coast value down**, canonical or preset: both come from `wb_coast_preset`, so
+/// `continentality.rs` stays the one place the numbers live and a test cannot agree with a stale
+/// copy of them.
+fn coast_preset_record(selector: u32) -> [f64; WB_COAST_STRIDE] {
+    let mut record = [0.0; WB_COAST_STRIDE];
+    let status = wb_coast_preset(selector, record.as_mut_ptr(), WB_COAST_STRIDE as u32);
+    assert_eq!(status, WB_OK, "coast preset {selector} must be readable");
+    record
+}
+
+fn canonical_coast_record() -> [f64; WB_COAST_STRIDE] {
+    coast_preset_record(WB_COAST_CANONICAL)
+}
+
+fn world_with_coast(record: &[f64; WB_COAST_STRIDE]) -> u32 {
+    wb_world_new_coast(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        record.as_ptr(),
+        WB_COAST_STRIDE as u32,
+    )
+}
+
+/// Build the world a coast record asks for, walk every probe point, and free it.
+///
+/// **This is where an abort or a hang would happen, and that is the point of calling it.**
+/// `Continentality::with_coast` merely *stores* the block -- it is `above_shore` that reads it,
+/// once per sample -- so a constructor that returned a handle has proved nothing at all about
+/// the record it was given. The octave loop and the frequency product are both walked here and
+/// nowhere earlier.
+fn sample_coast(record: &[f64; WB_COAST_STRIDE], label: &str) -> Vec<f64> {
+    let handle = world_with_coast(record);
+    assert_ne!(handle, 0, "accepted record refused by the constructor: {label} {record:?}");
+    let mut heights = Vec::with_capacity(COAST_PROBES.len());
+    for (lat, lon) in COAST_PROBES {
+        let height = wb_elevation_m(handle, *lat, *lon, RES_M);
+        assert!(
+            height.is_finite(),
+            "accepted record produced a non-finite elevation at ({lat}, {lon}): {label} {record:?}",
+        );
+        // `structural_m` is the other half: the coastal term reaches the SHELF through the same
+        // `Continentality`, so sampling only `elevation_m` would leave half the thing under test
+        // unwatched. A NaN that only appeared in the shelf would be invisible above.
+        let structural = wb_structural_m(handle, *lat, *lon);
+        assert!(
+            structural.is_finite(),
+            "accepted record gave a non-finite structural at ({lat}, {lon}): {label} {record:?}",
+        );
+        heights.push(height);
+    }
+    assert_eq!(wb_world_free(handle), WB_OK);
+    heights
+}
+
+/// The documented domain of each coast field, by its index in `WB_COAST_STRIDE`'s order.
+///
+/// **Written as the constants rather than as numbers**, for the reason `tectonic_field_domain`
+/// gives: a test that restates a bound cannot notice it moving.
+fn coast_field_domain(field: usize) -> (f64, f64) {
+    match field {
+        0 => (WB_MIN_COAST_AMPLITUDE, WB_MAX_COAST_AMPLITUDE),
+        1 => (WB_MIN_COAST_WINDOW_SPREADS, WB_MAX_COAST_WINDOW_SPREADS),
+        // The per-field ceiling on `frequency` IS the finest-octave ceiling: a single octave's
+        // frequency cannot exceed the finest one the schedule reaches. The binding check for
+        // this field is still the product, which is why the ladder runs the whole way to the top
+        // -- at `fractal()`'s four octaves and lacunarity 2, everything above 125,000 is refused
+        // by the PRODUCT while sitting inside this per-field range, and that band is exactly
+        // what a sweep stopping at the first refusal would never see.
+        2 => (WB_MIN_COAST_FREQUENCY, WB_MAX_COAST_FINEST_FREQUENCY),
+        3 => (1.0, f64::from(WB_MAX_COAST_OCTAVES)),
+        4 => (0.0, WB_MAX_COAST_GAIN),
+        5 => (WB_MIN_COAST_LACUNARITY, WB_MAX_COAST_LACUNARITY),
+        _ => unreachable!("WB_COAST_STRIDE is 6"),
+    }
+}
+
+/// Word 3 of a coast record: `octaves`, **the loop bound**. Named because two places below have
+/// to treat it differently from the five f64 fields around it.
+const COAST_OCTAVES_FIELD: usize = 3;
+
+/// Every value one coast field is driven through: `HOSTILE` in full, both documented bounds and
+/// the values immediately either side of each, and a ladder across the admissible interval --
+/// geometric where the domain spans orders of magnitude (`frequency` runs 0.5 to 1e6 and
+/// `window_spreads` 1e-3 to 4, where a linear ladder would put its first rung a long way above
+/// the floor and never sample the small end at all) and linear where it does not.
+///
+/// **The interior values between the sensible ones are the point**, not the endpoints: every
+/// hazard this project has found was a band. `WB_MAX_EROSION_RATE_PER_YR`'s doc records a
+/// negative erodibility where `-9.0e-4` aborts while `-1.0e-2`, `-1.0` and `-1.0e-6` all stay
+/// finite, and a single spot-check at one negative value would have missed it.
+fn coast_field_sweep(field: usize) -> Vec<f64> {
+    let (low, high) = coast_field_domain(field);
+    let mut values: Vec<f64> = HOSTILE.to_vec();
+    for bound in [low, high] {
+        values.extend_from_slice(&[
+            bound,
+            bound - bound.abs() * 1.0e-12,
+            bound + bound.abs() * 1.0e-12,
+            bound * 0.5,
+            bound * 2.0,
+            -bound,
+        ]);
+    }
+    let steps = 24;
+    let geometric = low > 0.0 && high / low >= 1.0e3;
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        values.push(if geometric { low * (high / low).powf(t) } else { low + (high - low) * t });
+    }
+    // **The loop bound is the one field a ladder sweeps badly, and it is the one field where
+    // that matters most** -- exactly as it is for `suture_count`, and for the same reason. Its
+    // domain is the sixteen integers 1..=16 and a 25-rung linear ladder across it is mostly
+    // fractions, which the boundary refuses for being non-integral before the count is ever
+    // exercised. So every integer either side of both ends is added by hand, along with the
+    // values a SATURATING `as u32` would turn into a four-billion-iteration walk PER SAMPLE:
+    // `HOSTILE` already carries `f64::MAX`, `INFINITY` and `1e300`, and `u32::MAX` itself and
+    // its neighbours are added here because they are the exact number a saturating cast
+    // produces and nothing else in this list is.
+    if field == COAST_OCTAVES_FIELD {
+        for integer in -2..=20 {
+            values.push(f64::from(integer));
+        }
+        values.extend_from_slice(&[
+            f64::from(WB_MAX_COAST_OCTAVES) + 1.0,
+            f64::from(u32::MAX),
+            f64::from(u32::MAX) - 1.0,
+            f64::from(u32::MAX) + 1.0,
+            4_294_967_296.0,
+            2.5,
+            1.5,
+            1.0 + f64::EPSILON,
+            2.0 - f64::EPSILON,
+        ]);
+    }
+    values
+}
+
+/// The two bases every coast field is swept around.
+///
+/// **One base is not a sweep of this channel, and the reason is sharper here than it was for the
+/// tectonic one.** `CoastParams::canonical()` carries `amplitude = 0.0`, and
+/// `Continentality::above_shore` branches on exactly that BEFORE it touches the noise -- so
+/// around canonical, `frequency`, `octaves`, `gain` and `lacunarity` are swept with the code
+/// that reads them switched off entirely. Four of the six fields, including **both** halves of
+/// the loop bound and the frequency product, would be swept against a function that returns
+/// early. Around `fractal()` the term is live and every field is read.
+///
+/// The canonical base is kept anyway rather than dropped: it is the base a host reaches by
+/// moving one slider off zero, and the *validator* is exercised there even where the engine is
+/// not.
+fn coast_sweep_bases() -> [(&'static str, [f64; WB_COAST_STRIDE]); 2] {
+    [("canonical", canonical_coast_record()), ("fractal", coast_preset_record(WB_COAST_FRACTAL))]
+}
+
+fn swept_coast_records() -> Vec<(String, [f64; WB_COAST_STRIDE])> {
+    let mut out = Vec::new();
+    for (base_name, base) in coast_sweep_bases() {
+        for field in 0..WB_COAST_STRIDE {
+            for value in coast_field_sweep(field) {
+                let mut record = base;
+                record[field] = value;
+                out.push((format!("{base_name} + coast field {field} = {value:e}"), record));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_coast_field_swept_across_its_whole_range_and_beyond_never_aborts() {
+    let records = swept_coast_records();
+    // A sweep that refused everything would pass a "nothing aborted" assertion trivially, and
+    // one that accepted everything would prove the validator absent. Both counts are asserted.
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for (label, record) in &records {
+        if wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32) == WB_OK {
+            sample_coast(record, label);
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert_eq!(accepted + refused, records.len());
+    assert!(
+        accepted >= 100,
+        "only {accepted} records were accepted; the sweep is not exercising the engine",
+    );
+    assert!(
+        refused >= 100,
+        "only {refused} records were refused; the validator is not doing its job",
+    );
+}
+
+#[test]
+fn the_coast_checker_and_the_constructor_agree_on_every_swept_record() {
+    // Two validators would be two chances to disagree, and the disagreement that matters is
+    // "the checker said yes and the constructor aborted". Held to each other over the identical
+    // population the sweep above uses.
+    for (label, record) in swept_coast_records() {
+        let status = wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32);
+        let handle = world_with_coast(&record);
+        if status == WB_OK {
+            assert_ne!(handle, 0, "checker accepted, constructor refused: {label}");
+            assert_eq!(wb_world_free(handle), WB_OK);
+        } else {
+            assert_eq!(
+                status, WB_ERR_PARAM,
+                "a well-formed buffer refused for a buffer reason: {label}",
+            );
+            assert_eq!(handle, 0, "checker refused, constructor built: {label}");
+        }
+    }
+}
+
+#[test]
+fn the_coast_sweep_is_the_size_it_claims_to_be() {
+    // **The size and shape of the coast sweep, stated as a number rather than left implicit.**
+    // A report that says "the sweep found nothing" is worthless unless the sweep's size is
+    // checkable, and a threshold assertion (`accepted >= 100`) says nothing about how far above
+    // the threshold the run actually was. This pins the counts exactly, so a later change that
+    // halves the sweep -- a field quietly dropped from `coast_field_domain`, a base removed --
+    // turns this red with the two numbers side by side instead of passing at 101.
+    let records = swept_coast_records();
+    let mut accepted = 0usize;
+    for (_, record) in &records {
+        if wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32) == WB_OK {
+            accepted += 1;
+        }
+    }
+    // 2 bases x (5 ordinary fields at 57 values each, plus the octave field's 57 + 32 hand-added
+    // rungs -- a linear ladder over sixteen integers is almost all fractions).
+    assert_eq!(records.len(), 2 * (5 * 57 + 89), "the sweep changed size");
+    assert_eq!(records.len(), 748, "and the arithmetic above says 748");
+    assert_eq!(
+        accepted, COAST_SWEEP_ACCEPTED,
+        "the accepted/refused split moved: {accepted} of {}",
+        records.len()
+    );
+}
+
+/// The accepted half of the coast sweep, pinned. Re-derived on this host by running the sweep;
+/// see `the_coast_sweep_is_the_size_it_claims_to_be` for why a bare threshold is not enough.
+const COAST_SWEEP_ACCEPTED: usize = 392;
+
+#[test]
+fn the_octave_count_loop_bound_is_refused_above_its_ceiling_and_bounded_below_it() {
+    // **`octaves` is a LOOP BOUND and therefore a HANG, not an abort**, and the hang is delivered
+    // by the cast rather than by the caller: `value as u32` in Rust SATURATES, so 1e300 arrives
+    // as `u32::MAX` and `Noise::fbm` walks four billion octaves **per sample** -- once per texel
+    // of every tile. `WB_MAX_SUTURE_COUNT`'s doc records the ~2,600-second measurement that
+    // motivated bounding the other loop bound on this boundary; this is the same shape.
+    //
+    // Every value below is one the cast would turn into something other than what it says.
+    let base = coast_preset_record(WB_COAST_FRACTAL);
+    for hostile in [
+        f64::NAN,
+        -f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        1.0e300,
+        f64::from(u32::MAX),
+        4_294_967_296.0,
+        f64::from(WB_MAX_COAST_OCTAVES) + 1.0,
+        0.0,
+        -0.0,
+        -1.0,
+        // Non-integral: 2.5 would TRUNCATE to 2, which is a silently-adjusted parameter, and
+        // this boundary does not adjust.
+        2.5,
+        1.5,
+        0.5,
+        f64::EPSILON,
+    ] {
+        let mut record = base;
+        record[COAST_OCTAVES_FIELD] = hostile;
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+            "an octave count of {hostile} is not a loop bound this boundary will pass on",
+        );
+        assert_eq!(world_with_coast(&record), 0);
+    }
+    // And every count it WILL pass on is walked, so "bounded" is a measurement rather than a
+    // claim about a number. Sixteen worlds, each sampled at every probe.
+    for count in 1..=WB_MAX_COAST_OCTAVES {
+        let mut record = base;
+        record[COAST_OCTAVES_FIELD] = f64::from(count);
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_OK,
+            "octave count {count} is inside the ceiling and must be admitted",
+        );
+        sample_coast(&record, &format!("octaves {count}"));
+    }
+}
+
+#[test]
+fn the_finest_octave_frequency_is_bounded_as_a_product_no_per_field_ceiling_can_see() {
+    // **THE BAND, AND IT IS NOT AT EITHER END.** `frequency`, `octaves` and `lacunarity` are each
+    // inside their own documented domain at values whose PRODUCT is not: the finest octave is
+    // `frequency * lacunarity^(octaves - 1)`, `Noise::at` floors that coordinate and casts to
+    // `i64`, the cast saturates above ~9.22e18, and the very next line computes `ix + 1` --
+    // which overflows. That is a panic under the test profile's overflow checks (an ABORT across
+    // `extern "C"`) and a wrapped index into a different lattice cell in release (a world nobody
+    // asked for). `WB_MAX_EROSION_NODES`'s doc asks a future caller to "bound the *product*";
+    // this is that, taken.
+    //
+    // Each triple below has all three fields individually admissible.
+    for (frequency, octaves, lacunarity) in [
+        (WB_MAX_COAST_FINEST_FREQUENCY, 16.0, WB_MAX_COAST_LACUNARITY),
+        (WB_MAX_COAST_FINEST_FREQUENCY, 2.0, 2.0),
+        (1.0e5, 8.0, 4.0),
+        (1.0, 16.0, WB_MAX_COAST_LACUNARITY),
+        (1.0e3, 12.0, 8.0),
+    ] {
+        let mut record = coast_preset_record(WB_COAST_FRACTAL);
+        record[2] = frequency;
+        record[COAST_OCTAVES_FIELD] = octaves;
+        record[5] = lacunarity;
+        // **The premise, asserted rather than assumed: each field ALONE is admitted**, so this
+        // record is refused for the product and for nothing else. "Alone" has to mean *with the
+        // other two at their most permissive*, which is one octave at a lacunarity of one -- a
+        // schedule whose finest band IS its base frequency. Asked against `fractal()` itself the
+        // premise would be false and the test would be measuring the wrong thing: `fractal()`
+        // carries four octaves at lacunarity 2, so a frequency of 1e6 there already asks for
+        // 8e6 and is refused by the product before it is refused by anything else.
+        let permissive = {
+            let mut record = coast_preset_record(WB_COAST_FRACTAL);
+            record[COAST_OCTAVES_FIELD] = 1.0;
+            record[5] = WB_MIN_COAST_LACUNARITY;
+            record
+        };
+        for (field, value) in [(2usize, frequency), (COAST_OCTAVES_FIELD, octaves), (5, lacunarity)]
+        {
+            let mut alone = permissive;
+            alone[field] = value;
+            assert_eq!(
+                wb_coast_check(alone.as_ptr(), WB_COAST_STRIDE as u32),
+                WB_OK,
+                "field {field} = {value} must be admissible on its own for this to be a product \
+                 test rather than a per-field one",
+            );
+        }
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+            "frequency {frequency} x lacunarity {lacunarity}^({octaves} - 1) is past the finest \
+             frequency the noise lattice can index",
+        );
+        assert_eq!(world_with_coast(&record), 0);
+    }
+    // And the other side: a triple whose product lands just under the ceiling is ADMITTED and
+    // walked, so the check is a bound rather than a blanket refusal of anything interesting.
+    // 1e6 / 2^15 = 30.517578125, so fifteen doublings from there land exactly on the ceiling.
+    let mut inside = coast_preset_record(WB_COAST_FRACTAL);
+    inside[2] = WB_MAX_COAST_FINEST_FREQUENCY / 32_768.0;
+    inside[COAST_OCTAVES_FIELD] = 16.0;
+    inside[5] = 2.0;
+    assert_eq!(wb_coast_check(inside.as_ptr(), WB_COAST_STRIDE as u32), WB_OK);
+    sample_coast(&inside, "the finest schedule that fits");
+}
+
+#[test]
+fn a_coast_term_that_would_do_nothing_anywhere_is_refused_rather_than_admitted() {
+    // **The silently-dropping-builder shape, three doors onto it.** None of these is a crash and
+    // none is a division by zero: each is a field present in the record, accepted by the
+    // constructor, and contributing exactly nothing at every point on the planet -- with
+    // `amplitude` sitting beside it looking configured. The engine's own guards are checked
+    // against these refusals here rather than assumed to agree with them.
+    let base = coast_preset_record(WB_COAST_FRACTAL);
+
+    // 1. `coast_offset` computes `reach = spread * window_spreads` and closes the window when
+    //    that is not positive.
+    for silent in [0.0, -0.0, -1.0, -4.0, f64::NEG_INFINITY, f64::NAN, 5.0e-324, 1.0e-300] {
+        let mut record = base;
+        record[1] = silent;
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+            "a window width of {silent} is a term that never opens",
+        );
+        assert_eq!(world_with_coast(&record), 0);
+    }
+
+    // 2. A frequency below half a cycle over the unit sphere is a uniform DISPLACEMENT of every
+    //    shore rather than a roughening of any of them.
+    for silent in [0.0, -0.0, -1.0, -20.0, f64::NEG_INFINITY, f64::NAN, 1.0e-300, 0.25] {
+        let mut record = base;
+        record[2] = silent;
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+            "a frequency of {silent} cannot complete a cycle anywhere on the world",
+        );
+        assert_eq!(world_with_coast(&record), 0);
+    }
+
+    // 3. `fbm` with zero octaves returns exactly 0.0 -- `loudest == 0.0` -- so a zero-octave
+    //    record is a coastal term that is read and answers nothing.
+    let mut none = base;
+    none[COAST_OCTAVES_FIELD] = 0.0;
+    assert_eq!(wb_coast_check(none.as_ptr(), WB_COAST_STRIDE as u32), WB_ERR_PARAM);
+    assert_eq!(world_with_coast(&none), 0);
+}
+
+#[test]
+fn a_negative_coast_amplitude_is_refused_because_the_sign_is_not_a_second_parameter() {
+    // The same statement `WB_MIN_MARGIN_WARP_M` makes about the warp: the coast lattice is
+    // zero-mean, so a negative amplitude is the same displacement drawn from the negated field --
+    // a second spelling of "how far", on a field whose whole meaning is how far.
+    let base = coast_preset_record(WB_COAST_FRACTAL);
+    for mirrored in [-f64::MIN_POSITIVE, -0.35, -1.0, -WB_MAX_COAST_AMPLITUDE, f64::NEG_INFINITY] {
+        let mut record = base;
+        record[0] = mirrored;
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+            "an amplitude of {mirrored} is outside this channel's stated domain",
+        );
+        assert_eq!(world_with_coast(&record), 0);
+    }
+    // `-0.0` is NOT refused, and that is deliberate rather than an oversight: `-0.0 >= 0.0` is
+    // true in IEEE 754, `above_shore`'s guard is `amplitude == 0.0` which `-0.0` satisfies, and
+    // the record is therefore exactly as inert as canonical. Refusing it would be refusing a
+    // spelling of the canonical path.
+    let mut negative_zero = base;
+    negative_zero[0] = -0.0;
+    assert_eq!(wb_coast_check(negative_zero.as_ptr(), WB_COAST_STRIDE as u32), WB_OK);
+}
+
+#[test]
+fn the_coast_channel_default_path_is_the_untouched_world() {
+    // RULING 1, and the one property this task is not allowed to break: a null pointer with a
+    // length of zero is `None`, not `Some(canonical())`, and the world it builds is byte-for-byte
+    // the world `wb_world_new` builds.
+    //
+    // **Unlike the tectonic channel, this is not a vacuous pairing.** `CoastParams::canonical()`
+    // does not resolve through an `unwrap_or_else`: `above_shore` matches on the `Option` itself
+    // and early-returns on a zero amplitude, so `None` and `Some(canonical())` reach the same
+    // answer by two different routes and the second arm below is a real comparison.
+    // `a_chosen_coast_block_actually_moves_the_ground_it_claims_to` is the discriminator that
+    // stops this passing over a channel that ignores its argument.
+    let plain = plain_world();
+    let defaulted = wb_world_new_coast(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+    );
+    assert_ne!(defaulted, 0);
+    let explicit_canonical = world_with_coast(&canonical_coast_record());
+    assert_ne!(explicit_canonical, 0);
+
+    for (lat, lon) in COAST_PROBES {
+        for resolution in [RES_M, -1.0] {
+            let expected = wb_elevation_m(plain, *lat, *lon, resolution);
+            assert_eq!(
+                wb_elevation_m(defaulted, *lat, *lon, resolution).to_bits(),
+                expected.to_bits(),
+                "the null coast path moved the world at ({lat}, {lon})",
+            );
+            assert_eq!(
+                wb_elevation_m(explicit_canonical, *lat, *lon, resolution).to_bits(),
+                expected.to_bits(),
+                "an explicit canonical record moved the world at ({lat}, {lon})",
+            );
+        }
+        let expected = wb_structural_m(plain, *lat, *lon);
+        assert_eq!(wb_structural_m(defaulted, *lat, *lon).to_bits(), expected.to_bits());
+        assert_eq!(wb_structural_m(explicit_canonical, *lat, *lon).to_bits(), expected.to_bits());
+    }
+    for handle in [plain, defaulted, explicit_canonical] {
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+}
+
+#[test]
+fn a_chosen_coast_block_actually_moves_the_ground_it_claims_to() {
+    // The whole point of the task, asserted at the boundary rather than three modules down.
+    // Without this, every test above would pass over a channel that decoded six f64 and threw
+    // them away.
+    let canonical = sample_coast(&canonical_coast_record(), "canonical");
+    let fractal = sample_coast(&coast_preset_record(WB_COAST_FRACTAL), "fractal");
+    assert_eq!(fractal.len(), canonical.len());
+    let moved = fractal
+        .iter()
+        .zip(&canonical)
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
+    // Eight of the eleven probes are coastal witnesses and were derived as the largest movers on
+    // this world, so a majority moving is the claim rather than "at least one".
+    assert!(moved >= 8, "the fractal preset moved only {moved} of {} probes", fractal.len());
+
+    // And the amplitude is the knob, separately: it is the ONE field `fractal()` moves, so a
+    // channel that read the other five and dropped this one would still pass the pairing above.
+    let mut half = coast_preset_record(WB_COAST_FRACTAL);
+    half[0] /= 2.0;
+    let halved = sample_coast(&half, "half amplitude");
+    assert!(
+        halved.iter().zip(&fractal).any(|(a, b)| a.to_bits() != b.to_bits()),
+        "halving the amplitude changed nothing at any probe",
+    );
+
+    // And the frequency, which is the field the canonical base cannot see at all.
+    let mut coarse = coast_preset_record(WB_COAST_FRACTAL);
+    coarse[2] /= 4.0;
+    let coarsened = sample_coast(&coarse, "quarter frequency");
+    assert!(
+        coarsened.iter().zip(&fractal).any(|(a, b)| a.to_bits() != b.to_bits()),
+        "quartering the frequency changed nothing at any probe",
+    );
+}
+
+#[test]
+fn the_coastal_term_is_not_a_global_one() {
+    // The term is windowed by `|above_shore|`, and the window is the property that keeps land
+    // fraction where the calibrator put it. **A term that moved every point on the planet would
+    // satisfy every other test in this file** -- including the one above, which only asks that
+    // points move. So the complement is asserted: over a 4-degree global grid there must be a
+    // substantial population the fractal preset leaves BIT-IDENTICAL.
+    let canonical = world_with_coast(&canonical_coast_record());
+    let fractal = world_with_coast(&coast_preset_record(WB_COAST_FRACTAL));
+    assert_ne!(canonical, 0);
+    assert_ne!(fractal, 0);
+    let mut same = 0usize;
+    let mut moved = 0usize;
+    let mut latitude = -88.0;
+    while latitude <= 88.0 {
+        let mut longitude = -180.0;
+        while longitude < 180.0 {
+            let a = wb_elevation_m(canonical, latitude, longitude, RES_M);
+            let b = wb_elevation_m(fractal, latitude, longitude, RES_M);
+            if a.to_bits() == b.to_bits() {
+                same += 1;
+            } else {
+                moved += 1;
+            }
+            longitude += 4.0;
+        }
+        latitude += 4.0;
+    }
+    assert!(same > 1_000, "only {same} of {} grid points were left alone", same + moved);
+    assert!(moved > 1_000, "only {moved} of {} grid points moved at all", same + moved);
+    assert_eq!(wb_world_free(canonical), WB_OK);
+    assert_eq!(wb_world_free(fractal), WB_OK);
+}
+
+#[test]
+fn wb_coast_preset_hands_back_the_engines_own_blocks_and_nothing_else() {
+    // The preset export exists so no host transcribes a default or a preset. It must therefore
+    // BE them, in `WB_COAST_STRIDE` order, compared against the module's own values rather than
+    // against a third copy written here.
+    for (selector, expected) in
+        [(WB_COAST_CANONICAL, CoastParams::canonical()), (WB_COAST_FRACTAL, CoastParams::fractal())]
+    {
+        let record = coast_preset_record(selector);
+        assert_eq!(record[0].to_bits(), expected.amplitude.to_bits());
+        assert_eq!(record[1].to_bits(), expected.window_spreads.to_bits());
+        assert_eq!(record[2].to_bits(), expected.frequency.to_bits());
+        assert_eq!(record[3].to_bits(), f64::from(expected.octaves).to_bits());
+        assert_eq!(record[4].to_bits(), expected.gain.to_bits());
+        assert_eq!(record[5].to_bits(), expected.lacunarity.to_bits());
+        // Every preset must be a record this channel would accept. A preset the checker refuses
+        // is a button that produces a blank viewer.
+        assert_eq!(wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32), WB_OK);
+    }
+    // `fractal()` moves exactly ONE field off canonical, which is what makes the panel's single
+    // slider an honest presentation of it.
+    let canonical = canonical_coast_record();
+    let fractal = coast_preset_record(WB_COAST_FRACTAL);
+    let differing =
+        (0..WB_COAST_STRIDE).filter(|i| canonical[*i].to_bits() != fractal[*i].to_bits()).count();
+    assert_eq!(differing, 1, "fractal() moves {differing} fields, not one");
+    assert_ne!(fractal[0].to_bits(), canonical[0].to_bits(), "and the one field is the amplitude");
+
+    // An unknown selector is a parameter error and writes nothing.
+    let mut out = [7.0; WB_COAST_STRIDE];
+    for unknown in [2u32, 3, u32::MAX] {
+        assert_eq!(
+            wb_coast_preset(unknown, out.as_mut_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+        );
+    }
+    assert!(out.iter().all(|v| *v == 7.0), "a refused selector wrote into the buffer");
+}
+
+#[test]
+fn every_amplitude_the_panel_slider_can_reach_is_a_block_the_engine_accepts() {
+    // **The panel's travel, held against the real validator.** `viewer/public/app/coast-params.js`
+    // maps an integer slider position to `canonical.amplitude + position / 20`, from 0 to 15 --
+    // 0.00 to 0.75, the top of the band Task 5 measured as useful. A control most of whose travel
+    // the engine refuses is worse than no control, and the tectonic channel's own version of this
+    // test is what caught `margin_warp_m` having one live position.
+    //
+    // The arithmetic is restated here rather than imported because a Rust test cannot import a JS
+    // module; `viewer/test/coast-params.test.mjs` holds the JS side against the shipped `.wasm`
+    // and this holds the same lattice against the native build, so a drift between them fails on
+    // one side or the other.
+    let canonical = canonical_coast_record();
+    for position in 0..=15 {
+        let mut record = canonical;
+        record[0] = canonical[0] + f64::from(position) / 20.0;
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_OK,
+            "slider position {position} asks for an amplitude the engine refuses",
+        );
+    }
+    // Position 0 must be canonical BIT-FOR-BIT, or an untouched panel writes an amplitude into
+    // every shared link and takes the reload off the engine's `None` path.
+    assert_eq!((canonical[0] + 0.0 / 20.0).to_bits(), canonical[0].to_bits());
+    // And the preset's own value must land ON the lattice, or the slider cannot express the
+    // number its own preset button sets -- the panel-default defect this viewer has shipped four
+    // times. `7 / 20` and not `7 * 0.05`: the second is one ULP out.
+    assert_eq!(
+        (canonical[0] + 7.0 / 20.0).to_bits(),
+        coast_preset_record(WB_COAST_FRACTAL)[0].to_bits(),
+    );
+}
+
+#[test]
+fn the_coast_buffer_channel_refuses_what_it_cannot_read() {
+    let record = canonical_coast_record();
+    // Null with a length is a caller mistake, not a request for canonical.
+    assert_eq!(wb_coast_check(core::ptr::null(), WB_COAST_STRIDE as u32), WB_ERR_BUFFER);
+    // Non-null with a length of zero is a host that computed a length wrong.
+    assert_eq!(wb_coast_check(record.as_ptr(), 0), WB_ERR_BUFFER);
+    // Null with zero IS canonical.
+    assert_eq!(wb_coast_check(core::ptr::null(), 0), WB_OK);
+    for length in [1u32, 5, 7, 8, 10, 16, u32::MAX] {
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), length),
+            WB_ERR_BUFFER,
+            "a {length}-word coast record is not a coast record",
+        );
+    }
+    // Misaligned: one byte into an f64-sized buffer.
+    let mut bytes = [0u8; WB_COAST_STRIDE * 8 + 8];
+    let misaligned = unsafe { bytes.as_mut_ptr().add(1) } as *const f64; // cast-ok: a deliberately misaligned pointer for the alignment check
+    assert_eq!(wb_coast_check(misaligned, WB_COAST_STRIDE as u32), WB_ERR_BUFFER);
+
+    // The constructor refuses the same things, with a handle of 0 rather than a status.
+    for (ptr, len) in [
+        (core::ptr::null(), WB_COAST_STRIDE as u32),
+        (record.as_ptr(), 0u32),
+        (record.as_ptr(), 4u32),
+    ] {
+        assert_eq!(
+            wb_world_new_coast(
+                SEED,
+                RADIUS_M,
+                PLATES,
+                LAND,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                ptr,
+                len,
+            ),
+            0,
+        );
+    }
+    // A bad buffer for the OUT parameter of the preset export.
+    let mut out = [0.0; WB_COAST_STRIDE];
+    assert_eq!(
+        wb_coast_preset(WB_COAST_CANONICAL, core::ptr::null_mut(), WB_COAST_STRIDE as u32),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(wb_coast_preset(WB_COAST_CANONICAL, out.as_mut_ptr(), 0), WB_ERR_BUFFER);
+    assert_eq!(wb_coast_preset(WB_COAST_CANONICAL, out.as_mut_ptr(), 5), WB_ERR_BUFFER);
+}
+
+#[test]
+fn the_fourth_door_carries_the_other_three_blocks_unchanged() {
+    // `wb_world_new_coast` is `wb_world_new_tectonic` plus one record, and all four doors are one
+    // `build_world` behind the boundary. **That is a claim about the other three channels still
+    // working through this one**, and a channel that dropped its relief or tectonic argument on
+    // the way through would look identical from every test above.
+    let relief = {
+        let mut record = [0.0; WB_RELIEF_STRIDE];
+        assert_eq!(
+            wb_relief_preset(WB_RELIEF_HILLS, record.as_mut_ptr(), WB_RELIEF_STRIDE as u32),
+            WB_OK,
+        );
+        record
+    };
+    let tectonics = tectonic_preset_record(WB_TECTONIC_RANGES);
+    let coast = coast_preset_record(WB_COAST_FRACTAL);
+
+    let through_the_third = wb_world_new_tectonic(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        relief.as_ptr(),
+        WB_RELIEF_STRIDE as u32,
+        tectonics.as_ptr(),
+        WB_TECTONIC_STRIDE as u32,
+    );
+    let through_the_fourth = wb_world_new_coast(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        relief.as_ptr(),
+        WB_RELIEF_STRIDE as u32,
+        tectonics.as_ptr(),
+        WB_TECTONIC_STRIDE as u32,
+        core::ptr::null(),
+        0,
+    );
+    let with_coast = wb_world_new_coast(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        relief.as_ptr(),
+        WB_RELIEF_STRIDE as u32,
+        tectonics.as_ptr(),
+        WB_TECTONIC_STRIDE as u32,
+        coast.as_ptr(),
+        WB_COAST_STRIDE as u32,
+    );
+    assert_ne!(through_the_third, 0);
+    assert_ne!(through_the_fourth, 0);
+    assert_ne!(with_coast, 0);
+
+    let mut differs = 0usize;
+    for (lat, lon) in COAST_PROBES {
+        let third = wb_elevation_m(through_the_third, *lat, *lon, RES_M);
+        assert_eq!(
+            wb_elevation_m(through_the_fourth, *lat, *lon, RES_M).to_bits(),
+            third.to_bits(),
+            "the fourth door with a null coast is not the third door at ({lat}, {lon})",
+        );
+        if wb_elevation_m(with_coast, *lat, *lon, RES_M).to_bits() != third.to_bits() {
+            differs += 1;
+        }
+    }
+    // And the coast block still bites when the other two are non-canonical, which is the
+    // interaction a single-channel test cannot see.
+    assert!(differs >= 8, "the coast block moved only {differs} probes under a relief+tectonic world");
+    for handle in [through_the_third, through_the_fourth, with_coast] {
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+}
+
+#[test]
+fn the_octave_schedule_is_swept_as_a_cross_product_because_the_hazard_is_a_product() {
+    // **A one-field-at-a-time sweep cannot find this channel's abort, and that is not a
+    // hypothetical.** `swept_coast_records` moves one word off a base and leaves the rest alone,
+    // so the largest finest-octave frequency it ever asks for is `1e6 * 2^3 = 8e6` (the top of
+    // the `frequency` ladder against `fractal()`'s four octaves) -- twelve orders below the
+    // `i64` saturation in `Noise::at` that ends in an `ix + 1` overflow. The band lives where
+    // three fields meet, and only a cross product reaches it.
+    //
+    // **Measured, not argued.** With the product check removed from `coast_is_admissible` and
+    // nothing else changed, this test ABORTS -- `attempt to add with overflow`, `noise.rs:95`,
+    // inside `Noise::at`, reached through `wb_elevation_m`. The single-field sweep above stays
+    // green under the same mutation. That is recorded in the task report's mutation table.
+    let base = coast_preset_record(WB_COAST_FRACTAL);
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for frequency in [WB_MIN_COAST_FREQUENCY, 20.0, 1.0e3, 1.0e5, WB_MAX_COAST_FINEST_FREQUENCY] {
+        for octaves in [1.0, 2.0, 4.0, 8.0, 12.0, f64::from(WB_MAX_COAST_OCTAVES)] {
+            for lacunarity in [
+                WB_MIN_COAST_LACUNARITY,
+                2.0,
+                4.0,
+                8.0,
+                WB_MAX_COAST_LACUNARITY,
+            ] {
+                let mut record = base;
+                record[2] = frequency;
+                record[COAST_OCTAVES_FIELD] = octaves;
+                record[5] = lacunarity;
+                let label = format!("f={frequency:e} o={octaves} l={lacunarity}");
+                if wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32) == WB_OK {
+                    sample_coast(&record, &label);
+                    accepted += 1;
+                } else {
+                    assert_eq!(world_with_coast(&record), 0, "checker refused, constructor built: {label}");
+                    refused += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(accepted + refused, 5 * 6 * 5);
+    // Neither side trivial: a grid that refused everything would pass "nothing aborted" for
+    // free, and one that accepted everything would prove the product check absent.
+    assert!(accepted >= 20, "only {accepted} of {} schedules were accepted", accepted + refused);
+    assert!(refused >= 20, "only {refused} of {} schedules were refused", accepted + refused);
+}
+
+#[test]
+fn the_amplitude_and_the_window_are_swept_together_not_one_at_a_time() {
+    // The other pair on this channel that interacts: `coast_offset` multiplies
+    // `amplitude * spread * window(|above_shore| / (spread * window_spreads))`, so the amplitude
+    // decides how far the coast moves and the window decides over how wide a band it is allowed
+    // to -- and the two together decide whether the displacement can carry a point out of the
+    // band the window drew for it. A sweep of either alone rides the other at its preset value.
+    //
+    // Every combination is admissible by construction (both ladders are inside their own
+    // domains), so what this test watches for is an abort or a non-finite sample, which
+    // `sample_coast` asserts at every probe.
+    let base = coast_preset_record(WB_COAST_FRACTAL);
+    let mut built = 0usize;
+    for amplitude in [
+        WB_MIN_COAST_AMPLITUDE,
+        0.1,
+        0.35,
+        0.75,
+        1.5,
+        WB_MAX_COAST_AMPLITUDE,
+    ] {
+        for window in [
+            WB_MIN_COAST_WINDOW_SPREADS,
+            0.01,
+            0.25,
+            1.0,
+            2.0,
+            WB_MAX_COAST_WINDOW_SPREADS,
+        ] {
+            let mut record = base;
+            record[0] = amplitude;
+            record[1] = window;
+            assert_eq!(
+                wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+                WB_OK,
+                "amplitude {amplitude} at window {window} is inside both domains and must be \
+                 admitted",
+            );
+            sample_coast(&record, &format!("a={amplitude} w={window}"));
+            built += 1;
+        }
+    }
+    assert_eq!(built, 36);
+}
+
+#[test]
+fn a_gain_above_one_is_refused_because_it_runs_the_octave_schedule_backwards_and_ends_in_a_nan() {
+    // **The band, measured.** `Noise::fbm` multiplies its running amplitude by `gain` each
+    // octave; far enough above one the amplitude overflows to `+inf`, `loudest` overflows with
+    // it, and `2.0 * total / loudest` is `inf / inf` -- a NaN in `above_shore`. That NaN does
+    // **not** surface as a NaN: `elevation_from_above` fails both of its comparisons and returns
+    // the abyssal floor, so the planet drowns silently and every finiteness assertion stays
+    // green. See `a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one`, which
+    // is why this ceiling is a refusal rather than something left to a downstream check.
+    //
+    // Measured on the coast lattice at `frequency = 20`, `lacunarity = 2`, this host:
+    //
+    //     gain      1e20   1e21   1e50   1e102   1e103   1e300
+    //     4 octaves  fin    fin    fin     fin     NaN     NaN
+    //     16 octaves fin    NaN    NaN     NaN     NaN     NaN
+    //
+    // **A band whose edge moves with another field**, which is the shape every hazard this
+    // project has found has had, and the reason nothing here is spot-checked: a probe at
+    // `gain = 1e20` finds nothing, one at `1e100` finds nothing at four octaves and a NaN at
+    // sixteen, and the value in between is where the edge actually is.
+    //
+    // The ceiling is drawn at 1.0 rather than at the measured edge because above one the
+    // parameter has already stopped meaning what its name says -- each octave louder than the
+    // last -- and a domain the caller cannot use is not worth the eighteen orders of margin.
+    let base = coast_preset_record(WB_COAST_FRACTAL);
+    for hostile in [
+        WB_MAX_COAST_GAIN + f64::EPSILON,
+        1.5,
+        2.0,
+        1.0e20,
+        1.0e21,
+        1.0e103,
+        1.0e300,
+        f64::MAX,
+        f64::INFINITY,
+        f64::NAN,
+        -f64::MIN_POSITIVE,
+        -0.5,
+        f64::NEG_INFINITY,
+    ] {
+        let mut record = base;
+        record[4] = hostile;
+        assert_eq!(
+            wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32),
+            WB_ERR_PARAM,
+            "a gain of {hostile} is outside this channel's stated domain",
+        );
+        assert_eq!(world_with_coast(&record), 0);
+    }
+    // And every gain it does admit is walked, including the two ends. Zero is admitted and is
+    // NOT a silence: at `gain = 0` the first octave carries its full amplitude and `loudest`
+    // is 1, so the term still acts -- it is simply one octave wearing four octaves' name.
+    for gain in [0.0, 0.25, 0.5, 0.75, WB_MAX_COAST_GAIN] {
+        let mut record = base;
+        record[4] = gain;
+        assert_eq!(wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32), WB_OK);
+        sample_coast(&record, &format!("gain {gain}"));
+    }
+}
+
+#[test]
+fn a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one() {
+    // **Why `WB_MAX_COAST_GAIN` is a refusal and not a finiteness check downstream.**
+    //
+    // `sample_coast` asserts every accepted record produces a finite elevation, and that
+    // assertion is weaker than it looks: `Continentality::elevation_from_above` reads
+    // `if above >= 0.0` and then `if depth < 1.0`, and **a NaN fails both**, so it falls through
+    // to `ABYSS_M * 1.0`. A NaN in the coastal term therefore does not appear as a NaN anywhere
+    // a caller can see -- it appears as a planet whose coastal band is uniformly at the abyssal
+    // floor, passing every health check this crate has.
+    //
+    // This is reached through the ENGINE rather than through the export, deliberately: the
+    // boundary now refuses every gain that can produce it, so there is no record
+    // `wb_world_new_coast` will accept that gets here. That is the point -- the refusal is what
+    // stands between a host and this world -- and the behaviour it stands in front of is pinned
+    // here so the constant's doc cannot drift away from the code.
+    let drowning = CoastParams { gain: 1.0e300, ..CoastParams::fractal() };
+    // The boundary refuses it. If this ever stops being true, the rest of the test is the
+    // description of what a host would then be able to build.
+    let mut record = coast_preset_record(WB_COAST_FRACTAL);
+    record[4] = drowning.gain;
+    assert_eq!(wb_coast_check(record.as_ptr(), WB_COAST_STRIDE as u32), WB_ERR_PARAM);
+
+    let surface =
+        Surface::with_coast(SEED, RADIUS_M, PLATES as usize, LAND, None, None, None, Some(drowning));
+    let mut drowned = 0usize;
+    let mut nan_seen = 0usize;
+    for (lat, lon) in COAST_PROBES {
+        let point = SpherePoint::from_latlon(*lat, *lon);
+        let elevation = surface.elevation_m(&point, Some(RES_M));
+        if elevation.is_nan() {
+            nan_seen += 1;
+        }
+        // The abyssal floor, within the detail and shelf terms that ride on top of it.
+        if elevation < -4_000.0 {
+            drowned += 1;
+        }
+    }
+    assert_eq!(nan_seen, 0, "the NaN surfaced after all -- this test's premise has changed");
+    assert!(
+        drowned >= COAST_PROBES.len() - 1,
+        "only {drowned} of {} probes drowned; the failure mode is not what the ceiling's doc says",
+        COAST_PROBES.len(),
     );
 }

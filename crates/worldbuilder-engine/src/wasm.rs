@@ -93,6 +93,7 @@ use std::alloc as sys;
 use std::alloc::Layout;
 use std::cell::RefCell;
 
+use crate::continentality::CoastParams;
 use crate::detail::ReliefParams;
 use crate::erosion::{erode_to_convergence, receiver_distances_m, ErosionParams, ErosionRun};
 use crate::features::Feature;
@@ -659,6 +660,199 @@ pub const WB_MAX_MARGIN_WARP_WAVELENGTH_M: f64 = WB_MAX_WORLD_RADIUS_M;
 /// and five times clear of this ceiling.
 pub const WB_MAX_STRUCTURE_WAVELENGTH_M: f64 = MAX_TECTONIC_RANGE_M;
 
+// ------------------------------------------------------- the coastal channel, Task 6
+//
+// The fractal-coastline slice, Task 6. Task 5 built `CoastParams` -- a separate roughening
+// term windowed by `|above_shore|`, applied AFTER calibration so land fraction cannot move --
+// measured it (the coastline ratio GROWS with measurement resolution, 1.358 at a 100 km ruler
+// to 1.639 at 12.5 km, while a deliberately smooth control at the same amplitude sits flat at
+// 1.02-1.03; inlet heads 2 -> 175), and then **stopped at this boundary**. Its own report says
+// so in as many words: "there is no `wb_world_new_coast` ... the owner cannot see this yet."
+// This is that door.
+//
+// Same shape as the relief and tectonic channels above, for the third time: a flat f64 record
+// in a documented order, a preset export so no host transcribes a number, a checker that
+// answers *why* rather than only *that*, and a constructor that refuses a record entire rather
+// than admitting it with one field adjusted. **Nothing here clamps.**
+
+/// f64 words per coast record, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `amplitude` |
+/// | 1 | `window_spreads` |
+/// | 2 | `frequency` |
+/// | 3 | `octaves` -- **an integer carried as an f64, and a LOOP BOUND**, see [`WB_MAX_COAST_OCTAVES`] |
+/// | 4 | `gain` |
+/// | 5 | `lacunarity` |
+///
+/// That is `CoastParams`'s own declaration order, and [`wb_coast_preset`] writes it in exactly
+/// this order so a host never has to transcribe a value.
+pub const WB_COAST_STRIDE: usize = 6;
+
+/// [`wb_coast_preset`] selector: `CoastParams::canonical()`, today's six values and the `None`
+/// path's exact equivalent. Its `amplitude` is exactly 0.0 and `Continentality::above_shore`
+/// branches on that before sampling, so this preset is inert by construction.
+pub const WB_COAST_CANONICAL: u32 = 0;
+
+/// [`wb_coast_preset`] selector: `CoastParams::fractal()`, the preset Task 5 swept and chose.
+///
+/// **It crosses as FIELDS, never as a name**, the same Ruling 7 the tectonic preset is held to:
+/// the panel receives six numbers, puts the one it has calibrated travel for on a slider and
+/// shows the other five, so the owner sees what the preset asked for.
+pub const WB_COAST_FRACTAL: u32 = 1;
+
+/// The floor on `amplitude`. **A magnitude, and the sign is not a second parameter** -- the
+/// same statement [`WB_MIN_MARGIN_WARP_M`] makes, for the same reason.
+///
+/// `coast_offset` multiplies `amplitude * spread * window * field`, and the coast lattice is
+/// zero-mean, so a negative amplitude is the same displacement drawn from the negated field.
+/// That is not a shape a caller can want and cannot ask for otherwise; it is a second spelling
+/// of "how far", on a field whose whole meaning is how far. Exactly 0.0 is admitted, because
+/// 0.0 is what `canonical()` carries and the canonical record must cross this channel.
+pub const WB_MIN_COAST_AMPLITUDE: f64 = 0.0;
+
+/// The ceiling on `amplitude`, in multiples of `spread`. **A domain statement with margin, and
+/// the useful band is far below it** -- Task 5 measured the whole travel and this is not it.
+///
+/// The measured band on the owner's world (seed 562423712, R = 4,500,000 m, 28 plates, land
+/// 0.16, a 25 km grid) is **0.10 to 0.75**: below 0.10 the coast lengthens by under 3% and the
+/// inlet count is single digits, and from 0.75 upward the small-island count runs away
+/// (17 -> 23 -> 28) while the >= 100,000 km2 count stays flat at 9-10, which is speckle rather
+/// than new continents. `fractal()` takes 0.35 and the panel's slider stops at 0.75.
+///
+/// This ceiling sits at **four**, above every row Task 5 swept (its table stops at 1.5), and it
+/// is a domain statement rather than a measured hazard: `elevation_from_above` saturates at
+/// `|above| >= 1` and the window is bounded by 1, so no amplitude in this range can make an
+/// elevation non-finite. That is asserted by *sampling* every accepted record in the sweep
+/// rather than by argument -- the posture [`WB_MAX_TECTONIC_AMPLITUDE_M`] takes, and for the
+/// reason its doc gives: the hazards this project has found were bands nobody would have picked
+/// by hand.
+pub const WB_MAX_COAST_AMPLITUDE: f64 = 4.0;
+
+/// The floor on `window_spreads`. **A silence, not a crash**, and the same shape
+/// [`WB_MIN_STRUCTURE_WAVELENGTH_M`] closes.
+///
+/// `Continentality::coast_offset` computes `reach = spread * window_spreads` and closes the
+/// window entirely when that is not positive -- so a zero, negative or NaN width is a term
+/// present in the record, accepted by the constructor, and contributing exactly nothing at
+/// every point on the planet, with `amplitude` sitting beside it looking configured. The
+/// silently-dropping-builder shape.
+///
+/// **And a strictly-positive floor would not close it**, which is why this is a number rather
+/// than `> 0.0`: `calibrate` floors `spread` at `1e-6`, so any `window_spreads` below about
+/// `2.2e-302` underflows the product to exactly zero and reaches the same silence from inside a
+/// strict inequality. This floor is twelve orders above that underflow -- margin, not the
+/// measured edge, the same posture [`WB_MAX_WORLD_RADIUS_M`] takes -- and a band a thousandth
+/// of `spread` wide is already far narrower than the shore feature it is meant to roughen.
+pub const WB_MIN_COAST_WINDOW_SPREADS: f64 = 1.0e-3;
+
+/// The ceiling on `window_spreads`, in multiples of `spread`.
+///
+/// **Nothing above 1.0 buys much, and that is derived rather than asserted**:
+/// `Continentality::base_elevation` normalises `above_shore` by `spread` and
+/// `elevation_from_above` saturates at `|above| >= 1`, so past one spread from the shore the
+/// drawn ground is already at its plateau and displacing it further cannot change what is
+/// drawn. `canonical()` therefore carries exactly 1.0.
+///
+/// The ceiling is four rather than one because the window is not the only reader of
+/// `above_shore` -- `shelf.rs` weights on the coast and `tectonics.rs` probes inboard along a
+/// margin -- so a caller may legitimately want a band wider than the one the hypsometric curve
+/// can show. Stated here so nobody reads this ceiling as a useful setting.
+pub const WB_MAX_COAST_WINDOW_SPREADS: f64 = 4.0;
+
+/// The floor on `frequency`, **derived from the sphere the field is sampled on**.
+///
+/// `Continentality::coast_offset` hands the point's unit-sphere coordinates straight to
+/// `Noise::fbm`, so the noise-space extent of the whole planet is a diameter of 2 in each
+/// coordinate. A frequency below one half therefore cannot complete a single cycle anywhere on
+/// the world: the term becomes a near-constant displacement of the entire coastline -- every
+/// shore moved the same way -- rather than a roughening of it, while `amplitude` sits beside it
+/// reading as a roughness. Same silently-dropping-builder shape as a zero-width profile, and
+/// the same answer.
+pub const WB_MIN_COAST_FREQUENCY: f64 = 0.5;
+
+/// The ceiling on `octaves`, and **this is the loop bound**.
+///
+/// `Noise::fbm` runs `for _ in 0..octaves`, once per sample, and a sample is taken per texel of
+/// every tile. `octaves` crosses this channel as an f64 word, and `value as u32` in Rust
+/// **saturates**: 1e300 would arrive as `u32::MAX` and every elevation on the planet would walk
+/// four billion noise evaluations. That is a **HANG, not an abort**, and it is the shape this
+/// project has already found once -- see [`WB_MAX_SUTURE_COUNT`], whose doc records the
+/// ~2,600-second measurement that motivated bounding it. `decode_coast_octaves` refuses a word
+/// that is not finite, exactly integral and inside this ceiling *before* the cast, and
+/// `coast_is_admissible` states the same bound a second time for a caller that built its
+/// `CoastParams` in Rust.
+///
+/// **16 is four times the measured setting.** `canonical()` carries 4, and at `frequency = 20`
+/// with `lacunarity = 2` a sixteenth octave sits at 655,360 cycles over the sphere -- a
+/// wavelength of about 43 m of arc on the owner's 4,500,000 m planet, three orders below the
+/// finest post spacing any tile in this viewer asks for. Nothing above this buys a feature
+/// anyone can see; the margin is margin.
+pub const WB_MAX_COAST_OCTAVES: u32 = 16;
+
+/// The ceiling on `gain`, and the floor is zero.
+///
+/// `Noise::fbm` multiplies the running amplitude by `gain` each octave, so a gain above one
+/// makes each octave **louder** than the one before it: `frequency` stops naming the finest
+/// band, `octaves` stops being a detail count, and the parameter that reads as "how quickly the
+/// detail fades" is running the schedule backwards. Far enough above one the amplitude overflows
+/// to `+inf`, `loudest` overflows with it, and `2.0 * total / loudest` is `inf / inf` -- **a NaN
+/// in `above_shore`**.
+///
+/// **And a NaN there does NOT show up as a NaN, which is the reason this ceiling is drawn rather
+/// than left to a finiteness assertion downstream.** `Continentality::elevation_from_above` reads
+/// `if above >= 0.0` (false for NaN) and then `if depth < 1.0` (false for NaN), so a NaN falls
+/// through both comparisons to `ABYSS_M * 1.0`: **every affected point silently becomes the
+/// deepest abyss and every `is_finite` check in this crate stays green.** Measured, on the
+/// fixture world at `gain = 1e300`: `above_shore` is NaN at all three probes and `elevation_m`
+/// reads -4,599 m to -4,625 m. A drowned planet that passes its own health checks is worse than
+/// a refusal, and worse than a NaN. `a_nan_in_the_coastal_term_drowns_the_world_rather_than_
+/// showing_as_one` pins that behaviour so this paragraph cannot go stale.
+///
+/// Zero is admitted and is not a silence: at `gain = 0` the first octave still carries its full
+/// amplitude and `loudest` is 1.
+pub const WB_MAX_COAST_GAIN: f64 = 1.0;
+
+/// The floor on `lacunarity`. Below one the octave schedule runs **coarse**, not fine: each
+/// octave's frequency is smaller than the last, so `frequency` names the finest band instead of
+/// the coarsest and [`WB_MAX_COAST_FINEST_FREQUENCY`]'s product check -- which multiplies
+/// forward -- would be watching the wrong end. At or below zero the frequency alternates sign
+/// or collapses to a constant. One is admitted and means every octave at the same frequency.
+pub const WB_MIN_COAST_LACUNARITY: f64 = 1.0;
+
+/// The ceiling on `lacunarity`. A domain statement; `canonical()` carries 2.0, the doubling
+/// every octave schedule in this engine uses. **The binding check is not this one** -- it is
+/// [`WB_MAX_COAST_FINEST_FREQUENCY`], which holds the *product* this field compounds into.
+pub const WB_MAX_COAST_LACUNARITY: f64 = 16.0;
+
+/// **The ceiling on the FINEST octave's frequency, which is the one bound on this channel that
+/// closes a measured abort -- and no per-field ceiling can see it.**
+///
+/// `Noise::fbm` multiplies the frequency by `lacunarity` once per octave, so the finest band a
+/// record asks for is `frequency * lacunarity^(octaves - 1)`. Three fields compound into that
+/// product and every one of them is individually inside its own domain at values whose product
+/// is not: `frequency = 1e6`, `lacunarity = 16` and `octaves = 16` are each admissible alone and
+/// together ask for `1e6 * 16^15`, about `1.15e24`.
+///
+/// **That is an abort.** `Noise::at` floors each coordinate and casts to `i64`; the cast
+/// SATURATES at `i64::MAX` for anything above about `9.22e18`, and the very next line computes
+/// `ix + 1`, which overflows -- a panic under the overflow checks Rust's dev and test profiles
+/// enable by default, and a wrapped index into a different lattice cell in release. It is the
+/// same hazard [`WB_MAX_WORLD_RADIUS_M`]'s doc records reaching through a huge radius, arrived
+/// at from the other side. A panic across `extern "C"` is an abort; a silently wrapped lattice
+/// index is a world nobody asked for. Neither is acceptable and this refuses both.
+///
+/// **This is the "bound the product" lesson [`WB_MAX_EROSION_NODES`]'s doc asks for, taken.**
+/// That doc records two ceilings that are individually safe and jointly a month of work, and
+/// says a future caller "must bound the *product*". This channel does, in code, in
+/// `coast_is_admissible`, by walking the octave schedule the engine itself will walk.
+///
+/// 1e6 is twelve orders below the saturation point and is itself far past useful: a frequency of
+/// 1e6 over the unit sphere is a wavelength of about 4.5 m of arc on the owner's planet, well
+/// below any post spacing the viewer asks for.
+pub const WB_MAX_COAST_FINEST_FREQUENCY: f64 = 1.0e6;
+
 /// The ceiling on `plate_count`, and it is a *refusal*, not a clamp.
 ///
 /// Every sample walks the plate table and `Surface::new` builds it, so a plate count in the
@@ -709,6 +903,9 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_world_new_tectonic",
     "wb_tectonic_preset",
     "wb_tectonic_check",
+    "wb_world_new_coast",
+    "wb_coast_preset",
+    "wb_coast_check",
     "wb_world_free",
     "wb_world_count",
     "wb_elevation_m",
@@ -1334,6 +1531,197 @@ fn tectonic_preset_by_selector(preset: u32) -> Option<TectonicParams> {
     }
 }
 
+// --------------------------------------------------------- the coastal channel, decoded
+
+/// Whether a coast block is one this boundary will let reach `Surface::with_coast`.
+///
+/// Every bound is documented on its own constant, with which ones close a real hazard
+/// ([`WB_MAX_COAST_OCTAVES`] closes a **hang** and [`WB_MAX_COAST_FINEST_FREQUENCY`] closes an
+/// **abort** no per-field ceiling can see) and which are domain statements. **Nothing here
+/// clamps**: a record is admitted as the host wrote it or refused entire, because a
+/// silently-adjusted parameter is a world nobody asked for -- and a caller sweeping this channel
+/// needs a refusal to mean refusal, not a quiet substitution.
+///
+/// **Validation is where clamping is most tempting and there is none of it here.** No
+/// `f64::min`, no `f64::max`, no `.clamp` -- all three are NaN-asymmetric and this repository's
+/// own guard does not catch them. Every comparison below is written so that a NaN fails it:
+/// `within` is two `>=`/`<=` tests, both false for NaN, and the octave count is refused for
+/// non-finiteness before it is anything else.
+fn coast_is_admissible(coast: &CoastParams) -> bool {
+    if !within(coast.amplitude, WB_MIN_COAST_AMPLITUDE, WB_MAX_COAST_AMPLITUDE) {
+        return false;
+    }
+    if !within(
+        coast.window_spreads,
+        WB_MIN_COAST_WINDOW_SPREADS,
+        WB_MAX_COAST_WINDOW_SPREADS,
+    ) {
+        return false;
+    }
+    if !within(coast.frequency, WB_MIN_COAST_FREQUENCY, WB_MAX_COAST_FINEST_FREQUENCY) {
+        return false;
+    }
+    // `octaves` is already a `u32` by the time it arrives here -- `decode_coast` refuses a word
+    // that is not a finite integer in range before it can become one -- so this is a second
+    // statement of the same bound rather than the only one. It is stated twice on purpose, the
+    // same way `suture_count`'s is: a caller reaching this function through a `CoastParams` it
+    // built in Rust gets the same answer as one reaching it through the ABI, and **a loop bound
+    // is not a thing to be right about once**.
+    if coast.octaves < 1 || coast.octaves > WB_MAX_COAST_OCTAVES {
+        return false;
+    }
+    if !within(coast.gain, 0.0, WB_MAX_COAST_GAIN) {
+        return false;
+    }
+    if !within(coast.lacunarity, WB_MIN_COAST_LACUNARITY, WB_MAX_COAST_LACUNARITY) {
+        return false;
+    }
+    // **THE PRODUCT CHECK, and it is the binding one.** Three fields above are each inside their
+    // own domain at values whose product is not, and the product is what `Noise::fbm` actually
+    // walks -- see [`WB_MAX_COAST_FINEST_FREQUENCY`] for the `i64` saturation and the `ix + 1`
+    // overflow it ends in.
+    //
+    // Walked rather than raised to a power: the schedule is multiplied forward exactly as `fbm`
+    // multiplies it, so this cannot disagree with the loop it is protecting, and there is no
+    // transcendental involved at all (`powf` would be one, and `detmath` is the only door for
+    // those). The loop is bounded by an octave count that has already been refused above this
+    // line if it is out of range, so this is not a second unbounded loop.
+    let mut finest = coast.frequency;
+    for _ in 1..coast.octaves {
+        finest *= coast.lacunarity;
+        if !finest.is_finite() {
+            return false;
+        }
+    }
+    if !within(finest, WB_MIN_COAST_FREQUENCY, WB_MAX_COAST_FINEST_FREQUENCY) {
+        return false;
+    }
+    true
+}
+
+/// Word 3 of a coast record as an octave count, or `None` if it is not one.
+///
+/// The exact shape of `decode_suture_count`, and for the exact reason its doc gives: finite,
+/// exactly integral and inside `1..=WB_MAX_COAST_OCTAVES` **before** the cast, which is what
+/// makes the cast total rather than saturating.
+///
+/// - **not finite** -- `f64::NAN as u32` is 0 and `f64::INFINITY as u32` is `u32::MAX`, so a NaN
+///   would silently become a refused zero and an infinity a four-billion-iteration loop **per
+///   sample**;
+/// - **not integral** -- 2.5 would truncate to 2, a silently-adjusted parameter, and this
+///   boundary does not adjust;
+/// - **outside the range** -- 1e300 saturates to `u32::MAX`, which is the hang itself.
+///
+/// Zero is refused by the range rather than admitted: `fbm` with zero octaves returns exactly
+/// 0.0 (`loudest == 0.0`), so a zero-octave record is a coastal term present in the record,
+/// accepted, and contributing nothing anywhere -- the silently-dropping-builder shape, with
+/// `amplitude` sitting beside it looking configured.
+///
+/// `trunc` is not a transcendental and is not on `detmath`'s list; the comparison is written
+/// against the value's own truncation so no rounding mode is involved.
+fn decode_coast_octaves(value: f64) -> Option<u32> {
+    if !value.is_finite() || value != value.trunc() {
+        return None;
+    }
+    if !within(value, 1.0, f64::from(WB_MAX_COAST_OCTAVES)) {
+        return None;
+    }
+    Some(value as u32) // cast-ok: proved finite, integral and inside 1..=WB_MAX_COAST_OCTAVES on the three lines above
+}
+
+/// One coast record, decoded and validated, or `None` if this channel refuses it.
+fn decode_coast(record: &[f64]) -> Option<CoastParams> {
+    let fields = <[f64; WB_COAST_STRIDE]>::try_from(record).ok()?;
+    let coast = CoastParams {
+        amplitude: fields[0],
+        window_spreads: fields[1],
+        frequency: fields[2],
+        // The one field on this channel that is not an f64. See `decode_coast_octaves`.
+        octaves: decode_coast_octaves(fields[3])?,
+        gain: fields[4],
+        lacunarity: fields[5],
+    };
+    if coast_is_admissible(&coast) {
+        Some(coast)
+    } else {
+        None
+    }
+}
+
+/// The inverse of [`decode_coast`]'s field order, in one place so the two cannot drift.
+fn encode_coast(coast: &CoastParams) -> [f64; WB_COAST_STRIDE] {
+    [
+        coast.amplitude,
+        coast.window_spreads,
+        coast.frequency,
+        // The inverse of `decode_coast_octaves`. A `u32` up to `WB_MAX_COAST_OCTAVES` is exactly
+        // representable as an f64 with room to spare, so this round-trips by construction and
+        // `f64::from` cannot be the lossy direction.
+        f64::from(coast.octaves),
+        coast.gain,
+        coast.lacunarity,
+    ]
+}
+
+/// What a host's `(coast_ptr, coast_len)` pair means. The same three outcomes [`ReliefArg`] and
+/// [`TectonicArg`] draw, kept as a separate type for the same reason they are separate from each
+/// other: the strides differ and a shared one would have to carry the length as data.
+enum CoastArg {
+    /// A null pointer with a length of zero: the canonical path, `None`, byte-for-byte today's
+    /// coastline. **This is what the viewer sends when nothing was touched** -- RULING 1, held
+    /// at the door rather than trusted to `canonical()` being equal to `None`.
+    Canonical,
+    /// A decoded, validated block.
+    Chosen(CoastParams),
+    /// The buffer was unusable, or a field was outside its documented domain.
+    Refused(u32),
+}
+
+/// Read a coast argument out of linear memory.
+///
+/// # Safety
+/// If `coast_len` is non-zero, `coast_ptr` must be a live, 8-aligned allocation of at least
+/// `coast_len` f64.
+unsafe fn read_coast(coast_ptr: *const f64, coast_len: u32) -> CoastArg {
+    if coast_len == 0 {
+        // A null pointer is the canonical path. A non-null pointer with a length of zero is a
+        // host that computed a length wrong, not a host asking for canonical.
+        return if coast_ptr.is_null() { CoastArg::Canonical } else { CoastArg::Refused(WB_ERR_BUFFER) };
+    }
+    if coast_ptr.is_null() {
+        return CoastArg::Refused(WB_ERR_BUFFER);
+    }
+    let address = coast_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return CoastArg::Refused(WB_ERR_BUFFER);
+    }
+    let words = match usize::try_from(coast_len) {
+        Ok(words) if words == WB_COAST_STRIDE => words,
+        _ => return CoastArg::Refused(WB_ERR_BUFFER),
+    };
+    let record = core::slice::from_raw_parts(coast_ptr, words);
+    match decode_coast(record) {
+        Some(coast) => CoastArg::Chosen(coast),
+        None => CoastArg::Refused(WB_ERR_PARAM),
+    }
+}
+
+/// The coast preset a selector names, or `None` for one this build does not know.
+///
+/// **The only place `CoastParams::canonical()`'s and `fractal()`'s values are read**, and there
+/// is no second copy of either anywhere -- not in this file, not in the viewer. The panel's
+/// slider anchor and its preset button are both this function's answer, so `continentality.rs`
+/// stays the only place the numbers live. Ruling 7 of the relief slice, for the third channel.
+fn coast_preset_by_selector(preset: u32) -> Option<CoastParams> {
+    if preset == WB_COAST_CANONICAL {
+        Some(CoastParams::canonical())
+    } else if preset == WB_COAST_FRACTAL {
+        Some(CoastParams::fractal())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------------- the exports
 
 /// The generator's identity, per VERSION-001. Not the package version and never derived
@@ -1445,6 +1833,9 @@ pub extern "C" fn wb_world_new(
             feature_count,
             None,
             None,
+            // `None` -- today's coastline, byte-for-byte, unchanged by the coast channel Task
+            // 6 added beside this export as a fourth door.
+            None,
         )
     }
 }
@@ -1501,6 +1892,8 @@ pub extern "C" fn wb_world_new_relief(
             features_ptr,
             feature_count,
             relief,
+            None,
+            // `None` -- today's coastline. Its arity is frozen for the reason above.
             None,
         )
     }
@@ -1573,7 +1966,157 @@ pub extern "C" fn wb_world_new_tectonic(
             feature_count,
             relief,
             tectonics,
+            // `None` -- today's coastline, exactly what this export did before the coast
+            // channel existed. Its arity is frozen for the same reason the two above it are.
+            None,
         )
+    }
+}
+
+
+/// Build a world with a caller-chosen relief block, a caller-chosen tectonic block **and** a
+/// caller-chosen coast block, or **0** if it refused.
+///
+/// Exactly [`wb_world_new_tectonic`] plus a coast record, and every one of that function's
+/// domains -- and `wb_world_new_relief`'s and `wb_world_new`'s before it -- still applies
+/// unchanged.
+///
+/// # Why a fourth door rather than a wider third one
+///
+/// The same reason the third gives for not widening the second: `wb_world_new_tectonic` already
+/// ships in a committed `.wasm` that the parity harness compares against, and widening its
+/// arity would break every existing caller for a parameter most of them never want. All four
+/// doors are one `build_world` behind the boundary, so there is one `Surface::with_coast` call
+/// in this file and not four.
+///
+/// # The coast argument
+///
+/// - **`coast_ptr` null with `coast_len == 0` is the canonical path** -- `None`, not
+///   `Some(canonical())`. RULING 1 of this slice: the default cannot move, and the viewer's
+///   untouched path must reach the engine as `None`. Held at the door rather than trusted to
+///   `canonical()` agreeing with `None` -- though here, unlike the tectonic channel, the two
+///   *are* pinned bit-identical by `continentality.rs`'s and `surface.rs`'s own tests, because
+///   `above_shore` early-returns on a zero amplitude rather than adding an exactly-zero offset.
+/// - Otherwise `coast_len` must be exactly [`WB_COAST_STRIDE`] and `coast_ptr` a live,
+///   8-aligned buffer of that many f64 in the order that constant documents. Every field is
+///   bounded, and **a single field outside its domain refuses the whole call.**
+///
+/// **Two of those bounds are not politeness.** [`WB_MAX_COAST_OCTAVES`] is a per-sample loop
+/// bound and an unbounded one is a hung tab, not a slow world; [`WB_MAX_COAST_FINEST_FREQUENCY`]
+/// holds the *product* three admissible fields compound into, which ends in an `i64` overflow
+/// inside `Noise::at` -- an abort across this boundary. Neither is visible to a per-field
+/// ceiling alone.
+///
+/// A host that wants to know *why* a record was refused calls [`wb_coast_check`] on the same
+/// buffer.
+///
+/// # Safety
+/// The feature-, relief- and tectonic-channel safety requirements of [`wb_world_new_tectonic`]
+/// apply unchanged. If `coast_len` is non-zero, `coast_ptr` must be a live, 8-aligned allocation
+/// of at least `coast_len` f64.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn wb_world_new_coast(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+    coast_ptr: *const f64,
+    coast_len: u32,
+) -> u32 {
+    let relief = match unsafe { read_relief(relief_ptr, relief_len) } {
+        ReliefArg::Canonical => None,
+        ReliefArg::Chosen(relief) => Some(relief),
+        ReliefArg::Refused(_) => return 0,
+    };
+    let tectonics = match unsafe { read_tectonic(tectonic_ptr, tectonic_len) } {
+        TectonicArg::Canonical => None,
+        TectonicArg::Chosen(tectonics) => Some(tectonics),
+        TectonicArg::Refused(_) => return 0,
+    };
+    let coast = match unsafe { read_coast(coast_ptr, coast_len) } {
+        CoastArg::Canonical => None,
+        CoastArg::Chosen(coast) => Some(coast),
+        CoastArg::Refused(_) => return 0,
+    };
+    unsafe {
+        build_world(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features_ptr,
+            feature_count,
+            relief,
+            tectonics,
+            coast,
+        )
+    }
+}
+
+/// Write a named coast preset's six f64 into a caller buffer, in [`WB_COAST_STRIDE`]'s order.
+///
+/// `WB_OK`, or `WB_ERR_PARAM` for a selector this build does not know, or `WB_ERR_BUFFER` for a
+/// null, misaligned, or wrongly-sized buffer. The selectors are [`WB_COAST_CANONICAL`] and
+/// [`WB_COAST_FRACTAL`].
+///
+/// **This export exists so no host ever transcribes a coast default or a preset.** The panel's
+/// amplitude slider is anchored on canonical and its preset button sends `fractal()` back, so
+/// `continentality.rs` stays the only place `0.35`, `20.0`, `4`, `0.5` and `2.0` are written
+/// down. The viewer holds none of them.
+///
+/// # Safety
+/// `out_ptr` must be a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_coast_preset(preset: u32, out_ptr: *mut f64, out_len: u32) -> u32 {
+    let coast = match coast_preset_by_selector(preset) {
+        Some(coast) => coast,
+        None => return WB_ERR_PARAM,
+    };
+    if out_ptr.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(words) if words == WB_COAST_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    let values = encode_coast(&coast);
+    for (offset, value) in values.into_iter().enumerate() {
+        unsafe { out_ptr.add(offset).write(value) };
+    }
+    WB_OK
+}
+
+/// Ask whether a coast record would be accepted, **without building a world**.
+///
+/// `WB_OK` for a record [`wb_world_new_coast`] would take (including the canonical null/zero
+/// pair), `WB_ERR_BUFFER` for an unusable buffer, `WB_ERR_PARAM` for a field outside its
+/// documented domain.
+///
+/// The constructor answers a refusal with a handle of 0, which says *that* it refused and never
+/// *why*. A panel driving this channel needs the difference, and so does a sweep, which must be
+/// able to tell "refused" from "accepted and then fatal".
+/// `the_coast_checker_and_the_constructor_agree_on_every_swept_record` holds the two to each
+/// other across the whole sweep so this cannot drift into a second, laxer validator.
+///
+/// # Safety
+/// If `coast_len` is non-zero, `coast_ptr` must be a live, 8-aligned allocation of at least
+/// `coast_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_coast_check(coast_ptr: *const f64, coast_len: u32) -> u32 {
+    match unsafe { read_coast(coast_ptr, coast_len) } {
+        CoastArg::Canonical | CoastArg::Chosen(_) => WB_OK,
+        CoastArg::Refused(status) => status,
     }
 }
 
@@ -1706,6 +2249,7 @@ pub extern "C" fn wb_relief_check(relief_ptr: *const f64, relief_len: u32) -> u3
 /// # Safety
 /// If `feature_count` is non-zero, `features_ptr` must be a live, 8-aligned allocation of at
 /// least `feature_count * WB_FEATURE_STRIDE` f64.
+#[allow(clippy::too_many_arguments)]
 unsafe fn build_world(
     world_seed: i64,
     radius_m: f64,
@@ -1715,6 +2259,7 @@ unsafe fn build_world(
     feature_count: u32,
     relief: Option<ReliefParams>,
     tectonics: Option<TectonicParams>,
+    coast: Option<CoastParams>,
 ) -> u32 {
     if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
         return 0;
@@ -1759,11 +2304,22 @@ unsafe fn build_world(
         Some(FeatureInput::Loose(decoded))
     };
 
-    // Both blocks arrive already validated -- `read_relief` and `read_tectonic` refuse at the
-    // boundary, so nothing outside either documented domain reaches here. `None` is the
-    // canonical path for each, and is what `wb_world_new` always passes for both.
-    let surface =
-        Surface::new(world_seed, radius_m, plates, land_fraction, features, relief, tectonics);
+    // All THREE blocks arrive already validated -- `read_relief`, `read_tectonic` and
+    // `read_coast` refuse at the boundary, so nothing outside any documented domain reaches
+    // here. `None` is the canonical path for each, and is what `wb_world_new` always passes for
+    // all three. `with_coast` rather than `new` so this file still holds exactly ONE `Surface`
+    // constructor call behind four doors; `new` delegates to `with_coast` with `None`, so the
+    // canonical path is the same code either way.
+    let surface = Surface::with_coast(
+        world_seed,
+        radius_m,
+        plates,
+        land_fraction,
+        features,
+        relief,
+        tectonics,
+        coast,
+    );
     insert_world(World::new(surface))
 }
 

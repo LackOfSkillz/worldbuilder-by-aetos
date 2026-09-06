@@ -40,6 +40,7 @@
 //!
 //! Run: `cargo run --release --example parity_dump --features wasm > native.txt`
 
+use worldbuilder_engine::continentality::CoastParams;
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use worldbuilder_engine::surface::Surface;
@@ -922,6 +923,403 @@ fn main() {
     println!(
         "TCTL {control_elevation_ranges} {control_structural_ranges} \
          {control_elevation_belt} {control_structural_belt} {control_tile_belt}"
+    );
+
+    // --- the coast channel: the presets, the checker, and a world built from one -----------
+    //
+    // Task 5 built `CoastParams` and could not expose it; Task 6 opened
+    // `wb_world_new_coast` / `wb_coast_preset` / `wb_coast_check`, and **a new crossing value
+    // with no corpus coverage is a crossing value nothing compares.** The tectonic block sat
+    // in exactly that position for three tasks before anybody owned it, and this section is
+    // written at the same time as the export rather than three tasks later.
+    //
+    // The shape is the tectonic channel's, one row for one row: the presets first, field by
+    // field; then the checker, accepted and refused; then a world carrying a NON-canonical
+    // block; then scalars on it; then a tile, because the tile worker is the block's real
+    // consumer in the browser.
+    //
+    // **What is NOT shared between the two sides is the decode.** The block crosses as six
+    // f64 in linear memory, is read back through a raw pointer, and is bounds-checked --
+    // including one bound that is a *product* of three fields and one that is a loop bound
+    // narrowed from an f64 -- before it becomes a `CoastParams`. That path exists only on
+    // this boundary.
+    let mut coast_canonical = [0.0f64; WB_COAST_STRIDE];
+    let mut coast_fractal = [0.0f64; WB_COAST_STRIDE];
+    let coast_canonical_status = wb_coast_preset(
+        WB_COAST_CANONICAL,
+        coast_canonical.as_mut_ptr(),
+        WB_COAST_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    let coast_fractal_status = wb_coast_preset(
+        WB_COAST_FRACTAL,
+        coast_fractal.as_mut_ptr(),
+        WB_COAST_STRIDE as u32, // cast-ok: as above
+    );
+    assert_eq!(coast_canonical_status, WB_OK, "the canonical coast preset must be readable");
+    assert_eq!(coast_fractal_status, WB_OK, "the fractal coast preset must be readable");
+    assert_ne!(
+        coast_fractal, coast_canonical,
+        "a preset identical to canonical would make every coast row below a second copy of \
+         the plain world's rows",
+    );
+    for (selector, status, record) in [
+        (WB_COAST_CANONICAL, coast_canonical_status, &coast_canonical),
+        (WB_COAST_FRACTAL, coast_fractal_status, &coast_fractal),
+    ] {
+        let encoded: Vec<String> = record.iter().map(|v| hex(*v)).collect();
+        println!("CP {selector} {status} {}", encoded.join(" "));
+    }
+
+    // The control's block: `fractal()` with `amplitude` -- word 0, `encode_coast`'s own order
+    // -- turned back to canonical's inert value, and nothing else touched. Built from the
+    // preset the export just handed back, so the five fields it keeps are not retyped either.
+    const COAST_AMPLITUDE_INDEX: usize = 0;
+    let coast_control_amplitude = coast_canonical[COAST_AMPLITUDE_INDEX];
+    let mut coast_control = coast_fractal;
+    coast_control[COAST_AMPLITUDE_INDEX] = coast_control_amplitude;
+    assert_ne!(
+        coast_fractal[COAST_AMPLITUDE_INDEX], coast_control_amplitude,
+        "the control must actually change the field it names -- a preset that already ships \
+         the control's value would make the whole control a no-op wearing a control's name",
+    );
+
+    // `wb_coast_check`, the third coast export and the only one that answers *why* a record
+    // was refused. Six records, three accepted and three refused, so the group cannot be
+    // trivially uniform in either direction.
+    //
+    // The refusals are the three the sweep found matter: the saturating `as u32` on a
+    // per-sample loop bound, a **product** of three individually-admissible fields that walks
+    // the noise lattice's `i64` index past saturation, and a negative amplitude -- the sign
+    // this channel refuses because the lattice is zero-mean and a mirrored field is a second
+    // spelling of "how far".
+    let mut coast_saturating = coast_fractal;
+    coast_saturating[3] = 1.0e300;
+    let mut coast_product = coast_fractal;
+    coast_product[2] = WB_MAX_COAST_FINEST_FREQUENCY;
+    coast_product[3] = f64::from(WB_MAX_COAST_OCTAVES);
+    coast_product[5] = WB_MAX_COAST_LACUNARITY;
+    let mut coast_mirrored = coast_fractal;
+    coast_mirrored[COAST_AMPLITUDE_INDEX] = -coast_fractal[COAST_AMPLITUDE_INDEX];
+    let coast_check_records = [
+        ("canonical", coast_canonical),
+        ("fractal", coast_fractal),
+        ("control", coast_control),
+        ("saturating", coast_saturating),
+        ("product", coast_product),
+        ("mirrored", coast_mirrored),
+    ];
+    let mut coast_accepted = 0usize;
+    let mut coast_refused = 0usize;
+    for (name, record) in &coast_check_records {
+        let status = wb_coast_check(
+            record.as_ptr(),
+            WB_COAST_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+        );
+        if status == WB_OK {
+            coast_accepted += 1;
+        } else {
+            coast_refused += 1;
+        }
+        let encoded: Vec<String> = record.iter().map(|v| hex(*v)).collect();
+        println!("CC {name} {status} {}", encoded.join(" "));
+    }
+    assert_eq!(coast_accepted, 3, "three of the six coast check records are meant to be accepted");
+    assert_eq!(coast_refused, 3, "three of the six coast check records are meant to be refused");
+
+    // A world carrying the non-canonical block, twice under two names, for the reason the
+    // tectonic world is: the scattered points and the concentrated ones then tally as
+    // separate groups, so the control's own report says which population moved and by how
+    // much. One mixed group would have hidden exactly that.
+    //
+    // `CAMP` goes out first because the replaying side needs it *here*, when it builds these
+    // worlds; the prediction it belongs to (`CCTL`) cannot be written until the corpus has
+    // been sampled.
+    println!("CAMP {}", hex(coast_control_amplitude));
+    let coast_encoded: Vec<String> = coast_fractal.iter().map(|v| hex(*v)).collect();
+    for name in ["fractal", "shore"] {
+        println!(
+            "worldc {name} {SEED} {} {PLATES} {} {}",
+            hex(RADIUS_M),
+            hex(LAND),
+            coast_encoded.join(" ")
+        );
+    }
+    let coast_world = wb_world_new_coast(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        coast_fractal.as_ptr(),
+        WB_COAST_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    assert!(coast_world != 0, "the fractal coast world must build");
+    let coast_control_world = wb_world_new_coast(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        coast_control.as_ptr(),
+        WB_COAST_STRIDE as u32, // cast-ok: as above
+    );
+    assert!(coast_control_world != 0, "the coast control world must build");
+
+    // WHERE THE SHORE IS, AND WHY IT IS NOT A ROUND NUMBER.
+    //
+    // A 0.5-degree global scan of this exact fixture compares the canonical world against
+    // `CoastParams::fractal()` and finds **162,159 of 258,480 sites moving**; the largest
+    // mover is **-71.50, 38.00, where the ground moves 1,267.34 m**. A corpus scattered
+    // uniformly over a sphere that is 71% open water does reach the coastal band -- that band
+    // is wide -- but it does not concentrate on it, and the concentrated group is what makes
+    // the control's report readable.
+    const COAST_LAT: f64 = -71.5;
+    const COAST_LON: f64 = 38.0;
+    // **Twenty degrees, not two, and the first attempt at two is why.** The coastal window is
+    // `|above_shore| <= window_spreads * spread`, which on this world is a band wide enough that
+    // a 0.5-degree global scan finds 63% of all sites moving -- so a 2-degree box on the largest
+    // mover is entirely INSIDE the band and every one of its 2,000 points moved. This file's own
+    // both-ends-refused guard caught that and refused to write the corpus, which is the guard
+    // doing exactly what it is for: a group that moves 2,000 of 2,000 is as uninformative as one
+    // that moves none. Twenty degrees straddles the band and the ground either side of it.
+    const COAST_SPAN_DEG: f64 = 20.0;
+    {
+        let point_on = wb_elevation_m(coast_world, COAST_LAT, COAST_LON, RES_M);
+        let point_off = wb_elevation_m(coast_control_world, COAST_LAT, COAST_LON, RES_M);
+        let moved = if point_on > point_off { point_on - point_off } else { point_off - point_on };
+        assert!(
+            moved > 500.0,
+            "the shore site must be somewhere the control's one field actually moves the \
+             ground; it moved {moved} m, so either the witness is stale or the field no \
+             longer reaches this world",
+        );
+    }
+
+    // 5,000 scattered points, exactly as the other two worlds take them.
+    let mut coast_scattered = Vec::with_capacity(5_000);
+    for _ in 0..5_000 {
+        let latitude_deg = rng.unit() * 180.0 - 90.0;
+        let longitude_deg = rng.unit() * 360.0 - 180.0;
+        coast_scattered.push((latitude_deg, longitude_deg));
+        println!(
+            "E fractal {} {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(RES_M),
+            hex(wb_elevation_m(coast_world, latitude_deg, longitude_deg, RES_M))
+        );
+        println!(
+            "S fractal {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(wb_structural_m(coast_world, latitude_deg, longitude_deg))
+        );
+    }
+
+    // 2,000 points on the shore itself, in a +/-1 degree box on the witness site.
+    let mut coast_shore = Vec::with_capacity(2_000);
+    for _ in 0..2_000 {
+        let latitude_deg = COAST_LAT + (rng.unit() - 0.5) * COAST_SPAN_DEG;
+        let longitude_deg = COAST_LON + (rng.unit() - 0.5) * COAST_SPAN_DEG;
+        coast_shore.push((latitude_deg, longitude_deg));
+        println!(
+            "E shore {} {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(RES_M),
+            hex(wb_elevation_m(coast_world, latitude_deg, longitude_deg, RES_M))
+        );
+        println!(
+            "S shore {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(wb_structural_m(coast_world, latitude_deg, longitude_deg))
+        );
+    }
+
+    // And a tile across the shore, because the tile worker is where a coast block lands in
+    // the browser: the viewer attaches it to the spec before `TilePool.start` and every
+    // worker rebuilds the world from it. A coastline that disagreed between the terrain and
+    // the tiles is exactly what a decode difference would look like.
+    let shore_tile = {
+        // The same box the shore points take, and for the same reason: a 1-degree tile here is
+        // entirely inside the coastal band and every one of its 4,225 cells moved under the
+        // control. The guard below caught that too.
+        let half = COAST_SPAN_DEG / 2.0;
+        let (lat0, lat1) = (COAST_LAT + half, COAST_LAT - half);
+        let (lon0, lon1) = (COAST_LON - half, COAST_LON + half);
+        let (width, height) = (65u32, 65u32);
+        let mut tile = vec![0.0f32; 65 * 65];
+        let status = wb_fill_tile_f32(
+            coast_world,
+            lat0,
+            lat1,
+            lon0,
+            lon1,
+            width,
+            height,
+            RES_M,
+            tile.as_mut_ptr(),
+            width * height,
+        );
+        assert_eq!(status, WB_OK, "shore: the tile must fill");
+        let cells: Vec<String> = tile.iter().map(|v| hex32(*v)).collect();
+        println!(
+            "T shore {} {} {} {} {width} {height} {} {}",
+            hex(lat0),
+            hex(lat1),
+            hex(lon0),
+            hex(lon1),
+            hex(RES_M),
+            cells.join(" ")
+        );
+        (lat0, lat1, lon0, lon1, width, height, tile)
+    };
+
+    // THE COAST CONTROL'S PREDICTION, PER GROUP, MADE HERE AND CHECKED ON THE OTHER SIDE.
+    //
+    // `--mutate coast-amplitude` replays the `worldc` records with word 0 set back to
+    // canonical's inert value and touches nothing else, so `amplitude` is the only thing that
+    // differs. Everything the mutation cannot reach must compare EQUAL, and that list is the
+    // informative half: the two `CP` preset groups (a world block cannot move an export that
+    // hands back `continentality.rs`' own constants), the `CC` checker group, and every group
+    // of every world above -- including both tectonic worlds, whose blocks this mutation does
+    // not touch.
+    //
+    // The counts are computed natively, per group, and `parity.mjs` must meet each of them
+    // exactly. Two things hold the prediction to something other than its own output:
+    //
+    //   1. **The library agrees with the exports.** The same counts are recomputed through
+    //      `Surface::elevation_m` / `structural_m` directly rather than through
+    //      `wb_elevation_m` / `wb_structural_m`, and the two must be equal. A disagreement
+    //      means the export layer adds or hides a difference, and it fails HERE rather than
+    //      being absorbed into a divergent tally later.
+    //   2. **Both ends refused.** Every group's count must be strictly between zero and the
+    //      group's size. A control that moves everything is as uninformative as one that
+    //      moves nothing, and this file will not write a corpus where either is true.
+    //
+    // **No structural-containment claim is made here, unlike the tectonic control's**, and
+    // that is deliberate rather than an omission: `CoastParams` reaches `elevation_m` through
+    // `Continentality::base_elevation` as well as through the shelf, so an elevation that
+    // moves without a structural moving is expected. Claiming the subset the warp satisfies
+    // would be claiming something false.
+    let (
+        control_elevation_fractal,
+        control_structural_fractal,
+        control_elevation_shore,
+        control_structural_shore,
+        control_tile_shore,
+    ) = {
+        // The library side reads its block from `continentality.rs` rather than from the six
+        // words that crossed the boundary, which is what makes this a second derivation
+        // instead of the same one twice: if `encode_coast` and `decode_coast` disagreed
+        // anywhere, the two counts below would part company.
+        let on = Surface::with_coast(
+            SEED,
+            RADIUS_M,
+            PLATES as usize, // cast-ok: a corpus-fixed plate count widened to usize
+            LAND,
+            None,
+            None,
+            None,
+            Some(CoastParams::fractal()),
+        );
+        let off = Surface::with_coast(
+            SEED,
+            RADIUS_M,
+            PLATES as usize, // cast-ok: as above
+            LAND,
+            None,
+            None,
+            None,
+            Some(CoastParams { amplitude: CoastParams::canonical().amplitude, ..CoastParams::fractal() }),
+        );
+
+        let mut moved = [0usize; 4];
+        let mut moved_lib = [0usize; 4];
+        for (slot, points) in [(0usize, &coast_scattered), (2, &coast_shore)] {
+            for (latitude_deg, longitude_deg) in points {
+                let e_on = wb_elevation_m(coast_world, *latitude_deg, *longitude_deg, RES_M);
+                let e_off =
+                    wb_elevation_m(coast_control_world, *latitude_deg, *longitude_deg, RES_M);
+                let s_on = wb_structural_m(coast_world, *latitude_deg, *longitude_deg);
+                let s_off = wb_structural_m(coast_control_world, *latitude_deg, *longitude_deg);
+                if e_on.to_bits() != e_off.to_bits() {
+                    moved[slot] += 1;
+                }
+                if s_on.to_bits() != s_off.to_bits() {
+                    moved[slot + 1] += 1;
+                }
+                let point = SpherePoint::from_latlon(*latitude_deg, *longitude_deg);
+                if on.elevation_m(&point, Some(RES_M)).to_bits()
+                    != off.elevation_m(&point, Some(RES_M)).to_bits()
+                {
+                    moved_lib[slot] += 1;
+                }
+                if on.structural_m(&point).to_bits() != off.structural_m(&point).to_bits() {
+                    moved_lib[slot + 1] += 1;
+                }
+            }
+        }
+        assert_eq!(
+            moved, moved_lib,
+            "the exports and the library disagree about how many values the coast amplitude \
+             moves; the six words that crossed the boundary and `CoastParams::fractal()` \
+             itself are describing different worlds",
+        );
+
+        let (lat0, lat1, lon0, lon1, width, height, on_cells) = shore_tile;
+        let mut control_tile = vec![0.0f32; (width * height) as usize]; // cast-ok: a compile-time 65x65 back to a length
+        let status = wb_fill_tile_f32(
+            coast_control_world,
+            lat0,
+            lat1,
+            lon0,
+            lon1,
+            width,
+            height,
+            RES_M,
+            control_tile.as_mut_ptr(),
+            width * height,
+        );
+        assert_eq!(status, WB_OK, "shore: the control's tile must fill");
+        let tile_moved = on_cells
+            .iter()
+            .zip(control_tile.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+
+        (moved[0], moved[1], moved[2], moved[3], tile_moved)
+    };
+
+    for (label, moved, total) in [
+        ("elevation/fractal", control_elevation_fractal, 5_000usize),
+        ("structural/fractal", control_structural_fractal, 5_000),
+        ("elevation/shore", control_elevation_shore, 2_000),
+        ("structural/shore", control_structural_shore, 2_000),
+        ("tile/shore", control_tile_shore, 65 * 65),
+    ] {
+        assert!(
+            moved > 0 && moved < total,
+            "{label}: the control moved {moved} of {total}. A control that moves everything is \
+             as uninformative as one that moves nothing, and this corpus refuses to write \
+             either",
+        );
+    }
+
+    println!(
+        "CCTL {control_elevation_fractal} {control_structural_fractal} \
+         {control_elevation_shore} {control_structural_shore} {control_tile_shore}"
     );
 
     println!("version {}", wb_generator_version());

@@ -15,6 +15,7 @@ import {
 } from "./panel-fields.js";
 import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
+import { coastFromParams } from "./coast-params.js";
 import {
   biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
 } from "./relief-provider.js";
@@ -46,6 +47,7 @@ function worldSpecFromParams() {
     // already.
     relief: null,
     tectonics: null,
+    coast: null,
   };
 }
 
@@ -122,6 +124,24 @@ async function boot() {
   // by accident -- and it would look entirely plausible.
   const tectonicCanonical = engine.tectonicPreset("canonical");
   spec.tectonics = tectonicFromParams(params, tectonicCanonical);
+
+  // The coast block, and RULING 1 of the fractal-coastline slice in one more line. Same shape as
+  // the two above and for the same reasons -- canonical is read FROM THE ENGINE,
+  // `coastFromParams` returns `null` when nothing was asked for, and that `null` reaches
+  // `wb_world_new_coast` as a null pointer with a length of zero.
+  //
+  // **This is the block that can make a coastline fractal.** Today's is not: its length ratio is
+  // flat across an eightfold change of measuring ruler, which is the estimator saying the coast
+  // has no structure below its own finest octave, and the whole planet has two inlet heads.
+  //
+  // Placed beside the other two reads and before the pool for the identical reason: the workers
+  // are handed this same `spec` by `structuredClone`, so a coast block chosen here reaches every
+  // worker's own constructor and the tiles they fill are the same planet as the main thread's.
+  // Applied on only one side it would be the `stale-worker` fault shape arrived at by accident --
+  // and a coastline that disagreed between the terrain and the tiles is exactly what it would
+  // look like.
+  const coastCanonical = engine.coastPreset("canonical");
+  spec.coast = coastFromParams(params, coastCanonical);
 
   // Two handles on purpose. `world` is what the provider draws; `reference` is what the
   // checks compare against, and it is always built from the *stated* parameters. Under
@@ -342,6 +362,14 @@ async function boot() {
           (spec.tectonics.structureWavelengthM / 1000).toFixed(0)}km wander ${
           (spec.tectonics.marginWarpM / 1000).toFixed(0)}@${
           (spec.tectonics.marginWarpWavelengthM / 1000).toFixed(0)}km`
+        : "canonical"} coast=${
+      spec.coast
+        // The amplitude AND the schedule. A diagnostic line that named the amplitude alone would
+        // say nothing about a block whose octaves or frequency had moved, and this line is what a
+        // screenshot carries as its own caption.
+        ? `amp ${spec.coast.amplitude.toFixed(2)} band ${
+          spec.coast.windowSpreads} freq ${spec.coast.frequency} oct ${
+          spec.coast.octaves} gain ${spec.coast.gain} lac ${spec.coast.lacunarity}`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -380,6 +408,20 @@ async function boot() {
     /// holds no tectonic number of its own to drift. `ranges` is read here beside `canonical`
     /// for exactly the reason `relief.hills` is: **the preset must reach the panel as fourteen
     /// NUMBERS rather than as a name**, so the owner sees what it asked for and can move it.
+    /// The engine's own coast presets, read across the boundary at boot. `controls.js` anchors
+    /// the amplitude slider on `canonical` and fills the whole block from `fractal` when the
+    /// preset button is pressed -- so the panel cannot drift from `continentality.rs`, because it
+    /// holds no coast number of its own to drift.
+    coast: {
+      canonical: coastCanonical,
+      fractal: engine.coastPreset("fractal"),
+      chosen: spec.coast,
+      /// Whether the engine would accept a block, asked of `wb_coast_check` itself. Two of this
+      /// channel's bounds are joint -- the octave count is a loop bound and the finest frequency
+      /// is a product of three fields -- so a panel re-deriving them in JavaScript would be a
+      /// second copy of a bound and a second chance to disagree with it.
+      check: (block) => engine.checkCoast(block) === 0,
+    },
     tectonics: {
       canonical: tectonicCanonical,
       ranges: engine.tectonicPreset("ranges"),

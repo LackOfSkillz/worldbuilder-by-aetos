@@ -11,7 +11,8 @@ number that cannot be defended, so it lives here instead.
 `.wasm`, in Node) call **the same shipped exports** — `wb_world_new`, `wb_elevation_m`,
 `wb_structural_m`, `wb_bottom_at`, `wb_fill_tile_f32`, `wb_generator_version`, (slice 5a)
 `wb_erosion_run`, (slice 5b) `wb_water_run`, and (slice mountains Task 6)
-`wb_world_new_tectonic`, `wb_tectonic_preset` and `wb_tectonic_check` — never an internal
+`wb_world_new_tectonic`, `wb_tectonic_preset` and `wb_tectonic_check`, and (photoreal slice
+Task 6) `wb_world_new_coast`, `wb_coast_preset` and `wb_coast_check` — never an internal
 function, because the exports are what a browser reaches.
 
 The corpus is defined once, in the native dump, and carried to the replaying side as
@@ -38,8 +39,13 @@ Population, per run (`SEED = 20260904`, `radius = 6_371_000 m`, `plate_count = 1
 | **a non-canonical tectonic world** (slice mountains) | 5,000 scattered points through `wb_world_new_tectonic` carrying `TectonicParams::ranges()`, `wb_elevation_m` + `wb_structural_m` | 10,000 |
 | **its belt** | 2,000 points in a 2° box on the range that block builds, same two exports | 4,000 |
 | **its tile** | one 65×65 `wb_fill_tile_f32` across the belt — the path the viewer's tile workers take with a tectonic block on the spec | 4,225 |
+| **the coast presets** (photoreal slice) | `wb_coast_preset` at both selectors — status + six f64 each | 14 |
+| **the coast checker** (photoreal slice) | `wb_coast_check` on six records, three accepted and three refused — status each | 6 |
+| **a non-canonical coast world** (photoreal slice) | 5,000 scattered points through `wb_world_new_coast` carrying `CoastParams::fractal()`, `wb_elevation_m` + `wb_structural_m` | 10,000 |
+| **its shore box** | 2,000 points in a 20° box on the largest mover, same two exports | 4,000 |
+| **its tile** | one 65×65 `wb_fill_tile_f32` across the same box — the path the viewer's tile workers take with a coast block on the spec | 4,225 |
 | identity | `wb_generator_version` | 1 |
-| | | **89,861** |
+| | | **108,106** |
 
 The last four rows are slice 5b Task 5's, and each closes a hole rather than adding volume:
 
@@ -69,13 +75,16 @@ RE-DERIVED rather than merely re-run.** Every other row above is a count this ha
 with datum 0.0, and it enters the total twice over — `156 × 7 + 3 = 1,095` in the `water/plain`
 row, and `60 of 156` in the water control's own gate. Change the mesh, the sampler, the seed,
 the node count or the datum and **both pins move**, along with `gates.yml`'s
-`--expect-compared 89861` and `--expect-divergent 60`.
+`--expect-compared 108106` and `--expect-divergent 60`.
 
 **Neither are the tectonic control's five counts.** 132 / 132 / 1,269 / 1,269 / 3,384 are
 properties of where this world's convergent continental margins fall relative to a scatter and
 a box, not of any choice made here. They do not enter the corpus size — every tectonic row's
 *size* is chosen — but they are `--expect-divergent 6186`, and the seed control's own
-`--expect-divergent 86190` carries the same dependence.
+`--expect-divergent 103931` carries the same dependence.
+
+**Nor are the coast control's five.** 3,185 / 3,185 / 1,643 / 1,643 / 3,472 are properties of
+how much of this world lies inside the coastal window, and they are `--expect-divergent 13128`.
 
 The correct response when that happens is to re-derive the corpus arithmetic from its
 definition — line by line, the way `gates.yml`'s own inline commentary sets it out — measure
@@ -115,6 +124,39 @@ evidence that the block does **not** reach the rest of the planet.
 The two `worldt` records name one configuration under two names on purpose, so the scattered
 points and the belt points tally as separate groups. One mixed group would have hidden exactly
 what the control is there to show.
+
+### The five coast rows, and the task that owned the gap the same day it opened
+
+The tectonic channel sat unwatched for three tasks before anybody owned it. The coast channel
+did not: `wb_world_new_coast`, `wb_coast_preset` and `wb_coast_check` and these five rows were
+written in the same commit, because **a new crossing value with no corpus coverage is a
+crossing value nothing compares.**
+
+What is not shared between the two sides is again the **decode** — six f64 in linear memory,
+read back through a raw pointer, bounds-checked, and only then a `CoastParams`. Two of those
+bounds are unlike anything the other channels carry and are the reason this decode is worth
+comparing rather than assuming:
+
+- **`octaves` is a per-sample loop bound narrowed from an f64.** `value as u32` saturates in
+  Rust, so `1e300` would arrive as `u32::MAX` and `Noise::fbm` would walk four billion octaves
+  for **one elevation sample** — measured natively in release at ~1.6 × 10⁻⁸ s an octave, about
+  68 s per sample, so a single 65×65 tile is roughly 80 hours. A hung tab, not a slow world.
+- **The finest octave's frequency is a PRODUCT**, `frequency × lacunarity^(octaves − 1)`, and
+  three fields each inside their own domain can compound past the point where `Noise::at`'s
+  `i64` lattice index saturates and `ix + 1` overflows. `CC product` in the corpus is exactly
+  that record, and it must be refused on both sides.
+
+**The shore box is 20° and the first cut of it was 2°.** The coastal window is
+`|above_shore| ≤ window_spreads × spread`, and that band is wide: an independent 0.5° global scan
+of this fixture finds **162,159 of 258,480 sites** moving under `CoastParams::fractal()`. A 2°
+box on the largest mover — −71.50, 38.00, where the ground moves 1,267.34 m — is therefore
+entirely *inside* the band, and every one of its 2,000 points moved under the control, as did
+every one of a 1° tile's 4,225 cells. The dump's own both-ends-refused guard caught that and
+refused to write the corpus. That is the guard doing what it exists for, and it is recorded here
+rather than quietly fixed.
+
+The two `worldc` records name one configuration under two names for the same reason the `worldt`
+pair does.
 
 ## Running it
 
@@ -188,19 +230,20 @@ throws rather than guess, and this script turns that into a refusal too.
 ## Recorded output
 
 Host: Windows 11 (10.0.26200), x86_64-pc-windows-msvc, cargo 1.98.0, Node v22.17.0.
-Artifact: the committed `worldbuilder_engine.wasm`, **225,277 bytes (19 exports, 0 imports)** —
+Artifact: the committed `worldbuilder_engine.wasm`, **226,558 bytes (22 exports, 0 imports)** —
 grew from 117,146 bytes / 12 exports at slice 5a, then through the relief slice's three
-exports, slice 5b's `wb_water_run`, and this slice's three tectonic exports. Dump: 65,825
-lines. **Re-run in full for slice mountains Task 6**, not carried forward: this run is the
-first that compares a tectonic preset, a tectonic checker answer, or a world built from a
-tectonic block at all. Every figure below is a count — a property of the algorithm, not of the
-moment — except the byte size, which is a property of this build.
+exports, slice 5b's `wb_water_run`, slice mountains' three tectonic exports, and the photoreal
+slice's three coast exports. Dump: 79,838 lines. **Re-run in full for photoreal slice Task 6**,
+not carried forward: this run is the first that compares a coast preset, a coast checker
+answer, or a world built from a coast block at all. Every figure below is a count — a property
+of the algorithm, not of the moment — except the byte size, which is a property of this
+build.
 
 ```
 $ node parity.mjs native.txt
 provenance: the shipped .wasm matches its manifest and current source.
-parity: 89861 values compared through the shipped exports, 0 divergent
-artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (225277 bytes)
+parity: 108106 values compared through the shipped exports, 0 divergent
+artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (226558 bytes)
   elevation/plain: 10000 compared, 0 divergent
   structural/plain: 10000 compared, 0 divergent
   elevation/harbour: 10800 compared, 0 divergent
@@ -224,13 +267,21 @@ artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wa
   elevation/belt: 2000 compared, 0 divergent
   structural/belt: 2000 compared, 0 divergent
   tile/belt: 4225 compared, 0 divergent
+  coast-preset/0: 7 compared, 0 divergent
+  coast-preset/1: 7 compared, 0 divergent
+  coast-check: 6 compared, 0 divergent
+  elevation/fractal: 5000 compared, 0 divergent
+  structural/fractal: 5000 compared, 0 divergent
+  elevation/shore: 2000 compared, 0 divergent
+  structural/shore: 2000 compared, 0 divergent
+  tile/shore: 4225 compared, 0 divergent
   version: 1 compared, 0 divergent
 OK: zero divergent
 
 $ node parity.mjs native.txt --mutate seed
 provenance: the shipped .wasm matches its manifest and current source.
-CONTROL (--mutate seed): 89861 values compared through the shipped exports, 86190 divergent
-artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (225277 bytes)
+CONTROL (--mutate seed): 108106 values compared through the shipped exports, 103931 divergent
+artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (226558 bytes)
   elevation/plain: 10000 compared, 10000 divergent
   structural/plain: 10000 compared, 9058 divergent
   elevation/harbour: 10800 compared, 10800 divergent
@@ -254,6 +305,14 @@ artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wa
   elevation/belt: 2000 compared, 2000 divergent
   structural/belt: 2000 compared, 2000 divergent
   tile/belt: 4225 compared, 4225 divergent
+  coast-preset/0: 7 compared, 0 divergent
+  coast-preset/1: 7 compared, 0 divergent
+  coast-check: 6 compared, 0 divergent
+  elevation/fractal: 5000 compared, 5000 divergent
+  structural/fractal: 5000 compared, 4516 divergent
+  elevation/shore: 2000 compared, 2000 divergent
+  structural/shore: 2000 compared, 2000 divergent
+  tile/shore: 4225 compared, 4225 divergent
   version: 1 compared, 0 divergent
   e.g. elevation plain 4050f64e53982ff4,c059b998e99bf26c res 406f400000000000: native c064279493d609d0 wasm c0ac07bc33592429
   e.g. structural plain 4050f64e53982ff4,c059b998e99bf26c: native c06604fe81b06af5 wasm c0abd90419cad964
@@ -264,8 +323,8 @@ control OK: the harness can be made to fail
 
 $ node parity.mjs native.txt --mutate erosion-k
 provenance: the shipped .wasm matches its manifest and current source.
-CONTROL (--mutate erosion-k): 89861 values compared through the shipped exports, 216 divergent
-artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (225277 bytes)
+CONTROL (--mutate erosion-k): 108106 values compared through the shipped exports, 216 divergent
+artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (226558 bytes)
   elevation/plain: 10000 compared, 0 divergent
   structural/plain: 10000 compared, 0 divergent
   elevation/harbour: 10800 compared, 0 divergent
@@ -289,6 +348,14 @@ artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wa
   elevation/belt: 2000 compared, 0 divergent
   structural/belt: 2000 compared, 0 divergent
   tile/belt: 4225 compared, 0 divergent
+  coast-preset/0: 7 compared, 0 divergent
+  coast-preset/1: 7 compared, 0 divergent
+  coast-check: 6 compared, 0 divergent
+  elevation/fractal: 5000 compared, 0 divergent
+  structural/fractal: 5000 compared, 0 divergent
+  elevation/shore: 2000 compared, 0 divergent
+  structural/shore: 2000 compared, 0 divergent
+  tile/shore: 4225 compared, 0 divergent
   version: 1 compared, 0 divergent
   e.g. erosion height erosion[13]: native 407336eb79a24d0d wasm 407336eb79a24d0c
   e.g. erosion height erosion[53]: native 4030732c664ab4a0 wasm 4030732c664ab49b
@@ -299,8 +366,8 @@ control OK: the harness can be made to fail
 
 $ node parity.mjs native.txt --mutate water-pond
 provenance: the shipped .wasm matches its manifest and current source.
-CONTROL (--mutate water-pond): 89861 values compared through the shipped exports, 60 divergent
-artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (225277 bytes)
+CONTROL (--mutate water-pond): 108106 values compared through the shipped exports, 60 divergent
+artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (226558 bytes)
   elevation/plain: 10000 compared, 0 divergent
   structural/plain: 10000 compared, 0 divergent
   elevation/harbour: 10800 compared, 0 divergent
@@ -324,6 +391,14 @@ artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wa
   elevation/belt: 2000 compared, 0 divergent
   structural/belt: 2000 compared, 0 divergent
   tile/belt: 4225 compared, 0 divergent
+  coast-preset/0: 7 compared, 0 divergent
+  coast-preset/1: 7 compared, 0 divergent
+  coast-check: 6 compared, 0 divergent
+  elevation/fractal: 5000 compared, 0 divergent
+  structural/fractal: 5000 compared, 0 divergent
+  elevation/shore: 2000 compared, 0 divergent
+  structural/shore: 2000 compared, 0 divergent
+  tile/shore: 4225 compared, 0 divergent
   version: 1 compared, 0 divergent
   e.g. water plain body[1].kind: native 0000000000000000 wasm 3ff0000000000000
   e.g. water plain body[2].kind: native 0000000000000000 wasm 3ff0000000000000
@@ -334,8 +409,8 @@ control OK: 60 of 1095 water values moved, exactly the bodies the native surface
 
 $ node parity.mjs native.txt --mutate tectonic-warp
 provenance: the shipped .wasm matches its manifest and current source.
-CONTROL (--mutate tectonic-warp): 89861 values compared through the shipped exports, 6186 divergent
-artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (225277 bytes)
+CONTROL (--mutate tectonic-warp): 108106 values compared through the shipped exports, 6186 divergent
+artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (226558 bytes)
   elevation/plain: 10000 compared, 0 divergent
   structural/plain: 10000 compared, 0 divergent
   elevation/harbour: 10800 compared, 0 divergent
@@ -359,6 +434,14 @@ artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wa
   elevation/belt: 2000 compared, 1269 divergent
   structural/belt: 2000 compared, 1269 divergent
   tile/belt: 4225 compared, 3384 divergent
+  coast-preset/0: 7 compared, 0 divergent
+  coast-preset/1: 7 compared, 0 divergent
+  coast-check: 6 compared, 0 divergent
+  elevation/fractal: 5000 compared, 0 divergent
+  structural/fractal: 5000 compared, 0 divergent
+  elevation/shore: 2000 compared, 0 divergent
+  structural/shore: 2000 compared, 0 divergent
+  tile/shore: 4225 compared, 0 divergent
   version: 1 compared, 0 divergent
   e.g. elevation ranges c024ffe9697c6af8,406500d5a186d7be res 406f400000000000: native 404f780c121dbec1 wasm 404f78ac2969b75c
   e.g. structural ranges c024ffe9697c6af8,406500d5a186d7be: native 404d23b23714aaa5 wasm 404d24503fe554f3
@@ -366,9 +449,52 @@ artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wa
   e.g. structural ranges c023c00d930ebbc0,c050a9e716173668: native c0b1f71cb3137dc3 wasm c0b1f61753d26d79
   e.g. elevation ranges c03f6e60156fe3ba,405acc2e9fa9dbd8 res 406f400000000000: native c0b245f22c311c6b wasm c0b245f1fe21c9d5
 control OK: elevation/ranges 132/5000, structural/ranges 132/5000, elevation/belt 1269/2000, structural/belt 1269/2000, tile/belt 3384/4225 moved, exactly as the native side predicted, and every other group -- both tectonic presets, the checker, and every world without a tectonic block -- moved nothing at all
+
+$ node parity.mjs native.txt --mutate coast-amplitude
+provenance: the shipped .wasm matches its manifest and current source.
+CONTROL (--mutate coast-amplitude): 108106 values compared through the shipped exports, 13128 divergent
+artifact: D:\dev\worldbuilder_by_aetos\viewer\public\wasm\worldbuilder_engine.wasm (226558 bytes)
+  elevation/plain: 10000 compared, 0 divergent
+  structural/plain: 10000 compared, 0 divergent
+  elevation/harbour: 10800 compared, 0 divergent
+  structural/harbour: 10000 compared, 0 divergent
+  bottom/plain: 2000 compared, 0 divergent
+  bottom/harbour: 2000 compared, 0 divergent
+  tile/plain: 4225 compared, 0 divergent
+  tile/harbour: 4225 compared, 0 divergent
+  erosion/erosion: 3003 compared, 0 divergent
+  preset/0: 11 compared, 0 divergent
+  preset/1: 11 compared, 0 divergent
+  elevation/hills: 5000 compared, 0 divergent
+  structural/hills: 5000 compared, 0 divergent
+  tile/hills: 4225 compared, 0 divergent
+  water/plain: 1095 compared, 0 divergent
+  tpreset/0: 17 compared, 0 divergent
+  tpreset/1: 17 compared, 0 divergent
+  tcheck: 6 compared, 0 divergent
+  elevation/ranges: 5000 compared, 0 divergent
+  structural/ranges: 5000 compared, 0 divergent
+  elevation/belt: 2000 compared, 0 divergent
+  structural/belt: 2000 compared, 0 divergent
+  tile/belt: 4225 compared, 0 divergent
+  coast-preset/0: 7 compared, 0 divergent
+  coast-preset/1: 7 compared, 0 divergent
+  coast-check: 6 compared, 0 divergent
+  elevation/fractal: 5000 compared, 3185 divergent
+  structural/fractal: 5000 compared, 3185 divergent
+  elevation/shore: 2000 compared, 1643 divergent
+  structural/shore: 2000 compared, 1643 divergent
+  tile/shore: 4225 compared, 3472 divergent
+  version: 1 compared, 0 divergent
+  e.g. elevation fractal 402d1e4b93ccc168,40663abac478f8c8 res 406f400000000000: native c08f605fd11306f0 wasm c08e8151153cdd19
+  e.g. structural fractal 402d1e4b93ccc168,40663abac478f8c8: native c08f6a2803cefba4 wasm c08e8b21d4f0e9b4
+  e.g. elevation fractal 404e309a81231f0c,404439e73e2152f0 res 406f400000000000: native 4080049556a64ab9 wasm 40807d8ad1cb46c3
+  e.g. structural fractal 404e309a81231f0c,404439e73e2152f0: native 407dc6f381b8e19b wasm 407eb0026515d51a
+  e.g. elevation fractal 40529b2df7f58e5c,c0510a222ac62d95 res 406f400000000000: native 4076dfdbda1e8545 wasm 40775e4f1f579b4c
+control OK: elevation/fractal 3185/5000, structural/fractal 3185/5000, elevation/shore 1643/2000, structural/shore 1643/2000, tile/shore 3472/4225 moved, exactly as the native side predicted, and every other group -- both coast presets, the checker, and every world without a coast block -- moved nothing at all
 ```
 
-(All five exit 0 — the plain run because it is genuinely clean, the four controls because a
+(All six exit 0 — the plain run because it is genuinely clean, the five controls because a
 control that successfully fails the comparison is itself the passing outcome; see
 `parity.mjs`'s own exit-code table.)
 
@@ -475,6 +601,41 @@ one predicts a classifier's output from summed surface areas — a different qua
 predicts an export's output from the library beneath it: a different *call path* over the same
 arithmetic, which catches a decode or a boundary defect and would not catch a shared error in
 `from_margin`. The containment and the "neither end" refusal are what carry the rest.
+
+### The fifth control: one word of the coast block
+
+`--mutate coast-amplitude` sets word 0 of both `worldc` records — `amplitude`, the one field
+`CoastParams::fractal()` moves off canonical — back to canonical's own inert value, read from
+`wb_coast_preset` on the native side rather than written down anywhere. Stated **before** the
+run, per group, and then checked against it:
+
+| group | prediction | result |
+|---|---|---|
+| `elevation/fractal`, `structural/fractal` | 3,185 of 5,000 each | 3,185, 3,185 |
+| `elevation/shore`, `structural/shore` | 1,643 of 2,000 each | 1,643, 1,643 |
+| `tile/shore` | 3,472 of 4,225 | 3,472 |
+| `coast-preset/0`, `coast-preset/1`, `coast-check` | 0 | 0 |
+| every group of every world with no coast block | 0 | 0 |
+
+**63.7% from orbit is the right shape here, and 2.6% would be wrong.** That is the difference
+between this control and the tectonic one above, and it is a fact about the two mechanisms
+rather than about the corpus: a tectonic belt is a line on the planet, while the coastal window
+is `|above_shore| ≤ window_spreads × spread` and covers the whole shelf. An independent 0.5°
+global scan of this fixture finds **162,159 of 258,480 sites** moving under `fractal()`.
+
+**The 94,978 values that must not move are still the informative half**, and they now include
+both tectonic worlds as well as both coast presets and the checker.
+
+**The counts are derived twice, natively, before this script sees them** — through the exports
+and through the library's own `Surface`, with the block read from `CoastParams::fractal()`
+rather than from the six words that crossed the boundary, so an `encode_coast`/`decode_coast`
+disagreement parts the two counts and fails there.
+
+**No structural containment is asserted, unlike the tectonic control's, and that is a
+deliberate omission rather than a missing check.** `CoastParams` reaches `elevation_m` through
+`Continentality::base_elevation` as well as through the shelf, so an elevation that moves
+without a structural moving is expected. Claiming the subset the warp satisfies would be
+claiming something false.
 
 ## Why this is not a `cargo test`
 

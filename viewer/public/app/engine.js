@@ -25,6 +25,9 @@ import { RELIEF_STRIDE, RELIEF_PRESET, toRecord, fromRecord } from "./relief-par
 import {
   TECTONIC_STRIDE, TECTONIC_PRESET, tectonicToRecord, tectonicFromRecord,
 } from "./tectonic-params.js";
+import {
+  COAST_STRIDE, COAST_PRESET, coastToRecord, coastFromRecord,
+} from "./coast-params.js";
 
 /// Status codes, mirrored from `wasm.rs`. Kept as names so a failure reads as a sentence.
 export const WB_OK = 0;
@@ -82,7 +85,8 @@ export class Engine {
     for (const name of [
       "wb_generator_version", "wb_alloc", "wb_dealloc", "wb_world_new", "wb_world_new_relief",
       "wb_relief_preset", "wb_relief_check",
-      "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check", "wb_world_free",
+      "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check",
+      "wb_world_new_coast", "wb_coast_preset", "wb_coast_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32",
     ]) {
@@ -195,14 +199,63 @@ export class Engine {
     }
   }
 
+  /// The six f64 of a named coast preset, as an object keyed by `COAST_FIELDS`.
+  ///
+  /// **The only way the viewer learns a coast number.** Nothing in `viewer/` restates 0.35, 20, 4,
+  /// 0.5 or 2; the amplitude slider is anchored here and the preset button sends this answer
+  /// straight back, so `continentality.rs` stays the single place those numbers live. `name` is a
+  /// key of `COAST_PRESET`.
+  coastPreset(name = "canonical") {
+    const selector = COAST_PRESET[name];
+    if (selector === undefined) throw new Error(`unknown coast preset "${name}"`);
+    const bytes = COAST_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the coast preset buffer");
+    try {
+      const status = this.exports.wb_coast_preset(selector, ptr, COAST_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_coast_preset(${name}) returned ${statusName(status)}`);
+      }
+      // The view is created after the allocation and copied immediately — a view taken before
+      // `wb_alloc` could be detached by heap growth.
+      return coastFromRecord(Array.from(new Float64Array(this.memory.buffer, ptr, COAST_STRIDE)));
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Ask the engine whether a coast block would be accepted, **without building a world**.
+  /// Returns a `WB_*` status. `null` is the canonical path and always answers `WB_OK`.
+  ///
+  /// Two of this channel's bounds are not politeness: the octave count is a per-sample loop bound
+  /// (a hung tab, not a slow world) and the finest-octave frequency is a PRODUCT of three fields
+  /// that are each individually admissible. A panel that could only report "the engine said no"
+  /// would push the owner into bisecting six fields by hand.
+  checkCoast(coast) {
+    if (coast === null || coast === undefined) return WB_OK;
+    const bytes = COAST_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the coast buffer");
+    try {
+      new Float64Array(this.memory.buffer, ptr, COAST_STRIDE).set(coastToRecord(coast));
+      return this.exports.wb_coast_check(ptr, COAST_STRIDE) >>> 0;
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
   /// `relief` is `null`/absent for the canonical path — a null pointer and a length of zero,
   /// which is the same `None` `wb_world_new` passes and is byte-for-byte today's world. An
   /// object keyed by `RELIEF_FIELDS` asks for a different one.
   /// `tectonics` is the same story: `null`/absent is `None` -- Ruling 1 of the mountains
   /// slice, which is that the default world cannot move -- and an object keyed by
   /// `TECTONIC_FIELDS` asks for a different uplift.
+  /// `coast` is the same story again: `null`/absent is `None` -- RULING 1 of the fractal-coastline
+  /// slice, which is that the default coastline cannot move -- and an object keyed by
+  /// `COAST_FIELDS` asks for a roughened one.
   newWorld({
     seed, radiusM, plateCount, landFraction, features = [], relief = null, tectonics = null,
+    coast = null,
   }) {
     let ptr = 0;
     let bytes = 0;
@@ -210,7 +263,15 @@ export class Engine {
     let reliefBytes = 0;
     let tectonicPtr = 0;
     let tectonicBytes = 0;
+    let coastPtr = 0;
+    let coastBytes = 0;
     try {
+      if (coast) {
+        coastBytes = COAST_STRIDE * 8;
+        coastPtr = this.exports.wb_alloc(coastBytes);
+        if (coastPtr === 0) throw new Error("wb_alloc refused the coast buffer");
+        new Float64Array(this.memory.buffer, coastPtr, COAST_STRIDE).set(coastToRecord(coast));
+      }
       if (tectonics) {
         tectonicBytes = TECTONIC_STRIDE * 8;
         tectonicPtr = this.exports.wb_alloc(tectonicBytes);
@@ -236,29 +297,32 @@ export class Engine {
           ], i * WB_FEATURE_STRIDE);
         });
       }
-      // ONE constructor for all four paths, and `wb_world_new_tectonic` is it. With both
-      // blocks null this is `(null, 0, null, 0)`, which the engine reads as `None` and
-      // `None` — the same world `wb_world_new` builds, which the engine-side tests
-      // `the_relief_channel_default_path_is_the_untouched_world` and
-      // `the_tectonic_channel_default_path_is_the_untouched_world` pin bit for bit.
+      // ONE constructor for all EIGHT paths, and `wb_world_new_coast` is it. With all three
+      // blocks null this is `(null, 0, null, 0, null, 0)`, which the engine reads as `None`,
+      // `None` and `None` — the same world `wb_world_new` builds, which the engine-side tests
+      // `the_relief_channel_default_path_is_the_untouched_world`,
+      // `the_tectonic_channel_default_path_is_the_untouched_world` and
+      // `the_coast_channel_default_path_is_the_untouched_world` pin bit for bit.
       //
-      // Calling the widest door unconditionally rather than choosing between three is
+      // Calling the widest door unconditionally rather than choosing between four is
       // deliberate: a branch here would mean the default path and the chosen path went
       // through different exports, and the byte-identity those tests assert would stop
       // covering what the viewer actually calls.
-      const handle = this.exports.wb_world_new_tectonic(
+      const handle = this.exports.wb_world_new_coast(
         BigInt(seed), radiusM, plateCount, landFraction, ptr, features.length,
         reliefPtr, relief ? RELIEF_STRIDE : 0,
         tectonicPtr, tectonics ? TECTONIC_STRIDE : 0,
+        coastPtr, coast ? COAST_STRIDE : 0,
       ) >>> 0;
       if (handle === 0) {
-        // A refused world is a blank viewer, so the message has to name the reason. The two
+        // A refused world is a blank viewer, so the message has to name the reason. The three
         // parameter blocks are the arguments here with checkers that can say which field.
         const why =
           (relief ? ` relief=${statusName(this.checkRelief(relief))}` : "") +
-          (tectonics ? ` tectonics=${statusName(this.checkTectonic(tectonics))}` : "");
+          (tectonics ? ` tectonics=${statusName(this.checkTectonic(tectonics))}` : "") +
+          (coast ? ` coast=${statusName(this.checkCoast(coast))}` : "");
         throw new Error(
-          `wb_world_new_tectonic refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
+          `wb_world_new_coast refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
           `land=${landFraction} features=${features.length}${why}`,
         );
       }
@@ -267,6 +331,7 @@ export class Engine {
       if (ptr !== 0) this.exports.wb_dealloc(ptr, bytes);
       if (reliefPtr !== 0) this.exports.wb_dealloc(reliefPtr, reliefBytes);
       if (tectonicPtr !== 0) this.exports.wb_dealloc(tectonicPtr, tectonicBytes);
+      if (coastPtr !== 0) this.exports.wb_dealloc(coastPtr, coastBytes);
     }
   }
 

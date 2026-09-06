@@ -6,7 +6,7 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
@@ -81,13 +81,13 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp] [--no-provenance]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp'];
+const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude'];
 if (mutate !== null && !MUTATIONS.includes(mutate)) {
   console.error(`unknown mutation "${mutate}"; the controls are ${MUTATIONS.map((m) => `--mutate ${m}`).join(', ')}`);
   process.exit(2);
@@ -181,6 +181,13 @@ let waterControl = null;
 // stamp, so the number is made on the other side of the boundary and checked here.
 let tectonicWarp = null;
 let tectonicControl = null;
+// `CAMP` carries the value `--mutate coast-amplitude` writes into word 0 of every `worldc`
+// record -- canonical's own inert amplitude, read from the engine rather than written here --
+// and `CCTL` carries the per-group counts the native side predicts will move when it does.
+// Same discipline as `WCTL` and `TWARP`/`TCTL`: a control gate read off the control's own run
+// is a rubber stamp, so the number is made on the other side of the boundary and checked here.
+let coastAmplitude = null;
+let coastControl = null;
 let compared = 0;
 let divergent = 0;
 const samples = [];
@@ -532,6 +539,108 @@ for (const raw of lines) {
       worlds.set(name, handle);
       break;
     }
+    case 'CP': {
+      // CP <selector> <status> <six coast f64 hex>
+      //
+      // `wb_coast_preset`, the export that exists so no host transcribes a coast default or
+      // preset. The panel's slider anchor and its preset button are both this call's answer,
+      // so a wasm build whose preset disagreed with the native one would put a different
+      // number on the owner's slider than the number the engine actually uses.
+      const selector = Number(f[1]);
+      const out = wb.wb_alloc(6 * 8);
+      if (out === 0) throw new Error('wb_alloc refused the coast preset buffer');
+      const status = wb.wb_coast_preset(selector, out, 6);
+      group = `coast-preset/${selector}`;
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`coast preset ${selector} status`, f[2], String(status));
+      const view = mem();
+      for (let k = 0; k < 6; k += 1) {
+        const got = bitsOf(view.getFloat64(out + k * 8, true));
+        tally(got === f[3 + k]);
+        if (got !== f[3 + k]) note(`coast preset ${selector}[${k}]`, f[3 + k], got);
+      }
+      wb.wb_dealloc(out, 6 * 8);
+      break;
+    }
+    case 'CC': {
+      // CC <name> <status> <six coast f64 hex>
+      //
+      // `wb_coast_check`, over three records it must accept and three it must refuse. Two of
+      // the three refusals are bounds no per-field ceiling can see: a saturating `as u32` on a
+      // per-sample loop bound, and a finest-octave frequency that is a PRODUCT of three fields
+      // each of which is inside its own domain.
+      const record = f.slice(3);
+      if (record.length !== 6) throw new Error('a coast record must be six f64');
+      const ptr = wb.wb_alloc(6 * 8);
+      if (ptr === 0) throw new Error('wb_alloc refused the coast check buffer');
+      const view = mem();
+      record.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      const status = wb.wb_coast_check(ptr, 6);
+      group = 'coast-check';
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`coast check ${f[1]}`, f[2], String(status));
+      wb.wb_dealloc(ptr, 6 * 8);
+      break;
+    }
+    case 'worldc': {
+      // worldc <name> <seed> <radius_hex> <plates> <land_hex> <six coast f64 hex>
+      //
+      // A world through `wb_world_new_coast`, carrying a NON-canonical block --
+      // `CoastParams::fractal()`, the one block the viewer's panel reaches with a button.
+      //
+      // Two records name the same configuration under two names, so the scattered points and
+      // the shore points tally separately. That is not redundancy: it is what lets the
+      // control's own output say how much of the planet the coastal band actually covers.
+      //
+      // `--mutate coast-amplitude` rewrites word 0, `amplitude`, and nothing else.
+      const [, name, seedText, radiusHex, platesText, landHex] = f;
+      const seed = BigInt(seedText) + (mutate === 'seed' ? 1n : 0n);
+      const block = f.slice(6);
+      if (block.length !== 6) throw new Error('a coast record must be six f64');
+      const ptr = wb.wb_alloc(6 * 8);
+      if (ptr === 0) throw new Error('wb_alloc refused the coast buffer');
+      const view = mem();
+      block.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      if (mutate === 'coast-amplitude') {
+        if (coastAmplitude === null) throw new Error('--mutate coast-amplitude needs a CAMP record');
+        view.setFloat64(ptr, coastAmplitude, true);
+      }
+      const handle = wb.wb_world_new_coast(
+        seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0, 0, 0, 0, 0, ptr, 6);
+      if (handle === 0) throw new Error(`coast world ${name} did not build in wasm`);
+      wb.wb_dealloc(ptr, 6 * 8);
+      worlds.set(name, handle);
+      break;
+    }
+    case 'CAMP': {
+      // CAMP <amplitude_hex>
+      //
+      // The control's value for `amplitude` -- canonical's own, read from the engine on the
+      // native side -- carried rather than written here, so the one number the mutation
+      // substitutes comes from the corpus like every other input. It arrives BEFORE the
+      // `worldc` records because that is where it is used. Not a compared value.
+      coastAmplitude = f64of(f[1]);
+      break;
+    }
+    case 'CCTL': {
+      // CCTL <elevation/fractal> <structural/fractal> <elevation/shore> <structural/shore>
+      //      <tile/shore>
+      //
+      // Prediction, not a compared value: nothing here goes through `tally`. The five counts
+      // are computed natively in `examples/parity_dump.rs` -- through the exports AND, as a
+      // second derivation, through the library's own `Surface` with a block read from
+      // `continentality.rs` rather than from the six words that crossed the boundary -- and
+      // this script requires every one of these groups to move exactly the predicted amount
+      // and every other group to move zero.
+      coastControl = {
+        'elevation/fractal': Number(f[1]),
+        'structural/fractal': Number(f[2]),
+        'elevation/shore': Number(f[3]),
+        'structural/shore': Number(f[4]),
+        'tile/shore': Number(f[5]),
+      };
+      break;
+    }
     case 'TWARP': {
       // TWARP <warp_hex>
       //
@@ -662,6 +771,46 @@ if (mutate) {
       `control OK: ${named} moved, exactly as the native side predicted, and every other ` +
       'group -- both tectonic presets, the checker, and every world without a tectonic ' +
       'block -- moved nothing at all');
+    process.exit(0);
+  }
+  // THE COAST CONTROL CHECKS ITS OWN PREDICTION TOO, group by group, and the groups it
+  // requires to stay EQUAL are the informative half. `amplitude` is one word of a world's
+  // coast block: it cannot reach `wb_coast_preset` (which hands back `continentality.rs`' own
+  // constants), it cannot reach `wb_coast_check` (whose records this mutation does not touch),
+  // and it cannot reach any world built without a coast block at all -- including both
+  // tectonic worlds. So a run where the shore moved AND something else did is a finding, not
+  // a pass.
+  if (mutate === 'coast-amplitude') {
+    if (coastControl === null) {
+      console.error('FAIL: --mutate coast-amplitude ran with no CCTL record in the corpus');
+      process.exit(1);
+    }
+    let bad = false;
+    for (const [name, g] of groups) {
+      const expected = coastControl[name] ?? 0;
+      if (g.divergent !== expected) {
+        console.error(
+          `FAIL: group ${name} moved ${g.divergent} values; the native side predicted ${expected}`);
+        bad = true;
+      }
+    }
+    if (bad) {
+      console.error('  The coast control turns the roughening amplitude back to canonical and');
+      console.error('  touches nothing else. It reaches the land/sea field of a world built');
+      console.error('  from a coast block, and nothing else in this corpus -- not the presets,');
+      console.error('  not the checker, not a world built without a block. A count other than');
+      console.error('  the prediction means either the two sides decode the block differently');
+      console.error('  or that field now reaches something it does not name, and either is a');
+      console.error('  finding rather than a tolerance to widen.');
+      process.exit(1);
+    }
+    const named = Object.entries(coastControl)
+      .map(([name, n]) => `${name} ${n}/${groups.get(name)?.compared ?? '?'}`)
+      .join(', ');
+    console.log(
+      `control OK: ${named} moved, exactly as the native side predicted, and every other ` +
+      'group -- both coast presets, the checker, and every world without a coast block -- ' +
+      'moved nothing at all');
     process.exit(0);
   }
   console.log('control OK: the harness can be made to fail');

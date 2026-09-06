@@ -32,6 +32,10 @@ import {
 import {
   TECTONIC_SLIDERS, MEASURED_GRADES, tectonicTravel, tectonicPanelFields, tectonicToParams,
 } from "./tectonic-params.js";
+import {
+  COAST_SLIDERS, MEASURED_COAST, USEFUL_BAND, coastReadoutFields, coastTravel, coastPanelFields,
+  coastToParams,
+} from "./coast-params.js";
 
 const params = new URLSearchParams(location.search);
 
@@ -87,10 +91,24 @@ const FAULT_OPTIONS = [
 // peak, 1,437.81 m of it structural -- 98.9% tectonic.** They come off together because
 // `wb_tectonic_preset` / `wb_tectonic_check` / `wb_world_new_tectonic` reach the block that
 // carries both, and neither would be honest to remove alone.
+//
+// **A THIRD ENTRY CAME OFF THIS LIST, AND A FOURTH WAS WRONG.**
+//
+// The one that came off was the coastline. It was never written down here, because the coast
+// channel did not exist in the engine when this list was last touched -- `CoastParams` shipped
+// for a whole task with no export, no field and no slider, verified and measured and invisible.
+// `wb_coast_preset` / `wb_coast_check` / `wb_world_new_coast` reach it now and the "coastline"
+// section below is what turns it.
+//
+// The one that was WRONG is "lakes + water", which said `no export yet`. That has been false
+// since slice 5b: `wb_water_run` is in `WB_EXPORTS` and ships in the committed artifact. What is
+// actually missing is a viewer that CALLS it, which is a different sentence and a smaller claim,
+// and the entry now says that instead. A "not wired yet" list that is wrong about the engine is
+// worse than no list: it is the panel telling the owner a capability does not exist when it does.
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
   ["island arcs", "TectonicParams carries them; Task 1 proved no coverage, so no slider"],
-  ["lakes + water", "slice 5b, in progress: no export yet"],
+  ["lakes + water", "wb_water_run ships in the .wasm; nothing in the viewer calls it"],
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],
   ["place areas", "slice 3, the studio: not started"],
   ["export to Evennia", "slice 2a apply: not started"],
@@ -480,6 +498,161 @@ function build() {
     paint();
   }
 
+  // === coastline — these rebuild ==========================================================
+  //
+  // **THE SECTION THAT MAKES A COASTLINE FRACTAL.** The owner's coasts are smooth: measured on
+  // their own world, the coastline's length is FLAT across an eightfold change of measuring
+  // ruler (101,323 km at 100 km spacing, 100,981 km at 12.5 km), which is the estimator saying
+  // there is no structure below the land/sea field's own finest octave -- and the whole planet
+  // has two inlet heads.
+  //
+  // Rebuild-class for the same reason the relief and mountain sliders are: `CoastParams` is an
+  // argument to `Surface::with_coast`, resolved once in `Continentality::with_coast`, and every
+  // worker holds its own already-built world. There is no uniform to poke.
+  //
+  // **No coast number is written in this file.** The one slider and both buttons are anchored on
+  // `wb_coast_preset`'s answer in `wireCoast` below, and until the engine answers they are
+  // disabled and say so.
+
+  const coastSection = section(body, "coastline · rebuilds");
+  const coastLabels = {
+    // Labelled for its EFFECT, not its unit. The parameter is "how far the coast may be pushed,
+    // in multiples of the field's own spread", which means nothing to someone looking at a bay.
+    amplitude: "raggedness",
+  };
+  const coastRows = {};
+  for (const field of COAST_SLIDERS) {
+    coastRows[field] = row(coastSection, coastLabels[field], `wb-coast-${field}`,
+      "range", { min: 0, max: 1, step: 1, value: 0, disabled: true });
+    coastRows[field].out.textContent = "—";
+  }
+  // The five fields with no widget, SHOWN. `COAST_SLIDERS`' own comment gives the measured reason
+  // there is no control for them: Task 5 calibrated the amplitude and calibrated nothing else, and
+  // a slider whose travel nobody has measured is a slider nobody can aim. But the preset carries
+  // all six, the query string carries all six, and a preset that changed something the panel never
+  // mentioned would be a parameter the owner cannot see -- which is the whole defect this slice
+  // exists to fix. So they are a readout.
+  const coastScheduleNote = el("div", "wb-note", "—");
+  coastSection.append(coastScheduleNote);
+  // And whether the engine would take the block, before generate rather than after. Two of this
+  // channel's bounds are JOINT -- the octave count is a per-sample loop bound, and the finest
+  // octave's frequency is a product of `frequency`, `octaves` and `lacunarity` that can be past
+  // the noise lattice's index range while all three fields sit inside their own domains -- so a
+  // hand-typed query string can ask for a record the engine refuses entire. Asked of
+  // `wb_coast_check` through the engine, which is the same validator the record will meet, rather
+  // than by re-deriving the product in JavaScript.
+  const coastAdmissibleNote = el("div", "wb-note", "");
+  coastSection.append(coastAdmissibleNote);
+  const coastNote = el("div", "wb-note", "waiting for the engine…");
+  coastSection.append(coastNote);
+  const coastActions = el("div", "wb-actions");
+  const fractalButton = el("button", "wb-mini", "fractal preset");
+  fractalButton.type = "button";
+  fractalButton.disabled = true;
+  fractalButton.title =
+    "CoastParams::fractal(), read from the engine — its one moved field is on the slider you can see";
+  const coastReset = el("button", "wb-mini", "canonical");
+  coastReset.type = "button";
+  coastReset.disabled = true;
+  coastReset.title = "back to the engine's canonical block, which is the untouched coastline";
+  coastActions.append(fractalButton, coastReset);
+  coastSection.append(coastActions);
+
+  /// The coast block the slider currently describes, or `null` while the engine has not answered.
+  let coastState = null;
+  let coastCanonical = null;
+
+  /// What the measured table says about the position the slider is on, as a sentence. Read from
+  /// `MEASURED_COAST` rather than typed here, so the panel and the survey cannot disagree about
+  /// what was measured.
+  const coastRowFor = (amplitude) => {
+    let best = MEASURED_COAST[0];
+    for (const row of MEASURED_COAST) {
+      if (Math.abs(row.amplitude - amplitude) < Math.abs(best.amplitude - amplitude)) best = row;
+    }
+    return best;
+  };
+
+  /// Fill in the travel, the defaults and the readouts once the engine can be asked.
+  function wireCoast(presets) {
+    coastCanonical = presets.canonical;
+    // **The panel-default family check, run in production and not only in a test.** The widget
+    // carries integer positions, so a mis-stepped default ought to be impossible by construction
+    // -- but "impossible by construction" is what was said about the radius slider too, and this
+    // asks the question in the units the calibration was measured in. Four instances of this
+    // defect have shipped; the fourth was found by this check.
+    const faults = panelFieldFaults(coastPanelFields(presets.canonical));
+    if (faults.length > 0) {
+      coastNote.textContent = `slider travel refused: ${faults.join("; ")}`;
+      return;
+    }
+    const travel = coastTravel(presets.canonical);
+    coastState = { ...presets.canonical, ...(presets.chosen ?? {}) };
+
+    const paint = () => {
+      for (const field of COAST_SLIDERS) {
+        const value = travel[field].toValue(Number(coastRows[field].input.value));
+        coastState[field] = value;
+        coastRows[field].out.textContent = travel[field].format(value);
+      }
+      // The schedule, read out of the state the preset button writes rather than from literals.
+      // Every driven field appears somewhere the owner can see it: the slider shows one and this
+      // line shows the rest. Asserted rather than trusted -- `coast-params.test.mjs` checks that
+      // the union of `COAST_SLIDERS` and the fields named on this line is `COAST_CONTROLS`, so a
+      // seventh field added to the channel cannot arrive silently.
+      const shown = coastReadoutFields().map((f) => `${f} ${coastState[f]}`).join(" · ");
+      coastScheduleNote.textContent = shown;
+      // What the measured survey says about where the slider is standing. The numbers come from
+      // the table, and the BAND's two ends come from `USEFUL_BAND`, so this file states neither.
+      const amplitude = coastState.amplitude;
+      const measured = coastRowFor(amplitude);
+      const where = amplitude < USEFUL_BAND.low
+        ? "below the visible floor — a sub-pixel wobble"
+        : amplitude > USEFUL_BAND.high
+          ? "past the fragmenting end — small islands multiply and the large ones do not"
+          : "inside the measured band";
+      coastNote.textContent =
+        `${where}. At ${measured.amplitude.toFixed(2)} the coast measures ` +
+        `${measured.lengthRatio.toFixed(3)}x longer at a 25 km ruler with ` +
+        `${measured.inletHeads} inlet heads (canonical has ${MEASURED_COAST[0].inletHeads}), ` +
+        `and the largest landmass holds ${measured.largestShare.toFixed(1)}% of the land.`;
+      if (typeof presets.check === "function") {
+        coastAdmissibleNote.textContent = presets.check(coastState)
+          ? ""
+          : "the engine will refuse this block — check the octave schedule in the query string.";
+      }
+    };
+
+    for (const field of COAST_SLIDERS) {
+      const { input } = coastRows[field];
+      input.min = travel[field].min;
+      input.max = travel[field].max;
+      input.step = 1;
+      input.value = travel[field].toPosition(coastState[field]);
+      input.disabled = false;
+      input.addEventListener("input", paint);
+    }
+    coastReset.disabled = false;
+    fractalButton.disabled = false;
+    // **Both buttons send the ENGINE'S OWN record back to the engine and restate nothing.**
+    // `setAllCoast` writes every field of a preset -- the one that has a slider onto its slider,
+    // and the five that do not straight into the state the readout and the query string both
+    // read. That second half is why this is a loop over the block rather than over the widgets: a
+    // preset half-applied because five of its fields had no widget is the silently-dropping-
+    // builder shape, and this file's own history is four instances of a panel value that was not
+    // the engine's value.
+    const setAllCoast = (block) => {
+      coastState = { ...block };
+      for (const field of COAST_SLIDERS) {
+        coastRows[field].input.value = travel[field].toPosition(block[field]);
+      }
+      paint();
+    };
+    fractalButton.addEventListener("click", () => setAllCoast(presets.fractal));
+    coastReset.addEventListener("click", () => setAllCoast(presets.canonical));
+    paint();
+  }
+
   // === appearance — live, no reload =======================================================
 
   const look = section(body, "appearance · live");
@@ -576,6 +749,10 @@ function build() {
     ...(tectonicState && tectonicCanonical
       ? tectonicToParams(tectonicState, tectonicCanonical)
       : {}),
+    // And the same for the coastline: every coast field still at canonical is dropped, so an
+    // untouched panel writes no coast parameter at all and the reload takes the `None` path --
+    // RULING 1, held in the one place a generate can break it.
+    ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
   });
 
   const actions = el("div", "wb-actions");
@@ -631,7 +808,7 @@ function build() {
   missing.append(list);
 
   document.body.append(panel);
-  return { readout, wireRelief, reliefNote, wireTectonics, mountainNote };
+  return { readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote };
 }
 
 /// Camera altitude, cursor position and the terrain height under it.
@@ -682,7 +859,9 @@ function wireReadout(readout) {
 // fallback set of numbers here to fall back to. If boot fails, the sliders stay disabled and
 // the note says why, which is honest; a panel that showed plausible relief defaults over a
 // dead engine would be the drift hazard again, wearing a different hat.
-const { readout, wireRelief, reliefNote, wireTectonics, mountainNote } = build();
+const {
+  readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
+} = build();
 const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
   ? window.__wbBoot
   : Promise.resolve();
@@ -695,9 +874,13 @@ booted
     const tectonics = window.__wb && window.__wb.tectonics;
     if (tectonics) wireTectonics(tectonics);
     else mountainNote.textContent = "engine unavailable — mountains cannot be read or set";
+    const coast = window.__wb && window.__wb.coast;
+    if (coast) wireCoast(coast);
+    else coastNote.textContent = "engine unavailable — the coastline cannot be read or set";
   })
   .catch((error) => {
     wireReadout(readout);
     reliefNote.textContent = `engine unavailable — relief cannot be set (${error})`;
     mountainNote.textContent = `engine unavailable — mountains cannot be set (${error})`;
+    coastNote.textContent = `engine unavailable — the coastline cannot be set (${error})`;
   });
