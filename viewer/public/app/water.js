@@ -23,8 +23,11 @@
 //    shipped 30,000 nodes, which is 52 km on the owner's world and a quarter of its largest
 //    body's own width. That is why `dilateBodyExtents` exists and why one node cell radius is
 //    the size of the correction -- see that function for the calibration, which has actual
-//    ground truth in it. The test drawn here is still `inside the (dilated) box AND at or below
-//    the body's level`; the level test is what stops the water, and the box is a search hint.
+//    ground truth in it. The test drawn here is `within one node cell radius of the box ON THE
+//    GREAT CIRCLE, AND at or below the body's level`; the level test is what stops the water, and
+//    the box is a search hint. **The dilation is a distance, so the shape it draws is a disc**,
+//    which is the whole of `bodyContains`'s second half and the answer to "why all the straight
+//    lines".
 // 2. **There is no representative point and no radius.** `rootNode` is an index into a stream
 //    graph the viewer cannot see -- `stream::node_positions` is not an export -- so a body
 //    cannot be located except through its box. A point box IS that position, though, which is
@@ -36,8 +39,11 @@
 //    `dilateBodyExtents` gives each of them the one node cell it stands for -- not an invented
 //    radius, but `4 * pi * R^2 / nodeCount`, the share of the sphere `wb_water_run` itself
 //    allotted that node -- and **both worlds go to 100% of bodies drawn**, with no point body
-//    drawing more water than that one cell can hold. The counts are still reported, because a
-//    dilated point box is still a body whose true shape the manifest never carried.
+//    drawing more water than that one cell can hold. That cell is drawn as **a spherical cap**,
+//    which is what "this body occupies one node cell" means; drawn as a square it was 4/pi of a
+//    cell, and on the owner's 86,000-node world one of the 422 point bodies exceeded the cell it
+//    cannot exceed. The counts are still reported, because a dilated point box is still a body
+//    whose true shape the manifest never carried.
 //
 // # The pole, not the antimeridian
 //
@@ -145,8 +151,96 @@ function wrapLongitudeDeg(longitudeDeg) {
   return ((((longitudeDeg + 180) % 360) + 360) % 360) - 180;
 }
 
-/// **Every body's box, grown by one node cell radius on every side.**
+/// **The great-circle distance from a point to a lat/lon box, in degrees of arc.** Zero inside.
 ///
+/// This is what makes the dilation the shape its own construction describes. One node cell radius
+/// is an ANGULAR radius -- `2 / sqrt(nodeCount)` radians, the planet's radius having cancelled --
+/// and the set of points within an angular radius of a region is a **great-circle disc swept along
+/// that region**, not an axis-aligned lat/lon box. A box was never the shape the radius licensed:
+/// it is anisotropic (a degree of longitude is `cos(latitude)` of a degree of arc, so a box that
+/// gains one cell at its poleward edge gains more than one at its equatorward edge), and it has
+/// four corners that sit `sqrt(2)` cell radii from the nearest node centre -- ground the
+/// construction never reached.
+///
+/// Three cases, and the first two are exact by inspection:
+///
+/// - **Inside the longitude arc.** A meridian is a great circle, so the distance is the plain
+///   latitude gap, and zero when the latitude is inside too.
+/// - **Outside the arc.** The nearest point lies on the nearer of the two meridian edges. Along a
+///   meridian at longitude offset `dl`, the cosine of the distance to a point at latitude `f` is
+///   `sin(f) sin(g) + cos(f) cos(g) cos(dl)` for the edge point's latitude `g`; that is maximised
+///   at `tan(g) = tan(f) / cos(dl)`, so the candidates are that stationary latitude when it falls
+///   inside the box's range, and the two ends of the range otherwise. Taking the largest cosine of
+///   the three is exact and needs no case analysis for corners: a corner IS the range end.
+///
+/// **No `Math.min`/`Math.max` and no clamp**, this project's standing rule: a NaN latitude gives a
+/// NaN cosine, every `>` comparison against it is false, `Math.acos` returns NaN, and the caller's
+/// `<= padDeg` is false -- so a NaN propagates into a body that visibly fails to draw rather than
+/// being silently absorbed into a plausible one.
+export function angularDistanceToBoxDeg(box, latitudeDeg, longitudeDeg) {
+  const span = longitudeSpanDeg(box);
+  const east = eastwardDeg(box.minLongitudeDeg, longitudeDeg);
+  if (east <= span) {
+    if (latitudeDeg < box.minLatitudeDeg) return box.minLatitudeDeg - latitudeDeg;
+    if (latitudeDeg > box.maxLatitudeDeg) return latitudeDeg - box.maxLatitudeDeg;
+    // Neither below nor above is "inside" for a real latitude and **also true for NaN**, so the
+    // inside case is asserted positively and NaN falls through to NaN. Written as a bare `return
+    // 0` this branch was the one place in the function that silently absorbed a NaN latitude into
+    // a body that draws -- found by the test that asks, not by reading.
+    if (latitudeDeg >= box.minLatitudeDeg && latitudeDeg <= box.maxLatitudeDeg) return 0;
+    return Number.NaN;
+  }
+  // Outside the arc: the shorter way round to an edge, west or east.
+  const toWest = 360 - east;
+  const toEast = east - span;
+  const deltaLonRad = ((toWest < toEast ? toWest : toEast) * Math.PI) / 180;
+  const f = (latitudeDeg * Math.PI) / 180;
+  const south = (box.minLatitudeDeg * Math.PI) / 180;
+  const north = (box.maxLatitudeDeg * Math.PI) / 180;
+  const cosDelta = Math.cos(deltaLonRad);
+  const stationary = Math.atan(Math.tan(f) / cosDelta);
+  const cosine = (g) => Math.sin(f) * Math.sin(g) + Math.cos(f) * Math.cos(g) * cosDelta;
+  let best = cosine(south);
+  const atNorth = cosine(north);
+  if (atNorth > best) best = atNorth;
+  if (stationary > south && stationary < north) {
+    const atStationary = cosine(stationary);
+    if (atStationary > best) best = atStationary;
+  }
+  // `acos` is undefined a hair outside [-1, 1], which rounding can produce for a coincident point.
+  // Written as two comparisons rather than a clamp so NaN passes straight through.
+  const bounded = best > 1 ? 1 : (best < -1 ? -1 : best);
+  return (Math.acos(bounded) * 180) / Math.PI;
+}
+
+/// **Every body's box, grown by one node cell radius -- as a distance on the sphere, not as a
+/// bigger rectangle.**
+///
+/// # The shape, and why the rectangle was always the wrong one
+///
+/// The owner's report was "why am I getting all these straight lines? Nature builds very little
+/// straight." They are right, and the cause is in this function rather than in the engine: the
+/// dilation is an ANGULAR radius, `2 / sqrt(nodeCount)` radians, and **a great-circle distance test
+/// against that radius draws the disc the radius actually describes.** An axis-aligned lat/lon box
+/// was never that disc. It is anisotropic; it distorts with latitude; and its corners lie
+/// `sqrt(2)` cell radii from the nearest node centre, which the construction below does not
+/// license. A single-node body drawn as its node cell IS a spherical cap, and 422 of this world's
+/// 963 bodies are single-node.
+///
+/// So the drawn set is `{ p : distance(p, raw box) <= one cell radius }` -- the union of one node
+/// cell's disc centred at every point the box bounds, which for a point box is exactly one cap.
+/// The returned `minLatitudeDeg`..`maxLongitudeDeg` are still a rectangle, and still the dilated
+/// one, because `bodiesOverlappingRectangle` needs a cheap conservative box to reject tiles with;
+/// the rectangle is a **search hint** and `core*` plus `padDeg` are the shape. The rectangle
+/// contains the shape by construction: its longitude pad is measured at the poleward edge, where a
+/// degree of longitude is shortest, so it is at least the pad any latitude inside it needs.
+///
+/// **The measurement is in `bodyContains` and it did not go the way the obvious guess does**: the
+/// perimeter exposure barely moves (25.5% to 25.8%), because exposure is a property of a shape's
+/// SIZE and the disc is smaller than the square that held it. What collapses is the straight cut
+/// itself -- 25.5% of the boundary to 15.3%, and to 0.0% on every point body.
+///
+
 /// # What this fixes, and it is two separate defects with one cause
 ///
 /// 1. **38 of the owner's 55 bodies could not be drawn at all** (60 of `DEFAULT_WORLD`'s 156),
@@ -181,6 +275,25 @@ function wrapLongitudeDeg(longitudeDeg) {
 /// crossed on both worlds, which is the measurement that rules out going further. At 0.5 the
 /// bodies draw under a tenth of their cell, which is the measurement that rules out going less.
 ///
+/// **And that is the calibration's own argument for the disc, arrived at from the other side.** A
+/// box of half-width one cell radius has area `4r^2`; the disc of that radius has `pi r^2`. The
+/// box IS the 1.27 row -- it is the circumscribing square, by `4/pi = 1.2732` -- and the table says
+/// the circumscribing square crosses the physical bound. It did not show on the owner's earlier
+/// world because the level test happened to absorb it there. It shows now: re-measured on the
+/// world where the defect was reported (**seed 636659598, radius 9,309,000 m, 20 plates, land
+/// 0.4, mountains `ranges` and coastline `fractal`, 86,000 nodes: 963 bodies, 422 of them point
+/// boxes**), 96x96 per body through `wb_fill_tile_f32` at canonical resolution:
+///
+/// ```text
+///   shape                   mean water drawn per point body    bodies over their one-cell ceiling
+///   dilated BOX (shipped)             33.4 %                            1 / 422
+///   one node cell's DISC              26.9 %                            0 / 422
+/// ```
+///
+/// The disc restores the bound the box was calibrated against. Total drawn water moves by 2.3%
+/// (40.62 to 39.69 million km^2 over all 963 bodies), which is the corner area the construction
+/// never licensed and nothing else.
+///
 /// And the straight-edge exposure, over **all** bodies -- the fraction of the box perimeter that
 /// is at or below the body's own level, i.e. the fraction of the boundary at which the box rather
 /// than the terrain decides where the water stops (512 samples per edge, `wb_elevation_m` at
@@ -196,6 +309,31 @@ function wrapLongitudeDeg(longitudeDeg) {
 /// residue of the real gap: the manifest carries no footprint, and one cell radius is the largest
 /// correction its construction actually licenses. See this file's module doc.
 ///
+/// # What the disc changed, measured the same way
+///
+/// Same definition of exposure, same estimator, on the world the defect was reported on (963
+/// bodies at 86,000 nodes, 1,024 arc-length-weighted samples per body's boundary,
+/// `wb_elevation_m` at canonical resolution). **`straight` is the share of the boundary that is
+/// exposed AND is an axis-aligned lat/lon edge** -- the owner's actual complaint, since a corner
+/// arc that follows the terrain's own outline is not a straight line:
+///
+/// ```text
+///                                    exposure    of which straight
+///   raw box (multi-node only)          34.0 %          34.0 %
+///   dilated BOX (shipped)              25.5 %          25.5 %
+///   one node cell's DISC               25.8 %          15.3 %
+///     -- of which, point bodies        23.5 %           0.0 %
+///     -- of which, multi-node          26.3 %          18.7 %
+/// ```
+///
+/// **Exposure does not improve, and it was never going to.** It is the share of a boundary the
+/// terrain does not choose, and that is decided by the shape's SIZE; the disc is 21% smaller than
+/// the square that held it, so a hair more of its shorter boundary cuts water. Reporting a win
+/// there would have meant measuring something else. What the shape decides is whether the cut is
+/// straight, and **straight exposure falls by 40%, to zero on every one of the 422 point bodies.**
+/// The 18.7% that survives on multi-node bodies is the raw box's own four edges, offset outward:
+/// no dilation can round them, because a rectangle is what the engine actually exported.
+///
 /// # The seam and the poles
 ///
 /// Latitude is bounded at the poles by explicit comparison -- never `Math.min`/`Math.max`, this
@@ -210,6 +348,16 @@ export function dilateBodyExtents(bodies, nodeCount) {
   const cellDeg = nodeCellRadiusDeg(nodeCount);
   if (!(cellDeg > 0)) return bodies;
   return bodies.map((body) => {
+    // **The shape**, carried beside the search box: the raw box the engine exported, and the
+    // angular radius every point of it is grown by. `bodyContains` reads these; the rectangle
+    // below is only what rejects a tile cheaply.
+    const core = {
+      padDeg: cellDeg,
+      coreMinLatitudeDeg: body.minLatitudeDeg,
+      coreMaxLatitudeDeg: body.maxLatitudeDeg,
+      coreMinLongitudeDeg: body.minLongitudeDeg,
+      coreMaxLongitudeDeg: body.maxLongitudeDeg,
+    };
     let south = body.minLatitudeDeg - cellDeg;
     let north = body.maxLatitudeDeg + cellDeg;
     if (south < -90) south = -90;
@@ -224,13 +372,14 @@ export function dilateBodyExtents(bodies, nodeCount) {
     const newSpan = span + 2 * lonPad;
     if (!(newSpan < 360)) {
       return {
-        ...body, minLatitudeDeg: south, maxLatitudeDeg: north,
+        ...body, ...core, minLatitudeDeg: south, maxLatitudeDeg: north,
         minLongitudeDeg: -180, maxLongitudeDeg: 180,
       };
     }
     const west = wrapLongitudeDeg(body.minLongitudeDeg - lonPad);
     return {
       ...body,
+      ...core,
       minLatitudeDeg: south,
       maxLatitudeDeg: north,
       minLongitudeDeg: west,
@@ -239,13 +388,30 @@ export function dilateBodyExtents(bodies, nodeCount) {
   });
 }
 
-/// Is a point inside a body's box? Latitude is a plain interval; longitude is an arc.
+/// Is a point inside a body?
 ///
-/// Inclusive at both ends, which matters only for a measure-zero set of texels and is the same
-/// convention `Extent`'s min/max carry.
+/// **Two shapes, and which one is used depends on whether the row has been through
+/// `dilateBodyExtents`.** A raw manifest row is only ever a box, so it is tested as one: latitude
+/// a plain interval, longitude an arc. Inclusive at both ends, which matters only for a
+/// measure-zero set of texels and is the same convention `Extent`'s min/max carry.
+///
+/// A dilated row carries `padDeg` and its `core*` box, and then the shape is **the set of points
+/// within `padDeg` of that box on the great circle** -- one node cell's disc swept along the box,
+/// and a single spherical cap when the box is a point. The rectangle is still tested first, and
+/// only as a cheap reject: it contains the disc, so a texel outside it cannot be inside, and the
+/// trigonometry is paid only by the small minority of texels that survive. That ordering is why
+/// the shape change does not show in the tile-fill cost.
 export function bodyContains(body, latitudeDeg, longitudeDeg) {
   if (latitudeDeg < body.minLatitudeDeg || latitudeDeg > body.maxLatitudeDeg) return false;
-  return eastwardDeg(body.minLongitudeDeg, longitudeDeg) <= longitudeSpanDeg(body);
+  if (eastwardDeg(body.minLongitudeDeg, longitudeDeg) > longitudeSpanDeg(body)) return false;
+  if (!(body.padDeg > 0)) return true;
+  const core = {
+    minLatitudeDeg: body.coreMinLatitudeDeg,
+    maxLatitudeDeg: body.coreMaxLatitudeDeg,
+    minLongitudeDeg: body.coreMinLongitudeDeg,
+    maxLongitudeDeg: body.coreMaxLongitudeDeg,
+  };
+  return angularDistanceToBoxDeg(core, latitudeDeg, longitudeDeg) <= body.padDeg;
 }
 
 /// The surface level of the body covering this point, or `null`.

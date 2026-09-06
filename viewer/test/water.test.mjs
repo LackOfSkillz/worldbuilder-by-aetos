@@ -27,8 +27,9 @@ import { fileURLToPath } from "node:url";
 
 import { Engine, WB_BODY_KIND, WB_MAX_WATER_NODES, WB_WATER_BODY_STRIDE } from "../public/app/engine.js";
 import {
-  DEFAULT_WATER_NODES, bodiesOverlappingRectangle, bodyContains, dilateBodyExtents, lakeLevelAt,
-  longitudeSpanDeg, nodeCellRadiusDeg, waterDiagnostics, waterEnabled, waterNodeCountFromParams,
+  DEFAULT_WATER_NODES, angularDistanceToBoxDeg, bodiesOverlappingRectangle, bodyContains,
+  dilateBodyExtents, lakeLevelAt, longitudeSpanDeg, nodeCellRadiusDeg, waterDiagnostics,
+  waterEnabled, waterNodeCountFromParams,
 } from "../public/app/water.js";
 import {
   AMBIENT, DEFAULT_SUN, LAKE_BANDS, OCEAN_BANDS, coastDitherM, marginedTileRequest, reliefTile,
@@ -622,6 +623,12 @@ test("no one-node body draws more water than the one cell it can physically hold
       const weight = Math.cos((lat * Math.PI) / 180) * Math.abs(dLat) * dLon;
       for (let col = 0; col < n; col += 1) {
         const h = heights[row * n + col];
+        // **The SHAPE, not the window.** The window is the body's search box either way, so it is
+        // held fixed across any change of shape; what is counted inside it is what the drawing
+        // rule actually draws. Counting the whole window instead -- which this test did while the
+        // shape was the window -- would make it blind to the difference between a square cell and
+        // the disc a cell radius describes, and that difference is 4/pi.
+        if (!bodyContains(body, lat, body.minLongitudeDeg + dLon * col)) continue;
         if (h > 0 && h <= body.levelM) solidAngle += weight;
       }
     }
@@ -637,9 +644,27 @@ test("no one-node body draws more water than the one cell it can physically hold
   // was too SMALL would produce -- and which the ceiling above cannot notice.
   const mean = totalFraction / points.length;
   assert.ok(
-    mean > 0.15 && mean < 0.40,
-    `one-node bodies draw a mean ${(100 * mean).toFixed(1)}% of their cell; measured 28.6%`,
+    mean > 0.12 && mean < 0.35,
+    `one-node bodies draw a mean ${(100 * mean).toFixed(1)}% of their cell; measured 22.4% as a `
+    + "disc on this world at 30,000 nodes, and 26.9% on the owner's 86,000-node world",
   );
+  // **And on the real population, not only on a constructed one: no point body's drawn set
+  // reaches its search box's corners.** A square cell is 4/pi of the cell it is named after, and
+  // on the owner's 86,000-node world that put one of 422 point bodies over a ceiling that is an
+  // identity. Here it is asserted as geometry rather than as an area, which is the form that
+  // cannot be absorbed by the level test happening to be kind.
+  for (const body of dilateBodyExtents(points, NODES)) {
+    const east = body.minLongitudeDeg + longitudeSpanDeg(body);
+    for (const [lat, lon] of [
+      [body.minLatitudeDeg, body.minLongitudeDeg], [body.minLatitudeDeg, east],
+      [body.maxLatitudeDeg, body.minLongitudeDeg], [body.maxLatitudeDeg, east],
+    ]) {
+      assert.ok(
+        !bodyContains(body, lat, lon),
+        `body ${body.rootNode} draws the corner of its own search box: the cell is still square`,
+      );
+    }
+  }
 });
 
 test("the dilation grows the box on the sphere, at the poles and across the seam", () => {
@@ -673,7 +698,19 @@ test("the dilation grows the box on the sphere, at the poles and across the seam
   );
   assert.equal(longitudeSpanDeg(polar), 360);
   assert.ok(polar.maxLatitudeDeg <= 90, `latitude ran past the pole to ${polar.maxLatitudeDeg}`);
-  assert.ok(bodyContains(polar, 89, 179.9) && bodyContains(polar, 89, -179.9));
+  // **The full-circle branch is about the SEARCH BOX, and this is where the two part company.**
+  // The box has to span the circle, because near a pole a body a few cell radii wide genuinely
+  // touches every longitude and a wrapped arc would be nonsense. The SHAPE does not follow it
+  // round: the body's own arc ends at longitude 116, and 179.9 is 63.9 degrees of longitude past
+  // that -- about 1.1 degrees of arc at latitude 89, more than one cell radius. So the box
+  // accepts the far side of the pole and the disc does not, which is the whole difference
+  // between a search hint and a footprint.
+  assert.ok(polar.minLongitudeDeg === -180 && polar.maxLongitudeDeg === 180);
+  assert.ok(bodyContains(polar, 89, 130), "the shape lost ground one cell east of the body's arc");
+  assert.ok(
+    !bodyContains(polar, 89, 179.9),
+    "the shape wrapped the whole pole; a full-circle box is a search hint, not a footprint",
+  );
 
   // A body already crossing the seam keeps the `min > max` convention, and every point it
   // contained it still contains. The convention is the thing a naive pad would destroy.
@@ -693,6 +730,233 @@ test("the dilation grows the box on the sphere, at the poles and across the seam
     assert.ok(big.maxLatitudeDeg - big.minLatitudeDeg > body.maxLatitudeDeg - body.minLatitudeDeg);
     assert.ok(longitudeSpanDeg(big) > longitudeSpanDeg(body));
   }
+});
+
+// ------------------------------------------------------------------------------------------
+// THE SHAPE. One cell radius is an ANGULAR radius, so the set it describes is a great-circle
+// disc, and the three tests below are about the difference between that disc and the rectangle
+// this viewer drew instead.
+//
+// **Nothing here frames itself on `water.js`.** The radius is re-derived from the sphere's area,
+// the geometry is re-derived through an independently written destination-point formula and an
+// independently written haversine, and every probe point is placed by those rather than by
+// anything the module under test computes. Three mutations on the previous lake task turned
+// nothing red because the test framed each tile on the box it was drawing with; a disc test
+// framed on the disc under test would be the same dud.
+// ------------------------------------------------------------------------------------------
+
+const RAD = Math.PI / 180;
+
+/// One node cell's angular radius, in degrees, by the long way round: the sphere's area, the
+/// node's share of it, the equal-area disc's radius as a length, then that length as an angle.
+/// Independent of `nodeCellRadiusDeg` on purpose -- a probe placed with the function under test
+/// moves with it under any mutation of it.
+function cellRadiusDegHere(nodeCount) {
+  const radiusM = 1000000;
+  const discRadiusM = Math.sqrt(cellAreaM2(radiusM, nodeCount) / Math.PI);
+  return (discRadiusM / radiusM) / RAD;
+}
+
+/// The point a great-circle distance `distanceDeg` from `(latDeg, lonDeg)` along `bearingDeg`.
+/// The standard direct formula, written here rather than imported: this is the ruler the disc is
+/// measured with and it must not be the thing being measured.
+function walk(latDeg, lonDeg, bearingDeg, distanceDeg) {
+  const f1 = latDeg * RAD;
+  const l1 = lonDeg * RAD;
+  const d = distanceDeg * RAD;
+  const b = bearingDeg * RAD;
+  const sinF2 = Math.sin(f1) * Math.cos(d) + Math.cos(f1) * Math.sin(d) * Math.cos(b);
+  const f2 = Math.asin(sinF2);
+  const l2 = l1 + Math.atan2(
+    Math.sin(b) * Math.sin(d) * Math.cos(f1),
+    Math.cos(d) - Math.sin(f1) * sinF2,
+  );
+  return [f2 / RAD, ((((l2 / RAD) + 180) % 360) + 360) % 360 - 180];
+}
+
+/// Great-circle separation in degrees, by the haversine. A second formula for the same quantity
+/// `angularDistanceToBoxDeg` computes with a spherical-cosine argument, so agreement between them
+/// is agreement between two derivations rather than a function agreeing with itself.
+function haversineDeg(aLat, aLon, bLat, bLon) {
+  const dF = (bLat - aLat) * RAD;
+  const dL = (bLon - aLon) * RAD;
+  const h = Math.sin(dF / 2) ** 2
+    + Math.cos(aLat * RAD) * Math.cos(bLat * RAD) * Math.sin(dL / 2) ** 2;
+  return (2 * Math.asin(Math.sqrt(h))) / RAD;
+}
+
+test("the distance to a body's box is a great-circle distance, not a difference of coordinates", () => {
+  // The estimator: the nearest point of the box found by brute-force search over its boundary,
+  // measured with a haversine. Slow, obvious, and derived from nothing in `water.js`.
+  const search = (box, lat, lon) => {
+    const span = longitudeSpanDeg(box);
+    let best = Infinity;
+    const N = 4000;
+    for (let i = 0; i <= N; i += 1) {
+      const t = i / N;
+      const edgeLat = box.minLatitudeDeg + (box.maxLatitudeDeg - box.minLatitudeDeg) * t;
+      const edgeLon = box.minLongitudeDeg + span * t;
+      for (const [pLat, pLon] of [
+        [box.minLatitudeDeg, edgeLon], [box.maxLatitudeDeg, edgeLon],
+        [edgeLat, box.minLongitudeDeg], [edgeLat, box.minLongitudeDeg + span],
+      ]) {
+        const d = haversineDeg(lat, lon, pLat, pLon);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  };
+  const boxes = [
+    { minLatitudeDeg: 59, maxLatitudeDeg: 61, minLongitudeDeg: 10, maxLongitudeDeg: 12 },
+    { minLatitudeDeg: -1, maxLatitudeDeg: 1, minLongitudeDeg: 179, maxLongitudeDeg: -179 },
+    { minLatitudeDeg: 20, maxLatitudeDeg: 20, minLongitudeDeg: -30, maxLongitudeDeg: -30 },
+    { minLatitudeDeg: 82, maxLatitudeDeg: 84, minLongitudeDeg: 100, maxLongitudeDeg: 140 },
+  ];
+  for (const box of boxes) {
+    const midLat = (box.minLatitudeDeg + box.maxLatitudeDeg) / 2;
+    const midLon = box.minLongitudeDeg + longitudeSpanDeg(box) / 2;
+    for (const [dLat, dLon] of [[0, 3], [0, -3], [2.5, 0], [-2.5, 0], [2, 4], [-1.5, -6], [0, 0]]) {
+      const lat = midLat + dLat;
+      const lon = midLon + dLon;
+      const got = angularDistanceToBoxDeg(box, lat, lon);
+      const want = search(box, lat, lon);
+      // Inside the box both must be zero; outside, the search is an upper bound that a 4,000-step
+      // boundary walk resolves to well under a hundredth of a degree.
+      const inside = lat >= box.minLatitudeDeg && lat <= box.maxLatitudeDeg
+        && (((lon - box.minLongitudeDeg) % 360) + 360) % 360 <= longitudeSpanDeg(box);
+      if (inside) {
+        assert.equal(got, 0, `inside the box but ${got} deg away`);
+        continue;
+      }
+      assert.ok(
+        Math.abs(got - want) < 0.01,
+        `at (${lat}, ${lon}) the formula says ${got.toFixed(4)} deg and a boundary walk says `
+        + `${want.toFixed(4)} deg`,
+      );
+      // ...and it is NOT the flat coordinate difference, which is what a lat/lon box test is.
+      // At latitude 83 a three-degree longitude gap is under half a degree of arc.
+      if (Math.abs(midLat) > 80 && dLat === 0 && dLon !== 0) {
+        assert.ok(
+          got < Math.abs(dLon) * 0.5,
+          `${got.toFixed(4)} deg for a ${dLon} deg longitude step at latitude ${midLat}: that is `
+          + "a coordinate difference, not a distance on the sphere",
+        );
+      }
+    }
+  }
+  // A NaN latitude is not silently absorbed: it comes back NaN, and NaN fails every containment
+  // comparison, so the body visibly fails to draw rather than drawing something plausible.
+  assert.ok(Number.isNaN(angularDistanceToBoxDeg(boxes[0], Number.NaN, 11)));
+});
+
+test("a point body is drawn as its node cell's disc, and a disc has no corners", () => {
+  // The defect in one sentence: 422 of the owner's 963 bodies are point boxes, and a point box
+  // drawn as a rectangle is a rectangle on the picture. It is one node cell, and one node cell is
+  // a cap.
+  const rho = cellRadiusDegHere(NODES);
+  for (const [lat, lon] of [[0, 0], [40, 20], [70, -150], [-63, 179.4]]) {
+    const [body] = dilateBodyExtents(
+      [{
+        rootNode: 1, levelM: 100, minLatitudeDeg: lat, maxLatitudeDeg: lat,
+        minLongitudeDeg: lon, maxLongitudeDeg: lon,
+      }],
+      NODES,
+    );
+    // **The disc, in every direction.** Not "it is bigger than a point" -- the boundary is at one
+    // cell radius on all sixteen bearings, which a rectangle is not: a rectangle's boundary is at
+    // one radius due north and at sqrt(2) radii to the north-east.
+    for (let i = 0; i < 16; i += 1) {
+      const bearing = (360 * i) / 16;
+      const [inLat, inLon] = walk(lat, lon, bearing, rho * 0.98);
+      const [outLat, outLon] = walk(lat, lon, bearing, rho * 1.02);
+      assert.ok(
+        bodyContains(body, inLat, inLon),
+        `at ${lat},${lon} bearing ${bearing}: 0.98 cell radii out is not drawn`,
+      );
+      assert.ok(
+        !bodyContains(body, outLat, outLon),
+        `at ${lat},${lon} bearing ${bearing}: 1.02 cell radii out IS drawn -- ${
+          (haversineDeg(lat, lon, outLat, outLon) / rho).toFixed(3)} radii, so the shape reaches `
+        + "further on this bearing than the radius licenses, which is what a box does",
+      );
+    }
+    // **And the corner is the assertion that fails if the rectangle comes back.** The corner of
+    // the search box sits sqrt(2) cell radii from the node centre; the box still has to contain
+    // it, because it is a conservative hint and `bodiesOverlappingRectangle` rejects tiles with
+    // it, and the SHAPE must not. Both halves are asserted so that shrinking the box cannot pass
+    // for rounding the shape.
+    const cornerLat = body.maxLatitudeDeg;
+    const cornerLon = body.minLongitudeDeg + longitudeSpanDeg(body);
+    assert.ok(
+      haversineDeg(lat, lon, cornerLat, cornerLon) > rho * 1.35,
+      `the search box's corner is only ${
+        (haversineDeg(lat, lon, cornerLat, cornerLon) / rho).toFixed(3)} cell radii out; the box `
+      + "is no longer the circumscribing square and this test's premise has moved",
+    );
+    assert.ok(
+      cornerLat <= body.maxLatitudeDeg + 1e-12,
+      "the search box no longer contains its own corner",
+    );
+    assert.ok(
+      !bodyContains(body, cornerLat, cornerLon),
+      `at ${lat},${lon} the box's own corner is drawn: the shape is still a rectangle`,
+    );
+  }
+});
+
+test("a multi-node body keeps a full cell on its edges and rounds its corners", () => {
+  // The same statement for the 541 bodies whose box is not a point. The box is what the engine
+  // exported and no dilation can round ITS four edges -- but the ground added around it is a
+  // distance, so the added ground is a disc swept along the box rather than a bigger box.
+  const rho = cellRadiusDegHere(NODES);
+  const raw = {
+    rootNode: 1, levelM: 100, minLatitudeDeg: 59, maxLatitudeDeg: 61,
+    minLongitudeDeg: 10, maxLongitudeDeg: 12,
+  };
+  const [body] = dilateBodyExtents([raw], NODES);
+  // The edges gain a full cell radius of ARC, at both latitudes -- the thing the cos(latitude)
+  // pad exists for, checked as a distance rather than as a coordinate.
+  for (const edgeLat of [raw.minLatitudeDeg, raw.maxLatitudeDeg]) {
+    for (const bearing of [90, 270]) {
+      const from = bearing === 90 ? raw.maxLongitudeDeg : raw.minLongitudeDeg;
+      const [inLat, inLon] = walk(edgeLat, from, bearing, rho * 0.98);
+      const [outLat, outLon] = walk(edgeLat, from, bearing, rho * 1.02);
+      assert.ok(bodyContains(body, inLat, inLon), `latitude ${edgeLat}: the edge lost its cell`);
+      assert.ok(!bodyContains(body, outLat, outLon), `latitude ${edgeLat}: the edge overran`);
+    }
+  }
+  for (const [edgeLon, bearing] of [[10.5, 0], [11.5, 180]]) {
+    const from = bearing === 0 ? raw.maxLatitudeDeg : raw.minLatitudeDeg;
+    const [inLat, inLon] = walk(from, edgeLon, bearing, rho * 0.98);
+    const [outLat, outLon] = walk(from, edgeLon, bearing, rho * 1.02);
+    assert.ok(bodyContains(body, inLat, inLon), `longitude ${edgeLon}: the edge lost its cell`);
+    assert.ok(!bodyContains(body, outLat, outLon), `longitude ${edgeLon}: the edge overran`);
+  }
+  // **The corners are quarter arcs, not corners.** Diagonally out from each corner of the RAW box
+  // the shape ends at one cell radius, exactly as it does off an edge -- and the search box's own
+  // corner, sqrt(2) radii out, is outside the shape while remaining inside the box.
+  const corners = [
+    [raw.maxLatitudeDeg, raw.maxLongitudeDeg, 45], [raw.minLatitudeDeg, raw.maxLongitudeDeg, 135],
+    [raw.minLatitudeDeg, raw.minLongitudeDeg, 225], [raw.maxLatitudeDeg, raw.minLongitudeDeg, 315],
+  ];
+  for (const [cLat, cLon, bearing] of corners) {
+    const [inLat, inLon] = walk(cLat, cLon, bearing, rho * 0.98);
+    const [outLat, outLon] = walk(cLat, cLon, bearing, rho * 1.02);
+    assert.ok(bodyContains(body, inLat, inLon), `corner ${cLat},${cLon}: the arc was cut short`);
+    assert.ok(
+      !bodyContains(body, outLat, outLon),
+      `corner ${cLat},${cLon}: 1.02 cell radii out is drawn, so this corner is square`,
+    );
+  }
+  const boxCorner = [body.maxLatitudeDeg, body.minLongitudeDeg + longitudeSpanDeg(body)];
+  assert.ok(
+    haversineDeg(raw.maxLatitudeDeg, raw.maxLongitudeDeg, boxCorner[0], boxCorner[1]) > rho * 1.35,
+    "the search box's corner is no longer sqrt(2) radii from the raw corner",
+  );
+  assert.ok(
+    !bodyContains(body, boxCorner[0], boxCorner[1]),
+    "the search box's own corner is drawn: the shape is still a rectangle",
+  );
 });
 
 test("a lake is not drawn from the ocean's table, and the reason is measured", () => {

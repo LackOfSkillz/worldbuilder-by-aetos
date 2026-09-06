@@ -267,6 +267,9 @@ async function boot() {
   // them.** `water.rs::lake_body_extents` takes `Extent::from_points` over the submerged members'
   // positions, and a node stands for `4 * pi * R^2 / nodeCount` of sphere; the box is therefore
   // one cell radius short on every side, and a one-node body's box is a point rather than a cell.
+  // **One cell radius is an ANGULAR radius, so the shape it grows the box into is a disc on the
+  // great circle and not a bigger rectangle** -- which is why a point body draws as a spherical
+  // cap and why the picture stopped being full of straight lines.
   // `dilateBodyExtents` carries the whole argument and the calibration -- including the one piece
   // of ground truth available here, that a one-node body cannot hold more than one cell of water.
   // `waterFacts` above is deliberately taken on the RAW rows: it is a statement about what the
@@ -595,7 +598,7 @@ async function boot() {
     `lakes=${
       lakesOn
         ? `${drawnBodies.length}/${waterFacts.bodies} drawn (${waterFacts.pointBoxes} point ` +
-          `boxes given their node cell) @${waterNodes} nodes ` +
+          `boxes drawn as a node-cell cap) @${waterNodes} nodes ` +
           `datum ${water.seaLevelM} m in ${(waterMs / 1000).toFixed(2)}s` +
           `${waterFacts.wideBoxes > 0 ? ` WIDE=${waterFacts.wideBoxes}` : ""}` +
           `${waterFacts.overlappingPairs > 0 ? ` overlap=${waterFacts.overlappingPairs}` : ""}` +
