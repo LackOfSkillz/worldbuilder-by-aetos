@@ -597,25 +597,73 @@ jobs:
           # through `assert_counts.py cargo-list` AFTER the last source edit; the `64d73f3`
           # baseline (556/556/558/643/645) was re-derived the same way BEFORE the first edit and
           # `gates.yml` was CORRECT at it.
+          #
+          # CLOSING THE REST OF THAT FAMILY takes 557/557/559/644/646 -> 559/559/561/646/648:
+          # **+2 on EVERY row and nothing on the WASM rows alone**, because both new tests are
+          # in `src/` (`continentality.rs` and `noise.rs`) and compile unconditionally. No test
+          # binary was added; `assert_counts.py` still reports thirteen.
+          #
+          # The two are a matched pair -- the same "a plausible world, not an error" shape as
+          # the silent abyss, one function up and one module over:
+          #
+          #   a_nan_land_fraction_surfaces_as_a_nan_shore_rather_than_as_a_world_of_pure_land
+          #     `Continentality::calibrate` picked sea level with
+          #     `values[((1.0 - land_fraction) * last) as usize]`. `as usize` SATURATES and a
+          #     NaN saturates to 0, so sea level became the sorted sample's global MINIMUM and
+          #     every point on the planet read as land. Measured at seed 12345: shore -0.6889
+          #     against a canonical 0.0956, 2000 of 2000 spiral points land against 578. It was
+          #     refused by `wb_world_new` and open through `bindings::continentality_*`.
+          #
+          #   a_lattice_coordinate_the_index_cannot_name_surfaces_as_a_nan_rather_than_aborting
+          #     `Noise::at` floored each coordinate, cast to `i64` -- which saturates -- and
+          #     then asked for `ix + 1`, which overflows. Debug: `attempt to add with overflow`.
+          #     Behind `extern "C"`, which is nounwind: an ABORT. TWO entrants reach that ONE
+          #     line: an infinite vector component through `bindings::continentality_at`, and
+          #     the coastal octave schedule's PRODUCT `frequency * lacunarity^(octaves - 1)`,
+          #     which `WB_MAX_COAST_FINEST_FREQUENCY` refuses and which a one-field-at-a-time
+          #     sweep is blind to. Both are the same site and one guard closes both; the test
+          #     asserts the blindness too, by showing each field alone at its own ceiling still
+          #     produces a finite answer.
+          #
+          # Both contracts are PROPAGATE, the same decision the silent-abyss guard made and for
+          # the same reasons: Python's `int()` RAISES on the inputs concerned so there is no
+          # oracle value to match, a panic is an abort across a nounwind boundary, and refusing
+          # at the boundary cannot cover exports that take bare scalars.
+          #
+          # **NINE mutations, each reverted after.** The two "fix disabled" ones were run
+          # against the WHOLE `--features python,wasm` suite: EXACTLY ONE test goes red for
+          # each, its own, with 647 others green -- no sibling was standing there. Seven
+          # narrower ones were run against the named test alone with `-- --exact`, all RED:
+          # the NaN guard narrowed to positive-sign NaN; returning 0.0 instead of NaN; widened
+          # to swallow `land_fraction >= 1.0` (caught by the invisibility half); the lattice
+          # guard narrowed to `is_finite` only (misses the finite 9.3e18 saturation); narrowed
+          # to the x axis alone; returning 0.0 instead of NaN; and `LATTICE_LIMIT` widened to
+          # 9e300 (the cross product aborts again).
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` = 157,
+          # parity 108,106 compared / 0 divergent and all five controls unchanged. Re-derived
+          # per configuration through `assert_counts.py cargo-list` AFTER the last source edit;
+          # the `75fb726` baseline (557/557/559/644/646, 5 ignored, 13 binaries) was re-derived
+          # the same way BEFORE the first edit and `gates.yml` was CORRECT at it.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 557
+            expect: 559
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 557
+            expect: 559
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 559
+            expect: 561
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 644
+            expect: 646
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 646
+            expect: 648
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

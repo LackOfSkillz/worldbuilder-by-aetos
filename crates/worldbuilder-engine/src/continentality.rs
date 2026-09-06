@@ -315,9 +315,41 @@ impl Continentality {
         values.sort_by(|a, b| a.partial_cmp(b).expect("the field produces no NaN"));
 
         let last = (n - 1) as f64; // cast-ok: count to float, exact for n far below 2^53
-        let shore_index = ((1.0 - land_fraction) * last) as usize; // cast-ok: truncation, matching Python's int()
         let spread_index = (0.84 * last) as usize; // cast-ok: truncation, matching Python's int()
-        let shore = values[shore_index];
+
+        // THE SHORE INDEX IS A SATURATING CAST, AND A NaN SATURATES TO ZERO.
+        //
+        // `values` is sorted ascending, so `values[0]` is the field's GLOBAL MINIMUM: a NaN
+        // `land_fraction` would put sea level below every sample on the planet and hand back
+        // a world that is entirely land. Measured, seed 12345: shore -0.6889 against a
+        // canonical 0.0956, and 2000 of 2000 spiral points above the shore against 578.
+        //
+        // That is not a wrong-looking number, it is a WORLD -- and it is bit-identical to the
+        // world `land_fraction = 1.0` legitimately produces, which is exactly what makes it
+        // invisible. This is `elevation_from_above`'s silent abyss one function up, with a
+        // cast doing the swallowing instead of a pair of comparisons.
+        //
+        // The contract is the same one, for the same reasons: propagate. Python's `int()`
+        // RAISES on a NaN, so there is no oracle value to match and no canonical sample that
+        // can reach here; a panic is unavailable, because this constructor is reached through
+        // `extern "C"` exports where nounwind makes a panic an abort; and refusing at the
+        // boundary cannot cover the reach, since `wb_world_new` already refuses this while
+        // `bindings::continentality_*` -- which take a bare `f64` -- do not. A NaN shore makes
+        // `above_shore` NaN, which `elevation_from_above` carries out as a NaN, so the world
+        // reads as unanswerable rather than as dry land.
+        let shore = if land_fraction.is_nan() {
+            f64::NAN
+        } else {
+            // The marker below is true only BECAUSE of the branch above. Within `[0, 1]`, the
+            // documented domain, this is Python's `int()` exactly. Outside it the languages
+            // already disagree and both ends are loud enough to find: below 0 the product
+            // runs past `last` and the index panics (measured -- it is why `wb_world_new`
+            // bounds this parameter), and above 1 it saturates to 0, which is the answer
+            // `land_fraction = 1.0` gives and is the monotone continuation of the curve
+            // rather than a surprise.
+            let shore_index = ((1.0 - land_fraction) * last) as usize; // cast-ok: truncation, matching Python's int(); NaN excluded above
+            values[shore_index]
+        };
         let middle = values[n / 2];
         let difference = values[spread_index] - middle;
         // Python writes `... or 1e-6`, and both 0.0 and -0.0 are falsy there, so either
@@ -1042,6 +1074,98 @@ mod tests {
         // Both arms were actually walked, including both infinities and both zeros -- an
         // invisibility claim that only ever took one branch would be worth nothing.
         assert_eq!((land, sea), (9, 7));
+    }
+
+    /// The calibration sample, sorted, rebuilt here from the spiral rather than read out of
+    /// `calibrate` -- which is private and returns only the two numbers it picked. This is
+    /// the same construction `tests/test_conformance.py` transcribes from the Python, so
+    /// the test below indexes it exactly as `int((1 - land_fraction) * (n - 1))` does.
+    fn calibration_values() -> Vec<f64> {
+        let noise = Noise::new(12345, NOISE_SALT);
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        let n = CALIBRATION_SAMPLES;
+        let mut values: Vec<f64> = Vec::with_capacity(n);
+        for index in 0..n {
+            let z = 1.0 - 2.0 * (index as f64 + 0.5) / (n as f64); // cast-ok: loop counter to float, no truncation
+            let inner = 1.0 - z * z;
+            let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+            let angle = golden * index as f64; // cast-ok: loop counter to float, no truncation
+            let v = crate::vectors::Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z);
+            values.push(noise.fbm(v.x, v.y, v.z, BASE_FREQUENCY, OCTAVES, 0.5, 2.0));
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).expect("the field produces no NaN"));
+        values
+    }
+
+    /// The test that would have caught the all-land world.
+    ///
+    /// `calibrate` picks sea level with `values[((1.0 - land_fraction) * last) as usize]`.
+    /// **`as usize` saturates, and a NaN saturates to 0** -- so a NaN `land_fraction` chose
+    /// the sorted sample's first element, the field's global minimum, and every point on the
+    /// planet stood above the shore.
+    ///
+    /// **Why the assertions here are not decorative.** The number the defect produced is a
+    /// number this same function GIVES at a real input: `land_fraction = 1.0` produces the
+    /// identical shore, bit for bit, and it is supposed to. So a test that asserted "the NaN
+    /// world's shore is not -0.6889" would be asserting against a legitimate answer. The
+    /// three things asserted instead are the *class* of the number (NaN, not a height), the
+    /// fact that the displaced value is genuinely reachable (pinned below, first), and the
+    /// fact that the canonical world is NOT all land (pinned below, second) -- without which
+    /// "2000 of 2000 points are land" discriminates nothing.
+    #[test]
+    fn a_nan_land_fraction_surfaces_as_a_nan_shore_rather_than_as_a_world_of_pure_land() {
+        let values = calibration_values();
+        let points = spiral(2000);
+
+        // FIRST: the value the defect produced is the field's global minimum, and it is the
+        // answer a legitimate `land_fraction` of 1.0 gives. Without this line every
+        // assertion below is discriminating against a number nothing produces.
+        let all_land = Continentality::new(12345, EARTH_RADIUS_M, 1.0);
+        assert_eq!(all_land.shore().to_bits(), values[0].to_bits());
+        let all_land_count = points.iter().filter(|p| all_land.above_shore(p) >= 0.0).count();
+        assert_eq!(all_land_count, 2000, "land_fraction = 1.0 must legitimately be all land");
+
+        // SECOND: the canonical world is NOT all land, so "every point is land" is a real
+        // discriminator rather than a property of this fixture.
+        let canonical = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+        let canonical_land = points.iter().filter(|p| canonical.above_shore(p) >= 0.0).count();
+        assert_eq!(canonical_land, 578, "the canonical fixture's land count moved; re-derive it");
+        assert_eq!(canonical.shore().to_bits(), values[((1.0 - LAND_FRACTION) * 3999.0) as usize].to_bits()); // cast-ok: constant 0.71 * 3999, truncation as in Python
+
+        // THE GUARD, both NaN sign bits, and all the way out to a metre.
+        for land_fraction in [f64::NAN, -f64::NAN] {
+            let c = Continentality::new(12345, EARTH_RADIUS_M, land_fraction);
+            assert!(c.shore().is_nan(), "shore was {} for a NaN land fraction", c.shore());
+            // `spread` does not read `land_fraction` at all and must not have moved.
+            assert_eq!(c.spread().to_bits(), canonical.spread().to_bits());
+
+            let mut nan_elevations = 0usize;
+            for point in points.iter() {
+                assert!(c.above_shore(point).is_nan());
+                if c.base_elevation(point).is_nan() {
+                    nan_elevations += 1;
+                }
+            }
+            // Exact, not a threshold: an unanswerable world is unanswerable everywhere.
+            assert_eq!(nan_elevations, 2000, "sign bit {}", land_fraction.is_sign_negative());
+        }
+
+        // AND THE OTHER HALF: the guard is invisible to every land fraction the domain
+        // admits. The pre-guard arithmetic is transcribed inline and compared BY BITS.
+        let mut distinct = std::collections::BTreeSet::new();
+        for land_fraction in [0.0, 0.05, 0.2, LAND_FRACTION, 0.5, 0.71, 0.95, 1.0] {
+            let index = ((1.0 - land_fraction) * 3999.0) as usize; // cast-ok: truncation, the pre-guard expression transcribed
+            let c = Continentality::new(12345, EARTH_RADIUS_M, land_fraction);
+            assert_eq!(
+                c.shore().to_bits(),
+                values[index].to_bits(),
+                "the guard moved the shore at land_fraction = {land_fraction}"
+            );
+            distinct.insert(c.shore().to_bits());
+        }
+        // Eight land fractions, eight different shores -- an invisibility claim compared
+        // against a constant would be worth nothing.
+        assert_eq!(distinct.len(), 8);
     }
 
     #[test]

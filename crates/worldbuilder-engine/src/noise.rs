@@ -20,6 +20,23 @@ use crate::detmath as m;
 
 const SCALE: f64 = 18_446_744_073_709_551_616.0; // 2^64, exactly representable
 
+/// The largest lattice coordinate `Noise::at` can name, in either direction.
+///
+/// `i64::MAX` is about 9.223e18, so 9e18 is comfortably inside it with room for the `+ 1`
+/// that addresses the far corner of the cell. The bound is drawn at a round number rather
+/// than at the exact overflow boundary for the same reason `wasm.rs` draws `land_fraction`
+/// at its documented domain rather than at the measured panic: the exact boundary is an
+/// accident of the integer width and would move if that did.
+///
+/// It is astronomically outside any admissible sample, so this guard REFUSES NOTHING THE
+/// C ABI ACCEPTS. The canonical field is a unit-sphere component times
+/// `BASE_FREQUENCY * 2^3`, so |coordinate| <= 10, and `WB_MAX_COAST_FINEST_FREQUENCY`
+/// caps the most extreme admissible record at 1e6 — twelve orders of magnitude below this
+/// line. What lies above it is only what that ceiling already refuses (the ~1.15e24 the
+/// frequency/lacunarity/octaves cross product asks for) and what nothing validates at all
+/// (an infinity handed straight to `bindings::continentality_at`).
+const LATTICE_LIMIT: f64 = 9.0e18;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Noise {
     seed: u64,
@@ -74,15 +91,68 @@ impl Noise {
     /// times per terrain sample and several million times per chart. It is also transcribed
     /// in exactly the Python's order because floating-point addition is not associative and
     /// this must agree bit-for-bit.
+    ///
+    /// # A coordinate this lattice cannot address returns NaN
+    ///
+    /// Python's `int(x // 1)` is an arbitrary-precision integer: it has no lattice cell it
+    /// cannot name, and it raises rather than inventing one for `inf` or `nan`. `i64` has
+    /// both problems, and neither of them is loud on its own:
+    ///
+    /// - **`as i64` SATURATES.** `+inf`, and any finite coordinate past ~9.22e18, both come
+    ///   out as `i64::MAX`, and the very next line asks for `ix + 1`. In a debug profile
+    ///   that is `attempt to add with overflow`; behind `extern "C"`, which is nounwind,
+    ///   it is an **abort** that takes the host down and cannot be caught.
+    /// - **In release it is worse than an abort**, because the overflow wraps to `i64::MIN`
+    ///   and the function returns an ordinary-looking height from a cell chosen by
+    ///   wrap-around — the plausible-value failure this crate has now found four times.
+    ///
+    /// Both entrants are the SAME LINE, reached two ways, and this guard closes both:
+    ///
+    /// 1. **A non-finite vector component**, through `bindings::continentality_at` and its
+    ///    two siblings, which normalise nothing. (`SpherePoint::from_latlon` cannot reach
+    ///    it: it turns an infinity into a NaN, and a NaN already came out as a NaN here.)
+    /// 2. **The octave schedule's product**, `frequency * lacunarity^(octaves - 1)`, which
+    ///    three individually admissible coastal fields compound past the same saturation —
+    ///    the abort `WB_MAX_COAST_FINEST_FREQUENCY` was added to refuse, and which a
+    ///    one-field-at-a-time sweep is blind to by construction.
+    ///
+    /// The C ABI's refusal is not made redundant by this: a refusal names the offending
+    /// *field*, a NaN tells a host only that something somewhere is wrong. First line and
+    /// second line, exactly as `WB_MAX_COAST_GAIN` stands beside
+    /// `Continentality::elevation_from_above`'s NaN guard.
+    ///
+    /// Returning NaN rather than panicking is the same contract `elevation_from_above`
+    /// chose and for the same reason: loud-as-a-panic is unavailable across a nounwind
+    /// boundary, and NaN is what these exports already document for a question they cannot
+    /// answer. It is invisible on the canonical path, where every coordinate is a unit
+    /// sphere component times a frequency of order one. See
+    /// `a_lattice_coordinate_the_index_cannot_name_surfaces_as_a_nan_rather_than_aborting`.
     pub fn at(&self, x: f64, y: f64, z: f64) -> f64 {
         // floor, never a cast: Python uses int(x // 1), which floors toward negative
         // infinity, and every negative coordinate would otherwise land in the wrong cell.
         let fx_floor = m::floor(x);
         let fy_floor = m::floor(y);
         let fz_floor = m::floor(z);
-        let ix = fx_floor as i64; // cast-ok: already floored, mirrors Python's int(x // 1)
-        let iy = fy_floor as i64; // cast-ok: already floored, mirrors Python's int(y // 1)
-        let iz = fz_floor as i64; // cast-ok: already floored, mirrors Python's int(z // 1)
+
+        // Written as a negated pair of `>=`/`<=` rather than as `abs(..) > LIMIT`, so a NaN
+        // takes this branch too: a NaN fails both comparisons, the `!` makes that `true`,
+        // and it leaves by the same door. (A NaN coordinate already produced a NaN here
+        // through `x - floor(x)`; this only makes that answer explicit and cheaper.)
+        // `f64::max`/`min`/`clamp` are banned in this crate precisely because they would
+        // NOT have caught the NaN.
+        if !(fx_floor >= -LATTICE_LIMIT && fx_floor <= LATTICE_LIMIT)
+            || !(fy_floor >= -LATTICE_LIMIT && fy_floor <= LATTICE_LIMIT)
+            || !(fz_floor >= -LATTICE_LIMIT && fz_floor <= LATTICE_LIMIT)
+        {
+            return f64::NAN;
+        }
+
+        // The three markers below are true only BECAUSE of the guard above: without it
+        // these casts saturate rather than truncate, and Python's `int()` has no
+        // saturating behaviour to mirror.
+        let ix = fx_floor as i64; // cast-ok: already floored and bounded above, mirrors Python's int(x // 1)
+        let iy = fy_floor as i64; // cast-ok: already floored and bounded above, mirrors Python's int(y // 1)
+        let iz = fz_floor as i64; // cast-ok: already floored and bounded above, mirrors Python's int(z // 1)
 
         let fx = x - fx_floor;
         let fy = y - fy_floor;
@@ -441,6 +511,113 @@ mod tests {
         let v = n.ridged(0.3, 0.4, 0.5, f64::NAN, 4, 0.5, 2.0);
         assert!(!v.is_nan(), "a NaN frequency produced {v}");
         assert!((0.0..=1.0).contains(&v), "a NaN frequency produced {v}");
+    }
+
+    /// The test that would have caught the abort.
+    ///
+    /// `at` floors each coordinate and casts it to `i64`, then asks for `ix + 1`. The cast
+    /// SATURATES, so `+inf` and any finite coordinate past ~9.22e18 both arrive as
+    /// `i64::MAX` and the `+ 1` overflows: `attempt to add with overflow` in a debug profile,
+    /// and behind `extern "C"` -- which is nounwind -- an **abort**, not a failing test.
+    ///
+    /// **Two entrants, one line, and the second is the one a sweep cannot see.** An infinite
+    /// vector component reaches it through `bindings::continentality_at` on its own. The
+    /// coastal octave schedule reaches the *same* line only as a PRODUCT: `frequency`,
+    /// `lacunarity` and `octaves` are each individually admissible at 1e6, 16 and 16, and
+    /// `frequency * lacunarity^(octaves - 1)` is about 1.15e24. The four assertions below
+    /// prove that blindness rather than describing it -- each field alone, moved off the
+    /// canonical base to its own ceiling, still produces a finite answer.
+    #[test]
+    fn a_lattice_coordinate_the_index_cannot_name_surfaces_as_a_nan_rather_than_aborting() {
+        let n = Noise::new(12345, 0x0C0FFEE);
+
+        // FIRST: the field this is discriminating against is a real one. `at` returns
+        // ordinary values in [0, 1) at ordinary coordinates, so "is not a NaN" below is a
+        // statement about a function that answers, not about a function that never runs.
+        for (x, y, z) in [(0.3, 0.4, 0.5), (-7.25, 11.5, -0.125), (1e3, -1e3, 0.0)] {
+            let v = n.at(x, y, z);
+            assert!(v.is_finite() && (0.0..1.0).contains(&v), "at({x},{y},{z}) was {v}");
+        }
+
+        // ENTRANT 1: a non-finite component, every axis, both signs. `from_latlon` cannot
+        // produce an infinity, but the three `bindings::continentality_*` take the vector's
+        // components raw and normalise nothing.
+        let mut hostile = 0usize;
+        for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -f64::NAN] {
+            for axis in 0..3 {
+                let (x, y, z) = match axis {
+                    0 => (bad, 0.4, 0.5),
+                    1 => (0.3, bad, 0.5),
+                    _ => (0.3, 0.4, bad),
+                };
+                hostile += 1;
+                assert!(n.at(x, y, z).is_nan(), "at({x},{y},{z}) was {}", n.at(x, y, z));
+                // And out through fbm, which is what every field in this crate actually calls.
+                assert!(n.fbm(x, y, z, 1.25, 4, 0.5, 2.0).is_nan());
+            }
+        }
+        assert_eq!(hostile, 12, "the hostile population shrank");
+
+        // Finite, and still unnameable: the saturation boundary is not at infinity.
+        for bad in [9.3e18, -9.3e18, 1.0e24, -1.0e24, f64::MAX, f64::MIN] {
+            assert!(n.at(bad, 0.4, 0.5).is_nan(), "at({bad},..) was {}", n.at(bad, 0.4, 0.5));
+        }
+
+        // ENTRANT 2: THE CROSS PRODUCT. This exact record aborted at the same line.
+        assert!(
+            n.fbm(0.3, 0.4, 0.5, 1.0e6, 16, 0.5, 16.0).is_nan(),
+            "the octave schedule's product no longer reaches the lattice bound"
+        );
+        // ...and the proof that a one-field-at-a-time sweep is blind to it: each of the
+        // three fields alone, at the same ceiling, off the canonical base -- all finite.
+        // The finest band each asks for is 1e6, 1e6 * 2^15 = 3.3e10 and 1.25 * 16^3 = 5120,
+        // every one of them twelve or more orders below the saturation.
+        for (frequency, octaves, lacunarity) in [
+            (1.0e6, 4u32, 2.0),
+            (1.25, 16u32, 2.0),
+            (1.25, 4u32, 16.0),
+        ] {
+            let v = n.fbm(0.3, 0.4, 0.5, frequency, octaves, 0.5, lacunarity);
+            assert!(
+                v.is_finite(),
+                "the single-field sweep stopped being blind at ({frequency}, {octaves}, \
+                 {lacunarity}) -- it produced {v}, so the cross-product claim needs redoing"
+            );
+        }
+
+        // AND THE OTHER HALF: the guard is invisible to every coordinate anything real
+        // reaches. The pre-guard body is transcribed inline and compared BY BITS, over a
+        // range that spans the canonical field's whole extent and far past it.
+        let mut samples = 0usize;
+        let mut distinct = std::collections::BTreeSet::new();
+        for i in -400i64..400 {
+            let t = i as f64 * 0.037; // cast-ok: loop counter to float, exact far below 2^53
+            let (x, y, z) = (t, -t * 1.5, t * 0.25 + 1e9);
+            let (fx_floor, fy_floor, fz_floor) = (m::floor(x), m::floor(y), m::floor(z));
+            let (ix, iy, iz) = (fx_floor as i64, fy_floor as i64, fz_floor as i64); // cast-ok: floored, bounded by construction here
+            let (fx, fy, fz) = (x - fx_floor, y - fy_floor, z - fz_floor);
+            let ux = fx * fx * (3.0 - 2.0 * fx);
+            let uy = fy * fy * (3.0 - 2.0 * fy);
+            let uz = fz * fz * (3.0 - 2.0 * fz);
+            let (jx, jy, jz) = (ix + 1, iy + 1, iz + 1);
+            let x00 = n.lattice(ix, iy, iz)
+                + (n.lattice(jx, iy, iz) - n.lattice(ix, iy, iz)) * ux;
+            let x10 = n.lattice(ix, jy, iz)
+                + (n.lattice(jx, jy, iz) - n.lattice(ix, jy, iz)) * ux;
+            let x01 = n.lattice(ix, iy, jz)
+                + (n.lattice(jx, iy, jz) - n.lattice(ix, iy, jz)) * ux;
+            let x11 = n.lattice(ix, jy, jz)
+                + (n.lattice(jx, jy, jz) - n.lattice(ix, jy, jz)) * ux;
+            let y0 = x00 + (x10 - x00) * uy;
+            let y1 = x01 + (x11 - x01) * uy;
+            let want = y0 + (y1 - y0) * uz;
+            assert_eq!(n.at(x, y, z).to_bits(), want.to_bits(), "the guard moved at({x},{y},{z})");
+            samples += 1;
+            distinct.insert(want.to_bits());
+        }
+        assert_eq!(samples, 800);
+        // The comparison is against a field that actually varies, not against a constant.
+        assert!(distinct.len() > 700, "only {} distinct values over 800 samples", distinct.len());
     }
 
     #[test]
