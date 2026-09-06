@@ -32,6 +32,7 @@ import {
 } from "../public/app/water.js";
 import {
   AMBIENT, DEFAULT_SUN, OCEAN_BANDS, coastDitherM, marginedTileRequest, reliefTile, shadeTint,
+  slopeColor,
 } from "../public/app/relief.js";
 import { PANEL_RANGES, panelFieldFaults } from "../public/app/panel-fields.js";
 
@@ -182,6 +183,23 @@ test("a body's box is an interval in latitude and an ARC in longitude", () => {
   assert.ok(!bodyContains(wrapped, 0, 169));
 });
 
+test("a lake's surface is not dithered, and the sea's still is", () => {
+  // **The dither is a SURF-EDGE treatment**, +-4 m against a 6 m band, and a lake's whole depth
+  // range lives inside the bands it would scatter (measured p50 28.5 m on the largest body of the
+  // owner's world), so on a lake it stops being an edge and becomes a texture over the entire
+  // body. Removed there and kept at sea -- and both halves are asserted, because "the dither was
+  // deleted everywhere" would satisfy the first line alone.
+  assert.deepEqual(
+    slopeColor(500, 0, 10, 20, null, 520), slopeColor(500, 0, 10, 21, null, 520),
+    "a lake's colour moved with longitude; the surf dither is still being applied to it",
+  );
+  assert.notDeepEqual(
+    slopeColor(-25, 0, 10, 20), slopeColor(-25, 0, 10, 21),
+    "the SEA lost its dither too; that is a change to the ocean, which this task may not make",
+  );
+  assert.ok(Math.abs(coastDitherM(10, 20)) <= 4, "the dither's own amplitude has moved");
+});
+
 test("the sea is never a lake texel, whatever the manifest says", () => {
   // Slice 5b's Ruling 6: the sea is not a body, the datum is carried once in `sea_level_m`, and a
   // texel at or below the datum belongs to the ocean's own colour path. This is the assertion that
@@ -327,13 +345,13 @@ test("a lake is drawn exactly where the engine says, at the level the engine say
     if (level === body.levelM) fromThisBody += 1;
 
     // ...and the colour is the OCEAN table read at the depth below THAT level, lit as a flat
-    // plane. **Derived here, not asked of the module under test.** `slopeColor` is what draws
-    // this, so predicting with it would make the two sides move together under any mutation of
-    // the rule -- the shadowing this project has now found three times. The palette and the
-    // dither are imported because they are DATA and a hash; the lookup, the depth and the flat
-    // shade are re-derived.
-    const [r, g, b] = bandLookup(OCEAN_BANDS,
-      (texel.heightM - level) + coastDitherM(texel.latitudeDeg, texel.longitudeDeg));
+    // plane, **with no dither**: the coast dither is a surf-edge treatment and a lake's whole
+    // depth range lives inside the bands it would scatter (p50 28.5 m on this body). Derived
+    // here, not asked of the module under test -- `slopeColor` is what draws this, so predicting
+    // with it would make the two sides move together under any mutation of the rule, which is
+    // the shadowing this project has now found three times. The palette is imported because it
+    // is DATA; the lookup, the depth and the flat shade are re-derived.
+    const [r, g, b] = bandLookup(OCEAN_BANDS, texel.heightM - level);
     const shade = AMBIENT + (1 - AMBIENT) * DEFAULT_SUN.up;
     const [tr, tg, tb] = shadeTint(shade);
     const idx = (texel.row * size + texel.col) * 4;

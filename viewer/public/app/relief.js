@@ -418,9 +418,15 @@ export function slopeColor(
   // project bakes at, so such a branch could not execute on this mesh. Dead code looks like a
   // feature; a body is drawn at its level whatever its label.
   if (lakeLevelM !== null && heightM > 0) {
-    return bandColor(
-      OCEAN_BANDS, (heightM - lakeLevelM) + coastDitherM(latitudeDeg, longitudeDeg),
-    );
+    // **No dither, and that is a measurement rather than an omission.** `coastDitherM` exists to
+    // break the SURF band's outer edge -- +-4 m against the sea's 6 m surf stop, where the next
+    // band down is 24 m wide and the one below that 90, so it scatters an edge and leaves the
+    // open sea alone. A lake's whole depth range lives inside those top bands: measured on the
+    // largest body of the owner's world, depth runs p50 **28.5 m** and **max 115.1 m**, so +-4 m
+    // is 13% of the water at the median and the dither stops being an edge treatment and becomes
+    // a texture over the entire body. It read as speckled cloud, not as water. The sea keeps it;
+    // the lake does not.
+    return bandColor(OCEAN_BANDS, heightM - lakeLevelM);
   }
   // **The land base colour is the only thing the biome layer replaces.** Water keeps
   // `OCEAN_BANDS` (no ocean retune in this task), and the rock and snow blends below act on
