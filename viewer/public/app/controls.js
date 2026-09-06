@@ -30,7 +30,7 @@ import {
   RELIEF_CONTROLS, RELIEF_PARAM_NAMES, HURST_BAND, hurst, sliderTravel, reliefToParams,
 } from "./relief-params.js";
 import {
-  TECTONIC_CONTROLS, MEASURED_GRADES, tectonicTravel, tectonicPanelFields, tectonicToParams,
+  TECTONIC_SLIDERS, MEASURED_GRADES, tectonicTravel, tectonicPanelFields, tectonicToParams,
 } from "./tectonic-params.js";
 
 const params = new URLSearchParams(location.search);
@@ -298,11 +298,17 @@ function build() {
   // to `Surface::new`, resolved once in `Tectonics::new`, and every worker holds its own
   // already-built world. There is no uniform to poke.
   //
-  // **No tectonic number is written in this file** -- not 1500, not 400000, not 0.45. All
-  // three sliders are anchored on `wb_tectonic_preset`'s answer in `wireTectonics` below, and
-  // until the engine answers they are disabled and say so. The panel's ramp defaults drifted
-  // from `main.js`'s once and silently reverted the ramp on every generate; the answer here,
-  // as with relief, is to hold no copy at all rather than a correct copy.
+  // **No tectonic number is written in this file.** All SIX sliders and both buttons are
+  // anchored on `wb_tectonic_preset`'s answer in `wireTectonics` below, and until the engine
+  // answers they are disabled and say so. The panel's ramp defaults drifted from `main.js`'s
+  // once and silently reverted the ramp on every generate; the answer here, as with relief, is
+  // to hold no copy at all rather than a correct copy.
+  //
+  // **Three of the six are Task 3's, and they are the reason this section is worth looking at
+  // again.** Task 2 built the structure field -- the doubly-vergent wedge, the stacked
+  // sutures, and the ridged-multifractal-times-segmentation field that turns one smooth welt
+  // into separate massifs -- and stopped at the WASM boundary, so for a whole task none of it
+  // was reachable from here. `WB_TECTONIC_STRIDE` went 9 -> 14 and these are what it carries.
 
   const mountainSection = section(body, "mountains · rebuilds");
   const mountainLabels = {
@@ -312,21 +318,41 @@ function build() {
     // shows the kilometres.
     continentCollisionWidthM: "steepness",
     continentalBlend: "count",
+    // The three structure sliders. Labelled for what they DO to the picture, because none of
+    // their parameter names would mean anything to someone looking at a mountain: this is the
+    // difference between a smooth blade and two parallel belts of separate massifs with a
+    // ridge-and-valley interior, which is what Task 2 built and nobody could see.
+    collisionAsymmetry: "vergence",
+    structureDepth: "structure",
+    structureWavelengthM: "massif size",
   };
   const mountainRows = {};
-  for (const field of TECTONIC_CONTROLS) {
+  for (const field of TECTONIC_SLIDERS) {
     mountainRows[field] = row(mountainSection, mountainLabels[field], `wb-tectonic-${field}`,
       "range", { min: 0, max: 1, step: 1, value: 0, disabled: true });
     mountainRows[field].out.textContent = "—";
   }
+  // The suture pair, SHOWN but not sliderable. `TECTONIC_SLIDERS`' own comment gives the
+  // measured reason there is no widget: count and spread are jointly constrained, and the one
+  // useful setting is a point rather than a travel. But the preset moves them, the query string
+  // carries them, and a preset that changed something the panel never mentioned would be a
+  // parameter the owner cannot see -- which is the whole defect this slice exists to fix. So
+  // they are a readout.
+  const beltNote = el("div", "wb-note", "—");
+  mountainSection.append(beltNote);
   const mountainNote = el("div", "wb-note", "waiting for the engine…");
   mountainSection.append(mountainNote);
   const mountainActions = el("div", "wb-actions");
+  const rangesButton = el("button", "wb-mini", "ranges preset");
+  rangesButton.type = "button";
+  rangesButton.disabled = true;
+  rangesButton.title =
+    "TectonicParams::ranges(), read from the engine — every value is set on a slider you can see and move";
   const mountainReset = el("button", "wb-mini", "canonical");
   mountainReset.type = "button";
   mountainReset.disabled = true;
   mountainReset.title = "back to the engine's canonical block, which is the untouched world";
-  mountainActions.append(mountainReset);
+  mountainActions.append(rangesButton, mountainReset);
   mountainSection.append(mountainActions);
 
   /// The tectonic block the sliders currently describe, or `null` while the engine has not
@@ -361,21 +387,38 @@ function build() {
     tectonicState = { ...presets.canonical, ...(presets.chosen ?? {}) };
 
     const paint = () => {
-      for (const field of TECTONIC_CONTROLS) {
+      for (const field of TECTONIC_SLIDERS) {
         const value = travel[field].toValue(Number(mountainRows[field].input.value));
         tectonicState[field] = value;
         mountainRows[field].out.textContent = travel[field].format(value);
       }
+      // The two fields with no widget, read out of the state the preset button writes rather
+      // than from a literal. `sutureCount` is an integer in an f64 slot; `sutureSpreadM` is
+      // metres.
+      const belts = tectonicState.sutureCount;
+      beltNote.textContent = belts > 1
+        ? `${belts} parallel belts, ${(tectonicState.sutureSpreadM / 1000).toFixed(0)} km apart`
+        : "one belt (canonical)";
       // Which way "count" runs, said in words, because the parameter behind it runs the
       // opposite way to its name: `collision = inboard * outboard` and each side is a
       // smoothstep over `value / blend`, so a NARROWER transition is MORE mountains. The
       // slider is negated for that reason and the note says which end you are at.
       const position = Number(mountainRows.continentalBlend.input.value);
       const direction = position > 0 ? "more" : position < 0 ? "fewer" : "canonical";
-      mountainNote.textContent = `${gradeNote()} Count: ${direction}.`;
+      // And what the structure slider costs, because it is not free and the height slider's
+      // reading is no longer independent of it: the multiplier is at most 1, so turning
+      // structure up can only LOWER the delivered peak. Measured at −22% at depth 0.7.
+      //
+      // The note carries no NUMBER for that depth on purpose -- a literal here is a literal
+      // the "no tectonic number written twice" test would have to allow through, and this file
+      // has already shipped four panel values that were not the engine's.
+      const structure = tectonicState.structureDepth > 0
+        ? " Structure carves the delivered peak down by up to a fifth; 40–80 km is where it bites."
+        : "";
+      mountainNote.textContent = `${gradeNote()} Count: ${direction}.${structure}`;
     };
 
-    for (const field of TECTONIC_CONTROLS) {
+    for (const field of TECTONIC_SLIDERS) {
       const { input } = mountainRows[field];
       input.min = travel[field].min;
       input.max = travel[field].max;
@@ -385,13 +428,23 @@ function build() {
       input.addEventListener("input", paint);
     }
     mountainReset.disabled = false;
-    // Sends the engine's own record back to the engine; it restates nothing.
-    mountainReset.addEventListener("click", () => {
-      for (const field of TECTONIC_CONTROLS) {
-        mountainRows[field].input.value = travel[field].toPosition(presets.canonical[field]);
+    rangesButton.disabled = false;
+    // **Both buttons send the ENGINE'S OWN record back to the engine and restate nothing.**
+    // `setAllMountains` writes every field of a preset -- the six that have sliders onto their
+    // sliders, and the two that do not straight into the state the readout and the query
+    // string both read. That second half is why this is a loop over the block rather than over
+    // the widgets: a preset half-applied because two of its fields had no widget is the
+    // silently-dropping-builder shape, and this file's own history is four instances of a
+    // panel value that was not the engine's value.
+    const setAllMountains = (block) => {
+      tectonicState = { ...block };
+      for (const field of TECTONIC_SLIDERS) {
+        mountainRows[field].input.value = travel[field].toPosition(block[field]);
       }
       paint();
-    });
+    };
+    rangesButton.addEventListener("click", () => setAllMountains(presets.ranges));
+    mountainReset.addEventListener("click", () => setAllMountains(presets.canonical));
     paint();
   }
 

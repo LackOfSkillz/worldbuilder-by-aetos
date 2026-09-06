@@ -1963,12 +1963,19 @@ const TECTONIC_PROBES: &[(f64, f64)] = &[
     (-33.5, -22.0),  // where narrowing it adds the most
 ];
 
-fn canonical_tectonic_record() -> [f64; WB_TECTONIC_STRIDE] {
+/// A named preset, read across the boundary exactly as the viewer reads it. **Nothing in this
+/// file writes a tectonic value down**, canonical or preset: both come from
+/// `wb_tectonic_preset`, so `tectonics.rs` stays the one place the numbers live and a test
+/// cannot agree with a stale copy of them.
+fn tectonic_preset_record(selector: u32) -> [f64; WB_TECTONIC_STRIDE] {
     let mut record = [0.0; WB_TECTONIC_STRIDE];
-    let status =
-        wb_tectonic_preset(WB_TECTONIC_CANONICAL, record.as_mut_ptr(), WB_TECTONIC_STRIDE as u32);
-    assert_eq!(status, WB_OK, "the canonical tectonic preset must be readable");
+    let status = wb_tectonic_preset(selector, record.as_mut_ptr(), WB_TECTONIC_STRIDE as u32);
+    assert_eq!(status, WB_OK, "tectonic preset {selector} must be readable");
     record
+}
+
+fn canonical_tectonic_record() -> [f64; WB_TECTONIC_STRIDE] {
+    tectonic_preset_record(WB_TECTONIC_CANONICAL)
 }
 
 fn world_with_tectonics(record: &[f64; WB_TECTONIC_STRIDE]) -> u32 {
@@ -2026,9 +2033,34 @@ fn tectonic_field_domain(field: usize) -> (f64, f64) {
         5 => (WB_MIN_TECTONIC_WIDTH_M, WB_MAX_ISLAND_ARC_WIDTH_M),
         7 => (WB_MIN_TECTONIC_WIDTH_M, WB_MAX_CENTRED_TECTONIC_WIDTH_M),
         8 => (WB_MIN_CONTINENTAL_BLEND, WB_MAX_CONTINENTAL_BLEND),
-        _ => unreachable!("WB_TECTONIC_STRIDE is 9"),
+        // The five structure fields, Task 3. Three of these ceilings are DERIVED, and they are
+        // written here as their derivation rather than as a number, for the same reason the
+        // width ceilings above are: a test that restates a bound cannot notice it moving.
+        //
+        // `collision_asymmetry` has no ceiling constant of its own -- it is bounded by the
+        // OVERRIDING FLANK it produces, `continent_collision_width_m / asymmetry`, held against
+        // the same floor every width faces. On the canonical 400 km flank that ceiling is
+        // 4.0e8, so this ladder runs far past every setting Task 2 measured (1.00 to 3.00) and
+        // out into the region where the narrow flank is under a millimetre, which is the point.
+        9 => {
+            (WB_MIN_COLLISION_ASYMMETRY, WB_MAX_CENTRED_TECTONIC_WIDTH_M / WB_MIN_TECTONIC_WIDTH_M)
+        }
+        10 => (1.0, f64::from(WB_MAX_SUTURE_COUNT)),
+        11 => (WB_MIN_SUTURE_SPREAD_M, MAX_TECTONIC_RANGE_M),
+        12 => (0.0, WB_MAX_STRUCTURE_DEPTH),
+        13 => (WB_MIN_STRUCTURE_WAVELENGTH_M, WB_MAX_STRUCTURE_WAVELENGTH_M),
+        _ => unreachable!("WB_TECTONIC_STRIDE is 14"),
     }
 }
+
+/// Word 10 of a tectonic record: `suture_count`, **the loop bound**.
+///
+/// Named because three separate places below have to treat it differently from the thirteen
+/// f64 fields around it, and a bare `10` in each of them is three chances to mean a different
+/// field.
+const SUTURE_COUNT_FIELD: usize = 10;
+/// Word 11: `suture_spread_m`. A count above one is inadmissible without one.
+const SUTURE_SPREAD_FIELD: usize = 11;
 
 /// Every value one tectonic field is driven through: `HOSTILE` in full, both documented
 /// bounds and the values immediately either side of each, and a ladder across the admissible
@@ -2056,17 +2088,59 @@ fn tectonic_field_sweep(field: usize) -> Vec<f64> {
         let t = f64::from(step) / f64::from(steps);
         values.push(if geometric { low * (high / low).powf(t) } else { low + (high - low) * t });
     }
+    // **The loop bound is the one field a ladder sweeps badly, and it is the one field where
+    // that matters most.** Its domain is the eight integers 1..=8, and a 25-rung ladder across
+    // it is mostly fractions -- which the boundary refuses for being non-integral before the
+    // count is ever exercised at all. So every integer either side of both ends is added by
+    // hand, along with the values a SATURATING `as u32` would turn into a four-billion-
+    // iteration walk: `HOSTILE` already carries `f64::MAX`, `INFINITY` and `1e300`, and
+    // `u32::MAX` itself and its neighbours are added here because they are the exact number a
+    // saturating cast produces and nothing else in this list is.
+    if field == SUTURE_COUNT_FIELD {
+        for integer in -2..=12 {
+            values.push(f64::from(integer));
+        }
+        values.extend_from_slice(&[
+            f64::from(WB_MAX_SUTURE_COUNT) + 1.0,
+            f64::from(u32::MAX),
+            f64::from(u32::MAX) - 1.0,
+            f64::from(u32::MAX) + 1.0,
+            4_294_967_296.0,
+            2.5,
+            1.5,
+            1.0 + f64::EPSILON,
+            2.0 - f64::EPSILON,
+        ]);
+    }
     values
 }
 
+/// The two bases every field is swept around.
+///
+/// **One base is not a sweep of a channel whose fields interact, and Task 2 measured that they
+/// do.** Around `canonical()` every structure field is at its inert setting, so a sweep of
+/// `structure_wavelength_m` there rides a `structure_depth` of zero and `structure_at` returns
+/// before it ever reads the wavelength -- the field would be swept with the code under it
+/// switched off, which is a sweep of nothing wearing a sweep's name. Around `ranges()` the
+/// structure is on, the sutures are stacked, and the reach is 235 km of the 420 km gate, so
+/// the interaction bands are reachable. Both, therefore: every hazard the ledger records was a
+/// **band, not a cliff**, and a band lives where two fields meet.
+fn tectonic_sweep_bases() -> [(&'static str, [f64; WB_TECTONIC_STRIDE]); 2] {
+    [
+        ("canonical", canonical_tectonic_record()),
+        ("ranges", tectonic_preset_record(WB_TECTONIC_RANGES)),
+    ]
+}
+
 fn swept_tectonic_records() -> Vec<(String, [f64; WB_TECTONIC_STRIDE])> {
-    let base = canonical_tectonic_record();
     let mut out = Vec::new();
-    for field in 0..WB_TECTONIC_STRIDE {
-        for value in tectonic_field_sweep(field) {
-            let mut record = base;
-            record[field] = value;
-            out.push((format!("tectonic field {field} = {value:e}"), record));
+    for (base_name, base) in tectonic_sweep_bases() {
+        for field in 0..WB_TECTONIC_STRIDE {
+            for value in tectonic_field_sweep(field) {
+                let mut record = base;
+                record[field] = value;
+                out.push((format!("{base_name} + tectonic field {field} = {value:e}"), record));
+            }
         }
     }
     out
@@ -2248,6 +2322,30 @@ fn a_continental_blend_of_zero_or_less_is_refused_because_it_is_the_hard_test_ag
 ///   `canonical * (9 - position) / 9` rather than `canonical - position * 0.05` for the reason
 ///   `quieting_strength` is written as `canonical * n / 14`: both measured ends then land
 ///   exactly, and position 0 is canonical bit-for-bit.
+///
+/// **Task 3 adds three more, and every travel is calibrated from Task 2's measured columns --
+/// a slider whose useful range is a tenth of its travel is a slider nobody can aim.**
+///
+/// - `collision_asymmetry`: canonical (1.00, symmetric) up to 3.00, a quarter a step. That is
+///   exactly the interval Task 2 swept and found monotone in summit count, grade and flank
+///   ratio at all six of its settings, and 2.0 -- the preset's -- lands on the lattice.
+/// - `structure_depth`: canonical (0.0) up to 0.9, a tenth a step. Task 2's depth table runs
+///   0.0 to 0.9 and stops there because the peak cost keeps rising while the summit count
+///   flattens.
+/// - `structure_wavelength_m`: canonical (120 km) DOWN to 40 km, 20 km a step -- five
+///   positions, of which the last three (80, 60, 40 km) are the measured working band.
+///   **The travel deliberately excludes 120-250 km, which Task 2 measured as doing NOTHING**
+///   at any depth (summit counts fall back to 0-3 against 12 at 40 km), and it has to start at
+///   120 km anyway because that is the canonical placeholder and position 0 must be canonical
+///   bit-for-bit or an untouched panel writes a parameter into every shared link. So one of
+///   five positions is dead and it is the one Ruling 1 requires; a 40-250 km slider would have
+///   been two-thirds dead.
+///
+/// Written as `position / 4.0` and `position / 10.0` rather than `position * 0.25` and
+/// `position * 0.1` for the reason Task 4 found the hard way: `0.1 * 7` is
+/// 0.7000000000000001, and the preset's `structure_depth` is 0.7. A preset value that cannot
+/// be expressed by the slider it lands on is the panel-default defect this viewer has now
+/// shipped four times.
 fn tectonic_slider_travel() -> Vec<(usize, Vec<f64>)> {
     let canonical = canonical_tectonic_record();
     let mut height = Vec::new();
@@ -2262,7 +2360,26 @@ fn tectonic_slider_travel() -> Vec<(usize, Vec<f64>)> {
     for position in -11..=7 {
         blend.push(canonical[8] * (f64::from(9 - position) / 9.0));
     }
-    vec![(0, height), (1, width), (8, blend)]
+    let mut asymmetry = Vec::new();
+    for position in 0..=8 {
+        asymmetry.push(canonical[9] + f64::from(position) / 4.0);
+    }
+    let mut depth = Vec::new();
+    for position in 0..=9 {
+        depth.push(canonical[12] + f64::from(position) / 10.0);
+    }
+    let mut wavelength = Vec::new();
+    for position in 0..=4 {
+        wavelength.push(canonical[13] - f64::from(position) * 20_000.0);
+    }
+    vec![
+        (0, height),
+        (1, width),
+        (8, blend),
+        (9, asymmetry),
+        (12, depth),
+        (13, wavelength),
+    ]
 }
 
 #[test]
@@ -2272,6 +2389,28 @@ fn the_calibrated_mountain_slider_travel_is_swept_at_every_step_the_widget_can_p
     assert_eq!(travel[0].1.len(), 46, "mountain height travel");
     assert_eq!(travel[1].1.len(), 31, "mountain width travel");
     assert_eq!(travel[2].1.len(), 19, "mountain count travel");
+    assert_eq!(travel[3].1.len(), 9, "asymmetry travel");
+    assert_eq!(travel[4].1.len(), 10, "structure depth travel");
+    assert_eq!(travel[5].1.len(), 5, "structure wavelength travel");
+
+    // Position 0 is canonical BIT FOR BIT on all three new sliders, for the reason Task 4
+    // found by one ULP: `tectonicToParams` drops a field equal to canonical, so a position-0
+    // value one ULP off would be written into every shared link and take an untouched viewer
+    // off the engine's `None` path. Ruling 1, broken by a rounding mode.
+    assert_eq!(travel[3].1[0].to_bits(), base[9].to_bits(), "asymmetry position 0");
+    assert_eq!(travel[4].1[0].to_bits(), base[12].to_bits(), "depth position 0");
+    assert_eq!(travel[5].1[0].to_bits(), base[13].to_bits(), "wavelength position 0");
+    // And the three PRESET values land on the lattice EXACTLY, which is what makes the preset
+    // button and the sliders the same control rather than two that nearly agree. `0.1 * 7` is
+    // 0.7000000000000001 and would fail this; `7 / 10.0` is 0.7.
+    let preset = tectonic_preset_record(WB_TECTONIC_RANGES);
+    assert_eq!(travel[3].1[4].to_bits(), preset[9].to_bits(), "asymmetry 2.00 is position 4");
+    assert_eq!(travel[4].1[7].to_bits(), preset[12].to_bits(), "depth 0.7 is position 7");
+    assert_eq!(travel[5].1[2].to_bits(), preset[13].to_bits(), "wavelength 80 km is position 2");
+    // Both measured ends of the three new travels, landed on rather than approached.
+    assert_eq!(travel[3].1[8], 3.0, "the asymmetry sweep's far end");
+    assert_eq!(travel[4].1[9], 0.9, "the depth table's far end");
+    assert_eq!(travel[5].1[4], 40_000.0, "the working band's short end");
 
     // The measured ends, landed on exactly rather than approached. 6,000 m over 100 km is the
     // 7.030% grade the probe measured on the owner's world; real ranges run 3-8%, and today's
@@ -2337,6 +2476,292 @@ fn the_three_exposed_tectonic_parameters_are_swept_together_not_one_at_a_time() 
         }
     }
     assert_eq!(built, 180);
+}
+
+/// **`suture_count` IS A LOOP BOUND, and this is the test that says so.**
+///
+/// `Tectonics::sutures` runs `while index < params.suture_count` once per convergent sample.
+/// The field was unreachable from outside until this task widened the stride; admitting one
+/// without a ceiling is **a HANG, not an odd world**, and a hang through `extern "C"` is
+/// uninterruptible because that boundary is nounwind -- the tab does not error, it stops.
+///
+/// Three separate refusals, because `as u32` in Rust **saturates** and each of them would
+/// otherwise arrive as a different large number:
+///
+/// - **non-finite**: `f64::NAN as u32` is 0 and `f64::INFINITY as u32` is `u32::MAX`;
+/// - **non-integral**: 2.5 would truncate to 2 -- a silently-adjusted parameter;
+/// - **out of range**: 1e300 and `u32::MAX` saturate to `u32::MAX`, four billion iterations.
+///
+/// And then the positive half, which is what stops this being a test that passes by refusing
+/// everything: every admissible count from 1 to the ceiling is built AND SAMPLED, so the loop
+/// actually runs at its bound rather than merely being accepted at it.
+#[test]
+fn the_suture_count_loop_bound_is_refused_above_its_ceiling_and_sampled_below_it() {
+    let mut base = canonical_tectonic_record();
+    // A spread the counts can actually use, on a flank narrow enough that eight of them still
+    // fit inside the range gate. **Both parts are load-bearing and the first draft had neither
+    // right**: without a spread, a count above one is inadmissible for a different reason
+    // (coincident sutures), and on the canonical 400 km flank even TWO sutures 30 km apart
+    // reach 440 km and are refused by the range check -- so this test would have "proved" a
+    // ceiling that was really the gate, at a count of 2. Eight at 30 km on a 100 km flank
+    // reach 383.5 km, inside the 420 km gate, so the only thing left to refuse a count here is
+    // the ceiling itself.
+    base[0] = 6_000.0;
+    base[1] = 100_000.0;
+    base[SUTURE_SPREAD_FIELD] = 30_000.0;
+
+    let mut refused = 0usize;
+    for count in [
+        f64::NAN,
+        -f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        -0.0,
+        -1.0,
+        -8.0,
+        0.5,
+        1.5,
+        2.5,
+        1.0 + f64::EPSILON,
+        f64::from(WB_MAX_SUTURE_COUNT) + 1.0,
+        f64::from(WB_MAX_SUTURE_COUNT) + 0.5,
+        9.0,
+        64.0,
+        1.0e6,
+        1.0e300,
+        f64::from(u32::MAX),
+        f64::from(u32::MAX) - 1.0,
+        4_294_967_296.0,
+        f64::MAX,
+    ] {
+        let mut record = base;
+        record[SUTURE_COUNT_FIELD] = count;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_ERR_PARAM,
+            "suture_count = {count:e} is not a count this boundary admits",
+        );
+        assert_eq!(
+            world_with_tectonics(&record),
+            0,
+            "the constructor admitted a suture_count the checker refused: {count:e}",
+        );
+        refused += 1;
+    }
+    assert_eq!(refused, 22, "the refusal list must not shrink silently");
+
+    // The other half. Every count the boundary DOES admit is walked, because a ceiling that
+    // refuses everything is not a ceiling, it is an off switch.
+    let mut admitted = 0usize;
+    for count in 1..=WB_MAX_SUTURE_COUNT {
+        let mut record = base;
+        record[SUTURE_COUNT_FIELD] = f64::from(count);
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_OK,
+            "suture_count = {count} is inside the ceiling and was refused",
+        );
+        sample_tectonics(&record, &format!("suture_count = {count}"));
+        admitted += 1;
+    }
+    assert_eq!(admitted, WB_MAX_SUTURE_COUNT as usize); // cast-ok: a small ceiling to usize for a count comparison
+
+    // **And a count above one at a spread of exactly zero is refused**, which is a different
+    // hazard reached through the same field: `sutures` places suture `i` at
+    // `i * suture_spread_m * jitter`, so at a spread of zero every one of them lands on offset
+    // zero and the profile becomes the amplitude times the sum of the weights -- a HEIGHT knob
+    // wearing a count's name, decided by a hash of the plate pair. Task 2 measured that same
+    // arithmetic as a 64% peak overshoot at four sutures 60 km apart.
+    for count in 2..=WB_MAX_SUTURE_COUNT {
+        for spread in [0.0, -0.0, -1.0, -100_000.0] {
+            let mut record = canonical_tectonic_record();
+            record[SUTURE_COUNT_FIELD] = f64::from(count);
+            record[SUTURE_SPREAD_FIELD] = spread;
+            assert_eq!(
+                wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+                WB_ERR_PARAM,
+                "{count} coincident sutures at a spread of {spread} is a height knob",
+            );
+        }
+    }
+    // One suture at a spread of zero IS canonical, and must stay admissible -- otherwise this
+    // rule would have refused the default world.
+    let canonical = canonical_tectonic_record();
+    assert_eq!(canonical[SUTURE_COUNT_FIELD], 1.0);
+    assert_eq!(canonical[SUTURE_SPREAD_FIELD], 0.0);
+    assert_eq!(wb_tectonic_check(canonical.as_ptr(), WB_TECTONIC_STRIDE as u32), WB_OK);
+}
+
+/// **The range gate, asked of the stacked profile rather than of one width.**
+///
+/// Task 2 drove off this cliff and measured the drop: four sutures 150 km apart reach 707 km
+/// against a 420 km gate, and `offset_m` simply does not evaluate a margin past that -- so the
+/// outer sutures are truncated mid-profile rather than faded, measured at **a 41.3% grade and
+/// 827 m of relief over 2 km**. `TectonicParams::collision_reach_m` was added for this call
+/// site and its own doc says so; this is the boundary asking it.
+///
+/// The interesting property is that **`continent_collision_width_m` alone cannot see this**:
+/// every record below has a width of 100 km, comfortably inside the per-field ceiling, and the
+/// refusals come entirely from the count and spread stacked on top of it. A boundary that
+/// checked only the widths would have admitted every one.
+#[test]
+fn a_stacked_collision_profile_past_the_range_gate_is_refused_by_its_reach_not_its_width() {
+    let mut base = canonical_tectonic_record();
+    base[0] = 6_000.0;
+    base[1] = 100_000.0;
+
+    // Straight off Task 2's sutures table: the `inside` / `past` column, reproduced through
+    // the boundary rather than restated. Every one of these has an admissible WIDTH.
+    for (count, spread_km, inside) in [
+        (1u32, 0.0, true),
+        (2, 60.0, true),
+        (2, 100.0, true),
+        (2, 150.0, true),
+        (3, 60.0, true),
+        (3, 100.0, true),
+        (4, 60.0, true),
+        (4, 100.0, false),
+        (4, 150.0, false),
+        (8, 100.0, false),
+    ] {
+        let mut record = base;
+        record[SUTURE_COUNT_FIELD] = f64::from(count);
+        record[SUTURE_SPREAD_FIELD] = spread_km * 1_000.0;
+        let status = wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32);
+        if inside {
+            assert_eq!(status, WB_OK, "{count} sutures at {spread_km} km is inside the gate");
+            sample_tectonics(&record, "a stacked profile inside the gate");
+        } else {
+            assert_eq!(status, WB_ERR_PARAM, "{count} sutures at {spread_km} km reaches past it");
+            assert_eq!(world_with_tectonics(&record), 0);
+        }
+        // The width alone is admissible in EVERY row, which is what makes the reach check the
+        // thing doing the work rather than a restatement of the width ceiling.
+        let mut width_only = canonical_tectonic_record();
+        width_only[1] = record[1];
+        assert_eq!(wb_tectonic_check(width_only.as_ptr(), WB_TECTONIC_STRIDE as u32), WB_OK);
+    }
+}
+
+/// **A `collision_asymmetry` below 1.0 is a cliff `collision_reach_m` cannot see**, and this
+/// is the test that pins the floor to that fact rather than to a preference.
+///
+/// `asymmetric_bump` gives the overriding flank `width_m / asymmetry`, so 0.1 makes that flank
+/// ten times `continent_collision_width_m` -- a 400 km profile carrying weight at 4,000 km.
+/// `collision_reach_m` reports `continent_collision_width_m`, because the field's own doc
+/// guarantees this parameter can only ever NARROW a range, and the reach check would therefore
+/// pass a profile the range gate truncates. The floor is what buys that guarantee.
+///
+/// The ceiling is the other side of the same arithmetic: the narrow flank held against the
+/// same floor every width faces, so it is derived and there is no number to pick.
+#[test]
+fn the_collision_asymmetry_floor_and_ceiling_are_both_the_flank_it_produces() {
+    let base = canonical_tectonic_record();
+    // Refused below 1.0, at every hostile shape and at the interior values -- a band, not a
+    // cliff, is what this project keeps finding.
+    for asymmetry in [
+        f64::NAN,
+        -f64::NAN,
+        f64::NEG_INFINITY,
+        0.0,
+        -0.0,
+        -1.0,
+        -1.67,
+        1.0e-300,
+        0.001,
+        0.1,
+        0.5,
+        0.9,
+        1.0 - f64::EPSILON,
+    ] {
+        let mut record = base;
+        record[9] = asymmetry;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_ERR_PARAM,
+            "collision_asymmetry = {asymmetry:e} widens the flank the reach check cannot see",
+        );
+        assert_eq!(world_with_tectonics(&record), 0);
+    }
+    // Admitted from exactly 1.0 upward, through the whole measured sweep and well past it.
+    for asymmetry in [1.0, 1.0 + f64::EPSILON, 1.25, 1.67, 2.0, 2.5, 3.0, 10.0, 1.0e6] {
+        let mut record = base;
+        record[9] = asymmetry;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_OK,
+            "collision_asymmetry = {asymmetry:e} only narrows the overriding flank",
+        );
+        sample_tectonics(&record, "an asymmetric wedge");
+    }
+    // And refused again once the flank it produces falls under the width floor, which is where
+    // the ceiling is: `continent_collision_width_m / asymmetry < WB_MIN_TECTONIC_WIDTH_M`. On
+    // the canonical 400 km flank that crossing is at 4e8, and the two sides of it are checked
+    // rather than one -- the ceiling has to be a band edge, not an assertion.
+    let crossing = base[1] / WB_MIN_TECTONIC_WIDTH_M;
+    for (asymmetry, admissible) in [(crossing * 0.5, true), (crossing, true), (crossing * 2.0, false), (f64::INFINITY, false)] {
+        let mut record = base;
+        record[9] = asymmetry;
+        let status = wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32);
+        assert_eq!(
+            status,
+            if admissible { WB_OK } else { WB_ERR_PARAM },
+            "asymmetry {asymmetry:e} gives a flank of {} m",
+            base[1] / asymmetry,
+        );
+    }
+}
+
+/// The five structure fields swept **together**, on the envelope they are meant for.
+///
+/// The same argument the three-parameter cross product above makes, and it applies harder
+/// here: Task 2 measured that these interact -- `structure_depth` costs 22% of the peak, a
+/// tight `suture_spread_m` adds 64%, and the wavelength decides whether the depth does
+/// anything at all. A one-axis-at-a-time sweep never visits the corner where they multiply,
+/// and every hazard this project has found was a band sitting exactly there.
+#[test]
+fn the_structure_fields_are_swept_together_on_the_envelope_they_are_for() {
+    let mut base = canonical_tectonic_record();
+    base[0] = 6_000.0;
+    base[1] = 100_000.0;
+    let travel = tectonic_slider_travel();
+    let (asymmetries, depths, wavelengths) = (&travel[3].1, &travel[4].1, &travel[5].1);
+
+    let mut built = 0usize;
+    let mut refusals = 0usize;
+    for a in 0..5 {
+        for d in 0..5 {
+            for w in 0..wavelengths.len() {
+                // The last pair reaches 707 km against the 420 km gate -- Task 2's own
+                // `4 x 150 km` row, the one it measured at a 41.3% grade. It is in this list
+                // so the cross product has a refused corner by construction rather than by
+                // luck: a sweep whose every record is admitted proves nothing about a bound.
+                for (count, spread) in
+                    [(1.0, 0.0), (2.0, 100_000.0), (4.0, 60_000.0), (4.0, 150_000.0)]
+                {
+                    let mut record = base;
+                    record[9] = asymmetries[a * (asymmetries.len() - 1) / 4];
+                    record[12] = depths[d * (depths.len() - 1) / 4];
+                    record[13] = wavelengths[w];
+                    record[SUTURE_COUNT_FIELD] = count;
+                    record[SUTURE_SPREAD_FIELD] = spread;
+                    if wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32) == WB_OK {
+                        sample_tectonics(&record, "structure cross product");
+                        built += 1;
+                    } else {
+                        assert_eq!(world_with_tectonics(&record), 0);
+                        refusals += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(built + refusals, 500);
+    // Both sides non-trivial: a cross product that accepted everything would prove nothing
+    // about the bounds, and one that refused everything would prove nothing about the fields.
+    assert!(built >= 300, "only {built} of 500 structure corners were admitted");
+    assert!(refusals > 0, "no corner of the structure cross product is refused");
 }
 
 #[test]
@@ -2437,20 +2862,71 @@ fn wb_tectonic_preset_hands_back_the_engines_own_canonical_and_nothing_else() {
     assert_eq!(record[6], 900.0, "ridge_m");
     assert_eq!(record[7], 380_000.0, "ridge_width_m");
     assert_eq!(record[8], 0.45, "continental_blend");
+    // And the five structure fields at their INERT settings -- the ones that make the
+    // canonical path perform the same operations on the same numbers it did before those
+    // fields existed. Word 13 is the placeholder wavelength, which `structure_at` never reads
+    // while word 12 is zero, and it is stated here rather than left unasserted precisely
+    // because it is the one canonical value that is not an arithmetic identity.
+    assert_eq!(record[9], 1.0, "collision_asymmetry: symmetric, width / 1.0 is width");
+    assert_eq!(record[10], 1.0, "suture_count: one bump, weight exactly 1.0 at offset 0.0");
+    assert_eq!(record[11], 0.0, "suture_spread_m");
+    assert_eq!(record[12], 0.0, "structure_depth: the multiplier is exactly 1.0, unsampled");
+    assert_eq!(record[13], 120_000.0, "structure_wavelength_m: the unread placeholder");
     // Its own checker must accept it, or the panel starting position would be a refused world.
     assert_eq!(wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32), WB_OK);
 
-    // And there is exactly ONE selector. A named tectonic preset is Task 3's decision against
-    // Task 2's fuller survey; inventing one here would be choosing for the owner before they
-    // can turn the knob themselves.
+    // There are exactly TWO selectors now: canonical, and the preset Task 3 chose. Every other
+    // value is refused, and that is checked either side of both known ones rather than only
+    // far away from them -- an off-by-one in a selector comparison is a band like any other.
     let mut scratch = [0.0; WB_TECTONIC_STRIDE];
-    for unknown in [1u32, 2, 7, u32::MAX] {
+    for unknown in [2u32, 3, 7, 100, u32::MAX, u32::MAX - 1] {
         assert_eq!(
             wb_tectonic_preset(unknown, scratch.as_mut_ptr(), WB_TECTONIC_STRIDE as u32),
             WB_ERR_PARAM,
             "selector {unknown} is not a preset this build knows",
         );
     }
+}
+
+/// **The preset, across the boundary, as fields.**
+///
+/// Task 3's whole point: the owner presses one button and the panel fills with fourteen
+/// numbers it did not write down. So this asserts the export hands back
+/// `TectonicParams::ranges()` word for word, that its own checker accepts it (a preset the
+/// boundary refuses would be a button that produces a blank page), and that building the world
+/// it describes moves the ground away from canonical at a point where the collision profile is
+/// live.
+#[test]
+fn the_ranges_preset_crosses_the_boundary_as_fields_and_is_admissible() {
+    let preset = tectonic_preset_record(WB_TECTONIC_RANGES);
+    let canonical = canonical_tectonic_record();
+
+    // The six moved fields, at the values `TectonicParams::ranges()`' doc comment argues for.
+    assert_eq!(preset[0], 6_000.0, "continent_collision_m: Task 4's calibrated top");
+    assert_eq!(preset[1], 100_000.0, "continent_collision_width_m: 7.030% measured");
+    assert_eq!(preset[9], 2.0, "collision_asymmetry: the setting that MEASURES 1.67");
+    assert_eq!(preset[10], 2.0, "suture_count: the useful pair");
+    assert_eq!(preset[11], 100_000.0, "suture_spread_m: the 100-150 km band");
+    assert_eq!(preset[12], 0.7, "structure_depth");
+    assert_eq!(preset[13], 80_000.0, "structure_wavelength_m: inside the 40-80 km band");
+    // And the eight it leaves alone, held against the canonical record rather than against a
+    // second copy of eight numbers.
+    for field in [2usize, 3, 4, 5, 6, 7, 8] {
+        assert_eq!(preset[field], canonical[field], "the preset moved field {field}");
+    }
+
+    assert_eq!(
+        wb_tectonic_check(preset.as_ptr(), WB_TECTONIC_STRIDE as u32),
+        WB_OK,
+        "the boundary refuses its own preset -- the button would produce a blank page",
+    );
+
+    // It must reach the ground, not merely the constructor. `TECTONIC_PROBES`' last three are
+    // the sites Task 4 measured as where each knob moves this fixture world the most, and the
+    // collision witness is where a collision block has to show up if it shows up anywhere.
+    let moved = sample_tectonics(&preset, "the ranges preset");
+    let flat = sample_tectonics(&canonical, "canonical");
+    assert_ne!(moved, flat, "the preset builds the canonical world");
 }
 
 #[test]
@@ -2462,7 +2938,10 @@ fn the_tectonic_buffer_channel_refuses_what_it_cannot_read() {
     assert_eq!(wb_tectonic_check(record.as_ptr(), 0), WB_ERR_BUFFER);
     // Null with zero IS canonical.
     assert_eq!(wb_tectonic_check(core::ptr::null(), 0), WB_OK);
-    for length in [1u32, 8, 10, 18, u32::MAX] {
+    // 9 is the old stride, and it is in this list on purpose: a host built against the Task 4
+    // channel must be REFUSED rather than quietly given five canonical structure fields, which
+    // is the silently-dropping shape. 13 and 15 are one either side of the new stride.
+    for length in [1u32, 8, 9, 10, 13, 15, 18, 28, u32::MAX] {
         assert_eq!(
             wb_tectonic_check(record.as_ptr(), length),
             WB_ERR_BUFFER,
@@ -2526,8 +3005,17 @@ fn the_tectonic_buffer_channel_refuses_what_it_cannot_read() {
         wb_tectonic_preset(WB_TECTONIC_CANONICAL, core::ptr::null_mut(), WB_TECTONIC_STRIDE as u32),
         WB_ERR_BUFFER,
     );
-    assert_eq!(wb_tectonic_preset(WB_TECTONIC_CANONICAL, out.as_mut_ptr(), 8), WB_ERR_BUFFER);
-    assert_eq!(wb_tectonic_preset(WB_TECTONIC_CANONICAL, out.as_mut_ptr(), 10), WB_ERR_BUFFER);
+    // 9 is the old stride: a host built against the Task 4 channel gets a refusal, not nine
+    // words and five it does not know are missing.
+    for selector in [WB_TECTONIC_CANONICAL, WB_TECTONIC_RANGES] {
+        for length in [8u32, 9, 13, 15, 0] {
+            assert_eq!(
+                wb_tectonic_preset(selector, out.as_mut_ptr(), length),
+                WB_ERR_BUFFER,
+                "preset {selector} wrote into a {length}-word buffer",
+            );
+        }
+    }
 }
 
 #[test]
@@ -2590,4 +3078,29 @@ fn the_two_channels_are_independent_and_the_third_door_carries_both() {
         );
     }
     assert_eq!(wb_world_free(plain), WB_OK);
+}
+
+/// **The size and shape of the tectonic sweep, stated as a number rather than left implicit.**
+///
+/// A report that says "the sweep found nothing" is worthless unless the sweep's size is
+/// checkable, and a threshold assertion (`accepted >= 180`) says nothing about how far above
+/// the threshold the run actually was. This pins the counts exactly, so a later change that
+/// halves the sweep -- a field quietly dropped from `tectonic_field_domain`, a base removed --
+/// turns this red with the two numbers side by side instead of passing at 181.
+#[test]
+fn the_tectonic_sweep_is_the_size_it_claims_to_be() {
+    let records = swept_tectonic_records();
+    let mut accepted = 0usize;
+    for (_, record) in &records {
+        if wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32) == WB_OK {
+            accepted += 1;
+        }
+    }
+    // 2 bases x (13 ordinary fields at 57 values each, plus the count field's 57 + 24
+    // hand-added rungs -- a linear ladder over eight integers is almost all fractions).
+    assert_eq!(records.len(), 2 * (13 * 57 + 81), "the sweep changed size");
+    assert_eq!(records.len(), 1644, "and the arithmetic above says 1,644");
+    // 947 accepted, 697 refused. Neither side is trivial, which is the property that makes
+    // "no abort and no hang was found" a result rather than an absence.
+    assert_eq!(accepted, 947, "the accepted/refused split moved: {accepted} of {}", records.len());
 }

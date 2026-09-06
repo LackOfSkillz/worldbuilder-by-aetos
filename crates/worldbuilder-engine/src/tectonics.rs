@@ -344,6 +344,119 @@ impl TectonicParams {
         }
     }
 
+    /// **A range rather than a blade.** The envelope Task 4 calibrated, carrying all three
+    /// structure techniques Task 2 measured and shipped.
+    ///
+    /// `ReliefParams::hills()` is the pattern and its bar is the bar: **every field that
+    /// moves states the ground it moved on**, and the ground is either a published figure
+    /// read verbatim or a column of Task 2's own survey. A preset with no argument behind it
+    /// is taste, and this generator has already carried one set of numbers nobody chose.
+    ///
+    /// **`canonical()` does not move and no default changes.** This is a second constructor
+    /// beside it, reachable only by a caller who asks for it by name.
+    ///
+    /// Six fields move. The coastal, arc and ridge profiles and `continental_blend` stay at
+    /// canonical deliberately: this preset shapes the *collision* profile, which is the one
+    /// Task 1's one-ULP perturbation fixtures prove is read live, and `continental_blend`
+    /// decides how MANY margins become ranges, which is a different question from what a
+    /// range looks like and is the owner's own slider.
+    ///
+    /// - **`continent_collision_m: 6_000.0` with `continent_collision_width_m: 100_000.0`.**
+    ///   The far end of the two sliders Task 4 shipped, and the pair is chosen together
+    ///   because the grade is the ratio of the two. `mountain_probe.rs` measured this pair at
+    ///   a **7.030% flank grade** on the owner's world, and Davis, Suppe & Dahlen (1983),
+    ///   *JGR* 88(B2), Table 1 gives the Himalaya at **alpha = 4.0 +- 0.5 deg** verbatim,
+    ///   which is a 7.0% surface slope. The envelope is a real orogen's grade, measured --
+    ///   not a large number chosen for being large.
+    /// - **`collision_asymmetry: 2.0`.** Naylor & Sinclair (2008), *Basin Research*, verbatim:
+    ///   a **115 km pro-wedge against a 69 km retro-wedge**, a ratio of 1.67. **The setting
+    ///   that DELIVERS 1.67 on a planet is 2.0, not 1.67**, and that is Task 2's finding and
+    ///   the reason this is not the published number: the profile in isolation is exactly
+    ///   1.67 at a setting of 1.67 (proved by bisecting [`asymmetric_bump`] itself for its
+    ///   half-height crossings), but the survey measures **1.50 on the ground** there and
+    ///   **1.64 at 2.0**, because a real margin's two flanks each meet their own base. Chosen
+    ///   from the measured column. The sweep is monotone in summit count, grade and flank
+    ///   ratio over six settings, and costs 8 m of peak and no reach at all.
+    /// - **`suture_count: 2` with `suture_spread_m: 100_000.0`.** The one setting Task 2's
+    ///   sutures table found useful: **the across-range crest count doubles, 1 -> 2, and the
+    ///   peak does not move at all** (4,540.5 m at 2 x 100 km and at 2 x 150 km, against
+    ///   4,540.5 m at one suture). Both sides of that band are measured failures rather than
+    ///   supposed ones -- tighter spreads inflate the peak, because overlapping bumps add
+    ///   (**7,457.6 m at 4 x 60 km, +64%**), and wider or more numerous ones drive
+    ///   [`TectonicParams::collision_reach_m`] past [`MAX_TECTONIC_RANGE_M`] and are truncated
+    ///   into the cliff that constant exists to prevent (4 x 150 km reaches 707 km and
+    ///   measures a 41.3% grade). Two at 100 km reaches **235 km against the 420 km gate**,
+    ///   the largest margin anywhere in the useful band.
+    /// - **`structure_depth: 0.7` with `structure_wavelength_m: 80_000.0`.** The largest of
+    ///   the three effects: summits **2 -> 12** at 40 km and 6 at 80 km, against 2 for the
+    ///   bare blade. 0.7 rather than 0.9 because 0.9 buys three more summits for another 8%
+    ///   of the peak. **80 km rather than 40 km is a grade decision, and it is the one place
+    ///   this preset does not take the biggest number available:** at 40 km the same depth
+    ///   measures a **17.783% grade**, more than twice the steepest surface slope in this
+    ///   project's literature notes (Taiwan, alpha = 2.9 +- 0.3 deg = 5.2%; the Himalaya's
+    ///   4.0 deg = 7.0%), while 80 km measures **8.420%** -- just past the 3-8% band the
+    ///   panel already quotes, beside the Alps. (Both figures are on the bare steep envelope,
+    ///   which is the envelope Task 2's whole table is measured on; what this preset itself
+    ///   delivers is the table below.) And it has to be one of those two: Task 2
+    ///   measured that **120-250 km does nothing at any depth** (summit counts fall back to
+    ///   0-3), so this parameter's working band is 40-80 km with no interior to interpolate.
+    ///
+    /// # What it DELIVERS, measured, because the request is not the answer
+    ///
+    /// `structure_at` returns a multiplier of at most 1, so `structure_depth` can only ever
+    /// LOWER the peak -- 22% at depth 0.7 -- while a tight `suture_spread_m` would raise it.
+    /// So this preset **asks for 6,000 m and delivers 3,323.8 m**, and that is the number the
+    /// owner reads off the ground. It is inside the 1,500-6,000 m band Task 4 calibrated the
+    /// height slider over, which is the check the amplitude alone cannot pass.
+    ///
+    /// `src/bin/mountain_survey.rs`'s "THE PRESET" row, same population/method/host as every
+    /// table above it (seed 123,925,603, radius 4,500,000 m, 28 plates, land 0.16; peak over a
+    /// 0.5-degree global grid refined at 0.05 degrees; grade the steepest single 2 km step on
+    /// the flank over 12 bearings; summits P300 in a +/-3 degree box; native release build):
+    ///
+    /// | | peak | grade | summits | crests | flank ratio | reach |
+    /// |---|---|---|---|---|---|---|
+    /// | canonical | 1,454.0 m | 1.787% | 0 | 0 | 1.12 | 400 km |
+    /// | the blade (6,000 m / 100 km) | 4,540.5 m | 7.030% | 2 | 1 | 1.08 | 100 km |
+    /// | **`ranges()`** | **3,323.8 m** | **9.811%** | **8** | 1 | **1.42** | 235 km |
+    ///
+    /// **THREE THINGS DID NOT COMPOSE, and they are recorded rather than rounded off.** Each
+    /// technique was measured alone on the steep envelope; stacked, the numbers move:
+    ///
+    /// - **The flank ratio is 1.42, not the 1.64 the asymmetry sweep measured at this
+    ///   setting.** The structure field carves both flanks, and a carved flank's half-height
+    ///   crossing sits closer in on the wide side than a smooth one's. Raising the asymmetry
+    ///   to close the gap costs grade the published surface slopes do not support.
+    /// - **The across-range crest count is 1, not the 2 the sutures table measured** at this
+    ///   count and spread on the bare envelope. What the sutures do buy here is measured and
+    ///   is not nothing: dropping to one suture takes the summit count **8 -> 6** with every
+    ///   other column identical. The technique still earns its place; the column it earned it
+    ///   in on the bare envelope is not the column it earns it in here.
+    /// - **The delivered grade is 9.811%, above the 3-8% band this panel quotes.** The band
+    ///   comes from Davis, Suppe & Dahlen's *alpha*, a wedge's mean surface taper, and this
+    ///   figure is the steepest single 2 km step on a flank the structure field has
+    ///   deliberately carved into ridge and valley -- the two are not the same quantity, and
+    ///   the 2 km step on a ridged flank must be the larger of them. Stated rather than
+    ///   tuned away: the alternative measured at 40 km wavelength reads **17.597%**, which no
+    ///   reading of any published figure supports, and avoiding that is what the 80 km choice
+    ///   above bought.
+    ///
+    /// Choosing this preset from the single-technique tables and never measuring the
+    /// combination would have been choosing blind, which is Ruling 4 of this slice wearing
+    /// different clothes.
+    pub fn ranges() -> Self {
+        Self {
+            continent_collision_m: 6_000.0,
+            continent_collision_width_m: 100_000.0,
+            collision_asymmetry: 2.0,
+            suture_count: 2,
+            suture_spread_m: 100_000.0,
+            structure_depth: 0.7,
+            structure_wavelength_m: 80_000.0,
+            ..Self::canonical()
+        }
+    }
+
     /// How far from the margin the collision profile still has something to say, in metres.
     ///
     /// The furthest suture's centre plus the collision width -- the wider flank, since
@@ -1776,5 +1889,133 @@ mod tests {
             "reach {} should sit inside the gate",
             safe.collision_reach_m()
         );
+    }
+
+    // ---------------------------------------------- Task 3: the `ranges()` preset ---------
+
+    /// `ranges()` must not be `canonical()` with the serial numbers filed off -- every field
+    /// it moves is named in its doc comment with its ground, and every field it does NOT move
+    /// must still be canonical. `ReliefParams::hills()`'s own first test is this one.
+    #[test]
+    fn ranges_only_moves_the_six_named_fields() {
+        let ranges = TectonicParams::ranges();
+        let canonical = TectonicParams::canonical();
+
+        // Untouched: the coastal, arc and ridge profiles, and the blend. This preset shapes
+        // the COLLISION profile; how many margins become ranges is the owner's own slider.
+        assert_eq!(ranges.coastal_uplift_m, canonical.coastal_uplift_m);
+        assert_eq!(ranges.coastal_uplift_width_m, canonical.coastal_uplift_width_m);
+        assert_eq!(ranges.island_arc_m, canonical.island_arc_m);
+        assert_eq!(ranges.island_arc_width_m, canonical.island_arc_width_m);
+        assert_eq!(ranges.ridge_m, canonical.ridge_m);
+        assert_eq!(ranges.ridge_width_m, canonical.ridge_width_m);
+        assert_eq!(ranges.continental_blend, canonical.continental_blend);
+
+        // Moved, and each is the value its doc comment argues for.
+        assert_eq!(ranges.continent_collision_m, 6_000.0);
+        assert_eq!(ranges.continent_collision_width_m, 100_000.0);
+        assert_eq!(ranges.collision_asymmetry, 2.0);
+        assert_eq!(ranges.suture_count, 2);
+        assert_eq!(ranges.suture_spread_m, 100_000.0);
+        assert_eq!(ranges.structure_depth, 0.7);
+        assert_eq!(ranges.structure_wavelength_m, 80_000.0);
+
+        // And every one of them is genuinely a move -- a "preset" field that happened to
+        // equal canonical would be a field this preset does not actually choose.
+        for (label, moved, base) in [
+            ("continent_collision_m", ranges.continent_collision_m, canonical.continent_collision_m),
+            (
+                "continent_collision_width_m",
+                ranges.continent_collision_width_m,
+                canonical.continent_collision_width_m,
+            ),
+            ("collision_asymmetry", ranges.collision_asymmetry, canonical.collision_asymmetry),
+            ("suture_spread_m", ranges.suture_spread_m, canonical.suture_spread_m),
+            ("structure_depth", ranges.structure_depth, canonical.structure_depth),
+            (
+                "structure_wavelength_m",
+                ranges.structure_wavelength_m,
+                canonical.structure_wavelength_m,
+            ),
+        ] {
+            assert_ne!(moved, base, "{label} is not actually moved by the preset");
+        }
+        assert_ne!(ranges.suture_count, canonical.suture_count);
+    }
+
+    /// **RULING 1: adding a second constructor must not perturb what `None` means.**
+    /// `canonical()` is the `None` path's exact equivalent and this preset sits beside it, so
+    /// this asserts the neighbour changed nothing -- the same check
+    /// `canonical_is_still_bit_identical_to_none_after_adding_hills` makes in `detail.rs`.
+    #[test]
+    fn canonical_is_still_bit_identical_to_none_after_adding_ranges() {
+        let none = lopsided_world();
+        let explicit = lopsided_world_with(Some(TectonicParams::canonical()));
+        let mut distance_m = -MAX_TECTONIC_RANGE_M;
+        while distance_m <= MAX_TECTONIC_RANGE_M {
+            assert_eq!(
+                none.from_margin_for_test(distance_m).to_bits(),
+                explicit.from_margin_for_test(distance_m).to_bits(),
+                "None and canonical() disagree at {distance_m} m"
+            );
+            distance_m += 1_000.0;
+        }
+    }
+
+    /// **The preset must sit inside the range gate, and by a stated margin.**
+    ///
+    /// This is the check Task 2's `collision_reach_m` was added for, made of the one block
+    /// that ships with sutures turned on. 235 km against a 420 km gate: one suture past the
+    /// first, at 100 km, stretched by the `SUTURE_OFFSET_JITTER` ceiling, plus the 100 km
+    /// flank. Asserted against the function rather than the arithmetic, and then the
+    /// arithmetic is stated so a reader can check the function.
+    #[test]
+    fn the_ranges_preset_sits_inside_the_range_gate_with_room() {
+        let reach = TectonicParams::ranges().collision_reach_m();
+        assert!(
+            reach <= MAX_TECTONIC_RANGE_M,
+            "the preset reaches {reach} m past the {MAX_TECTONIC_RANGE_M} m gate"
+        );
+        assert_eq!(reach, 235_000.0, "one suture at 100 km x 1.35, plus a 100 km flank");
+        // The measured neighbours this preset was chosen over, both still inside -- so the
+        // owner can move any slider off the preset without walking into the cliff.
+        let mut wider = TectonicParams::ranges();
+        wider.suture_spread_m = 150_000.0;
+        assert!(wider.collision_reach_m() <= MAX_TECTONIC_RANGE_M);
+        let mut deeper = TectonicParams::ranges();
+        deeper.suture_count = 3;
+        assert!(deeper.collision_reach_m() <= MAX_TECTONIC_RANGE_M);
+    }
+
+    /// **The preset must actually move the ground**, and be different from the bare envelope
+    /// it sits on -- otherwise the three structure techniques would be a story about a block
+    /// nobody can see. Both directions asserted, because "different from canonical" alone
+    /// would pass on the envelope change and prove nothing about the structure at all.
+    #[test]
+    fn the_ranges_preset_differs_from_both_canonical_and_its_own_bare_envelope() {
+        let canonical = lopsided_world();
+        let preset = lopsided_world_with(Some(TectonicParams::ranges()));
+        // The same 6,000 m / 100 km envelope with every structure field back at its inert
+        // setting: the blade Task 2's screenshots start from.
+        let blade = lopsided_world_with(Some(TectonicParams {
+            continent_collision_m: 6_000.0,
+            continent_collision_width_m: 100_000.0,
+            ..TectonicParams::canonical()
+        }));
+
+        let (mut off_canonical, mut off_blade) = (false, false);
+        let mut distance_m = -MAX_TECTONIC_RANGE_M;
+        while distance_m <= MAX_TECTONIC_RANGE_M {
+            let here = preset.from_margin_for_test(distance_m).to_bits();
+            if here != canonical.from_margin_for_test(distance_m).to_bits() {
+                off_canonical = true;
+            }
+            if here != blade.from_margin_for_test(distance_m).to_bits() {
+                off_blade = true;
+            }
+            distance_m += 1_000.0;
+        }
+        assert!(off_canonical, "the preset builds the canonical world");
+        assert!(off_blade, "the preset is the bare envelope -- the structure fields do nothing");
     }
 }

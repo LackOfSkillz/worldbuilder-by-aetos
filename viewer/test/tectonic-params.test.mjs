@@ -18,9 +18,10 @@
 //     1,500 m / 400 km to 6,000 m / 100 km changes not one bit at any of them, because none
 //     is within MAX_TECTONIC_RANGE_M of a convergent continental margin. Found by the
 //     engine-side test failing. See `TECTONIC_PROBES` in `tests/wasm_exports.rs`.
-//   - Slider population: every integer position each of the three sliders can take --
-//     46 + 31 + 19 = 96 -- each turned into a tectonic block and put through
-//     wb_tectonic_check.
+//   - Slider population: every integer position each of the SIX sliders can take --
+//     46 + 31 + 19 + 9 + 10 + 5 = 120 -- each turned into a tectonic block and put through
+//     wb_tectonic_check. Three of the six are Task 3's: the structure field is on the channel
+//     now, and the whole point of this task is that the owner can reach it.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -30,6 +31,7 @@ import { Engine, WB_OK, WB_ERR_PARAM } from "../public/app/engine.js";
 import { panelFieldFaults } from "../public/app/panel-fields.js";
 import {
   TECTONIC_CONTROLS,
+  TECTONIC_SLIDERS,
   TECTONIC_FIELDS,
   TECTONIC_PARAM_NAMES,
   MEASURED_GRADES,
@@ -40,6 +42,10 @@ import {
   BLEND_NINTHS,
   BLEND_POSITIONS_FEWER,
   BLEND_POSITIONS_MORE,
+  ASYMMETRY_STEPS,
+  DEPTH_STEPS,
+  WAVELENGTH_STEPS,
+  WAVELENGTH_STEP_M,
   tectonicTravel,
   tectonicPanelFields,
   tectonicFromParams,
@@ -72,11 +78,13 @@ async function loadEngine() {
 
 let engine;
 let canonical;
+let ranges;
 let travel;
 
 test.before(async () => {
   engine = await loadEngine();
   canonical = engine.tectonicPreset("canonical");
+  ranges = engine.tectonicPreset("ranges");
   travel = tectonicTravel(canonical);
 });
 
@@ -115,8 +123,24 @@ test("no tectonic number is written down twice in the viewer", () => {
     .split("\n")
     .map((line) => line.replace(/^\s*\/\/.*$/, "").replace(/^\s*\/\/\/.*$/, ""))
     .join("\n");
-  const literals = TECTONIC_CONTROLS.map((field) => String(canonical[field]));
-  assert.deepEqual(literals, ["1500", "400000", "0.45"]);
+  // **Only the DISTINCTIVE values can be asked this question, and saying so is part of the
+  // test.** Four of the fourteen canonical fields are 0, 0.0 or 1 -- the inert settings that
+  // make the structure fields arithmetic identities on the canonical path -- and a source file
+  // that never contains the character "1" or "0" is not a file. Those four are checked by the
+  // *function-source* half below instead, which asks the sharper question anyway: not "does
+  // this digit appear" but "is any tectonic value computed from a literal rather than from the
+  // engine's block".
+  const literals = ["continentCollisionM", "continentCollisionWidthM", "continentalBlend",
+    "structureWavelengthM"].map((field) => String(canonical[field]));
+  assert.deepEqual(literals, ["1500", "400000", "0.45", "120000"]);
+  // And the PRESET's own values, which is Ruling 7 of the relief slice applied to this one:
+  // the preset crosses as fields, so no file in `viewer/` may contain the numbers it chose.
+  // If it did, the panel would be showing a copy rather than the engine's answer, and the copy
+  // is what drifts.
+  const presetLiterals = ["continentCollisionM", "continentCollisionWidthM", "structureDepth",
+    "structureWavelengthM"].map((field) => String(ranges[field]));
+  assert.deepEqual(presetLiterals, ["6000", "100000", "0.7", "80000"]);
+  literals.push(...presetLiterals);
   for (const name of ["controls.js", "main.js"]) {
     const code = strip(appFile(name));
     for (const literal of literals) {
@@ -135,7 +159,12 @@ test("no tectonic number is written down twice in the viewer", () => {
   // the source of the functions that produce tectonic values, taken from the live functions
   // rather than by parsing the file -- there is no way for that to pass by matching nothing.
   for (const fn of [tectonicTravel, tectonicPanelFields, tectonicFromParams, tectonicToParams]) {
-    const source = String(fn);
+    // Comments stripped here too, and for the same reason they are stripped from the files:
+    // `tectonicTravel`'s own comment has to be able to say that `0.1 * 7` is
+    // 0.7000000000000001, because that is WHY the map divides rather than multiplies, and a
+    // check that forbade the explanation would push the reasoning out of the file it belongs
+    // in. `String(fn)` includes comments; this asks about the code.
+    const source = strip(String(fn));
     for (const literal of literals) {
       assert.ok(
         !source.includes(literal),
@@ -150,6 +179,7 @@ test("no tectonic number is written down twice in the viewer", () => {
   // that simply has no mountains section.
   assert.match(appFile("controls.js"), /from "\.\/tectonic-params\.js"/);
   assert.match(appFile("main.js"), /engine\.tectonicPreset\("canonical"\)/);
+  assert.match(appFile("main.js"), /engine\.tectonicPreset\("ranges"\)/);
   assert.match(appFile("engine.js"), /wb_tectonic_preset/);
 });
 
@@ -183,14 +213,14 @@ test("every mountain slider can express its own default", () => {
   assert.ok(panelFieldFaults(broken).length > 0, "the check has stopped being able to fail");
 });
 
-test("position 0 is canonical exactly, on all three sliders", () => {
+test("position 0 is canonical exactly, on all six sliders", () => {
   // **This is the assertion that keeps RULING 1.** `tectonicToParams` drops a field that
   // EQUALS canonical, so a position-0 value one ULP off would be written into every shared
   // link and would take an untouched viewer off the engine's `None` path.
   //
   // `canonical * (n / 9)` is exact at n = 9 and `canonical * n / 9` is one ULP out -- the
   // engine-side test found that by failing, not by inspection. Asserted with `===`.
-  for (const field of TECTONIC_CONTROLS) {
+  for (const field of TECTONIC_SLIDERS) {
     assert.equal(travel[field].toValue(0), canonical[field], `${field} at position 0`);
     assert.equal(travel[field].toPosition(canonical[field]), 0, `${field} position of canonical`);
   }
@@ -234,7 +264,7 @@ test("the slider travel is the travel that was measured", () => {
   assert.equal(BLEND_NINTHS, 9);
 
   // Round trips: every position reads back as itself, on every slider.
-  for (const field of TECTONIC_CONTROLS) {
+  for (const field of TECTONIC_SLIDERS) {
     for (let position = travel[field].min; position <= travel[field].max; position += 1) {
       assert.equal(
         travel[field].toPosition(travel[field].toValue(position)), position,
@@ -250,7 +280,7 @@ test("every position the sliders can take is a block the engine accepts", () => 
   // exactly those values, through the committed artifact, so the panel cannot offer a
   // position that turns the viewer blank.
   let checked = 0;
-  for (const field of TECTONIC_CONTROLS) {
+  for (const field of TECTONIC_SLIDERS) {
     for (let position = travel[field].min; position <= travel[field].max; position += 1) {
       const tectonics = { ...canonical, [field]: travel[field].toValue(position) };
       assert.equal(
@@ -260,7 +290,7 @@ test("every position the sliders can take is a block the engine accepts", () => 
       checked += 1;
     }
   }
-  assert.equal(checked, 46 + 31 + 19);
+  assert.equal(checked, 46 + 31 + 19 + 9 + 10 + 5);
 });
 
 test("the checker says WHY, and refuses what the panel cannot produce", () => {
@@ -384,13 +414,26 @@ test("the count slider moves the ground in both directions", () => {
 });
 
 test("a shared link carries only what was moved", () => {
-  assert.deepEqual(tectonicToParams(canonical, canonical), {
-    mtnHeight: null, mtnWidth: null, mtnCount: null,
-  });
+  const nothing = tectonicToParams(canonical, canonical);
+  assert.equal(Object.keys(nothing).length, TECTONIC_CONTROLS.length);
+  for (const [name, value] of Object.entries(nothing)) {
+    assert.equal(value, null, `${name} is written into a link nobody touched`);
+  }
   const moved = { ...canonical, continentCollisionM: 3000 };
-  assert.deepEqual(tectonicToParams(moved, canonical), {
-    mtnHeight: "3000", mtnWidth: null, mtnCount: null,
-  });
+  assert.equal(tectonicToParams(moved, canonical).mtnHeight, "3000");
+  assert.equal(tectonicToParams(moved, canonical).mtnWidth, null);
+  // **And the preset writes all six of its moved fields into the link, including the two with
+  // no slider.** A preset that only round-tripped what had a widget would come back half
+  // applied on reload -- the silently-dropping shape, arriving through a share link.
+  const fromPreset = tectonicToParams(ranges, canonical);
+  for (const field of ["continentCollisionM", "continentCollisionWidthM", "collisionAsymmetry",
+    "sutureCount", "sutureSpreadM", "structureDepth", "structureWavelengthM"]) {
+    assert.equal(
+      fromPreset[TECTONIC_PARAM_NAMES[field]], String(ranges[field]),
+      `${field} is dropped from a link that carries the preset`,
+    );
+  }
+  assert.equal(fromPreset.mtnCount, null, "the preset does not move the blend");
 });
 
 test("the calibration table is the probe's table, and it says what it measured", () => {
@@ -413,4 +456,93 @@ test("the calibration table is the probe's table, and it says what it measured",
   assert.ok(steepest.grade > tallGentle.grade * 2.5);
   // Every row's peak is below its own amplitude: the profile is a smoothstep, not an offset.
   for (const row of MEASURED_GRADES) assert.ok(row.peakM < row.heightM);
+});
+
+test("the preset crosses the boundary as fields the panel can show and the sliders can reach", () => {
+  // **THE TASK, in one test.** Task 2 built the structure field and the owner could not see
+  // one number of it: the five fields were not on the channel at all. So this asserts the
+  // whole path -- engine, ABI, travel, widget -- rather than any one link of it.
+
+  // 1. It is fourteen numbers, not a name.
+  assert.equal(Object.keys(ranges).length, TECTONIC_FIELDS.length);
+  for (const field of TECTONIC_FIELDS) {
+    assert.ok(Number.isFinite(ranges[field]), `${field} did not come across as a number`);
+  }
+
+  // 2. It is genuinely a different block, and different in the structure fields specifically
+  // -- a "preset" that only moved the envelope would be Task 4's sliders with a button on.
+  assert.notDeepEqual(ranges, canonical);
+  const structural = ["collisionAsymmetry", "sutureCount", "sutureSpreadM", "structureDepth",
+    "structureWavelengthM"];
+  for (const field of structural) {
+    assert.notEqual(ranges[field], canonical[field], `${field} is still at its inert setting`);
+  }
+
+  // 3. Every field that HAS a slider lands on that slider's lattice EXACTLY. This is the
+  // panel-default defect asked about the preset button: a value the widget cannot express is
+  // silently replaced, and the panel then shows a number the engine never chose.
+  for (const field of TECTONIC_SLIDERS) {
+    const position = travel[field].toPosition(ranges[field]);
+    assert.ok(
+      Number.isInteger(position) && position >= travel[field].min && position <= travel[field].max,
+      `${field} = ${ranges[field]} is off the slider's ${travel[field].min}..${travel[field].max}`,
+    );
+    assert.equal(
+      travel[field].toValue(position), ranges[field],
+      `the ${field} slider cannot express the preset's own value`,
+    );
+  }
+
+  // 4. The engine accepts it. A preset its own boundary refuses is a button that blanks the
+  // page, and the reach check is the one most likely to catch it: two sutures 100 km apart on
+  // a 100 km flank reach 235 km of the 420 km gate.
+  assert.equal(engine.checkTectonic(ranges), WB_OK);
+
+  // 5. And it reaches the GROUND. Built and sampled at the nine probes, against canonical --
+  // because a constructor that returned a handle has proved nothing about the block it stored,
+  // and because the six relief probes alone are blind to a collision profile on this world.
+  const plain = engine.newWorld({ ...DEFAULT_WORLD });
+  const preset = engine.newWorld({ ...DEFAULT_WORLD, tectonics: ranges });
+  try {
+    let moved = 0;
+    for (const [lat, lon] of PROBES) {
+      const before = engine.elevationM(plain, lat, lon);
+      const after = engine.elevationM(preset, lat, lon);
+      assert.ok(Number.isFinite(after), `the preset gave a non-finite elevation at ${lat},${lon}`);
+      if (before !== after) moved += 1;
+    }
+    assert.ok(moved > 0, "the preset builds the canonical world");
+  } finally {
+    for (const handle of [plain, preset]) engine.freeWorld(handle);
+  }
+});
+
+test("the structure sliders' travel is the band Task 2 measured, and no wider", () => {
+  // **A slider whose useful range is a tenth of its travel is a slider nobody can aim**, and
+  // the wavelength is the live example: 40-80 km bites and 120-250 km does nothing at any
+  // depth. So the travel stops at 40 km and never reaches 250.
+  assert.equal(travel.structureWavelengthM.max, WAVELENGTH_STEPS);
+  assert.equal(travel.structureWavelengthM.toValue(WAVELENGTH_STEPS), 40000);
+  assert.equal(
+    travel.structureWavelengthM.toValue(WAVELENGTH_STEPS),
+    canonical.structureWavelengthM - WAVELENGTH_STEPS * WAVELENGTH_STEP_M,
+  );
+  // Three of the five positions are inside the measured working band, and the two that are not
+  // include position 0, which Ruling 1 requires to be canonical. Stated as a proportion rather
+  // than left implicit: this is the check the brief asked for.
+  const live = [];
+  for (let p = travel.structureWavelengthM.min; p <= travel.structureWavelengthM.max; p += 1) {
+    const km = travel.structureWavelengthM.toValue(p) / 1000;
+    if (km >= 40 && km <= 80) live.push(km);
+  }
+  assert.deepEqual(live, [80, 60, 40]);
+  assert.ok(live.length * 2 >= travel.structureWavelengthM.max + 1, "most of the travel is dead");
+
+  // The asymmetry: canonical (symmetric) to 3.00, which is exactly the interval swept.
+  assert.equal(travel.collisionAsymmetry.toValue(ASYMMETRY_STEPS), 3);
+  assert.equal(travel.collisionAsymmetry.toValue(0), 1);
+  // The depth: 0.0 to 0.9, and 0.7 -- the preset's -- must land EXACTLY. `0.1 * 7` is
+  // 0.7000000000000001, which is why the map divides rather than multiplies.
+  assert.equal(travel.structureDepth.toValue(DEPTH_STEPS), 0.9);
+  assert.equal(travel.structureDepth.toValue(7), 0.7);
 });

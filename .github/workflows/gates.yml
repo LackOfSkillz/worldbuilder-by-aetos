@@ -462,25 +462,48 @@ jobs:
           # `assert_counts.py cargo-list` itself against fresh `-- --list` /
           # `-- --list --ignored` output, which reported `count OK` at all five. See
           # task-2-report.md.
+          #
+          # 2026-09-05, slice mountains Task 3 (the preset, and the structure fields crossing
+          # the WASM boundary): 538/538/540/599/601 -> 542/542/544/609/611. Two different
+          # movements, and only one of them lands on every row.
+          #   * +4 on ALL five, from `src/tectonics.rs`, which compiles unconditionally: the
+          #     four tests for `TectonicParams::ranges()` (only the six named fields move; the
+          #     `None` path is still bit-identical after a second constructor exists beside
+          #     canonical; the preset sits inside the range gate with a stated margin; and it
+          #     differs from BOTH canonical and its own bare envelope, so the structure fields
+          #     are proved to be doing something rather than the envelope alone).
+          #   * +6 on the two WASM rows only, from `tests/wasm_exports.rs`, which is
+          #     `#![cfg(feature = "wasm")]` in its entirety: the preset crossing as fields, the
+          #     `suture_count` loop-bound refusal and its sampled interior, the stacked-profile
+          #     range-gate refusal, the `collision_asymmetry` floor and derived ceiling, the
+          #     five structure fields swept together, and a pin on the sweep's own size
+          #     (1,644 records, 947 accepted) so a later change that halves it goes red with
+          #     both numbers rather than passing at one over a threshold.
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added, and no test binary was.
+          # Re-derived per configuration through `assert_counts.py cargo-list` itself against
+          # fresh `-- --list` / `-- --list --ignored` output, AFTER the last source edit, and
+          # the 032b41f baseline (538/538/540/599/601) was re-derived the same way BEFORE the
+          # first edit rather than trusted -- this pin block was found already wrong once in
+          # this slice. See task-3-report.md.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 538
+            expect: 542
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 538
+            expect: 542
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 540
+            expect: 544
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 599
+            expect: 609
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 601
+            expect: 611
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

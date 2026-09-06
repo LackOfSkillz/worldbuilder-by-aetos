@@ -810,5 +810,36 @@ fn main() {
         },
     );
 
+    // ------------------------------------------------------------------ Task 3: the preset
+    //
+    // **The DELIVERED peak, which is the only calibration that means anything now.** Task 2
+    // measured that `structure_depth` costs 22% of the peak and that a tight
+    // `suture_spread_m` can add 64%, so `continent_collision_m` is a REQUEST and this row is
+    // the ANSWER. The panel's height slider was calibrated 1,500-6,000 m against a smooth
+    // envelope; this row is what says whether the preset lands inside that band.
+    //
+    // The three rows after it are the alternatives the preset was chosen over, measured on
+    // the same population and host rather than argued about: the wavelength decision (40 km
+    // buys summits and a grade no published orogen reaches), the depth decision, and the
+    // asymmetry decision (1.67 is the published ratio; 2.0 is what MEASURES it).
+    println!("\n--- Task 3: THE PRESET, and the alternatives it was chosen over");
+    row("THE PRESET  TectonicParams::ranges()", TectonicParams::ranges());
+    row(
+        "  preset with wavelength 40 km",
+        TectonicParams { structure_wavelength_m: 40_000.0, ..TectonicParams::ranges() },
+    );
+    row(
+        "  preset with depth 0.9",
+        TectonicParams { structure_depth: 0.9, ..TectonicParams::ranges() },
+    );
+    row(
+        "  preset with asymmetry 1.67 (the published ratio)",
+        TectonicParams { collision_asymmetry: 1.67, ..TectonicParams::ranges() },
+    );
+    row(
+        "  preset with one suture (no stacking)",
+        TectonicParams { suture_count: 1, suture_spread_m: 0.0, ..TectonicParams::ranges() },
+    );
+
     feedback_sweep();
 }

@@ -325,9 +325,18 @@ async function boot() {
           spec.relief.octavePersistence}`
         : "canonical"} tectonics=${
       spec.tectonics
+        // The envelope AND the structure. The structure half was added when the channel
+        // widened to carry it: a diagnostic line that named three of eight fields would have
+        // said "canonical" about a block whose whole shape had changed, and this line is what
+        // a screenshot carries as its own caption.
         ? `mtn ${spec.tectonics.continentCollisionM} m / ${
           (spec.tectonics.continentCollisionWidthM / 1000).toFixed(0)} km blend ${
-          spec.tectonics.continentalBlend.toFixed(3)}`
+          spec.tectonics.continentalBlend.toFixed(3)} verg ${
+          spec.tectonics.collisionAsymmetry.toFixed(2)} belts ${
+          spec.tectonics.sutureCount}x${
+          (spec.tectonics.sutureSpreadM / 1000).toFixed(0)}km struct ${
+          spec.tectonics.structureDepth.toFixed(2)}@${
+          (spec.tectonics.structureWavelengthM / 1000).toFixed(0)}km`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -360,11 +369,15 @@ async function boot() {
       hills: engine.reliefPreset("hills"),
       chosen: spec.relief,
     },
-    /// The engine's own tectonic canonical, read across the boundary at boot. `controls.js`
-    /// anchors all three mountain sliders on it -- so the panel cannot drift from
-    /// `tectonics.rs`, because it holds no tectonic number of its own to drift.
+    /// The engine's own tectonic presets, read across the boundary at boot. `controls.js`
+    /// anchors all six mountain sliders on `canonical` and fills them from `ranges` when the
+    /// preset button is pressed -- so the panel cannot drift from `tectonics.rs`, because it
+    /// holds no tectonic number of its own to drift. `ranges` is read here beside `canonical`
+    /// for exactly the reason `relief.hills` is: **the preset must reach the panel as fourteen
+    /// NUMBERS rather than as a name**, so the owner sees what it asked for and can move it.
     tectonics: {
       canonical: tectonicCanonical,
+      ranges: engine.tectonicPreset("ranges"),
       chosen: spec.tectonics,
     },
     /// The frame-budget measurement. Populations, not a single number.

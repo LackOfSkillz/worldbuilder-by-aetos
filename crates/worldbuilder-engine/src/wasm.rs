@@ -102,7 +102,8 @@ use crate::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use crate::substrate::{MUD, ROCK, SAND};
 use crate::surface::{FeatureInput, Surface};
 use crate::tectonics::{
-    TectonicParams, COASTAL_UPLIFT_OFFSET_M, ISLAND_ARC_OFFSET_M, MAX_TECTONIC_RANGE_M,
+    TectonicParams, COASTAL_UPLIFT_OFFSET_M, COLLISION_SYMMETRIC, ISLAND_ARC_OFFSET_M,
+    MAX_TECTONIC_RANGE_M,
 };
 use crate::water;
 use crate::{World, GENERATOR_VERSION};
@@ -362,17 +363,36 @@ pub const WB_MAX_QUIETING_SCALE_M: f64 = 1.0e9;
 /// | 6 | `ridge_m` |
 /// | 7 | `ridge_width_m` |
 /// | 8 | `continental_blend` |
+/// | 9 | `collision_asymmetry` |
+/// | 10 | `suture_count` -- **an integer carried as an f64**, see [`WB_MAX_SUTURE_COUNT`] |
+/// | 11 | `suture_spread_m` |
+/// | 12 | `structure_depth` |
+/// | 13 | `structure_wavelength_m` |
 ///
 /// That is `TectonicParams`'s own declaration order, and [`wb_tectonic_preset`] writes it in
-/// exactly this order so a host never has to transcribe `canonical()`'s nine values.
-pub const WB_TECTONIC_STRIDE: usize = 9;
+/// exactly this order so a host never has to transcribe a value.
+///
+/// **Words 9-13 are Task 3 widening this from 9, and that widening is the whole task.** Task 2
+/// built the structure field -- the three techniques that turn a smooth blade into parallel
+/// belts with separate massifs and a ridge-and-valley interior -- and then stopped at this
+/// line, because its own brief forbade viewer work. The comment `decode_tectonic` carried at
+/// the point it filled these from `canonical()` named exactly what a later task had to do:
+/// *"widen the stride, `decode`, `encode`, `tectonic_is_admissible` AND sweep the export"*.
+/// All four are done here, and the sweep found what that comment predicted it would.
+pub const WB_TECTONIC_STRIDE: usize = 14;
 
-/// [`wb_tectonic_preset`] selector: `TectonicParams::canonical()`, today's nine values and
-/// the `None` path's exact equivalent. **There is no second selector**, and that is Ruling 1
-/// rather than an omission: a named tectonic preset is Task 3's decision, taken against
-/// Task 2's fuller survey, and inventing one here would be choosing for the owner before
-/// they can turn the knob themselves.
+/// [`wb_tectonic_preset`] selector: `TectonicParams::canonical()`, today's fourteen values and
+/// the `None` path's exact equivalent.
 pub const WB_TECTONIC_CANONICAL: u32 = 0;
+
+/// [`wb_tectonic_preset`] selector: `TectonicParams::ranges()`, the preset Task 3 chose.
+///
+/// **It crosses as FIELDS, never as a name.** The panel receives fourteen numbers and puts
+/// them on its own sliders, so the owner sees what the preset asked for and can move any part
+/// of it -- which is Ruling 7 of the relief slice, enforced there by a test that strips
+/// comments out of the viewer's JavaScript and asserts the values appear in neither file. The
+/// same test exists for this preset in `viewer/test/tectonic-params.test.mjs`.
+pub const WB_TECTONIC_RANGES: u32 = 1;
 
 /// The magnitude bound on each of the four profile amplitudes (`continent_collision_m`,
 /// `coastal_uplift_m`, `island_arc_m`, `ridge_m`).
@@ -482,6 +502,103 @@ pub const WB_MIN_CONTINENTAL_BLEND: f64 = 1.0e-3;
 /// at 1.00 and is still 126 at 8.00 -- a curve that is already flat two orders of magnitude
 /// below this bound. `src/bin/mountain_probe.rs` is that measurement.
 pub const WB_MAX_CONTINENTAL_BLEND: f64 = 1.0e3;
+
+// ------------------------------------------------- the five structure fields, bounded
+//
+// Every bound below is either **derived from arithmetic already in `tectonics.rs`** or is a
+// measured band from Task 2's survey, and each says which. Nothing clamps: a record is
+// admitted as the host wrote it or refused entire.
+//
+// **Validation code is where clamping is most tempting, and this is most of this task.** So:
+// no `f64::min`, no `f64::max`, no `.clamp(` -- all three are NaN-asymmetric and the
+// determinism guard does not catch them. Every comparison goes through `within`, which is
+// `value >= low && value <= high` and is therefore false for NaN on both sides without a
+// separate NaN test anywhere in this file.
+
+/// The floor on `collision_asymmetry`, and it is `COLLISION_SYMMETRIC` -- the canonical
+/// setting itself, which is the smallest admissible one.
+///
+/// **Below 1.0 is a CLIFF, and it is one `TectonicParams::collision_reach_m` cannot see.**
+/// `asymmetric_bump` gives the overriding flank `width_m / asymmetry`, so an asymmetry of 0.1
+/// makes that flank **ten times `continent_collision_width_m`** -- a 100 km profile reaching
+/// 1,000 km. `collision_reach_m` reports the *wider of the two nominal flanks* as
+/// `continent_collision_width_m`, because the field's own doc guarantees this parameter can
+/// only ever narrow a range, so the reach check below would report 235 km for a profile
+/// carrying weight at 1,000 km and [`MAX_TECTONIC_RANGE_M`] would truncate it mid-fade. That
+/// guarantee is exactly the thing this floor buys, and it is why the floor is here rather
+/// than a domain preference.
+///
+/// At or below zero `asymmetric_bump` already treats the value as symmetric, which is the
+/// silently-adjusted-parameter shape this boundary refuses on principle.
+pub const WB_MIN_COLLISION_ASYMMETRY: f64 = COLLISION_SYMMETRIC;
+
+/// The ceiling on `suture_count`, **and it is the loop bound, which makes it the one bound
+/// in this file that closes a HANG rather than an odd-looking world.**
+///
+/// `Tectonics::sutures` runs `while index < params.suture_count`, once per convergent sample.
+/// A `u32` near its maximum makes every one of them walk four billion iterations, and a hang
+/// through `extern "C"` is *uninterruptible*, because that boundary is nounwind: the tab does
+/// not error, it stops. `TectonicParams::suture_count`'s own doc carries this hazard at the
+/// field, written there by the task that could not expose it, addressed to whoever did.
+///
+/// This project has found **three aborts and one ~2,600-second hang** by sweeping export
+/// inputs and **zero** by spot-checking, so this is swept
+/// (`the_suture_count_loop_bound_is_refused_above_its_ceiling_and_bounded_below_it`) rather
+/// than argued.
+///
+/// **8 is twice the measured band.** Task 2's sutures table sweeps 1 through 4 and finds the
+/// technique degrading on two measured axes above 2 -- the peak inflates 64% at 4 x 60 km
+/// because overlapping bumps add, and the reach passes the 420 km gate at 4 x 100 km. Nothing
+/// above 4 was measured to buy anything. Doubling that is margin rather than a claim, and it
+/// keeps the worst admissible case at eight `asymmetric_bump` calls per sample: a constant
+/// factor on a hot path, which is a slow world, not a dead tab.
+pub const WB_MAX_SUTURE_COUNT: u32 = 8;
+
+/// The floor on `suture_spread_m`. **Negative is not a mirror image; it is an unreported
+/// reach.**
+///
+/// `collision_reach_m` computes `last * spread * (1 + SUTURE_OFFSET_JITTER)` and reports
+/// `0.0` when that is not positive -- so a spread of -300 km places sutures 300 km *outboard*
+/// and reports a reach of exactly `continent_collision_width_m`, and the range gate truncates
+/// them. Same cliff as a sub-1.0 asymmetry, reached from the other side, and the same answer.
+pub const WB_MIN_SUTURE_SPREAD_M: f64 = 0.0;
+
+/// The ceiling on `structure_depth`, and the floor is zero.
+///
+/// `structure_at` returns `1 - depth + depth * ridges * segments` with both fields in
+/// `[0, 1]`, so the multiplier is in `[1 - depth, 1]` -- **which is only a multiplier while
+/// depth is.** Above 1 the low end goes negative and the collision profile *inverts* wherever
+/// the structure field is quiet: mountains become basins, which is a different mechanism
+/// wearing this parameter's name. Below 0 the low end exceeds 1 and the field *amplifies* the
+/// envelope past `continent_collision_m`, so the height the panel reports stops being the
+/// height the ground has.
+///
+/// The same objection [`WB_MAX_QUIETING_STRENGTH`] makes to a quieting strength past 1, and
+/// derived from `structure_at`'s own documented range rather than chosen.
+pub const WB_MAX_STRUCTURE_DEPTH: f64 = 1.0;
+
+/// The floor on `structure_wavelength_m`. **A silence, not a crash** -- exactly what
+/// [`WB_MIN_TECTONIC_WIDTH_M`] closes, and the same value for the same reason.
+///
+/// `structure_at` opens with `if params.structure_wavelength_m <= 0.0 { return 1.0 }`, so a
+/// zero or negative wavelength is a structure field that is present in the record, accepted by
+/// the constructor, and contributes exactly nothing at every point on the planet -- while
+/// `structure_depth` sits beside it looking configured. The silently-dropping-builder shape.
+pub const WB_MIN_STRUCTURE_WAVELENGTH_M: f64 = WB_MIN_TECTONIC_WIDTH_M;
+
+/// The ceiling on `structure_wavelength_m`, **derived from the range gate rather than picked**.
+///
+/// The structure field is *multiplied into* the collision profile and nothing else, and that
+/// profile is identically zero beyond [`MAX_TECTONIC_RANGE_M`] because `offset_m` never
+/// evaluates a margin further away than that. So a ridge wavelength longer than the gate
+/// cannot complete a cycle anywhere the field is able to act: it is a constant multiplier
+/// wearing a wavelength's name, and `structure_depth` would then read as an amplitude.
+///
+/// Task 2's own table is the confirmation rather than the argument: at 250 km -- already
+/// inside this ceiling -- the summit count falls back to 0-3 at every depth, against 12 at
+/// 40 km. The measured working band is 40-80 km, two orders of magnitude clear of the floor
+/// and five times clear of this ceiling.
+pub const WB_MAX_STRUCTURE_WAVELENGTH_M: f64 = MAX_TECTONIC_RANGE_M;
 
 /// The ceiling on `plate_count`, and it is a *refusal*, not a clamp.
 ///
@@ -925,6 +1042,68 @@ fn tectonic_is_admissible(tectonics: &TectonicParams) -> bool {
     if !within(tectonics.continental_blend, WB_MIN_CONTINENTAL_BLEND, WB_MAX_CONTINENTAL_BLEND) {
         return false;
     }
+
+    // ------------------------------------------------- the five structure fields, Task 3
+    //
+    // `suture_count` is already a `u32` by the time it arrives here -- `decode_tectonic`
+    // refuses a word that is not a finite integer in range before it can become one -- so the
+    // ceiling below is a second statement of the same bound rather than the only one. It is
+    // stated twice on purpose: a caller reaching `tectonic_is_admissible` through
+    // `TectonicParams` it built itself (every test in this crate) gets the same answer as one
+    // reaching it through the ABI, and the loop bound is not a thing to be right about once.
+    if tectonics.suture_count < 1 || tectonics.suture_count > WB_MAX_SUTURE_COUNT {
+        return false;
+    }
+    if !within(tectonics.collision_asymmetry, WB_MIN_COLLISION_ASYMMETRY, f64::INFINITY) {
+        return false;
+    }
+    // The overriding flank, which is `continent_collision_width_m / collision_asymmetry`, held
+    // against the SAME floor the width itself faces. **This is the asymmetry's upper bound and
+    // it is derived rather than chosen**: a flank narrower than `WB_MIN_TECTONIC_WIDTH_M` is
+    // the silence that floor exists to refuse, and an infinite asymmetry produces exactly zero
+    // there. Nothing above needs to be picked, and nothing here divides by zero -- the floor
+    // above has already refused every asymmetry below 1.0.
+    let overriding_flank_m = tectonics.continent_collision_width_m / tectonics.collision_asymmetry;
+    if !within(overriding_flank_m, WB_MIN_TECTONIC_WIDTH_M, WB_MAX_CENTRED_TECTONIC_WIDTH_M) {
+        return false;
+    }
+    if !within(tectonics.suture_spread_m, WB_MIN_SUTURE_SPREAD_M, MAX_TECTONIC_RANGE_M) {
+        return false;
+    }
+    // **A count above one at a spread of zero is a HEIGHT knob wearing a count's name.**
+    // `sutures` places suture `i` at `i * suture_spread_m * jitter`, so at a spread of exactly
+    // zero every one of them sits at offset zero and the profile is the amplitude multiplied
+    // by the sum of the weights -- somewhere between 1x and 8x `continent_collision_m`,
+    // decided by a hash of the plate pair. That is the same arithmetic Task 2 measured as a
+    // 64% overshoot at 4 x 60 km, taken to its limit, and it would make the height slider read
+    // a different number on every margin. Refused rather than adjusted.
+    if tectonics.suture_count > 1 && !(tectonics.suture_spread_m > WB_MIN_SUTURE_SPREAD_M) {
+        return false;
+    }
+    if !within(tectonics.structure_depth, 0.0, WB_MAX_STRUCTURE_DEPTH) {
+        return false;
+    }
+    if !within(
+        tectonics.structure_wavelength_m,
+        WB_MIN_STRUCTURE_WAVELENGTH_M,
+        WB_MAX_STRUCTURE_WAVELENGTH_M,
+    ) {
+        return false;
+    }
+    // **THE RANGE GATE, asked of the whole profile rather than of one field.** Task 2 added
+    // `collision_reach_m` for exactly this call site and said so: past this distance
+    // `offset_m` does not evaluate the margin at all, so a profile still carrying weight there
+    // is truncated rather than faded -- a cliff, measured by Task 2's own survey at a 41.3%
+    // grade and 827 m of relief over 2 km on `4 sutures x 150 km`.
+    //
+    // The per-field width ceiling above cannot see this: it is `continent_collision_width_m`
+    // alone, and two sutures 150 km apart carry a 100 km profile out to 302 km. This check
+    // subsumes it at canonical structure settings, where the reach IS the width, and the width
+    // check is kept anyway because it is the one that stays true if `collision_reach_m`'s
+    // definition ever changes.
+    if !within(tectonics.collision_reach_m(), 0.0, MAX_TECTONIC_RANGE_M) {
+        return false;
+    }
     true
 }
 
@@ -941,31 +1120,50 @@ fn decode_tectonic(record: &[f64]) -> Option<TectonicParams> {
         ridge_m: fields[6],
         ridge_width_m: fields[7],
         continental_blend: fields[8],
-        // **The structure fields are DELIBERATELY NOT ON THIS CHANNEL, and this line is
-        // where that decision lives.** Task 2 added `collision_asymmetry`, `suture_count`,
-        // `suture_spread_m`, `structure_depth` and `structure_wavelength_m`; its brief
-        // forbids viewer work and says to stop and report if a new parameter needs
-        // exposing, so `WB_TECTONIC_STRIDE` does not move and this channel keeps admitting
-        // exactly the nine envelope fields it admitted before.
-        //
-        // The rest come from `canonical()`, which sets every one of them to its inert
-        // value, so a record decoded here produces bit-for-bit the `TectonicParams` it
-        // produced before those fields existed. That is not an assumption: this file's
-        // `decode_tectonic` and `encode_tectonic` are round-trip tested, and
-        // `tectonics.rs::the_structure_fields_are_inert_at_canonical_settings` proves the
-        // canonical settings reduce to the pre-Task-2 expression.
-        //
-        // **A later task exposing these must widen the stride, `decode`, `encode`,
-        // `tectonic_is_admissible` AND sweep the export**, because `suture_spread_m` and
-        // `suture_count` together can drive `collision_reach_m` past
-        // `MAX_TECTONIC_RANGE_M`, which is a cliff and not merely an odd-looking world.
-        ..TectonicParams::canonical()
+        collision_asymmetry: fields[9],
+        // **The one field on this channel that is not an f64, and the only place in this file
+        // a word is narrowed rather than carried.** `suture_count` is a `u32` loop bound; the
+        // ABI is a flat f64 record; so the word has to be a finite integer inside the ceiling
+        // *before* it can become a count at all. `decode_suture_count` refuses everything
+        // else, and refusing is the only safe move: `as u32` on an f64 SATURATES in Rust, so
+        // 1e300 would arrive here as `u32::MAX` and every convergent sample would then walk
+        // four billion iterations -- the hang `WB_MAX_SUTURE_COUNT` exists for, delivered by
+        // the cast rather than by the caller.
+        suture_count: decode_suture_count(fields[10])?,
+        suture_spread_m: fields[11],
+        structure_depth: fields[12],
+        structure_wavelength_m: fields[13],
     };
     if tectonic_is_admissible(&tectonics) {
         Some(tectonics)
     } else {
         None
     }
+}
+
+/// Word 10 of a tectonic record as a suture count, or `None` if it is not one.
+///
+/// Finite, exactly integral, and inside `1..=WB_MAX_SUTURE_COUNT` **before** the cast, which
+/// is what makes the cast total rather than saturating. `value as u32` on an f64 saturates at
+/// both ends and truncates the fraction, so every one of those three checks is load-bearing
+/// and none of them is a restatement of another:
+///
+/// - **not finite** -- `f64::NAN as u32` is 0 and `f64::INFINITY as u32` is `u32::MAX`, so a
+///   NaN would silently become a refused zero and an infinity a four-billion-iteration loop;
+/// - **not integral** -- 2.5 would truncate to 2, which is a silently-adjusted parameter and
+///   this boundary does not adjust;
+/// - **outside the range** -- 1e300 saturates to `u32::MAX`, the hang itself.
+///
+/// `trunc` is not a transcendental and is not on `detmath`'s list; the comparison is written
+/// against the value's own truncation so no rounding mode is involved.
+fn decode_suture_count(value: f64) -> Option<u32> {
+    if !value.is_finite() || value != value.trunc() {
+        return None;
+    }
+    if !within(value, 1.0, f64::from(WB_MAX_SUTURE_COUNT)) {
+        return None;
+    }
+    Some(value as u32) // cast-ok: proved finite, integral and inside 1..=WB_MAX_SUTURE_COUNT on the three lines above
 }
 
 /// The inverse of [`decode_tectonic`]'s field order, in one place so the two cannot drift.
@@ -980,6 +1178,14 @@ fn encode_tectonic(tectonics: &TectonicParams) -> [f64; WB_TECTONIC_STRIDE] {
         tectonics.ridge_m,
         tectonics.ridge_width_m,
         tectonics.continental_blend,
+        tectonics.collision_asymmetry,
+        // The inverse of `decode_suture_count`. A `u32` up to `WB_MAX_SUTURE_COUNT` is exactly
+        // representable as an f64 with room to spare, so this round-trips by construction and
+        // `f64::from` cannot be the lossy direction.
+        f64::from(tectonics.suture_count),
+        tectonics.suture_spread_m,
+        tectonics.structure_depth,
+        tectonics.structure_wavelength_m,
     ]
 }
 
@@ -1032,12 +1238,16 @@ unsafe fn read_tectonic(tectonic_ptr: *const f64, tectonic_len: u32) -> Tectonic
 
 /// The tectonic preset a selector names, or `None` for one this build does not know.
 ///
-/// **The only place `canonical()`'s nine values are read**, and there is no second copy of
-/// them anywhere -- not in this file, not in the viewer. The panel's slider anchors are this
-/// function's answer, so `tectonics.rs` stays the only place the numbers live.
+/// **The only place `canonical()`'s and `ranges()`'s values are read**, and there is no second
+/// copy of either anywhere -- not in this file, not in the viewer. The panel's slider anchors
+/// and its preset button are both this function's answer, so `tectonics.rs` stays the only
+/// place the numbers live. That is Ruling 7 of the relief slice, and `relief_preset_by_selector`
+/// above is the same three lines for the same reason.
 fn tectonic_preset_by_selector(preset: u32) -> Option<TectonicParams> {
     if preset == WB_TECTONIC_CANONICAL {
         Some(TectonicParams::canonical())
+    } else if preset == WB_TECTONIC_RANGES {
+        Some(TectonicParams::ranges())
     } else {
         None
     }
