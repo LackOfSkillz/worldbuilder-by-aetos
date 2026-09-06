@@ -755,6 +755,46 @@ jobs:
           # in one process: fill-and-resolve went 2.777-3.101 s to 0.132-0.194 s and the whole
           # solve 5.839-6.095 s to 2.844-3.754 s, at an unchanged 845 bodies.
           #
+          # HOTSPOT FIX 2 (2026-09-06) takes these to 610/610/612/705/707, 5 ignored -- ONE more
+          # test, again in the lib (`detmath.rs`), so again every configuration moves by exactly
+          # one and `assert_counts.py` still reports FOURTEEN binaries. `detmath::sqrt` now calls
+          # `x.sqrt()` instead of `libm::sqrt(x)`. The profile measured `libm::sqrt` as the single
+          # hottest function in the engine -- 76.2% of the water solve, 35.4% of a relief tile
+          # fill -- because libm 0.2.11's software routine compiles to a called function in the
+          # WASM build rather than lowering to the `f64.sqrt` instruction.
+          #
+          # THE DETERMINISM RULE IS NOT WEAKENED AND THE GUARD IS NOT TOUCHED.
+          # `tests/no_std_math.rs` is byte-for-byte unchanged: it still bans `.sqrt(` and
+          # `f64::sqrt(` in every other file in the crate, and it still skips `detmath.rs` as it
+          # always has. Only what `detmath::sqrt` calls changed, in one line, inside the one file
+          # the guard already treats as the choke point -- so unlike `.abs()`, this is not a new
+          # exempt NAME that a later slice could widen. PROVED BY MUTATION, NOT BY READING: five
+          # mutations planted in real source (`vectors.rs`) -- `.sqrt()`, `f64::sqrt(x)`,
+          # `f64::sin(x)`, `.powf(2.0)` and `x as i64` -- each turned the guard red naming the
+          # file and line, and each was reverted.
+          #
+          # WHY sqrt AND ONLY sqrt. IEEE-754 requires square root to be CORRECTLY ROUNDED, so
+          # every conforming implementation -- SQRTSD, the WASM `f64.sqrt` opcode, a correct
+          # software routine -- returns identical bits. `sin`/`cos`/`atan2`/`pow`/`exp`/`ln`/
+          # `hypot` carry no such guarantee (slice 0 measured native `f64::sin` against
+          # `libm::sin` in WASM diverging on 2,441 of 100,000), and every one of them still calls
+          # libm. The diff touches no second function.
+          #
+          # THE EVIDENCE, NATIVE AND THROUGH WASM, because native alone would only prove half.
+          # Native: the new test compares `libm::sqrt` against the routed `sqrt` on BIT PATTERNS
+          # over 1,000,000 values across five magnitude scales plus the edges, 0 differing; and
+          # `examples/parity_dump.rs`' whole 126,359-value corpus is byte-for-byte the same file
+          # as before EITHER fix (sha256 b6a7cb38e18763f9...). Through WASM: the rebuilt artifact
+          # replayed at 126,359 compared / 0 divergent with all six controls unmoved. Chained,
+          # those give WASM-after == native-after == native-before == WASM-before. IEEE-754 does
+          # NOT specify the NaN payload for a negative argument, so the test compares `is_nan()`
+          # there and bits everywhere else; nothing in this crate roots a negative.
+          #
+          # WHAT IT BOUGHT. Node, the shipped .wasm, `wb_water_run` at n = 86,000 on the owner's
+          # world, three runs each on one host: 45,801 / 47,384 / 54,954 ms before both fixes.
+          # See the report for the after figures -- and note the two fixes compound, since Fix 1
+          # removes one of the two k-NN searches and this makes the remaining one cheaper.
+          #
           # WHAT IT IS. The owner compared this generator's mountains to satellite photographs:
           # they want dendritic V-notched valleys branching down the flanks with snow following
           # the ridge lines. That is drainage, and two spikes cleared the ground for it. The
@@ -831,23 +871,23 @@ jobs:
           # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 609
+            expect: 610
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 609
+            expect: 610
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 611
+            expect: 612
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 704
+            expect: 705
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 706
+            expect: 707
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
