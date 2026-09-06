@@ -737,6 +737,24 @@ jobs:
           # THE GULLY SLICE (2026-09-06) takes these to 608/608/610/703/705, 5 ignored.
           # `assert_counts.py` still reports FOURTEEN test binaries -- no new one was added.
           #
+          # HOTSPOT FIX 1 (2026-09-06) takes these to 609/609/611/704/706, 5 ignored -- ONE new
+          # test, in `water.rs` in the lib, so every configuration moves by exactly one and
+          # `assert_counts.py` still reports FOURTEEN binaries. The performance profile
+          # (`.superpowers/sdd/notes/performance-profile.md`) found `wb_water_run` building the
+          # k-nearest-neighbour relation in `stream::sample_nodes` and then paying for a second,
+          # identical k-NN search inside `water::fill_and_resolve_water` -- 57.7% of the dominant
+          # cost of the largest single number in the project, spent recomputing a value the
+          # caller was already holding. The relation is passed in now
+          # (`fill_and_resolve_water_with_neighbours`), and the new test IS the claim: the two
+          # entry points over the same graph must come out BIT-IDENTICAL on
+          # `StreamGraph::bit_identical_to`, not merely close. Byte-identity was demonstrated end
+          # to end rather than asserted -- `examples/parity_dump.rs`' whole 126,359-value native
+          # corpus is byte-for-byte the same file before and after (sha256 b6a7cb38e18763f9...),
+          # water manifest included -- and parity stayed 126,359 / 0 divergent with all six
+          # controls unmoved. Native, n = 86,000, the owner's world, four interleaved A/B pairs
+          # in one process: fill-and-resolve went 2.777-3.101 s to 0.132-0.194 s and the whole
+          # solve 5.839-6.095 s to 2.844-3.754 s, at an unchanged 845 bodies.
+          #
           # WHAT IT IS. The owner compared this generator's mountains to satellite photographs:
           # they want dendritic V-notched valleys branching down the flanks with snow following
           # the ridge lines. That is drainage, and two spikes cleared the ground for it. The
@@ -813,23 +831,23 @@ jobs:
           # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 608
+            expect: 609
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 608
+            expect: 609
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 610
+            expect: 611
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 703
+            expect: 704
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 705
+            expect: 706
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

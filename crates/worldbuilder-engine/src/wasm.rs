@@ -3206,16 +3206,23 @@ pub extern "C" fn wb_erosion_run(
 /// [`WB_MAX_EROSION_NODES`] rather than at it, and for a reason that is about memory rather
 /// than time.
 ///
-/// [`crate::water::fill_and_resolve_water`] regenerates the neighbour relation from the world
-/// seed and then holds a *second*, symmetric copy of it beside the directed one
-/// ([`crate::water::symmetric_adjacency`], measured by slice 5b's Task 1 review to add
-/// 1.6-3.4% of entries and to raise the maximum degree from 8 to 12). This export therefore
-/// holds three neighbour structures at once at its peak -- `sample_nodes`' own, and the
-/// directed and symmetric pair inside `fill_and_resolve_water` -- against
-/// `wb_erosion_run`'s one. The 5b ledger records ~2.2 GB of live neighbour copies at
-/// 20,000,000 nodes; **wasm32's linear memory is 4 GiB at the absolute limit and far less in
-/// practice**, so a ceiling that is merely survivable natively is not the same as one a
-/// browser can meet.
+/// [`crate::water::fill_and_resolve_water_with_neighbours`] holds a *second*, symmetric copy
+/// of the relation beside the directed one ([`crate::water::symmetric_adjacency`], measured
+/// by slice 5b's Task 1 review to add 1.6-3.4% of entries and to raise the maximum degree
+/// from 8 to 12). This export therefore holds **two** neighbour structures at once at its
+/// peak -- `sample_nodes`' directed relation, which it now passes in rather than letting the
+/// water path rebuild, and the symmetric copy made from it -- against `wb_erosion_run`'s one.
+///
+/// **It used to hold three.** Until the performance profile's Fix 1 this export called
+/// `fill_and_resolve_water`, which regenerated the directed relation from the world seed and
+/// discarded the caller's; `sample_nodes`' copy, the regenerated one and the symmetric one
+/// were all live at the peak. Passing the relation in removes one of the three, so the
+/// ceiling below is if anything now conservative -- it is left where it is because nothing
+/// re-measured it, not because the old arithmetic still holds.
+///
+/// The 5b ledger records ~2.2 GB of live neighbour copies at 20,000,000 nodes; **wasm32's
+/// linear memory is 4 GiB at the absolute limit and far less in practice**, so a ceiling that
+/// is merely survivable natively is not the same as one a browser can meet.
 ///
 /// `100_000` is where this crate's own measurements stop being extrapolations: Task 1
 /// measured neighbour regeneration at 3.982 s for 500,000 nodes and 9.038 s for 1,000,000
@@ -3487,7 +3494,16 @@ pub extern "C" fn wb_water_run(
             return Err(WB_ERR_GRAPH);
         }
 
-        let basins = water::fill_and_resolve_water(&mut graph, pond_max_surface_area_m2);
+        // `..._with_neighbours`, not `fill_and_resolve_water`: `sample_nodes` above already
+        // built this exact k-nearest-neighbour relation, and the regenerating entry point
+        // would discard it and search again from the seed. Same seed, same count, same
+        // function, so the answer is identical BY CONSTRUCTION -- and the performance profile
+        // measured that second search at 57.7% of the dominant cost of this export.
+        let basins = water::fill_and_resolve_water_with_neighbours(
+            &mut graph,
+            pond_max_surface_area_m2,
+            &sampling.neighbours,
+        );
         Ok(water::water_manifest_from_graph(&graph, &basins))
     });
 

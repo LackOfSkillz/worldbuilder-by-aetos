@@ -1302,6 +1302,11 @@ fn lake_body_surface_totals_m2(
 ///
 /// Same restriction as `fill_basins`/`resolve_outflows`: `graph.header().sampling_kind` must
 /// be `Spiral`.
+///
+/// **A caller that already holds the relation should call
+/// [`fill_and_resolve_water_with_neighbours`] instead** -- this entry point exists for a
+/// caller that does not, and the regeneration it performs is the single most expensive thing
+/// in the water path. See that function's own doc for the measurement.
 pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_surface_area_m2: f64) -> Basins {
     assert!(
         graph.header().sampling_kind == SamplingKind::Spiral,
@@ -1313,7 +1318,46 @@ pub fn fill_and_resolve_water(graph: &mut StreamGraph, pond_max_surface_area_m2:
 
     let positions = stream::node_positions(graph.header().world_seed, graph.node_count());
     let directed = stream::node_neighbours(&positions, stream::NEIGHBOUR_COUNT);
-    let neighbours = symmetric_adjacency(&directed);
+
+    fill_and_resolve_water_with_neighbours(graph, pond_max_surface_area_m2, &directed)
+}
+
+/// The same pipeline, over a neighbour relation the caller already holds.
+///
+/// **This is the body; [`fill_and_resolve_water`] is now a wrapper that regenerates
+/// `directed` from the world seed and then calls this.** The two differ in exactly one
+/// respect -- where `directed` comes from -- and in nothing else, so a caller passing the
+/// relation `stream::sample_nodes` returned gets the identical answer *by construction*
+/// rather than by measurement: it is the same relation, computed once instead of twice.
+///
+/// **Why this exists.** `.superpowers/sdd/notes/performance-profile.md` found that
+/// `wasm.rs::wb_water_run` builds the k-nearest-neighbour relation in `stream::sample_nodes`,
+/// hands the graph here, and then paid for a *second*, identical k-NN search from the seed --
+/// and that the k-NN search is ~95% of the whole solve. A V8 profile of one 30,000-node call
+/// split `node_neighbours`' 549 `sqrt` ticks 317 / 232 between the two callers: **57.7% of
+/// the dominant cost of the water solve was a recomputation of a value the caller was already
+/// holding.**
+///
+/// `directed` is the *directed* relation -- what `stream::node_neighbours` and
+/// `stream::sample_nodes` return, k entries per node, before symmetrisation. This function
+/// symmetrises it itself ([`symmetric_adjacency`]), exactly as the regenerating wrapper did
+/// and does, so a caller must **not** pre-symmetrise.
+///
+/// # Panics
+///
+/// **`fill_basins`/`resolve_outflows`/`fill_and_resolve_water`'s `Spiral` restriction does
+/// not apply here, and that is the point.** That assertion exists because those entry points
+/// *regenerate* the geometry from the world seed, which only reconstructs the graph a caller
+/// actually built when the sampling was `Spiral`. This function regenerates nothing, so there
+/// is no geometry for it to be wrong about: any graph whose own neighbour relation is passed
+/// in is served correctly. Taking the relation as an argument **removes** a constraint rather
+/// than adding one.
+pub fn fill_and_resolve_water_with_neighbours(
+    graph: &mut StreamGraph,
+    pond_max_surface_area_m2: f64,
+    directed: &[Vec<u32>],
+) -> Basins {
+    let neighbours = symmetric_adjacency(directed);
 
     let basins = basins_of(graph);
     let filled = fill_lakes(graph, &basins, &neighbours);
@@ -2918,6 +2962,52 @@ mod tests {
         let basins = basins_of(&graph);
         classify_lake_kinds(&mut graph, &basins, 0.0);
         assert_eq!(graph.lake_at(0).expect("the fixture's one lake").kind, LakeKind::Lake);
+    }
+
+    /// **Fix 1's whole claim, asserted rather than argued.** `wb_water_run` now passes
+    /// `stream::sample_nodes`' own directed relation into
+    /// `fill_and_resolve_water_with_neighbours` instead of letting `fill_and_resolve_water`
+    /// rebuild an identical one from the world seed -- ~40% of the largest single cost in
+    /// the project, per `.superpowers/sdd/notes/performance-profile.md`.
+    ///
+    /// The claim is that the two are the same computation, so this compares the two entry
+    /// points over the same starting graph and requires the results to be **bit-identical**,
+    /// on `StreamGraph::bit_identical_to` (bits, not `==`: `==` calls `-0.0` and `0.0` equal
+    /// and never calls a NaN equal to itself, and both of those would be real bugs here).
+    /// The basin partitions are compared too, since that is the other half of what either
+    /// entry point hands back.
+    ///
+    /// `real_graph` samples through `stream::sample_nodes`, so `sampling.neighbours` is
+    /// exactly what `wb_water_run` holds -- this is the production pairing, not a synthetic
+    /// one. Re-sampled here rather than returned by `real_graph` so that the regenerating
+    /// side has no chance to share a buffer with the passed-in side.
+    #[test]
+    fn passing_the_neighbour_relation_in_is_bit_identical_to_regenerating_it() {
+        let world_seed = SEED as u64; // cast-ok: two's-complement reinterpretation, as Surface::new makes
+        let sampling = sample_nodes(world_seed, NODES, EARTH_RADIUS_M).expect("a node set");
+
+        let mut regenerated = real_graph(SEED);
+        let basins_regenerated = fill_and_resolve_water(&mut regenerated, 5.0e9);
+
+        let mut passed_in = real_graph(SEED);
+        let basins_passed_in = fill_and_resolve_water_with_neighbours(
+            &mut passed_in,
+            5.0e9,
+            &sampling.neighbours,
+        );
+
+        assert!(
+            !regenerated.lakes().is_empty(),
+            "fixture must actually have lakes for this comparison to mean anything"
+        );
+        assert!(
+            regenerated.bit_identical_to(&passed_in),
+            "passing sample_nodes' relation in must give the bit-identical graph the \
+             regenerating entry point gives -- it is the same relation computed once instead \
+             of twice"
+        );
+        assert_eq!(basins_regenerated.root_of, basins_passed_in.root_of);
+        assert_eq!(basins_regenerated.members, basins_passed_in.members);
     }
 
     /// Determinism (Property 1): the same graph, classified twice at the same threshold,
