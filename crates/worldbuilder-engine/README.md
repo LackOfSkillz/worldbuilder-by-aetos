@@ -4603,23 +4603,24 @@ from `$?` directly, never through a pipe.**
 
 | configuration | listed | ignored | **run** |
 |---|---|---|---|
-| `--no-default-features` | 582 | 5 | **577** |
-| default | 582 | 5 | **577** |
-| `--features python` | 584 | 5 | **579** |
-| `--features wasm` | 669 | 5 | **664** |
-| `--features python,wasm` | 671 | 5 | **666** |
+| `--no-default-features` | 603 | 5 | **598** |
+| default | 603 | 5 | **598** |
+| `--features python` | 605 | 5 | **600** |
+| `--features wasm` | 690 | 5 | **685** |
+| `--features python,wasm` | 692 | 5 | **687** |
 
 All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **14 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
 every row** (it widened no C ABI), the coast channel **+18 on the two WASM rows only**
 (`tests/wasm_exports.rs` is `#![cfg(feature = "wasm")]` in its entirety), the three NaN guards
-**+1 then +2 on every row**, and the climate slice's temperature task **+18 on every row** --
-again because its tests live in `src/` (`climate.rs`, `surface.rs`) and compile unconditionally,
-and again because it added no export.
+**+1 then +2 on every row**, the climate slice's temperature task **+18 on every row**, and its
+moisture march **+21 on every row** -- each time because the tests live in `src/` (`climate.rs`,
+`surface.rs`) and compile unconditionally, and each time because no export was added.
 
-**The binary count moved from 13 to 14 and the run counts did not, which is the point of stating
-both.** `src/bin/climate_survey.rs` is a new `[[bin]]` carrying zero tests, so it is invisible to
-`--expect-passed` and visible only here.
+**The binary count moved from 13 to 14 at the temperature task and has NOT moved since.**
+`src/bin/climate_survey.rs` is a `[[bin]]` carrying zero tests, so it is invisible to
+`--expect-passed` and visible only here; the moisture march **extended that binary rather than
+adding a fifteenth**, which is why this line reads 14 twice running.
 
 **Conformance, re-derived:** `WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/` -- **398 passed, exit
 0** -- and `pytest tests/test_conformance.py` -- **157 passed, exit 0** -- against the extension
@@ -4688,7 +4689,7 @@ whole shelf. The first corpus cut was refused by the dump's own both-ends-refuse
 cargo test -p worldbuilder-engine <cfg> --no-fail-fast            # five configurations
 cargo test -p worldbuilder-engine <cfg> -- --list                 # and --list --ignored
 python .github/scripts/assert_counts.py cargo-list --all list-all.txt --ignored list-ignored.txt \
-    --expect-passed <577|577|579|664|666> --expect-ignored 5
+    --expect-passed <598|598|600|685|687> --expect-ignored 5
 
 maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
 WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/                       # 398 passed on a quiet host

@@ -1,4 +1,5 @@
-//! Measures what temperature this engine's worlds actually reach, and chooses nothing.
+//! Measures what temperature and what moisture this engine's worlds actually reach, and
+//! chooses nothing.
 //!
 //! Task 1 of the climate slice
 //! (`docs/superpowers/plans/2026-09-06-slice-climate.md`). `climate.rs` gives every point
@@ -51,15 +52,47 @@
 //! - **freezing contour** -- the elevation at which this world's temperature crosses zero,
 //!   at five latitudes, and the count of land points above it. That is the snow line Task 5
 //!   consumes, reported here so Task 5 starts from a measurement rather than a claim.
+//!
+//! # The moisture half -- Task 2, and it RE-DERIVES A SHIPPED CONSTANT
+//!
+//! `climate::MARCH_SAMPLES` is 160 rather than the 40 the spike benchmarked, and the reason
+//! is not a cost curve -- the spike proved the cost is affine with no knee, so the budget is
+//! a physics decision. **This section is that physics, re-derivable on demand rather than
+//! transcribed from a report**, which is the standing test for whether a `[[bin]]` earns its
+//! place next to `relief_survey.rs` and `pond_threshold_survey.rs`.
+//!
+//! Two measurements, with their own smaller population (`MARCH_SAMPLES_SURVEYED`, because
+//! each moisture query is 161 elevation queries against temperature's one):
+//!
+//! - **upwind fetch to open water** -- from each land point, walk upwind in `MARCH_STEP_M`
+//!   steps until `elevation_m <= 0`. The percentiles say how far a march must reach before
+//!   it measures a fetch at all, and the coverage table says what fraction of a world's
+//!   land a given budget reaches water from. **A budget that never leaves the continent
+//!   measures nothing.**
+//! - **the moisture the march actually produces** -- deciles over land, so Task 3 can cut
+//!   its bands from a distribution it has seen rather than from an assumed one, and so a
+//!   world whose land is all one moisture is visible as such.
 
 use worldbuilder_engine::climate::{self, ClimateParams};
 use worldbuilder_engine::continentality::LAND_FRACTION;
 use worldbuilder_engine::detmath as m;
 use worldbuilder_engine::sphere::{SpherePoint, EARTH_RADIUS_M};
 use worldbuilder_engine::surface::Surface;
+use worldbuilder_engine::tangent::TangentFrame;
 use worldbuilder_engine::tectonics::TectonicParams;
 
 const SAMPLES: usize = 200_000;
+
+/// The moisture half's population. Smaller than `SAMPLES` for a stated reason rather than a
+/// convenient one: **one moisture query is `MARCH_SAMPLES + 1` elevation queries**, so the
+/// same 200,000 points would be 161 times the work of the temperature half.
+const MARCH_SAMPLES_SURVEYED: usize = 20_000;
+
+/// How far the fetch probe is willing to walk before calling a point landlocked, in march
+/// steps. 300 steps at `MARCH_STEP_M` is 6,000 km -- comfortably past the widest continent
+/// any of these four worlds has, so "never reached water" is a fact about the world and not
+/// about this constant.
+const FETCH_PROBE_STEPS: usize = 300;
 
 /// The photoreal slice's absolute temperature band edges
 /// (`viewer/public/app/biome.js::TEMP_BAND_EDGES_C`), transcribed here for occupancy only.
@@ -118,6 +151,36 @@ fn freezing_contour_m(latitude_deg: f64, params: &ClimateParams) -> f64 {
         / params.lapse_c_per_km
 }
 
+/// The decile boundaries of a sorted sample, as a small table. Explicit indexing rather
+/// than interpolation: this is a distribution to look at, not a statistic to publish.
+fn deciles(sorted: &[f64]) -> Vec<f64> {
+    if sorted.is_empty() {
+        return Vec::new();
+    }
+    (0..=10)
+        .map(|tenth| {
+            let index = (sorted.len() - 1) * tenth / 10;
+            sorted[index]
+        })
+        .collect()
+}
+
+/// How many march steps upwind of `point` open water lies, or `None` if it is further than
+/// `FETCH_PROBE_STEPS`. **This is the measurement that sets `MARCH_SAMPLES`.**
+fn upwind_fetch_steps(surface: &Surface, radius_m: f64, point: &SpherePoint) -> Option<usize> {
+    let (latitude, _) = point.to_latlon();
+    let east = climate::upwind_east(latitude);
+    let frame = TangentFrame::at(point, radius_m);
+    for step in 1..=FETCH_PROBE_STEPS {
+        let offset = east * climate::MARCH_STEP_M * step as f64; // cast-ok: loop counter to float
+        let probe = frame.local_to_sphere(offset, 0.0);
+        if !(surface.elevation_m(&probe, None) > 0.0) {
+            return Some(step);
+        }
+    }
+    None
+}
+
 fn main() {
     let worlds = [
         World {
@@ -154,10 +217,14 @@ fn main() {
         },
     ];
 
-    println!("climate_survey -- Task 1 of the climate slice");
-    println!("engine {}, {SAMPLES} Fibonacci samples per world, resolution_m = None", env!("CARGO_PKG_VERSION"));
-    println!("canonical params: equator {} C, pole {} C, lapse {} C/km",
+    println!("climate_survey -- temperature (Task 1) and the upwind moisture march (Task 2)");
+    println!("engine {}, {SAMPLES} Fibonacci samples per world for temperature and {MARCH_SAMPLES_SURVEYED} for moisture, resolution_m = None", env!("CARGO_PKG_VERSION"));
+    println!("canonical temperature: equator {} C, pole {} C, lapse {} C/km",
         climate::EQUATOR_C, climate::POLE_C, climate::LAPSE_C_PER_KM);
+    println!("canonical march: {} steps of {} m ({} km of reach), lift {} m, fetch {} m, recharge {} m",
+        climate::MARCH_SAMPLES, climate::MARCH_STEP_M,
+        climate::MARCH_STEP_M * f64::from(climate::MARCH_SAMPLES) / 1000.0,
+        climate::LIFT_SCALE_M, climate::FETCH_SCALE_M, climate::RECHARGE_SCALE_M);
     println!();
 
     let params = ClimateParams::canonical();
@@ -251,6 +318,55 @@ fn main() {
             print!(" {latitude:.0}deg {:.0}m", freezing_contour_m(latitude, &params));
         }
         println!();
+
+        // ---- Moisture. Its own smaller population; see MARCH_SAMPLES_SURVEYED. ----
+        let mut fetches: Vec<usize> = Vec::new();
+        let mut landlocked = 0usize;
+        let mut wetness: Vec<f64> = Vec::new();
+        let mut march_land = 0usize;
+        for index in 0..MARCH_SAMPLES_SURVEYED {
+            let point = fibonacci_point(index, MARCH_SAMPLES_SURVEYED);
+            if !(surface.elevation_m(&point, None) > 0.0) {
+                continue;
+            }
+            march_land += 1;
+            match upwind_fetch_steps(&surface, world.radius_m, &point) {
+                Some(steps) => fetches.push(steps),
+                None => landlocked += 1,
+            }
+            wetness.push(surface.moisture_index(&point, None, None));
+        }
+        fetches.sort_unstable();
+        wetness.sort_by(|a, b| a.partial_cmp(b).expect("the march produces no NaN on real land"));
+
+        println!("  --- moisture, {march_land} land points of {MARCH_SAMPLES_SURVEYED} ---");
+        let km = |steps: usize| steps as f64 * climate::MARCH_STEP_M / 1000.0; // cast-ok: count to float
+        if fetches.is_empty() {
+            println!("  upwind fetch: no land point reached water within {FETCH_PROBE_STEPS} steps");
+        } else {
+            let at = |fraction: f64| km(fetches[((fetches.len() - 1) as f64 * fraction) as usize]); // cast-ok: quantile index
+            println!("  upwind fetch km   p50 {:.0}  p75 {:.0}  p90 {:.0}  p95 {:.0}  max {:.0}   landlocked {landlocked} ({:.2}%)",
+                at(0.50), at(0.75), at(0.90), at(0.95), at(1.0),
+                100.0 * landlocked as f64 / march_land as f64); // cast-ok: counts to float
+            print!("  land reaching water by budget:");
+            for budget in [40usize, 80, 160, 240] {
+                let within = fetches.iter().filter(|steps| **steps <= budget).count();
+                print!("  {budget} ({:.0} km) {:.0}%", km(budget),
+                    100.0 * within as f64 / march_land as f64); // cast-ok: counts to float
+            }
+            println!();
+        }
+        let d = deciles(&wetness);
+        if d.is_empty() {
+            println!("  moisture: no land");
+        } else {
+            print!("  moisture deciles  ");
+            for value in &d {
+                print!(" {value:.3}");
+            }
+            println!();
+            println!("  moisture span {:.3} .. {:.3}", d[0], d[d.len() - 1]);
+        }
         println!();
     }
 }

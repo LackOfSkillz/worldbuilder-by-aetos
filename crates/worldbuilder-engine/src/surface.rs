@@ -28,7 +28,7 @@
 //! every number it uses is imported from the layer that owns it. `structural_m`,
 //! `elevation_m` and `bottom_at` arrive in later tasks, as do the bindings.
 
-use crate::climate::{self, ClimateParams};
+use crate::climate::{self, ClimateParams, MoistureParams};
 use crate::continentality::{Continentality, CoastParams};
 use crate::detail::{Detail, ReliefParams};
 use crate::features::{Feature, Features};
@@ -37,6 +37,7 @@ use crate::plates::PlateSet;
 use crate::shelf::Shelf;
 use crate::sphere::SpherePoint;
 use crate::substrate::{self, Composition, UnknownSubstrate};
+use crate::tangent::TangentFrame;
 use crate::tectonics::{TectonicParams, Tectonics};
 
 /// What the caller brought, where Python writes `features=`.
@@ -430,6 +431,72 @@ impl Surface {
         };
         let (latitude_deg, _longitude_deg) = point.to_latlon();
         climate::temperature_c(latitude_deg, self.elevation_m(point, resolution_m), &params)
+    }
+
+    /// How much moisture the air still has when it reaches a point, as a dimensionless
+    /// index in `[0, 1]`.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: Passed straight to every `elevation_m` the march takes. `None` is the
+    /// physics ground truth. **This argument is the spike's measured 27% saving**: at
+    /// `Some(20_000.0)` every configured detail octave has faded, so the march reads
+    /// structure alone and costs about a quarter less -- and 20 km is `MARCH_STEP_M`
+    /// itself, so a march coarsened to its own step is reading exactly the scale it steps
+    /// at.
+    /// moisture: `None` for the measured march -- `climate.rs`'s five constants exactly --
+    /// or `Some(params)`. The **fifth** opt-in parameter block of this kind, after
+    /// `relief`, `tectonics`, `coast` and `climate`, and the second that arrives at a
+    /// method rather than a constructor for the reason `temperature_c` gives above:
+    /// climate holds no state, so there is nothing for a constructor to build and nothing
+    /// for `Surface` to store. `lib.rs::the_surface_is_not_modified_by_this_slice` still
+    /// pins this struct at eight fields, by name.
+    ///
+    /// Returns:
+    /// `1.0` for saturated marine air, `0.0` for air that has rained out completely.
+    /// **No unit and no anchor** -- there is no moisture equivalent of water freezing at
+    /// zero, which is exactly why Task 3 quantiles this and does not quantile temperature.
+    ///
+    /// # This is `N + 1` elevation queries, and that is the whole cost model
+    ///
+    /// The march takes `budget` steps and samples the ground at each, plus once at the far
+    /// upwind end, so a canonical call is **161 `elevation_m` evaluations** against
+    /// `temperature_c`'s one. The spike measured the consequence as an affine curve with no
+    /// knee -- `0.48 + 0.48*N` microseconds native, `2.0 + 1.5*N` in WASM -- so nothing
+    /// here is cheap by accident and nothing is expensive by surprise. See `MARCH_SAMPLES`
+    /// for why the budget is what it is, and for what it means for the raster Task 4 ships.
+    ///
+    /// # The NaN entrant, and the same inheritance `temperature_c` records
+    ///
+    /// Every NaN this function can produce arrives through `elevation_m`, exactly as
+    /// temperature's does. `SpherePoint::to_latlon` clamps a NaN `z` to `1.0` and reports
+    /// latitude 90, which would put the query in the polar easterlies and march it
+    /// somewhere plausible -- but `noise.rs`'s lattice guard makes `elevation_m` answer NaN
+    /// for every non-finite vector, and `climate::moisture_index` propagates a NaN sample
+    /// through all three of its arms rather than reading it as sea, as land, or as
+    /// saturated air.
+    ///
+    /// **No guard is written here, and that is a decision rather than an omission.** Task 1
+    /// wrote a latitude guard at this level, mutation-tested it, found the whole suite green
+    /// without it, and deleted it -- `noise.rs` had already closed the hole. The same is
+    /// true here and is checked the same way: `a_nan_point_is_not_answered_with_marine_air`
+    /// goes red under the mutation that replaces the march's elevation sampler with `0.0`,
+    /// and green under no guard, so the property is asserted where it actually lives.
+    pub fn moisture_index(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        moisture: Option<MoistureParams>,
+    ) -> f64 {
+        let params = match moisture {
+            Some(params) => params,
+            None => MoistureParams::canonical(),
+        };
+        let (latitude_deg, _longitude_deg) = point.to_latlon();
+        let frame = TangentFrame::at(point, self.radius_m);
+        climate::moisture_index(latitude_deg, &frame, &params, &|probe: &SpherePoint| {
+            self.elevation_m(probe, resolution_m)
+        })
     }
 
     /// What the bottom is made of, as fractions of sand, mud and rock.
@@ -2257,6 +2324,13 @@ mod tests {
             !body.contains("climate") && !body.contains("Climate"),
             "structural_m or elevation_m grew a climate term"
         );
+        // Task 2 adds a second climate question and the same absence has to hold for it.
+        // `moisture` is checked by name as well as through `climate`, because a direct
+        // `use crate::climate::moisture_index` would let a call site say neither.
+        assert!(
+            !body.contains("moisture") && !body.contains("Moisture"),
+            "structural_m or elevation_m grew a moisture term"
+        );
         // And the call site is exactly one: `temperature_c`'s own body. The two other
         // matches in this file are in the two tests above, which name it explicitly.
         assert_eq!(
@@ -2264,5 +2338,195 @@ mod tests {
             0,
             "the existing elevation path now mentions temperature"
         );
+        assert_eq!(
+            body.matches("moisture_index").count(),
+            0,
+            "the existing elevation path now mentions moisture"
+        );
+    }
+
+    // ---- Moisture: the march, over a REAL world rather than a synthetic ridge ----
+
+    /// The same `None`-is-canonical claim, at the level a caller sees it.
+    ///
+    /// **Population**: a 13 x 25 lat/lon grid (every 15 degrees of latitude, every 15 of
+    /// longitude), 325 points, each read at two resolutions -- `None`, the canonical arm,
+    /// and `Some(20_000.0)`, which is `MARCH_STEP_M` itself and the arm that fades every
+    /// detail octave -- so **650 comparisons**, on the `shaped()` world. **Method**: bit
+    /// patterns of `moisture_index`, never values and never a tolerance. **Host**: this
+    /// crate's test runner. The grid is coarser than `temperature_c`'s 5,402 for one
+    /// reason and it is stated rather than hidden: **each of these readings is 161
+    /// elevation queries**, so this test is already two orders of magnitude more work.
+    ///
+    /// The count is asserted because a loop that compared nothing would pass, and the
+    /// variation is asserted because a march that returned `1.0` everywhere -- which is
+    /// exactly what the spike's swallowing bug returned -- would satisfy every bit
+    /// comparison here.
+    #[test]
+    fn moisture_none_matches_moisture_some_canonical_bit_for_bit() {
+        let surface = shaped();
+        let mut compared = 0usize;
+        let mut varied = 0usize;
+        let mut first: Option<u64> = None;
+        for i in 0..13 {
+            for j in 0..25 {
+                let lat = -90.0 + f64::from(i) * 15.0;
+                let lon = -180.0 + f64::from(j) * 15.0;
+                let point = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(20_000.0)] {
+                    let none = surface.moisture_index(&point, resolution, None);
+                    let canonical = surface.moisture_index(
+                        &point,
+                        resolution,
+                        Some(MoistureParams::canonical()),
+                    );
+                    assert_eq!(
+                        none.to_bits(),
+                        canonical.to_bits(),
+                        "canonical is not None at {lat}, {lon}"
+                    );
+                    // The index is an index. If this ever leaves [0, 1] on a real world,
+                    // every band Task 3 cuts out of it is meaningless.
+                    assert!(none >= 0.0 && none <= 1.0, "the index read {none} at {lat}, {lon}");
+                    match first {
+                        None => first = Some(none.to_bits()),
+                        Some(bits) => {
+                            if bits != none.to_bits() {
+                                varied += 1;
+                            }
+                        }
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 650, "the grid compared {compared} pairs");
+        assert!(varied > 300, "only {varied} of {compared} readings differed from the first");
+    }
+
+    /// An opted-in `MoistureParams` reaches the answer, which the bit-identity test above
+    /// cannot show -- it passes just as well if the block is ignored entirely. The
+    /// `CoastParams` lesson, applied to the fifth block of this kind rather than relearned.
+    ///
+    /// The probe is a *dry* opt-in: a fetch scale ten times shorter dries the same point,
+    /// which is a direction as well as a difference. A test that only asserted inequality
+    /// would pass for a parameter wired to the wrong term.
+    #[test]
+    fn an_opted_in_moisture_moves_the_answer() {
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(37.0, -41.0);
+        let canonical = surface.moisture_index(&point, None, None);
+        let parched = surface.moisture_index(
+            &point,
+            None,
+            Some(MoistureParams { fetch_scale_m: 200_000.0, ..MoistureParams::canonical() }),
+        );
+        assert!(
+            parched < canonical,
+            "a tenfold shorter fetch scale did not dry the point: {canonical} then {parched}"
+        );
+        assert!(
+            canonical - parched > 0.05,
+            "the opted-in block barely reached the answer: {canonical} then {parched}"
+        );
+    }
+
+    /// `resolution_m` is threaded into every march sample rather than hard-coded to `None`.
+    ///
+    /// This is the argument that buys the spike's measured 27%, so a version that quietly
+    /// ignored it would look like a free saving and be none. Scanned over a grid rather
+    /// than asserted at one point, because the two resolutions agree wherever the detail
+    /// stack happens to be flat and a single unlucky probe would make this vacuous -- the
+    /// count of points where they differ is pinned, not merely required to be non-zero.
+    #[test]
+    fn the_resolution_argument_reaches_the_moisture() {
+        let surface = shaped();
+        let mut moved = 0usize;
+        let mut looked = 0usize;
+        for i in 0..7 {
+            for j in 0..7 {
+                let point = SpherePoint::from_latlon(
+                    -60.0 + f64::from(i) * 20.0,
+                    -150.0 + f64::from(j) * 50.0,
+                );
+                let canonical = surface.moisture_index(&point, None, None);
+                let coarse = surface.moisture_index(&point, Some(20_000.0), None);
+                looked += 1;
+                if canonical.to_bits() != coarse.to_bits() {
+                    moved += 1;
+                }
+            }
+        }
+        assert_eq!(looked, 49);
+        assert!(moved > 20, "only {moved} of {looked} points saw the resolution argument");
+    }
+
+    /// The spike's defect, at the level a host reaches it: a point that cannot be answered
+    /// must not come back as saturated marine air.
+    ///
+    /// **No guard is written in `Surface::moisture_index` for this**, and the reason is
+    /// Task 1's measured one: `noise.rs`'s lattice guard already makes `elevation_m`
+    /// answer NaN for every non-finite vector, and `climate::moisture_index` propagates a
+    /// NaN sample through all three of its arms. The mutation that proves the coupling is
+    /// real rather than assumed is the march's sampler replaced by `0.0`, which turns this
+    /// red.
+    #[test]
+    fn a_nan_point_is_not_answered_with_marine_air() {
+        let surface = shaped();
+        for vector in [
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 1.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+        ] {
+            let point = SpherePoint { vector };
+            let answer = surface.moisture_index(&point, None, None);
+            assert!(answer.is_nan(), "a NaN point was answered with a moisture of {answer}");
+        }
+        // The blindness, asserted rather than described. `to_latlon` clamps the first two
+        // of those to latitude 90, which is a real band with a real wind, and a march that
+        // read their elevations as sea would come back at exactly 1.0 -- the most ordinary
+        // answer this function has.
+        let ocean = surface.moisture_index(&SpherePoint::from_latlon(41.2, -8.7), None, None);
+        assert!(ocean > 0.9, "the swallowed value would have looked like this: {ocean}");
+    }
+
+    /// A non-finite `step_m` is not refused at the door and does not need to be: every
+    /// probe offset becomes non-finite, `local_to_sphere` carries that into the point, and
+    /// the lattice guard answers NaN.
+    ///
+    /// **The spike reported the opposite behaviour and reported it as a defect**: *"a host
+    /// that passes garbage gets a plausible answer instead of an obviously wrong one"*.
+    /// This is that entrant, closed, and asserted where it actually arrives rather than at
+    /// a guard that would be dead.
+    #[test]
+    fn a_nan_step_length_does_not_return_full_moisture() {
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(37.0, -41.0);
+        for step_m in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let answer = surface.moisture_index(
+                &point,
+                None,
+                Some(MoistureParams { step_m, ..MoistureParams::canonical() }),
+            );
+            assert!(answer.is_nan(), "step {step_m} was answered with {answer}");
+        }
+    }
+
+    /// The march is bounded from this level too, which is the point of the bound living in
+    /// the type: a `Surface` caller cannot widen it either, because there is no way to
+    /// build a `MoistureParams` that carries an unbounded loop.
+    #[test]
+    fn a_surface_caller_cannot_widen_the_march() {
+        assert!(crate::climate::MarchBudget::new(u16::MAX).is_none());
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(12.0, 34.0);
+        // The widest march any caller can ask for still answers, and answers in range.
+        let widest = MoistureParams {
+            budget: crate::climate::MarchBudget::new(crate::climate::MAX_MARCH_SAMPLES)
+                .expect("the ceiling is admissible"),
+            ..MoistureParams::canonical()
+        };
+        let answer = surface.moisture_index(&point, Some(20_000.0), Some(widest));
+        assert!(answer >= 0.0 && answer <= 1.0, "the widest march read {answer}");
     }
 }

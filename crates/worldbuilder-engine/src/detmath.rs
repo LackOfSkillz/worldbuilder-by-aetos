@@ -53,6 +53,18 @@ pub fn powf(x: f64, y: f64) -> f64 {
     libm::pow(x, y)
 }
 
+/// `e^x`. Added for `climate.rs`'s upwind moisture march, whose orographic rain-out and
+/// over-water recharge are both exponential relaxations.
+///
+/// It is routed here for the usual reason and for one extra worth stating: `exp(-x)` for a
+/// non-negative `x` lands in `(0, 1]` **by arithmetic**, so a moisture written as a product
+/// of such factors stays in range with **no clamp** -- and `f64::min`/`f64::max`/`.clamp(`
+/// are NaN-asymmetric and banned in this crate for exactly the reason the march would have
+/// needed them. A NaN argument comes back NaN, which is the march's stated contract.
+pub fn exp(x: f64) -> f64 {
+    libm::exp(x)
+}
+
 /// Floors toward negative infinity, which is what Python's `int(x // 1)` does and what
 /// `as i64` does NOT do. Never derive a lattice coordinate with a cast.
 pub fn floor(x: f64) -> f64 {
@@ -97,6 +109,18 @@ mod tests {
         // test counts beyond what `relief_survey.rs` itself needs (see task-2-report.md).
         assert!(ln(2.0).is_finite());
         assert!((ln(std::f64::consts::E) - 1.0).abs() < 1e-12);
+        // `exp` was added for `climate.rs`'s moisture march; checked here rather than in
+        // its own test so the march does not disturb the crate's five pinned counts by
+        // more than the assertions it actually needs.
+        assert!(exp(1.0).is_finite());
+        assert!((exp(1.0) - std::f64::consts::E).abs() < 1e-12);
+        assert_eq!(exp(0.0).to_bits(), 1.0f64.to_bits());
+        // The property the march relies on instead of a clamp: a non-positive argument
+        // never leaves (0, 1], and the far tail underflows to zero rather than to a
+        // negative moisture.
+        assert!(exp(-1e-300) <= 1.0 && exp(-1e-300) > 0.0);
+        assert_eq!(exp(f64::NEG_INFINITY).to_bits(), 0.0f64.to_bits());
+        assert!(exp(f64::NAN).is_nan());
     }
 
     #[test]

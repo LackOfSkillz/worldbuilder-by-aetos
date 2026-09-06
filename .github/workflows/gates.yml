@@ -684,25 +684,75 @@ jobs:
           # `assert_counts.py cargo-list` AFTER the last source edit; the `231c47b` baseline
           # (559/559/561/646/648, 5 ignored, 13 binaries) was re-derived the same way BEFORE
           # the first edit and `gates.yml` was CORRECT at it.
+          #
+          # ---------------------------------------------------------------------------
+          # 598/598/600/685/687 -- CLIMATE SLICE TASK 2, the upwind moisture march.
+          # ---------------------------------------------------------------------------
+          #
+          # +21 on EVERY row and nothing on the WASM rows alone, the same shape the
+          # temperature task had and for the same reason: every new test lives in `src/`
+          # (`climate.rs`, `surface.rs`) and compiles unconditionally, and NO EXPORT WAS
+          # ADDED -- Task 4 of the slice owns `wasm.rs`. The strongest single check that
+          # this reaches no shipped path is that the re-blessed
+          # `viewer/public/wasm/worldbuilder_engine.wasm` is BYTE-IDENTICAL: 226,673 bytes,
+          # artifact-sha256 88a565adfa4b3433cb2dc4e30f2f775adf1739abc57cbb41b2092c7735499a4f,
+          # the same 22 exports; only MANIFEST.txt's source-fingerprint moved.
+          #
+          # `assert_counts.py` still reports FOURTEEN test binaries. The march EXTENDED
+          # `src/bin/climate_survey.rs` rather than adding a fifteenth, because the
+          # measurement that sets the march's sample budget belongs beside the measurement
+          # that sets the temperature bands.
+          #
+          # THE SAMPLE BUDGET IS 160, NOT THE 40 THE SPIKE BENCHMARKED, and that is a
+          # physics decision rather than a performance one -- the spike proved cost is
+          # affine in the budget with no knee anywhere from 1 to 320 samples, so there is no
+          # bend to cite. Measured on these worlds: the upwind fetch to open water has a
+          # median of 1,000-2,200 km, so a 40-sample (800 km) march reaches water for only
+          # 20-42% of land points and never measures a fetch at all on the majority of this
+          # engine's land. Against an 8,000 km reference march the mean absolute error in
+          # the moisture index is 0.178-0.270 at 40 samples and 0.002-0.007 at 160 -- one to
+          # one-and-a-half whole bands against three percent of one.
+          #
+          # THE LOOP BOUND LIVES IN THE TYPE. `MarchBudget` has one constructor, which
+          # returns `None` above `MAX_MARCH_SAMPLES` (1,024), so a `MoistureParams` cannot
+          # be built carrying an unbounded march and no caller -- Rust or, when Task 4 adds
+          # one, C -- can reach the ~2,600-second hang the spike extrapolated from
+          # `count = u32::MAX` behind a nounwind boundary.
+          #
+          # A CROSS-PRODUCT SWEEP OF 37,818 CALLS found 536 answers outside [0, 1] -- a
+          # BAND of admissible-looking arguments (a negative `step_m`, a zero or negative
+          # scale), not a cliff. The march now refuses that domain with NaN, written as
+          # negated comparisons so a NaN takes the same door, and the re-run sweep is 0 out
+          # of range. TWENTY-THREE MUTATIONS, each reverted; every one of the twenty-one new
+          # assertions has at least one that turns it red, and TWO PIECES OF CODE THIS TASK
+          # WROTE WERE DELETED BECAUSE NO MUTATION COULD: a NaN guard on the lift term (the
+          # water arm and the seed guard already cover it) and a whole test that the guard
+          # subsumed. That is the second and third time in this slice.
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` =
+          # 157, parity 108,106 compared / 0 divergent. Re-derived per configuration through
+          # `assert_counts.py cargo-list` AFTER the last source edit; the `4991055` baseline
+          # (577/577/579/664/666, 5 ignored, 14 binaries) was re-derived the same way BEFORE
+          # the first edit and `gates.yml` was CORRECT at it.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 577
+            expect: 598
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 577
+            expect: 598
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 579
+            expect: 600
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 664
+            expect: 685
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 666
+            expect: 687
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

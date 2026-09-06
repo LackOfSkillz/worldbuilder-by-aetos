@@ -61,6 +61,8 @@
 //! field.**
 
 use crate::detmath as m;
+use crate::sphere::SpherePoint;
+use crate::tangent::TangentFrame;
 
 /// Mean annual surface temperature at sea level on the equator, in degrees C.
 ///
@@ -195,6 +197,499 @@ pub fn temperature_c(latitude_deg: f64, elevation_m: f64, params: &ClimateParams
     let sea_level_c =
         params.pole_c + (params.equator_c - params.pole_c) * m::cos(m::to_radians(latitude_deg));
     sea_level_c - params.lapse_c_per_km * above_datum_m / 1000.0
+}
+
+// ===========================================================================================
+// MOISTURE -- the bounded upwind march. Task 2 of the climate slice.
+// ===========================================================================================
+//
+// Everything above this line is a closed form. Everything below it is not, and the reason is
+// physical rather than architectural: **rain that falls here fell out of air that came from
+// somewhere else.** How much moisture is left at a point is the integral of what has already
+// rained out along the path the air took to get here, so it cannot be answered from the
+// point alone. The design the roadmap chose (§3.4) is to march that path at query time
+// rather than to bake a raster, so an edited mountain casts its shadow immediately and the
+// studio can never draw from an approximation the game disagrees with.
+//
+// # The three things the march is, stated before the constants
+//
+// 1. **A fetch meter.** Walking upwind until open water is reached measures the distance to
+//    the sea *along the wind*, which is the term the temperature profile does not have.
+//    Task 1's report named the absence: the engine exposes no distance-to-coast, so a west
+//    coast and a continental interior get the same temperature. The march does not close
+//    that for temperature -- it is still latitude and height -- but **moisture gets a real
+//    continentality out of it, for free, because measuring the fetch is what the march
+//    already does.**
+// 2. **A rain-shadow meter.** Where the ground rises along the path, air is lifted, cools,
+//    and sheds moisture; downwind of the crest there is less left. That is the whole
+//    mechanism of the Atacama, the Great Basin and the Canterbury Plains.
+// 3. **A bounded loop behind a nounwind boundary.** See `MarchBudget`.
+
+/// How far apart the march's samples are, in metres.
+///
+/// # Ground
+///
+/// **This is `detail::COARSEST_WAVELENGTH_M`, and that is the argument for it.** Below 20 km
+/// the terrain this engine builds is *detail* -- a seven-octave noise stack laid over
+/// structure -- and detail is not what casts a rain shadow. Above 20 km the march starts
+/// stepping over the structural ridges that do. The two claims are one claim: 20 km is the
+/// scale at which this engine's ground stops being texture and starts being terrain.
+///
+/// It is also the resolution at which `elevation_m`'s `resolution_m` argument has already
+/// faded every configured octave, which is why the spike measured `res = 20 km` and
+/// `res = 80 km` as the same column. A caller who coarsens the march to buy the spike's
+/// measured 27% is coarsening it to exactly this step.
+///
+/// **Measured, not asserted.** Against a 5 km reference march at a fixed 3,200 km span over
+/// every land point of three worlds, a 20 km step differs by a mean of 0.037-0.044 in the
+/// moisture index. Halving to 10 km halves that (0.015-0.019) for twice the cost, and
+/// doubling to 40 km nearly doubles it (0.068-0.075). **The step error is first order and
+/// has no knee either** -- it is a straight purchase, exactly like the sample budget, and
+/// the reason the samples are spent on span instead is that the span error at the budget
+/// this file rejects is *five times larger*. See `MARCH_SAMPLES`.
+pub const MARCH_STEP_M: f64 = 20_000.0;
+
+/// How many steps the march takes, upwind, before it gives up and calls the air saturated.
+///
+/// **The spike proved there is no performance knee: cost is affine in this number from 1 to
+/// 320 samples, natively and in WASM. So this is a physics decision and it is made on
+/// measurements of these worlds, not on a cost curve.**
+///
+/// # Why 160, when the spike benchmarked 40
+///
+/// Because 40 is not a rain-shadow budget on a planet whose continents are this wide, and
+/// that is measured rather than argued.
+///
+/// **The fetch measurement.** Over 50,000 Fibonacci points per world on the four worlds
+/// `climate_survey.rs` uses, marching upwind in 20 km steps until `elevation_m <= 0`, the
+/// distance to open water along the wind has a **median of 1,020 to 2,200 km** and a
+/// **90th percentile of 2,860 to 4,780 km**. A 40-sample, 800 km march reaches open water
+/// for only **20% to 42%** of land points. On the majority of this engine's land, the
+/// spike's budget never leaves the continent, so it never measures a fetch at all.
+///
+/// **The convergence measurement, which is the one that sets the number.** Against a
+/// reference march of 8,000 km at the same 20 km step, over every land point of three
+/// worlds, the mean absolute error in the moisture index is:
+///
+/// ```text
+///   span   800 km ( 40 samples)   0.178 - 0.270      <- the spike's shape
+///   span  1600 km ( 80 samples)   0.041 - 0.085
+///   span  2560 km (128 samples)   0.006 - 0.019
+///   span  3200 km (160 samples)   0.002 - 0.007      <- chosen
+///   span  4800 km (240 samples)   0.0001 - 0.0007
+/// ```
+///
+/// The moisture index runs over `[0, 1]` and Task 3 cuts four or five bands out of it, so a
+/// band is order 0.2 wide. **A 40-sample march is wrong by one to one-and-a-half whole
+/// bands. A 160-sample march is wrong by three percent of one.** That is the entire
+/// argument, and it is why the samples are spent on reach rather than on step: at a fixed
+/// 3,200 km span, halving the step from 20 km to 10 km buys 0.02 of accuracy for 160 more
+/// samples, while the last 800 km of *span* was worth 0.06 for eighty.
+///
+/// # What it costs, and what that means for Task 4
+///
+/// On the spike's own curve, `0.48 + 0.48*N` native and `2.0 + 1.5*N` in WASM: **77 us
+/// native and 242 us in WASM per query**, about 4x the spike's headline 40-sample figure.
+/// The spike's other finding therefore binds harder than it did: **the raster is the lever
+/// and it is quadratic.** At the browser's measured ~2.7 us per elevation, a 160-sample
+/// march is ~432 us per moisture query, so a 32x32 moisture raster (1,156 sampled texels)
+/// is ~500 ms per tile and a **16x16 one is ~140 ms, which is the parity-with-relief figure
+/// the spike put at 32x32 for a 40-sample march.** Task 4 should expect to ship 16x16, not
+/// the 32x32 the spike named, and the reason is this constant rather than a regression.
+pub const MARCH_SAMPLES: u16 = 160;
+
+/// The ceiling `MarchBudget` refuses to be built above. See that type for why it exists at
+/// all; this is where the number comes from.
+///
+/// The spike measured `count = 2^20` at 0.643 s and extrapolated `u32::MAX` to **~2,600
+/// seconds inside one uninterruptible call** -- and `extern "C"` is nounwind, so that is a
+/// hang and not an abort. A bare `u16` would already cap the damage at 65,535 samples, about
+/// 31 ms native and 100 ms in WASM, which is survivable but is a frame budget's worth of
+/// freeze for a single point.
+///
+/// **1,024 is 6.4x the canonical budget and 246 us native / 2.8 ms in the browser at the
+/// worst.** It is drawn at a round number rather than at the exact point where the cost
+/// becomes objectionable, for the reason `wasm.rs` gives for `land_fraction`'s bound: an
+/// exact boundary is an accident of the host it was measured on and would move if the host
+/// did. What matters is that the loop bound is **finite by construction and small**, and
+/// that no caller -- Rust or C -- can reach past it.
+pub const MAX_MARCH_SAMPLES: u16 = 1_024;
+
+/// Metres of orographic lift that remove `1 - 1/e` of the air's remaining moisture.
+///
+/// # Ground -- three real rain shadows, fitted
+///
+/// Each of these is a crest height and the ratio of leeward to windward precipitation, and
+/// each implies a scale through `ratio = exp(-crest / scale)`:
+///
+/// | range | crest | lee / windward | implied scale |
+/// | --- | --- | --- | --- |
+/// | Sierra Nevada, Great Basin behind it | ~2,500 m | ~0.20 | 1,553 m |
+/// | Southern Alps, Canterbury behind them | ~2,000 m | ~0.06 | 712 m |
+/// | Andes, Atacama behind them | ~4,000 m | ~0.01 | 868 m |
+///
+/// The three do not agree with each other -- they span a factor of 2.2 -- because real rain
+/// shadows also depend on wind speed, sea temperature and how far the lee station is from
+/// the crest, none of which this model has. **Their geometric mean is 986 m and the constant
+/// is 1,000 m**, which reproduces the three ratios as 0.082 / 0.135 / 0.018 against the
+/// observed 0.20 / 0.06 / 0.01: worst factor 2.4, in a quantity whose observations disagree
+/// by 2.2 among themselves. `a_thousand_metres_of_lift_shed_the_fitted_fraction` pins it.
+///
+/// The alternative -- fitting one shadow exactly -- would be a number with a smaller stated
+/// error and a larger real one, which is the shape this project has already found four
+/// times in transcribed figures.
+pub const LIFT_SCALE_M: f64 = 1_000.0;
+
+/// Metres of overland travel that remove `1 - 1/e` of the air's remaining moisture, with no
+/// lifting at all.
+///
+/// This is the term that makes a continental interior drier than its coast on flat ground,
+/// and it is the honest half of what a distance-to-coast field would give: **the march is
+/// already walking the fetch, so charging for it costs nothing extra.**
+///
+/// # Ground -- two continental transects
+///
+/// | transect | inland distance | coastal / interior rainfall | implied scale |
+/// | --- | --- | --- | --- |
+/// | Atlantic coast to central Kazakhstan, along the westerlies | ~4,000 km | 800 / 200 mm | 2,885 km |
+/// | Queensland coast to central Australia | ~2,000 km | 1,200 / 280 mm | 1,372 km |
+///
+/// Geometric mean 1,990 km; the constant is **2,000 km**. Both transects cross some relief,
+/// so both implied scales are if anything too short (they attribute orographic loss to
+/// fetch), which makes 2,000 km a conservative -- wetter -- choice. Stated because it is a
+/// bias with a known sign rather than an error bar.
+pub const FETCH_SCALE_M: f64 = 2_000_000.0;
+
+/// Metres of travel over open water that close `1 - 1/e` of the gap back to saturation.
+///
+/// # Ground
+///
+/// Air crossing open water re-moistens from below, fast. The sharpest everyday evidence is
+/// lake-effect snow, which needs roughly **100 km of open-water fetch** to organise and is
+/// fully developed across the ~400 km of the Sea of Japan -- an air mass that arrives
+/// continental-dry and leaves saturated. **300 km** puts 28% of the recovery inside the
+/// 100 km threshold and 74% inside 400 km, which is the shape those two landmarks describe.
+///
+/// **And it barely matters, which is measured rather than hoped.** Any scale short against
+/// the span saturates the air long before it makes landfall, so the constant's exact value
+/// is nearly invisible: moved over a **factor of ten**, 100 km to 1,000 km, on terrain built
+/// specifically to expose it (a far continent, then a sea, then a coastal range), it shifts
+/// the moisture index by **0.0113** -- about a twentieth of one of Task 3's bands.
+/// `the_recharge_scale_is_not_a_sensitive_parameter` pins that, and pins that it is not
+/// zero: a constant nothing reads and a constant nothing depends on are different things,
+/// and only the first is a defect.
+///
+/// It is fitted to two landmarks rather than three for that reason. A third would be effort
+/// spent on a digit the answer cannot see.
+pub const RECHARGE_SCALE_M: f64 = 300_000.0;
+
+/// Where the trade-wind belt gives way to the westerlies, in degrees of latitude.
+///
+/// Earth's three-cell circulation, and the only piece of atmospheric dynamics in this file:
+/// **easterlies from the equator to 30, westerlies from 30 to 60, polar easterlies beyond**.
+/// The two boundaries are the Hadley and Ferrel cell edges and they are the standard
+/// idealisation, which is what this model wants -- a real jet stream meanders and a real
+/// intertropical convergence zone migrates with the season, and this field has no season.
+pub const TRADE_WIND_EDGE_DEG: f64 = 30.0;
+
+/// Where the westerlies give way to the polar easterlies. See `TRADE_WIND_EDGE_DEG`.
+pub const POLAR_EASTERLY_EDGE_DEG: f64 = 60.0;
+
+/// A march length that **cannot be constructed out of range**, which is the whole of its
+/// job.
+///
+/// # Why a type and not a bounds check
+///
+/// The plan's instruction is *bound the loop in the type, not only in the export*, and the
+/// reason is reach rather than tidiness. The spike measured a `count` of `2^20` at 0.643 s
+/// and extrapolated `u32::MAX` to about **2,600 seconds inside one uninterruptible call**;
+/// `extern "C"` is nounwind, so what a host sees is a **hang**, not an abort it can catch.
+/// Refusing at the export closes the C ABI and leaves every Rust caller of
+/// `climate::moisture_index` and `Surface::moisture_index` holding the same unbounded loop
+/// -- and this crate is a library whose Rust surface is `pub`.
+///
+/// So the bound lives where the value does. `MarchBudget::new` is the only constructor,
+/// there is no public field and no `Default`, and it returns `None` above
+/// `MAX_MARCH_SAMPLES`. **A `MoistureParams` therefore cannot be built with an unbounded
+/// march, which means the loop in `moisture_index` has a finite bound that no caller and no
+/// export can widen.** That is the same first-line/second-line split `nan-abyss-fix.md`
+/// records for `WB_MAX_COAST_GAIN`: the type refuses, and Task 4's export will still name
+/// the offending field in a status code, because a refusal that says which argument was
+/// wrong is worth more than one that only says no.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarchBudget(u16);
+
+impl MarchBudget {
+    /// `None` above `MAX_MARCH_SAMPLES`. There is no other way to make one.
+    ///
+    /// Zero is admitted deliberately: a zero-step march is a well-defined question with a
+    /// well-defined answer -- the air has travelled nowhere, so it is still saturated -- and
+    /// refusing it would be refusing the identity element rather than an error.
+    pub fn new(samples: u16) -> Option<Self> {
+        if samples > MAX_MARCH_SAMPLES {
+            None
+        } else {
+            Some(Self(samples))
+        }
+    }
+
+    /// `MARCH_SAMPLES` steps: the budget the convergence measurement chose.
+    pub fn canonical() -> Self {
+        Self(MARCH_SAMPLES)
+    }
+
+    pub fn samples(self) -> u16 {
+        self.0
+    }
+}
+
+/// What the air does on its way here, broken out the way `ClimateParams` breaks out what it
+/// is like when it arrives.
+///
+/// `Surface::moisture_index` takes `Option<MoistureParams>` with `None` canonical -- the
+/// fifth opt-in block of that kind in this crate and the second in this file. It is a
+/// **method** argument for the same reason `ClimateParams` is: the march holds no state, so
+/// there is nothing for a constructor to build and nothing for `Surface` to store, and
+/// `lib.rs::the_surface_is_not_modified_by_this_slice` still pins that struct at eight
+/// fields by name.
+///
+/// The budget is a `MarchBudget` rather than a `u16` so that a `MoistureParams` cannot
+/// carry an unbounded loop; see that type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoistureParams {
+    /// How many upwind steps to take. Bounded by construction.
+    pub budget: MarchBudget,
+    /// How far apart those steps are, in metres.
+    pub step_m: f64,
+    /// Metres of orographic lift that shed `1 - 1/e` of the remaining moisture.
+    pub lift_scale_m: f64,
+    /// Metres of overland fetch that shed `1 - 1/e` of the remaining moisture.
+    pub fetch_scale_m: f64,
+    /// Metres of over-water fetch that close `1 - 1/e` of the gap back to saturation.
+    pub recharge_scale_m: f64,
+}
+
+impl MoistureParams {
+    /// The measured march: 160 steps of 20 km, 3,200 km of reach, and the three fitted
+    /// scales. `Some(MoistureParams::canonical())` is bit-identical to `None`.
+    pub fn canonical() -> Self {
+        Self {
+            budget: MarchBudget::canonical(),
+            step_m: MARCH_STEP_M,
+            lift_scale_m: LIFT_SCALE_M,
+            fetch_scale_m: FETCH_SCALE_M,
+            recharge_scale_m: RECHARGE_SCALE_M,
+        }
+    }
+}
+
+/// Which way the air came from, as a component along the local east axis: `+1` if it came
+/// from the east, `-1` if it came from the west.
+///
+/// Earth's three-cell zonal circulation, and nothing else -- see `TRADE_WIND_EDGE_DEG`.
+///
+/// # Two approximations, stated rather than discovered later
+///
+/// **The wind is purely zonal.** Real trades blow from the north-east in the northern
+/// hemisphere and the south-east in the southern, and the westerlies have a matching
+/// poleward tilt. Dropping the meridional component means a north-south coastline collects
+/// all of the rain on this model and an east-west one collects none, which is what a purely
+/// zonal flow would genuinely do; it is the band structure, not the tilt, that produces the
+/// deserts, and the tilt is the cheaper thing to add later.
+///
+/// **A NaN latitude takes the easterly arm, and that is not a swallow.** Both comparisons
+/// against a NaN are false, so an unanswerable latitude falls through to `+1`. It is left
+/// that way on purpose, for the reason Task 1's report gives at length: a NaN latitude can
+/// only arise from a point whose vector is non-finite, `noise.rs`'s lattice guard already
+/// makes `elevation_m` answer NaN for every such point, and the march multiplies by those
+/// elevations -- so the NaN arrives through the elevation whatever the wind says. Task 1
+/// wrote exactly this guard one level up, mutation-tested it, found the whole suite green
+/// without it and **deleted it**. A second dead guard is not defence in depth.
+pub fn upwind_east(latitude_deg: f64) -> f64 {
+    let from_equator = latitude_deg.abs();
+    if from_equator >= TRADE_WIND_EDGE_DEG && from_equator < POLAR_EASTERLY_EDGE_DEG {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// How much moisture the air still has when it gets here, as a dimensionless index.
+///
+/// Args:
+/// latitude_deg: The query point's latitude, which picks the prevailing wind band.
+/// frame: A `TangentFrame` at the query point. The march walks its local east axis, so the
+/// path is a **geodesic launched due east or due west** -- not a parallel of latitude,
+/// which a straight line on a sphere is not. Over 3,200 km from 45 degrees that path drifts
+/// polewards, and that is the physically right thing for a parcel travelling in a straight
+/// line to do.
+/// params: `MoistureParams::canonical()` for the measured march.
+/// elevation_at: How high the ground is at a probe point. This is the `substrate::at`
+/// shape -- a stateless stage in this crate is a free function reached through a sampler
+/// rather than a method on a layer -- and it is what lets the rain-out arithmetic be tested
+/// against a synthetic ridge with no `Surface` at all.
+///
+/// Returns:
+/// A number in `[0, 1]`, or **NaN for params outside the domain** -- a negative `step_m` or
+/// a scale that is not strictly positive; see the guard at the top of the body, which was
+/// written because a sweep found 536 out-of-range answers and not because the code looked
+/// wrong. 1 is saturated marine air,
+/// 0 is air that has rained out completely. **It has no unit and no anchor**, which is
+/// exactly why Task 3 quantiles it and does not quantile temperature. There is no moisture
+/// equivalent of water freezing at zero.
+///
+/// # How it walks, and why downwind
+///
+/// The samples are laid out from `budget` steps upwind down to the query point, and the
+/// accumulator runs **downwind**, in the direction the air actually travels, because
+/// rain-out is causal: what falls on the second ridge depends on what the first one already
+/// took. Walking the other way and reversing the arithmetic would need the elevations kept
+/// in an array, and an array sized by a runtime budget is either a heap allocation on a
+/// path that must run in WASM or a fixed buffer sized by the ceiling. Marching downwind
+/// needs neither: the far end is just an offset, so the loop counts down and carries two
+/// floats.
+///
+/// At each step:
+///
+/// - **over water** (`elevation <= 0`) the air relaxes back towards saturation,
+///   `m <- 1 - (1 - m) * exp(-step / recharge_scale)`;
+/// - **over land** it loses `exp(-lift / lift_scale)` for whatever the ground rose since the
+///   last sample, and then `exp(-step / fetch_scale)` for having travelled over land at all.
+///
+/// **Every factor is an `exp` of a non-positive number, so the result stays in `[0, 1]` by
+/// arithmetic and there is no clamp anywhere in this function.** That is not a stylistic
+/// point: `f64::min`, `f64::max` and `.clamp(` are NaN-asymmetric and banned in this crate,
+/// and a march written with a clamp is a march that would have swallowed exactly the NaN the
+/// spike found.
+///
+/// # The NaN contract is PROPAGATE, and the spike found the trap
+///
+/// The spike's own note, verbatim: *"A `NaN` step silently returns full moisture rather than
+/// `NaN`. `lift_m` is `NaN`, `if lift_m > 0.0` is false, and the accumulator is never
+/// touched -- so a host that passes garbage gets a plausible answer instead of an obviously
+/// wrong one."* That is the fifth instance of this project's recurring failure -- the abyss
+/// that read as the deepest ocean, the NaN land fraction that produced a legitimate all-land
+/// world, the lattice cell that could not name itself, and Task 1's own NaN elevation that
+/// would have read as sea level.
+///
+/// **So the lift test is a NaN test first and a comparison second**, the same shape as
+/// `temperature_c`'s elevation floor. The house decision on the three NaN entrants that
+/// converged on `elevation_from_above` was propagate, for three reasons that all still hold
+/// here: there is no Python oracle to contradict, a panic across a nounwind boundary is an
+/// abort rather than a loud failure, and refusing at the boundary cannot cover callers that
+/// pass bare scalars. A moisture nobody can compute comes back NaN.
+///
+/// **What is deliberately NOT guarded**, because guarding it would be the dead code Task 1
+/// deleted: a non-finite `step_m` makes every probe offset non-finite, `local_to_sphere`
+/// carries that into the point, and `elevation_m`'s lattice guard answers NaN -- so the NaN
+/// arrives through the sampler. `a_nan_step_length_does_not_return_full_moisture` asserts
+/// that it arrives, rather than asserting that a guard here would catch it.
+///
+/// # What a zero step means
+///
+/// `step_m = 0.0` marches nowhere: every probe is the query point, nothing rises, and no
+/// fetch is travelled, so the answer is exactly `1.0`. That is arithmetically correct rather
+/// than a fall-through -- a path of zero length loses nothing -- and it is pinned so that a
+/// future edit cannot make it mean "the loop did not run".
+pub fn moisture_index(
+    latitude_deg: f64,
+    frame: &TangentFrame,
+    params: &MoistureParams,
+    elevation_at: &dyn Fn(&SpherePoint) -> f64,
+) -> f64 {
+    // THE DOMAIN, REFUSED AT THE DOOR RATHER THAN HONOURED, and found by sweeping rather
+    // than by reading the code. Each comparison is NEGATED so that a NaN takes the same
+    // door -- a NaN fails `>=` and `>` alike and the `!` makes that `true`, which is the
+    // `noise.rs::LATTICE_LIMIT` form and the reason `f64::min`/`max`/`clamp` are banned.
+    //
+    // What the sweep found: over 37,818 calls across three cross products, **536 returned
+    // a value outside `[0, 1]`** -- infinities and numbers of order 1e25 -- and every one
+    // came from this band rather than from a cliff:
+    //
+    // - a **negative `step_m`** makes `exp(-step / fetch_scale)` greater than one, so the
+    //   fetch term *adds* moisture every step and the index runs away. A negative length is
+    //   not a shorter march, it is the wind blowing backwards through an amplifier.
+    // - a **zero scale** divides by zero, so `exp` of an infinity is an infinity or a zero,
+    //   and the index leaves the interval in one step. `0.0` is non-negative, which is why
+    //   this bound is `> 0.0` and not `>= 0.0`; that distinction is the whole guard.
+    // - a **negative scale** flips the sign of every exponent, turning rain-out into
+    //   rain-in.
+    //
+    // None of those is a plausible answer a caller could act on, and an out-of-range index
+    // would silently break every band Task 3 cuts out of `[0, 1]`. So the answer is the one
+    // this ABI already speaks: **NaN for a question that cannot be answered.** Infinite
+    // scales are deliberately ADMITTED -- `exp(-x / inf)` is `1`, meaning "this term never
+    // fires", which is a coherent request and stays in range.
+    if !(params.step_m >= 0.0)
+        || !(params.lift_scale_m > 0.0)
+        || !(params.fetch_scale_m > 0.0)
+        || !(params.recharge_scale_m > 0.0)
+    {
+        return f64::NAN;
+    }
+    let east = upwind_east(latitude_deg);
+    // Land height above the datum at `steps` steps upwind. Below the datum is open water and
+    // reads as exactly zero, matching `temperature_c`'s floor and for the same reason: the
+    // sea surface is at the datum, so a trench is not a valley the air has to climb out of.
+    // NaN first, comparison second -- an unanswerable elevation must not read as sea.
+    let land_height_m = |steps: u16| -> f64 {
+        let probe = frame.local_to_sphere(east * params.step_m * f64::from(steps), 0.0);
+        let height = elevation_at(&probe);
+        if height.is_nan() {
+            height
+        } else if height > 0.0 {
+            height
+        } else {
+            0.0
+        }
+    };
+
+    let budget = params.budget.samples();
+    let mut moisture = 1.0f64;
+    let mut previous_m = land_height_m(budget);
+    // The seed sample is read only as the *previous* height, so a NaN there is invisible to
+    // every arm below if the first step downwind is over water: the recharge arm does not
+    // look at `previous_m` at all, and the air would come back saturated from a path whose
+    // far end could not be answered. That is the spike's defect wearing a third branch, and
+    // it is the one arm no mutation of the loop body can reach.
+    if previous_m.is_nan() {
+        moisture = f64::NAN;
+    }
+    let mut remaining = budget;
+    while remaining > 0 {
+        remaining -= 1;
+        let height_m = land_height_m(remaining);
+        if height_m > 0.0 {
+            let lift_m = height_m - previous_m;
+            // NO NaN GUARD HERE, AND THAT IS MEASURED RATHER THAN ASSUMED. The obvious
+            // reading of the spike's defect is that this line needs one: `lift_m > 0.0` is
+            // false for a NaN, so an unanswerable step would leave the accumulator
+            // untouched. **One was written here, and mutation M1 deleted it with the whole
+            // 682-test suite still green.** It was dead, and the proof is structural rather
+            // than empirical: `lift_m` can only be NaN if `height_m` or `previous_m` is, and
+            // `previous_m` is last iteration's `height_m`. A NaN `height_m` fails
+            // `height_m > 0.0` and lands in the water arm below, whose first branch poisons
+            // the accumulator -- so by the time a NaN can reach this subtraction, `moisture`
+            // is already NaN and the multiply carries it regardless. The two guards that ARE
+            // here (the water arm, and the seed before the loop) are each proven red on
+            // their own by M2 and M3. **Dead code looks like a feature**, so this is a
+            // comment and not a branch.
+            if lift_m > 0.0 {
+                moisture *= m::exp(-lift_m / params.lift_scale_m);
+            }
+            moisture *= m::exp(-params.step_m / params.fetch_scale_m);
+        } else if height_m.is_nan() {
+            // Open water is `height_m <= 0.0`, and a NaN fails that comparison as surely as
+            // it fails the land one. Without this arm a NaN elevation would be recharged
+            // towards saturation and come back as marine air -- the spike's defect wearing
+            // the other branch.
+            moisture = f64::NAN;
+        } else {
+            moisture = 1.0 - (1.0 - moisture) * m::exp(-params.step_m / params.recharge_scale_m);
+        }
+        previous_m = height_m;
+    }
+    moisture
 }
 
 #[cfg(test)]
@@ -387,5 +882,481 @@ mod tests {
             }
             assert_ne!(probe(&params).to_bits(), base.to_bits(), "field {field} was not read");
         }
+    }
+
+    // =======================================================================================
+    // MOISTURE -- Task 2. Everything below marches against a SYNTHETIC ground, so the
+    // arithmetic is judged on terrain the test states rather than on terrain a world
+    // happens to have. `surface.rs` carries the tests that need a real world.
+    // =======================================================================================
+
+    use crate::sphere::EARTH_RADIUS_M;
+
+    /// The equator's band is easterly, so upwind is +x on the local chart and a test can
+    /// write its terrain as "height at this many metres upwind" and read left to right.
+    const EASTERLY_LAT: f64 = 0.0;
+    /// A westerly band: upwind is -x, so the *same* terrain function shadows nothing.
+    const WESTERLY_LAT: f64 = 45.0;
+
+    fn frame_at(latitude_deg: f64) -> TangentFrame {
+        TangentFrame::at_latlon(latitude_deg, 0.0, EARTH_RADIUS_M)
+    }
+
+    /// Turns a "height at this local x" function into the sampler `moisture_index` wants,
+    /// by asking the frame where the probe fell. The round trip is exact to about a
+    /// micrometre (`tangent.rs::the_round_trip_returns_where_it_started`), which is eleven
+    /// orders below the 20 km step.
+    fn ground(frame: &TangentFrame, height_of_x: impl Fn(f64) -> f64 + 'static)
+        -> impl Fn(&SpherePoint) -> f64
+    {
+        let frame = *frame;
+        move |point: &SpherePoint| {
+            let (x_m, _y_m) = frame.sphere_to_local(point);
+            height_of_x(x_m)
+        }
+    }
+
+    /// A coast with a range on it: open water beyond `sea_from_m` upwind, a ridge of
+    /// `crest_m` between `ridge_from_m` and `sea_from_m`, and low land in from there.
+    fn coast_with_a_ridge(sea_from_m: f64, ridge_from_m: f64, crest_m: f64)
+        -> impl Fn(f64) -> f64 + Copy
+    {
+        move |x_m: f64| {
+            if x_m >= sea_from_m {
+                -3_000.0
+            } else if x_m >= ridge_from_m {
+                crest_m
+            } else {
+                1.0
+            }
+        }
+    }
+
+    /// A far continent, then a sea, then a coastal range, then low land to the query point.
+    ///
+    /// **This is the terrain the parameter tests need and the simple coast is not.** On a
+    /// coast whose water runs all the way to the far end of the march, the air starts
+    /// saturated and stays saturated until landfall, so `recharge_scale_m` never has a gap
+    /// to close and a shorter budget that still reaches the same water gives the same
+    /// answer -- both parameters read as unread. Two of the tests below were written against
+    /// that terrain, failed, and are the reason this fixture exists: **a fixture that cannot
+    /// exercise a parameter makes the parameter look dead.**
+    fn a_continent_a_sea_and_a_range() -> impl Fn(f64) -> f64 + Copy {
+        |x_m: f64| {
+            if x_m >= 1_000_000.0 {
+                1.0
+            } else if x_m >= 300_000.0 {
+                -3_000.0
+            } else if x_m >= 200_000.0 {
+                3_000.0
+            } else {
+                1.0
+            }
+        }
+    }
+
+    /// The three cells, at their edges and inside them, in both hemispheres.
+    ///
+    /// The edges are half-open the way the constants read: 30 degrees is already the
+    /// westerlies and 60 is already the polar easterlies. Pinning the *boundary* samples is
+    /// the point -- an off-by-one in a band table is invisible at the band centres.
+    #[test]
+    fn the_wind_bands_are_earths_three_cells() {
+        for sign in [1.0f64, -1.0] {
+            assert_eq!(upwind_east(sign * 0.0), 1.0, "the equator is in the trades");
+            assert_eq!(upwind_east(sign * 29.999), 1.0, "just inside the trades");
+            assert_eq!(upwind_east(sign * 30.0), -1.0, "30 deg is already westerly");
+            assert_eq!(upwind_east(sign * 45.0), -1.0, "mid-latitudes are westerly");
+            assert_eq!(upwind_east(sign * 59.999), -1.0, "just inside the westerlies");
+            assert_eq!(upwind_east(sign * 60.0), 1.0, "60 deg is already polar easterly");
+            assert_eq!(upwind_east(sign * 90.0), 1.0, "the pole is polar easterly");
+        }
+        // Even in latitude, so the two hemispheres get mirror-image winds rather than the
+        // same one -- which is what `abs` buys and what its removal would cost.
+        assert_eq!(upwind_east(-45.0).to_bits(), upwind_east(45.0).to_bits());
+    }
+
+    /// THE POINT OF THE WHOLE TASK. A range between the query point and the sea leaves the
+    /// lee dry, and removing the range leaves it wet, on identical terrain otherwise.
+    #[test]
+    fn a_ridge_casts_a_rain_shadow_and_flat_ground_does_not() {
+        let frame = frame_at(EASTERLY_LAT);
+        let params = MoistureParams::canonical();
+        let shadowed = moisture_index(EASTERLY_LAT, &frame, &params,
+            &ground(&frame, coast_with_a_ridge(600_000.0, 500_000.0, 3_000.0)));
+        let open = moisture_index(EASTERLY_LAT, &frame, &params,
+            &ground(&frame, coast_with_a_ridge(600_000.0, 500_000.0, 1.0)));
+        assert!(shadowed < 0.10, "the lee of a 3,000 m range read {shadowed}");
+        assert!(open > 0.60, "the same coast without the range read {open}");
+        // And the gap is a factor, not a rounding difference: the whole claim of the slice
+        // is that a mountain makes a desert, so the ratio is pinned rather than the order.
+        assert!(open / shadowed > 5.0, "the range only cost a factor of {}", open / shadowed);
+    }
+
+    /// The band steers the march, so the SAME terrain shadows the equator and not the
+    /// mid-latitudes. Without this, a march that ignored `upwind_east` and always walked
+    /// `+x` would pass every other test in this file.
+    #[test]
+    fn the_wind_band_decides_which_side_of_a_range_is_dry() {
+        let params = MoistureParams::canonical();
+        let terrain = coast_with_a_ridge(600_000.0, 500_000.0, 3_000.0);
+        let easterly = frame_at(EASTERLY_LAT);
+        let lee = moisture_index(EASTERLY_LAT, &easterly, &params, &ground(&easterly, terrain));
+        // At 45 degrees the air comes from the west, so the march walks -x, where this
+        // terrain function is low land for ever -- no range, and no sea either.
+        let westerly = frame_at(WESTERLY_LAT);
+        let windward = moisture_index(WESTERLY_LAT, &westerly, &params,
+            &ground(&westerly, coast_with_a_ridge(600_000.0, 500_000.0, 3_000.0)));
+        assert!(lee < 0.10, "the easterly band's lee read {lee}");
+        assert!(windward > lee * 3.0, "the westerly band saw the range anyway: {windward}");
+    }
+
+    /// Recharge over water erases history, so a range 2,000 km out to sea shadows far less
+    /// than the same range at the coast. This is the test that the accumulator runs
+    /// **downwind**: a march that summed the lifts without ordering them against the water
+    /// in between could not tell these two apart.
+    #[test]
+    fn a_distant_range_across_water_shadows_less_than_a_near_one() {
+        let frame = frame_at(EASTERLY_LAT);
+        let params = MoistureParams::canonical();
+        // Near: the range is the coast itself.
+        let near = moisture_index(EASTERLY_LAT, &frame, &params,
+            &ground(&frame, coast_with_a_ridge(200_000.0, 100_000.0, 3_000.0)));
+        // Far: an identical range, then 1,900 km of open water, then the query point.
+        let far = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, |x_m: f64| {
+            if x_m >= 2_100_000.0 {
+                -3_000.0
+            } else if x_m >= 2_000_000.0 {
+                3_000.0
+            } else {
+                -3_000.0
+            }
+        }));
+        assert!(far > 0.95, "an island range 2,000 km upwind still cost {}", 1.0 - far);
+        assert!(near < 0.30, "the same range at the coast read {near}");
+    }
+
+    /// The fetch term alone, checked against its own closed form. Flat land all the way out
+    /// means no lift and no water, so the march reduces to `exp(-span / fetch_scale)` and
+    /// the accumulated product must equal it.
+    #[test]
+    fn a_flat_continent_dries_at_the_fetch_scale() {
+        let frame = frame_at(EASTERLY_LAT);
+        let params = MoistureParams::canonical();
+        let measured = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, |_x| 1.0));
+        let span_m = params.step_m * f64::from(params.budget.samples());
+        let expected = m::exp(-span_m / params.fetch_scale_m);
+        assert!((measured - expected).abs() < 1e-12, "{measured} against {expected}");
+        // 3,200 km of the canonical fetch scale is a fifth of saturation left, which is what
+        // makes a continental interior a different place from its coast.
+        assert!(measured > 0.19 && measured < 0.21, "a 3,200 km flat interior read {measured}");
+    }
+
+    /// Open water is saturated, exactly, not nearly.
+    #[test]
+    fn open_ocean_stays_saturated_bit_for_bit() {
+        let frame = frame_at(EASTERLY_LAT);
+        let answer = moisture_index(EASTERLY_LAT, &frame, &MoistureParams::canonical(),
+            &ground(&frame, |_x| -4_000.0));
+        assert_eq!(answer.to_bits(), 1.0f64.to_bits(), "open ocean read {answer}");
+        // The datum itself is water, not land: `elevation_m == 0.0` is the shoreline and
+        // must take the recharge arm, not the fetch one.
+        let at_datum = moisture_index(EASTERLY_LAT, &frame, &MoistureParams::canonical(),
+            &ground(&frame, |_x| 0.0));
+        assert_eq!(at_datum.to_bits(), 1.0f64.to_bits(), "the datum read {at_datum}");
+    }
+
+    /// The three rain shadows `LIFT_SCALE_M` was fitted to, reproduced as ratios.
+    ///
+    /// **Population:** Sierra Nevada / Great Basin (~2,500 m crest, lee about 0.20 of
+    /// windward), Southern Alps / Canterbury (~2,000 m, ~0.06), Andes / Atacama (~4,000 m,
+    /// ~0.01). **Method:** the shed factor `exp(-crest / LIFT_SCALE_M)` this march applies
+    /// to a single climb, compared against the observed ratio. **Host:** arithmetic, so
+    /// any.
+    ///
+    /// The three landmarks disagree with each other by a factor of 2.2 -- 1,553 / 712 / 868
+    /// metres of implied scale -- so the constant is their geometric mean and the assertion
+    /// is a factor band rather than a percentage. Naming the disagreement is the point: a
+    /// tighter assertion here would be a tighter fit to three numbers that do not agree.
+    #[test]
+    fn a_thousand_metres_of_lift_sheds_the_fitted_fraction() {
+        let landmarks = [(2_500.0f64, 0.20f64), (2_000.0, 0.06), (4_000.0, 0.01)];
+        let mut worst = 1.0f64;
+        for (crest_m, observed) in landmarks {
+            let modelled = m::exp(-crest_m / LIFT_SCALE_M);
+            let factor = if modelled > observed { modelled / observed } else { observed / modelled };
+            assert!(factor < 2.5, "a {crest_m} m crest modelled {modelled} against {observed}");
+            if factor > worst {
+                worst = factor;
+            }
+        }
+        // Pinned so the fit cannot silently loosen, and so the honest number is on record:
+        // the worst landmark is out by a factor of 2.4, in a quantity whose three
+        // observations imply scales that differ by 2.2 among themselves.
+        assert!(worst > 2.3 && worst < 2.5, "worst landmark factor was {worst}");
+    }
+
+    /// The march produces an index, and an index that left `[0, 1]` would break every band
+    /// Task 3 cuts out of it. Checked on ground designed to break it: a sawtooth of
+    /// eight-kilometre peaks alternating with trenches, at a step that lands between them.
+    #[test]
+    fn moisture_stays_inside_the_unit_interval_on_hostile_ground() {
+        let frame = frame_at(EASTERLY_LAT);
+        let params = MoistureParams::canonical();
+        let answer = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, |x_m: f64| {
+            // Alternates every step, so every land sample is a fresh 8,000 m climb.
+            let bucket = m::floor(x_m / 20_000.0);
+            if (bucket / 2.0) == m::floor(bucket / 2.0) { 8_000.0 } else { -6_000.0 }
+        }));
+        assert!(answer >= 0.0 && answer <= 1.0, "a sawtooth planet read {answer}");
+        // And it is not zero by underflow: it must be a real number in the interval, which
+        // is what says the assertion above is discriminating rather than vacuous.
+        assert!(answer.is_finite(), "the sawtooth read {answer}");
+    }
+
+    /// THE SPIKE'S OWN DEFECT, PINNED. Its report: *"A `NaN` step silently returns full
+    /// moisture rather than `NaN`. `lift_m` is `NaN`, `if lift_m > 0.0` is false, and the
+    /// accumulator is never touched."*
+    ///
+    /// Three entrants, because a guard proved on one is a guard proved on the arithmetic
+    /// and not on the reach: a NaN in the middle of a land path, a NaN over what would
+    /// otherwise be water, and a NaN at the far upwind seed of an all-water path -- which is
+    /// the one arm the loop body cannot see, because the recharge arm never reads the
+    /// previous height.
+    #[test]
+    fn a_nan_elevation_is_not_answered_with_marine_air() {
+        let frame = frame_at(EASTERLY_LAT);
+        let params = MoistureParams::canonical();
+
+        // 1. Mid-path, over land.
+        let mid_land = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, |x_m: f64| {
+            if x_m > 1_000_000.0 && x_m < 1_100_000.0 { f64::NAN } else { 1.0 }
+        }));
+        assert!(mid_land.is_nan(), "a NaN over land read {mid_land}");
+
+        // 2. Mid-path, over water -- the branch where a NaN fails the `> 0.0` test and
+        // would otherwise be recharged towards saturation.
+        let mid_water = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, |x_m: f64| {
+            if x_m > 1_000_000.0 && x_m < 1_100_000.0 { f64::NAN } else { -4_000.0 }
+        }));
+        assert!(mid_water.is_nan(), "a NaN over water read {mid_water}");
+
+        // 3. The seed alone, on an otherwise all-water path. Nothing in the loop body reads
+        // it, so only the guard before the loop can catch this.
+        let span_m = params.step_m * f64::from(params.budget.samples());
+        let seed_only = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, move |x_m: f64| {
+            if x_m > span_m - 1_000.0 { f64::NAN } else { -4_000.0 }
+        }));
+        assert!(seed_only.is_nan(), "a NaN at the far end read {seed_only}");
+
+        // The blindness itself, asserted rather than described: the value the unguarded
+        // form returns is 1.0 -- fully saturated marine air, the most ordinary answer this
+        // function has. That is what would have made it invisible.
+        let plausible = moisture_index(EASTERLY_LAT, &frame, &params,
+            &ground(&frame, |_x| -4_000.0));
+        assert_eq!(plausible.to_bits(), 1.0f64.to_bits(),
+            "the swallowed value is meant to be exactly saturated air");
+    }
+
+    /// A march of no length loses nothing, and a march of no steps loses nothing, and both
+    /// are exactly saturated rather than approximately so.
+    ///
+    /// These are the identity elements rather than errors -- a path of zero length cannot
+    /// rain -- and they are pinned so that a future edit cannot make an empty answer mean
+    /// "the loop did not run".
+    #[test]
+    fn a_march_of_no_length_and_a_march_of_no_steps_both_stay_saturated() {
+        let frame = frame_at(EASTERLY_LAT);
+        let dry_land = ground(&frame, |_x| 4_000.0);
+
+        let mut still = MoistureParams::canonical();
+        still.step_m = 0.0;
+        assert_eq!(moisture_index(EASTERLY_LAT, &frame, &still, &dry_land).to_bits(),
+            1.0f64.to_bits());
+
+        let mut none = MoistureParams::canonical();
+        none.budget = MarchBudget::new(0).expect("zero is an admissible budget");
+        assert_eq!(moisture_index(EASTERLY_LAT, &frame, &none, &dry_land).to_bits(),
+            1.0f64.to_bits());
+    }
+
+    /// THE LOOP BOUND. `MarchBudget` is the only way to set the march's length and it
+    /// cannot be built above the ceiling, so no caller -- Rust or, once Task 4 adds one, C
+    /// -- can reach the ~2,600-second hang the spike extrapolated.
+    #[test]
+    fn the_march_length_cannot_be_built_above_the_ceiling() {
+        assert!(MarchBudget::new(MAX_MARCH_SAMPLES).is_some(), "the ceiling itself is admitted");
+        assert!(MarchBudget::new(MAX_MARCH_SAMPLES + 1).is_none(), "one past the ceiling");
+        assert!(MarchBudget::new(u16::MAX).is_none(), "the widest a u16 can hold");
+        assert!(MarchBudget::new(0).is_some(), "zero is the identity, not an error");
+        assert_eq!(MarchBudget::canonical().samples(), MARCH_SAMPLES);
+        // The ceiling is a real bound and not a formality: it is 6.4x the canonical budget,
+        // so it leaves room to experiment and still bounds one call to a fraction of a
+        // millisecond natively.
+        assert!(u32::from(MAX_MARCH_SAMPLES) > 4 * u32::from(MARCH_SAMPLES));
+        assert!(MAX_MARCH_SAMPLES < u16::MAX / 8);
+    }
+
+    /// `canonical()` is the constants, and `None` at the `Surface` level is `canonical()`
+    /// (pinned over a real world in `surface.rs`).
+    #[test]
+    fn canonical_moisture_params_match_the_constants() {
+        let params = MoistureParams::canonical();
+        assert_eq!(params.budget.samples(), MARCH_SAMPLES);
+        assert_eq!(params.step_m.to_bits(), MARCH_STEP_M.to_bits());
+        assert_eq!(params.lift_scale_m.to_bits(), LIFT_SCALE_M.to_bits());
+        assert_eq!(params.fetch_scale_m.to_bits(), FETCH_SCALE_M.to_bits());
+        assert_eq!(params.recharge_scale_m.to_bits(), RECHARGE_SCALE_M.to_bits());
+        // The step is the coarsest detail octave, which is the whole argument for it. If
+        // `detail.rs` ever moves that constant, this says so rather than leaving the
+        // docstring quietly wrong.
+        assert_eq!(MARCH_STEP_M.to_bits(), crate::detail::COARSEST_WAVELENGTH_M.to_bits());
+    }
+
+    /// All five parameters are READ. A bit-identity test between `None` and `canonical()`
+    /// passes just as well when the whole block is ignored -- the `CoastParams` lesson, and
+    /// the reason this test exists separately from that one.
+    #[test]
+    fn every_moisture_parameter_moves_the_answer() {
+        let frame = frame_at(EASTERLY_LAT);
+        let terrain = a_continent_a_sea_and_a_range();
+        let canonical = MoistureParams::canonical();
+        let base = moisture_index(EASTERLY_LAT, &frame, &canonical, &ground(&frame, terrain));
+        for field in 0..5 {
+            let mut params = canonical;
+            match field {
+                0 => params.budget = MarchBudget::new(40).expect("in range"),
+                1 => params.step_m = 30_000.0,
+                2 => params.lift_scale_m = 2_000.0,
+                3 => params.fetch_scale_m = 1_000_000.0,
+                _ => params.recharge_scale_m = 30_000.0,
+            }
+            let moved = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, terrain));
+            assert_ne!(moved.to_bits(), base.to_bits(), "field {field} was not read");
+        }
+    }
+
+    /// THE DOMAIN, AND IT WAS FOUND BY SWEEPING RATHER THAN BY READING.
+    ///
+    /// A cross-product sweep of 37,818 calls -- budget x step x lift scale, step x fetch x
+    /// recharge, and resolution x budget x step, each over a set of probe points including
+    /// both band edges and three non-finite vectors -- returned **536 answers outside
+    /// `[0, 1]`**: infinities, and numbers of order 1e25. Every one came from a *band* of
+    /// admissible-looking arguments and not from a cliff, which is the shape this project
+    /// has now found six times and never once by spot-checking.
+    ///
+    /// Three entrants, each asserted here at the value that produced it:
+    ///
+    /// - a **negative `step_m`**, which turns `exp(-step / fetch)` into a number greater
+    ///   than one, so the fetch term adds moisture at every step;
+    /// - a **zero scale**, which divides by zero -- and `0.0` is *non-negative*, so a guard
+    ///   written `>= 0.0` would have admitted it. That distinction is the guard;
+    /// - a **negative scale**, which flips every exponent and turns rain-out into rain-in.
+    ///
+    /// And the other half, which is what stops this from being a guard that refuses too
+    /// much: an **infinite** scale is admitted, because `exp(-x / inf)` is `1` and means
+    /// "this term never fires", which is a coherent request with an in-range answer.
+    #[test]
+    fn the_march_refuses_the_domain_it_cannot_answer() {
+        let frame = frame_at(EASTERLY_LAT);
+        let terrain = a_continent_a_sea_and_a_range();
+        let probe = |params: &MoistureParams| {
+            moisture_index(EASTERLY_LAT, &frame, params, &ground(&frame, terrain))
+        };
+
+        // First, that the value being discriminated against is real: the canonical answer
+        // on this terrain is an ordinary number strictly inside the interval. Without this
+        // line every assertion below could be asserting against nothing.
+        let canonical = probe(&MoistureParams::canonical());
+        assert!(canonical > 0.0 && canonical < 1.0, "the canonical answer was {canonical}");
+
+        let mut refused = 0usize;
+        for (label, params) in [
+            ("negative step", MoistureParams { step_m: -20_000.0, ..MoistureParams::canonical() }),
+            ("zero lift scale", MoistureParams { lift_scale_m: 0.0, ..MoistureParams::canonical() }),
+            ("negative zero lift scale", MoistureParams { lift_scale_m: -0.0, ..MoistureParams::canonical() }),
+            ("negative lift scale", MoistureParams { lift_scale_m: -1_000.0, ..MoistureParams::canonical() }),
+            ("zero fetch scale", MoistureParams { fetch_scale_m: 0.0, ..MoistureParams::canonical() }),
+            ("negative fetch scale", MoistureParams { fetch_scale_m: -2e6, ..MoistureParams::canonical() }),
+            ("zero recharge scale", MoistureParams { recharge_scale_m: 0.0, ..MoistureParams::canonical() }),
+            ("negative recharge scale", MoistureParams { recharge_scale_m: -3e5, ..MoistureParams::canonical() }),
+            // A NaN in any of the four fields is refused by the SAME guard, because every
+            // comparison is negated and a NaN fails `>=` and `>` alike. A separate test
+            // asserted this through the arithmetic instead and was deleted when the guard
+            // landed: with the guard in place no mutation could turn it red, because a NaN
+            // parameter reached NaN by two independent routes and breaking either left the
+            // other. **An assertion two mechanisms both satisfy is not load-bearing**, and
+            // this project has now found fourteen of those.
+            ("nan step", MoistureParams { step_m: f64::NAN, ..MoistureParams::canonical() }),
+            ("nan lift scale", MoistureParams { lift_scale_m: f64::NAN, ..MoistureParams::canonical() }),
+            ("nan fetch scale", MoistureParams { fetch_scale_m: f64::NAN, ..MoistureParams::canonical() }),
+            ("nan recharge scale", MoistureParams { recharge_scale_m: f64::NAN, ..MoistureParams::canonical() }),
+        ] {
+            let answer = probe(&params);
+            assert!(answer.is_nan(), "{label} was answered with {answer}");
+            refused += 1;
+        }
+        assert_eq!(refused, 12, "the loop refused {refused} configurations");
+
+        // `-0.0` is a different bit pattern from `0.0` and the two ends of the guard treat
+        // it differently ON PURPOSE, which is asserted rather than left to be discovered:
+        // `-0.0 >= 0.0` is TRUE, so a negative-zero STEP is admitted and is the identity
+        // march; `-0.0 > 0.0` is FALSE, so a negative-zero SCALE is refused with the other
+        // zero. This test was written asserting the opposite for the step and went red
+        // saying so, which is the line that earned this paragraph.
+        let negative_zero_step = probe(&MoistureParams { step_m: -0.0, ..MoistureParams::canonical() });
+        assert_eq!(negative_zero_step.to_bits(), 1.0f64.to_bits(),
+            "a negative-zero step is a march of no length, not an error");
+
+        // And the admitted half. An infinite scale means "this term never fires", which is
+        // answerable and in range -- a guard that refused it would be refusing a question
+        // rather than an error.
+        for params in [
+            MoistureParams { lift_scale_m: f64::INFINITY, ..MoistureParams::canonical() },
+            MoistureParams { fetch_scale_m: f64::INFINITY, ..MoistureParams::canonical() },
+            MoistureParams { recharge_scale_m: f64::INFINITY, ..MoistureParams::canonical() },
+        ] {
+            let answer = probe(&params);
+            assert!(answer >= 0.0 && answer <= 1.0, "an infinite scale was answered with {answer}");
+        }
+        // An infinite fetch scale means no continental drying at all, so the same terrain
+        // must come back WETTER than canonical -- which says the admitted arm is reaching
+        // the arithmetic rather than merely not panicking.
+        let no_drying = probe(&MoistureParams { fetch_scale_m: f64::INFINITY, ..MoistureParams::canonical() });
+        assert!(no_drying > canonical, "an infinite fetch scale read {no_drying} against {canonical}");
+    }
+
+    /// `RECHARGE_SCALE_M`'s docstring claims the answer barely depends on it. That is a
+    /// claim about this model and it is measured here rather than asserted, because an
+    /// insensitive parameter is one nobody should spend effort fitting -- and saying so
+    /// without a number is how a guess becomes a constant.
+    ///
+    /// **Population:** the coast-with-a-range terrain above, at the canonical march.
+    /// **Method:** the recharge scale moved over a factor of ten, 100 km to 1,000 km,
+    /// against the 300 km constant. **Host:** arithmetic.
+    #[test]
+    fn the_recharge_scale_is_not_a_sensitive_parameter() {
+        let frame = frame_at(EASTERLY_LAT);
+        let terrain = a_continent_a_sea_and_a_range();
+        let base = moisture_index(EASTERLY_LAT, &frame, &MoistureParams::canonical(),
+            &ground(&frame, terrain));
+        let mut worst = 0.0f64;
+        for scale_m in [100_000.0f64, 1_000_000.0] {
+            let mut params = MoistureParams::canonical();
+            params.recharge_scale_m = scale_m;
+            let moved = moisture_index(EASTERLY_LAT, &frame, &params, &ground(&frame, terrain));
+            let shift = (moved - base).abs();
+            if shift > worst {
+                worst = shift;
+            }
+        }
+        // MEASURED: a factor of ten in this constant moves the index by 0.0113 on the
+        // terrain built to expose it -- about a **twentieth of a band**, against the roughly
+        // 0.2-wide bands Task 3 will cut. The lift scale, for contrast, moves the same
+        // terrain by more than a whole band for a factor of two, which is why that one is
+        // fitted to three landmarks and this one to two. The band is 0.015 rather than
+        // 0.0113 so the pin is a ceiling and not a transcription of one run.
+        assert!(worst < 0.015, "a factor of ten in the recharge scale moved it {worst}");
+        assert!(worst > 0.0, "the recharge scale did not reach the answer at all");
     }
 }
