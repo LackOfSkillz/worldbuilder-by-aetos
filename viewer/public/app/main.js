@@ -16,7 +16,7 @@ import {
 import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
 import {
-  createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
+  biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
 } from "./relief-provider.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
@@ -200,6 +200,9 @@ async function boot() {
       worldHandle: world,
       radiusM: spec.radiusM,
       tileSize: number("reliefSize", RELIEF_TILE_SIZE),
+      // `undefined` means "calibrate this world's own band edges"; `null` is the height
+      // ramp the layer drew before the land-colour work. See `biomeColourEnabled`.
+      biome: biomeColourEnabled(params) ? undefined : null,
       // Defaults to the *terrain's* cap, so imagery is never the thing that stops refining
       // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
       maximumLevel: number("reliefMaxLevel", maxLevel),

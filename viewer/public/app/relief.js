@@ -127,9 +127,22 @@
 //   contour ring and read as a bug, which is what the brief asked to avoid.
 //
 // Not modelled, and visible: no continentality or precipitation in the snowline (a desert
-// mountain and a maritime one get the same line), no sea ice, no vegetation zonation beyond
-// altitude, no clouds.
+// mountain and a maritime one get the same line), no sea ice, no clouds.
+//
+// # Land colour now comes from `biome.js`
+//
+// `LAND_BANDS` below is a six-stop height ramp and **both of its ends are mid-tone**, so the
+// whole of land sat inside a narrow luminance band and the picture read as a diagram. It is
+// still here and still reachable -- pass no `biome` and this file behaves exactly as it did
+// -- but the default path now takes its land base colour from `biome.js`, which classifies
+// landform x temperature x moisture against per-world quantiles and colours the result from
+// reflectances rather than from a ramp. That is where the dynamic range comes from.
+//
+// **The rock and snow blends were not moved and were not duplicated.** They act on whatever
+// base colour arrives, biome or ramp; `biome.js` deliberately contains no second elevation
+// system, only a `montane` band feeding the base the blends then modify.
 
+import { biomeColor } from "./biome.js";
 import { metresPerDegree } from "./terrain.js";
 
 /// The cool-to-warm shading axis, applied as a multiplier on top of the shade fraction.
@@ -322,8 +335,17 @@ export function baseColor(heightM) {
 /// steep enough to read as bare rock is a face snow slides off. Together those two turn what
 /// would be a contour ring into a mottled cap that follows the terrain, which is what a
 /// photograph of a snowy range looks like.
-export function slopeColor(heightM, slopeDeg, latitudeDeg = 0) {
-  const color = baseColor(heightM);
+export function slopeColor(
+  heightM, slopeDeg, latitudeDeg = 0, longitudeDeg = 0, calibration = null,
+) {
+  // **The land base colour is the only thing the biome layer replaces.** Water keeps
+  // `OCEAN_BANDS` (no ocean retune in this task), and the rock and snow blends below act on
+  // whatever the base is -- they are not duplicated over there. With `calibration` null this
+  // is byte-for-byte the pre-biome function, which is what keeps the height-only baseline
+  // (and every test written against it) meaningful rather than quietly rewritten.
+  const color = heightM > 0 && calibration
+    ? biomeColor({ heightM, latitudeDeg, longitudeDeg, calibration })
+    : baseColor(heightM);
   if (heightM <= 0) return color;
   const rockT = smoothstep(ROCK_SLOPE_LOW_DEG, ROCK_SLOPE_HIGH_DEG, slopeDeg);
   const withRock = rockT > 0 ? lerpColor(color, ROCK_COLOR, rockT) : color;
@@ -391,6 +413,11 @@ export function makeImageData(data, size) {
 export function reliefTile({
   rectangle, level = null, size = 256, engine, worldHandle, radiusM,
   resolutionM = null, sun = DEFAULT_SUN, ambient = AMBIENT, zFactor = Z_FACTOR,
+  /// The per-world band edges from `biome.js::calibrate`, or `null` for the height-only
+  /// ramp. A plain structured-cloneable object on purpose: `relief-provider.js` computes it
+  /// once on the main thread and posts it with every tile request, rather than each worker
+  /// spending its own 4,000 engine calls arriving at the same four numbers.
+  biome = null,
 }) {
   if (!engine || typeof engine.fillTileF32 !== "function") {
     throw new Error("reliefTile: engine.fillTileF32 is required");
@@ -404,7 +431,7 @@ export function reliefTile({
   const { grid, dLatStep, dLonStep, rowStepM, metresPerLatDeg } = request;
   const heights = engine.fillTileF32(request);
 
-  const { northDeg } = rectangle;
+  const { northDeg, westDeg } = rectangle;
   const data = new Uint8ClampedArray(size * size * 4);
 
   for (let row = 0; row < size; row += 1) {
@@ -451,7 +478,8 @@ export function reliefTile({
       const slopeRad = Math.atan(Math.sqrt(exEast * exEast + exNorth * exNorth));
       const slopeDeg = (slopeRad * 180) / Math.PI;
 
-      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg);
+      const lonDeg = westDeg + dLonStep * col;
+      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg, lonDeg, biome);
 
       // **Shade is a COLOUR, not a brightness**, and this is the largest single change
       // between a relief map and a photograph.

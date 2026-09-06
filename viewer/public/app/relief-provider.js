@@ -60,6 +60,7 @@
 // fallback for a host without module workers and the A/B baseline every figure in the Task
 // 4 report is quoted against -- same page, same world, same tiles, one flag apart.
 
+import { calibrate } from "./biome.js";
 import { reliefTile, DEFAULT_SUN, makeImageData } from "./relief.js";
 import { MAX_LEVEL, tileRectangleDegrees } from "./terrain.js";
 
@@ -77,6 +78,17 @@ export const RELIEF_TILE_SIZE = 256;
 /// read by the code that sets it is exactly the shape that drifts.
 export function reliefLayerEnabled(params) {
   return params.get("relief") !== "0";
+}
+
+/// **`?biome=0` puts land back on the height ramp**, and nothing else does.
+///
+/// Same shape and same convention as `reliefLayerEnabled` above, for the same reason: one
+/// switch spelling in this file rather than a second one introduced beside it. It exists so
+/// the before/after of the land-colour work is **one build, one world, one camera, one
+/// flag** -- comparing two checkouts would also change the wasm, the tile cost and the
+/// camera's settle time, and none of those are the thing being shown.
+export function biomeColourEnabled(params) {
+  return params.get("biome") !== "0";
 }
 
 /// `ImageData` -> `HTMLCanvasElement`, which is one of the four types Cesium's
@@ -122,6 +134,14 @@ export function createReliefImageryProvider({
   tilingScheme = new Cesium.GeographicTilingScheme(),
   credit = "worldbuilder engine relief",
   sun = DEFAULT_SUN,
+  /// The land-colour band edges. `undefined` (the default) means **calibrate once, here**;
+  /// `null` means the height-only ramp, which is what a before/after measurement asks for.
+  ///
+  /// It is computed on the main thread and shipped in every tile request rather than
+  /// recomputed per worker: it is 4,000 `wb_elevation_m` calls for four numbers, the four
+  /// numbers are identical in every worker, and a worker that calibrated its own would be a
+  /// second place they could disagree.
+  biome,
   toImage = imageDataToCanvas,
   onTile = null,
   /// The worker pool from `pool.js`, or `null` for the synchronous main-thread path.
@@ -157,6 +177,12 @@ export function createReliefImageryProvider({
     workerMs: 0,
     wallMs: 0,
   };
+
+  /// The per-world band edges, calibrated once at construction unless the caller supplied
+  /// its own (or `null` to turn the layer's biome colouring off).
+  const calibration = biome === undefined
+    ? calibrate({ engine, worldHandle, radiusM })
+    : biome;
 
   /// One place that accumulates the main-thread cost, so both paths cannot disagree about
   /// what `totalMs` and `maxMs` mean.
@@ -216,6 +242,7 @@ export function createReliefImageryProvider({
         try {
           imageData = reliefTile({
             rectangle, level, size: tileSize, engine, worldHandle, radiusM, sun,
+            biome: calibration,
           });
         } catch (error) {
           // Cesium's own failure path: reject, and it retries or falls back to the parent
@@ -237,7 +264,7 @@ export function createReliefImageryProvider({
       // an index into a table inside one wasm instance's linear memory and is meaningless
       // in another, and an `Engine` object is not structured-cloneable at all -- posting
       // one throws `DataCloneError` per tile. The worker supplies both from its own world.
-      const request = { rectangle, level, size: tileSize, radiusM, sun };
+      const request = { rectangle, level, size: tileSize, radiusM, sun, biome: calibration };
       const wallStarted = performance.now();
       return pool.relief(request).then((result) => {
         // The only main-thread work left. `makeImageData` is a view over the transferred
@@ -269,6 +296,9 @@ export function createReliefImageryProvider({
       radiusM,
       tileSize,
       sun,
+      /// The band edges this provider is drawing with, so a check reads them rather than
+      /// recalibrating and hoping it got the same answer.
+      biome: calibration,
       pool,
       stats,
       rectangleDegrees: (x, y, level) => tileRectangleDegrees(tilingScheme, x, y, level),
