@@ -143,3 +143,113 @@ test("relief is NOT memoised -- the decision not to cache rasters, written down"
   assert.equal(cache.key(3, 4, 5), "5/3/4");
   assert.equal(summarise([]).n, 0, "an empty sample reports n, not a fabricated median");
 });
+
+// -------------------------------------------------------------------------------------------
+// THE THIRD CONSUMER: clouds.
+//
+// The pool now carries three jobs, and the reason each keeps its own duration sample is the
+// same reason `reliefMs` was split from `fillMs` one slice ago, only stronger: the three
+// populations are an order of magnitude apart in cost (a heightmap tile is 4,225 engine
+// samples; a relief tile is 66,564 plus 65,536 texels of shading; a cloud tile is 16,384 texels
+// of pure hash noise and NO engine fill at all). A single pooled median would describe none of
+// them, and the whole argument for adding a third consumer to a saturated pool rests on knowing
+// which of the three a millisecond belongs to.
+
+test("cloud() posts type 'cloud', and the other two jobs still post their own", () => {
+  const pool = makePool(1);
+  pool.cloud({ size: 128 });
+  pool.relief({ size: 256 });
+  pool.fill({ width: 65 });
+  assert.deepEqual(
+    pool.workers[0].sent.map((m) => m.type), ["cloud", "relief", "fill"],
+    "the worker matches on message.type; a wrong name falls through to the unknown-type error " +
+    "and the cloud tile is never drawn -- which looks exactly like a planet with no weather",
+  );
+  assert.deepEqual(pool.workers[0].sent[0].request, { size: 128 });
+  const ids = pool.workers[0].sent.map((m) => m.id);
+  assert.equal(new Set(ids).size, 3, "all three jobs share one id counter; a collision settles the wrong promise");
+});
+
+test("a cloud reply resolves with the raster", async () => {
+  const pool = makePool(1);
+  const promise = pool.cloud({ size: 2 });
+  const [id] = pool.workers[0].sent.map((m) => m.id);
+  pool.receive({
+    type: "cloud", id, index: 1, fillMs: 17,
+    data: new Uint8ClampedArray(16), width: 2, height: 2,
+  });
+  const cloud = await promise;
+  assert.equal(cloud.width, 2);
+  assert.equal(cloud.height, 2);
+  assert.equal(cloud.data.length, 16);
+  assert.equal(cloud.fillMs, 17);
+  assert.equal(cloud.worker, 1);
+});
+
+test("all three durations land in their OWN samples", async () => {
+  const pool = makePool(1);
+  const cloudPromise = pool.cloud({ size: 2 });
+  const reliefPromise = pool.relief({ size: 2 });
+  const fillPromise = pool.fill({ width: 2 });
+  const [cloudId, reliefId, fillId] = pool.workers[0].sent.map((m) => m.id);
+  pool.receive({ type: "cloud", id: cloudId, index: 0, fillMs: 17, data: new Uint8ClampedArray(4), width: 1, height: 1 });
+  pool.receive({ type: "relief", id: reliefId, index: 0, fillMs: 190, data: new Uint8ClampedArray(4), width: 1, height: 1 });
+  pool.receive({ type: "tile", id: fillId, index: 0, fillMs: 4, heights: new Float32Array(1) });
+  await Promise.all([cloudPromise, reliefPromise, fillPromise]);
+
+  assert.deepEqual(pool.cloudMs, [17]);
+  assert.deepEqual(pool.reliefMs, [190]);
+  assert.deepEqual(pool.fillMs, [4]);
+  const stats = pool.stats();
+  assert.equal(stats.clouds, 1);
+  assert.equal(stats.reliefs, 1);
+  assert.equal(stats.fills, 1);
+  assert.equal(stats.cloudMs.median, 17);
+  assert.equal(stats.reliefMs.median, 190);
+  assert.equal(stats.fillMs.median, 4);
+});
+
+test("a mislabelled reply cannot choose its own bucket", async () => {
+  // The dispatcher decides which sample a duration belongs in, from what it ASKED for, not from
+  // what came back. So a worker that answered a cloud request with `type: "relief"` still has
+  // its duration recorded against the cloud sample -- which is what stops one job's statistics
+  // being polluted by another's mislabelling, and it is the property `pool.js`'s own comment
+  // claims.
+  const pool = makePool(1);
+  const promise = pool.cloud({ size: 2 });
+  const [id] = pool.workers[0].sent.map((m) => m.id);
+  pool.receive({ type: "relief", id, index: 0, fillMs: 190, data: new Uint8ClampedArray(4), width: 1, height: 1 });
+  await promise;
+  assert.deepEqual(pool.cloudMs, [190], "the duration belongs to the job that was dispatched");
+  assert.deepEqual(pool.reliefMs, []);
+});
+
+test("cloud work is spread by least-outstanding, like the other two", () => {
+  const pool = makePool(4);
+  for (let i = 0; i < 4; i += 1) pool.cloud({ size: 128 });
+  assert.deepEqual(
+    pool.dispatched, [1, 1, 1, 1],
+    "four cloud tiles must reach four workers; serialising them onto one would put the third " +
+    "consumer's whole cost on a single core",
+  );
+});
+
+test("the three jobs share ONE queue, so a cloud burst queues behind relief rather than beside it", () => {
+  // One pool and not three, and this is what that decision means in practice: the contention is
+  // engine instances per core, and dispatching clouds on their own rotation would let eight
+  // cloud tiles and eight relief tiles land on the same eight cores at once.
+  const pool = makePool(2);
+  pool.relief({ size: 256 });
+  pool.relief({ size: 256 });
+  pool.cloud({ size: 128 });
+  pool.cloud({ size: 128 });
+  assert.deepEqual(pool.dispatched, [2, 2]);
+  assert.deepEqual(pool.outstanding, [2, 2]);
+});
+
+test("clouds are NOT memoised either", () => {
+  const pool = makePool(1);
+  pool.cloud({ size: 128, level: 2 });
+  pool.cloud({ size: 128, level: 2 });
+  assert.equal(pool.workers[0].sent.length, 2);
+});

@@ -19,6 +19,10 @@ import { coastFromParams } from "./coast-params.js";
 import {
   biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
 } from "./relief-provider.js";
+import {
+  cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider,
+} from "./cloud-provider.js";
+import { CLOUD_MAX_LEVEL, CLOUD_TILE_SIZE } from "./clouds.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
 import { createAvailability, FEATURE_CEILING } from "./availability.js";
@@ -235,6 +239,79 @@ async function boot() {
     viewer.imageryLayers.addImageryProvider(reliefProvider);
   }
 
+  // The cloud layer -- **difference #1 of 12 in the gap analysis**, and the element a viewer's
+  // eye reads first as "photograph of a planet" rather than "diagram of a planet".
+  //
+  // # It is added AFTER the relief layer, and the order is the composite
+  //
+  // `ImageryLayerCollection` composites in index order, so the last layer added is drawn over
+  // the ones before it. Clouds must be last: they are a translucent deck and the ground is what
+  // shows through them. Adding them first would have Cesium blend the (opaque) relief layer over
+  // them and the whole layer would silently do nothing -- the same failure shape as the
+  // `ElevationRamp` material hiding the relief imagery, which is documented a few lines below
+  // and was a real bug here.
+  //
+  // # Altitude and parallax: what was chosen, and what it costs
+  //
+  // An `ImageryLayer` is DRAPED ON THE TERRAIN. There is no altitude option on it and no
+  // parallax: a cloud texel is painted at the ground point beneath it. The alternative -- a
+  // second, slightly larger textured ellipsoid primitive floating above the globe -- is the only
+  // thing in this stack that would give real parallax, and it would need its own tiling, its own
+  // level-of-detail and its own request path, none of which the worker pool and provider
+  // machinery this task was told to reuse would serve.
+  //
+  // **What that costs, computed rather than waved at:** for a deck at altitude `h` on a planet
+  // of radius `R`, the ground point directly under a cloud and the ground point the cloud
+  // appears over differ by an arc that is zero at the sub-camera point and grows towards the
+  // limb. At the owner's radius of 4,500 km and a 10 km deck, the displacement reaches ~10 km
+  // near the disc centre-to-mid and diverges only in the last few percent of the disc radius,
+  // where the surface is edge-on. At the orbital camera used for this task's screenshots the
+  // disc is ~700 px across, so 10 km is under a pixel over most of the disc. The visible
+  // consequence is at the limb, where a real cloud deck would overhang the silhouette and this
+  // one stops exactly at it. That is the honest limitation of the choice and it is named here
+  // rather than discovered later.
+  //
+  // `?clouds=0` turns the layer off, and it is not constructed at all in that case -- see
+  // `cloudLayerEnabled` for why "constructed but transparent" is not good enough.
+  // # Why `paint` is decided HERE, above the cloud layer rather than below it
+  //
+  // The `ElevationRamp` material composites OVER all imagery (see the block further down: the
+  // material's alpha is 1 everywhere, so it hides every layer beneath it). That is already why
+  // the ramp defaults to off when the relief layer is on. It applies to the cloud layer for
+  // exactly the same reason, and with the ramp painting, a cloud layer would be constructed,
+  // rasterised in the pool, uploaded -- and invisible.
+  //
+  // **Dead code looks like a feature**, and this repository has shipped three colour blends that
+  // were never once selected. So the cloud layer is not built when the ramp would cover it, and
+  // the status line says so rather than leaving an owner to wonder why `?relief=0&clouds=0.4`
+  // shows no weather. The alternative -- changing `paint`'s default so clouds suppress the ramp
+  // too -- was rejected: with `?relief=0` and no ramp there is no imagery at all and the globe is
+  // one flat colour, and it would have moved the `?relief=0` picture that Task 1 recorded digests
+  // for.
+  const paint = params.has("paint") ? params.get("paint") !== "0" : !reliefOn;
+  const cloudCover = cloudCoverFromParams(params);
+  let cloudProvider = null;
+  if (cloudLayerEnabled(params) && !paint) {
+    cloudProvider = createCloudImageryProvider({
+      radiusM: spec.radiusM,
+      // The same seed the world was built from. Weather from a different seed would be a second
+      // planet's, on a layer where nothing about the picture would give it away.
+      seed: spec.seed,
+      cover: cloudCover,
+      tileSize: number("cloudSize", CLOUD_TILE_SIZE),
+      // **Deliberately NOT the terrain's cap.** The relief layer follows `maxLevel` because
+      // colour must not stop refining before geometry does; the cloud field's finest structure is
+      // 41 km and it is already oversampled twelve times over at level 5, so following the
+      // terrain to level 12 would ask the pool for seven levels of tiles carrying no new content.
+      maximumLevel: number("cloudMaxLevel", CLOUD_MAX_LEVEL),
+      credit: "worldbuilder cloud layer",
+      // The same pool the mesh and the relief layer use. One pool and not three: the contention
+      // that matters is engine instances per core.
+      pool,
+    });
+    viewer.imageryLayers.addImageryProvider(cloudProvider);
+  }
+
   // Two scheduling knobs, neither of which changes a generated height.
   //
   // `tileCacheSize` defaults to 100, which was sized for a networked provider fetching a
@@ -317,7 +394,6 @@ async function boot() {
   // forces it either way, and the expression is written so that with `?relief=0` it reduces
   // to the previous `params.get("paint") !== "0"` for all three of paint absent, `paint=0`
   // and `paint=1`: `!reliefOn` is `true`, which is what the absent case evaluated to before.
-  const paint = params.has("paint") ? params.get("paint") !== "0" : !reliefOn;
   if (paint) {
     const material = Cesium.Material.fromType("ElevationRamp");
     // The window, from `panel-fields.js` -- the same object the panel's two sliders take
@@ -379,6 +455,19 @@ async function boot() {
         ? `${reliefProvider.tileWidth}px cap=${reliefProvider.maximumLevel} ${
           pool ? "workers" : "MAIN THREAD"}`
         : "off"} paint=${paint ? "ramp" : "off"} | ` +
+    // The cloud layer, named with the number that decides its look. A screenshot carries this
+    // line as its own caption, and "clouds=on" would say nothing about a layer whose entire
+    // control is one coverage figure -- so the REQUESTED coverage and the threshold the
+    // calibration derived from it are both here, and the reason is stated when it is off.
+    `clouds=${
+      cloudProvider
+        ? `${cloudCover.toFixed(2)} cover thr ${
+          cloudProvider.worldbuilder.clouds.threshold.toFixed(3)} sd ${
+          cloudProvider.worldbuilder.clouds.sd.toFixed(3)} ${
+          cloudProvider.tileWidth}px cap=${cloudProvider.maximumLevel}`
+        : cloudCover <= 0
+          ? "off"
+          : "off (ramp material covers imagery)"} | ` +
     // The cost knob, named where it can be found. `?sse=1` buys one more imagery level at
     // the whole-planet view for ~3x the tile cost -- measured above -- and a cost setting
     // nobody can find is a setting that does not exist.
@@ -392,6 +481,11 @@ async function boot() {
     /// `null` under `?relief=0`. Its `worldbuilder.stats` is the per-tile cost this task
     /// reports and Task 4's worker move is measured against.
     reliefProvider,
+    /// `null` under `?clouds=0` and under any configuration where the ramp material would cover
+    /// it. Its `worldbuilder.clouds` is the calibration the layer is drawing with -- read rather
+    /// than recalibrated, so a check cannot arrive at a different threshold and compare against
+    /// that -- and its `worldbuilder.stats` is the per-tile cost the report quotes.
+    cloudProvider,
     FAULTS,
     /// The engine's own relief presets, read across the boundary at boot. `controls.js`
     /// takes its slider defaults, two of its three travel ends and its preset button from

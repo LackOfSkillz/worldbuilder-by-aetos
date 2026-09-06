@@ -653,6 +653,36 @@ function build() {
     paint();
   }
 
+  // === clouds — these rebuild =============================================================
+  //
+  // **Rebuild-class, not live**, and for the same reason the relief sliders are: the coverage
+  // decides a threshold every rasterised cloud texel is compared against, so moving it means
+  // re-rasterising every tile in the layer. There is no uniform to poke the way the ramp and the
+  // exaggeration have one.
+  //
+  // **The slider's travel IS the coverage**, and it comes from `panel-fields.js`, so this file
+  // holds no cloud number at all — not the default and not either end. The readout says what the
+  // number means, because a bare "0.40" against a label reading "coverage" is a number with no
+  // referent, and the referent here is a measurement: the fraction of the sphere the calibrated
+  // threshold actually puts at or above half opacity.
+  const cloudSection = section(body, "clouds · rebuilds");
+  const cloudCover = row(cloudSection, "coverage", "wb-clouds", "range", travelFor("clouds"));
+  const cloudNote = el("div", "wb-note", "");
+  cloudSection.append(cloudNote);
+  const paintClouds = () => {
+    const c = Number(cloudCover.input.value);
+    cloudCover.out.textContent = c <= 0 ? "off" : `${(c * 100).toFixed(0)}%`;
+    cloudNote.textContent = c <= 0
+      ? "no cloud layer at all — it is not constructed, so the picture is the pre-cloud one byte "
+        + "for byte."
+      : `${(c * 100).toFixed(0)}% of the sphere at or above half opacity, set by inverting the `
+        + "field's own measured distribution rather than by a nominal range. The north-star "
+        + "reference reads about 40%. Banded by latitude: the ITCZ and both storm tracks carry "
+        + "more than this, the subtropics less.";
+  };
+  cloudCover.input.addEventListener("input", paintClouds);
+  paintClouds();
+
   // === appearance — live, no reload =======================================================
 
   const look = section(body, "appearance · live");
@@ -739,6 +769,11 @@ function build() {
     featureCeiling: ceiling.input.value,
     harbour: harbour.checked ? "1" : null,
     fault: fault.value || null,
+    // The cloud coverage. Written like every other range field: `apply` drops it when it still
+    // equals the panel default, so an untouched panel writes no `clouds` parameter at all and
+    // the boot path takes `DEFAULT_CLOUD_COVER` from one place rather than from a query string
+    // that agrees with it.
+    clouds: cloudCover.input.value,
     // Every relief field still at canonical is dropped, so an untouched panel writes no
     // relief parameter at all and the reload takes the `None` path -- Ruling 1, held in the
     // one place a generate can break it.

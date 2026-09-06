@@ -346,6 +346,8 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 ?maxLevel= ?size= ?featureCeiling=             the tiling and the caps
 ?workers= ?cache=0 ?cacheTiles=                the pool and the cache
 ?relief=0 ?reliefSize= ?reliefMaxLevel=        the relief imagery layer
+?biome=0                                       land colour off, back to the height ramp
+?clouds= ?cloudSize= ?cloudMaxLevel=           the cloud layer -- see below
 ?reliefPreset= ?mountainM= ?quietingStrength= ?octavePersistence=   the relief channel
 ?sse=                                          THE detail knob -- see below
 ?exaggeration= ?paint=0 ?atmosphere=1 ?rampMin= ?rampMax=   what it looks like
@@ -357,6 +359,31 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 
 `window.viewer` and `window.__viewerReady` are exposed for the trace harness and for the
 later tasks in this slice.
+
+### `?clouds=` -- the coverage IS the slider, and it was calibrated rather than guessed
+
+`?clouds=` is a coverage in 0..1: **the fraction of the sphere the layer puts at or above half
+opacity**, not a threshold on a noise field. The two are not the same knob, and this one is the
+one worth exposing -- the threshold that delivers a given coverage is found by inverting the
+field's own measured distribution on a 20,000-point equal-area spiral at world load, so asking
+for 0.40 delivers 0.40 and asking for 0.05 delivers 0.05. Measured back out of a fresh spiral:
+
+| asked | delivered |
+| --- | --- |
+| 0.05 / 0.10 / 0.20 / 0.30 | 0.0496 / 0.1009 / 0.2010 / 0.3010 |
+| **0.40 (the default)** | **0.4000** |
+| 0.50 / 0.70 / 0.90 | 0.5030 / 0.6987 / 0.8996 |
+
+`?clouds=0` does not build the layer at all, and the picture is then byte-identical to the
+pre-cloud one -- proven by SHA-256 at a pinned viewport, camera and frame time, not asserted.
+
+The cloud layer's own caps are **128 texels and level 3**, against the relief layer's 256 and 12,
+and the pair is the point. A narrower imagery tile does not by itself buy anything -- the table
+at the end of this file records `?reliefSize=` 128 / 256 / 512 producing 244 / 61 / 15 tiles at
+4.00 / 4.00 / 3.93 M texels, i.e. **detail-invariant**, because Cesium simply refines one level
+further. The saving comes from the level cap, which is set where the field is still sampled 2.6
+times per its finest 36 km feature. Measured at the orbital camera on the owner's world: without
+the cap, 292 cloud tiles; with it, 148 and a quarter of the texels.
 
 ### `?sse=` -- the one detail knob, and why the default is the cheap one
 

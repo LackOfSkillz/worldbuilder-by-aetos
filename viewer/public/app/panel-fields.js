@@ -33,6 +33,7 @@
 
 import { FEATURE_CEILING } from "./availability.js";
 import { HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
+import { DEFAULT_CLOUD_COVER } from "./clouds.js";
 
 /// The default world is the one this slice's fixtures pin: `Surface::new(20260904,
 /// 6_371_000, 12, 0.29, None)`. The extraction witnessed an elevation on it three
@@ -95,6 +96,18 @@ export const PANEL_RANGES = [
   // cannot express 2,400 either, so the ramp's top silently became 2,250 or 2,500.
   { query: "rampMin", min: -11000, max: 0, step: 100, value: RAMP_WINDOW.minimumHeight },
   { query: "rampMax", min: 500, max: 12000, step: 100, value: RAMP_WINDOW.maximumHeight },
+  // **The slider's travel IS the coverage**, 0 to 1 in hundredths, and that is the whole of the
+  // calibration story from the panel's side: `clouds.js` inverts the field's own measured
+  // distribution so the number here is the fraction of the sphere that actually comes back
+  // covered. The alternative -- exposing the index threshold and letting the owner discover
+  // empirically which end is cloudy -- is a slider whose travel is in the units of an
+  // implementation detail, and the *nominal* range of that detail is precisely what this
+  // project has been wrong about before.
+  //
+  // `min 0, step 0.01` and a default of 0.40 lands exactly on the lattice; note Task 1's related
+  // trap, where `position * 0.05` could not express 0.35 and had to become `position / 20`.
+  // Nothing here multiplies a slider position by a fraction: the position IS the value.
+  { query: "clouds", min: 0, max: 1, step: 0.01, value: DEFAULT_CLOUD_COVER },
 ];
 
 /// Panel defaults as the strings `controls.js` compares against and writes into the URL.

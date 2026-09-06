@@ -63,6 +63,14 @@ const RECTANGLE = { northDeg: 45, southDeg: 0, westDeg: -45, eastDeg: 0 };
 /// spec, in this process, so a worker that quietly built a different world is visible.
 const { Engine } = await import("../public/app/engine.js");
 const { reliefTile } = await import("../public/app/relief.js");
+const { calibrateClouds, cloudTile } = await import("../public/app/clouds.js");
+
+/// The cloud calibration the cloud-branch tests below post. Built here, on the main thread, the
+/// way `cloud-provider.js` builds it -- the worker is handed the result rather than computing
+/// its own, and that is the property these tests are asserting the wire honours.
+const CLOUD_CALIBRATION = calibrateClouds({
+  radiusM: DEFAULT_WORLD.radiusM, seed: DEFAULT_WORLD.seed, cover: 0.4, samples: 4000,
+});
 
 let reference;
 let referenceWorld;
@@ -198,6 +206,80 @@ test("fill still works, and is unchanged by the second job", async () => {
   assert.equal(message.id, 13);
   assert.equal(message.heights.length, 64);
   assert.equal(transfer[0], message.heights.buffer);
+});
+
+// -----------------------------------------------------------------------------------------
+// The THIRD job: clouds.
+//
+// Same argument as the relief branch above, one slice later. `if (message.type === "cloud")` is
+// exactly the shape that fails silently: if `pool.js` never sends the message, or sends it under
+// another name, the imagery layer falls back to the parent texture and the planet looks merely
+// cloudless -- which is what it looked like before this task, so nothing about the picture would
+// say the branch was dead.
+
+test("the cloud branch is REACHED, and answers with a raster of the requested size", async () => {
+  const { message } = await send({
+    type: "cloud",
+    id: 21,
+    request: { rectangle: RECTANGLE, level: 3, size: 32, clouds: CLOUD_CALIBRATION },
+  });
+  assert.equal(
+    message.type, "cloud",
+    "the worker answered something other than a cloud raster -- if this is 'error' the branch " +
+    "exists but throws; if it is 'relief' the message type is being matched wrongly",
+  );
+  assert.equal(message.id, 21, "the id must come back or pool.js can never settle the promise");
+  assert.equal(message.index, 3);
+  assert.equal(message.width, 32);
+  assert.equal(message.height, 32);
+  assert.equal(message.data.length, 32 * 32 * 4);
+  assert.ok(Number.isFinite(message.fillMs) && message.fillMs >= 0);
+});
+
+test("the cloud raster's buffer is TRANSFERRED, not copied", async () => {
+  const { message, transfer } = await send({
+    type: "cloud", id: 22,
+    request: { rectangle: RECTANGLE, level: 3, size: 32, clouds: CLOUD_CALIBRATION },
+  });
+  // The stub `postMessage` records the transfer list rather than performing the transfer, so
+  // what is asserted is that the worker ASKED for it -- omitting it is invisible (same pixels,
+  // same code path) and costs a structured-clone copy of 65,536 bytes per tile.
+  assert.ok(Array.isArray(transfer), "postMessage must be given a transfer list");
+  assert.equal(transfer.length, 1);
+  assert.equal(transfer[0], message.data.buffer, "the transferred object must be the raster's own ArrayBuffer");
+});
+
+test("the worker's cloud raster is byte-identical to the main thread's", async () => {
+  const { message } = await send({
+    type: "cloud", id: 23,
+    request: { rectangle: RECTANGLE, level: 3, size: 24, clouds: CLOUD_CALIBRATION },
+  });
+  const expected = cloudTile({ rectangle: RECTANGLE, level: 3, size: 24, clouds: CLOUD_CALIBRATION });
+  assert.deepEqual(Array.from(message.data), Array.from(expected.data));
+});
+
+test("the cloud job takes no world handle and does not disturb the world", async () => {
+  // The cloud field is a point function of position: it reads neither the engine nor the world.
+  // A `fill` before and after a `cloud` must answer the same heights -- which is what would fail
+  // if the cloud branch ever grew an engine call and left a handle in a different state.
+  const request = {
+    lat0Deg: 45, lat1Deg: 0, lon0Deg: -45, lon1Deg: 0, width: 8, height: 8, resolutionM: null,
+  };
+  const before = await send({ type: "fill", id: 24, request });
+  const heights = Array.from(before.message.heights);
+  await send({
+    type: "cloud", id: 25,
+    request: { rectangle: RECTANGLE, level: 3, size: 16, clouds: CLOUD_CALIBRATION },
+  });
+  const after = await send({ type: "fill", id: 26, request });
+  assert.deepEqual(Array.from(after.message.heights), heights);
+});
+
+test("a cloud request that throws comes back as an error reply carrying its id", async () => {
+  const { message } = await send({ type: "cloud", id: 27, request: { rectangle: RECTANGLE, size: 16 } });
+  assert.equal(message.type, "error");
+  assert.equal(message.id, 27);
+  assert.match(message.message, /calibrateClouds/);
 });
 
 test("an unknown message type is refused rather than silently ignored", async () => {

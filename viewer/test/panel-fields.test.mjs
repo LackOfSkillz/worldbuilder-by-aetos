@@ -144,15 +144,29 @@ test("every ramp stop is a height this generator actually reaches", () => {
   }
 });
 
-test("the panel's field names are the query parameters main.js reads", () => {
+test("the panel's field names are the query parameters the boot path reads", () => {
   // A slider wired to a parameter nothing reads is a knob that does nothing, and it looks
-  // exactly like a knob that works. Checked against `main.js`'s source rather than against a
-  // second list.
-  const source = appFile("main.js");
+  // exactly like a knob that works. Checked against the boot path's own source rather than
+  // against a second list.
+  //
+  // **The boot path is `main.js` PLUS the modules it imports**, and that widening was forced by
+  // a real case rather than chosen: the cloud layer's `?clouds=` read lives in
+  // `cloud-provider.js::cloudCoverFromParams`, next to `reliefLayerEnabled` and
+  // `biomeColourEnabled`, which is where a layer's own switch belongs. Narrowing the search to
+  // `main.js` alone would have forced the read up into the wiring file purely to satisfy a test,
+  // which is the check dictating the architecture.
+  //
+  // It is still one hop, deliberately, not a sweep of `app/`: a parameter mentioned anywhere in
+  // the directory would be satisfied by a stale comment in a file nothing loads, and this check
+  // exists to prove the knob is on the path the browser actually takes.
+  const main = appFile("main.js");
+  const imported = [...main.matchAll(/from\s+"\.\/([\w-]+\.js)"/g)].map((m) => m[1]);
+  assert.ok(imported.length >= 8, "main.js's import list did not parse -- the sweep below is empty");
+  const sources = [main, ...imported.map(appFile)];
   for (const { query } of PANEL_RANGES) {
     assert.ok(
-      source.includes(`"${query}"`),
-      `main.js never reads the "${query}" parameter the panel writes`,
+      sources.some((source) => source.includes(`"${query}"`)),
+      `neither main.js nor any module it imports reads the "${query}" parameter the panel writes`,
     );
   }
 });

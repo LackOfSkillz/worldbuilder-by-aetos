@@ -129,6 +129,15 @@ export class TilePool {
     /// without its population.
     this.reliefMs = [];
     this.reliefWallMs = [];
+    /// And the same two again for cloud rasters -- **the pool's third consumer**, kept separate
+    /// for exactly the reason the relief samples are. A cloud tile is 16,384 texels of pure
+    /// hash-noise and **no engine fill at all**; a relief tile is 66,564 engine samples plus
+    /// 65,536 texels of shading. Pooling those into one median would describe neither, and the
+    /// whole reason a third consumer can be added to a saturated pool is that these two
+    /// populations are an order of magnitude apart -- which is only visible if they are counted
+    /// apart.
+    this.cloudMs = [];
+    this.cloudWallMs = [];
   }
 
   /// Start `count` workers and wait for every one to have built its world.
@@ -174,7 +183,8 @@ export class TilePool {
   }
 
   receive(message) {
-    if (message.type !== "tile" && message.type !== "relief" && message.type !== "error") return;
+    if (message.type !== "tile" && message.type !== "relief" && message.type !== "cloud"
+      && message.type !== "error") return;
     const entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);
@@ -188,7 +198,12 @@ export class TilePool {
     // would let a mislabelled worker reply silently pollute the other job's statistics.
     entry.workMs.push(message.fillMs);
     entry.wallMs.push(performance.now() - entry.started);
-    if (message.type === "relief") {
+    // Relief and cloud replies have the same raster shape, so they are resolved the same way.
+    // They are still two message types rather than one: the DISPATCHER decides which sample a
+    // duration lands in, and it can only do that if the reply it is matching says which job it
+    // was -- a shared `raster` type would make the two indistinguishable at exactly the point
+    // where the report needs them apart.
+    if (message.type === "relief" || message.type === "cloud") {
       entry.resolve({
         data: message.data,
         width: message.width,
@@ -259,6 +274,16 @@ export class TilePool {
     return this.dispatch("relief", request, this.reliefMs, this.reliefWallMs);
   }
 
+  /// Rasterise one cloud tile. Resolves `{ data, width, height, fillMs, worker }`, where `data`
+  /// is a `Uint8ClampedArray` of RGBA texels transferred out of the worker.
+  ///
+  /// **No cache, for the same reason `relief` has none**: `ImageryLayer` caches the uploaded
+  /// texture itself, so an imagery tile is asked for once per layer lifetime and a master copy
+  /// would buy a hit rate near zero. A 128 x 128 cloud master is 65,536 bytes.
+  cloud(request) {
+    return this.dispatch("cloud", request, this.cloudMs, this.cloudWallMs);
+  }
+
   terminate() {
     for (const worker of this.workers) worker.terminate();
     this.workers = [];
@@ -276,6 +301,9 @@ export class TilePool {
       reliefs: this.reliefMs.length,
       reliefMs: summarise(this.reliefMs),
       reliefWallMs: summarise(this.reliefWallMs),
+      clouds: this.cloudMs.length,
+      cloudMs: summarise(this.cloudMs),
+      cloudWallMs: summarise(this.cloudWallMs),
     };
   }
 }

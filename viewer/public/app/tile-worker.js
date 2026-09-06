@@ -23,6 +23,10 @@
 // `Float32Array` is detached by the transfer, which is correct: it was a copy off the wasm
 // heap made by `fillTileF32` and the worker has no further use for it.
 //
+// # Three jobs: heights, relief, and clouds -- but only two of them are about the world
+//
+// `cloud` is the third and it takes no world handle. See its own comment below.
+//
 // # Two jobs, one world: heights and relief
 //
 // `fill` answers the terrain mesh (a 65 x 65 `Float32Array` of heights). `relief` answers
@@ -42,6 +46,7 @@
 
 import { Engine } from "./engine.js";
 import { reliefTile } from "./relief.js";
+import { cloudTile } from "./clouds.js";
 
 /// Faults that live on this side of the wire. Mirrored in `terrain.js`'s `FAULTS`; the
 /// worker is told which one is active at init so a stale world is built *once*, the way a
@@ -114,6 +119,32 @@ function relief(message) {
   };
 }
 
+/// Rasterise one cloud tile. **The third job, and the only one that does not touch the engine
+/// or the world handle at all** -- the cloud field is a point function of position, so unlike
+/// `fill` and `relief` there is nothing here for a stale world to be stale about. That is worth
+/// stating rather than leaving as an omission: a reader who has just read `relief` above will
+/// look for the `handle: world` this one does not have.
+///
+/// It is still dispatched through the same pool as the other two, because the contention that
+/// matters is CPU per core rather than which job is running on it.
+function cloud(message) {
+  const started = performance.now();
+  const imageData = cloudTile(message.request);
+  const fillMs = performance.now() - started;
+  return {
+    message: {
+      type: "cloud",
+      id: message.id,
+      index,
+      fillMs,
+      data: imageData.data,
+      width: imageData.width,
+      height: imageData.height,
+    },
+    buffer: imageData.data.buffer,
+  };
+}
+
 self.onmessage = async (event) => {
   const message = event.data;
   try {
@@ -128,6 +159,11 @@ self.onmessage = async (event) => {
     }
     if (message.type === "relief") {
       const { message: reply, buffer } = relief(message);
+      self.postMessage(reply, [buffer]);
+      return;
+    }
+    if (message.type === "cloud") {
+      const { message: reply, buffer } = cloud(message);
       self.postMessage(reply, [buffer]);
       return;
     }
