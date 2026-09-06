@@ -54,7 +54,9 @@ import {
   temperatureC,
   unitVector,
 } from "../public/app/biome.js";
-import { marginedTileRequest, reliefTile, slopeColor } from "../public/app/relief.js";
+import {
+  coastDitherM, marginedTileRequest, OCEAN_BANDS, reliefTile, slopeColor,
+} from "../public/app/relief.js";
 import { biomeColourEnabled, reliefLayerEnabled } from "../public/app/relief-provider.js";
 
 const OWNER_WORLD = { seed: 562423712, radiusM: 4500000, plateCount: 28, landFraction: 0.16 };
@@ -608,14 +610,52 @@ test("with no calibration relief.js is exactly the layer it was before", () => {
   // The escape hatch has to be a real one: the height ramp is the baseline every earlier
   // measurement in this repository was taken against, and a "default off" that quietly
   // differed would invalidate all of them.
-  for (const [h, slope, lat] of [[0, 0, 0], [500, 3, 45], [1400, 20, -12], [-300, 0, 60]]) {
+  //
+  // **Land only, and that narrowing is deliberate rather than convenient.** The ocean retune added
+  // a per-texel coast dither, so water DOES depend on longitude now -- by design, on the ocean
+  // side, with nothing to do with this switch. Asserting the old identity for water would be
+  // asserting that the dither does not exist; dropping the case would be dropping a case. So the
+  // water case moves to the assertion below, which states what it now is, exactly.
+  for (const [h, slope, lat] of [[0, 0, 0], [500, 3, 45], [1400, 20, -12], [40, 0, 60]]) {
     assert.deepEqual(
       slopeColor(h, slope, lat, 100, null),
       slopeColor(h, slope, lat),
       `slopeColor(${h},${slope},${lat}) moved when longitude was supplied`,
     );
   }
+
+  // Water, with no calibration, is the ocean table read at the DITHERED depth -- exactly, not
+  // approximately. If the dither were dropped, applied to land instead, or applied at a different
+  // amplitude, this is the assertion that says so.
+  assert.deepEqual(
+    slopeColor(-300, 0, 60, 100, null),
+    bandColorOf(OCEAN_BANDS, -300 + coastDitherM(60, 100)),
+    "water is not the ocean table read at the dithered depth",
+  );
+  assert.notDeepEqual(
+    slopeColor(-300, 0, 60, 100, null), slopeColor(-300, 0, 60, 101, null),
+    "a degree of longitude changed nothing under water, so the coast dither is not wired",
+  );
 });
+
+/// `bandColor` is private to `relief.js` on purpose -- it is a table lookup, not an interface --
+/// so the assertion above restates the five lines of linear interpolation rather than widening
+/// that module's surface for a test. Restating the arithmetic is cheap; restating the TABLE would
+/// be the defect this repository keeps finding, and the table is imported.
+function bandColorOf(bands, x) {
+  if (x <= bands[0][0]) return bands[0][1];
+  const last = bands[bands.length - 1];
+  if (x >= last[0]) return last[1];
+  for (let i = 1; i < bands.length; i += 1) {
+    if (x <= bands[i][0]) {
+      const [lo, loColor] = bands[i - 1];
+      const [hi, hiColor] = bands[i];
+      const t = (x - lo) / (hi - lo);
+      return loColor.map((v, k) => v + (hiColor[k] - v) * t);
+    }
+  }
+  return last[1];
+}
 
 test("longitude reaches the colour, which is what makes the third dimension real", () => {
   // `reliefTile` had no longitude in its colour path at all before this task. If the wiring

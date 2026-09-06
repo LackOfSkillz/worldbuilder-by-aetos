@@ -19,7 +19,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Engine } from "../public/app/engine.js";
+import { OCEAN_STOPS, RAMP_STOPS } from "../public/app/panel-fields.js";
 import {
+  baseColor,
+  coastDitherM,
+  FOAM_DITHER_M,
   reliefTile,
   luminanceStats,
   marginedTileRequest,
@@ -547,4 +551,168 @@ test("every colour band is a height this generator reaches", () => {
       + "generator produces, so it can never be drawn",
     );
   }
+});
+
+// ------------------------------------------------------------------------------------------
+// The ocean retune: one palette, stops that are attained, and a water's edge that is not a
+// contour.
+//
+// Population/method/host for every figure quoted below, and for the fill this file runs:
+//   - Worlds: `DEFAULT_WORLD` (above) and the owner's -- seed 562423712, radius 4,500,000 m,
+//     28 plates, land fraction 0.16, the engine's own `ranges` tectonic preset.
+//   - Method: a `REACH_W x REACH_H` edge-inclusive global fill at canonical resolution, the
+//     same `wb_fill_tile_f32` the raster uses. The headline figures in `panel-fields.js` are
+//     from the same method at 2,880 x 1,440 (4,147,200 samples); this file runs it at
+//     720 x 360 (259,200) so `node --test` stays in seconds, and every stop asserted below
+//     clears the smaller grid by a margin stated in its own message.
+//   - Host: node, this repository's checked-in `worldbuilder_engine.wasm`.
+// ------------------------------------------------------------------------------------------
+
+const REACH_W = 720;
+const REACH_H = 360;
+
+/// Sea depths from one global fill, as a plain array. Row 0 is north, edge-inclusive, matching
+/// `marginedTileRequest`'s own post convention.
+function seaDepths(handle) {
+  const out = [];
+  for (let r0 = 0; r0 < REACH_H; r0 += 30) {
+    const rows = Math.min(30, REACH_H - r0);
+    const buf = engine.fillTileF32({
+      handle,
+      lat0Deg: 90 - (180 * r0) / (REACH_H - 1),
+      lat1Deg: 90 - (180 * (r0 + rows - 1)) / (REACH_H - 1),
+      lon0Deg: -180, lon1Deg: 180, width: REACH_W, height: rows, resolutionM: -1,
+    });
+    for (let i = 0; i < buf.length; i += 1) if (buf[i] <= 0) out.push(buf[i]);
+  }
+  return out;
+}
+
+test("every ocean stop is a depth this generator attains, and the one that was not is named", () => {
+  // **This is the check the previous one could not make.** `every colour band is a height this
+  // generator reaches` asserts a BOX -- a min and a max over three worlds -- and a box whose
+  // floor is the deepest sample found anywhere cannot notice a stop that no world reaches. The
+  // -6,800 m stop satisfied that box for the whole of its life and was drawn zero times.
+  //
+  // So this one asks the engine for a distribution instead of two extremes, and asserts the
+  // property that matters: for every ocean stop there is water at or below it, so its colour is
+  // a colour something is actually painted.
+  const ownerHandle = engine.newWorld({
+    seed: 562423712, radiusM: 4500000, plateCount: 28, landFraction: 0.16,
+    tectonics: engine.tectonicPreset("ranges"),
+  });
+  for (const [label, depths] of [
+    ["DEFAULT_WORLD", seaDepths(world)],
+    ["the owner's world", seaDepths(ownerHandle)],
+  ]) {
+    assert.ok(depths.length > 10000, `${label}: only ${depths.length} sea samples`);
+    for (const [metres, hex] of OCEAN_STOPS) {
+      const n = depths.reduce((count, d) => (d <= metres ? count + 1 : count), 0);
+      assert.ok(
+        n > 0,
+        `${label}: no sample of ${depths.length} is at or below the ${hex} stop at ${metres} m, `
+        + "so that colour is never drawn",
+      );
+    }
+    // And the finding, pinned: the stop this table replaced is unreachable on BOTH worlds. If a
+    // later change made -6,800 m reachable this would fail, which is the correct outcome -- the
+    // sentence in `panel-fields.js` would then be wrong and would have to be re-measured.
+    assert.equal(
+      depths.reduce((count, d) => (d <= -6800 ? count + 1 : count), 0), 0,
+      `${label}: the retired -6,800 m stop is reachable after all; re-measure the table`,
+    );
+  }
+});
+
+test("the two colour systems draw the ocean from ONE table", () => {
+  // The defect this file and `panel-fields.js` both open by describing, in its fifth instance:
+  // two copies of one palette, which had drifted. Identity, not equality -- a copy that happens
+  // to hold equal values today is exactly the state the last four started in.
+  for (let i = 0; i < OCEAN_STOPS.length; i += 1) {
+    assert.equal(RAMP_STOPS[i], OCEAN_STOPS[i], `ramp stop ${i} is not the shared ocean stop`);
+  }
+  assert.equal(OCEAN_BANDS.length, OCEAN_STOPS.length);
+  for (let i = 0; i < OCEAN_STOPS.length; i += 1) {
+    assert.equal(OCEAN_BANDS[i][0], OCEAN_STOPS[i][0], `band ${i} is at a different depth`);
+  }
+  // Every stop below the datum is in the shared table and none above it is: the retune was told
+  // not to touch land colour, and this is that constraint as an assertion rather than a promise.
+  for (const [metres] of OCEAN_STOPS) assert.ok(metres < 0, `${metres} m is not below the datum`);
+  for (const [metres] of RAMP_STOPS.slice(OCEAN_STOPS.length)) {
+    assert.ok(metres >= 0, `${metres} m is below the datum but outside the shared table`);
+  }
+});
+
+test("the 60 metres holding half the ocean carry a visible gradient", () => {
+  // **The measured defect, as a check that can fail.** 44-49% of the sea on the two worlds lies
+  // between -4,620 m and -4,560 m; the table this replaced interpolated straight through that
+  // band, from -4,600 m to -1,200 m, and gave the whole of it a luminance difference of **0.5 of
+  // one unit** -- which is why the ocean read flat while its bathymetry was fully in use.
+  //
+  // The threshold is 8 units: sixteen times what the old table produced there, half of what this
+  // one does, and far above the one-unit rounding of a `Uint8ClampedArray`.
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const spread = lum(baseColor(-4560)) - lum(baseColor(-4620));
+  assert.ok(
+    spread >= 8,
+    `the abyssal plain spans ${spread.toFixed(2)} luminance units between -4620 m and -4560 m; `
+    + "half the ocean is one colour again",
+  );
+  // Monotone brightening from the trench to the surf, across the whole table. A ramp that folded
+  // back would put a bright band in the deeps and read as a seabed feature rather than as depth.
+  for (let i = 1; i < OCEAN_BANDS.length; i += 1) {
+    assert.ok(
+      lum(OCEAN_BANDS[i][1]) > lum(OCEAN_BANDS[i - 1][1]),
+      `ocean band ${i} at ${OCEAN_BANDS[i][0]} m is not brighter than the one below it`,
+    );
+  }
+});
+
+test("the water's edge is dithered, and the dither does not move the coastline", () => {
+  // A hard rim at a fixed depth is the strongest "diagram, not photograph" tell in the picture,
+  // because the coastline is its highest-contrast edge. Three properties, and the first is the
+  // one a missing dither fails.
+
+  // 1. THE BAND'S EDGE IS RAGGED. At 8 m down -- two metres outside the 6 m surf stop and inside
+  //    the 4 m dither -- some texels read as surf and some do not. With no dither every one of
+  //    them reads the same, and this assertion is what says so.
+  const surf = OCEAN_BANDS[OCEAN_BANDS.length - 1][1];
+  const isSurf = (c) => c[0] === surf[0] && c[1] === surf[1] && c[2] === surf[2];
+  const trials = 400;
+  let inBand = 0;
+  for (let i = 0; i < trials; i += 1) {
+    if (isSurf(slopeColor(-8, 0, 12.5, -30 + i * 0.37))) inBand += 1;
+  }
+  assert.ok(
+    inBand > 0 && inBand < trials,
+    `${inBand} of ${trials} texels at -8 m read as surf; the band's edge is a contour, not a dither`,
+  );
+
+  // 2. IT NEVER TOUCHES LAND. The same longitudes, one metre above the datum, must all be the
+  //    land base colour -- if the dither were applied before the land/sea test, a coastal texel
+  //    would flicker between sand and surf and the coastline itself would fray.
+  for (let i = 0; i < trials; i += 1) {
+    assert.deepEqual(
+      slopeColor(1, 0, 12.5, -30 + i * 0.37), baseColor(1),
+      "a land texel moved with longitude; the dither is on the wrong side of the datum",
+    );
+  }
+
+  // 3. IT IS DETERMINISTIC AND BOUNDED. Two calls at one point agree -- a tile is rebuilt every
+  //    time the cache evicts it, and a re-drawn tile that differed would shimmer -- and no call
+  //    exceeds the stated amplitude, which is the number the "this is a coast dither and not an
+  //    ocean texture" claim rests on.
+  let worst = 0;
+  for (let i = 0; i < 2000; i += 1) {
+    const lat = -80 + i * 0.08;
+    const lon = -170 + i * 0.17;
+    const a = coastDitherM(lat, lon);
+    assert.equal(a, coastDitherM(lat, lon), "the dither is not deterministic");
+    worst = Math.max(worst, Math.abs(a));
+  }
+  assert.ok(worst <= FOAM_DITHER_M, `the dither reached ${worst} m, past its stated ${FOAM_DITHER_M} m`);
+  assert.ok(
+    worst > FOAM_DITHER_M * 0.9,
+    `the dither only ever reached ${worst} m of its ${FOAM_DITHER_M} m; it is not using its range`,
+  );
 });

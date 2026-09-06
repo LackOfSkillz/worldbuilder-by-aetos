@@ -143,6 +143,7 @@
 // system, only a `montane` band feeding the base the blends then modify.
 
 import { biomeColor } from "./biome.js";
+import { OCEAN_STOPS } from "./panel-fields.js";
 import { metresPerDegree } from "./terrain.js";
 
 /// The cool-to-warm shading axis, applied as a multiplier on top of the shade fraction.
@@ -246,28 +247,68 @@ export function snowLineM(latitudeDeg) {
   return SNOW_LINE_EQUATOR_M * (1 - t);
 }
 
-/// Hypsometric bands, height (m) -> RGB. Chosen to read the same way as the existing
-/// `elevationRamp()` canvas in `main.js` (abyssal near-black, basin blue, pale shelf, strand,
-/// lowland green, upland ochre) so the relief layer and the fallback material agree when
-/// both are visible, without literally sharing code -- one is a 256x1 canvas gradient
-/// consumed by a Cesium material, the other is a per-texel table consumed here, and forcing
-/// them through one function would coupled two things that change for different reasons.
-/// **Every stop is a height this generator actually reaches**, which the previous table's
-/// top two were not. Measured over three worlds (seed 20260904 / 7 / 424242) by a 4,170,724
-/// -sample global fill at canonical resolution: land runs p50 421-619 m, p90 709-733 m,
-/// p99 973-1,314 m, p99.9 1,507-1,643 m, max 1,645-2,051 m; the sea floor runs p10 -4,610 m,
-/// p50 -3,261 to -4,264 m, min -6,345 to -6,807 m. The old table's 1,800 m and 3,200 m land
-/// stops and its -9,000 m ocean stop were all outside that, so three of eleven colours in
-/// this file were unreachable.
-export const OCEAN_BANDS = [
-  [-6800, [2, 10, 20]],
-  [-4600, [4, 24, 46]],
-  [-1200, [10, 51, 88]],
-  [-200, [20, 84, 140]],
-  [-20, [47, 134, 189]],
-  [0, [126, 197, 223]],
-];
+/// `#rrggbb` to `[r, g, b]`. The ocean palette is written as hex because the *other* consumer of
+/// it is a `CanvasGradient`, which takes CSS colours; this is the one conversion rather than a
+/// second table.
+function hexRgb(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16),
+  ];
+}
 
+/// **The ocean bands are `OCEAN_STOPS`, not a copy of them.** They were a copy until this task,
+/// and the copies had drifted: this file carried a shelf stop at -20 m where `panel-fields.js`
+/// carried two, at -60 m and -8 m, so the imagery layer and the `?relief=0` fallback drew
+/// measurably different shallows. See `OCEAN_STOPS` for where the twelve stops are placed and for
+/// the depth distribution they are placed against.
+///
+/// There is no `[0, ...]` entry and none is needed: `bandColor` holds the last stop's colour above
+/// it, so every sample from -6 m to the datum takes the surf colour. That flat band is the surf
+/// line, and `coastDitherM` below is what stops its outer edge being a contour.
+export const OCEAN_BANDS = OCEAN_STOPS.map(([metres, hex]) => [metres, hexRgb(hex)]);
+
+/// **The dithered water's edge.** A hard rim at a fixed depth is the strongest "this is a diagram"
+/// tell in the picture, because the coastline is its highest-contrast edge and the eye goes
+/// straight there. The reference render breaks its surf line with a per-texel noise term; a 1-D
+/// height table cannot express that at all, so it is done here, where there is a texel to vary.
+///
+/// The jitter is added to the height the OCEAN table is read at -- never to land, and never to the
+/// land/sea test itself, so **the coastline does not move**: a texel the engine calls water stays
+/// water and a texel it calls land stays land. Only which side of the -6 m surf stop a water texel
+/// falls on is scattered.
+///
+/// `FOAM_DITHER_M` is 4 m, which is two thirds of the surf band's own 6 m depth, so the band's
+/// outer edge is genuinely broken rather than merely soft. Below -30 m the same 4 m is under 2% of
+/// the narrowest remaining band and under 0.2% of the widest, which is why this is a coast dither
+/// and not an ocean texture.
+export const FOAM_DITHER_M = 4;
+
+/// A deterministic hash of a position, in metres, in `[-amplitudeM, amplitudeM]`.
+///
+/// **Integer arithmetic, not `sin` fract.** `Math.sin` is implementation-defined in JavaScript, and
+/// this value reaches a screenshot digest that is compared across runs and hosts; `Math.imul` is
+/// exact everywhere. The 1e5 scale quantises position at about 1.1 m of longitude at the equator,
+/// finer than the raster's own texel spacing at every level this viewer draws, so adjacent texels
+/// get uncorrelated values rather than sharing one.
+export function coastDitherM(latitudeDeg, longitudeDeg, amplitudeM = FOAM_DITHER_M) {
+  let h = Math.imul(Math.round(latitudeDeg * 1e5) | 0, 0x27d4eb2d);
+  h = (h ^ Math.imul(Math.round(longitudeDeg * 1e5) | 0, 0x165667b1)) | 0;
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  h ^= h >>> 15;
+  return (((h >>> 0) / 0xffffffff) * 2 - 1) * amplitudeM;
+}
+
+/// Hypsometric land bands, height (m) -> RGB. Chosen to read the same way as the
+/// `elevationRamp()` canvas in `main.js` (strand, lowland green, upland ochre) so the relief layer
+/// and the fallback material agree when both are visible. **Every stop is a height this generator
+/// actually reaches**, which the previous table's top two were not. Measured over three worlds
+/// (seed 20260904 / 7 / 424242) by a 4,170,724-sample global fill at canonical resolution: land
+/// runs p50 421-619 m, p90 709-733 m, p99 973-1,314 m, p99.9 1,507-1,643 m, max 1,645-2,051 m.
+/// The old table's 1,800 m and 3,200 m stops were outside that.
+///
+/// **Not touched by this task**, which was told to change ocean tone only. Where the *ocean* half
+/// used to live beside this one as a second copy, it now comes from `OCEAN_STOPS`.
 export const LAND_BANDS = [
   [0, [221, 207, 168]],
   [40, [120, 142, 84]],
@@ -343,9 +384,15 @@ export function slopeColor(
   // whatever the base is -- they are not duplicated over there. With `calibration` null this
   // is byte-for-byte the pre-biome function, which is what keeps the height-only baseline
   // (and every test written against it) meaningful rather than quietly rewritten.
-  const color = heightM > 0 && calibration
-    ? biomeColor({ heightM, latitudeDeg, longitudeDeg, calibration })
-    : baseColor(heightM);
+  //
+  // **The dither applies to the ocean lookup only, and only below the datum.** `heightM > 0`
+  // still decides land against water, so the coastline itself is exactly where the engine put
+  // it; what is scattered is which side of the -6 m surf stop a water texel reads as.
+  const color = heightM > 0
+    ? (calibration
+      ? biomeColor({ heightM, latitudeDeg, longitudeDeg, calibration })
+      : baseColor(heightM))
+    : bandColor(OCEAN_BANDS, heightM + coastDitherM(latitudeDeg, longitudeDeg));
   if (heightM <= 0) return color;
   const rockT = smoothstep(ROCK_SLOPE_LOW_DEG, ROCK_SLOPE_HIGH_DEG, slopeDeg);
   const withRock = rockT > 0 ? lerpColor(color, ROCK_COLOR, rockT) : color;

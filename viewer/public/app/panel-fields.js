@@ -148,6 +148,78 @@ export function panelFieldFaults(fields = PANEL_RANGES) {
   return faults;
 }
 
+/// **The ocean palette, defined ONCE.** `relief.js` imports this and derives its `OCEAN_BANDS`
+/// from it; before this task the two files each held their own copy of the same six colours and
+/// **the copies had already drifted** -- `RAMP_STOPS` carried stops at -60 m and -8 m where
+/// `OCEAN_BANDS` carried one at -20 m, so the imagery layer and the `?relief=0` fallback drew
+/// different shelves. That is this viewer's characteristic defect (see the four cases at the top
+/// of this file) in its fifth instance, and the fix is the same one: one copy.
+///
+/// # Where these stops are placed, and why they are not evenly spaced
+///
+/// **Population:** a 2,880 x 1,440 edge-inclusive global fill (4,147,200 samples) at canonical
+/// resolution, area-weighted by cos(latitude), on two worlds -- `DEFAULT_WORLD` (2,514,697 sea
+/// samples, 70.8% of the sphere) and the owner's world, seed 562423712 / 4,500,000 m / 28 plates
+/// / land 0.16 with the `ranges` tectonic preset (3,623,605 sea samples, 83.8%).
+/// **Host:** node 22, this repository's checked-in `worldbuilder_engine.wasm`.
+///
+/// **The sea floor is a slab, not a slope.** Cumulative share of sea area at or below a depth:
+///
+/// ```text
+///   depth      DEFAULT_WORLD      owner's world
+///   -6000 m      0.025 %            0.114 %
+///   -4700 m      1.306 %            1.878 %
+///   -4620 m      3.746 %            4.794 %
+///   -4560 m     47.829 %           53.412 %     <-- 44 to 49 % of the ocean in 60 metres
+///   -4300 m     52.122 %           60.651 %
+///   -3000 m     66.192 %           75.727 %
+///   -1800 m     79.873 %           86.260 %
+///    -900 m     89.981 %           93.034 %
+///    -350 m     95.465 %           96.503 %
+///    -120 m     98.301 %           98.712 %
+///     -30 m     99.366 %           99.552 %
+///      -6 m     99.779 %           99.857 %
+/// ```
+///
+/// **That single line is the whole finding.** Roughly half the ocean lies inside a 60-metre band
+/// around -4,590 m -- the abyssal plain -- and the previous table interpolated straight from
+/// -4,600 m to -1,200 m, so those 3,400 metres of gradient were spent on 62% of the sea while the
+/// 47% living in 60 metres of it received a colour difference of **under one RGB unit**. The
+/// ocean did not read as flat because its deeps were not dark enough; it read as flat because
+/// **half of it was one colour**. The stops at -4620 and -4560 are what give the plain a gradient
+/// of its own, and everything above -4560 is spaced so that no band carries less than ~1% or more
+/// than ~15% of the sea.
+///
+/// **Every stop is a depth both worlds attain**, which the previous table's -6,800 m stop was not:
+/// zero samples at or below it in 8,294,400 samples over the two worlds. The deepest stop here is
+/// -6,000 m (496 samples on `DEFAULT_WORLD`, 4,755 on the owner's); water below it clamps to the
+/// abyssal colour, which is a colour that is actually drawn rather than an anchor nothing reaches.
+///
+/// **The colours brighten rather than darken.** The reference render's water runs `#3D94B5` shelf
+/// -> `#26709E` open sea -> `#1A4F7A` abyss, which is *lighter than ours at every depth*; and our
+/// deeps were already at luminance 19 of 255, with nowhere below them to go. So the contrast is
+/// bought at the bright end: the shelf and the surf band are much brighter than before, the plain
+/// is given an internal gradient, and only the trench floor is darkened.
+///
+/// The last stop is the **surf band**: from -6 m to the datum every ocean sample takes `#c9edf0`,
+/// because `bandColor`/`addColorStop` both hold the last stop's colour above it. `relief.js`
+/// scatters that band's outer edge with a per-texel dither, which is the half of a foam line a
+/// 1-D height table cannot express.
+export const OCEAN_STOPS = [
+  [-6000, "#04101f"],   // trench floor -- 0.03% / 0.11% of sea area at or below it
+  [-4620, "#082036"],   // the abyssal plain's floor
+  [-4560, "#0e3357"],   // the plain's top: these two straddle half the ocean
+  [-4300, "#114271"],
+  [-4000, "#134d82"],
+  [-3000, "#175b93"],
+  [-1800, "#1d6da3"],
+  [-900, "#2b88bd"],
+  [-350, "#41a5d0"],    // slope
+  [-120, "#66c2de"],    // shelf -- the pale rim around every landmass
+  [-30, "#95dae9"],
+  [-6, "#c9edf0"],      // surf, dithered by relief.js
+];
+
 /// The hypsometric ramp's stops, in metres above the datum.
 ///
 /// **The stops are metres above the datum, not fractions of the window.** That is the fix
@@ -167,13 +239,23 @@ export function panelFieldFaults(fields = PANEL_RANGES) {
 /// the sea floor's minimum at -6,345 m and the highest land at 1,979 m, so the previous
 /// table's implied 2,165 m and 2,400 m whites were unreachable and the ramp's own snow band
 /// had never once been drawn.
+///
+/// **That check was made with a loose bound and one stop slipped through it.** The bound was the
+/// deepest sample over three worlds (-6,807 m), so a stop at -6,800 m satisfied it -- while being
+/// attained by **zero of the 8,294,400 samples** of the two worlds this viewer actually draws.
+/// The ocean stops are now placed against a *cumulative* distribution rather than against a pair
+/// of extremes, and `ocean stop reachability` in `panel-fields.test.mjs` asks the engine.
+///
+/// **One land stop is in the same position and is deliberately left there.** `[1980, "#ffffff"]`
+/// is 2.4 m above `DEFAULT_WORLD`'s highest measured land (1,977.6 m in the fill above), so pure
+/// white is never drawn on that world -- it is drawn on the owner's, whose peak is 4,978 m. This
+/// task was told not to change land colour, so it is reported here rather than moved.
+///
+/// **The ocean half is `OCEAN_STOPS` above, spread in, not a second copy of it.** The two tables
+/// had already drifted apart at the shelf before this task; spreading is what makes drifting
+/// again impossible rather than merely unlikely.
 export const RAMP_STOPS = [
-  [-6800, "#020a14"],   // abyssal plain
-  [-4600, "#04182e"],   // the sea floor's own plateau: p10..p25 of every sampled depth
-  [-1200, "#0a3358"],   // basin
-  [-200, "#14548c"],
-  [-60, "#2f86bd"],     // shelf, just under the coast -- the pale rim around every landmass
-  [-8, "#7ec5df"],
+  ...OCEAN_STOPS,
   [0, "#ddcfa8"],       // THE DATUM: strand. Derived, not placed.
   [40, "#8f9a5e"],
   [380, "#4a7a3c"],     // lowland
