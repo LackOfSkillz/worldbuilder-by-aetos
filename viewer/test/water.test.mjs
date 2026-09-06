@@ -773,6 +773,25 @@ test("a lake is not drawn from the ocean's table, and the reason is measured", (
     lum(bandLookup(LAKE_BANDS, 0)) < 140,
     `the lake shoreline is at luminance ${lum(bandLookup(LAKE_BANDS, 0)).toFixed(0)}; still ice`,
   );
+  // **And `slopeColor` actually reads it.** The two paragraphs above are about the tables; this
+  // is about the wiring, and without it a build that had both tables and still drew lakes from
+  // the ocean's would satisfy every line here.
+  const level = 560.760;
+  for (const depth of [0, 4, 18, 55, 119]) {
+    const drawnLake = slopeColor(level - depth, 0, 12, 129, null, level);
+    const wantLake = bandLookup(LAKE_BANDS, -depth);
+    const oceanWould = bandLookup(OCEAN_BANDS, -depth);
+    for (let c = 0; c < 3; c += 1) {
+      assert.ok(
+        Math.abs(drawnLake[c] - wantLake[c]) <= 1,
+        `a lake at ${depth} m draws ${drawnLake} where its own table says ${wantLake}`,
+      );
+    }
+    assert.ok(
+      Math.abs(drawnLake[1] - oceanWould[1]) > 20,
+      `a lake at ${depth} m is within 20 units of what the OCEAN table would have drawn`,
+    );
+  }
   // The ocean's own table is untouched by any of it -- the constraint this task was given, as an
   // assertion rather than a promise. `slopeColor` at a sub-datum height is still the ocean's, and
   // still dithered.
