@@ -27,14 +27,16 @@ import { fileURLToPath } from "node:url";
 
 import { Engine, WB_BODY_KIND, WB_MAX_WATER_NODES, WB_WATER_BODY_STRIDE } from "../public/app/engine.js";
 import {
-  DEFAULT_WATER_NODES, bodiesOverlappingRectangle, bodyContains, lakeLevelAt, longitudeSpanDeg,
-  waterDiagnostics, waterEnabled, waterNodeCountFromParams,
+  DEFAULT_WATER_NODES, bodiesOverlappingRectangle, bodyContains, dilateBodyExtents, lakeLevelAt,
+  longitudeSpanDeg, nodeCellRadiusDeg, waterDiagnostics, waterEnabled, waterNodeCountFromParams,
 } from "../public/app/water.js";
 import {
-  AMBIENT, DEFAULT_SUN, OCEAN_BANDS, coastDitherM, marginedTileRequest, reliefTile, shadeTint,
-  slopeColor,
+  AMBIENT, DEFAULT_SUN, LAKE_BANDS, OCEAN_BANDS, coastDitherM, marginedTileRequest, reliefTile,
+  shadeTint, slopeColor,
 } from "../public/app/relief.js";
-import { PANEL_RANGES, panelFieldFaults } from "../public/app/panel-fields.js";
+import {
+  LAKE_STOPS, OCEAN_STOPS, PANEL_RANGES, RAMP_STOPS, panelFieldFaults,
+} from "../public/app/panel-fields.js";
 
 /// One app source file, as text. The same device `coast-params.test.mjs` uses to hold `main.js`
 /// and `controls.js` to their wiring: there is no DOM and no Cesium here, so the wiring between
@@ -44,6 +46,9 @@ function appFile(name) {
 }
 
 const OWNER_WORLD = { seed: 562423712, radiusM: 4500000, plateCount: 28, landFraction: 0.16 };
+/// The engine's own default world, needed because the owner's deepest lake is 127.5 m and the
+/// lake table's four deepest stops are carried for the world that reaches 401.7 m.
+const DEFAULT_WORLD = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
 const NODES = 30000;
 
 async function loadEngine() {
@@ -344,14 +349,14 @@ test("a lake is drawn exactly where the engine says, at the level the engine say
     predicted += 1;
     if (level === body.levelM) fromThisBody += 1;
 
-    // ...and the colour is the OCEAN table read at the depth below THAT level, lit as a flat
+    // ...and the colour is the LAKE table read at the depth below THAT level, lit as a flat
     // plane, **with no dither**: the coast dither is a surf-edge treatment and a lake's whole
     // depth range lives inside the bands it would scatter (p50 28.5 m on this body). Derived
     // here, not asked of the module under test -- `slopeColor` is what draws this, so predicting
     // with it would make the two sides move together under any mutation of the rule, which is
     // the shadowing this project has now found three times. The palette is imported because it
     // is DATA; the lookup, the depth and the flat shade are re-derived.
-    const [r, g, b] = bandLookup(OCEAN_BANDS, texel.heightM - level);
+    const [r, g, b] = bandLookup(LAKE_BANDS, texel.heightM - level);
     const shade = AMBIENT + (1 - AMBIENT) * DEFAULT_SUN.up;
     const [tr, tg, tb] = shadeTint(shade);
     const idx = (texel.row * size + texel.col) * 4;
@@ -448,7 +453,20 @@ test("the boot path resolves the manifest before the provider exists, and can be
   // the off switch.
   const main = appFile("main.js");
   assert.match(main, /engine\.waterRun\(\{ handle: world, nodeCount: waterNodes \}\)/);
-  assert.match(main, /lakes: water\.bodies/, "the manifest never reaches the relief provider");
+  assert.match(main, /lakes: drawnBodies/, "the manifest never reaches the relief provider");
+  // ...and what reaches it is the DILATED manifest, because the raw boxes bound node centres and
+  // 38 of this world's 55 bodies have a box of zero measure. `main.js` handing over `water.bodies`
+  // would pass every other assertion in this file and draw two thirds of nothing.
+  assert.match(
+    main, /dilateBodyExtents\(water\.bodies, waterNodes\)/,
+    "the boxes reach the provider undilated; the point-box bodies would draw nothing",
+  );
+  // The diagnostics are deliberately taken on the RAW rows -- they are a statement about the
+  // manifest, and counting them after the dilation would report a fact about `main.js` instead.
+  assert.ok(
+    main.indexOf("waterDiagnostics(water.bodies)") < main.indexOf("dilateBodyExtents("),
+    "the diagnostics are counted after the dilation, so they no longer describe the manifest",
+  );
   // **Off means NOT RESOLVED, not resolved-and-ignored.** Four seconds of boot spent on an answer
   // that is then discarded is the shape this line refuses; the ternary is what makes `?lakes=0`
   // restore the previous boot cost as well as the previous picture.
@@ -460,4 +478,371 @@ test("the boot path resolves the manifest before the provider exists, and can be
     main.indexOf("engine.waterRun(") < main.indexOf("createReliefImageryProvider("),
     "the manifest is resolved after the provider is built; early tiles would cache without lakes",
   );
+});
+
+// ------------------------------------------------------------------------------------------
+// The box bounds NODE CENTRES, and the two defects that follow from it.
+//
+// `water.rs::lake_body_extents` builds a body's `Extent` as `Extent::from_points` over
+// `positions[member].to_latlon()` for its submerged members, so the box's resolution is one node
+// spacing and a one-node body's box is a point. Everything below is about the correction, and
+// about the one piece of GROUND TRUTH available for calibrating it: a one-node body's water is at
+// most exactly one node cell, `4 * pi * R^2 / nodeCount`, which is an identity rather than an
+// estimate.
+// ------------------------------------------------------------------------------------------
+
+/// One node's share of the sphere, in m^2, re-derived here from the sampler's own contract rather
+/// than asked of the module under test.
+function cellAreaM2(radiusM, nodeCount) {
+  return (4 * Math.PI * radiusM * radiusM) / nodeCount;
+}
+
+test("the dilation is one node cell, and the cell is the engine's own share of the sphere", () => {
+  // **Re-derived, by a different route.** `nodeCellRadiusDeg` computes `2/sqrt(n)` in radians
+  // directly; this goes the long way round -- area of the sphere, divided by the node count, the
+  // radius of the equal-area disc holding that area, then that length as an angle -- and does it
+  // on three different planets. Predicting with the function under test would make both sides
+  // move together under any mutation of it, which is the shadowing this project has found four
+  // times.
+  for (const radiusM of [4500000, 6371000, 1737400]) {
+    for (const nodeCount of [8000, 30000, 100000]) {
+      const discRadiusM = Math.sqrt(cellAreaM2(radiusM, nodeCount) / Math.PI);
+      const expectDeg = (discRadiusM / radiusM) * (180 / Math.PI);
+      assert.ok(
+        Math.abs(nodeCellRadiusDeg(nodeCount) - expectDeg) < 1e-12,
+        `n=${nodeCount} R=${radiusM}: ${nodeCellRadiusDeg(nodeCount)} deg, the sphere says ${
+          expectDeg}`,
+      );
+    }
+  }
+  assert.ok(Math.abs(nodeCellRadiusDeg(30000) - 0.661595) < 0.000001, "0.6616 deg at 30,000 nodes");
+  // Monotone and finite, and a nonsense node count does not produce a nonsense box.
+  assert.ok(nodeCellRadiusDeg(100000) < nodeCellRadiusDeg(30000));
+  assert.equal(nodeCellRadiusDeg(0), 0);
+  assert.equal(nodeCellRadiusDeg(Number.NaN), 0);
+});
+
+test("every body the engine resolves is drawn, including the ones whose box is a point", () => {
+  // **The defect, as a check that can fail.** Before the dilation, 38 of this world's 55 bodies
+  // painted nothing at all -- not filtered by a rule, just never hit, because a point has zero
+  // measure. Each of those is water the engine resolved and the picture did not have.
+  const facts = waterDiagnostics(manifest.bodies);
+  assert.ok(facts.pointBoxes > 0, "no point boxes on this world; this test asserts nothing");
+  const dilated = dilateBodyExtents(manifest.bodies, NODES);
+  assert.equal(dilated.length, manifest.bodies.length);
+
+  let drawn = 0;
+  for (const body of dilated) {
+    const counters = { lakeTexels: 0, lakeTiles: 0 };
+    // Framed on the DILATED box with no extra margin, so the only thing that can paint a texel
+    // is the dilation itself, and rasterised through `reliefTile` -- the function the workers
+    // call -- rather than through a second implementation of the containment test.
+    reliefTile({
+      rectangle: {
+        northDeg: body.maxLatitudeDeg,
+        southDeg: body.minLatitudeDeg,
+        westDeg: body.minLongitudeDeg,
+        eastDeg: body.minLongitudeDeg + longitudeSpanDeg(body),
+      },
+      size: 32,
+      engine,
+      worldHandle: ownerHandle,
+      radiusM: OWNER_WORLD.radiusM,
+      lakes: [body],
+      counters,
+    });
+    if (counters.lakeTexels > 0) drawn += 1;
+  }
+  assert.equal(
+    drawn, manifest.bodies.length,
+    `${manifest.bodies.length - drawn} of ${manifest.bodies.length} bodies still draw nothing`,
+  );
+
+  // And the point boxes genuinely are a large part of the manifest, or the line above is passing
+  // for the boring reason that nothing ever needed the dilation.
+  assert.ok(
+    facts.pointBoxes >= 30,
+    `only ${facts.pointBoxes} point boxes; the finding has changed scale, re-measure it`,
+  );
+});
+
+test("no one-node body draws more water than the one cell it can physically hold", () => {
+  // **The calibration, against ground truth.** A body with a point box has exactly one submerged
+  // member node, and that node's share of the sphere is `4 * pi * R^2 / nodeCount` -- 8,482 km^2
+  // here. The body's true surface cannot exceed it. So this is a bound the dilation must not
+  // cross, and it is what rules out dilating further: measured over all 38, a dilation of 1.27
+  // cell radii (the square that circumscribes the cell rather than inscribing its radius) puts
+  // one body over the ceiling, and 1.0 puts none over while drawing a mean 28.6% of a cell.
+  const ceilingM2 = cellAreaM2(OWNER_WORLD.radiusM, NODES);
+  const points = manifest.bodies.filter(
+    (b) => longitudeSpanDeg(b) === 0 && b.minLatitudeDeg === b.maxLatitudeDeg,
+  );
+  assert.ok(points.length > 0, "no point boxes on this world; this test asserts nothing");
+  let over = 0;
+  let totalFraction = 0;
+  for (const body of dilateBodyExtents(points, NODES)) {
+    const north = body.maxLatitudeDeg;
+    const south = body.minLatitudeDeg;
+    const span = longitudeSpanDeg(body);
+    const n = 64;
+    const heights = engine.fillTileF32({
+      handle: ownerHandle,
+      lat0Deg: north,
+      lat1Deg: south,
+      lon0Deg: body.minLongitudeDeg,
+      lon1Deg: body.minLongitudeDeg + span,
+      width: n,
+      height: n,
+      resolutionM: -1,
+    });
+    const dLat = (south - north) / (n - 1);
+    const dLon = span / (n - 1);
+    let solidAngle = 0;
+    for (let row = 0; row < n; row += 1) {
+      const lat = north + dLat * row;
+      const weight = Math.cos((lat * Math.PI) / 180) * Math.abs(dLat) * dLon;
+      for (let col = 0; col < n; col += 1) {
+        const h = heights[row * n + col];
+        if (h > 0 && h <= body.levelM) solidAngle += weight;
+      }
+    }
+    const areaM2 = solidAngle * (Math.PI / 180) ** 2 * OWNER_WORLD.radiusM ** 2;
+    if (areaM2 > ceilingM2) over += 1;
+    totalFraction += areaM2 / ceilingM2;
+  }
+  assert.equal(
+    over, 0,
+    `${over} of ${points.length} one-node bodies draw more water than one node cell can hold`,
+  );
+  // ...and they are not drawing a negligible sliver either, which is the failure a dilation that
+  // was too SMALL would produce -- and which the ceiling above cannot notice.
+  const mean = totalFraction / points.length;
+  assert.ok(
+    mean > 0.15 && mean < 0.40,
+    `one-node bodies draw a mean ${(100 * mean).toFixed(1)}% of their cell; measured 28.6%`,
+  );
+});
+
+test("the dilation grows the box on the sphere, at the poles and across the seam", () => {
+  const cell = nodeCellRadiusDeg(NODES);
+  // A plain box grows by one cell radius in latitude, and by rather MORE than one in longitude at
+  // any latitude off the equator, because a degree of longitude is shorter there.
+  const [mid] = dilateBodyExtents(
+    [{
+      rootNode: 1, levelM: 100, minLatitudeDeg: 59, maxLatitudeDeg: 61,
+      minLongitudeDeg: 10, maxLongitudeDeg: 12,
+    }],
+    NODES,
+  );
+  assert.ok(Math.abs(mid.minLatitudeDeg - (59 - cell)) < 1e-12);
+  assert.ok(Math.abs(mid.maxLatitudeDeg - (61 + cell)) < 1e-12);
+  const grew = longitudeSpanDeg(mid) - 2;
+  assert.ok(
+    grew > 2 * cell * 1.9,
+    `at latitude 61 the longitude pad is ${(grew / 2).toFixed(4)} deg, barely more than the `
+    + `${cell.toFixed(4)} deg of arc it has to cover`,
+  );
+
+  // A polar body: the pad in longitude exceeds the whole circle, and the box becomes the circle
+  // rather than an arc that wraps a nonsensical number of times. Latitude is bounded at the pole.
+  const [polar] = dilateBodyExtents(
+    [{
+      rootNode: 2, levelM: 100, minLatitudeDeg: 87.28, maxLatitudeDeg: 89.64,
+      minLongitudeDeg: -100, maxLongitudeDeg: 116,
+    }],
+    NODES,
+  );
+  assert.equal(longitudeSpanDeg(polar), 360);
+  assert.ok(polar.maxLatitudeDeg <= 90, `latitude ran past the pole to ${polar.maxLatitudeDeg}`);
+  assert.ok(bodyContains(polar, 89, 179.9) && bodyContains(polar, 89, -179.9));
+
+  // A body already crossing the seam keeps the `min > max` convention, and every point it
+  // contained it still contains. The convention is the thing a naive pad would destroy.
+  const seam = {
+    rootNode: 3, levelM: 100, minLatitudeDeg: -1, maxLatitudeDeg: 1,
+    minLongitudeDeg: 179, maxLongitudeDeg: -179,
+  };
+  const [wrapped] = dilateBodyExtents([seam], NODES);
+  assert.ok(wrapped.minLongitudeDeg > wrapped.maxLongitudeDeg, "the seam convention was lost");
+  assert.ok(longitudeSpanDeg(wrapped) > longitudeSpanDeg(seam));
+  for (const lon of [179, 179.9, 180, -180, -179.5, -179]) {
+    assert.ok(bodyContains(wrapped, 0, lon), `the dilated seam box dropped longitude ${lon}`);
+  }
+  // A body is never shrunk, in either axis, whatever its shape.
+  for (const body of manifest.bodies) {
+    const [big] = dilateBodyExtents([body], NODES);
+    assert.ok(big.maxLatitudeDeg - big.minLatitudeDeg > body.maxLatitudeDeg - body.minLatitudeDeg);
+    assert.ok(longitudeSpanDeg(big) > longitudeSpanDeg(body));
+  }
+});
+
+test("a lake is not drawn from the ocean's table, and the reason is measured", () => {
+  // **The premise, asserted, so that a check fires if the premise changes.** The claim is not
+  // "lakes should be darker"; it is that EVERY lake on this world is shallower than the ocean
+  // table's third-shallowest stop, so nine of that table's twelve could never be reached on a lake
+  // and all lake water drew from the shelf and the surf.
+  const byDepth = OCEAN_BANDS.map(([m]) => m).sort((a, b) => b - a);
+  const thirdShallowest = byDepth[2];
+  assert.equal(thirdShallowest, -120, "the ocean table's shape changed; re-measure this premise");
+
+  let deepest = 0;
+  let lakeSamples = 0;
+  let pastTheStop = 0;
+  for (const body of dilateBodyExtents(manifest.bodies, NODES)) {
+    const span = longitudeSpanDeg(body);
+    const n = 48;
+    const heights = engine.fillTileF32({
+      handle: ownerHandle,
+      lat0Deg: body.maxLatitudeDeg,
+      lat1Deg: body.minLatitudeDeg,
+      lon0Deg: body.minLongitudeDeg,
+      lon1Deg: body.minLongitudeDeg + span,
+      width: n,
+      height: n,
+      resolutionM: -1,
+    });
+    for (const h of heights) {
+      if (!(h > 0) || h > body.levelM) continue;
+      lakeSamples += 1;
+      const depth = body.levelM - h;
+      if (depth > deepest) deepest = depth;
+      if (depth > -thirdShallowest) pastTheStop += 1;
+    }
+  }
+  assert.ok(
+    deepest > 40,
+    `the deepest lake sample found is ${deepest.toFixed(1)} m; too shallow to say anything`,
+  );
+  // The premise is about the DISTRIBUTION, not about the single deepest sample: one body on this
+  // world does cross 120 m, by seven metres, and one texel is not what makes a picture read as
+  // ice. What does is that essentially none of the lake area reaches the ocean table's nine
+  // deeper stops, so those nine are unreachable in practice and the three palest carry the lot.
+  const share = pastTheStop / lakeSamples;
+  assert.ok(lakeSamples > 5000, `only ${lakeSamples} lake samples; this proves little`);
+  assert.ok(
+    share < 0.01,
+    `${(100 * share).toFixed(2)}% of lake samples are past the ocean table's ${-thirdShallowest} `
+    + "m stop; the ice finding no longer holds and the lake table should be re-placed",
+  );
+  assert.ok(
+    deepest < 4000,
+    `a lake reaches ${deepest.toFixed(1)} m, into the sea table's own working range`,
+  );
+
+  // ...and the lake table actually spends its range there, which is the half the premise cannot
+  // supply. Over 0..120 m the ocean table carries three stops; the lake table carries ten.
+  const lum = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const inRange = (bands) => bands.filter(([m]) => m >= -120 && m <= 0).length;
+  assert.ok(
+    inRange(LAKE_BANDS) > inRange(OCEAN_BANDS) + 4,
+    `the lake table has ${inRange(LAKE_BANDS)} stops over 0..120 m against the ocean's `
+    + `${inRange(OCEAN_BANDS)}; it is no denser where the water actually is`,
+  );
+  const oceanSpread = lum(bandLookup(OCEAN_BANDS, 0)) - lum(bandLookup(OCEAN_BANDS, -120));
+  const lakeSpread = lum(bandLookup(LAKE_BANDS, 0)) - lum(bandLookup(LAKE_BANDS, -120));
+  assert.ok(
+    lakeSpread > oceanSpread,
+    `the lake table spans ${lakeSpread.toFixed(1)} luminance units over 0..120 m against the `
+    + `ocean's ${oceanSpread.toFixed(1)}; it has no more range where the water is`,
+  );
+  // And it is DARK where the ocean's is pale. The whole visible defect in one number.
+  assert.ok(
+    lum(bandLookup(OCEAN_BANDS, 0)) > 200,
+    "the ocean's surf colour is no longer pale; the ice finding has moved",
+  );
+  assert.ok(
+    lum(bandLookup(LAKE_BANDS, 0)) < 140,
+    `the lake shoreline is at luminance ${lum(bandLookup(LAKE_BANDS, 0)).toFixed(0)}; still ice`,
+  );
+  // The ocean's own table is untouched by any of it -- the constraint this task was given, as an
+  // assertion rather than a promise. `slopeColor` at a sub-datum height is still the ocean's, and
+  // still dithered.
+  const seaColour = slopeColor(-50, 0, 12, 129);
+  const seaWanted = bandLookup(OCEAN_BANDS, -50 + coastDitherM(12, 129));
+  for (let c = 0; c < 3; c += 1) assert.ok(Math.abs(seaColour[c] - seaWanted[c]) <= 1);
+});
+
+test("the lake palette is one table in one place, and it is not the ocean's", () => {
+  // The defect this viewer keeps producing -- a second copy of a number -- pre-empted for the
+  // sixth time. Identity, not equality: a copy holding equal values today is exactly the state
+  // the previous five started in.
+  assert.equal(LAKE_BANDS.length, LAKE_STOPS.length);
+  for (let i = 0; i < LAKE_STOPS.length; i += 1) {
+    assert.equal(LAKE_BANDS[i][0], LAKE_STOPS[i][0], `lake band ${i} is at a different depth`);
+  }
+  // Ascending, so `bandColor` interpolates rather than picking whichever stop it met first.
+  for (let i = 1; i < LAKE_STOPS.length; i += 1) {
+    assert.ok(LAKE_STOPS[i][0] > LAKE_STOPS[i - 1][0], `lake stop ${i} is out of order`);
+  }
+  // No lake stop is above the datum, and the shallowest is exactly the shoreline. `lakeLevelAt`
+  // refuses a texel at or below the datum, so this table can never be asked about the sea.
+  for (const [metres] of LAKE_STOPS) assert.ok(metres <= 0, `${metres} m is above the datum`);
+  assert.equal(LAKE_STOPS[LAKE_STOPS.length - 1][0], 0, "the shoreline stop is not at zero depth");
+  // The lake table is NOT in the height ramp: `?relief=0` draws a 1-D function of height and a
+  // lake is a level attached to a place, which such a ramp cannot express at any resolution. A
+  // lake stop leaking into `RAMP_STOPS` would recolour the sea at that depth on that path.
+  const rampDepths = new Set(RAMP_STOPS.map(([m]) => m));
+  const oceanDepths = new Set(OCEAN_STOPS.map(([m]) => m));
+  for (const [metres, hex] of LAKE_STOPS) {
+    // The datum itself is a stop in every table -- it is the ocean's clamp and the ramp's strand
+    // -- so a lake stop AT zero is a coincidence of depth, not a leak. Everything below it is not.
+    if (metres === 0 || oceanDepths.has(metres)) continue;
+    assert.ok(!rampDepths.has(metres), `the lake stop ${hex} at ${metres} m reached the ramp`);
+  }
+  // And the two water tables are genuinely different objects with different colours, which is
+  // the whole change: sharing one would put the lakes back in the shelf and surf colours.
+  const oceanAt = new Map(OCEAN_STOPS);
+  for (const [metres, hex] of LAKE_STOPS) {
+    if (oceanAt.has(metres)) {
+      assert.notEqual(oceanAt.get(metres), hex, `lake and ocean agree exactly at ${metres} m`);
+    }
+  }
+});
+
+test("every lake stop is a depth this generator attains, and the shallowest three do the work", () => {
+  // **The check `OCEAN_STOPS` had to learn to make**, applied to the new table from the start: a
+  // stop no water reaches anchors an interpolation and is never itself painted, which is what the
+  // retired -6,800 m ocean stop did for the whole of its life. So this asks the ENGINE for the
+  // distribution rather than asserting a pair of extremes.
+  //
+  // Two worlds are needed and that is the finding, not an inconvenience: the owner's world's
+  // deepest lake is 127.5 m, so the four stops below -110 m are unreachable there and are carried
+  // for `DEFAULT_WORLD`, which reaches 401.7 m.
+  const defaultHandle = engine.newWorld(DEFAULT_WORLD);
+  const worlds = [
+    ["the owner's world", ownerHandle, OWNER_WORLD, manifest],
+    ["DEFAULT_WORLD", defaultHandle, DEFAULT_WORLD,
+      engine.waterRun({ handle: defaultHandle, nodeCount: NODES })],
+  ];
+  const attained = new Set();
+  for (const [label, handle, world, mani] of worlds) {
+    const depths = [];
+    for (const body of dilateBodyExtents(mani.bodies, NODES)) {
+      const span = longitudeSpanDeg(body);
+      const n = 40;
+      const heights = engine.fillTileF32({
+        handle,
+        lat0Deg: body.maxLatitudeDeg,
+        lat1Deg: body.minLatitudeDeg,
+        lon0Deg: body.minLongitudeDeg,
+        lon1Deg: body.minLongitudeDeg + span,
+        width: n,
+        height: n,
+        resolutionM: -1,
+      });
+      for (const h of heights) if (h > 0 && h <= body.levelM) depths.push(h - body.levelM);
+    }
+    assert.ok(depths.length > 2000, `${label}: only ${depths.length} lake samples`);
+    for (const [metres] of LAKE_STOPS) {
+      if (depths.some((d) => d <= metres)) attained.add(metres);
+    }
+    assert.ok(world.radiusM > 0);
+  }
+  for (const [metres, hex] of LAKE_STOPS) {
+    assert.ok(
+      attained.has(metres),
+      `no lake sample on either world is at or below the ${hex} stop at ${metres} m, so that `
+      + "colour is never drawn",
+    );
+  }
 });

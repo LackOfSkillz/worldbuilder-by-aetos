@@ -238,6 +238,109 @@ export const OCEAN_STOPS = [
   [-6, "#c9edf0"],      // surf, dithered by relief.js
 ];
 
+/// **The lake palette, and it is NOT the ocean's.** `relief.js` imports this and derives its
+/// `LAKE_BANDS` from it, exactly as it derives `OCEAN_BANDS` from `OCEAN_STOPS` above -- one
+/// table each, in one place, for the same reason.
+///
+/// # Why a lake cannot share the sea's table
+///
+/// `OCEAN_STOPS` was placed against a measured *sea*-depth distribution whose median sits at
+/// -4,580 m, and it is correct for that. **Every lake this generator makes is shallower than the
+/// ocean table's third-shallowest stop**, so a lake could only ever draw from `-120 #66c2de`,
+/// `-30 #95dae9` and `-6 #c9edf0` -- the shelf and the surf, luminance 176 to 230. Nine of the
+/// twelve stops are unreachable on a lake and the three that remain are the palest in the table,
+/// which is why the lakes read as sheets of ice rather than as water.
+///
+/// **Measured, over the whole drawn population rather than over one body.**
+/// **Population:** every body `wb_water_run` resolves at 30,000 nodes, on two worlds -- the
+/// owner's (seed 562423712, radius 4,500,000 m, 28 plates, land 0.16, `ranges`; 55 bodies) and
+/// `DEFAULT_WORLD` (20260904, 6,371,000 m, 12 plates, 0.29; 156 bodies) -- each body's box grown
+/// by one node cell radius first, because that is the box the picture is actually drawn from
+/// (`water.js::dilateBodyExtents`). **Method:** each dilated box sampled at 0.02 degrees through
+/// `wb_fill_tile_f32` at canonical resolution, a sample counted where `0 < h <= level_m`,
+/// area-weighted by cos(latitude): 272,206 lake samples on the owner's world and 1,583,747 on
+/// `DEFAULT_WORLD`. **Host:** node 22, this repository's checked-in `worldbuilder_engine.wasm`.
+///
+/// ```text
+///   depth below the surface     owner's      DEFAULT_WORLD
+///   p5                             1.3 m           1.5 m
+///   p25                            7.0 m           8.2 m
+///   p50                           15.4 m          18.5 m
+///   p75                           27.1 m          36.8 m
+///   p90                           40.2 m          82.3 m
+///   p99                           72.1 m         237.4 m
+///   max                          127.5 m         401.7 m
+///
+///   share of lake area SHALLOWER than
+///     3 m      11.0 %    9.7 %
+///     6 m      21.5 %   18.8 %
+///    10 m      34.5 %   30.1 %
+///    15 m      49.0 %   42.5 %
+///    20 m      61.4 %   52.9 %
+///    30 m      79.3 %   68.1 %
+///    45 m      93.0 %   80.6 %
+///    60 m      97.7 %   86.0 %
+///   120 m      99.99%   93.8 %
+///   200 m     100.0 %   97.7 %
+/// ```
+///
+/// **Half a lake's area lies in its first twenty metres**, which is the mirror image of the sea's
+/// finding: the sea is a slab at one depth, a lake is a wedge whose mass is at the shore. So the
+/// stops are dense over 0..48 m -- nine of the thirteen -- and no band carries more than about
+/// 15% of the lake area on either world. The tail to -390 m exists because `DEFAULT_WORLD` reaches
+/// 401.7 m and the owner's world reaches only 127.5; a stop nothing attains is the defect
+/// `OCEAN_STOPS`'s retired -6,800 m entry was, so -390 is inside the deepest sample found on
+/// either world rather than a round number beyond it -- and inside it at every sampling density
+/// measured, not only the finest: a 40x40 per-body grid finds 394.2 m, 128x128 finds 401.4 m.
+///
+/// # Where the colours come from, which is optics rather than taste
+///
+/// Inland water is dark for a physical reason, and it is the same reason the sea's shallows are
+/// bright: what you see in shallow water is the **bottom**, and the two bottoms are different.
+/// A shelf sea is a pale carbonate floor under water whose diffuse attenuation is around
+/// 0.04 /m; an inland lake is a drowned soil-and-vegetation floor under water carrying dissolved
+/// organic matter, an order of magnitude more absorbing. So a lake reaches its own asymptotic
+/// colour within tens of metres, where the sea is still showing its floor at 120.
+///
+/// Each stop below is the two-term evaluation, at that stop's depth, of
+///
+/// ```text
+///   colour(d) = bottom * exp(-2 * Kd * d)  +  column(d) * (1 - exp(-2 * Kd * d))
+///   column(d) = lerp([27,58,72], [8,20,30], 1 - exp(-d / 200))
+/// ```
+///
+/// with `Kd = 0.075 /m` (one way; the path is doubled because the light goes down and comes back)
+/// and `bottom = [94,125,112]`, a wet valley floor. The bottom's contribution is 86% at 1 m, 41%
+/// at 6 m, 10% at 15 m and under 1% by 32 m: **the gradient is spent over 0..32 m, where 73% of
+/// the owner's lake area and 60% of `DEFAULT_WORLD`'s lives.** The second term is what keeps the
+/// deep tail from being one flat colour -- it carries luminance 48 down to 24 over the remaining
+/// 318 m, slowly, which is what a large lake looks like from orbit: a dark uniform centre inside a
+/// visible shallow rim.
+///
+/// The model is evaluated once, here, and the results written down. It is not evaluated per texel:
+/// `bandColor` interpolates between these thirteen exactly as it does between the ocean's twelve,
+/// so a lake and the sea go through one lookup and not two code paths.
+///
+/// **No stop is at or above the datum.** The last stop IS `0`, which is the shoreline -- a texel
+/// exactly at the body's own level -- and `slopeColor` never reaches this table for a texel at or
+/// below the datum, because `lakeLevelAt` refuses one. The ocean is untouched by this table's
+/// existence and a test asserts it byte for byte.
+export const LAKE_STOPS = [
+  [-390, "#0b1924"],    // inside the deepest lake sample on either world (DEFAULT_WORLD, 401.7 m)
+  [-180, "#10232f"],
+  [-110, "#132a36"],
+  [-70, "#152f3c"],
+  [-48, "#17323f"],     // 91% of the owner's lake area is shallower than this
+  [-32, "#193542"],     // the bottom's contribution has fallen under 1% here
+  [-22, "#1c3945"],
+  [-15, "#213f4a"],
+  [-10, "#29484f"],
+  [-6, "#365558"],      // the bottom is still 41% of what is seen
+  [-3, "#466561"],
+  [-1, "#55746a"],
+  [0, "#5e7d70"],       // the shoreline: the wet floor itself, under no water at all
+];
+
 /// The hypsometric ramp's stops, in metres above the datum.
 ///
 /// **The stops are metres above the datum, not fractions of the window.** That is the fix

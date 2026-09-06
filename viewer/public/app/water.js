@@ -16,22 +16,28 @@
 // A body row is `{ rootNode, kind, levelM, minLatitudeDeg, maxLatitudeDeg, minLongitudeDeg,
 // maxLongitudeDeg }` -- a **surface level** and a **bounding box**, and nothing else. So:
 //
-// 1. **There is no footprint.** The box is a deliberate over-approximation of the body's true
-//    irregular shore (`water.rs::Extent` argues the choice at length and says so). The only
-//    other thing that can narrow it back down is the height field itself, so the test drawn
-//    here is `inside the box AND at or below the body's level`. That is exact wherever the box
-//    holds no *other* depression below the same level, and over-paints where it does.
+// 1. **There is no footprint** -- but the box is not the over-approximation it was taken for.
+//    `water.rs::lake_body_extents` builds it as `Extent::from_points` over
+//    `positions[member].to_latlon()` for the body's submerged members, so **it bounds node
+//    CENTRES, not water**, and its resolution is one node spacing: 0.6616 degrees of arc at the
+//    shipped 30,000 nodes, which is 52 km on the owner's world and a quarter of its largest
+//    body's own width. That is why `dilateBodyExtents` exists and why one node cell radius is
+//    the size of the correction -- see that function for the calibration, which has actual
+//    ground truth in it. The test drawn here is still `inside the (dilated) box AND at or below
+//    the body's level`; the level test is what stops the water, and the box is a search hint.
 // 2. **There is no representative point and no radius.** `rootNode` is an index into a stream
 //    graph the viewer cannot see -- `stream::node_positions` is not an export -- so a body
-//    cannot be located except through its box.
+//    cannot be located except through its box. A point box IS that position, though, which is
+//    what makes (3) recoverable.
 // 3. **A single-node body's box is a POINT**, `minLat == maxLat` and `minLon == maxLon`, and a
-//    point has zero measure: no texel centre ever lands on one, so such a body can never be
-//    drawn. It is not skipped by a rule in this file -- the containment test simply never
-//    fires. **Measured, and it is not a rare corner:** on the owner's world at
-//    `node_count = 30,000`, **38 of 55 bodies are point boxes and 17 are drawable**; on
-//    `DEFAULT_WORLD`, 60 of 156 and 96 drawable. Both counts are in the task report with their
-//    method, and the gap is reported to the engine side rather than papered over here with an
-//    invented radius.
+//    point has zero measure: no texel centre ever lands on one. **Measured, and it is not a rare
+//    corner:** on the owner's world at `node_count = 30,000`, **38 of 55 bodies are point boxes**;
+//    on `DEFAULT_WORLD`, 60 of 156. Until this task all 38 and all 60 were undrawn.
+//    `dilateBodyExtents` gives each of them the one node cell it stands for -- not an invented
+//    radius, but `4 * pi * R^2 / nodeCount`, the share of the sphere `wb_water_run` itself
+//    allotted that node -- and **both worlds go to 100% of bodies drawn**, with no point body
+//    drawing more water than that one cell can hold. The counts are still reported, because a
+//    dilated point box is still a body whose true shape the manifest never carried.
 //
 // # The pole, not the antimeridian
 //
@@ -109,6 +115,128 @@ export function longitudeSpanDeg(body) {
 /// correct for both signs and for the seam.
 function eastwardDeg(fromDeg, longitudeDeg) {
   return (((longitudeDeg - fromDeg) % 360) + 360) % 360;
+}
+
+/// **The angular radius of one stream node's cell**, in degrees of great-circle arc.
+///
+/// This is the number the whole box question turns on, and it comes from the engine's own
+/// construction rather than from anything chosen here. `water.rs::lake_body_extents` builds a
+/// body's `Extent` as `Extent::from_points` over `positions[member].to_latlon()` for every member
+/// whose height is at or below the level -- so **the box bounds submerged NODE CENTRES, not
+/// water**. Each of those centres owns a share of the sphere: `wb_water_run` samples `nodeCount`
+/// nodes over `4 * pi * R^2`, so one node's share is `4 * pi * R^2 / nodeCount`, and the radius of
+/// the equal-area disc is `sqrt(4 * R^2 / nodeCount) = 2 * R / sqrt(nodeCount)`.
+///
+/// **The planet's radius cancels when that is expressed as an angle**, which is why this function
+/// does not take one: `r / R` in radians is `2 / sqrt(nodeCount)` whatever the world is. At the
+/// shipped 30,000 nodes that is **0.6616 degrees** -- 52.0 km on the owner's 4,500,000 m world and
+/// 73.6 km on `DEFAULT_WORLD`'s 6,371,000 m one.
+///
+/// Nothing here is a footprint the engine did not compute. It is the statement that a bounding box
+/// over points is smaller than the bounding box over the cells those points stand for, by exactly
+/// one cell radius on every side.
+export function nodeCellRadiusDeg(nodeCount) {
+  if (!(nodeCount > 0)) return 0;
+  return (2 / Math.sqrt(nodeCount)) * (180 / Math.PI);
+}
+
+/// A longitude folded into `[-180, 180)`. Positive-modulo, so it is correct for both signs.
+function wrapLongitudeDeg(longitudeDeg) {
+  return ((((longitudeDeg + 180) % 360) + 360) % 360) - 180;
+}
+
+/// **Every body's box, grown by one node cell radius on every side.**
+///
+/// # What this fixes, and it is two separate defects with one cause
+///
+/// 1. **38 of the owner's 55 bodies could not be drawn at all** (60 of `DEFAULT_WORLD`'s 156),
+///    because a single-node body's box is a *point* and a point has zero measure, so no texel
+///    centre ever landed on one. A single node is not a body of zero size; it is a body of one
+///    **cell**, and this gives it that cell. Both worlds go to **100% drawable**.
+/// 2. **The box's straight edges were visible at 900 km**, because the drawn set is
+///    `box AND at-or-below-level` and the box was cutting through ground the level test would
+///    have kept. Growing the box moves that cut outward, where more of it lands on ground above
+///    the level and the *terrain* becomes what stops the water.
+///
+/// # Why one cell radius, and not a number picked to look right
+///
+/// **The single-node bodies are ground truth, which is rare enough in this project to say out
+/// loud.** A one-node body's water is at most exactly one cell -- `4 * pi * R^2 / nodeCount`,
+/// 8,482 km^2 on the owner's world and 17,002 km^2 on `DEFAULT_WORLD` -- and that is an identity,
+/// not an estimate. So the dilation can be calibrated against a bound it must not cross. Measured,
+/// at three dilations, over all 38 and all 60 point-box bodies, sampling each dilated box at 64x64
+/// through `wb_fill_tile_f32`:
+///
+/// ```text
+///   dilation      mean water drawn per point body      bodies exceeding their one-cell ceiling
+///   (cell radii)     owner's        DEFAULT_WORLD          owner's        DEFAULT_WORLD
+///     0.5            9.1 %              7.5 %               0 / 38            0 / 60
+///     1.0           28.6 %             26.5 %               0 / 38            0 / 60
+///     1.27          43.0 %             42.9 %               1 / 38            2 / 60
+/// ```
+///
+/// At **1.0** every body draws, and not one draws more water than the single cell it can
+/// physically hold -- the level test, not the box, is what stops it. At 1.27 (the square that
+/// circumscribes the equal-area disc rather than inscribes its radius) the physical bound is
+/// crossed on both worlds, which is the measurement that rules out going further. At 0.5 the
+/// bodies draw under a tenth of their cell, which is the measurement that rules out going less.
+///
+/// And the straight-edge exposure, over **all** bodies -- the fraction of the box perimeter that
+/// is at or below the body's own level, i.e. the fraction of the boundary at which the box rather
+/// than the terrain decides where the water stops (512 samples per edge, `wb_elevation_m` at
+/// canonical resolution):
+///
+/// ```text
+///   dilation      owner's world      DEFAULT_WORLD
+///     0.0            47.8 %             31.3 %
+///     1.0            20.7 %             22.5 %
+/// ```
+///
+/// **Halved, not eliminated.** A fifth of the boundary is still a straight cut, and that is the
+/// residue of the real gap: the manifest carries no footprint, and one cell radius is the largest
+/// correction its construction actually licenses. See this file's module doc.
+///
+/// # The seam and the poles
+///
+/// Latitude is bounded at the poles by explicit comparison -- never `Math.min`/`Math.max`, this
+/// project's standing rule, so a NaN latitude propagates into a visible artefact instead of being
+/// silently absorbed. Longitude is padded by `cellRadius / cos(latitude)`, because a degree of
+/// longitude is `cos(latitude)` of a degree of arc and a polar body needs a much wider box to gain
+/// the same distance; where that would meet or exceed the whole circle -- which is the case for a
+/// body over a pole -- the arc becomes the full 360 degrees, which `bodyContains` already accepts.
+/// The `min > max` wrap convention is preserved: `wrapLongitudeDeg` folds the new start back into
+/// `[-180, 180)` and the end is the start plus the new span, folded the same way.
+export function dilateBodyExtents(bodies, nodeCount) {
+  const cellDeg = nodeCellRadiusDeg(nodeCount);
+  if (!(cellDeg > 0)) return bodies;
+  return bodies.map((body) => {
+    let south = body.minLatitudeDeg - cellDeg;
+    let north = body.maxLatitudeDeg + cellDeg;
+    if (south < -90) south = -90;
+    if (north > 90) north = 90;
+    // The pad in longitude is measured at whichever of the two latitudes is nearer a pole, so
+    // the box gains at least `cellDeg` of arc along its whole height rather than only at its
+    // equatorward edge.
+    const worstLat = Math.abs(south) > Math.abs(north) ? south : north;
+    const cosLat = Math.cos((worstLat * Math.PI) / 180);
+    const span = longitudeSpanDeg(body);
+    const lonPad = cosLat > 0 ? cellDeg / cosLat : 360;
+    const newSpan = span + 2 * lonPad;
+    if (!(newSpan < 360)) {
+      return {
+        ...body, minLatitudeDeg: south, maxLatitudeDeg: north,
+        minLongitudeDeg: -180, maxLongitudeDeg: 180,
+      };
+    }
+    const west = wrapLongitudeDeg(body.minLongitudeDeg - lonPad);
+    return {
+      ...body,
+      minLatitudeDeg: south,
+      maxLatitudeDeg: north,
+      minLongitudeDeg: west,
+      maxLongitudeDeg: wrapLongitudeDeg(west + newSpan),
+    };
+  });
 }
 
 /// Is a point inside a body's box? Latitude is a plain interval; longitude is an arc.

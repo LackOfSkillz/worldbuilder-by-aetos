@@ -25,7 +25,7 @@ import {
 } from "./cloud-provider.js";
 import { CLOUD_MAX_LEVEL, CLOUD_TILE_SIZE } from "./clouds.js";
 import {
-  waterDiagnostics, waterEnabled, waterNodeCountFromParams,
+  dilateBodyExtents, waterDiagnostics, waterEnabled, waterNodeCountFromParams,
 } from "./water.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
@@ -263,6 +263,16 @@ async function boot() {
   // `lakeLevelAt` choose.
   const waterFacts = waterDiagnostics(water.bodies);
 
+  // **The boxes bound node CENTRES, so they are grown by one node cell before anything draws
+  // them.** `water.rs::lake_body_extents` takes `Extent::from_points` over the submerged members'
+  // positions, and a node stands for `4 * pi * R^2 / nodeCount` of sphere; the box is therefore
+  // one cell radius short on every side, and a one-node body's box is a point rather than a cell.
+  // `dilateBodyExtents` carries the whole argument and the calibration -- including the one piece
+  // of ground truth available here, that a one-node body cannot hold more than one cell of water.
+  // `waterFacts` above is deliberately taken on the RAW rows: it is a statement about what the
+  // manifest carries, and dilating first would make it report a fact about this file instead.
+  const drawnBodies = dilateBodyExtents(water.bodies, waterNodes);
+
   const reliefOn = reliefLayerEnabled(params);
   let reliefProvider = null;
   if (reliefOn) {
@@ -276,7 +286,7 @@ async function boot() {
       biome: biomeColourEnabled(params) ? undefined : null,
       // The bodies, resolved above. `[]` under `?lakes=0`, which is the picture this task
       // started from.
-      lakes: water.bodies,
+      lakes: drawnBodies,
       // Defaults to the *terrain's* cap, so imagery is never the thing that stops refining
       // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
       maximumLevel: number("reliefMaxLevel", maxLevel),
@@ -584,7 +594,8 @@ async function boot() {
     // datum the engine echoed back, are here.
     `lakes=${
       lakesOn
-        ? `${waterFacts.drawable}/${waterFacts.bodies} drawable @${waterNodes} nodes ` +
+        ? `${drawnBodies.length}/${waterFacts.bodies} drawn (${waterFacts.pointBoxes} point ` +
+          `boxes given their node cell) @${waterNodes} nodes ` +
           `datum ${water.seaLevelM} m in ${(waterMs / 1000).toFixed(2)}s` +
           `${waterFacts.wideBoxes > 0 ? ` WIDE=${waterFacts.wideBoxes}` : ""}` +
           `${waterFacts.overlappingPairs > 0 ? ` overlap=${waterFacts.overlappingPairs}` : ""}` +
@@ -635,7 +646,7 @@ async function boot() {
     /// estimate.
     water: {
       enabled: lakesOn, nodeCount: waterNodes, ms: waterMs,
-      seaLevelM: water.seaLevelM, bodies: water.bodies, facts: waterFacts,
+      seaLevelM: water.seaLevelM, bodies: water.bodies, drawnBodies, facts: waterFacts,
     },
     /// `null` under `?clouds=0` and under any configuration where the ramp material would cover
     /// it. Its `worldbuilder.clouds` is the calibration the layer is drawing with -- read rather

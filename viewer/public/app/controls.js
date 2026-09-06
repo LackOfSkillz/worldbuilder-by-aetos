@@ -116,8 +116,15 @@ const FAULT_OPTIONS = [
 //
 // **Two narrower entries replace it, and both are measured rather than guessed.** A body arrives
 // as a level and a bounding BOX, so its true shoreline is not available at all -- what is drawn is
-// the box intersected with the level, which is exact only where no other depression shares the
-// box. And `LakeKind::Pond` cannot occur: the engine calibrated its threshold at 1.0e5 m^2 and
+// the box intersected with the level. **The box's own resolution has since been identified and is
+// one stream-node spacing** -- `water.rs::lake_body_extents` bounds submerged node CENTRES, so
+// `water.js::dilateBodyExtents` grows every box by the one cell radius that construction licenses,
+// which is what made the 38 point-box bodies drawable at all. It halves the straight-edge
+// exposure and does not remove it: measured over every body on two worlds, the fraction of a
+// box's perimeter that is still at or below the body's own level -- i.e. where the box rather
+// than the terrain decides where the water stops -- falls from 47.8% to 20.7% on the owner's
+// world and from 31.3% to 22.5% on `DEFAULT_WORLD`. That residue is the entry.
+// And `LakeKind::Pond` cannot occur: the engine calibrated its threshold at 1.0e5 m^2 and
 // then measured the smallest body this mesh produces at 7.9e8 m^2.
 //
 // **What did NOT come off is "rivers", deliberately.** `WaterManifest` carries `reaches` and
@@ -126,7 +133,8 @@ const FAULT_OPTIONS = [
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
   ["island arcs", "TectonicParams carries them; Task 1 proved no coverage, so no slider"],
-  ["lake shorelines", "a body arrives as a level and a BOX; its true footprint is not exported"],
+  ["lake shorelines", "the box bounds NODE CENTRES, so it is grown by one cell; 21% of a body's "
+    + "boundary is still a straight cut, because no true footprint is exported"],
   ["ponds", "the calibrated 1.0e5 m² threshold classifies none: the smallest body is 7.9e8 m²"],
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],
   ["place areas", "slice 3, the studio: not started"],

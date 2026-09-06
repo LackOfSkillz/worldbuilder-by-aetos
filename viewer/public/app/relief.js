@@ -142,17 +142,22 @@
 // base colour arrives, biome or ramp; `biome.js` deliberately contains no second elevation
 // system, only a `montane` band feeding the base the blends then modify.
 //
-// # Lakes join the OCEAN's colour system, and do not become a fourth one
+// # Lakes use the ocean's MACHINERY and their own TABLE
 //
 // `wb_water_run` hands back a body's **surface level**, and a lake surface is flat at that
 // level -- that is the whole of what slice 5b computed. So a lake texel is drawn by the two
 // rules the sea is already drawn by, evaluated at its own datum instead of at the planet's:
 //
-// - **Colour** is `OCEAN_BANDS` read at `heightM - levelM`, the depth below *that* lake's
-//   surface, with the same `coastDitherM` scattering its shore that the sea's gets. A lake is
-//   shallow water, so it lands in the pale end of the twelve stops the ocean retune placed
-//   against the measured depth distribution -- the shelf and surf colours -- which is where
-//   shallow water belongs. No new palette, no new blend, no fourth colour system.
+// - **Colour** is `LAKE_BANDS` read at `heightM - levelM`, the depth below *that* lake's
+//   surface, through the same `bandColor` the sea goes through. It was `OCEAN_BANDS` until this
+//   task, and that was measurably wrong rather than merely unflattering: **every lake this
+//   generator makes is shallower than the ocean table's third-shallowest stop**, so nine of its
+//   twelve stops could not be reached on a lake and all lake water drew from the shelf and surf
+//   colours at luminance 176 to 230. The lakes read as ice. `LAKE_STOPS` is thirteen stops over
+//   0..390 m, placed against the measured lake-depth distribution (p50 15.4 m / 18.5 m over two
+//   worlds) exactly as the ocean's twelve were placed against the sea's, and coloured from a
+//   two-term optical model rather than by eye -- see `LAKE_STOPS` in `panel-fields.js`. The
+//   ocean's table is not touched by any of it.
 // - **Shading is switched off**, exactly as it is below the datum: `dot = sun.up`, the flat
 //   plane. That is not a saving, it is the point -- a lake surface is flat, and hillshading the
 //   drowned valley floor beneath it would put a ridge's shadow on standing water. It is the
@@ -167,7 +172,7 @@
 // intent.
 
 import { biomeColor } from "./biome.js";
-import { OCEAN_STOPS } from "./panel-fields.js";
+import { LAKE_STOPS, OCEAN_STOPS } from "./panel-fields.js";
 import { metresPerDegree } from "./terrain.js";
 import { bodiesOverlappingRectangle, lakeLevelAt } from "./water.js";
 
@@ -292,6 +297,17 @@ function hexRgb(hex) {
 /// line, and `coastDitherM` below is what stops its outer edge being a contour.
 export const OCEAN_BANDS = OCEAN_STOPS.map(([metres, hex]) => [metres, hexRgb(hex)]);
 
+/// **The lake bands are `LAKE_STOPS`, and they are a different table from the ocean's.** Same
+/// derivation, same one-copy rule; see `LAKE_STOPS` in `panel-fields.js` for the measured lake
+/// depth distribution the thirteen stops are placed against and for the two-term optical model
+/// the colours come out of.
+///
+/// The last stop IS `[0, ...]`, unlike `OCEAN_BANDS`: a lake texel is read at `heightM - levelM`,
+/// which is zero exactly at the shoreline, so the shore is a stop rather than a clamp. Below
+/// -390 m `bandColor` holds the deepest colour, as it does at the ocean's -6,000 m; on the
+/// owner's world no lake comes near it and on `DEFAULT_WORLD` one body passes it by 11.7 m.
+export const LAKE_BANDS = LAKE_STOPS.map(([metres, hex]) => [metres, hexRgb(hex)]);
+
 /// **The dithered water's edge.** A hard rim at a fixed depth is the strongest "this is a diagram"
 /// tell in the picture, because the coastline is its highest-contrast edge and the eye goes
 /// straight there. The reference render breaks its surf line with a per-texel noise term; a 1-D
@@ -409,9 +425,14 @@ export function baseColor(heightM) {
 export function slopeColor(
   heightM, slopeDeg, latitudeDeg = 0, longitudeDeg = 0, calibration = null, lakeLevelM = null,
 ) {
-  // **A lake is the ocean's colour system read at the lake's own datum.** Same table, same
-  // dither, same clamp above the surf stop -- see the module doc. Placed before the land
-  // branch because a lake texel is water and must not reach the rock or snow blends.
+  // **A lake has its own table, and that is a measurement rather than a preference.** It used
+  // to read `OCEAN_BANDS`; every lake this generator makes is shallower than that table's
+  // third-shallowest stop, so nine of its twelve stops were unreachable on a lake and all of
+  // them drew from the shelf and surf colours -- luminance 176 to 230, which is ice. `LAKE_STOPS`
+  // is placed against the measured lake-depth distribution (p50 15.4 m on the owner's world,
+  // 18.5 m on `DEFAULT_WORLD`) the way the ocean's twelve were placed against the sea's. Placed
+  // before the land branch because a lake texel is water and must not reach the rock or snow
+  // blends.
   //
   // There is no branch here for a body of kind `pond`, and that is deliberate rather than an
   // omission: the engine's calibrated threshold produces zero ponds at every resolution this
@@ -426,7 +447,7 @@ export function slopeColor(
     // is 13% of the water at the median and the dither stops being an edge treatment and becomes
     // a texture over the entire body. It read as speckled cloud, not as water. The sea keeps it;
     // the lake does not.
-    return bandColor(OCEAN_BANDS, heightM - lakeLevelM);
+    return bandColor(LAKE_BANDS, heightM - lakeLevelM);
   }
   // **The land base colour is the only thing the biome layer replaces.** Water keeps
   // `OCEAN_BANDS` (no ocean retune in this task), and the rock and snow blends below act on
