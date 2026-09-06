@@ -531,38 +531,57 @@ test("every body the engine resolves is drawn, including the ones whose box is a
   const dilated = dilateBodyExtents(manifest.bodies, NODES);
   assert.equal(dilated.length, manifest.bodies.length);
 
-  let drawn = 0;
-  for (const body of dilated) {
+  // **The frame is built from the RAW box and a fixed margin, never from the dilated one.** A
+  // frame taken from the box under test is the dud this test was first written as: a point box
+  // gives a rectangle of zero size, every texel in it lands on the point, and the raster paints
+  // a full tile whether the dilation ran or not. Held fixed, the two sides are comparable and
+  // the only thing that can move the count is the containment test.
+  const MARGIN_DEG = 1.0;
+  const frame = (body) => ({
+    northDeg: body.maxLatitudeDeg + MARGIN_DEG,
+    southDeg: body.minLatitudeDeg - MARGIN_DEG,
+    westDeg: body.minLongitudeDeg - MARGIN_DEG,
+    eastDeg: body.minLongitudeDeg + longitudeSpanDeg(body) + MARGIN_DEG,
+  });
+  const texelsFor = (framedOn, drawnWith) => {
     const counters = { lakeTexels: 0, lakeTiles: 0 };
-    // Framed on the DILATED box with no extra margin, so the only thing that can paint a texel
-    // is the dilation itself, and rasterised through `reliefTile` -- the function the workers
-    // call -- rather than through a second implementation of the containment test.
+    // Rasterised through `reliefTile` -- the function the workers call -- rather than through a
+    // second implementation of the containment test.
     reliefTile({
-      rectangle: {
-        northDeg: body.maxLatitudeDeg,
-        southDeg: body.minLatitudeDeg,
-        westDeg: body.minLongitudeDeg,
-        eastDeg: body.minLongitudeDeg + longitudeSpanDeg(body),
-      },
-      size: 32,
+      rectangle: frame(framedOn),
+      size: 64,
       engine,
       worldHandle: ownerHandle,
       radiusM: OWNER_WORLD.radiusM,
-      lakes: [body],
+      lakes: [drawnWith],
       counters,
     });
-    if (counters.lakeTexels > 0) drawn += 1;
+    return counters.lakeTexels;
+  };
+
+  let drawn = 0;
+  let rawDrawn = 0;
+  for (let i = 0; i < manifest.bodies.length; i += 1) {
+    const raw = manifest.bodies[i];
+    if (texelsFor(raw, dilated[i]) > 0) drawn += 1;
+    if (texelsFor(raw, raw) > 0) rawDrawn += 1;
   }
   assert.equal(
     drawn, manifest.bodies.length,
     `${manifest.bodies.length - drawn} of ${manifest.bodies.length} bodies still draw nothing`,
   );
-
-  // And the point boxes genuinely are a large part of the manifest, or the line above is passing
-  // for the boring reason that nothing ever needed the dilation.
+  // ...and the raw boxes genuinely do NOT all draw, or the line above is passing for the boring
+  // reason that nothing ever needed the dilation. This is the half a "now it works" assertion
+  // cannot supply on its own, and it is the measurement the previous task reported: 17 of 55.
   assert.ok(
-    facts.pointBoxes >= 30,
-    `only ${facts.pointBoxes} point boxes; the finding has changed scale, re-measure it`,
+    rawDrawn < manifest.bodies.length - 20,
+    `${manifest.bodies.length - rawDrawn} bodies were undrawable before the dilation; the `
+    + "finding has changed scale, re-measure it",
+  );
+  assert.equal(
+    rawDrawn, manifest.bodies.length - facts.pointBoxes,
+    `${rawDrawn} raw bodies draw but ${facts.pointBoxes} boxes are points; the two counts must `
+    + "be the same statement arrived at two ways",
   );
 });
 
