@@ -11,18 +11,43 @@ generalises that from tags to the whole integration, and generalising it is corr
 
 ---
 
-## Why a contrib cannot be the engine
+## CORRECTED: the packaging objection was wrong, and it was mine
 
-Evennia contribs are **pure Python, in Evennia's own repository, under its licence, reviewed by its
-maintainers**. A contrib that vendored a Rust crate, a wasm artifact, or a `maturin`-built wheel would ask
-Evennia's maintainers to take on:
+**My first version of this document argued that a contrib cannot depend on the engine because it would ask
+Evennia's maintainers to take on a Rust toolchain, a binary artifact in their source tree, and a dependency
+that can fail to install. THAT IS WRONG, and the correction came from someone who packages Python for a
+living.**
 
-- a **build toolchain** they do not have (a Rust compiler, `wasm-pack`, a native wheel per platform),
-- a **binary artifact** in a source tree,
-- and **a dependency that can fail to install** on any platform they support.
+**Nobody vendors anything.** The route is:
 
-That is a hard sell on its merits and a reasonable one to refuse. **The engine is not what an Evennia game
-needs at runtime anyway.**
+1. The engine is already a **maturin/pyo3** project -- this repository builds a Python wheel today with
+   `maturin develop --release --features python`, and the 157-test conformance suite runs against it.
+2. **GitHub's free runners build wheels** per platform and per Python version.
+3. **A git tag triggers publication to PyPI.** Bump the version, push the tag, the workflow does the rest.
+4. The contrib then declares an ordinary **`pip install` dependency**, exactly like any other Python library.
+
+**Evennia's maintainers never see Rust.** They see a PyPI package with wheels for the platforms they
+support. The build toolchain lives in this repository's CI and nowhere else.
+
+So the packaging objection is dead, and with it the *strongest* argument in my first draft. **What remains
+of the original conclusion has to stand on different reasoning**, which is the point of writing this down
+rather than quietly editing.
+
+## The decision survives, on weaker but sufficient grounds
+
+The contrib should still be **the glue rather than the engine**, but now as a *choice* rather than a
+constraint:
+
+- **Generation is expensive and out-of-band.** A worldfile is produced once by a studio and applied many
+  times; a game server has no reason to carry a terrain generator it calls at world-build time only.
+- **Roadmap section 3.1 already chose this for climate tags** -- *"Evennia receives concrete tags and never
+  needs the engine at runtime"* -- and the reason given was determinism and fail-closed versioning, not
+  packaging. **That reason is untouched by the correction.**
+- **A file is inspectable, diffable and checked into the game's own repository.** An engine call is not.
+
+**But the option is now open where it was closed**, and that is a real gain: if some future feature genuinely
+needs the engine live -- a builder command that previews terrain before committing it, say -- **a PyPI
+dependency is a normal thing to add**, not an architectural breach.
 
 ## What an Evennia game actually needs
 
