@@ -33,7 +33,7 @@ use crate::noise::Noise;
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::tangent::TangentFrame;
-use crate::vectors::Vec3;
+use crate::vectors::{Vec3, DEGENERATE};
 
 /// Beyond this, a margin does nothing at all and no kinematics are evaluated. Every
 /// profile below must reach exactly zero by here, or the gate itself becomes a cliff.
@@ -260,6 +260,55 @@ pub struct TectonicParams {
     /// that path, and it is stated here rather than left at zero so a caller who turns the
     /// depth up gets a sane field rather than a division by nothing.
     pub structure_wavelength_m: f64,
+
+    // ------------------------------------------------------ the along-margin warp, Task 5
+    //
+    // **THE STRAIGHT LINE IS A GEOMETRY FACT, NOT A TUNING PROBLEM.** The owner, looking at
+    // a range this engine had just produced: *"how do we make them more random? they look
+    // like they were drawn with a straight line tool."* They were.
+    // `plates.rs::margin_at` computes `asin(|point . bisector_normal|) * radius`, and a
+    // bisector normal defines a PLANE THROUGH THE ORIGIN -- a GREAT CIRCLE. Every margin in
+    // this engine is a perfect arc, so every range built on one is dead straight by
+    // construction, and no setting of any field above changes that. The owner could max
+    // every control and get a more detailed straight line.
+    //
+    // Real plate boundaries are the one shape a great circle never is: transform faults
+    // offset spreading ridges into staircases, subduction zones curve into arcs, and
+    // collision belts bend around indenters.
+    /// How far the collision belt is displaced sideways off the plate bisector, in metres.
+    /// **The amplitude of a wander, not of a roughness.**
+    ///
+    /// The displacement is a function of position **ALONG** the margin only -- see
+    /// [`Tectonics::margin_warp_m_at`] -- so the whole belt translates coherently at each
+    /// point along its length. That is the difference between a *wandering belt* and a
+    /// *noisy edge*, and it is the one thing that separates this from the version Task 2
+    /// built and removed, which perturbed by an `fbm` of the 3-D point: that made the crest
+    /// wander AND the across-belt profile ragged at the same time, because the noise varied
+    /// in both directions at once.
+    ///
+    /// 0.0 is canonical and the field is then not merely multiplied by zero: `from_margin`
+    /// branches on it before sampling, so the canonical path never reaches
+    /// [`crate::noise::Noise::fbm`] on this field's account and hands the collision term the
+    /// identical `f64` it handed it before this field existed.
+    ///
+    /// **A caller setting this is responsible for the reach.**
+    /// [`TectonicParams::collision_reach_m`] adds this amplitude, because the profile now
+    /// reaches this much further on the side the warp pushes toward, and
+    /// [`MAX_TECTONIC_RANGE_M`] truncates rather than fades.
+    pub margin_warp_m: f64,
+    /// The wavelength of the warp's **longest** octave, in metres -- the orocline.
+    ///
+    /// [`MARGIN_WARP_OCTAVES`] octaves at a gain of 0.5 and a lacunarity of 2.0, so the
+    /// schedule is this wavelength, half it and a quarter of it, carrying 4/7, 2/7 and 1/7
+    /// of the amplitude. A real margin is ragged at every scale, and the long octave has to
+    /// BE long: a wavelength near the belt's own width shreds the belt instead of bending
+    /// it, which is the same failure the "function of position along the margin" form exists
+    /// to avoid in the other axis.
+    ///
+    /// Inert while `margin_warp_m` is 0.0. The canonical value is a placeholder never read
+    /// on that path, stated rather than left at zero for the reason
+    /// `structure_wavelength_m`'s is.
+    pub margin_warp_wavelength_m: f64,
 }
 
 /// The value of [`TectonicParams::collision_asymmetry`] that means "symmetric", and the
@@ -277,10 +326,23 @@ pub const SEGMENTATION_OCTAVES: u32 = 2;
 /// coarse relative to the ridges it is gating or it just adds a second layer of ridges.
 pub const SEGMENTATION_WAVELENGTH_RATIO: f64 = 6.0;
 
-/// Salts, so the three fields this module samples are independent of each other and of
+/// How many octaves the along-margin warp takes, at a gain of 0.5 and a lacunarity of 2.0.
+///
+/// **Three, and the schedule is the point.** The wavelengths are
+/// `margin_warp_wavelength_m`, half it and a quarter of it, carrying 4/7, 2/7 and 1/7 of the
+/// amplitude between them. The long octave is the orocline -- the Himalayan arc and the
+/// Bolivian orocline are both bends of tens of degrees over their length -- and the two
+/// short ones are the kinks a transform-offset margin has at every scale below that. Two
+/// octaves gives a bend with no texture; four puts a quarter of the amplitude at a
+/// wavelength approaching the belt's own width, which is where a coherent translation starts
+/// to read as a torn edge instead.
+pub const MARGIN_WARP_OCTAVES: u32 = 3;
+
+/// Salts, so the four fields this module samples are independent of each other and of
 /// `continentality`'s. ASCII, in the house style of `stream.rs`'s jitter salts.
 pub const STRUCTURE_SALT: u64 = 0x7374_7275_6374_7572; // "structur"
 pub const SEGMENTATION_SALT: u64 = 0x7365_676D_656E_7473; // "segments"
+pub const MARGIN_WARP_SALT: u64 = 0x7761_6E64_6572_696E; // "wanderin"
 
 /// The scale a 64-bit hash is divided by to land in `[0, 1)`. 2^64, exactly representable.
 const HASH_SCALE: f64 = 18_446_744_073_709_551_616.0;
@@ -341,6 +403,8 @@ impl TectonicParams {
             suture_spread_m: 0.0,
             structure_depth: 0.0,
             structure_wavelength_m: 120_000.0,
+            margin_warp_m: 0.0,
+            margin_warp_wavelength_m: 300_000.0,
         }
     }
 
@@ -355,7 +419,7 @@ impl TectonicParams {
     /// **`canonical()` does not move and no default changes.** This is a second constructor
     /// beside it, reachable only by a caller who asks for it by name.
     ///
-    /// Six fields move. The coastal, arc and ridge profiles and `continental_blend` stay at
+    /// Eight fields move. The coastal, arc and ridge profiles and `continental_blend` stay at
     /// canonical deliberately: this preset shapes the *collision* profile, which is the one
     /// Task 1's one-ULP perturbation fixtures prove is read live, and `continental_blend`
     /// decides how MANY margins become ranges, which is a different question from what a
@@ -400,6 +464,25 @@ impl TectonicParams {
     ///   delivers is the table below.) And it has to be one of those two: Task 2
     ///   measured that **120-250 km does nothing at any depth** (summit counts fall back to
     ///   0-3), so this parameter's working band is 40-80 km with no interior to interpolate.
+    /// - **`margin_warp_m: 80_000.0` with `margin_warp_wavelength_m: 300_000.0`.** Task 5,
+    ///   and the answer to the owner looking at the six fields above and saying *"they look
+    ///   like they were drawn with a straight line tool"*. They were: every margin here is a
+    ///   great circle and every belt on one is straight by construction. **Chosen against the
+    ///   grade and the range gate, not against the sinuosity it maximises**, which is the
+    ///   same rule Task 3 used for the asymmetry. On the bare envelope, where the belt is a
+    ///   great circle and nothing else is happening, the crest's maximum lateral deviation
+    ///   from its own endpoint chord goes **3.6 km -> 15.5 km** at this pair and the crest
+    ///   sinuosity **1.0261 -> 1.0470**, with the envelope sinuosity moving with it
+    ///   (1.0172/1.0139 -> 1.0250/1.0223) -- **the belt moves, not just the crest inside
+    ///   it.** On this preset the deviation goes **21.6 km -> 44.6 km, 0.054 -> 0.124 of the
+    ///   belt's length**, and the delivered grade goes **9.811% -> 9.293%**, slightly DOWN.
+    ///   120 km buys more bend (0.204 of belt length) and costs a grade of 10.711% and a
+    ///   reach of 355 km against the 420 km gate; 80 km reaches **315 km** and keeps the
+    ///   grade below the un-warped preset's, which is why it is the one here and the 120 km
+    ///   row is published beside it. The wavelength is 300 km for the reason the structure
+    ///   wavelength is 80 km: **900 km is measured as doing nothing** (deviation 9.4 km
+    ///   against 3.6 km unwarped, on a belt 350 km long -- a bend longer than the belt is a
+    ///   tilt), and 300 km is where the measured column peaks.
     ///
     /// # What it DELIVERS, measured, because the request is not the answer
     ///
@@ -453,6 +536,8 @@ impl TectonicParams {
             suture_spread_m: 100_000.0,
             structure_depth: 0.7,
             structure_wavelength_m: 80_000.0,
+            margin_warp_m: 80_000.0,
+            margin_warp_wavelength_m: 300_000.0,
             ..Self::canonical()
         }
     }
@@ -468,8 +553,24 @@ impl TectonicParams {
     /// belongs at the boundary that admits a block, per `MAX_TECTONIC_RANGE_M`'s own note.
     ///
     /// At `canonical()` this is `continent_collision_width_m` exactly: one suture at offset
-    /// zero and symmetric flanks.
+    /// zero, symmetric flanks, and no warp.
+    ///
+    /// **`margin_warp_m` is added, and that is Task 5's change to this function.** The warp
+    /// displaces the whole collision profile sideways off the bisector by up to that
+    /// amplitude -- `Noise::fbm` is bounded to `[-1, 1]` by construction, since every lattice
+    /// sample is in `[0, 1]` and the sum is divided by the summed amplitude -- so on the side
+    /// the warp pushes toward the profile carries weight exactly that much further out than
+    /// it did. Leaving it out would report a reach a warped range does not have, and the
+    /// range gate would then truncate the far flank into the cliff this function exists to
+    /// let a boundary refuse. Task 2's own removed version measured the reach growing 150%
+    /// for the same reason.
     pub fn collision_reach_m(&self) -> f64 {
+        // `abs`, not a `> 0.0` branch. A negative amplitude is a mirrored warp of the same
+        // magnitude and reaches exactly as far, so a branch that floored it at zero would
+        // report a reach the profile does not have -- the same "unreported reach" shape a
+        // negative `suture_spread_m` has. And `abs` keeps a NaN a NaN, so the boundary's
+        // `within` refuses it rather than a branch quietly turning it into a legal zero.
+        let warp = self.margin_warp_m.abs();
         let furthest = if self.suture_count > 1 {
             let last = f64::from(self.suture_count - 1); // cast-ok: a small count to float, exact
             let stretched = self.suture_spread_m * (1.0 + SUTURE_OFFSET_JITTER);
@@ -482,7 +583,7 @@ impl TectonicParams {
         } else {
             0.0
         };
-        furthest + self.continent_collision_width_m
+        furthest + self.continent_collision_width_m + warp
     }
 }
 
@@ -644,6 +745,10 @@ pub struct Tectonics {
     /// two amplitudes.
     structure: Noise,
     segmentation: Noise,
+    /// The along-margin warp's field. Salted apart from the other two for the same reason
+    /// they are salted apart from each other, and sampled at a point on the margin's own
+    /// great circle rather than at the query point -- see [`Tectonics::margin_warp_m_at`].
+    warp: Noise,
 }
 
 impl Tectonics {
@@ -665,7 +770,8 @@ impl Tectonics {
         let world_seed = land.world_seed();
         let structure = Noise::new(world_seed, STRUCTURE_SALT);
         let segmentation = Noise::new(world_seed, SEGMENTATION_SALT);
-        Self { plates, land, radius_m, params, structure, segmentation }
+        let warp = Noise::new(world_seed, MARGIN_WARP_SALT);
+        Self { plates, land, radius_m, params, structure, segmentation, warp }
     }
 
     /// What this world's uplift profiles are set to. Read-only: nothing writes these after
@@ -756,8 +862,22 @@ impl Tectonics {
                 Some(n) => n,
                 None => continue,
             };
+            // `margin.normal` goes down as well as `normal`, and they are two different
+            // things: `normal` is the across-margin direction in the tangent plane at
+            // `point`, and `margin.normal` is the bisector's PLANE normal, which is what the
+            // along-margin projection in `margin_warp_m_at` needs. The tangent-plane one
+            // cannot stand in for it -- projecting onto a plane that varies with the query
+            // point is exactly what would make the warp vary across the belt as well as
+            // along it, which is the failure this technique exists to avoid.
             total += margin.weight
-                * self.from_margin(point, &near, &margin.other, margin.distance_m, &normal);
+                * self.from_margin(
+                    point,
+                    &near,
+                    &margin.other,
+                    margin.distance_m,
+                    &normal,
+                    &margin.normal,
+                );
         }
         total
     }
@@ -876,6 +996,83 @@ impl Tectonics {
         1.0 - params.structure_depth + params.structure_depth * ridges * segments
     }
 
+    /// **How far this stretch of margin has wandered off its great circle, in metres.**
+    ///
+    /// This is the whole of Task 5 and the whole of the answer to *"they look like they were
+    /// drawn with a straight line tool"*. Every margin in this engine IS a great circle --
+    /// `plates.rs::margin_at` measures `asin(|p . n|) * radius`, and a plane through the
+    /// origin cuts a sphere in a circle of its full radius, exactly once, with no other
+    /// shape available. So a belt anchored on that distance is straight by construction and
+    /// no amplitude, width, asymmetry, suture or structure setting can bend it.
+    ///
+    /// **The perturbation is a function of position ALONG the margin, and nothing else.**
+    /// With `n` the bisector's plane normal and `p` the query point,
+    ///
+    /// ```text
+    /// signed = p . n                      // the signed sine-distance across the margin
+    /// along  = normalise(p - signed * n)  // the nearest point ON the great circle
+    /// ```
+    ///
+    /// `along` is **constant across the belt and varies only along it**: every point on one
+    /// perpendicular through the margin projects to the same place. Sampling the noise there
+    /// therefore translates the entire belt sideways, coherently, at each station along its
+    /// length -- a *wandering belt*. Task 2's removed version sampled an `fbm` of `p` itself,
+    /// which varies in both directions at once and so produced a *noisy edge*: the crest
+    /// moved, and the profile across the belt was chewed up while it moved. That difference
+    /// is the difference between the Andes and a torn strip of paper, and it is why this is
+    /// a new technique rather than a revival.
+    ///
+    /// **The projection is orientation-blind and that is load-bearing.** `bisector(i, j)` is
+    /// `normalise(seed_i - seed_j)`, so the SAME margin sampled from its two sides is handed
+    /// `n` and `-n`. Under that flip `signed` negates and `signed * n` does not, so `along`
+    /// -- and every metre of warp derived from it -- is identical on both sides by
+    /// construction rather than by luck. That is `pair_fraction`'s argument about ordered
+    /// pairs, made about a projection instead of a hash, and it is what stops the warp
+    /// putting a seam down the middle of every belt it bends.
+    ///
+    /// **The seam that IS here is the bisector's own poles**, where `p` is parallel to `n`,
+    /// `p - signed * n` is the zero vector, and there is no direction to keep. Guarded
+    /// explicitly against [`DEGENERATE`] in `flattened`'s form, not by trusting
+    /// `Vec3::normalised`, which only refuses an exactly-zero length -- and answered with
+    /// zero warp rather than by skipping the margin, because a skip is a discontinuity and
+    /// zero is the continuous limit. Those poles sit 90 degrees from the margin, which on
+    /// any world is far beyond [`MAX_TECTONIC_RANGE_M`], so this is a guard against
+    /// arithmetic rather than against a place terrain is drawn.
+    ///
+    /// Returns metres, signed, bounded in magnitude by `margin_warp_m`: `Noise::fbm` divides
+    /// its octave sum by the summed amplitude and every lattice sample is in `[0, 1]`, so it
+    /// is in `[-1, 1]` by construction. [`TectonicParams::collision_reach_m`] relies on that
+    /// bound.
+    fn margin_warp_m_at(&self, point: &SpherePoint, bisector: &Vec3) -> f64 {
+        let params = self.params;
+        // A silence rather than a division by nothing, matching `structure_at`'s opening
+        // line. `wasm.rs` floors this field for the same reason it floors that one.
+        if params.margin_warp_wavelength_m <= 0.0 {
+            return 0.0;
+        }
+        let v = point.vector;
+        let signed = v.dot(bisector);
+        let flat = v.sub(&bisector.scaled(signed));
+        if flat.length() <= DEGENERATE {
+            return 0.0;
+        }
+        let along = match flat.normalised() {
+            Some(a) => a,
+            None => return 0.0,
+        };
+        let frequency = self.radius_m / params.margin_warp_wavelength_m;
+        params.margin_warp_m
+            * self.warp.fbm(
+                along.x * frequency,
+                along.y * frequency,
+                along.z * frequency,
+                1.0,
+                MARGIN_WARP_OCTAVES,
+                0.5,
+                2.0,
+            )
+    }
+
     /// One margin's contribution to the ground here.
     ///
     /// Args:
@@ -884,6 +1081,7 @@ impl Tectonics {
     /// far: The plate across this margin.
     /// distance_m: How far the margin is.
     /// normal: Across it, tangent to the surface, pointing towards `near`.
+    /// bisector: The margin's great-circle plane normal, for the along-margin warp only.
     ///
     /// Returns metres, which may be zero, and usually is.
     fn from_margin(
@@ -893,6 +1091,7 @@ impl Tectonics {
         far: &Plate,
         distance_m: f64,
         normal: &Vec3,
+        bisector: &Vec3,
     ) -> f64 {
         let motion = motion_between(near, far, point, normal, self.radius_m);
 
@@ -991,13 +1190,69 @@ impl Tectonics {
             1.0
         };
 
-        let profile = |across_m: f64| -> f64 {
+        // ---------------------------------------------------- the along-margin warp
+        //
+        // Sampled ONCE, outside the closure, for `structure`'s two reasons and a third of
+        // its own: the closure is evaluated at both `+distance_m` and `-distance_m` for the
+        // same point, and the warp is a property of WHERE ON THE MARGIN this point sits, not
+        // of which side of the blend is being evaluated. A sample inside would be paid twice
+        // for one answer and would be describing the wrong thing while it did.
+        //
+        // Skipped entirely at the canonical setting -- the same shape as `structure`, and
+        // for the same reason: a canonical world must perform the identical operations it
+        // performed before this field existed, not merely reach the same number.
+        //
+        // **THE SIGNED AXIS IS THE PROFILE'S OWN, AND THE FIRST VERSION'S WAS NOT.** The
+        // warp needs a signed across-margin coordinate to displace along, and the obvious
+        // source -- `p . bisector` -- carries no side information at all: for a point on
+        // plate A the table hands back `normalise(A - B)` and the dot product is positive;
+        // for a point on B it hands back `normalise(B - A)` and the dot product is positive
+        // AGAIN. So the first version took the side from the ORDERED PLATE PAIR, the way
+        // `pair_fraction` takes its suture offsets, and **that produced a 913 m cliff**,
+        // measured as a single 100 m step on a transect across the belt (against 11.6 m for
+        // the same configuration unwarped).
+        //
+        // The reason is worth writing down, because the ordered pair genuinely IS stable
+        // across the margin it belongs to. It is not stable across a THIRD plate's boundary:
+        // crossing from plate A into plate C replaces the whole `(A, *)` margin set with
+        // `(C, *)`, so the belt that was `(A, B)` becomes `(C, B)` -- a different ordered
+        // pair, whose index comparison can come out the other way and flip the displacement
+        // from `+w` to `-w` in one step. `pair_fraction`'s own doc comment names this exact
+        // hazard -- *"a sign that flips across a boundary is a cliff"* -- about the sutures,
+        // and it applies with more force to a term that moves the whole belt.
+        //
+        // So the sign comes from the axis `from_margin` ALREADY has. The profile is
+        // evaluated at `+distance_m` and `-distance_m` and blended by `toward`, which is the
+        // smoothed lean -- **positive is the overriding, more continental side**, a
+        // geological quantity that varies continuously and belongs to no plate's index. Write
+        // `x` for that signed coordinate; on the overriding side the point has `x = +d` with
+        // `toward` near one, and on the subducting side `x = -d` with `toward` near zero, so
+        // subtracting the warp from BOTH branch arguments makes the collision profile
+        // `P(x - w)` on both sides of the margin -- one expression, one belt, translated by
+        // `w`. Where the lean is near zero the two branches simply blend, which is the
+        // behaviour that was already there.
+        let (collision_across_m, mirrored_collision_across_m) = if params.margin_warp_m != 0.0 {
+            let warp_m = self.margin_warp_m_at(point, bisector);
+            (distance_m - warp_m, -distance_m - warp_m)
+        } else {
+            // The identical `f64`s the profile was handed before this field existed, not
+            // merely equal ones: no warp is sampled, no arithmetic is performed, and the
+            // canonical path evaluates the same expression on the same numbers in the same
+            // order. That is what `the_margin_warp_is_inert_at_its_canonical_setting`
+            // asserts by bits.
+            (distance_m, -distance_m)
+        };
+
+        let profile = |across_m: f64, collision_across_m: f64| -> f64 {
             let collided = params.continent_collision_m
                 * structure
-                * self.sutures(across_m, near, far);
-            // Only the collision term is stacked and modulated. The trench, the arc and
-            // the coastal rise stay anchored to the margin itself, which is where they
-            // belong: a trench IS the plate boundary.
+                * self.sutures(collision_across_m, near, far);
+            // Only the collision term is stacked, modulated AND WARPED. The trench, the arc
+            // and the coastal rise stay anchored to the margin itself, which is where they
+            // belong: a trench IS the plate boundary. That is why the warp arrives as a
+            // second argument rather than by moving `across_m` -- the three terms below read
+            // the unwarped distance and the collision term above reads the warped one, from
+            // the same call.
             let trench = TRENCH_M * bump(across_m + TRENCH_OFFSET_M, TRENCH_WIDTH_M);
             let arc =
                 params.island_arc_m * bump(across_m - ISLAND_ARC_OFFSET_M, params.island_arc_width_m);
@@ -1023,7 +1278,9 @@ impl Tectonics {
         // the lean, which keeps every feature at its intended range and reaches zero by
         // the gate because each profile does.
         let toward = (1.0 + setting.lean()) * 0.5;
-        strength * (toward * profile(distance_m) + (1.0 - toward) * profile(-distance_m))
+        strength
+            * (toward * profile(distance_m, collision_across_m)
+                + (1.0 - toward) * profile(-distance_m, mirrored_collision_across_m))
     }
 }
 
@@ -1136,6 +1393,7 @@ mod tests {
                     &margin.other,
                     margin.distance_m,
                     &normal,
+                    &margin.normal,
                 );
                 Some(margin.weight * contribution)
             })
@@ -1344,11 +1602,23 @@ mod tests {
         near: Plate,
         far: Plate,
         normal: Vec3,
+        /// The bisector's PLANE normal, `normalise(near.seed - far.seed)` -- the same vector
+        /// `PlateSet::new` puts in its table for this ordered pair, built here directly
+        /// because this fixture calls `from_margin` without going through `margins_within`.
+        /// The along-margin warp is the only thing that reads it.
+        bisector: Vec3,
     }
 
     impl LopsidedWorld {
         fn from_margin_for_test(&self, distance_m: f64) -> f64 {
-            self.tectonics.from_margin(&self.point, &self.near, &self.far, distance_m, &self.normal)
+            self.tectonics.from_margin(
+                &self.point,
+                &self.near,
+                &self.far,
+                distance_m,
+                &self.normal,
+                &self.bisector,
+            )
         }
     }
 
@@ -1376,7 +1646,13 @@ mod tests {
         let plates = PlateSet::new(vec![near, far]);
         let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M, params);
 
-        LopsidedWorld { tectonics, point, near, far, normal }
+        let bisector = near
+            .seed
+            .vector
+            .sub(&far.seed.vector)
+            .normalised()
+            .expect("two distinct seeds have a bisector");
+        LopsidedWorld { tectonics, point, near, far, normal, bisector }
     }
 
     fn lopsided_world() -> LopsidedWorld {
@@ -1390,7 +1666,7 @@ mod tests {
 
     /// Every field of `TectonicParams`, and the one-line accessor that perturbs it.
     #[allow(clippy::type_complexity)]
-    const FIELDS: [(&str, fn(&mut TectonicParams)); 13] = [
+    const FIELDS: [(&str, fn(&mut TectonicParams)); 15] = [
         ("continent_collision_m", |p| p.continent_collision_m = flip_last_bit(p.continent_collision_m)),
         ("continent_collision_width_m", |p| {
             p.continent_collision_width_m = flip_last_bit(p.continent_collision_width_m)
@@ -1419,6 +1695,16 @@ mod tests {
         ("structure_depth", |p| p.structure_depth = flip_last_bit(p.structure_depth)),
         ("structure_wavelength_m", |p| {
             p.structure_wavelength_m = flip_last_bit(p.structure_wavelength_m)
+        }),
+        // Task 5's two, carried here for the same reason and expected BLIND for the same
+        // reason: `margin_warp_m` is canonically 0.0, so a one-ULP flip of it is 5e-324 of
+        // sideways displacement on a 4,500 km planet, and `margin_warp_wavelength_m` is
+        // unread while the amplitude is zero. Both are proved live by
+        // `each_structure_field_moves_the_answer_at_a_stated_setting` and
+        // `the_margin_warp_wavelength_is_unreachable_until_the_amplitude_is_turned_up`.
+        ("margin_warp_m", |p| p.margin_warp_m = flip_last_bit(p.margin_warp_m)),
+        ("margin_warp_wavelength_m", |p| {
+            p.margin_warp_wavelength_m = flip_last_bit(p.margin_warp_wavelength_m)
         }),
     ];
 
@@ -1477,7 +1763,13 @@ mod tests {
         let land = Continentality::new(20260902, EARTH_RADIUS_M, 0.02);
         let plates = PlateSet::new(vec![near, far]);
         let tectonics = Tectonics::new(plates, land, EARTH_RADIUS_M, params);
-        LopsidedWorld { tectonics, point, near, far, normal }
+        let bisector = near
+            .seed
+            .vector
+            .sub(&far.seed.vector)
+            .normalised()
+            .expect("two distinct seeds have a bisector");
+        LopsidedWorld { tectonics, point, near, far, normal, bisector }
     }
 
     #[test]
@@ -1624,6 +1916,175 @@ mod tests {
         assert_eq!(params.suture_spread_m.to_bits(), 0.0f64.to_bits());
     }
 
+    /// **The along-margin warp is inert at canonical, and this asserts the ARGUMENT rather
+    /// than the answer.**
+    ///
+    /// `the_structure_fields_are_inert_at_canonical_settings` above asserts `sutures`
+    /// reduces to `bump`, which is a statement about the profile. The warp does not touch
+    /// the profile at all -- it changes the DISTANCE the profile is asked about, which is
+    /// the argument, and a probe that exercises a stage can be blind to that stage's
+    /// arguments. So this sweeps `from_margin` itself, at 1 km steps to the range gate, on
+    /// the `None` path against an explicit `canonical()`, and compares by bits.
+    ///
+    /// The second half is the discrimination, and without it the first half proves nothing:
+    /// at 80 km of warp on the SAME fixture the answer must move, or this test would pass
+    /// on a warp that was never wired in at all.
+    #[test]
+    fn the_margin_warp_is_inert_at_its_canonical_setting() {
+        let none = lopsided_world_with(None);
+        let explicit = lopsided_world_with(Some(TectonicParams::canonical()));
+        let mut warped_params = TectonicParams::canonical();
+        warped_params.margin_warp_m = 80_000.0;
+        let warped = lopsided_world_with(Some(warped_params));
+
+        let mut moved = false;
+        let mut distance_m = 0.0;
+        while distance_m <= MAX_TECTONIC_RANGE_M {
+            assert_eq!(
+                none.from_margin_for_test(distance_m).to_bits(),
+                explicit.from_margin_for_test(distance_m).to_bits(),
+                "the canonical path moved at {distance_m} m"
+            );
+            if none.from_margin_for_test(distance_m).to_bits()
+                != warped.from_margin_for_test(distance_m).to_bits()
+            {
+                moved = true;
+            }
+            distance_m += 1_000.0;
+        }
+        assert!(moved, "an 80 km warp that changed nothing would make the sweep above vacuous");
+        assert_eq!(TectonicParams::canonical().margin_warp_m.to_bits(), 0.0f64.to_bits());
+    }
+
+    /// `margin_warp_wavelength_m` is unreachable while the amplitude is zero, and it is
+    /// asserted BLIND rather than left out -- the same house rule and the same shape as
+    /// `the_structure_wavelength_is_unreachable_until_the_depth_is_turned_up`.
+    #[test]
+    fn the_margin_warp_wavelength_is_unreachable_until_the_amplitude_is_turned_up() {
+        let baseline = lopsided_world();
+        let mut alone = TectonicParams::canonical();
+        alone.margin_warp_wavelength_m = 250_000.0;
+        let blind = lopsided_world_with(Some(alone));
+
+        let mut together = TectonicParams::canonical();
+        together.margin_warp_m = 80_000.0;
+        together.margin_warp_wavelength_m = 250_000.0;
+        let mut other = together;
+        other.margin_warp_wavelength_m = 900_000.0;
+        let a = lopsided_world_with(Some(together));
+        let b = lopsided_world_with(Some(other));
+
+        let mut blind_moved = false;
+        let mut wavelength_moved = false;
+        let mut distance_m = 0.0;
+        while distance_m <= MAX_TECTONIC_RANGE_M {
+            if baseline.from_margin_for_test(distance_m).to_bits()
+                != blind.from_margin_for_test(distance_m).to_bits()
+            {
+                blind_moved = true;
+            }
+            if a.from_margin_for_test(distance_m).to_bits()
+                != b.from_margin_for_test(distance_m).to_bits()
+            {
+                wavelength_moved = true;
+            }
+            distance_m += 1_000.0;
+        }
+        assert!(!blind_moved, "the warp wavelength moved the answer with the amplitude at zero");
+        assert!(wavelength_moved, "the warp wavelength does nothing with the amplitude turned up");
+    }
+
+    /// **The warp offset is the same on both sides of one margin, and that is what stops it
+    /// putting a seam down the middle of every belt it bends.**
+    ///
+    /// `PlateSet::new` stores `normalise(seed_i - seed_j)` for the ordered pair, so the same
+    /// margin sampled from its two sides is handed `n` and `-n`. Under that flip `signed`
+    /// negates and `signed * n` does not, so the along-margin projection is invariant -- by
+    /// construction, not by luck. Asserted by bits rather than argued, and the last two
+    /// lines stop it holding for the vacuous reason of the warp being zero everywhere.
+    #[test]
+    fn the_warp_offset_is_identical_from_either_side_of_the_margin() {
+        let mut params = TectonicParams::canonical();
+        params.margin_warp_m = 80_000.0;
+        let world = lopsided_world_with(Some(params));
+        let flipped = Vec3::new(-world.bisector.x, -world.bisector.y, -world.bisector.z);
+        for (lat, lon) in [(0.0, 0.0), (12.0, 3.0), (-40.0, 61.0), (70.0, -120.0)] {
+            let point = SpherePoint::from_latlon(lat, lon);
+            let a = world.tectonics.margin_warp_m_at(&point, &world.bisector);
+            let b = world.tectonics.margin_warp_m_at(&point, &flipped);
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "the warp disagreed across the margin at {lat},{lon}"
+            );
+        }
+        let live = world
+            .tectonics
+            .margin_warp_m_at(&SpherePoint::from_latlon(12.0, 3.0), &world.bisector);
+        assert_ne!(live, 0.0, "a warp of exactly zero would make this test vacuous");
+    }
+
+    /// **The bisector's poles, where `p - (p . n) n` is the zero vector and there is no
+    /// direction to keep.** Answered with zero warp rather than a NaN or a skip, and reached
+    /// by construction rather than by hoping a sweep lands on it: the poles of the plane
+    /// whose normal is `n` ARE `+n` and `-n`.
+    #[test]
+    fn the_warp_is_zero_at_the_bisectors_poles_rather_than_a_nan() {
+        let mut params = TectonicParams::canonical();
+        params.margin_warp_m = 80_000.0;
+        let world = lopsided_world_with(Some(params));
+        let n = world.bisector;
+        for pole in [n, Vec3::new(-n.x, -n.y, -n.z)] {
+            let point = SpherePoint { vector: pole };
+            let warp = world.tectonics.margin_warp_m_at(&point, &n);
+            assert_eq!(warp.to_bits(), 0.0f64.to_bits(), "the bisector's pole produced {warp}");
+        }
+    }
+
+    /// **`collision_reach_m` accounts for the warp, because the range gate truncates rather
+    /// than fades.**
+    ///
+    /// The profile half is asserted against the PROFILE rather than against the formula that
+    /// produced it -- how Task 2 wrote this check and for the same reason: past the stated
+    /// reach the collision term must be exactly zero on both sides, or a boundary admitting
+    /// the block has been told a number the ground does not have.
+    #[test]
+    fn the_reach_carries_the_warp_amplitude() {
+        let mut params = TectonicParams::canonical();
+        params.margin_warp_m = 80_000.0;
+        assert_eq!(
+            params.collision_reach_m().to_bits(),
+            (params.continent_collision_width_m + 80_000.0).to_bits()
+        );
+        // A negative amplitude is a mirrored warp of the same magnitude and reaches exactly
+        // as far, so the reach must not read it as zero.
+        let mut mirrored = TectonicParams::canonical();
+        mirrored.margin_warp_m = -80_000.0;
+        assert_eq!(
+            mirrored.collision_reach_m().to_bits(),
+            params.collision_reach_m().to_bits(),
+            "a mirrored warp reported a different reach"
+        );
+        // The unwarped reach is unchanged, so this is an addition and not a rewrite.
+        assert_eq!(
+            TectonicParams::canonical().collision_reach_m().to_bits(),
+            CONTINENT_COLLISION_WIDTH_M.to_bits()
+        );
+
+        // `sutures` at or beyond the reach is exactly zero on both sides, because `bump` is
+        // exactly zero at and beyond its width and the warp only shifts where the profile is
+        // centred. The warped ARGUMENT is bounded by the reach, which is the claim.
+        let world = lopsided_world_with(Some(params));
+        let reach = params.collision_reach_m();
+        for side in [-1.0f64, 1.0] {
+            for extra in [0.0, 1_000.0, 50_000.0] {
+                let across = side * (reach + extra);
+                let value = world.tectonics.sutures(across, &world.near, &world.far);
+                assert_eq!(value, 0.0, "the collision profile carries weight at {across} m");
+            }
+        }
+    }
+
     /// `asymmetric_bump` at a symmetric ratio is `bump`, by bits, on both sides of the sign
     /// boundary where its branch changes. The discrimination is the second half: at 1.67 it
     /// must NOT be `bump` inboard, or the first half would pass for a vacuous reason.
@@ -1699,7 +2160,7 @@ mod tests {
     #[test]
     fn each_structure_field_moves_the_answer_at_a_stated_setting() {
         let baseline = lopsided_world();
-        let settings: [(&str, fn(&mut TectonicParams)); 4] = [
+        let settings: [(&str, fn(&mut TectonicParams)); 5] = [
             ("collision_asymmetry = 1.67", |p| p.collision_asymmetry = 1.67),
             ("suture_count = 3, spread 150 km", |p| {
                 p.suture_count = 3;
@@ -1710,6 +2171,7 @@ mod tests {
                 p.suture_spread_m = 90_000.0;
             }),
             ("structure_depth = 0.6", |p| p.structure_depth = 0.6),
+            ("margin_warp_m = 80 km", |p| p.margin_warp_m = 80_000.0),
         ];
         for (label, apply) in settings {
             let mut params = TectonicParams::canonical();
@@ -1965,10 +2427,21 @@ mod tests {
     /// **The preset must sit inside the range gate, and by a stated margin.**
     ///
     /// This is the check Task 2's `collision_reach_m` was added for, made of the one block
-    /// that ships with sutures turned on. 235 km against a 420 km gate: one suture past the
+    /// that ships with sutures turned on. 315 km against a 420 km gate: one suture past the
     /// first, at 100 km, stretched by the `SUTURE_OFFSET_JITTER` ceiling, plus the 100 km
-    /// flank. Asserted against the function rather than the arithmetic, and then the
-    /// arithmetic is stated so a reader can check the function.
+    /// flank, plus **80 km of `margin_warp_m`**. Asserted against the function rather than
+    /// the arithmetic, and then the arithmetic is stated so a reader can check the function.
+    ///
+    /// **Task 5's warp spends 80 km of the preset's gate headroom, and that cost is asserted
+    /// rather than mentioned.** The preset was 235 km before it. One of the two neighbours
+    /// this test used to walk is now PAST the gate -- a third suture takes the reach to
+    /// 450 km -- and it is asserted past rather than quietly dropped, because the fact that
+    /// matters is what happens next: `wasm.rs::tectonic_is_admissible` asks
+    /// `collision_reach_m` and REFUSES the record, so the boundary turns it away at the door
+    /// instead of the range gate truncating it into a cliff mid-profile. `suture_count` is
+    /// not on a slider (Task 3 made it a readout precisely because it is jointly constrained),
+    /// so nothing the owner can move reaches it; a hand-written query string can, and is
+    /// refused.
     #[test]
     fn the_ranges_preset_sits_inside_the_range_gate_with_room() {
         let reach = TectonicParams::ranges().collision_reach_m();
@@ -1976,15 +2449,33 @@ mod tests {
             reach <= MAX_TECTONIC_RANGE_M,
             "the preset reaches {reach} m past the {MAX_TECTONIC_RANGE_M} m gate"
         );
-        assert_eq!(reach, 235_000.0, "one suture at 100 km x 1.35, plus a 100 km flank");
-        // The measured neighbours this preset was chosen over, both still inside -- so the
-        // owner can move any slider off the preset without walking into the cliff.
+        assert_eq!(
+            reach, 315_000.0,
+            "one suture at 100 km x 1.35, plus a 100 km flank, plus an 80 km warp"
+        );
+        // The same preset with the warp switched off is what it was before Task 5, so the
+        // 80 km is visibly the warp's and not a change of definition.
+        let unwarped = TectonicParams { margin_warp_m: 0.0, ..TectonicParams::ranges() };
+        assert_eq!(unwarped.collision_reach_m(), 235_000.0);
+
+        // A wider spread is still inside.
         let mut wider = TectonicParams::ranges();
         wider.suture_spread_m = 150_000.0;
         assert!(wider.collision_reach_m() <= MAX_TECTONIC_RANGE_M);
+
+        // A third suture is not, and that is the warp's cost stated as a number.
         let mut deeper = TectonicParams::ranges();
         deeper.suture_count = 3;
-        assert!(deeper.collision_reach_m() <= MAX_TECTONIC_RANGE_M);
+        assert_eq!(deeper.collision_reach_m(), 450_000.0);
+        assert!(
+            deeper.collision_reach_m() > MAX_TECTONIC_RANGE_M,
+            "a third suture used to fit and no longer does -- the boundary must refuse it"
+        );
+        assert!(
+            TectonicParams { margin_warp_m: 0.0, ..deeper }.collision_reach_m()
+                <= MAX_TECTONIC_RANGE_M,
+            "and it is the warp that spent the headroom, not the sutures"
+        );
     }
 
     /// **The preset must actually move the ground**, and be different from the bare envelope

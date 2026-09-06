@@ -504,6 +504,379 @@ fn crests_across(surface: &Surface, lat: f64, lon: f64, across_axis: usize) -> u
     count
 }
 
+/// How far along the belt the sinuosity walk goes, each way, in metres, and its step.
+///
+/// 250 km either way is 500 km of belt -- long enough for the warp's longest octave (a
+/// 600 km wavelength) to show a bend, and short enough to stay on one margin on a 4,500 km
+/// planet, where 28 plates puts a plate at roughly 1,500 km across.
+///
+/// **The step is part of the number.** Sinuosity is a path length over a chord, and a path
+/// length measured on a rough line grows as the step shrinks. Every figure this function
+/// produces is at THIS step and comparable only to others at it.
+const SINUOSITY_REACH_M: f64 = 250_000.0;
+const SINUOSITY_STEP_M: f64 = 5_000.0;
+
+/// How far to scan PERPENDICULAR at the seed station, and at what spacing.
+///
+/// **Wider than `crest_wander_km`'s +/-80 km, and it has to be.** That scan was built for a
+/// crest that stays near its bisector; a warp of 80 km can put the crest at the very edge of
+/// it, and a tracker that latches to the edge of its own scan reports a straight line at
+/// exactly the settings that were supposed to bend it.
+const SINUOSITY_SCAN_M: f64 = 200_000.0;
+const SINUOSITY_SCAN_STEP_M: f64 = 2_000.0;
+
+/// How far the crest may move between one station and the next before the tracker gives up
+/// and calls that station unresolved.
+///
+/// **This is the fix for a measurement that read 2.01 on a line it had itself established
+/// was straight.** The first version of this function took the highest sample in the whole
+/// +/-200 km scan at each station independently. On a preset world that scan contains the
+/// second suture belt, the far flank and whatever the neighbouring margin is doing, and the
+/// global maximum jumps tens of kilometres between adjacent stations as one ridge of a
+/// structure-carved flank overtakes another. Sinuosity is a path length, so per-station
+/// jitter is added to it directly and without limit -- the un-warped preset read **2.0133**
+/// and the canonical world, which is a smooth symmetric swell on a great circle and is as
+/// straight as this engine can produce, read **2.1212**. **A metric that scores a great
+/// circle at 2.12 cannot say anything about a warp**, and shipping the warp on it would have
+/// been the mirror image of Task 2 rejecting the warp on four metrics that could not see it.
+///
+/// So the crest is FOLLOWED rather than re-found: each station searches only within this
+/// distance of the previous station's crest, seeded at the station where the peak itself is
+/// and walked outward in both directions from there. A crest line is a continuous curve and
+/// tracking it continuously is what makes the path length a property of the curve rather
+/// than of the noise around it.
+///
+/// 40 km per 5 km step is an 8:1 lateral-to-along rate -- far more than any belt this engine
+/// draws can bend at, and far less than the ~100 km jumps between separate features that
+/// were the problem. A station whose maximum sits on the edge of this window is counted
+/// unresolved and printed, not silently accepted.
+const CREST_TRACK_WINDOW_M: f64 = 40_000.0;
+
+/// **The walk stops where the belt does, and this is the second half of the same fix.**
+///
+/// Tracking continuously stopped the crest jumping between features; it did not stop the
+/// walk running off the END of the belt, and a fixed 250 km reach does exactly that. Traced
+/// station by station on the bare steep envelope, the crest offset runs 26 km -> -6 km over
+/// 350 km -- a straight line with the bearing quantisation's linear trend on it -- and then
+/// the range simply stops: the next station's highest sample is 500 m, 136 km off axis, and
+/// the two after it sit on the edge of the scan. **Three stations of that turn a sinuosity
+/// of 1.0 into 1.34**, and on the canonical world into 2.13, because a path length adds
+/// every excursion it is handed and cannot tell a belt from the ocean beyond it.
+///
+/// So a station is on the belt while its tracked crest stands above this height, and the
+/// walk stops on that side the first time it does not. The value is [`SUMMIT_HEIGHT_M`] --
+/// this survey's own established "this is mountain" line, already the floor
+/// `summits_in_range` and `crests_across` both use -- rather than a threshold invented here
+/// and tuned until the answer looked right. The resolved belt length is PRINTED in every
+/// row, so a sinuosity measured over 120 km of belt cannot be read as one measured over 500.
+const BELT_END_M: f64 = SUMMIT_HEIGHT_M;
+
+/// The fraction of a station's own local relief at which the belt's outer EDGE is taken.
+///
+/// Half height, matching [`flank_ratio`]'s definition so the two compose, and taken against
+/// each station's own crest and its own local base rather than against the planet's peak --
+/// the crest height varies along a belt the structure field has carved, and a fixed absolute
+/// contour would measure where the belt is TALL rather than where it ENDS.
+const ENVELOPE_FRACTION: f64 = 0.5;
+
+/// How far the local base for that contour is looked for, either side of the crest.
+const ENVELOPE_BASE_REACH_M: f64 = 150_000.0;
+
+/// How wide a notch in a flank the envelope walk steps over before calling it the end of the
+/// belt.
+///
+/// The structure field deliberately carves ridge-and-valley relief into both flanks, so the
+/// profile crosses the half-height contour many times on the way out. Stopping at the first
+/// crossing would measure the innermost notch and call it the belt's edge, which on a carved
+/// flank is a measurement of the structure field rather than of the envelope. 30 km is
+/// narrower than the 40-80 km working band of `structure_wavelength_m`, so a real massif
+/// boundary still stops the walk.
+const ENVELOPE_GAP_M: f64 = 30_000.0;
+
+/// **CREST SINUOSITY AND ENVELOPE SINUOSITY -- the acceptance metric for the along-margin
+/// warp, and the measurement whose absence is the whole reason that technique was rejected
+/// once already.**
+///
+/// Task 2 built the crest warp, measured the crest moving 49.2 -> 78.8 km, and it was
+/// rejected for "moving nothing else". All four metrics it was judged on -- summit count,
+/// across-range crest count, flank ratio, grade -- measure structure ACROSS a range.
+/// **Straightness is a property ALONG it, and nothing in the set ever looked along.** So the
+/// displacement that was the entire point of the technique scored as a null result. This
+/// function is the axis that was missing.
+///
+/// # Method
+///
+/// The along-range bearing is [`flank_ratio`]'s across-range axis plus 90 degrees.
+///
+/// 1. **Seed.** At station 0 -- the peak's own station -- scan perpendicular over
+///    `+/-SINUOSITY_SCAN_M` at `SINUOSITY_SCAN_STEP_M` and take the highest sample. The peak
+///    is there by construction, so the seed is on the belt by construction.
+/// 2. **Follow.** Walk outward to `+/-SINUOSITY_REACH_M` at `SINUOSITY_STEP_M`, in both
+///    directions from the seed, taking at each station the highest sample within
+///    `CREST_TRACK_WINDOW_M` of the previous station's crest. A station whose maximum sits on
+///    the edge of that window is counted **unresolved**.
+/// 3. **Envelope.** At each station, `base` is the lowest sample within
+///    `ENVELOPE_BASE_REACH_M` of that station's crest and the contour is
+///    `base + ENVELOPE_FRACTION * (crest - base)`. Walk outward from the crest on each flank
+///    separately, keeping the furthest offset still above the contour and stopping once the
+///    profile has been continuously below it for `ENVELOPE_GAP_M`.
+///
+/// Each of the three offset series -- crest, lower edge, upper edge -- is then reduced by
+/// [`sinuosity_of`]:
+///
+/// **Sinuosity = path length / straight-line distance between the endpoints.** In the local
+/// (along, across) frame, path length is the sum of `hypot(step, offset_i - offset_(i-1))`
+/// and the straight-line distance is `hypot(total_along, offset_last - offset_first)`.
+/// **A perfect great circle scores exactly 1.000**, which is the property the number is
+/// named for, and `sinuosity_reads_one_on_a_straight_line` in `main`'s calibration row is
+/// the check rather than the claim.
+///
+/// # Two things this measurement is deliberately immune to, and one it is not
+///
+/// **The 30-degree bearing quantisation cannot fake it.** `crest_wander_km` had to de-trend
+/// by least squares because an across-range axis up to 15 degrees off the true crest puts a
+/// LINEAR trend in the offsets -- and its first version read 26.3 km of wander on a crest
+/// lying exactly along a straight bisector. A linear trend is a straight, tilted line, and a
+/// straight tilted line has a path length exactly equal to its endpoint distance. Sinuosity
+/// is 1.000 for it, with no de-trending and no fitted parameter. That is not a lucky
+/// property; it is why this ratio was chosen over an RMS.
+///
+/// **The lateral deviation is reported against the endpoint CHORD, not against the offset-0
+/// line**, for the same reason: offset 0 is where the quantised axis thinks the bisector is,
+/// and the chord is where the crest itself actually starts and ends.
+///
+/// **What it is NOT immune to is a badly-off axis foreshortening the wiggle.** Walking a
+/// wandering crest at an angle to it compresses the along-axis and can only make the
+/// measured sinuosity SMALLER than the truth. The number is therefore a lower bound, which
+/// is the safe direction for a task claiming a belt bends.
+///
+/// Returns, in order: crest sinuosity; the crest's maximum lateral deviation from its own
+/// endpoint chord, in km; that deviation as a fraction of the chord length; the two flanks'
+/// envelope sinuosities; the count of unresolved stations; and the resolved belt length in
+/// km, **which every other figure here is conditional on**.
+fn sinuosity(
+    surface: &Surface,
+    lat: f64,
+    lon: f64,
+    across_axis: usize,
+) -> (f64, f64, f64, f64, f64, usize, f64) {
+    let along_deg = across_axis as f64 * 30.0 + 90.0; // cast-ok: a bearing index to float, exact
+    let across_deg = across_axis as f64 * 30.0; // cast-ok: a bearing index to float, exact
+    let (along_dlat, along_dlon) = stride(lat, along_deg, SINUOSITY_STEP_M);
+    let (across_dlat, across_dlon) = stride(lat, across_deg, SINUOSITY_SCAN_STEP_M);
+
+    let stations = (SINUOSITY_REACH_M / SINUOSITY_STEP_M) as i64; // cast-ok: an exact ratio of two constants
+    let half_scan = (SINUOSITY_SCAN_M / SINUOSITY_SCAN_STEP_M) as i64; // cast-ok: an exact ratio of two constants
+    let window = (CREST_TRACK_WINDOW_M / SINUOSITY_SCAN_STEP_M) as i64; // cast-ok: an exact ratio of two constants
+    let base_reach = (ENVELOPE_BASE_REACH_M / SINUOSITY_SCAN_STEP_M) as i64; // cast-ok: an exact ratio of two constants
+    let gap = (ENVELOPE_GAP_M / SINUOSITY_SCAN_STEP_M) as i64; // cast-ok: an exact ratio of two constants
+    let step_km = SINUOSITY_SCAN_STEP_M / 1000.0;
+
+    // One station's profile, indexed 0..=2*half_scan, with index `half_scan` on the axis.
+    let profile_at = |station: i64| -> Vec<f64> {
+        let s = station as f64; // cast-ok: a station index to float, exact
+        let (slat, slon) = (lat + along_dlat * s, lon + along_dlon * s);
+        (-half_scan..=half_scan)
+            .map(|offset| {
+                let o = offset as f64; // cast-ok: an offset index to float, exact
+                surface.elevation_m(
+                    &SpherePoint::from_latlon(slat + across_dlat * o, slon + across_dlon * o),
+                    None,
+                )
+            })
+            .collect()
+    };
+    let width = 2 * half_scan + 1;
+
+    // The highest sample within `radius` indices of `centre`, and whether it sat on the edge
+    // of that window. `centre` and the return are indices into the profile above.
+    let track = |samples: &[f64], centre: i64, radius: i64| -> (i64, bool) {
+        let low = if centre - radius > 0 { centre - radius } else { 0 };
+        let high = if centre + radius < width - 1 { centre + radius } else { width - 1 };
+        let mut best = (f64::NEG_INFINITY, low);
+        let mut index = low;
+        while index <= high {
+            let value = samples[index as usize]; // cast-ok: bounded by `low`/`high` above
+            if value > best.0 {
+                best = (value, index);
+            }
+            index += 1;
+        }
+        let at_edge = best.1 == centre - radius || best.1 == centre + radius;
+        (best.1, at_edge)
+    };
+
+    // One station reduced to (crest index, lower edge index, upper edge index).
+    let measure = |samples: &[f64], crest_index: i64| -> (i64, i64) {
+        let low = if crest_index - base_reach > 0 { crest_index - base_reach } else { 0 };
+        let high =
+            if crest_index + base_reach < width - 1 { crest_index + base_reach } else { width - 1 };
+        let mut base = f64::INFINITY;
+        let mut index = low;
+        while index <= high {
+            let value = samples[index as usize]; // cast-ok: bounded by `low`/`high` above
+            if value < base {
+                base = value;
+            }
+            index += 1;
+        }
+        let crest = samples[crest_index as usize]; // cast-ok: an index into the profile it came from
+        let contour = base + ENVELOPE_FRACTION * (crest - base);
+
+        // Outward on each flank, keeping the furthest offset still above the contour and
+        // stepping over notches narrower than `ENVELOPE_GAP_M`.
+        let mut lower = crest_index;
+        let mut below = 0i64;
+        let mut index = crest_index;
+        while index > 0 {
+            index -= 1;
+            if samples[index as usize] >= contour {
+                // cast-ok: bounded by the loop
+                lower = index;
+                below = 0;
+            } else {
+                below += 1;
+                if below > gap {
+                    break;
+                }
+            }
+        }
+        let mut upper = crest_index;
+        let mut below = 0i64;
+        let mut index = crest_index;
+        while index < width - 1 {
+            index += 1;
+            if samples[index as usize] >= contour {
+                // cast-ok: bounded by the loop
+                upper = index;
+                below = 0;
+            } else {
+                below += 1;
+                if below > gap {
+                    break;
+                }
+            }
+        }
+        (lower, upper)
+    };
+
+    let to_km = |index: i64| -> f64 {
+        (index - half_scan) as f64 * step_km // cast-ok: a sample index to float, exact
+    };
+
+    // The seed: the peak's own station, found over the WHOLE scan because the peak is on the
+    // belt by construction and nothing has to be followed to get there.
+    let seed_samples = profile_at(0);
+    let (seed_index, _) = track(&seed_samples, half_scan, half_scan);
+    let mut unresolved = 0usize;
+    let (seed_lower, seed_upper) = measure(&seed_samples, seed_index);
+
+    // Outward in each direction from the seed, so the tracker never has to cross the peak
+    // and never inherits a drift from the far end of the belt.
+    let mut crest = vec![to_km(seed_index)];
+    let mut lower_edge = vec![to_km(seed_lower)];
+    let mut upper_edge = vec![to_km(seed_upper)];
+    let mut back_crest: Vec<f64> = Vec::new();
+    let mut back_lower: Vec<f64> = Vec::new();
+    let mut back_upper: Vec<f64> = Vec::new();
+
+    for direction in [1i64, -1] {
+        let mut previous = seed_index;
+        for step in 1..=stations {
+            let samples = profile_at(direction * step);
+            let (index, at_edge) = track(&samples, previous, window);
+            // The belt has ended on this side. Stop rather than tracking whatever is beyond
+            // it -- see `BELT_END_M`, which is the whole reason this branch exists.
+            if samples[index as usize] <= BELT_END_M {
+                // cast-ok: an index into the profile it came from
+                break;
+            }
+            if at_edge {
+                unresolved += 1;
+            }
+            let (lower, upper) = measure(&samples, index);
+            if direction > 0 {
+                crest.push(to_km(index));
+                lower_edge.push(to_km(lower));
+                upper_edge.push(to_km(upper));
+            } else {
+                back_crest.push(to_km(index));
+                back_lower.push(to_km(lower));
+                back_upper.push(to_km(upper));
+            }
+            previous = index;
+        }
+    }
+
+    // The backward half runs from the seed outward, so reverse it and put the forward half
+    // after it: one series ordered from -reach to +reach.
+    back_crest.reverse();
+    back_lower.reverse();
+    back_upper.reverse();
+    back_crest.extend(crest);
+    back_lower.extend(lower_edge);
+    back_upper.extend(upper_edge);
+
+    let belt_km = SINUOSITY_STEP_M / 1000.0 * (back_crest.len() - 1) as f64; // cast-ok: a station count to float, exact
+    let (crest_sinuosity, deviation_km, deviation_fraction) = sinuosity_of(&back_crest);
+    let (lower_sinuosity, _, _) = sinuosity_of(&back_lower);
+    let (upper_sinuosity, _, _) = sinuosity_of(&back_upper);
+    (
+        crest_sinuosity,
+        deviation_km,
+        deviation_fraction,
+        lower_sinuosity,
+        upper_sinuosity,
+        unresolved,
+        belt_km,
+    )
+}
+
+/// One offset series reduced to a sinuosity, a maximum lateral deviation in km, and that
+/// deviation as a fraction of the endpoint chord.
+///
+/// Kept separate from [`sinuosity`] so the crest series and the two envelope series are
+/// reduced by the SAME code rather than by three copies of it -- the crest number and the
+/// envelope number are about to be compared against each other, and a difference between
+/// them has to be a difference in the belt, not in two reductions that drifted.
+///
+/// Planar in the local (along, across) frame. At 500 km on a 4,500 km planet the along-axis
+/// is a 6.4-degree arc, and the error in treating it as flat is well below the 2 km scan
+/// resolution the offsets are quantised to anyway. Stated rather than assumed.
+fn sinuosity_of(offsets_km: &[f64]) -> (f64, f64, f64) {
+    if offsets_km.len() < 2 {
+        return (1.0, 0.0, 0.0);
+    }
+    let step_km = SINUOSITY_STEP_M / 1000.0;
+    let mut path_km = 0.0f64;
+    for index in 1..offsets_km.len() {
+        let rise = offsets_km[index] - offsets_km[index - 1];
+        path_km += libm::hypot(step_km, rise);
+    }
+    let along_km = step_km * (offsets_km.len() - 1) as f64; // cast-ok: a station count to float, exact
+    let last = offsets_km[offsets_km.len() - 1];
+    let first = offsets_km[0];
+    let chord_km = libm::hypot(along_km, last - first);
+    if !(chord_km > 0.0) {
+        return (1.0, 0.0, 0.0);
+    }
+
+    // The largest perpendicular distance from the endpoint chord, by the standard
+    // point-line formula written out rather than through a cross product, so the units stay
+    // visible: the chord runs from (0, first) to (along_km, last).
+    let (dx, dy) = (along_km, last - first);
+    let mut deviation_km = 0.0f64;
+    for (index, offset) in offsets_km.iter().enumerate() {
+        let x = step_km * index as f64; // cast-ok: a station index to float, exact
+        let y = offset - first;
+        let distance = (dx * y - dy * x).abs() / chord_km;
+        if distance > deviation_km {
+            deviation_km = distance;
+        }
+    }
+    (path_km / chord_km, deviation_km, deviation_km / chord_km)
+}
+
 /// One row of the survey. Everything above, on one configuration.
 fn row(label: &str, params: TectonicParams) {
     let reach = params.collision_reach_m();
@@ -515,11 +888,22 @@ fn row(label: &str, params: TectonicParams) {
     let (ratio, wide_m, narrow_m, axis) = flank_ratio(&surface, lat, lon, peak_m);
     let crests = crests_across(&surface, lat, lon, axis);
     let (wander_max_km, wander_rms_km, unresolved) = crest_wander_km(&surface, lat, lon, axis);
+    let (
+        crest_sin,
+        deviation_km,
+        deviation_fraction,
+        lower_sin,
+        upper_sin,
+        sin_unresolved,
+        belt_km,
+    ) = sinuosity(&surface, lat, lon, axis);
     println!(
         "{label:<40} peak {peak_m:8.1}  grade {grade:6.3}%  rel2km {relief_m:6.1}  \
          summits {summits:3}  2nd {runner_up_m:7.1}  crests {crests:2}  \
          wander {wander_max_km:5.1}/{wander_rms_km:5.1} km ({unresolved:2} unres)  \
-         flanks {wide_m:6.0}/{narrow_m:6.0}  ratio {ratio:5.2}  reach {reach:7.0}"
+         flanks {wide_m:6.0}/{narrow_m:6.0}  ratio {ratio:5.2}  reach {reach:7.0}  \
+         SIN belt {belt_km:5.0} km crest {crest_sin:6.4} dev {deviation_km:6.1} km \
+         ({deviation_fraction:5.3}) env {lower_sin:6.4}/{upper_sin:6.4} ({sin_unresolved:3} unres)"
     );
 }
 
@@ -603,18 +987,39 @@ fn feedback_sweep() {
 /// the horizon from the north-west, multiplied into a hypsometric tint. No smoothing, no
 /// gamma, no camera -- so two images differ only where the ground does.
 fn hillshade_ppm(path: &str, params: TectonicParams, size: usize) -> std::io::Result<()> {
+    let surface = surface_with(params);
+    let (_, lat, lon) = peak_of(&surface);
+    hillshade_ppm_at(path, params, size, lat, lon, 1.0)
+}
+
+/// The same raster at a caller-chosen centre and box.
+///
+/// **A before/after pair of a belt that MOVES cannot be framed on the belt.** `hillshade_ppm`
+/// centres on each configuration's own peak, which is right for showing what one setting
+/// produces and wrong for showing that a setting moved something: the warp moves the peak,
+/// so the two images end up being two different pieces of ground photographed by two
+/// different cameras. Task 5's pair is framed on the UN-warped configuration's peak, both
+/// times, so the belt is seen to leave.
+fn hillshade_ppm_at(
+    path: &str,
+    params: TectonicParams,
+    size: usize,
+    lat: f64,
+    lon: f64,
+    zoom: f64,
+) -> std::io::Result<()> {
     use std::io::Write;
 
     let surface = surface_with(params);
-    let (_, lat, lon) = peak_of(&surface);
-    let span = 2.0 * RANGE_BOX_DEG;
+    let box_deg = RANGE_BOX_DEG * zoom;
+    let span = 2.0 * box_deg;
     let step = span / size as f64; // cast-ok: a raster size to float, exact
 
     let mut heights = vec![0.0f64; size * size];
     for row in 0..size {
-        let plat = lat + RANGE_BOX_DEG - row as f64 * step; // cast-ok: a raster index to float, exact
+        let plat = lat + box_deg - row as f64 * step; // cast-ok: a raster index to float, exact
         for column in 0..size {
-            let plon = lon - RANGE_BOX_DEG + column as f64 * step; // cast-ok: a raster index to float, exact
+            let plon = lon - box_deg + column as f64 * step; // cast-ok: a raster index to float, exact
             heights[row * size + column] =
                 surface.elevation_m(&SpherePoint::from_latlon(plat, plon), None);
         }
@@ -672,7 +1077,7 @@ fn hillshade_ppm(path: &str, params: TectonicParams, size: usize) -> std::io::Re
     let mut file = std::fs::File::create(path)?;
     write!(file, "P6\n{size} {size}\n255\n")?;
     file.write_all(&pixels)?;
-    println!("wrote {path} -- peak at {lat:.2},{lon:.2}, +/-{RANGE_BOX_DEG} deg, {size}px");
+    println!("wrote {path} -- centre {lat:.2},{lon:.2}, +/-{box_deg} deg, {size}px");
     Ok(())
 }
 
@@ -705,12 +1110,215 @@ fn write_images() -> std::io::Result<()> {
     Ok(())
 }
 
+/// One row measured at a CALLER-CHOSEN anchor rather than at this configuration's own peak.
+///
+/// **A before/after of a belt that moves cannot be framed on the belt.** `row` finds the
+/// global maximum and measures there, which is right for "what does this configuration
+/// deliver" and wrong for "did this configuration move the belt": the warp moves the peak,
+/// so two rows end up measuring two different pieces of ground. Traced directly -- the
+/// un-warped preset peaks at 19.250,48.550 and the same preset with 80 km of warp peaks at
+/// 18.850,48.100, a different belt on a different bearing -- and the erratic grade and
+/// summit columns that produced were an artefact of that, not a property of the warp.
+///
+/// So every warp row below is anchored on the UN-warped configuration's peak and axis, and
+/// `here` is the elevation at that fixed point. It falls as the amplitude rises, which is
+/// the most direct evidence in this file that the belt has translated off it.
+fn sin_row(label: &str, params: TectonicParams, lat: f64, lon: f64, axis: usize) {
+    let surface = surface_with(params);
+    let (grade, slat, slon) = steepest_flank(&surface, lat, lon);
+    let relief_m = relief_2km_m(&surface, slat, slon);
+    let (summits, _) = summits_in_range(&surface, lat, lon);
+    let here = surface.elevation_m(&SpherePoint::from_latlon(lat, lon), None);
+    let (crest, deviation_km, fraction, lower, upper, unresolved, belt_km) =
+        sinuosity(&surface, lat, lon, axis);
+    println!(
+        "{label:<36} here {here:7.1} m  grade {grade:6.3}%  rel2km {relief_m:7.1}  \
+         summits {summits:3}  belt {belt_km:4.0} km  crest {crest:6.4}  \
+         dev {deviation_km:5.1} km ({fraction:5.3})  env {lower:6.4}/{upper:6.4}  \
+         ({unresolved:2} unres)  reach {:6.0}",
+        params.collision_reach_m()
+    );
+}
+
+/// **The largest single 100 m step on a transect across the belt.**
+///
+/// A cliff detector, and it is here because it found one. The first version of the
+/// along-margin warp took its signed side from the ordered plate pair, the way
+/// `pair_fraction` takes its suture offsets. That is stable across the margin it belongs to
+/// and NOT across a third plate's boundary, where the whole `(near, *)` margin set is
+/// replaced and the index comparison can come out the other way -- flipping the displacement
+/// from `+w` to `-w` in one step. Measured here at **913.52 m over 100 m** on
+/// `asymmetry 2.0 + warp`, against 11.58 m for the same configuration unwarped, and visible
+/// in the raster as a hairline crack running the length of the bisector.
+///
+/// It is kept as a permanent row rather than deleted along with the bug, because **every
+/// other column looked plausible while that cliff was present** -- the sinuosity numbers
+/// this file exists to produce all went UP. Nothing else in this survey looks for a
+/// discontinuity.
+fn seam_probe(label: &str, params: TectonicParams) {
+    let surface = surface_with(params);
+    let (peak_m, lat, lon) = peak_of(&surface);
+    let (_, _, _, axis) = flank_ratio(&surface, lat, lon, peak_m);
+    let across_deg = axis as f64 * 30.0; // cast-ok: a bearing index to float, exact
+    let (dlat, dlon) = stride(lat, across_deg, 100.0);
+    let mut worst = (0.0f64, 0.0f64);
+    let mut previous = surface
+        .elevation_m(&SpherePoint::from_latlon(lat - dlat * 2500.0, lon - dlon * 2500.0), None);
+    let mut index = -2499i64;
+    while index <= 2500 {
+        let f = index as f64; // cast-ok: a sample index to float, exact
+        let here =
+            surface.elevation_m(&SpherePoint::from_latlon(lat + dlat * f, lon + dlon * f), None);
+        let jump = (here - previous).abs();
+        if jump > worst.0 {
+            worst = (jump, f * 0.1);
+        }
+        previous = here;
+        index += 1;
+    }
+    println!(
+        "{label:<36} largest 100 m step over +/-250 km: {:8.2} m at {:7.1} km",
+        worst.0, worst.1
+    );
+}
+
+/// **Technique 2, rebuilt on the axis it exists for, and measured on it.**
+///
+/// Task 2 warped the signed across-margin distance by an `fbm` of the 3-D POINT, measured
+/// the crest moving 49.2 -> 78.8 km, and had it rejected for moving nothing else -- on four
+/// metrics none of which can see a crest line's shape. Task 5 rebuilds it perturbing by a
+/// function of position ALONG the margin only, so the whole belt translates coherently
+/// rather than the edge being roughened, and judges it on [`sinuosity`].
+///
+/// **Measured in combination as well as alone, and that is deliberate.** Task 3 found three
+/// of `ranges()`'s columns did not compose. The two bases disagree here too: the bare
+/// envelope's crest sinuosity starts at 1.0261 and the preset's at 1.2786, because the
+/// structure field already displaces the CREST as a side effect -- which is the argument
+/// Task 2 rejected the warp on, and which is true of the crest and false of the BELT. The
+/// envelope columns are where that distinction is visible.
+fn warp_sweep() {
+    let warped = |amplitude_km: f64, wavelength_km: f64, base: TectonicParams| TectonicParams {
+        margin_warp_m: amplitude_km * 1000.0,
+        margin_warp_wavelength_m: wavelength_km * 1000.0,
+        ..base
+    };
+
+    // The bare steep envelope: a great circle with nothing else happening on it, which is
+    // what makes it the calibration. A straight line must score 1.000, and this row is where
+    // that is checked rather than claimed.
+    let bare = steep();
+    let surface = surface_with(bare);
+    let (peak_m, lat, lon) = peak_of(&surface);
+    let (_, _, _, axis) = flank_ratio(&surface, lat, lon, peak_m);
+    println!(
+        "\n--- Task 5: the along-margin warp on the BARE envelope -- THE CALIBRATION BASE.\n\
+         Anchored on its un-warped peak, {peak_m:.1} m at {lat:.3},{lon:.3}, across axis {axis}"
+    );
+    sin_row("steep, no warp  <- CALIBRATION", bare, lat, lon, axis);
+    for wavelength_km in [300.0f64, 600.0, 900.0] {
+        for amplitude_km in [20.0f64, 40.0, 80.0, 120.0] {
+            sin_row(
+                &format!("steep + warp {amplitude_km:.0} km @ {wavelength_km:.0} km"),
+                warped(amplitude_km, wavelength_km, bare),
+                lat,
+                lon,
+                axis,
+            );
+        }
+    }
+
+    // The preset: the combination, on the un-warped preset's own peak, so the before and the
+    // after are the same belt.
+    let base = TectonicParams { margin_warp_m: 0.0, ..TectonicParams::ranges() };
+    let surface = surface_with(base);
+    let (peak_m, lat, lon) = peak_of(&surface);
+    let (_, _, _, axis) = flank_ratio(&surface, lat, lon, peak_m);
+    println!(
+        "\n--- Task 5: the same warp IN COMBINATION, on the preset.\n\
+         Anchored on the un-warped preset's peak, {peak_m:.1} m at {lat:.3},{lon:.3}, \
+         across axis {axis}"
+    );
+    sin_row("preset with the warp switched off", base, lat, lon, axis);
+    for amplitude_km in [20.0f64, 40.0, 80.0, 120.0, 160.0] {
+        sin_row(
+            &format!("preset + warp {amplitude_km:.0} km @ 300 km"),
+            warped(amplitude_km, 300.0, base),
+            lat,
+            lon,
+            axis,
+        );
+    }
+
+    println!("\n--- Task 5: what the shipped preset DELIVERS, each row on its own peak");
+    row("ranges() with the warp switched off", base);
+    row("THE PRESET  ranges(), warp 80 @ 300 km", TectonicParams::ranges());
+    row("  preset with warp 120 km", warped(120.0, 300.0, base));
+    row("  preset with warp wavelength 900 km", warped(80.0, 900.0, base));
+
+    println!("\n--- Task 5: THE CLIFF CHECK, which is how the first version was caught");
+    for (label, params) in [
+        ("steep", steep()),
+        ("steep + warp 80 @ 300", warped(80.0, 300.0, steep())),
+        ("asymmetry 2.0", TectonicParams { collision_asymmetry: 2.0, ..steep() }),
+        (
+            "asymmetry 2.0 + warp 80 @ 300",
+            warped(80.0, 300.0, TectonicParams { collision_asymmetry: 2.0, ..steep() }),
+        ),
+        ("ranges() with the warp off", base),
+        ("THE PRESET", TectonicParams::ranges()),
+    ] {
+        seam_probe(label, params);
+    }
+}
+
 fn main() {
     // `images` means IMAGES ONLY. The tables and the rasters each cost a full pass over
     // several dozen planets, and a mode that silently did both would make anyone who wanted
     // one of them pay for the other -- which is how a survey stops being run.
     if std::env::args().any(|a| a == "images") {
         write_images().expect("the raster dump could not be written");
+        return;
+    }
+
+    // `warp` means the Task 5 section only, for the same reason `images` means images only.
+    if std::env::args().any(|a| a == "warp") {
+        println!("world: seed {SEED}, radius {RADIUS_M} m, {PLATES} plates, land {LAND}");
+        warp_sweep();
+        return;
+    }
+
+    // `warpimages` renders the before/after pair the owner's complaint is about, BOTH framed
+    // on the un-warped configuration's peak so the pictures show a belt that moved rather
+    // than a camera that followed it.
+    if std::env::args().any(|a| a == "warpimages") {
+        let bare = steep();
+        let bare_surface = surface_with(bare);
+        let (_, bare_lat, bare_lon) = peak_of(&bare_surface);
+        let base = TectonicParams { margin_warp_m: 0.0, ..TectonicParams::ranges() };
+        let surface = surface_with(base);
+        let (_, lat, lon) = peak_of(&surface);
+        println!("bare framing {bare_lat:.3},{bare_lon:.3}; preset framing {lat:.3},{lon:.3}");
+        for (name, params, plat, plon) in [
+            ("task5-1-blade-straight", bare, bare_lat, bare_lon),
+            (
+                "task5-2-blade-warped",
+                TectonicParams { margin_warp_m: 120_000.0, ..bare },
+                bare_lat,
+                bare_lon,
+            ),
+            ("task5-3-preset-straight", base, lat, lon),
+            ("task5-4-preset-warped", TectonicParams::ranges(), lat, lon),
+        ] {
+            hillshade_ppm_at(
+                &format!("target/mountain-survey/{name}.ppm"),
+                params,
+                900,
+                plat,
+                plon,
+                2.0,
+            )
+            .expect("the raster dump could not be written");
+        }
         return;
     }
 
@@ -733,11 +1341,10 @@ fn main() {
         );
     }
 
-    // Technique 2 -- warping the signed across-margin distance -- was built, swept here, and
-    // REJECTED. Its sweep is in task-2-report.md; the parameter is gone, so this binary can
-    // no longer reproduce it, and it says so rather than leaving a section that silently
-    // measures nothing. The rejection and its numbers are recorded in `TectonicParams`' own
-    // doc comment, where the next person to propose a crest warp will read them.
+    // Technique 2 -- warping the signed across-margin distance -- was built here by Task 2,
+    // swept, and REJECTED on four metrics none of which could see what it did. Task 5
+    // rebuilt it perturbing by a function of position ALONG the margin and added the metric
+    // that can: see `warp_sweep`, called at the end of this function.
 
     println!("\n--- technique 3: stacked sutures");
     for count in [1u32, 2, 3, 4] {
@@ -840,6 +1447,8 @@ fn main() {
         "  preset with one suture (no stacking)",
         TectonicParams { suture_count: 1, suture_spread_m: 0.0, ..TectonicParams::ranges() },
     );
+
+    warp_sweep();
 
     feedback_sweep();
 }

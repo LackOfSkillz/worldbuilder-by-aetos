@@ -340,6 +340,18 @@ function build() {
   // they are a readout.
   const beltNote = el("div", "wb-note", "—");
   mountainSection.append(beltNote);
+  // **The block the sliders describe is now one the engine can REFUSE, and the panel says so
+  // before the owner presses generate.**
+  //
+  // The warp adds to `collision_reach_m`, which is held against `MAX_TECTONIC_RANGE_M` -- so
+  // "wander" at its top with "steepness" at its widest asks for a profile the range gate would
+  // truncate, and the engine refuses the record entire rather than adjusting it. That is the
+  // right behaviour and it used to be unreachable from here; it is not any more, and a
+  // generate that silently produced the previous world would be worse than a note. Asked of
+  // `wb_tectonic_check` through the engine, which is the same validator the record will meet,
+  // rather than by re-deriving the reach in JavaScript.
+  const admissibleNote = el("div", "wb-note", "");
+  mountainSection.append(admissibleNote);
   const mountainNote = el("div", "wb-note", "waiting for the engine…");
   mountainSection.append(mountainNote);
   const mountainActions = el("div", "wb-actions");
@@ -416,6 +428,26 @@ function build() {
         ? " Structure carves the delivered peak down by up to a fifth; 40–80 km is where it bites."
         : "";
       mountainNote.textContent = `${gradeNote()} Count: ${direction}.${structure}`;
+      // The wander's own readout, and the wavelength beside it -- the field with no widget,
+      // read out of the state the preset button writes rather than from a literal here.
+      // Task 5's pair, driven rather than sliderable for the reason `TECTONIC_SLIDERS` gives,
+      // and SHOWN for the reason the suture pair is: a preset that changed something the panel
+      // never mentioned would be a parameter the owner cannot see, which is the defect this
+      // whole slice exists to fix. Their words were "they look like they were drawn with a
+      // straight line tool"; this is the line that says whether they still are.
+      const wander = tectonicState.marginWarpM;
+      beltNote.textContent += wander > 0
+        ? ` · wander ±${(wander / 1000).toFixed(0)} km over ${
+          (tectonicState.marginWarpWavelengthM / 1000).toFixed(0)} km`
+        : " · no wander (the margin is a great circle)";
+      // And whether the engine would take it. `presets.check` is `wb_tectonic_check`; if the
+      // host did not supply it the note stays empty rather than claiming a block is fine.
+      if (typeof presets.check === "function") {
+        admissibleNote.textContent = presets.check(tectonicState)
+          ? ""
+          : "this block reaches past the range gate — the engine will refuse it. " +
+            "Lower wander, or narrow steepness.";
+      }
     };
 
     for (const field of TECTONIC_SLIDERS) {

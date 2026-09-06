@@ -138,8 +138,12 @@ test("no tectonic number is written down twice in the viewer", () => {
   // If it did, the panel would be showing a copy rather than the engine's answer, and the copy
   // is what drifts.
   const presetLiterals = ["continentCollisionM", "continentCollisionWidthM", "structureDepth",
-    "structureWavelengthM"].map((field) => String(ranges[field]));
-  assert.deepEqual(presetLiterals, ["6000", "100000", "0.7", "80000"]);
+    "structureWavelengthM", "marginWarpWavelengthM"].map((field) => String(ranges[field]));
+  // `marginWarpM` is deliberately NOT in this list and `marginWarpWavelengthM` is. The
+  // wander's amplitude is 80000, which is `structureWavelengthM`'s value too -- already
+  // checked, on the line above -- so adding it would be a second assertion about one string.
+  // The wavelength, 300000, is its own number and nothing else in this channel is it.
+  assert.deepEqual(presetLiterals, ["6000", "100000", "0.7", "80000", "300000"]);
   literals.push(...presetLiterals);
   for (const name of ["controls.js", "main.js"]) {
     const code = strip(appFile(name));
@@ -545,4 +549,61 @@ test("the structure sliders' travel is the band Task 2 measured, and no wider", 
   // 0.7000000000000001, which is why the map divides rather than multiplies.
   assert.equal(travel.structureDepth.toValue(DEPTH_STEPS), 0.9);
   assert.equal(travel.structureDepth.toValue(7), 0.7);
+});
+
+test("the warp crosses to the panel as numbers, and canonical is a great circle", () => {
+  // **Ruling 1, asked of Task 5's two fields specifically.** `canonical.marginWarpM` must be
+  // exactly 0.0 -- not near it -- because `from_margin` branches on `!= 0.0` before sampling
+  // the warp at all, and an untouched panel that wrote 1e-320 into a shared link would take
+  // the reload off the engine's `None` path for a displacement of less than an atom.
+  assert.equal(canonical.marginWarpM, 0);
+  assert.ok(Object.is(canonical.marginWarpM, 0), "canonical wander must be positive zero");
+  // And the preset must actually bend something, or the whole task shipped a no-op. The
+  // numbers are read from the engine here rather than written down, which is the same rule
+  // the rest of this file follows.
+  assert.ok(ranges.marginWarpM > 0, "the preset does not bend the margin at all");
+  assert.ok(
+    ranges.marginWarpWavelengthM === canonical.marginWarpWavelengthM,
+    "the preset's warp wavelength is the canonical placeholder, which is why it has no slider",
+  );
+  // The pair is carried on the channel and answers to a query name, even with no widget --
+  // the suture pair's rule, applied to this pair.
+  for (const field of ["marginWarpM", "marginWarpWavelengthM"]) {
+    assert.ok(TECTONIC_FIELDS.includes(field), `${field} is not on the ABI record`);
+    assert.ok(TECTONIC_CONTROLS.includes(field), `${field} is not driven`);
+    assert.ok(!TECTONIC_SLIDERS.includes(field), `${field} has a widget it cannot aim`);
+    assert.ok(TECTONIC_PARAM_NAMES[field], `${field} has no query-string name`);
+  }
+});
+
+test("the wander is refused exactly where the range gate would truncate it", () => {
+  // **This is why the warp has no slider, asserted rather than asserted-about-in-a-comment.**
+  // The warp adds to `collision_reach_m`, the engine holds that sum against
+  // `MAX_TECTONIC_RANGE_M`, and at the panel's widest steepness -- canonical's 400 km -- the
+  // gate leaves 20 km of room. A slider anchored on canonical would offer one live position.
+  //
+  // Asked of the shipped artifact through `wb_tectonic_check`, which is the validator the
+  // record would actually meet, rather than of a reach re-derived here.
+  const gate = 420000;
+  const room = gate - canonical.continentCollisionWidthM;
+  assert.equal(
+    engine.checkTectonic({ ...canonical, marginWarpM: room }), WB_OK,
+    "a warp that reaches exactly the gate is inside it",
+  );
+  assert.notEqual(
+    engine.checkTectonic({ ...canonical, marginWarpM: room + 1 }), WB_OK,
+    "a warp one metre past the gate must be refused, not truncated",
+  );
+  // On the preset's own 100 km steepness there is real room, which is the configuration the
+  // preset actually ships and the reason 80 km is admissible at all.
+  assert.equal(engine.checkTectonic(ranges), WB_OK, "the shipped preset must be admissible");
+  assert.notEqual(
+    engine.checkTectonic({ ...ranges, marginWarpM: gate }), WB_OK,
+    "the preset with a gate-sized warp reaches past the gate and must be refused",
+  );
+  // And a negative amplitude -- the mirror image -- is outside the channel's stated domain.
+  assert.notEqual(
+    engine.checkTectonic({ ...canonical, marginWarpM: -20000 }), WB_OK,
+    "a negative wander is not this channel's spelling of a mirrored warp",
+  );
 });

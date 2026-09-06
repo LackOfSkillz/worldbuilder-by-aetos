@@ -2049,7 +2049,18 @@ fn tectonic_field_domain(field: usize) -> (f64, f64) {
         11 => (WB_MIN_SUTURE_SPREAD_M, MAX_TECTONIC_RANGE_M),
         12 => (0.0, WB_MAX_STRUCTURE_DEPTH),
         13 => (WB_MIN_STRUCTURE_WAVELENGTH_M, WB_MAX_STRUCTURE_WAVELENGTH_M),
-        _ => unreachable!("WB_TECTONIC_STRIDE is 14"),
+        // Task 5's two. `margin_warp_m`'s ceiling is the range gate and is a RESTATEMENT --
+        // the binding check is `collision_reach_m`, which adds this amplitude to the suture
+        // and flank reach, so most of the top of this ladder is refused by the reach and not
+        // by the per-field ceiling. That is the intended shape and the reason the ladder runs
+        // to the ceiling anyway: a sweep that stopped where the reach starts refusing would
+        // never exercise the interaction it exists to find.
+        14 => (WB_MIN_MARGIN_WARP_M, WB_MAX_MARGIN_WARP_M),
+        // And this ceiling is NOT the range gate -- see `WB_MAX_MARGIN_WARP_WAVELENGTH_M`.
+        // The warp varies ALONG the margin, which runs the whole way round the planet, so the
+        // domain spans nine orders of magnitude and the ladder below goes geometric for it.
+        15 => (WB_MIN_MARGIN_WARP_WAVELENGTH_M, WB_MAX_MARGIN_WARP_WAVELENGTH_M),
+        _ => unreachable!("WB_TECTONIC_STRIDE is 16"),
     }
 }
 
@@ -2122,8 +2133,13 @@ fn tectonic_field_sweep(field: usize) -> Vec<f64> {
 /// `structure_wavelength_m` there rides a `structure_depth` of zero and `structure_at` returns
 /// before it ever reads the wavelength -- the field would be swept with the code under it
 /// switched off, which is a sweep of nothing wearing a sweep's name. Around `ranges()` the
-/// structure is on, the sutures are stacked, and the reach is 235 km of the 420 km gate, so
-/// the interaction bands are reachable. Both, therefore: every hazard the ledger records was a
+/// structure is on, the sutures are stacked, the warp is on, and the reach is **315 km of the
+/// 420 km gate**, so the interaction bands are reachable -- and with only 105 km of headroom
+/// left, the `margin_warp_m` ladder crosses the gate INSIDE the admissible per-field range,
+/// which is exactly the band a one-base sweep would miss.  Task 5's warp is the second field
+/// on this channel that is inert at `canonical()` and therefore invisible to a sweep run only
+/// there: `margin_warp_wavelength_m` is never read while the amplitude is zero, the same
+/// blindness `structure_wavelength_m` had. Both, therefore: every hazard the ledger records was a
 /// **band, not a cliff**, and a band lives where two fields meet.
 fn tectonic_sweep_bases() -> [(&'static str, [f64; WB_TECTONIC_STRIDE]); 2] {
     [
@@ -2764,6 +2780,97 @@ fn the_structure_fields_are_swept_together_on_the_envelope_they_are_for() {
     assert!(refusals > 0, "no corner of the structure cross product is refused");
 }
 
+/// **The warp against the reach, swept together, because the gate is where they meet.**
+///
+/// `margin_warp_m` is admitted by two different checks and only one of them can see the
+/// interaction. `WB_MAX_MARGIN_WARP_M` looks at the field alone; `collision_reach_m` adds it
+/// to the suture offsets and the flank width and holds the SUM against the range gate. On the
+/// preset that sum is 315 km of 420 km, so the amplitude has 105 km of headroom -- and a
+/// third suture, or a wider spread, spends it. A one-axis sweep visits neither corner.
+///
+/// This is the corner. Every combination is checked, every accepted one is BUILT and SAMPLED
+/// (`Tectonics::new` only stores the block, so a constructor that returned a handle has proved
+/// nothing), and both sides are asserted non-trivial.
+#[test]
+fn the_warp_and_the_reach_are_swept_together_against_the_range_gate() {
+    let base = tectonic_preset_record(WB_TECTONIC_RANGES);
+    let mut built = 0usize;
+    let mut refusals = 0usize;
+    for warp in [0.0, 20_000.0, 80_000.0, 120_000.0, 200_000.0, MAX_TECTONIC_RANGE_M] {
+        for wavelength in [WB_MIN_MARGIN_WARP_WAVELENGTH_M, 300_000.0, 900_000.0, 1.0e9] {
+            for (count, spread) in
+                [(1.0, 0.0), (2.0, 100_000.0), (3.0, 100_000.0), (2.0, 150_000.0)]
+            {
+                let mut record = base;
+                record[14] = warp;
+                record[15] = wavelength;
+                record[SUTURE_COUNT_FIELD] = count;
+                record[SUTURE_SPREAD_FIELD] = spread;
+                let status = wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32);
+                // The reach is the claim, so it is computed here from the record and the two
+                // are held to each other -- the check must refuse exactly what the gate would
+                // truncate, not merely refuse something.
+                let last = if count > 1.0 { (count - 1.0) * spread * 1.35 } else { 0.0 };
+                let reach = last + record[1] + warp;
+                let inside = reach <= MAX_TECTONIC_RANGE_M;
+                assert_eq!(
+                    status == WB_OK,
+                    inside,
+                    "warp {warp} @ {wavelength} with {count} sutures at {spread} reaches \
+                     {reach} m against the {MAX_TECTONIC_RANGE_M} m gate",
+                );
+                if status == WB_OK {
+                    sample_tectonics(&record, "warp x reach corner");
+                    built += 1;
+                } else {
+                    assert_eq!(world_with_tectonics(&record), 0);
+                    refusals += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(built + refusals, 96);
+    assert!(built >= 30, "only {built} of 96 warp corners were admitted");
+    assert!(refusals >= 20, "only {refusals} of 96 warp corners were refused");
+}
+
+/// **The wavelength floor is a SILENCE, and this is the shape that keeps biting.**
+///
+/// `Tectonics::margin_warp_m_at` opens with `if wavelength <= 0.0 { return 0.0 }`, so a zero
+/// or negative wavelength is a record that is well formed, would be built without complaint,
+/// and displaces nothing anywhere -- while `margin_warp_m` sits beside it at 80 km looking
+/// configured. Refused, exactly as the four zero-width profiles are, and checked against the
+/// engine guard rather than assumed to agree with it.
+#[test]
+fn a_warp_wavelength_that_displaces_nothing_is_refused_rather_than_admitted_silently() {
+    let mut base = tectonic_preset_record(WB_TECTONIC_RANGES);
+    base[14] = 80_000.0;
+    for nothing in [0.0, -0.0, -1.0, -300_000.0, f64::NEG_INFINITY] {
+        let mut record = base;
+        record[15] = nothing;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_ERR_PARAM,
+            "a warp wavelength of {nothing} is a field that looks configured and does nothing",
+        );
+        assert_eq!(world_with_tectonics(&record), 0);
+    }
+    // And a negative AMPLITUDE, which is the mirror image rather than a silence, is refused
+    // too -- see `WB_MIN_MARGIN_WARP_M`. `collision_reach_m` takes `abs` so the reach would
+    // still be honest; the floor is what makes that `abs` a second line of defence rather
+    // than the only one, and both halves are asserted.
+    for mirrored in [-1.0, -80_000.0, -MAX_TECTONIC_RANGE_M] {
+        let mut record = base;
+        record[14] = mirrored;
+        assert_eq!(
+            wb_tectonic_check(record.as_ptr(), WB_TECTONIC_STRIDE as u32),
+            WB_ERR_PARAM,
+            "a warp amplitude of {mirrored} is outside this channel's stated domain",
+        );
+        assert_eq!(world_with_tectonics(&record), 0);
+    }
+}
+
 #[test]
 fn the_tectonic_channel_default_path_is_the_untouched_world() {
     // RULING 1, and the one property this whole slice is not allowed to break: a null pointer
@@ -3096,11 +3203,17 @@ fn the_tectonic_sweep_is_the_size_it_claims_to_be() {
             accepted += 1;
         }
     }
-    // 2 bases x (13 ordinary fields at 57 values each, plus the count field's 57 + 24
+    // 2 bases x (15 ordinary fields at 57 values each, plus the count field's 57 + 24
     // hand-added rungs -- a linear ladder over eight integers is almost all fractions).
-    assert_eq!(records.len(), 2 * (13 * 57 + 81), "the sweep changed size");
-    assert_eq!(records.len(), 1644, "and the arithmetic above says 1,644");
-    // 947 accepted, 697 refused. Neither side is trivial, which is the property that makes
-    // "no abort and no hang was found" a result rather than an absence.
-    assert_eq!(accepted, 947, "the accepted/refused split moved: {accepted} of {}", records.len());
+    // Task 5's two fields take the ordinary count from 13 to 15.
+    assert_eq!(records.len(), 2 * (15 * 57 + 81), "the sweep changed size");
+    assert_eq!(records.len(), 1872, "and the arithmetic above says 1,872");
+    // 1,044 accepted, 828 refused. Neither side is trivial, which is the property that makes
+    // "no abort and no hang was found" a result rather than an absence. Re-derived after
+    // Task 5 widened the stride; the previous pin was 947 of 1,644.
+    assert_eq!(
+        accepted, 1_044,
+        "the accepted/refused split moved: {accepted} of {}",
+        records.len()
+    );
 }

@@ -336,7 +336,9 @@ async function boot() {
           spec.tectonics.sutureCount}x${
           (spec.tectonics.sutureSpreadM / 1000).toFixed(0)}km struct ${
           spec.tectonics.structureDepth.toFixed(2)}@${
-          (spec.tectonics.structureWavelengthM / 1000).toFixed(0)}km`
+          (spec.tectonics.structureWavelengthM / 1000).toFixed(0)}km wander ${
+          (spec.tectonics.marginWarpM / 1000).toFixed(0)}@${
+          (spec.tectonics.marginWarpWavelengthM / 1000).toFixed(0)}km`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -379,6 +381,15 @@ async function boot() {
       canonical: tectonicCanonical,
       ranges: engine.tectonicPreset("ranges"),
       chosen: spec.tectonics,
+      /// Whether the engine would accept a block, asked of `wb_tectonic_check` itself.
+      ///
+      /// Task 5's `marginWarpM` is the first panel control whose travel can combine with
+      /// another slider's into a record the engine refuses -- it adds to
+      /// `collision_reach_m`, and the boundary holds that against `MAX_TECTONIC_RANGE_M`.
+      /// The panel warns instead of finding out at generate time, and it asks the real
+      /// validator rather than re-deriving the reach in JavaScript, because a second copy of
+      /// a bound is a second chance to disagree with it.
+      check: (block) => engine.checkTectonic(block) === 0,
     },
     /// The frame-budget measurement. Populations, not a single number.
     bench: (options = {}) => runBench({ viewer, engine, provider, spec, ...options }),

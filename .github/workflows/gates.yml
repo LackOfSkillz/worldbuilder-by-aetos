@@ -485,25 +485,44 @@ jobs:
           # the 032b41f baseline (538/538/540/599/601) was re-derived the same way BEFORE the
           # first edit rather than trusted -- this pin block was found already wrong once in
           # this slice. See task-3-report.md.
+          #
+          # TASK 5 (the along-margin warp) takes 542/542/544/609/611 -> 547/547/549/616/618:
+          #   * +5 on EVERY row from `src/tectonics.rs`, which compiles unconditionally --
+          #     the warp is inert at canonical and that is asserted about the profile's
+          #     ARGUMENT rather than its answer (the earlier inertness test exercises
+          #     `sutures` and is structurally blind to the distance handed to it); the
+          #     wavelength is asserted BLIND until the amplitude is turned up; the warp offset
+          #     is identical from both sides of one margin, by bits, which is what stops it
+          #     seaming every belt it bends; the bisector's poles answer zero rather than a
+          #     NaN; and `collision_reach_m` carries the amplitude, checked against the
+          #     profile rather than against the formula that produced it.
+          #   * +2 more on the two WASM rows only, from `tests/wasm_exports.rs`: the warp
+          #     swept against the reach at the range gate (96 corners, each one's admissibility
+          #     predicted from the record before the checker is asked), and the wavelength
+          #     floor refused as a SILENCE rather than admitted as a field that does nothing.
+          # The sweep's own size pin moves with the stride: 1,644 records / 947 accepted
+          # becomes 1,872 / 1,044, both re-derived and both asserted exactly.
+          # The 'd1f022f' baseline (542/542/544/609/611) was re-derived BEFORE the first edit
+          # and `gates.yml` was CORRECT at it.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 542
+            expect: 547
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 542
+            expect: 547
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 544
+            expect: 549
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 609
+            expect: 616
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 611
+            expect: 618
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

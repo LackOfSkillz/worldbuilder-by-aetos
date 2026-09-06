@@ -368,6 +368,8 @@ pub const WB_MAX_QUIETING_SCALE_M: f64 = 1.0e9;
 /// | 11 | `suture_spread_m` |
 /// | 12 | `structure_depth` |
 /// | 13 | `structure_wavelength_m` |
+/// | 14 | `margin_warp_m` |
+/// | 15 | `margin_warp_wavelength_m` |
 ///
 /// That is `TectonicParams`'s own declaration order, and [`wb_tectonic_preset`] writes it in
 /// exactly this order so a host never has to transcribe a value.
@@ -379,7 +381,13 @@ pub const WB_MAX_QUIETING_SCALE_M: f64 = 1.0e9;
 /// the point it filled these from `canonical()` named exactly what a later task had to do:
 /// *"widen the stride, `decode`, `encode`, `tectonic_is_admissible` AND sweep the export"*.
 /// All four are done here, and the sweep found what that comment predicted it would.
-pub const WB_TECTONIC_STRIDE: usize = 14;
+///
+/// **Words 14-15 are Task 5 widening it again, from 14, and they are the only two fields on
+/// this channel that change WHERE a range is rather than what it looks like.** Every margin
+/// in this engine is a great circle, so every belt on one is straight by construction; the
+/// along-margin warp is what bends it, and the owner asked for it in those words. Same four
+/// things moved together, and the sweep gained a base and two cross products.
+pub const WB_TECTONIC_STRIDE: usize = 16;
 
 /// [`wb_tectonic_preset`] selector: `TectonicParams::canonical()`, today's fourteen values and
 /// the `None` path's exact equivalent.
@@ -585,6 +593,57 @@ pub const WB_MAX_STRUCTURE_DEPTH: f64 = 1.0;
 /// the constructor, and contributes exactly nothing at every point on the planet -- while
 /// `structure_depth` sits beside it looking configured. The silently-dropping-builder shape.
 pub const WB_MIN_STRUCTURE_WAVELENGTH_M: f64 = WB_MIN_TECTONIC_WIDTH_M;
+
+/// The floor on `margin_warp_m`. **A magnitude, and the sign is not a second parameter.**
+///
+/// A negative amplitude is the exact mirror of the positive one on the same margin -- the
+/// belt is displaced the other way and nothing else about it changes -- so admitting it adds
+/// a second spelling of a world the caller can already ask for, on a field whose whole
+/// meaning is "how far". It also puts the field and
+/// [`TectonicParams::collision_reach_m`] into two different sign conventions: the reach takes
+/// `abs` precisely so a mirrored warp cannot report a reach the profile does not have, and a
+/// floor here means that `abs` is the second line of defence rather than the only one. Both
+/// are tested, on both sides.
+pub const WB_MIN_MARGIN_WARP_M: f64 = 0.0;
+
+/// The ceiling on `margin_warp_m`, **derived from the range gate**, and a restatement rather
+/// than the only check.
+///
+/// The warp displaces the whole collision profile sideways, so
+/// [`TectonicParams::collision_reach_m`] adds this amplitude and the reach check below holds
+/// the total against [`MAX_TECTONIC_RANGE_M`]. That check is the binding one -- it is what
+/// stops a warped belt being truncated into the cliff `MAX_TECTONIC_RANGE_M`'s own doc exists
+/// to prevent -- and this per-field ceiling is kept beside it for the reason the width
+/// ceilings are kept beside it: it stays true if `collision_reach_m`'s definition ever moves.
+pub const WB_MAX_MARGIN_WARP_M: f64 = MAX_TECTONIC_RANGE_M;
+
+/// The floor on `margin_warp_wavelength_m`. **A silence, not a crash**, and the same value
+/// and the same reason as [`WB_MIN_STRUCTURE_WAVELENGTH_M`].
+///
+/// `Tectonics::margin_warp_m_at` opens with `if wavelength <= 0.0 { return 0.0 }`, so a zero
+/// or negative wavelength is a warp that is present in the record, accepted by the
+/// constructor, and displaces nothing anywhere on the planet -- with `margin_warp_m` sitting
+/// beside it looking configured. The silently-dropping-builder shape.
+pub const WB_MIN_MARGIN_WARP_WAVELENGTH_M: f64 = WB_MIN_TECTONIC_WIDTH_M;
+
+/// The ceiling on `margin_warp_wavelength_m`, and it is **NOT** the range gate.
+///
+/// [`WB_MAX_STRUCTURE_WAVELENGTH_M`] is the gate because the structure field only multiplies
+/// the collision profile, which is identically zero beyond it -- so a longer wavelength there
+/// cannot complete a cycle anywhere it can act. **The warp is the other way round.** It varies
+/// along the margin, and a margin is a great circle: it runs the whole way round the planet.
+/// The distance the field has to work over is the circumference, not the belt width, so the
+/// gate would be a ceiling two orders of magnitude below the field's own domain.
+///
+/// [`WB_MAX_WORLD_RADIUS_M`] is the bound instead, for the reason
+/// [`WB_MAX_RELIEF_WAVELENGTH_M`] takes the same value: a wavelength larger than the largest
+/// admissible planet is a caller mistake, and `+inf` is refused with it. It is a domain
+/// statement and not a measured edge -- what IS measured is that long wavelengths go quiet
+/// long before this: on a 350 km belt a 900 km wavelength moves the crest's deviation from
+/// 3.6 km to 9.4 km against 34.1 km at 300 km, because **a bend longer than the belt is a
+/// tilt**. Same shape as `structure_wavelength_m`'s dead 120-250 km band, and stated here so
+/// nobody reads this ceiling as a useful setting.
+pub const WB_MAX_MARGIN_WARP_WAVELENGTH_M: f64 = WB_MAX_WORLD_RADIUS_M;
 
 /// The ceiling on `structure_wavelength_m`, **derived from the range gate rather than picked**.
 ///
@@ -1090,6 +1149,16 @@ fn tectonic_is_admissible(tectonics: &TectonicParams) -> bool {
     ) {
         return false;
     }
+    if !within(tectonics.margin_warp_m, WB_MIN_MARGIN_WARP_M, WB_MAX_MARGIN_WARP_M) {
+        return false;
+    }
+    if !within(
+        tectonics.margin_warp_wavelength_m,
+        WB_MIN_MARGIN_WARP_WAVELENGTH_M,
+        WB_MAX_MARGIN_WARP_WAVELENGTH_M,
+    ) {
+        return false;
+    }
     // **THE RANGE GATE, asked of the whole profile rather than of one field.** Task 2 added
     // `collision_reach_m` for exactly this call site and said so: past this distance
     // `offset_m` does not evaluate the margin at all, so a profile still carrying weight there
@@ -1101,6 +1170,14 @@ fn tectonic_is_admissible(tectonics: &TectonicParams) -> bool {
     // subsumes it at canonical structure settings, where the reach IS the width, and the width
     // check is kept anyway because it is the one that stays true if `collision_reach_m`'s
     // definition ever changes.
+    //
+    // **Task 5 put `margin_warp_m` into that sum, and that is the whole of its safety case.**
+    // The warp translates the collision profile sideways off the bisector, so on the side it
+    // pushes toward the profile carries weight exactly that much further out -- and this is
+    // the only check that can see it. `WB_MAX_MARGIN_WARP_M` alone would admit the preset's
+    // 80 km warp on top of two sutures 150 km apart, whose reach is 302 km before the warp
+    // and 382 km after it, and 150 km of warp on the same pair reaches 452 km: past the gate,
+    // and truncated rather than faded.
     if !within(tectonics.collision_reach_m(), 0.0, MAX_TECTONIC_RANGE_M) {
         return false;
     }
@@ -1133,6 +1210,8 @@ fn decode_tectonic(record: &[f64]) -> Option<TectonicParams> {
         suture_spread_m: fields[11],
         structure_depth: fields[12],
         structure_wavelength_m: fields[13],
+        margin_warp_m: fields[14],
+        margin_warp_wavelength_m: fields[15],
     };
     if tectonic_is_admissible(&tectonics) {
         Some(tectonics)
@@ -1186,6 +1265,8 @@ fn encode_tectonic(tectonics: &TectonicParams) -> [f64; WB_TECTONIC_STRIDE] {
         tectonics.suture_spread_m,
         tectonics.structure_depth,
         tectonics.structure_wavelength_m,
+        tectonics.margin_warp_m,
+        tectonics.margin_warp_wavelength_m,
     ]
 }
 

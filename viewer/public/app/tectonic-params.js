@@ -42,7 +42,7 @@
 
 /// f64 per tectonic record, and the field names in `wasm.rs`'s `WB_TECTONIC_STRIDE` order.
 /// That order is the ABI: `wb_tectonic_preset` writes it and `wb_tectonic_check` reads it.
-export const TECTONIC_STRIDE = 14;
+export const TECTONIC_STRIDE = 16;
 export const TECTONIC_FIELDS = [
   "continentCollisionM",
   "continentCollisionWidthM",
@@ -65,6 +65,14 @@ export const TECTONIC_FIELDS = [
   "sutureSpreadM",
   "structureDepth",
   "structureWavelengthM",
+  // Task 5's two, and the only fields on this channel that change WHERE a range is rather
+  // than what it looks like. Every margin in this engine is a great circle -- the distance to
+  // one is `asin(|point . bisector_normal|) * radius`, and a plane through the origin cuts a
+  // sphere in exactly one shape -- so every belt built on one is straight by construction. The
+  // owner's words were "they look like they were drawn with a straight line tool"; these are
+  // what bends them. `WB_TECTONIC_STRIDE` widened 14 -> 16 to carry them.
+  "marginWarpM",
+  "marginWarpWavelengthM",
 ];
 
 /// `wb_tectonic_preset` selectors, mirrored from `wasm.rs`. Two now: canonical, and the preset
@@ -97,9 +105,11 @@ export const TECTONIC_CONTROLS = [
   "sutureSpreadM",
   "structureDepth",
   "structureWavelengthM",
+  "marginWarpM",
+  "marginWarpWavelengthM",
 ];
 
-/// The subset of `TECTONIC_CONTROLS` that gets a WIDGET. Six of the eight.
+/// The subset of `TECTONIC_CONTROLS` that gets a WIDGET. Six of the ten.
 ///
 /// **The suture pair is driven but not sliderable, and that is a measured decision rather than
 /// an omission.** The two are jointly constrained: `sutures` places suture `i` at
@@ -113,6 +123,33 @@ export const TECTONIC_CONTROLS = [
 ///
 /// So the preset carries them, the query string carries them, the panel SHOWS them as a
 /// readout, and nothing offers a control nobody could aim.
+///
+/// **Task 5's warp pair is driven and not sliderable either, and the reason is the same SHAPE
+/// as the suture pair's rather than the same sentence.**
+///
+/// `marginWarpM` is jointly constrained with `continentCollisionWidthM`, through
+/// `TectonicParams::collision_reach_m`: the warp displaces the whole collision profile
+/// sideways, so its amplitude ADDS to the reach, and the engine holds that sum against
+/// `MAX_TECTONIC_RANGE_M` and refuses the record entire when it passes. At the panel's own
+/// widest steepness -- canonical's 400 km -- the gate leaves **20 km** of room for a warp, so
+/// a slider anchored on canonical could offer exactly one live position before the engine
+/// began refusing every one after it. **A control most of whose travel turns the viewer blank
+/// is worse than no control**, and `every position the sliders can take is a block the engine
+/// accepts` is the test that says so -- written for this panel, and this is the first field
+/// that broke it. The honest fix is a travel that depends on another slider's position, which
+/// this travel model cannot express and which is its own task.
+///
+/// `marginWarpWavelengthM` has a second reason on top of that one: it has nowhere to go. Its
+/// canonical placeholder and the value `ranges()` chooses are the SAME number, 300 km -- the
+/// wavelength Task 5's measured column peaks at -- and on a 350 km belt a 900 km wavelength
+/// moves the crest's deviation from 3.6 km to 9.4 km against 34.1 km at 300 km, because **a
+/// bend longer than the belt is a tilt, not a bend.** That is `structureWavelengthM`'s dead
+/// 120-250 km band again, except that there three of five positions were live and here it
+/// would be one.
+///
+/// So both are driven: the preset sets them, the query string carries them, the panel shows
+/// them as a readout, and the owner sees the numbers that bent their range without being
+/// offered a control nobody could aim.
 export const TECTONIC_SLIDERS = [
   "continentCollisionM",
   "continentCollisionWidthM",
@@ -130,6 +167,8 @@ export const TECTONIC_PARAM_NAMES = {
   sutureSpreadM: "mtnBeltSpacing",
   structureDepth: "mtnStructure",
   structureWavelengthM: "mtnStructureWave",
+  marginWarpM: "mtnWander",
+  marginWarpWavelengthM: "mtnWanderWave",
 };
 
 /// **THE CALIBRATION.** Measured on the owner's own world, not the default one.
@@ -225,6 +264,36 @@ export const DEPTH_STEPS = 9;
 export const DEPTH_STEP_TENTHS = 10;
 export const WAVELENGTH_STEPS = 4;
 export const WAVELENGTH_STEP_M = 20000;
+
+/// **THE WANDER TABLE.** No slider is anchored on it -- `TECTONIC_SLIDERS` says why the warp
+/// is driven rather than sliderable -- and it is here because the preset's 80 km has to be
+/// justified from a measured column somewhere, and this is the panel's own record of what the
+/// owner is looking at when they press the button.
+///
+/// Task 5's table on the bare 6,000 m / 100 km envelope, anchored on the un-warped peak so
+/// every row measures the same belt, at a 300 km wavelength. `dev` is the crest's maximum
+/// lateral deviation from its own endpoint chord and `env` the two flanks' envelope
+/// sinuosities -- the second pair is the one that says the BELT moved rather than the crest
+/// moving inside a belt that did not:
+///
+///     wander      0 km   20 km   40 km   80 km  120 km
+///     crest sin  1.026   1.029   1.024   1.047   1.065
+///     dev         3.6     5.2     6.8    15.5    34.1
+///     env sin    1.017   1.016   1.018   1.025   1.040
+///     grade      7.03%   7.03%   6.88%   6.32%   5.85%
+///
+/// **A great circle scores 1.000 and the un-warped row scores 1.026**, which is what makes the
+/// rest of the column readable at all. The grade does not rise: the warp translates the belt,
+/// it does not steepen it.
+///
+/// **80 km rather than 120 km is a GATE decision, not a table one.** The warp adds directly to
+/// `TectonicParams::collision_reach_m`, which the engine holds against `MAX_TECTONIC_RANGE_M`
+/// -- past it a margin is not evaluated at all and a profile still carrying weight there is
+/// truncated rather than faded. On the preset (two sutures 100 km apart, a 100 km flank) the
+/// reach is 235 km before the warp, so 80 km reaches 315 km and leaves 105 km of headroom,
+/// while 120 km reaches 355 km and costs a delivered grade of 10.711% against 9.293%. Task 3
+/// chose the suture setting on exactly that argument -- the largest margin under the gate
+/// anywhere in the useful band -- and this follows it.
 
 /// The slider travel for each driven parameter, derived from the engine's own canonical block.
 ///
