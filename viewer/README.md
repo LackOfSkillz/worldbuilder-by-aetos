@@ -334,9 +334,16 @@ viewer/
   public/app/main.js                 wiring, the hypsometric ramp, the URL parameters
   public/app/controls.js             the parameter panel, built from panel-fields.js
   public/app/panel-fields.js         ONE copy of every default and every slider's travel
-  public/app/relief.js               the shaded-relief raster: hillshade + slope colour
+  public/app/relief.js               the shaded-relief raster: hillshade, slope colour, ocean,
+                                     lakes
   public/app/relief-provider.js      the Cesium ImageryProvider over that raster
   public/app/relief-params.js        the engine's relief presets, across the wasm boundary
+  public/app/biome.js                land colour: three axes, 33 re-derived colours
+  public/app/clouds.js               the cloud index and its raster
+  public/app/cloud-provider.js       the Cesium ImageryProvider over that raster
+  public/app/water.js                the water manifest: box arithmetic, dilation, lake lookup
+  public/app/tectonic-params.js      the engine's tectonic presets, across the wasm boundary
+  public/app/coast-params.js         the engine's coast presets, across the wasm boundary
   public/app/verify.js               the twelve checks -- window.__wb.check()
   public/app/bench.js                the frame budget -- window.__wb.bench()
   public/vendor/cesium/              the vendored build (committed)
@@ -354,6 +361,10 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 ?clouds= ?cloudSize= ?cloudMaxLevel=           the cloud layer -- see below
 ?lakes=0 ?lakeNodes=                           the water manifest -- see below
 ?reliefPreset= ?mountainM= ?quietingStrength= ?octavePersistence=   the relief channel
+?coast= ?coastBand= ?coastFreq= ?coastOctaves= ?coastGain= ?coastLacunarity=
+                                               the coastline channel -- see below.
+                                               `?coast=` is the raggedness amplitude and is
+                                               the only one of the six with a slider
 ?sse=                                          THE detail knob -- see below
 ?exaggeration= ?paint=0 ?rampMin= ?rampMax=    what it looks like
 ?atmosphere=0                                  ground atmosphere OFF (it is ON by default)
@@ -375,9 +386,18 @@ later tasks in this slice.
 `wb_water_run` shipped in the artifact with slice 5b and nothing in the viewer called it. It does
 now: at boot, `main.js` resolves the whole shipped water path -- basin fill, overflow resolution,
 the tied-plateau merge, classification -- and `relief.js` draws every body as a **flat sheet at
-its own spill level**, coloured by the ocean's own twelve-stop table read at the depth below that
-level. A lake is shallow water and lands in the shelf and surf colours; it is not a fourth colour
-system.
+its own spill level**, coloured by `LAKE_STOPS` read at the depth below that level.
+
+**A lake gets its own table and not the ocean's, and the distribution is why.** Re-measured for the
+record task over all 55 bodies on the owner's world at 30,000 nodes -- each dilated box sampled at
+0.02 degrees through `wb_fill_tile_f32`, a sample counted where `0 < h <= level`, area-weighted by
+cos(latitude), **270,320 samples**, node v22.17.0 against the checked-in `.wasm` -- lake depth runs
+p25 **7.0 m**, p50 **15.4 m**, p75 **27.1 m**, max **127.9 m**, with **61.4% of the area inside the
+first twenty metres**. The sea is the opposite shape: 48.6% of it sits in the sixty metres between
+-4,620 m and -4,560 m. **Half a lake is at its shore and half the sea is on one plain**, so one
+twelve-stop table cannot serve both -- read against the ocean's, every lake on this world falls in
+the three palest stops and reads as ice. `LAKE_STOPS` is thirteen stops over 0..390 m, nine of them
+inside the first 48 m.
 
 **The sea is not in the manifest and must not be added back.** Slice 5b's Ruling 6: the spec
 defines a mapping of *named* waters and a fallback for the unnamed, and the sea is the mapping's
@@ -389,24 +409,36 @@ the owner's world resolves **55 bodies at 30,000 nodes and 351 at 100,000**. It 
 expensive setting in this viewer. Measured on the owner's world, node 22, this repository's
 checked-in wasm, one call each:
 
-| `?lakeNodes=` | bodies | drawable | wall clock |
-| --- | --- | --- | --- |
-| 8,000 | 11 | | 0.98 s |
-| 15,000 | 22 | | 2.05 s |
-| **30,000 (the default)** | **55** | **17** | **4.21 s** |
-| 60,000 | 164 | | 9.32 s |
+| `?lakeNodes=` | bodies | wall clock |
+| --- | --- | --- |
+| 8,000 | 11 | 0.98 s |
+| 15,000 | 22 | 2.05 s |
+| **30,000 (the default)** | **55** | **4.21 s** |
+| 60,000 | 164 | 9.32 s |
 
 It is paid **synchronously, at boot**, and deliberately: Cesium caches the texture it is handed,
 so a manifest that arrived after the first tiles would leave permanently lake-free tiles wherever
-the camera looked first. `?lakes=0` skips the resolution entirely -- not resolved and ignored --
-so it restores both the previous picture and the previous boot time.
+the camera looked first. The running viewer's own status line reports the whole resolution at
+**5.4 s** on the default path at the orbital camera, which is the number an owner actually waits.
+`?lakes=0` skips the resolution entirely -- not resolved and ignored -- so it restores both the
+previous picture and the previous boot time, byte for byte.
 
-**"Drawable" is smaller than "bodies", and that is a finding rather than a filter.** A body
-arrives as a surface level and a **bounding box**, and a single-node body's box is a *point*: 38
-of the owner's 55 bodies at 30,000 nodes, and 60 of `DEFAULT_WORLD`'s 156. No texel centre lands
-on a point, so those bodies cannot be drawn at all. The manifest exports no footprint, no radius,
-and no way to turn `rootNode` into a position, so there is nothing here to draw them with. The
-count is in the status line and on `window.__wb.water.facts` rather than hidden.
+**All 55 draw, and the reason 38 of them did not is worth keeping.** A body arrives as a surface
+level and a **bounding box**, and `water.rs::lake_body_extents` builds that box over the
+`to_latlon()` of every submerged node -- so **it bounds node CENTRES, not water**. A single-node
+body's box is therefore a *point*, no texel centre lands on one, and 38 of the owner's 55 bodies
+at 30,000 nodes could not be drawn at all. `dilateBodyExtents` grows every box by the one cell
+radius that construction licenses: `2R/sqrt(n)` metres, which is `2/sqrt(n)` **radians on any
+planet** -- the radius cancels -- the equal-area disc holding one node's share of the sphere.
+Nothing is invented, and a one-node body is bounded by the one cell it can physically occupy.
+
+**What it cannot fix is the rest of the box.** The drawn set is the box intersected with the level,
+so where sub-level ground crosses the box the box is what stops the water, as a straight line of
+latitude or longitude. The dilation roughly halved that exposure and left about a fifth of a body's
+boundary as a straight cut; it is visible at 900 km on the east side of the largest inland sea, and
+it is on the panel's not-wired list with its number rather than as an adjective. **The fix is
+engine-side**: any per-body footprint -- a member-node list, a polygon, or a basin-id field sampled
+like `wb_fill_tile_f32` -- would close it. A surface area would not.
 
 ### `?clouds=` -- the coverage IS the slider, and it was calibrated rather than guessed
 
@@ -1939,6 +1971,14 @@ warp.** Recorded here so that the four rasters are not mistaken for screenshots.
 
 The most valuable section here, and the reason this slice is not "done".
 
+> **Written by the relief slice, and four of its items have since been closed by the photoreal
+> slice.** Items 3, 4 and 8 are stale as written and item 7 has already been partly rewritten in
+> place: there are clouds, land colour is no longer altitude-and-latitude, and lakes are drawn.
+> **The section is kept rather than edited into agreement**, because what it got wrong about its
+> own successors is part of the record; the live verdict on all twelve north-star differences is
+> in *The photoreal slice* at the end of this file, and in
+> `docs/design/2026-09-05-north-star-gap.md`.
+
 **Say this first: the reference image could not be found.** Nothing in `docs/`, `.superpowers/`
 or any scratchpad is the picture the owner compared against; the plan records it only through
 his words. **So the comparison below is against named qualities, not against pixels, and no
@@ -2138,7 +2178,9 @@ from a summary line.
 
 ```
 cd viewer
-npm test                 # 57 tests, 57 pass, 0 fail
+npm test                 # 57 tests, 57 pass, 0 fail -- the count AT THE TIME OF THAT SLICE.
+                         # Re-run for the photoreal record on 2026-09-06 at b6862d2 it is
+                         # 215/215, exit 0. A count is a property of the commit, not of the file.
 npm run check:wasm       # the shipped .wasm matches its manifest and the source that is here now
 ```
 
@@ -2177,3 +2219,369 @@ digests, which are at 1000x800:
 
 No console errors in any run. **0 off-origin requests in every one**, which remains the number
 that has never moved across every measurement in every task that has touched this viewer.
+
+---
+
+# The photoreal slice
+
+**Why it exists, in the owner's words.** Shown the viewer beside a reference render: *"lets stop
+all other tasks and make this our only priority. otherwise out app looks like a kindergarden
+toy."* And, on what the work actually was: *"I think our engine is amazing, now we need a good
+paint job."* Climate, the Evennia export, the studio and cartography were all parked. Nothing on
+the roadmap made the picture better.
+
+The reference was analysed element by element into **twelve differences** in
+`docs/design/2026-09-05-north-star-gap.md`. That document now carries the verdict on all twelve;
+this section is the viewer's half of the record -- what shipped, what it cost, what is still
+wrong, and the mistakes, which are worth more than the successes.
+
+**One framing the gap analysis got right at the outset and this section inherits:** the reference
+is a rendered illustration, not a photograph and not the output of a simulation. The target is a
+*look*, part of which is post-processing rather than terrain. Saying that up front is what stops
+anyone chasing the last five percent through the generator.
+
+## What shipped, in the order it ran
+
+| # | What | Files | Default |
+|---|---|---|---|
+| 1 | **Land colour** from three axes and 33 re-derived colours | `biome.js` | on; `?biome=0` restores the ramp |
+| 2 | **Clouds**, a third pool consumer | `clouds.js`, `cloud-provider.js` | `?clouds=0.40` |
+| 3 | **Ocean tone**, twelve stops in one shared table | `panel-fields.js`, `relief.js` | on |
+| 4 | **Ground atmosphere, limb and tone** as renderer state | `atmosphere-params.js` | haze **on**; ten other parameters offered, none defaulted |
+| 5 | **Fractal coastlines** (engine) | `continentality.rs` | **off** -- canonical is amplitude 0 |
+| 6 | **The coast channel**: three exports, one slider | `coast-params.js`, `engine.js`, `controls.js` | off |
+| 7 | **Lakes drawn** from the shipped manifest | `water.js`, `relief.js` | on; `?lakes=0` |
+| 8 | **Lakes drawn as lakes**: their own table, their own box | `panel-fields.js`, `water.js` | on |
+
+**The order is not the plan's order, and the correction is the first thing worth recording.** The
+plan parked land colour in Tier 3 behind a climate slice. Research refuted the premise -- the
+reference implementation this idea came from gets desert, forest and scrub from noise plus
+latitude, and derives its band edges as quantiles of a global array, which
+`continentality.rs::calibrate` already computes grid-free at 4,000 Fibonacci samples. **And the
+sequencing argument is sharper than the feasibility one: clouds at 40% coverage hide the land and
+coastline defects the slice exists to fix.** So land colour ran first, and every land measurement
+in this slice is taken at `?clouds=0`. Any future one must say so too.
+
+## The measurements that changed a design
+
+Four of them, and in each case the *distribution* decided the fix rather than the intent.
+**Every figure in this section was re-derived on 2026-09-06 at `b6862d2`** rather than carried
+from a task report; where a report disagrees, the disagreement is stated. Unless a row says
+otherwise the world is the owner's -- **seed 562423712, radius 4,500,000 m, 28 plates, land 0.16,
+the engine's `ranges` tectonic preset through its eight non-canonical fields** -- and the host is
+node v22.17.0 against this repository's checked-in `viewer/public/wasm/worldbuilder_engine.wasm`.
+
+### 1. Land luminance had a spread of 1.6:1 and now has 14.8:1
+
+**Population:** the six 30-degree tiles of a 12x6 global scan whose four corners and centre are at
+least three-fifths land, rasterised through `reliefTile` at 64 texels a side, **land texels only,
+16,743 of them**. Ocean is unchanged by construction and averaging it in would dilute the quantity.
+**Method:** the same tiles and the same build, `biome: null` against `biome: calibrate(...)`.
+
+| | mean | **sd** | min | p01 | p99 | max | **p99/p01** |
+|---|---|---|---|---|---|---|---|
+| **height ramp** | 96.3 | **9.8** | 83 | 88 | 143 | 191 | **1.6:1** |
+| **biome** | 63.6 | **42.3** | 5 | 12 | 184 | 200 | **14.8:1** |
+
+**Luminance sd 9.8 -> 42.3, a factor of 4.3.** That is the difference between a diagram and a
+photograph. The old ramp's ends were both mid-tone, which is why no amount of re-tinting it could
+have produced this: the range had to come from somewhere with a physical anchor, and it does --
+every palette entry carries a visible-band reflectance and its RGB is computed at module load.
+
+*(Task 1 measured 9.5 -> 42.1 and 14.6:1 over 16,740 land texels. This re-derivation uses its own
+tile rule and lands three texels away. Same claim.)*
+
+The mean **falls**, and that is not a defect: this world's land is mostly wet and tropical, and a
+closed canopy really is near-black in the visible band. It is the same physics that buys the
+spread.
+
+### 2. The ocean was flat because half of it was one colour -- so the fix was BRIGHTER
+
+The gap analysis' own correction said the bathymetry was already used and the gap was tone. True,
+and incomplete: the tone problem was **where the stops were**, not how dark they were.
+
+**Population:** a 2,880 x 1,440 edge-inclusive global fill, **4,147,200 samples** at canonical
+resolution, area-weighted by cos(latitude). **Method:** `wb_fill_tile_f32` in 24-row bands.
+
+- **48.61% of the sea's area lies between -4,620 m and -4,560 m.** Sixty metres. The old table ran
+  a straight interpolation from -4,600 m to -1,200 m, so **half the ocean received about half a
+  luminance unit**. Darkening the abyss could not have touched that, and darkening was the obvious
+  move.
+- **1.29%** of the sea is shallower than 120 m; **0.1137%** is at or below -6,000 m; the deepest
+  sample is **-6,558.5 m**. The retired `-6,800 m` stop was therefore reached by nothing: it
+  anchored an interpolation and was never itself painted.
+
+Twelve stops now, defined once in `panel-fields.js` and spread into `RAMP_STOPS`, with the shelf
+and surf much brighter and the abyssal plain given an internal gradient. Our table is still darker
+than the reference at every depth; that remaining lift belongs to a grade, and no grade ships.
+
+**And there were two colour systems, which had to be settled before anything moved.** The relief
+imagery layer paints the sea on the default path; `RAMP_STOPS` paints it only under `?relief=0`.
+Established three independent ways -- structurally, by rendered chromaticity (immune to the
+lighting scalar, which multiplies all three channels alike), and decisively by mutation: one stop
+turned red in each table in turn, and the two digests moved orthogonally. The imagery layer was
+also flattening the ramp, by a **constant** factor -- water is lit as a flat plane -- so it scales
+mean and spread alike and was not the cause of the flatness.
+
+### 3. Lakes are the ocean's mirror image, and one table cannot serve both
+
+**Population:** all 55 bodies at `node_count = 30,000`, each **dilated** box sampled at 0.02
+degrees, a sample counted where `0 < h <= level`, area-weighted by cos(latitude): **270,320
+samples**.
+
+| p25 | **p50** | p75 | max |
+|---|---|---|---|
+| 7.0 m | **15.4 m** | 27.1 m | 127.9 m |
+
+**61.4% of lake area is in the first twenty metres**; 21.4% in the first six; 79.2% in the first
+thirty. Against a sea that is a slab at one depth, that is the exact opposite shape, and read
+through the ocean's table every lake on this world falls in its three palest stops and **reads as
+ice**. `LAKE_STOPS` is thirteen stops over 0..390 m from one evaluation of a stated
+attenuation model, nine of them inside the first 48 m, where the gradient is actually spent.
+
+*(Task 8 reported 21.5 / 34.5 / 49.0 / 61.4 / 79.3 / 93.0% at 6 / 10 / 15 / 20 / 30 / 48 m and a
+127.5 m maximum; this run gives 21.4 / 34.4 / 49.0 / 61.4 / 79.2 / **94.4**% and 127.9 m. The 48 m
+row differs by 1.4 points. Nothing turns on it and it is recorded rather than smoothed.)*
+
+### 4. A coastline that gets longer as the ruler shortens -- and a control that does not
+
+The one engine change in the slice. **Re-derived by running the engine's own survey**,
+`cargo run --release --bin coastline_survey`, about four minutes single-threaded on this machine.
+Coastline length is a Cauchy-Crofton boundary-edge sum on an equirectangular grid and is quoted
+**only as a ratio** against the same grid at amplitude 0, so the estimator's raster bias divides
+out.
+
+| ruler | 100 km | 50 km | 25 km | 12.5 km |
+|---|---|---|---|---|
+| **fractal / canonical** | 1.358 | 1.472 | **1.591** | **1.639** |
+| **smooth control / canonical** | 1.023 | 1.027 | 1.032 | 1.030 |
+| canonical length, km | 101,323 | 100,780 | 100,749 | 100,981 |
+
+**The ratio grows as the ruler halves. That is the fractal signature**, and the two other rows are
+what make it a measurement rather than a sensitivity. The control moves the coast by the *same
+amplitude* at a frequency coarser than the base field's own finest octave -- the same
+displacement, no added structure -- and sits **flat at 1.02-1.03 across four ruler lengths**. And
+today's canonical coastline is flat across an eightfold change in ruler: it is not fractal, and
+the estimator says so.
+
+At the shipped preset (amplitude 0.35) on a 25 km grid: inlet heads **2 -> 175**, islands over
+100,000 km2 **5 -> 9**, and the field's land fraction moves **-0.017 pp** on the owner's world,
+which is a quarter of the uncertainty the 4,000-sample calibrator already carries.
+
+**It is off by default and the owner has to drag it.** `CoastParams::canonical()` is amplitude 0,
+Ruling 1 keeps it there, and the slider runs 0.00 to 0.75 in twentieths. Fourteen of its sixteen
+positions are inside the measured band; the engine would have accepted 4.0 and that would have put
+everything useful in the first fifth of the throw.
+
+### 5. Cloud coverage delivered against coverage asked
+
+`?clouds=` is **the fraction of the sphere at or above half opacity**, not a threshold on a noise
+field, and the threshold that delivers it is found by inverting the field's own measured
+distribution at world load. **Calibrated on a 20,000-point equal-area spiral; re-measured here on
+a fresh 200,000-point one**, because a function that measured its answer with the array it had
+just sorted would agree with itself by construction.
+
+| asked | 0.05 | 0.10 | 0.20 | 0.30 | **0.40** | 0.50 | 0.70 | 0.90 |
+|---|---|---|---|---|---|---|---|---|
+| **delivered** | 0.0495 | 0.1007 | 0.2006 | 0.3005 | **0.3996** | 0.5025 | 0.6984 | 0.8994 |
+
+*(Task 2 recorded 0.4000 at the default; this re-sample gives 0.3996.)*
+
+## The current digests, re-derived
+
+**Method:** the committed `viewer/scripts/shoot.mjs`, its **`digest`** command -- 1600x900, world
+and camera entirely through the URL, panel/status/credits hidden, the render loop **stopped**
+(`useDefaultRenderLoop = false`) and **20 frames driven by hand** at
+`JulianDate.fromIso8601("2026-09-05T12:00:00Z")`. SHA-256 of the captured PNG. Headless Chromium
+`Chrome/153.0.8010.12`, `--headless=new --use-angle=swiftshader`. Owner's world, camera
+`&fly=-18.87,167.74,9000000`.
+
+| picture | SHA-256 |
+|---|---|
+| **the shipped default** (clouds 0.40) | `fbf7d2dfcb031b3451f4444216674201e222e8ac7d8b5c5961ff7559a559ca72` |
+| **`?clouds=0`** -- the picture every land figure above is quoted at | `d609341db094915288139209b7ecbbf10e1d2e9808512b1cefbb32407341591a` |
+| `?clouds=0&lakes=0` | `80cef62bd215e71df1ca7855b0629207e12b6e4cf5be230bb64c2e1f4d8ea7ef` |
+| `?clouds=0&relief=0` -- the `ElevationRamp` fallback | `6cabb72c7ec5304c6124577e80231e45e6ded90dca62ea73fffdcc0ab9a0ceeb` |
+| `?clouds=0&atmosphere=0` | `8c23300a00e17016c27b8d883c7c977090af8d0be918885abfa87d5174fb3215` |
+
+**Stability:** the shipped default was digested twice, in separate processes with a fresh browser
+and a fresh page load each, and came back identical -- so the digest is measuring the picture and
+not the clock. The `?lakes=0` and `?relief=0` rows reproduce the values recorded before the last
+two tasks exactly, which is what makes them escape hatches rather than approximations.
+
+**The `?atmosphere=0` row has moved since it was recorded**, and legitimately: it restored the
+pre-atmosphere picture byte-for-byte at the commit that turned the haze on, and two lake tasks
+have changed that picture since. An escape hatch restores *its own* change, not the tree's.
+
+## THE FRAME-TIME TRAP, STATED PLAINLY
+
+**`shoot.mjs`'s plain `shoot` command renders at `JulianDate.now()`.** `Scene.render()` with no
+argument defaults its frame time, so **pinning `viewer.clock` does nothing**, and two captures
+taken minutes apart are lit differently.
+
+**Some of the before/after pairs shown to the owner in the earlier tasks of this slice were taken
+that way, and the two sides may not be under the same sun.** Nothing about the *conclusions*
+depends on it -- every quantitative claim in this slice comes from a probe or from a `digest`, and
+`digest` drives its own frames at an explicit `JulianDate` -- but a picture is the thing an owner
+actually judges, and this one deserves to be said rather than filed. The later tasks used
+`digest --out` for exactly this reason. **The fix is a `--pin` flag on `shoot`, it is about one
+line, and it has no owner.**
+
+## Two decisions left open for the owner
+
+Both were measured, neither can be settled by measurement, and both are one parameter away.
+
+1. **The thick blue limb.** The reference wraps the disc in a blue haze; ours is a thin, warm,
+   hard-edged ring. Measured by binning sky pixels against the *grazing altitude* of the ray each
+   one looks along (`IntersectionTests.grazingAltitudeLocation`) -- a thickness in kilometres,
+   which is a property of the atmosphere, where binning against pixels would be a property of the
+   camera distance. Ours peaks in the lowest 10 km bin, warm, r > b, and is at half by 40 km.
+   **`?limb=24000` turns it into a blue-cyan halo standing off the surface at 60 km** -- and buys
+   that by opening a dark gap at the silhouette itself. **Ours is thin because it is physically
+   right**: Cesium's scale heights are Earth's, over a drawn ellipsoid that is Earth's, and the
+   reference's limb is an illustrator's convention. A preference may not overturn a measurement,
+   so it is a parameter and not a default. **It costs nothing to try** -- the sky atmosphere is
+   drawn outside the silhouette and touches no ground fragment, and that was measured, not argued.
+2. **The PBR tone map.** `?hdr=1&tonemap=PBR_NEUTRAL` **beat shipping nothing on every measured
+   axis** -- ocean spread, ocean span, and the land's own dynamic ratio. It is not the default
+   because **it swallows the limb almost entirely**: it buys difference #12 by spending difference
+   #10, and nothing measured here can price that trade. (`FILMIC` lost on every column, and `ACES`
+   was rejected outright -- it crushes the land's first percentile onto the floor, which is
+   information destroyed rather than contrast gained.) If the owner prefers it, the change is one
+   default in `atmosphere-params.js` and **every figure in this section would have to be re-run**,
+   because HDR moves the whole colour pipeline.
+
+## What is still not right
+
+The most valuable section, and longer than the list of what shipped.
+
+1. **About a fifth of every lake's boundary is a straight cut**, because the manifest carries a
+   box and no footprint. See `?lakes=` above. Engine-side fix, named on the panel with its number.
+2. **The lakes' shallow rim is a strong halo.** The 0-6 m band is 21% of lake area and draws as a
+   conspicuous pale ring around every island and shore. It is a real depth signal and it is the
+   first thing the eye finds; the stop to move is the model's bottom colour and nothing else in
+   the table depends on taste.
+3. **Clouds are draped, not floating.** An `ImageryLayer` is painted on the terrain: no altitude,
+   no parallax. The displacement is zero at the sub-camera point and grows toward the limb, where
+   **a real deck would overhang the silhouette and this one stops exactly at it**. The only fix in
+   this stack is a second textured ellipsoid with its own tiling, level of detail and request
+   path -- which is not the machinery this layer was told to reuse.
+4. **The cloud layer stops sharpening at level 3** while the ground refines to 12. Derived rather
+   than chosen -- at that cap the field is still sampled 2.6 times per its finest 36 km feature --
+   and correct for a layer whose reference is a picture of a whole planet, but somebody will
+   notice it on a descent before they read this.
+5. **The two hemispheres' storm tracks are visibly unequal** on the owner's world, because the
+   macro noise field happens to sit dry over the northern mid-latitudes. The zonal profile is
+   symmetric to 1e-12 and that is asserted; this is one seed's weather.
+6. **The ground haze cost the land's darkest tone**, about a fifth of the rendered p99/p01. It was
+   turned on by re-measurement and the trade is defensible, and `?atmosphere=0` reverts it exactly.
+7. **`?relief=0` is now meaningfully less truthful than the default path.** It shows no lakes at
+   all -- a lake is a level attached to a *place*, and a 256x1 height gradient cannot express that
+   -- and it resolves the ocean's sixty-metre band through fewer than two gradient buckets. The
+   status line says the first part out loud.
+8. **The coastline is built and switched off.** Until the owner drags the slider, the highest-
+   contrast edge in the picture is still the smooth one. And the shipped preset is **above the
+   amplitude at which a strait opens through this world's supercontinent** -- a topology change,
+   photographed at five amplitudes rather than explained afterwards, and left as the owner's call.
+9. **No rivers, no settlement lights, no sea glint.** Untouched, and rivers are the finest visible
+   texture in the reference.
+10. **Snow is still a contour.** The biome palette has polar and ice entries and reaches them, but
+    there is no climate-driven snow line; white ridgelines remain an elevation threshold scaled by
+    latitude.
+11. **The boot pays about five seconds for the water manifest**, synchronously, before the first
+    tile. A worker-side resolution behind a barrier would move it off the main thread without the
+    texture-caching hazard, and was not built.
+12. **The coast dither is white noise, not blue.** At high zoom the surf band's edge is speckled
+    rather than scalloped; the honest fix is the noise field the cloud layer already has.
+
+## The mistakes, which are the transferable part
+
+1. **A noise field's real standard deviation was a fifth of its nominal one.** A trilinear
+   value-noise fBm normalised by its own amplitudes has sd about 0.105 against a nominal +-0.5 --
+   averaging eight lattice corners costs that much variance. **Every weight built on the nominal
+   range was five times too weak**: moisture became very nearly a function of latitude, the
+   classifier collapsed onto its diagonal, and **nine of thirty-three colours were unreachable**.
+   Weights are now expressed in standard deviations of their own field, with a test that fails if
+   the constant drifts. **The same mistake was caught a second time, before it shipped**, in the
+   cloud layer -- where it would have failed *invisibly*, because a layer that is transparent
+   everywhere looks exactly like light cloud cover.
+2. **A banding check appeared to test five terms and tested two.** Zeroing only the equatorial
+   cloud term turned exactly one test red -- and not the banding one -- because **the two
+   subtropical minima either side of the equator manufacture an apparent equatorial maximum out of
+   nothing**. The mutant preserved the distribution, the spread and the global coverage and
+   destroyed only the meaning. Replaced by a per-zone removal test; an intermediate form using a
+   fixed absolute margin was tried and rejected by measurement.
+3. **An ocean stop was reached by zero of 8,294,400 samples across two worlds**, and the check
+   that should have noticed asserted a **box** whose floor was a global extreme -- so it could not
+   have failed for any stop any world does not reach. The replacement asks the engine for a count
+   at or below every stop, and pins the retired one at exactly zero so the finding itself would
+   fail loudly if it stopped being true.
+4. **Three lake mutations in a row left the centrepiece assertion green.** `every body the engine
+   resolves is drawn` framed each body's tile **on the box it was about to draw with**, so a point
+   box gave a zero-size rectangle, every texel landed on the point, and the raster painted a full
+   tile whether the fix was in or not. Two more were green because a table-identity check compared
+   the two palettes' **depths** and never their colours -- which is precisely how the two ocean
+   tables had drifted before they were merged. Each fix took its own commit.
+5. **`pool.js` silently dropped the two counters it was not told about.** It resolves a raster
+   reply by rebuilding it from five named fields and discarding the rest, so the globe drew lakes
+   correctly and the browser reported `lakeTexels: 0`. **No unit test caught it**, and why is the
+   part worth keeping: the provider's test uses a `fakePool`, and the fake had been made faithful
+   by carrying the counts -- **the fake was right and the real dispatcher was wrong, in the one
+   place the fake replaces**. It took a live `measure` run against the real browser, real workers
+   and real pool. The counter had been added because a manifest that never arrived would draw
+   identical bytes; what it actually caught was the manifest arriving and the reporting being
+   broken. Either way the pixels were silent.
+6. **The first cloud draft fitted seven wavelengths around the planet.** A 4,000 km macro field on
+   a 4,500 km-radius world is hemispheric, not synoptic: it produced 3.9% coverage in one storm
+   track against 70.8% in its mirror image, which is one blob and its complement with the zonal
+   profile buried underneath. The rule that replaced the guess is now an assertion -- the profile's
+   peak-to-trough must exceed the noise's sd, and by less than a factor of four, so latitude leads
+   and the noise dithers rather than either painting stripes or drowning them.
+7. **A tile-width cap was set by analogy and cost 292 tiles where the relief layer drew 73.** A
+   narrower imagery tile does not halve the work: Cesium picks the imagery level from the terrain
+   tile's geometric error, error is inversely proportional to tile width, so halving the width
+   makes it refine one level further and land on the same metres per texel. **This file already
+   recorded that for `?reliefSize=` and it was met again from the other direction.** The cap is now
+   derived from a Nyquist ratio and the test asserts the ratio, not the level number.
+8. **A parameter table with two rows aimed at one property was invisible to the test written to
+   catch it.** The per-row walk still passed -- setting the parameter did move the property its
+   (wrong) row named -- and the one sibling it collided with was skipped by the walk's own
+   `other === property` guard as "the same property". The test now also asserts the property names
+   are distinct, the query names are distinct, and that each named property is a field the real
+   Cesium object actually has, because a row naming a *misspelt* property would otherwise create a
+   new one and change nothing about the picture, silently.
+9. **A longitude check survived wiring every column of the raster to the tile's west edge**, and
+   the rectangle it ran over was open ocean, so every texel took the height-only path. Replaced by
+   a tile-cut agreement check over two overlapping tiles whose shared meridians must come back
+   byte-identical, with an assertion that more than half the shared texels are land.
+
+## Everything this section was verified by, and it was all run
+
+At `b6862d2`, on this machine (Windows 11 10.0.26200, node v22.17.0, headless Chromium
+`Chrome/153.0.8010.12`). **Exit status read from `$?` directly, never through a pipe** -- piping
+into `grep` or `tail` gives you the pipe's status, and a four-error build was read as passing that
+way in this project.
+
+```
+cd viewer
+npm test                              # 215 tests, 215 pass, 0 fail, exit 0
+node scripts/build-wasm.mjs check     # the shipped .wasm matches its manifest and this source
+
+# the digests in the table above. WORLD is the owner's world, one line:
+#   seed=562423712&radius=4500000&plates=28&land=0.16&mtnHeight=6000&mtnWidth=100000
+#   &mtnCount=0.45&mtnAsym=2&mtnBelts=2&mtnBeltSpacing=100000&mtnStructure=0.7
+#   &mtnStructureWave=80000&mtnWander=80000&mtnWanderWave=300000
+#   &fly=-18.87,167.74,9000000
+node scripts/shoot.mjs digest --url "?$WORLD"                        # fbf7d2df...
+node scripts/shoot.mjs digest --url "?$WORLD&clouds=0"               # d609341d...
+node scripts/shoot.mjs digest --url "?$WORLD&clouds=0&lakes=0"       # 80cef62b...
+node scripts/shoot.mjs digest --url "?$WORLD&clouds=0&relief=0"      # 6cabb72c...
+node scripts/shoot.mjs digest --url "?$WORLD&clouds=0&atmosphere=0"  # 8c23300a...
+```
+
+The land, ocean, lake and cloud distributions above were measured in a throwaway node script
+against `public/app/{engine,relief,biome,clouds,water}.js` and the checked-in `.wasm`, by the
+methods each table states. The coastline ratios came from the engine's own
+`cargo run --release --bin coastline_survey`, and the engine's five test pins, the conformance
+suite and the parity corpus are re-derived in `crates/worldbuilder-engine/README.md` under
+*`continentality.rs`, revisited*.

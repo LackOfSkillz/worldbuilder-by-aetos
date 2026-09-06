@@ -13,9 +13,12 @@ Counted from `src/`, not from memory (re-counted for slice 5a Task 6, which foun
 two modules and one binary; re-counted again for slice 5b Task 6 / relief Task 5, which found
 it stale by one module and two binaries -- `water.rs`, `pond_threshold_survey.rs` and
 `relief_survey.rs` had landed without this count moving, exactly as `erosion.rs` and `wasm.rs`
-had before them): **twenty-one modules plus the crate root, and four binaries**
-(`crates/worldbuilder-engine/src/*.rs` is 22 files, one of which is the crate root;
-`src/bin/*.rs` is 4). Sixteen of the modules are ported from a named Python module and held
+had before them; **re-counted a third time for the photoreal slice's record, which found it
+stale by three binaries** -- `mountain_probe.rs`, `mountain_survey.rs` and
+`coastline_survey.rs` had landed without it moving, so **this count has now been wrong three
+times running and always in the same direction**): **twenty-one modules plus the crate root,
+and SEVEN binaries** (`crates/worldbuilder-engine/src/*.rs` is 22 files, one of which is the
+crate root; `src/bin/*.rs` is 7). Sixteen of the modules are ported from a named Python module and held
 to it by `tests/test_conformance.py`; the last five -- `stream.rs`, `streamfmt.rs`,
 `erosion.rs`, `water.rs` and `wasm.rs` -- are **new in this crate and have no Python to be
 conformant with**, so every claim they make is a property test, a measurement, or (for
@@ -47,6 +50,9 @@ conformant with**, so every claim they make is a property test, a measurement, o
     src/bin/erosion_convergence_sweep.rs  whether §14.3's iteration count holds, and against which parameter
     src/bin/pond_threshold_survey.rs  the body-surface-area distribution the pond threshold is calibrated against
     src/bin/relief_survey.rs  relief across ReliefParams' parameter space, over two site populations
+    src/bin/mountain_survey.rs  the STRUCTURE field across TectonicParams' space; chooses nothing
+    src/bin/mountain_probe.rs   a throwaway probe: does moving TectonicParams make a mountain?
+    src/bin/coastline_survey.rs  land fraction, coastline length against ruler, islands and inlets
 
 The first seventeen entries are the engine core, and it is closed -- see **This closes the
 engine core** below. `stream.rs`, `streamfmt.rs`, `erosion.rs` and `water.rs` are not part of
@@ -133,8 +139,10 @@ re-derived it -- slice 5a Task 6 found it a whole export behind after `wb_erosio
 it was four behind again by 5b Task 5 with the relief slice's three exports, and it was three
 behind and 4,825 bytes light again by mountains Task 6, this slice's own tectonic exports
 having landed the same way. A number nobody's gate reads is a number that goes stale; treat
-this paragraph as one to re-derive rather than to trust):** 225,277 bytes, **19 exports**
-(`memory` plus the eighteen functions below), **0 imports**. Zero imports is the design, not an accident:
+this paragraph as one to re-derive rather than to trust. **It went stale a FOURTH time**, by the
+photoreal slice's three coast exports, and was re-derived here from the file and the manifest
+together):** 226,673 bytes, **22 exports**
+(`memory` plus the twenty-one functions below), **0 imports**. Zero imports is the design, not an accident:
 `WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS runtime to keep in
 step, and a worker gets its own instance and therefore its own linear memory for free.
 
@@ -142,6 +150,7 @@ step, and a worker gets its own instance and therefore its own linear memory for
     wb_world_count         wb_elevation_m   wb_structural_m  wb_bottom_at   wb_fill_tile_f32
     wb_erosion_run         wb_world_new_relief   wb_relief_preset   wb_relief_check
     wb_water_run           wb_world_new_tectonic wb_tectonic_preset wb_tectonic_check
+    wb_world_new_coast     wb_coast_preset       wb_coast_check
 
 `WB_EXPORTS` in `wasm.rs` is that list, declared. A test holds this crate's source to it and
 the build script holds the built module's export section (id 7) to it, because a forgotten
@@ -4363,3 +4372,331 @@ owner until a task was written whose subject it was.
 - **`tectonics::continental` is dead code in a `--features wasm` build**, and the compiler says so
   on every build of this crate. Pre-existing, untouched here, named so it is not rediscovered as
   new.
+
+## `continentality.rs`, revisited: a coast term with its own amplitude, a fourth door, and three NaNs that looked like worlds
+
+The photoreal slice's whole purpose was viewer work -- the owner's complaint was that the picture
+*"looks like a kindergarden toy"* beside a reference render, and his framing of the job was *"I
+think our engine is amazing, now we need a good paint job."* Two things nevertheless landed in the
+engine, and the second of them was not on anybody's plan.
+
+**The first is coastline fractality.** The relief slice fixed the *height* field's spectrum and
+nobody had asked the same question of the *land/sea* field: ours are smooth because continentality
+is low-frequency, and a coastline is the highest-contrast edge in the whole image.
+
+**The second is a family of three NaNs that produced plausible worlds rather than errors**, found
+by the export sweep that the first one owed.
+
+### The brief was wrong in both directions, and that is the finding
+
+The plan's original Task 5 warned about one trap and missed another, and the miss was the
+dangerous one.
+
+- **The trap it warned about is solved by construction.** "Roughening the land/sea threshold will
+  change how much land there is." `Continentality::new` calibrates `shore` and `spread` as
+  quantiles of the same fBm **before the struct exists**, so land fraction is held whatever the
+  field's roughness. That warning was written about a problem this codebase fixed years of commits
+  ago.
+- **The risk it missed would have made the task invisible.** Its prescription was "add a fifth
+  octave". Adding an octave to a **gain-0.5 normalised sum gives the new term 3.23% of total
+  amplitude** -- a sub-pixel wobble, not a fjord. **The task could have passed every check the
+  brief named and produced no visible change**, which is the worst possible outcome for a task
+  whose entire purpose is visible. There is a second, quieter cost: `CALIBRATION_SAMPLES = 4000`
+  already gives only about 1.8 samples per finest-octave wavelength, and a fifth octave takes that
+  below one, degrading the land-fraction estimator from quasi-Monte-Carlo to plain Monte-Carlo.
+
+**What shipped instead is a separate term with its own amplitude, windowed by `|above_shore|`:**
+
+```
+above_shore(p) = at(p) - shore
+               + amplitude * spread * W(|at(p) - shore| / (window_spreads * spread))
+                 * fbm(p, ...)                                  [its own lattice salt]
+```
+
+Coast-localised roughening **by amplitude rather than by octave count**. It puts the detail where
+the eye looks, leaves plate interiors and abyssal plains untouched, and preserves land fraction to
+first order for free because the window is symmetric about the shore. **The term is added after
+calibration, never inside it**, so `shore()` and `spread()` -- both part of the conformance
+surface -- cannot move on any path and the Nyquist degradation never arises.
+
+`W` is the house clamped smoothstep written as three explicit branches: **no `min`, no `max`, no
+`.clamp`**, so a NaN falls to the final arm and closes the window, and that arm is asserted rather
+than described. `canonical()` sets `amplitude: 0.0` and `above_shore` branches on exactly that
+**before** touching the noise -- an early return rather than `+ 0.0`, deliberately, because
+`-0.0 + 0.0` is `+0.0` and an exactly-zero offset would flip the sign bit of a point sitting on
+the shore, so `Some(canonical())` would not be *bit*-identical to `None`.
+
+**One deviation from the `ReliefParams` / `TectonicParams` pattern, stated plainly.** Both of those
+widened the constructor they attach to. This one adds a delegating `Continentality::with_coast` /
+`Surface::with_coast` instead, because `Surface::new` has seventy call sites and a mechanical
+`, None` at ninety sites inside a commit about coastlines is diff nobody can review. The precedent
+is this crate's own C ABI, which ships `wb_world_new` / `_relief` / `_tectonic` as separate doors.
+Everything Ruling 1 requires is unchanged and asserted.
+
+### What the coast term delivers, and the control that makes it a measurement
+
+Re-derived for this section by `cargo run --release --bin coastline_survey` (about four minutes,
+single-threaded, this machine). Length is a Cauchy-Crofton boundary-edge sum on an equirectangular
+grid, quoted **only as a ratio** against the same grid at amplitude 0 so the estimator's raster
+bias divides out. Owner's world (seed 562423712, radius 4,500,000 m, 28 plates, land 0.16),
+predicate `above_shore > 0`:
+
+| ruler | 100 km | 50 km | 25 km | 12.5 km |
+|---|---|---|---|---|
+| **fractal / canonical** | 1.358 | 1.472 | **1.591** | **1.639** |
+| **smooth control / canonical** | 1.023 | 1.027 | 1.032 | 1.030 |
+| canonical length, km | 101,323 | 100,780 | 100,749 | 100,981 |
+
+**The ratio grows as the ruler halves on all three worlds surveyed. That is the fractal
+signature** -- and the control row is what makes it a discrimination rather than a sensitivity.
+The control moves the coast by the **same amplitude** at a frequency *coarser* than the base
+field's own finest octave: the same displacement, no added structure, and it sits flat at
+1.02-1.03 across four ruler lengths. The canonical column is flat across an eightfold change of
+ruler, which is the other half of the same statement: today's coastline is not fractal and the
+estimator says so.
+
+The land fraction is the control that would condemn the technique if it moved. Over a fixed
+200,000-point area-uniform Fibonacci spiral, `field_on - field_off` is **-0.017 pp** on the owner's
+world, +0.022 pp and +0.146 pp on two Earth-sized ones. The largest is a real second-order residual
+-- the window is symmetric about the shore but the *density* of points at a given `above_shore` is
+not -- and it is a quarter of the +-0.58 pp the 4,000-sample calibrator itself carries.
+
+The amplitude travel, same world, 25 km grid: visible from about **0.10** (below that the coast
+lengthens by under 3% and inlet heads are single digits -- the sub-pixel-wobble failure reproduced
+deliberately, so the floor is measured rather than assumed), and fragmenting above about **0.75**,
+where the small-island count runs away while the large one does not. `fractal()` takes **0.35**:
+1.591x at 25 km and still rising at 12.5 km, **inlet heads 2 -> 175**, four new landmasses over
+100,000 km2, and no sign of speckle.
+
+**A topology change the owner has to decide about.** Above a threshold amplitude a strait opens
+through this world's supercontinent and the largest landmass's share falls from 87.8% to about
+48%. That is not fragmentation -- the count of islands over 100,000 km2 rises 5 -> 9 at the same
+step, so what happened is that large pieces separated -- but it is a visible difference, and it is
+photographed at five amplitudes rather than explained afterwards. **The shipped preset is above
+it, and the slider reaches every amplitude in the table.**
+
+**And the threshold is a property of the ruler.** The 25 km survey puts the drop between 0.10 and
+0.15; a 0.5-degree (about 39 km) component pass puts it between 0.15 and 0.20, at the same neck. A
+39 km grid bridges an isthmus a 25 km grid has already cut. Neither is wrong. **Any landmass-count
+claim in this project must name its grid spacing**, and these two reports disagree by exactly one
+amplitude step for that reason.
+
+### The fourth door, and the sweep it owed
+
+`wb_world_new_coast`, `wb_coast_preset` and `wb_coast_check` -- the shape `wb_world_new_relief` and
+`wb_world_new_tectonic` already established: a flat f64 record in a documented order, a preset
+export so no host transcribes a number, a checker that answers *why* rather than only *that*, and
+a constructor that refuses a record entire rather than admitting it with one field adjusted.
+**Nothing clamps; every bound is a refusal, and every comparison is written so a NaN fails it.**
+
+The sweep is **two bases x six fields x about 57 values = 748 records**, 392 accepted and 356
+refused, both pinned exactly rather than left as a threshold. **Two bases, and the reason is
+sharper here than on the tectonic channel:** `canonical()` carries `amplitude = 0.0` and
+`above_shore` branches on exactly that before touching the noise, so around canonical four of the
+six fields -- including both halves of the loop bound and the frequency product -- would be swept
+with the code that reads them switched off.
+
+It found four things.
+
+1. **`octaves` is a per-sample loop bound and `value as u32` saturates.** `1e300` arrives as
+   `u32::MAX`; at a measured 1.6e-8 s per octave that is about **68 seconds for one elevation
+   sample** and roughly 80 hours for one 65x65 tile. Bounded at 16 in the contract, stated twice --
+   before the cast, and again for a caller who built the struct in Rust.
+2. **AN ABORT THAT NO PER-FIELD CEILING CAN SEE.** The finest band a record asks for is
+   `frequency * lacunarity^(octaves - 1)`. `frequency = 1e6`, `lacunarity = 16` and `octaves = 16`
+   are **each individually admissible** and together ask for about 1.15e24; `Noise::at` floors that
+   and casts to `i64`, the cast saturates, and the next line computes `ix + 1`, which overflows --
+   an abort across a nounwind `extern "C"`. **With the product check removed, the cross-product
+   test aborts and the one-field-at-a-time sweep stays green.** That is why it is a separate test
+   and not a comment. **Add cross products to every future export sweep.**
+3. **A NaN band whose edge moves with another field.** Above `gain = 1` the fBm amplitude overflows
+   to `+inf`, `loudest` with it, and `2*total/loudest` is `inf/inf`. At four octaves the NaN
+   appears near 1e103; at sixteen, near 1e21. A probe at one gain finds nothing that a probe at
+   another finds. **A band, not a cliff -- as every hazard this project has found has been.**
+4. **And the one that outgrew the channel: a NaN did not surface as a NaN.**
+
+### The silent abyss, and the two siblings behind it
+
+`Continentality::elevation_from_above` read `if above >= 0.0` and then `if depth < 1.0`. **A NaN is
+false for both**, so it fell through to `ABYSS_M`: every affected point silently became the
+deepest ocean on the planet **and every `is_finite` assertion in the crate stayed green**. A
+drowned planet that passes its own health checks is worse than a refusal and worse than a NaN.
+
+**The coastal term was not the only entrant and was not the shipped one.** Three reach that
+function, and two of them need no opt-in block at all: a non-finite `latitude_deg` or
+`longitude_deg` through the C ABI (which takes two bare `f64` and validates neither --
+`from_latlon` turns a NaN *or an infinity* into an all-NaN vector), a non-finite vector component
+through the Python bindings, and the coastal term. All three were measured returning about
+-4,600 m.
+
+The contract chosen is **propagate**, and the reasoning is worth keeping because two more sites
+inherited it:
+
+- **Refusing at the boundary cannot cover the reach.** The coastal entrant was already refused and
+  was the *least* reachable of the three; the other two arrive as bare scalars on exports whose
+  whole design is one `f64` in, one `f64` out.
+- **Loud-as-a-panic is unavailable.** `extern "C"` is nounwind here: a panic reached through
+  `wb_elevation_m` is an abort, and this project has found three aborts and a ~2,600-second hang
+  behind that boundary already. **Trading a wrong number for a dead process is not an improvement.**
+- **Propagation is the loud option this ABI already speaks**, and it is what makes the finiteness
+  assertions the crate already has actually load-bearing rather than only looking it.
+
+The guard is an explicit `if above.is_nan() { return f64::NAN; }` placed **first**. It is
+`plates.rs::margin_at`'s house form used the other way round, and the source says why: there a NaN
+is floored on purpose because the value is a **weight**, and a floored weight is visible in the
+product it enters; here the value is a **metre**, and a floored metre is indistinguishable from a
+real one.
+
+**Two siblings were reported by that work and closed next.**
+
+- **A NaN `land_fraction` made the world entirely land.** `calibrate` picked sea level with
+  `values[((1.0 - land_fraction) * last) as usize]`, and **`as usize` saturates a NaN to 0** --
+  so `shore` became the sorted sample's **global minimum** and every point on the planet stood
+  above it. Measured at seed 12345: shore -0.6889 against a canonical 0.0956, 2000 of 2000 spiral
+  points land against 578. **And the world it produced is BIT-IDENTICAL to the world
+  `land_fraction = 1.0` legitimately produces.** That is the whole difficulty: not a wrong-looking
+  number but a real world, from a real input, arrived at by accident. (`land_fraction = 1.5` gives
+  the same answer and is left alone -- it is the monotone continuation of the curve, and it is
+  documented at the cast.)
+- **A lattice coordinate the index could not name aborted, and in release it was worse.**
+  `Noise::at` floors, casts to `i64` -- which saturates -- and asks for `ix + 1`. Debug:
+  `attempt to add with overflow`. Behind `extern "C"`: an abort. **Release: the overflow wraps to
+  `i64::MIN` and the function returns an ordinary-looking height from a cell chosen by
+  wrap-around** -- the plausible-value failure again, on the same line as the loud one. **The
+  single-infinite-field entrant and the coastal cross product are the SAME site**, reproduced here
+  panicking at the identical line, and one guard closes both. The new test **asserts the
+  one-field blindness** as well: each of the three fields alone at its own ceiling still returns a
+  finite answer, because the finest bands those ask for are twelve or more orders below saturation.
+
+Both take the same **propagate** contract, and unlike the abyss guard **neither is a divergence
+from the Python oracle**: `int()` raises on a NaN `land_fraction` and on an out-of-range
+coordinate, so there is no CPython answer these contradict. They are the closest a nounwind
+boundary can get to the oracle's own refusal.
+
+### The sweep for the same shape elsewhere: one claim confirmed, one REFUTED
+
+The abyss note's claim was: `elevation_from_above` was the only site where a NaN's fall-through
+value is a *metre*; everywhere else it falls to **a weight in [0, 1]**, silent but oracle-required.
+
+- **Confirmed: no other production site turns a NaN into a finite height.** The three that deal in
+  metres all propagate -- two fall through to the NaN itself, and `erosion.rs`'s largest-change
+  test is explicitly NaN-aware.
+- **REFUTED, and the refutation is the transferable part.** "A weight in [0, 1]" is not what the
+  rest fall to. **Two sites fall to ANGLES** -- pi/2 and pi radians, both documented CPython
+  `min` transcriptions -- and one falls to a **categorical flag** (unreachable: a non-finite height
+  is refused seventeen lines earlier). The conclusion survives, because every one of these is
+  oracle-required or already refused. **But a later sweep that reused "a weight in [0,1]" as its
+  search pattern would have missed three sites**, and that is exactly how a characterisation
+  becomes a defect.
+- **And the axis the first sweep did not have at all**: defect A is a *cast*, not a comparison.
+  Every float-to-int cast in the crate was enumerated separately. **In production code there were
+  exactly three, and all three are now closed** -- the shore index, the three lattice indices, and
+  one whose operand is a literal.
+
+### Ruling 1, and the pins -- re-derived on this host, not read from `gates.yml`
+
+**Host:** Windows 11 (10.0.26200), `rustc 1.98.0 x86_64-pc-windows-msvc`, Python 3.11 in the
+repo's own `.venv`, node v22.17.0. **Method:** `cargo test -p worldbuilder-engine <cfg>
+--no-fail-fast` (exit status), then `-- --list` and `-- --list --ignored` through
+`.github/scripts/assert_counts.py cargo-list`; **listed minus ignored**. **Every exit status read
+from `$?` directly, never through a pipe.**
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 564 | 5 | **559** |
+| default | 564 | 5 | **559** |
+| `--features python` | 566 | 5 | **561** |
+| `--features wasm` | 651 | 5 | **646** |
+| `--features python,wasm` | 653 | 5 | **648** |
+
+All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **13 test
+binaries**. The whole slice's movement decomposes cleanly and the shape is the check: the coast
+term is **+9 on every row** (it widened no C ABI), the coast channel is **+18 on the two WASM rows
+only** (`tests/wasm_exports.rs` is `#![cfg(feature = "wasm")]` in its entirety), and the three NaN
+guards are **+1 then +2 on every row**, because their tests live in `src/` and compile
+unconditionally.
+
+**Conformance, re-derived:** `WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/` -- **398 passed, exit
+0** -- and `pytest tests/test_conformance.py` -- **157 passed, exit 0** -- against the extension
+built by `maturin develop --release --features python`. `worldbuilder/` was not modified.
+
+**One honest note about that 398, because it is not purely a property of the algorithm.** On a run
+taken while this machine was also compiling and driving a browser, the suite came back **397
+passed, 1 failed**: `test_performance.py`'s `test_the_table_that_decides_everything` asserts a
+wall-clock ceiling of 260 microseconds a sample and measured 487.8. Re-run on a quiet host it
+passes with the rest. **A count is a property of the algorithm; a millisecond is a property of the
+moment**, and one of the 398 is a millisecond wearing a count's clothes.
+
+**Parity, re-derived, and this is where Ruling 1 is actually proved:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **108,106** | **0** |
+| `--mutate seed` | 108,106 | 103,931 |
+| `--mutate erosion-k` | 108,106 | 216 |
+| `--mutate water-pond` | 108,106 | 60 |
+| `--mutate tectonic-warp` | 108,106 | 6,186 |
+| `--mutate coast-amplitude` | 108,106 | 13,128 |
+
+All six exited 0 and **every control matched its recorded figure exactly**, which is the statement
+that nothing in this slice moved a crossing value. `node scripts/build-wasm.mjs check` reports the
+committed artifact matches its manifest and the source that is here now.
+
+**The coast control was written in the same commit as the export**, deliberately: the tectonic
+channel sat unwatched by parity for three tasks, and each of the three reports named the gap
+accurately, sized it correctly, and declined it for a good local reason. Nobody was wrong; the work
+simply had no owner until a task was written whose subject it was.
+
+**63.7% of a uniform global scatter moving under the coast control is the right shape, and 2.6%
+would be wrong** -- a tectonic belt is a line on the planet, while the coastal window covers the
+whole shelf. The first corpus cut was refused by the dump's own both-ends-refused guard, because a
+2-degree box on the largest mover is entirely *inside* the coastal band and moved 100%.
+
+### What is still open here
+
+- **`CoastParams` is reachable and off.** `canonical()` is amplitude 0 and Ruling 1 keeps it
+  there, so the picture does not change until the owner drags the slider.
+- **`gradient()` still reads the smooth field.** Deliberate and documented -- the gradient is a
+  broad "which way to the sea" direction and `shelf.rs` uses its magnitude as a slope proxy -- but
+  it means the shelf's *slope* term follows the old coastline while its *coastal weight* term
+  follows the new one. Nothing measured shows a problem; it is an asymmetry a later task should
+  either justify or close.
+- **`WB_MAX_COAST_AMPLITUDE` and `WB_MAX_COAST_WINDOW_SPREADS` are domain statements, not measured
+  edges.** The survey stops at 1.5 and the panel at 0.75. What is asserted is that every accepted
+  record in the sweep produces finite elevations at eleven probes.
+- **The guards are at the convergence points, not at the entrants.** A host that passes a NaN
+  latitude now gets a NaN back instead of a plausible depth, which is the win -- but it still gets
+  no *reason*. If the scalar exports ever grow a status channel, validating at the door would be
+  strictly better information and the guards would remain as the backstop for the term nobody has
+  written yet.
+- **`elevation_from_above`'s guard is a deliberate divergence from the Python oracle in a region
+  the oracle is never asked about.** `min(1.0, NaN)` is `1.0` in CPython, so
+  `worldbuilder/terrain/continentality.py` still drowns a NaN. Nothing tests that today. If
+  somebody widens `continentality_corpus()` to hostile vectors the two languages will disagree,
+  and the right resolution is to change the Python.
+- **An infinite vector component through the Python bindings** reaches the lattice guard now, but
+  the bindings still validate nothing themselves.
+
+### Reproducing every figure in this section
+
+```
+cargo test -p worldbuilder-engine <cfg> --no-fail-fast            # five configurations
+cargo test -p worldbuilder-engine <cfg> -- --list                 # and --list --ignored
+python .github/scripts/assert_counts.py cargo-list --all list-all.txt --ignored list-ignored.txt \
+    --expect-passed <559|559|561|646|648> --expect-ignored 5
+
+maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
+WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/                       # 398 passed on a quiet host
+WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/test_conformance.py    # 157 passed
+
+node viewer/scripts/build-wasm.mjs check
+cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > \
+    crates/worldbuilder-engine/parity/native.txt
+cd crates/worldbuilder-engine/parity && node parity.mjs native.txt
+node parity.mjs native.txt --mutate {seed|erosion-k|water-pond|tectonic-warp|coast-amplitude}
+
+cargo run --release --bin coastline_survey                        # ~4 minutes, chooses nothing
+```
+
+**Every one of these was run for this section at `b6862d2`**, and every exit status was read
+directly. `native.txt` is regenerated by the dump and is deliberately untracked.
