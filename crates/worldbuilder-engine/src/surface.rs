@@ -28,6 +28,7 @@
 //! every number it uses is imported from the layer that owns it. `structural_m`,
 //! `elevation_m` and `bottom_at` arrive in later tasks, as do the bindings.
 
+use crate::climate::{self, ClimateParams};
 use crate::continentality::{Continentality, CoastParams};
 use crate::detail::{Detail, ReliefParams};
 use crate::features::{Feature, Features};
@@ -345,6 +346,90 @@ impl Surface {
         // Where somebody stated a shape, roughness defers to it.
         amplitude *= 1.0 - authority;
         shaped + self.detail.offset_m(point, amplitude, resolution_m)
+    }
+
+    /// Mean annual surface temperature at a point, in degrees C.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: Passed straight to `elevation_m`. `None` is the physics ground truth
+    /// and is what a snow line or a biome should be asked at; a viewer sampling a tile at
+    /// its own resolution gets a temperature consistent with the ground it is drawing,
+    /// which is the point of threading it rather than hard-coding `None` here.
+    /// climate: `None` for the fitted profile -- `climate.rs`'s three constants exactly --
+    /// or `Some(params)` for a caller-chosen `ClimateParams`. The fourth opt-in parameter
+    /// block of the same kind, after `relief`, `tectonics` and `coast`.
+    ///
+    /// Returns:
+    /// Degrees Celsius. An absolute unit; see `climate::temperature_c`.
+    ///
+    /// # Why this is a method taking params, where the other three blocks are constructor
+    /// arguments
+    ///
+    /// The other three configure a *layer that holds state*: `Detail` owns a noise lattice
+    /// and a band table, `Tectonics` owns a plate set, `Continentality` owns a calibration.
+    /// Their parameters have to arrive before that state is built, so they arrive at a
+    /// constructor and the built layer becomes a field of `Surface`.
+    ///
+    /// **Climate holds nothing.** It is a closed form in two floats and three constants:
+    /// there is no lattice to seed, no calibration to run, nothing to build and therefore
+    /// nothing to store. A `climate` field on `Surface` would be a struct wrapping three
+    /// `f64`s that no constructor could compute anything from, and it would cost the one
+    /// thing that is genuinely pinned here:
+    /// `lib.rs::the_surface_is_not_modified_by_this_slice` asserts this struct has
+    /// **exactly eight fields**, by name, from the source text. That assertion is CORE-001's
+    /// promise that a second representation was added beside the field rather than inside
+    /// it, and a stateless closed form is not a reason to spend it.
+    ///
+    /// So the `Option` lives where the question is asked. `None` still means canonical,
+    /// `Some(ClimateParams::canonical())` is still bit-identical to it
+    /// (`climate_none_matches_climate_some_canonical_bit_for_bit` below), and the
+    /// convention a caller sees -- an `Option<...Params>`, `None` for canonical -- is the
+    /// same one. `substrate::at` is the precedent for the shape: a stateless stage in this
+    /// crate is a free function reached through `&self`, not a field (see `bottom_at`).
+    ///
+    /// # The NaN entrant here is a POINT, and the latitude half of it IS swallowed
+    ///
+    /// `SpherePoint::to_latlon` clamps its `z` the way Python's `max(-1.0, min(1.0, z))`
+    /// does, and that form returns its first argument when the comparison is false -- so a
+    /// NaN `z` clamps to `1.0` and **reports latitude 90**. Measured, on the `-5` world:
+    /// `Vec3(0, 0, NaN)` and `Vec3(NaN, 0, 1)` both report latitude **90.0**, and
+    /// `Vec3(0, NaN, 0)` and `Vec3(inf, 0, 0)` both report **0.0**. Handed to the profile
+    /// alone, the first two are a believable, unremarkable -25 C for a point that does not
+    /// exist -- the same family as the NaN sea level that produced a world bit-identical to
+    /// a legitimate all-land one.
+    ///
+    /// **A latitude guard was written here, and then measured and REMOVED, because it was
+    /// dead.** `elevation_m` already answers NaN for every one of those four vectors --
+    /// `noise.rs`'s lattice guard, added at `b6862d2` for exactly this family, surfaces
+    /// them -- so `climate::temperature_c` receives a NaN elevation and propagates it
+    /// whatever the latitude says. The guard was proven dead the only way that counts: with
+    /// it deleted, the whole 666-test suite stayed green, including
+    /// `a_nan_point_is_not_answered_with_a_polar_temperature`, which is the test written to
+    /// catch precisely this. **Dead code looks like a feature**, and a guard no mutation
+    /// can turn red is not defence in depth, it is a comment with semicolons.
+    ///
+    /// So the property is real and the mechanism is one level down, which has a consequence
+    /// Task 2 needs: **this function's NaN safety rests entirely on elevation reaching the
+    /// answer.** The mutation that proves it is `elevation` -> `0.0` (M5 in the task
+    /// report): the point then reads latitude 90 through the clamp, sea level through the
+    /// floor, and comes back -25 C, and the test goes red. A moisture march that samples
+    /// elevations inherits the same protection and loses it the same way.
+    ///
+    /// **`to_latlon` is not changed and must not be**: its clamp is bit-for-bit Python and
+    /// is pinned by `sphere.rs::a_nan_z_clamps_the_way_python_does`.
+    pub fn temperature_c(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        climate: Option<ClimateParams>,
+    ) -> f64 {
+        let params = match climate {
+            Some(params) => params,
+            None => ClimateParams::canonical(),
+        };
+        let (latitude_deg, _longitude_deg) = point.to_latlon();
+        climate::temperature_c(latitude_deg, self.elevation_m(point, resolution_m), &params)
     }
 
     /// What the bottom is made of, as fractions of sand, mud and rock.
@@ -1953,6 +2038,231 @@ mod tests {
         assert_eq!(
             surface.structural_m(&point).to_bits(),
             surface.shelf.elevation_m(&point).to_bits()
+        );
+    }
+
+    // ---- Climate, and it is a QUESTION asked of this type rather than a stage in it ----
+
+    /// The same claim `relief`, `tectonics` and `coast` each make at this level: `None`
+    /// and `Some(ClimateParams::canonical())` are indistinguishable, not close.
+    ///
+    /// **Population**: a 37 x 73 lat/lon grid (every 5 degrees, poles to poles and around),
+    /// 2,701 points, each read at two resolutions -- `None`, the canonical arm of
+    /// `Detail::offset_m`, and `Some(5_000.0)`, the fade arm -- so 5,402 comparisons, on
+    /// the `shaped()` world (features placed, so the full pipeline is exercised rather
+    /// than an empty feature list). **Method**: bit patterns of `temperature_c`, never
+    /// values and never a tolerance. **Host**: this crate's test runner.
+    ///
+    /// The count is asserted at the end because a loop that compared nothing would pass.
+    #[test]
+    fn climate_none_matches_climate_some_canonical_bit_for_bit() {
+        let surface = shaped();
+        let mut compared = 0usize;
+        let mut varied = 0usize;
+        let mut first: Option<u64> = None;
+        for i in 0..37 {
+            for j in 0..73 {
+                let lat = -90.0 + f64::from(i) * 5.0;
+                let lon = -180.0 + f64::from(j) * 5.0;
+                let point = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(5_000.0)] {
+                    let none = surface.temperature_c(&point, resolution, None);
+                    let canonical =
+                        surface.temperature_c(&point, resolution, Some(ClimateParams::canonical()));
+                    assert_eq!(
+                        none.to_bits(),
+                        canonical.to_bits(),
+                        "canonical is not None at {lat}, {lon}"
+                    );
+                    match first {
+                        None => first = Some(none.to_bits()),
+                        Some(bits) => {
+                            if bits != none.to_bits() {
+                                varied += 1;
+                            }
+                        }
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 5_402, "the grid compared {compared} pairs");
+        // A field that returned one constant everywhere would satisfy every assertion
+        // above. It does not: the grid spans the whole planet and the answer moves.
+        assert!(varied > 5_000, "only {varied} of {compared} readings differed from the first");
+    }
+
+    /// An opted-in `ClimateParams` reaches the answer, which the bit-identity test above
+    /// cannot show -- it passes just as well if the parameter is ignored entirely. This is
+    /// `CoastParams`' lesson applied before it has to be learned again.
+    #[test]
+    fn an_opted_in_climate_moves_the_temperature() {
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(37.0, -41.0);
+        let canonical = surface.temperature_c(&point, None, None);
+        let colder = surface.temperature_c(
+            &point,
+            None,
+            Some(ClimateParams { equator_c: 5.0, ..ClimateParams::canonical() }),
+        );
+        assert!(
+            canonical - colder > 10.0,
+            "the opted-in block did not reach the answer: {canonical} then {colder}"
+        );
+    }
+
+    /// `resolution_m` is threaded to `elevation_m` rather than hard-coded to `None`, and
+    /// the proof is a point where the two resolutions genuinely disagree about the ground.
+    ///
+    /// The point is **found by scanning**, not written down: a fixed probe that happened to
+    /// sit where detail fades to nothing would let a hard-coded `None` pass, which is the
+    /// shape of three mutations this project has already survived by accident.
+    #[test]
+    fn the_resolution_argument_reaches_the_temperature() {
+        let surface = shaped();
+        let mut found = 0usize;
+        for i in 0..37 {
+            for j in 0..73 {
+                let lat = -90.0 + f64::from(i) * 5.0;
+                let lon = -180.0 + f64::from(j) * 5.0;
+                let point = SpherePoint::from_latlon(lat, lon);
+                let fine = surface.elevation_m(&point, None);
+                let coarse = surface.elevation_m(&point, Some(50_000.0));
+                // Only above the datum: below it the lapse floor makes every elevation the
+                // same temperature, correctly, so such a point proves nothing here.
+                if fine > 0.0 && coarse > 0.0 && fine.to_bits() != coarse.to_bits() {
+                    let hot = surface.temperature_c(&point, None, None);
+                    let cold = surface.temperature_c(&point, Some(50_000.0), None);
+                    assert_ne!(
+                        hot.to_bits(),
+                        cold.to_bits(),
+                        "resolution did not reach the temperature at {lat}, {lon}"
+                    );
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 100, "only {found} land points resolved differently; too few to judge");
+    }
+
+    /// The physics, on a real world rather than in the closed form's own unit test: the
+    /// planet is warmest at the equator, coldest at the poles.
+    #[test]
+    fn the_world_is_warm_at_the_equator_and_cold_at_the_poles() {
+        let surface = shaped();
+        let mut warmest_lat = 0.0f64;
+        let mut warmest = f64::NEG_INFINITY;
+        let mut coldest_lat = 0.0f64;
+        let mut coldest = f64::INFINITY;
+        for i in 0..37 {
+            let lat = -90.0 + f64::from(i) * 5.0;
+            let point = SpherePoint::from_latlon(lat, 12.0);
+            let t = surface.temperature_c(&point, None, None);
+            if t > warmest {
+                warmest = t;
+                warmest_lat = lat;
+            }
+            if t < coldest {
+                coldest = t;
+                coldest_lat = lat;
+            }
+        }
+        assert!(warmest_lat.abs() <= 5.0, "the warmest place was {warmest_lat} deg");
+        assert!(coldest_lat.abs() >= 85.0, "the coldest place was {coldest_lat} deg");
+        assert!(warmest - coldest > 40.0, "the planet spans only {} C", warmest - coldest);
+    }
+
+    /// Elevation reaches temperature, which is the reason this function takes a point at
+    /// all rather than a latitude -- and the reason the snow line is free.
+    #[test]
+    fn higher_ground_is_colder_at_the_same_latitude() {
+        let surface = shaped();
+        let mut best: Option<(f64, f64, f64)> = None;
+        for j in 0..360 {
+            let lon = -180.0 + f64::from(j);
+            let point = SpherePoint::from_latlon(20.0, lon);
+            let height = surface.elevation_m(&point, None);
+            let t = surface.temperature_c(&point, None, None);
+            match best {
+                None => best = Some((height, t, lon)),
+                Some((h, _, _)) if height > h => best = Some((height, t, lon)),
+                _ => {}
+            }
+        }
+        let (height, high_t, lon) = best.expect("the transect has points");
+        assert!(height > 100.0, "the highest point on the 20 N transect is only {height} m");
+        let sea_level_t = crate::climate::temperature_c(20.0, 0.0, &ClimateParams::canonical());
+        assert!(
+            sea_level_t - high_t > 0.5,
+            "at {lon} deg, {height} m of ground cost only {} C",
+            sea_level_t - high_t
+        );
+    }
+
+    /// THE ONE THAT MATTERS AT THIS LEVEL. A point whose vector is NaN must not come back
+    /// as an ordinary polar temperature.
+    ///
+    /// `SpherePoint::to_latlon` clamps a NaN `z` to 1.0 and reports **latitude 90**, which
+    /// is bit-for-bit what the Python does and is pinned by
+    /// `sphere.rs::a_nan_z_clamps_the_way_python_does`. Fed to the profile with nothing
+    /// else, that is a believable -25 C for a place that does not exist -- the same family
+    /// as the NaN sea level that produced a world bit-identical to a legitimate all-land
+    /// one.
+    ///
+    /// **What actually saves it is `elevation_m`, not a guard in `temperature_c`**, and
+    /// that was measured rather than assumed: a latitude guard was written here and the
+    /// whole suite stayed green with it deleted, so it was removed as dead code. See
+    /// `temperature_c`. This test is therefore a pin on the COMPOSITION -- the mutation
+    /// that turns it red is elevation not reaching the answer -- and the composition is
+    /// what a caller depends on.
+    ///
+    /// **The blindness is asserted, not described**: the test computes the value the
+    /// latitude clamp alone would have produced and requires it to be an ordinary
+    /// temperature, so a future reader can see what would have been swallowed.
+    #[test]
+    fn a_nan_point_is_not_answered_with_a_polar_temperature() {
+        let surface = shaped();
+        for vector in [
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 1.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+        ] {
+            let point = SpherePoint { vector };
+            let answer = surface.temperature_c(&point, None, None);
+            assert!(answer.is_nan(), "a NaN point was answered with {answer} C");
+        }
+        // What the latitude clamp alone gives for the first two of those: latitude 90,
+        // sea level through the elevation floor, and therefore POLE_C exactly.
+        let swallowed = crate::climate::temperature_c(90.0, 0.0, &ClimateParams::canonical());
+        assert!(
+            swallowed > -30.0 && swallowed < -20.0,
+            "the swallowed value was {swallowed} C, which would not have looked ordinary"
+        );
+    }
+
+    /// Climate is a question asked OF a `Surface`, not a stage IN one -- which is what
+    /// makes every existing world byte-identical without a single digest being compared.
+    ///
+    /// Read from the source text, because that is the only way to assert an absence. If
+    /// `structural_m` or `elevation_m` ever grew a climate term, every conformance digest
+    /// in `tests/test_conformance.py` would move and this test would say why first.
+    #[test]
+    fn climate_is_not_reachable_from_any_existing_surface_path() {
+        let source = include_str!("surface.rs");
+        let start = source.find("pub fn structural_m").expect("structural_m is declared");
+        let end = source.find("    /// Mean annual surface temperature").expect("the doc block");
+        assert!(start < end, "the methods moved relative to each other");
+        let body = &source[start..end];
+        assert!(
+            !body.contains("climate") && !body.contains("Climate"),
+            "structural_m or elevation_m grew a climate term"
+        );
+        // And the call site is exactly one: `temperature_c`'s own body. The two other
+        // matches in this file are in the two tests above, which name it explicitly.
+        assert_eq!(
+            body.matches("temperature_c").count(),
+            0,
+            "the existing elevation path now mentions temperature"
         );
     }
 }

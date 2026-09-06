@@ -645,25 +645,64 @@ jobs:
           # per configuration through `assert_counts.py cargo-list` AFTER the last source edit;
           # the `75fb726` baseline (557/557/559/644/646, 5 ignored, 13 binaries) was re-derived
           # the same way BEFORE the first edit and `gates.yml` was CORRECT at it.
+          #
+          # 2026-09-06, the climate slice, Task 1 (temperature, closed form):
+          # 559/559/561/646/648 -> 577/577/579/664/666. **+18 on EVERY row and nothing on the
+          # WASM rows alone**, because all eighteen tests are in `src/` (`climate.rs` and
+          # `surface.rs`) and compile unconditionally. **`assert_counts.py` now reports
+          # FOURTEEN test binaries rather than thirteen**: `src/bin/climate_survey.rs` is a
+          # new `[[bin]]`, carrying zero tests, added for the reason `relief_survey.rs` and
+          # `pond_threshold_survey.rs` already are -- four full-planet builds at 200,000
+          # samples each is a one-machine measurement, not a per-push property. A zero-test
+          # binary does not move `expect`; it moves the binary count, which is why the count
+          # is stated here rather than left for a reader to notice.
+          #
+          # `climate.rs` is a NEW STAGE THAT NOTHING EXISTING READS. It adds no field to
+          # `Surface` (`lib.rs::the_surface_is_not_modified_by_this_slice` still asserts
+          # exactly eight, by name), no term to `structural_m` or `elevation_m`, and no
+          # export -- Task 4 of the slice adds those. So `worldbuilder/` is untouched, every
+          # conformance digest is unmoved by construction rather than by comparison, and
+          # `surface.rs::climate_is_not_reachable_from_any_existing_surface_path` asserts
+          # that absence from the source text, which is the only way an absence can be
+          # asserted.
+          #
+          # `Surface::temperature_c` takes `Option<ClimateParams>` -- `None` canonical, the
+          # fourth block of that kind after `ReliefParams`, `TectonicParams` and
+          # `CoastParams`. It is a METHOD argument rather than a constructor argument
+          # because climate holds no state to build: `substrate::at` is the precedent, and
+          # the eight-field assertion above is the thing a needless field would have cost.
+          #
+          # FOURTEEN MUTATIONS, each reverted after. Every one of the eighteen new
+          # assertions has at least one mutation that turns it red, and one mutation
+          # DELETED CODE THIS TASK HAD WRITTEN: a NaN-latitude guard in `temperature_c` was
+          # removed with the whole 666-test suite still green, because `noise.rs`'s lattice
+          # guard (added at `b6862d2`) already makes `elevation_m` answer NaN for every
+          # NaN or infinite vector. It was dead, and dead code looks like a feature.
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` =
+          # 157, parity 108,106 compared / 0 divergent. Re-derived per configuration through
+          # `assert_counts.py cargo-list` AFTER the last source edit; the `231c47b` baseline
+          # (559/559/561/646/648, 5 ignored, 13 binaries) was re-derived the same way BEFORE
+          # the first edit and `gates.yml` was CORRECT at it.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 559
+            expect: 577
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 559
+            expect: 577
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 561
+            expect: 579
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 646
+            expect: 664
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 648
+            expect: 666
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
