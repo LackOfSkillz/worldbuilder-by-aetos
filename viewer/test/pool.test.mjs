@@ -59,7 +59,7 @@ test("a relief reply resolves with the raster, and a fill reply with the heights
   });
   pool.receive({
     type: "relief", id: reliefId, index: 0, fillMs: 190,
-    data: new Uint8ClampedArray(16), width: 2, height: 2,
+    data: new Uint8ClampedArray(16), width: 2, height: 2, lakeTexels: 37, lakeTiles: 1,
   });
 
   const relief = await reliefPromise;
@@ -68,6 +68,13 @@ test("a relief reply resolves with the raster, and a fill reply with the heights
   assert.equal(relief.height, 2);
   assert.equal(relief.data.length, 16);
   assert.equal(relief.fillMs, 190);
+  // **The dispatcher rebuilds this object from named fields, so anything not named is dropped.**
+  // That is the silently-dropping-builder shape, and it did drop these two: the worker counted
+  // them, the provider was ready to accumulate them, and the browser reported zero lake texels
+  // over a globe that was visibly drawing lakes. The picture cannot catch this; only the counter
+  // can, and only if the counter survives the hop.
+  assert.equal(relief.lakeTexels, 37, "the worker's lake texel count was dropped by the pool");
+  assert.equal(relief.lakeTiles, 1, "the worker's lake tile count was dropped by the pool");
   assert.equal(fill.heights.length, 4);
   assert.equal(fill.fillMs, 4);
 });

@@ -210,6 +210,16 @@ export class TilePool {
         height: message.height,
         fillMs: message.fillMs,
         worker: message.index,
+        // **This object maps a fixed key set and discards the rest, and that cost a bug.** The
+        // lake counters were added to the worker's relief reply and to the provider's stats at
+        // the same time; both ends were right, both were tested, and the numbers arrived at the
+        // browser as zero -- because this dispatcher rebuilt the reply from five named fields and
+        // silently dropped the two new ones. The picture was correct throughout, which is exactly
+        // why a counter was added in the first place, and it took a live `measure` run rather
+        // than any unit test to see it. `?? 0` because a CLOUD reply legitimately carries
+        // neither; `pool.test.mjs` now asserts that a relief reply's counts survive this hop.
+        lakeTexels: message.lakeTexels ?? 0,
+        lakeTiles: message.lakeTiles ?? 0,
       });
       return;
     }
