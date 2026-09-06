@@ -6,7 +6,7 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
@@ -81,14 +81,15 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond] [--no-provenance]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-if (mutate !== null && mutate !== 'seed' && mutate !== 'erosion-k' && mutate !== 'water-pond') {
-  console.error(`unknown mutation "${mutate}"; the controls are --mutate seed, --mutate erosion-k and --mutate water-pond`);
+const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp'];
+if (mutate !== null && !MUTATIONS.includes(mutate)) {
+  console.error(`unknown mutation "${mutate}"; the controls are ${MUTATIONS.map((m) => `--mutate ${m}`).join(', ')}`);
   process.exit(2);
 }
 const noProvenance = args.includes('--no-provenance');
@@ -174,6 +175,12 @@ const worlds = new Map();
 // A gate read off the control's own run is a rubber stamp; this one is a prediction made on
 // the other side of the boundary and checked here.
 let waterControl = null;
+// `TWARP` carries the value `--mutate tectonic-warp` writes into word 14 of every `worldt`
+// record; `TCTL` carries the per-group counts the native side predicts will move when it
+// does. Same discipline as `WCTL`: a control gate read off the control's own run is a rubber
+// stamp, so the number is made on the other side of the boundary and checked here.
+let tectonicWarp = null;
+let tectonicControl = null;
 let compared = 0;
 let divergent = 0;
 const samples = [];
@@ -445,6 +452,116 @@ for (const raw of lines) {
       wb.wb_dealloc(outSea, 8);
       break;
     }
+    case 'TP': {
+      // TP <selector> <status> <sixteen f64 hex>
+      //
+      // `wb_tectonic_preset` itself, field by field, at both selectors. Same argument as the
+      // `P` (relief preset) record above and the same shape: this export exists so that no
+      // host ever transcribes a preset, which makes "both sides read the SAME sixteen f64"
+      // the whole of its value and therefore the thing a parity harness has most business
+      // checking. A world seed cannot move these -- `tectonics.rs`' own constants are all
+      // they hand back -- so this group sits at zero under `--mutate seed` exactly as
+      // `preset/0` and `version` do.
+      const selector = Number(f[1]);
+      const out = wb.wb_alloc(16 * 8);
+      if (out === 0) throw new Error('wb_alloc refused the tectonic preset buffer');
+      const status = wb.wb_tectonic_preset(selector, out, 16);
+      const view = mem();
+      group = `tpreset/${selector}`;
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`tectonic preset status ${selector}`, f[2], String(status));
+      for (let k = 0; k < 16; k += 1) {
+        const got = bitsOf(view.getFloat64(out + k * 8, true));
+        tally(got === f[3 + k]);
+        if (got !== f[3 + k]) note(`tectonic preset ${selector}[${k}]`, f[3 + k], got);
+      }
+      wb.wb_dealloc(out, 16 * 8);
+      break;
+    }
+    case 'TC': {
+      // TC <name> <status> <sixteen f64 hex>
+      //
+      // `wb_tectonic_check`, the export that answers *why* a record was refused. Only the
+      // status is compared, because the status is all it produces -- but a status is exactly
+      // where the two sides could part company, since the whole bounds check runs on the
+      // decoded block and one of the six records is refused through a SATURATING `as u32`
+      // cast on a loop bound. Three of the six are accepted and three refused, asserted on
+      // the native side, so a checker stuck at either answer cannot pass this group.
+      const record = f.slice(3);
+      if (record.length !== 16) throw new Error('a tectonic record must be sixteen f64');
+      const ptr = wb.wb_alloc(16 * 8);
+      if (ptr === 0) throw new Error('wb_alloc refused the tectonic check buffer');
+      const view = mem();
+      record.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      const status = wb.wb_tectonic_check(ptr, 16);
+      group = 'tcheck';
+      tally(String(status) === f[2]);
+      if (String(status) !== f[2]) note(`tectonic check ${f[1]}`, f[2], String(status));
+      wb.wb_dealloc(ptr, 16 * 8);
+      break;
+    }
+    case 'worldt': {
+      // worldt <name> <seed> <radius_hex> <plates> <land_hex> <sixteen tectonic f64 hex>
+      //
+      // A world through `wb_world_new_tectonic`, carrying a NON-canonical block --
+      // `TectonicParams::ranges()`, the one block the viewer's panel reaches with a button,
+      // therefore the one most likely to be in flight when a decode differs. Three tasks in
+      // a row flagged that no such record existed; this is it.
+      //
+      // Two records name the same configuration under two names, so the scattered points and
+      // the belt points tally separately. That is not redundancy: it is what lets the
+      // control's own output say that the belt moved and the rest of the planet did not.
+      //
+      // `--mutate tectonic-warp` rewrites word 14, `margin_warp_m`, and nothing else.
+      const [, name, seedText, radiusHex, platesText, landHex] = f;
+      const seed = BigInt(seedText) + (mutate === 'seed' ? 1n : 0n);
+      const block = f.slice(6);
+      if (block.length !== 16) throw new Error('a tectonic record must be sixteen f64');
+      const ptr = wb.wb_alloc(16 * 8);
+      if (ptr === 0) throw new Error('wb_alloc refused the tectonic buffer');
+      const view = mem();
+      block.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
+      if (mutate === 'tectonic-warp') {
+        if (tectonicWarp === null) throw new Error('--mutate tectonic-warp needs a TWARP record');
+        view.setFloat64(ptr + 14 * 8, tectonicWarp, true);
+      }
+      const handle = wb.wb_world_new_tectonic(
+        seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0, 0, 0, ptr, 16);
+      if (handle === 0) throw new Error(`tectonic world ${name} did not build in wasm`);
+      wb.wb_dealloc(ptr, 16 * 8);
+      worlds.set(name, handle);
+      break;
+    }
+    case 'TWARP': {
+      // TWARP <warp_hex>
+      //
+      // The control's value for `margin_warp_m`, carried rather than written here, so the
+      // one number the mutation substitutes comes from the corpus like every other input.
+      // It arrives BEFORE the `worldt` records because that is where it is used; the
+      // prediction it belongs to is `TCTL`, which cannot be written until the corpus has
+      // been sampled. Not a compared value.
+      tectonicWarp = f64of(f[1]);
+      break;
+    }
+    case 'TCTL': {
+      // TCTL <elevation/ranges> <structural/ranges> <elevation/belt> <structural/belt>
+      //      <tile/belt>
+      //
+      // Prediction, not a compared value: nothing here goes through `tally`. The five counts
+      // are computed natively in `examples/parity_dump.rs` -- through the exports AND, as a
+      // second derivation, through the library's own `Surface` with blocks read from
+      // `tectonics.rs` rather than from the sixteen words that crossed the boundary -- and
+      // this script requires every one of these groups to move exactly the predicted amount
+      // and every other group to move zero.
+      tectonicControl = {
+        'elevation/ranges': Number(f[1]),
+        'structural/ranges': Number(f[2]),
+        'elevation/belt': Number(f[3]),
+        'structural/belt': Number(f[4]),
+        'tile/belt': Number(f[5]),
+      };
+      break;
+    }
     case 'version': {
       const got = String(wb.wb_generator_version());
       group = 'version';
@@ -506,6 +623,45 @@ if (mutate) {
       `control OK: ${waterControl.predicted} of ${groups.get('water/plain')?.compared ?? '?'} ` +
       'water values moved, exactly the bodies the native surface-area distribution predicted, ' +
       'and no value outside the water group moved at all');
+    process.exit(0);
+  }
+  // THE TECTONIC CONTROL CHECKS ITS OWN PREDICTION TOO, group by group, and the groups it
+  // requires to stay EQUAL are the informative half. `margin_warp_m` is one word of a world's
+  // tectonic block: it cannot reach `wb_tectonic_preset` (which hands back `tectonics.rs`'
+  // own constants), it cannot reach `wb_tectonic_check` (whose records this mutation does not
+  // touch), and it cannot reach any world built without a tectonic block at all. So a run
+  // where the belt moved AND something else did is a finding, not a pass.
+  if (mutate === 'tectonic-warp') {
+    if (tectonicControl === null) {
+      console.error('FAIL: --mutate tectonic-warp ran with no TCTL record in the corpus');
+      process.exit(1);
+    }
+    let bad = false;
+    for (const [name, g] of groups) {
+      const expected = tectonicControl[name] ?? 0;
+      if (g.divergent !== expected) {
+        console.error(
+          `FAIL: group ${name} moved ${g.divergent} values; the native side predicted ${expected}`);
+        bad = true;
+      }
+    }
+    if (bad) {
+      console.error('  The tectonic control turns margin_warp_m off and touches nothing else.');
+      console.error('  It reaches the collision profile of a world built from a tectonic block,');
+      console.error('  and nothing else in this corpus -- not the presets, not the checker, not');
+      console.error('  a world built without a block. A count other than the prediction means');
+      console.error('  either the two sides decode the block differently or that field now');
+      console.error('  reaches something it does not name, and either is a finding rather than');
+      console.error('  a tolerance to widen.');
+      process.exit(1);
+    }
+    const named = Object.entries(tectonicControl)
+      .map(([name, n]) => `${name} ${n}/${groups.get(name)?.compared ?? '?'}`)
+      .join(', ');
+    console.log(
+      `control OK: ${named} moved, exactly as the native side predicted, and every other ` +
+      'group -- both tectonic presets, the checker, and every world without a tectonic ' +
+      'block -- moved nothing at all');
     process.exit(0);
   }
   console.log('control OK: the harness can be made to fail');

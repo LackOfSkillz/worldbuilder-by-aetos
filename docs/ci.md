@@ -191,10 +191,12 @@ A mutated artifact is refused rather than silently compared: `REFUSING TO REPORT
 STALE ARTIFACT:` with the source/artifact hashes, because "the corpus and the .wasm agree
 with each other and with nothing else" is not evidence. Re-run on the current tree
 (slice 5a added the `erosion/erosion` group through `wb_erosion_run`; slice 5b Task 5 added
-the relief channel's three groups and the `water/plain` group through `wb_water_run` -- all
-re-derived, never carried forward from before those exports existed):
-`parity: 71596 values compared through the shipped exports, 0 divergent`, exit 0. A control
-run (`--mutate seed`) proves the harness can fail at all: of the same 71,596 values, 68,457
+the relief channel's three groups and the `water/plain` group through `wb_water_run`; slice
+mountains Task 6 added five tectonic groups through `wb_tectonic_preset`,
+`wb_tectonic_check` and `wb_world_new_tectonic` -- all re-derived, never carried forward from
+before those exports existed):
+`parity: 89861 values compared through the shipped exports, 0 divergent`, exit 0. A control
+run (`--mutate seed`) proves the harness can fail at all: of the same 89,861 values, 86,190
 diverge. A second control, `--mutate erosion-k` (bumps `erodibility_per_yr` by one ULP before
 replaying the erosion record and touches nothing else), isolates that group specifically:
 216 of the erosion group's 3,000 heights diverge and its status/iteration/converged fields do
@@ -285,15 +287,17 @@ mismatch, if they disagree or either is missing:
   (**157**, not 150: the gate pins the file's total, and seven of those are the guard unit
   tests named just above. An earlier draft of this line said 150 and contradicted its own
   preceding bullet.)
-- **Parity corpus**: the total line (`71,596 values compared` -- 53,251 from the original
+- **Parity corpus**: the total line (`89,861 values compared` -- 53,251 from the original
   Surface-level corpus, plus the 3,003-value `erosion/erosion` group slice 5a added, plus the
   15,342 slice 5b Task 5 added as 22 preset values, 14,225 on a non-canonical relief world and
-  1,095 of water manifest) is cross-checked against the sixteen per-group tallies summing to
-  it, so a shrunk corpus fails with `COUNT GATE FAILED / expected 71596 values compared, found
-  <M>` even when provenance and parity both report green on their own. All three controls are
-  gated on their own divergent counts too (68,457 / 216 / 60), because "the harness can be
-  made to fail" is satisfied by one divergent value and would prove far less than the record
-  claims.
+  1,095 of water manifest, plus the 18,265 slice mountains Task 6 added as 34 tectonic preset
+  values, 6 checker statuses, 14,000 scalars on a world built from `TectonicParams::ranges()`
+  and 4,225 tile cells across the belt it builds) is cross-checked against the twenty-four
+  per-group tallies summing to it, so a shrunk corpus fails with `COUNT GATE FAILED / expected
+  89861 values compared, found <M>` even when provenance and parity both report green on their
+  own. All four controls are gated on their own divergent counts too (86,190 / 216 / 60 /
+  6,186), because "the harness can be made to fail" is satisfied by one divergent value and
+  would prove far less than the record claims.
 
 ## What CI does NOT cover
 

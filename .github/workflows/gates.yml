@@ -888,14 +888,45 @@ jobs:
       # a recorded finding about the mesh; a corpus that quietly "fixed" it by moving the
       # threshold would be hiding the finding rather than testing it.
       #
-      # The script also checks the sixteen per-group tallies sum to the total, so a format
+      #
+      # 2026-09-05, slice mountains Task 6: 71,596 -> 89,861. RE-DERIVED FROM THE CORPUS
+      # DEFINITION the same way, and the run was then checked against it:
+      #
+      #   71,596  everything above, unchanged
+      #   +   34  `wb_tectonic_preset` itself: 2 selectors x (1 status + 16 f64)
+      #   +    6  `wb_tectonic_check`: 6 records, 3 accepted and 3 refused, statuses only
+      #   +5,000  `wb_elevation_m` scattered on a world built from a NON-canonical tectonic
+      #           block (`TectonicParams::ranges()`, the preset the panel's button sends)
+      #   +5,000  `wb_structural_m` on the same points
+      #   +2,000  `wb_elevation_m` in a 2-degree box on the belt that block builds
+      #   +2,000  `wb_structural_m` on the same points
+      #   +4,225  one 65x65 `wb_fill_tile_f32` across the belt -- the tile worker is where a
+      #           tectonic block lands in the browser, exactly as a relief block does
+      #   =89,861
+      #
+      # THREE TASKS FLAGGED THIS GAP AND NONE OWNED IT (mountains Task 4 concern 4, Task 3
+      # concern 1, Task 5 concern 6). The corpus watched 71,596 values and not one of them
+      # went through a tectonic export, while `ranges()` is a preset the owner presses on the
+      # panel and it drives seven of sixteen words across the boundary. Native and WASM are
+      # the same Rust over the same pure-Rust `libm`, so this comparison is strict bit-for-bit
+      # even with transcendentals in the path -- a stronger contract than Python-versus-Rust
+      # conformance's bounded one -- but the DECODE is boundary-only code, and nothing
+      # exercised it.
+      #
+      # The belt box is not a round number: `src/bin/mountain_probe.rs`'s `witness_between`
+      # scans this fixture world for where turning `margin_warp_m` off moves the ground most,
+      # and answers -5.00, 66.00 (821.955 m off, 2,432.773 m on). A uniform scatter over a
+      # planet does not land on a 100 km belt, which is the same reason this corpus already
+      # carries a second world for the placed harbour.
+      #
+      # The script also checks the twenty-four per-group tallies sum to the total, so a format
       # change fails loudly instead of matching nothing.
-      - name: Assert the corpus -- 71,596 values, 0 divergent
+      - name: Assert the corpus -- 89,861 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 71596 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 89861 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
       # `--mutate seed` moves the world seed by one and 68,457 of 71,596 values diverge. A
@@ -910,6 +941,17 @@ jobs:
       # 22 preset values do NOT move, and that is a property worth having in the tally rather
       # than a gap: `wb_relief_preset` hands back `detail.rs`'s own constants, which no world
       # seed can reach -- the same reason `version` has always sat at 0 divergent here.
+      #
+      # 2026-09-05, slice mountains Task 6: 68,457 -> 86,190, and the arithmetic is stated
+      # rather than adjusted. The five new sampled groups add 17,733 divergent values
+      # (elevation moves outright on all 5,000 scattered and all 2,000 belt points and on all
+      # 4,225 belt tile cells; 4,508 of the 5,000 scattered structural readings move, the
+      # residue being the same open-ocean floor that leaves 942 of the `plain` world's equal,
+      # and all 2,000 belt structural readings move because the belt is land). The 34
+      # `wb_tectonic_preset` values and the 6 `wb_tectonic_check` statuses do NOT move, and
+      # that is a property worth having in the tally rather than a gap: both hand back
+      # `tectonics.rs`' own constants and a decision about a caller-supplied record, neither
+      # of which a world seed can reach.
       - name: Parity -- the control (a harness that cannot fail is not evidence)
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -921,12 +963,12 @@ jobs:
       # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 68,457 of 71,596 divergent
+      - name: Assert the control -- 86,190 of 89,861 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 71596 --expect-divergent 68457
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 89861 --expect-divergent 86190
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -951,15 +993,17 @@ jobs:
       # step count, see above), and every non-erosion group is untouched (216 of 71,596
       # overall). Neither zero nor "every non-root node" -- a plausible fraction, which is
       # the property this control exists to demonstrate. The divergent count is UNCHANGED at
-      # 216 across slice 5b Task 5's corpus growth, and that is the expected outcome: the
-      # three groups Task 5 added are downstream of neither `k` nor erosion, so a control
-      # whose count had moved with them would have been reaching something it does not name.
-      - name: Assert the erosion control -- 216 of 71,596 divergent
+      # 216 across slice 5b Task 5's corpus growth AND across slice mountains Task 6's, and
+      # that is the expected outcome both times: the groups those tasks added are downstream
+      # of neither `k` nor erosion, so a control whose count had moved with them would have
+      # been reaching something it does not name. The water control's 60 is unchanged for the
+      # same reason.
+      - name: Assert the erosion control -- 216 of 89,861 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 71596 --expect-divergent 216
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 89861 --expect-divergent 216
 
       # THE THIRD CONTROL, slice 5b Task 5's own, and the one with the sharpest claim.
       #
@@ -1000,9 +1044,52 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate water-pond 2>&1 | tee water-control.out
 
-      - name: Assert the water control -- 60 of 71,596 divergent, all of them `kind`
+      - name: Assert the water control -- 60 of 89,861 divergent, all of them `kind`
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 71596 --expect-divergent 60
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 89861 --expect-divergent 60
+
+      # THE FOURTH CONTROL, slice mountains Task 6's own, and the first that says anything
+      # about the tectonic channel at all.
+      #
+      # `--mutate tectonic-warp` replays the two `worldt` records with word 14,
+      # `margin_warp_m`, set to 0.0 and touches nothing else. The prediction is stated before
+      # the run, per group, and both halves of it matter:
+      #
+      #   MOVES -- 132 of 5,000 scattered elevations and the same 132 structurals (a uniform
+      #     scatter over a planet is mostly nowhere near a convergent continental margin, so
+      #     2.6% is what "the warp reaches only the belt" looks like from orbit); 1,269 of
+      #     2,000 on the belt itself, elevation and structural alike; 3,384 of 4,225 tile
+      #     cells across it. 6,186 in total.
+      #   STAYS EQUAL -- both `wb_tectonic_preset` groups, the `wb_tectonic_check` group, and
+      #     every group of every world built without a tectonic block: the plain and harbour
+      #     worlds, the relief world, erosion, water and version. That is 83,675 values that
+      #     must not move, and it is the half that says the field reaches what it names and
+      #     nothing else.
+      #
+      # The counts are computed NATIVELY in `examples/parity_dump.rs` and checked here, not
+      # read off this run. They are derived twice on that side: once through the exports and
+      # once through the library's own `Surface`, with the two blocks read from `tectonics.rs`
+      # rather than from the sixteen words that crossed the boundary -- so an `encode`/`decode`
+      # disagreement parts the two counts and fails there. A structural containment is
+      # asserted beside them: `margin_warp_m` reaches `elevation_m` only through the tectonic
+      # offset, so every point whose elevation moved must be a point whose structural moved.
+      # (Measured, they are the same points; the assertion deliberately does not require it,
+      # because the reverse containment is not true in general.) And both ends are refused:
+      # every group's count must be strictly between zero and the group's size, because a
+      # control that moves everything is as uninformative as one that moves nothing.
+      - name: Parity -- the tectonic control (one word of the block, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate tectonic-warp 2>&1 | tee tectonic-control.out
+
+      - name: Assert the tectonic control -- 6,186 of 89,861 divergent, all on the belt
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 89861 --expect-divergent 6186

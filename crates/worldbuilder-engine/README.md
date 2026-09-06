@@ -128,19 +128,20 @@ belongs *here* is the shape of the door and the evidence that both sides of it a
     npm run check:wasm      # is the SHIPPED artifact built from the source that is here now?
 
 **The artifact, read from `public/wasm/MANIFEST.txt` and from the file (re-derived for
-slice 5b Task 5. This figure has now been found stale TWICE by the task that re-derived it --
-slice 5a Task 6 found it a whole export behind after `wb_erosion_run` landed, and it was four
-behind again by 5b Task 5, the relief slice's three exports having landed the same way. A
-number nobody's gate reads is a number that goes stale; treat this paragraph as one to
-re-derive rather than to trust):** 220,452 bytes, **16 exports** (`memory` plus the fifteen
-functions below), **0 imports**. Zero imports is the design, not an accident:
+slice mountains Task 6. This figure has now been found stale THREE times by the task that
+re-derived it -- slice 5a Task 6 found it a whole export behind after `wb_erosion_run` landed,
+it was four behind again by 5b Task 5 with the relief slice's three exports, and it was three
+behind and 4,825 bytes light again by mountains Task 6, this slice's own tectonic exports
+having landed the same way. A number nobody's gate reads is a number that goes stale; treat
+this paragraph as one to re-derive rather than to trust):** 225,277 bytes, **19 exports**
+(`memory` plus the eighteen functions below), **0 imports**. Zero imports is the design, not an accident:
 `WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS runtime to keep in
 step, and a worker gets its own instance and therefore its own linear memory for free.
 
     wb_generator_version   wb_alloc         wb_dealloc       wb_world_new   wb_world_free
     wb_world_count         wb_elevation_m   wb_structural_m  wb_bottom_at   wb_fill_tile_f32
     wb_erosion_run         wb_world_new_relief   wb_relief_preset   wb_relief_check
-    wb_water_run
+    wb_water_run           wb_world_new_tectonic wb_tectonic_preset wb_tectonic_check
 
 `WB_EXPORTS` in `wasm.rs` is that list, declared. A test holds this crate's source to it and
 the build script holds the built module's export section (id 7) to it, because a forgotten
@@ -196,22 +197,29 @@ Re-run in this task, on the committed artifact:
     node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed
     node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate erosion-k
     node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate water-pond
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate tectonic-warp
 
-**71,596 values compared, 0 divergent** (slice 5b Task 5's re-run: the corpus now carries the
-relief channel and the water manifest as well). **The controls are the half that matters** --
-a harness that has never reported a disagreement is not known to be able to -- and there are
-three, deliberately at three different scales:
+**89,861 values compared, 0 divergent** (slice mountains Task 6's re-run: the corpus now
+carries the tectonic channel as well -- both presets field by field, six checker answers, a
+world built from `TectonicParams::ranges()`, 2,000 points on the belt it builds, and a tile
+across it. Three tasks flagged that gap in a row and none owned it). **The controls are the
+half that matters** -- a harness that has never reported a disagreement is not known to be
+able to -- and there are four, deliberately at four different scales:
 
 | control | what it perturbs | divergent |
 |---|---|---:|
-| `--mutate seed` | the world seed, by one | 68,457 of 71,596 |
+| `--mutate seed` | the world seed, by one | 86,190 of 89,861 |
 | `--mutate erosion-k` | `erodibility_per_yr`, by one ULP | **216**, all in `erosion/erosion` |
 | `--mutate water-pond` | `pond_max_surface_area_m2`, one threshold | **60**, all of them `Body::kind` |
+| `--mutate tectonic-warp` | `margin_warp_m`, one word of the block | **6,186**, all on the tectonic world |
 
 A control that moves everything is nearly as uninformative as one that moves nothing, which is
-why the second and third exist. The third's count is **predicted natively before the run**,
-from an independently summed surface-area distribution, and `parity.mjs` fails if any group
-moves by a different amount. See `parity/README.md`.
+why the last three exist. The last two have their counts **predicted natively before the run**
+-- the water control from an independently summed surface-area distribution, the tectonic one
+per group and from the library beneath the exports -- and `parity.mjs` fails if any group moves
+by a different amount. The tectonic control's most useful number is the one that does *not*
+move: 83,675 values, including both tectonic presets and the tectonic checker, must compare
+equal. See `parity/README.md`.
 
 **Parity alone cannot tell you the artifact is current, and for several commits of this
 project it did not.** The committed `.wasm` predated a change to `wasm.rs`; the two differed
@@ -223,7 +231,11 @@ refuses to report at all when it returns problems. It imports rather than reimpl
 because two copies of a provenance rule drift, and the copy that drifts is the one that
 stops refusing.
 
-The fingerprint covers **29 inputs**: every file under `src/`, `examples/` and `tests/`
+The fingerprint covers **36 inputs** (re-derived at slice mountains Task 6 by running
+`node viewer/scripts/build-wasm.mjs digest`, which prints `fingerprint-inputs: 36`; this
+paragraph said 29 and had been left behind by two slices' worth of new files under the walked
+directories -- the same shape of staleness the artifact-size paragraph above records): every
+file under `src/`, `examples/` and `tests/`
 recursively, this crate's `Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`, the
 `rustc -vV` release, commit hash and host, and the literal cargo argument list. It is
 deliberately over-inclusive -- `bindings.rs` cannot affect a `--features wasm` build and will
@@ -242,10 +254,12 @@ and the integration tests are part of what makes the blessing mean anything.
 **28 became 29 in the identity slice**, when `tests/build_fingerprint.rs` landed as a new
 file under one of the three walked directories -- adding a fingerprinted input is exactly as
 much a digest-moving event as editing one of the existing 28, which is why this number is
-re-derived here rather than left at 28. Re-run: `node viewer/scripts/build-wasm.mjs digest`
-(from `viewer/`) prints `fingerprint-inputs: 29` alongside the digest, and
-`worldbuilder_engine.source_fingerprint_inputs()` -- the PyO3 export the identity slice's
-Task 2 added -- returns the same `"29"` from the just-built extension. The two are meant to
+re-derived here rather than left at 28. **29 became 36 over the slices since**, every one of
+them a new file under `src/bin/`, `examples/` or `tests/` rather than any change to how the
+walk works, and this paragraph did not notice until Task 6 ran the command. Re-run: `node
+viewer/scripts/build-wasm.mjs digest` (from `viewer/`) prints `fingerprint-inputs: 36`
+alongside the digest, and `worldbuilder_engine.source_fingerprint_inputs()` -- the PyO3 export
+the identity slice's Task 2 added -- returns the same `"36"` from the just-built extension. The two are meant to
 agree: see the top-level README's CI section for the gate that checks it and the ruling that
 allows this crate to compute the same digest twice, once in the Node build script and once
 in `build.rs`.
@@ -4010,3 +4024,342 @@ tectonic magnitude rather than on slope and curvature, so the Outerra mirroring 
 approximation rather than a match; and the amplitude ceiling has only been measured against
 `mountain_m` up to x4 (600 m). Larger values were not swept, and there is no evidence here
 about whether they degrade into noise before they reach a landform band.
+
+## `tectonics.rs`, revisited: a range is an envelope times a structure field, and a margin is a great circle
+
+The mountains slice, six tasks. Same discipline as the two sections above: **every number here
+was re-derived on this host while writing it**, from current source or from a run performed for
+this write-up -- `cargo run --release --bin mountain_probe` and `cargo run --release --bin
+mountain_survey`, whose full output is kept beside the slice's reports as
+`mountain-survey-task6.txt`. Nothing is copied from a task report, and where a report or the
+ledger disagrees with a run, **the run is what is recorded and the disagreement is named**.
+
+**Population, method and host, once, for the whole section.** The owner's own world, from their
+screenshot: seed **123925603**, radius **4,500,000 m**, **28** plates, land fraction **0.16**.
+Peak over a 0.5-degree global grid (720 x 359 = 258,480 sites) refined at 0.05 degrees in a
+2-degree box around the coarse maximum. **Grade** is the steepest single 2 km step on the
+*flank*, twelve bearings walked out from the peak to 250 km -- never across the summit, which
+is the one place a mountain is flat. **Summits** are local maxima above 1,000 m with at least
+300 m of prominence (the external P300 rule) in a +/-3-degree box at 0.02 degrees. **Crest
+sinuosity** is the crest's path length over the chord between its endpoints, at a 5 km
+along-step and a 2 km across-step; a path length on a rough line grows as the step shrinks, so
+these figures are comparable only to each other. Native release build, this developer machine
+(Windows 11 10.0.26200, x86_64-pc-windows-msvc, cargo 1.98.0).
+
+### The measurement that started it, and it is not about roughness
+
+The owner asked twice, and the second time was after the relief slice had finished: *"still no
+mountains."* The reason is one number.
+
+**The peak on their world is 1,454.0 m, of which 1,437.8 m is `structural_m`. 16.2 m is detail:
+the peak is 98.9% tectonic.** No relief parameter could ever have moved it -- which is what the
+relief slice's own closing section concluded from the other direction, and what the two
+`NOT_WIRED` entries on the viewer's panel had been saying in words.
+
+And the ramp was a constant, not an accident. `CONTINENT_COLLISION_M = 1500.0` over
+`CONTINENT_COLLISION_WIDTH_M = 400_000.0` is a **0.375% grade** at the profile's own scale, and
+**1.787%** measured as a steepest 2 km step on that world's flank. "Wheelchair ramps", months
+of work earlier, was an accurate reading of two constants.
+
+### The finding that reframed the slice: WE ALREADY HAD A REAL OROGEN'S GRADE
+
+Davis, Suppe & Dahlen (1983), *JGR* 88(B2), Table 1, read in the source text: **Himalaya
+alpha = 4.0 +- 0.5 degrees** -- a **7.0% surface slope**. And the probe, driven to 6,000 m over
+100 km, measures **7.030%**:
+
+| collision x width | peak | structural | grade |
+| --- | --- | --- | --- |
+| **1,500 m / 400 km -- canonical** | 1,454.0 m | 1,437.8 m | **1.787%** |
+| 1,500 m / 200 km | 1,423.3 m | 1,408.2 m | 1.809% |
+| 1,500 m / 100 km | 1,377.6 m | 1,366.8 m | 2.575% |
+| 3,000 m / 400 km | 2,500.0 m | 2,485.1 m | 2.677% |
+| 3,000 m / 150 km | 2,441.1 m | 2,430.6 m | 2.852% |
+| 6,000 m / 150 km | 4,551.5 m | 4,547.7 m | 4.936% |
+| **6,000 m / 100 km** | 4,540.5 m | 4,542.9 m | **7.030%** |
+
+**Amplitude alone buys height and almost no steepness** -- 3,000 m at the canonical 400 km is
+2.677%, barely above canonical -- **and amplitude with width buys both.** That much was the
+plan's hypothesis and it survived.
+
+**What did not survive is the assumption underneath it.** 7.030% is the Himalayan surface slope
+on the nose, and the thing it produced still did not read as a range: it is one smooth swell,
+4.5 km high, with **two** summits on it. **Steepness was never the missing quantity.** A range
+is a broad envelope saying *where*, times a structure field supplying the *shape*, and this
+generator had only the first. The summit count is the shortest statement of it:
+
+**canonical 0 summits -> the 6,000 m / 100 km blade 2 -> the shipped preset 10.**
+
+### The three techniques that shipped, and the one that was rejected
+
+Every row below sits on the 6,000 m / 100 km envelope, so each table answers "what does this add
+to what we already ship". `canonical()` is untouched throughout and the `None` path is
+bit-identical to it; Python conformance is 398/398 with `tests/test_conformance.py` = 157 on
+both sides of the whole slice.
+
+**1. The doubly-vergent asymmetric wedge -- `collision_asymmetry`, canonical 1.0. SHIPPED.**
+
+Naylor & Sinclair (2008), read in the source text: a **115 km pro-wedge against a 69 km
+retro-wedge** at `H_max = 3 km`, ratio **1.67**, with surface angles `alpha_pro = 1.5` and
+`alpha_retro = 2.5` degrees. A real orogen is two wedges of different taper meeting at a crest,
+not one symmetric bump, and because the widths are the exact inverse of the angles the profile
+needs **one** parameter rather than two.
+
+| asymmetry | peak | grade | summits | measured flank ratio |
+| --- | --- | --- | --- | --- |
+| 1.00 (canonical) | 4,540.5 m | 7.030% | **2** | 1.08 |
+| 1.25 | 4,536.1 | 7.910% | 5 | 1.30 |
+| **1.67 (published)** | 4,532.2 | 9.898% | 7 | **1.50** |
+| **2.00** | 4,531.1 | 11.363% | 10 | **1.64** |
+| 2.50 | 4,529.5 | 13.925% | 12 | 2.09 |
+| 3.00 | 4,527.5 | 16.538% | 16 | 2.56 |
+
+Monotone in every column over six settings, and it costs 8 m of peak across the whole sweep and
+no reach at all, because only the overriding flank is divided -- so no setting of this field can
+push a profile past `MAX_TECTONIC_RANGE_M`. **On the profile alone the ratio is exactly the
+published 1.67**, proved by bisecting the shipped `asymmetric_bump` for its half-height crossing
+rather than by rearranging algebra. **On a planet the same setting reads 1.50**, and 2.00 is
+what reads 1.64. A profile is not a planet, and the preset takes the measured column.
+
+**2. Stacked sutures -- `suture_count` and `suture_spread_m`. SHIPPED, with a measured hazard.**
+
+Over 70% of the North American Cordillera is accreted terranes; the Himalaya carries at least
+two sutures of different ages. A range is not one crest.
+
+| count x spread | peak | across-range crests | summits | reach | vs the 420 km gate |
+| --- | --- | --- | --- | --- | --- |
+| 1 (canonical) | 4,540.5 m | **1** | 2 | 100 km | inside |
+| 2 x 60 km | 5,238.7 | 1 | 0 | 181 km | inside |
+| **2 x 100 km** | **4,540.5** | **2** | 2 | 235 km | inside |
+| **2 x 150 km** | **4,540.5** | **2** | 2 | 302.5 km | inside |
+| 3 x 100 km | 4,509.0 | **2** | 1 | 370 km | inside |
+| 4 x 60 km | **7,457.6** | 1 | 1 | 343 km | inside |
+| 4 x 150 km | 5,137.1 | 1 | 1 | **707.5 km** | **past** |
+
+**Two sutures 100-150 km apart doubles the across-range crest count with the peak unmoved.**
+Both sides of that band are measured failures. Tight spreads *inflate* the peak, because
+overlapping bumps add and the sum is deliberately un-normalised: `4 x 60 km` reads **7,457.6 m**
+against the envelope's 4,540.5, a 64% overshoot that would make the height slider mean something
+different at every count. Wide ones drive the profile past the range gate, where it is
+**truncated rather than faded**: `4 x 150 km` reaches 707.5 km against a 420 km gate and measures
+**41.345% of grade and 827.2 m of relief over 2 km**. `collision_reach_m()` exists for that call
+site, and is tested against where the profile actually stops rather than against the formula that
+produced it.
+
+**3. Ridged multifractal x segmentation -- `structure_depth` and `structure_wavelength_m`.
+SHIPPED, and the biggest single win.**
+
+| depth x wavelength | peak | grade | summits | crest sinuosity |
+| --- | --- | --- | --- | --- |
+| 0.0 (canonical, inert) | 4,540.5 m | 7.030% | 2 | 1.0261 |
+| 0.3 x 40 km | 4,106.4 | 8.638% | 4 | 1.3940 |
+| 0.5 x 40 km | 3,817.1 | 12.706% | 7 | 1.6169 |
+| 0.5 x 80 km | 3,644.6 | 7.052% | 7 | 1.3805 |
+| **0.7 x 40 km** | 3,527.7 | **17.783%** | **12** | 1.5324 |
+| **0.7 x 80 km** | 3,323.8 | 8.420% | 6 | 1.6481 |
+| 0.9 x 40 km | 3,238.3 | 22.859% | **15** | 2.0023 |
+| 0.7 x 250 km | 2,955.8 | 4.740% | 1 | 1.1011 |
+| 0.9 x 250 km | 2,519.4 | 4.419% | 1 | 1.1644 |
+
+**Wavelength decides whether the knob works at all: 40-80 km bites, 120-250 km does nothing**
+(summit counts fall back to 0-4 at every depth -- a control that is switched on and visibly
+idle). And the cost is real and not independent: `structure_at` returns a multiplier of at most
+1, so **depth can only ever lower the peak** -- 4,540.5 m to 3,323.8 m at depth 0.7, a loss of
+22%. `RIDGE_FEEDBACK = 2.0` was swept on our own field rather than transcribed: 40,000 samples
+of a 200x200 lattice, crest fraction 0.1692 -> 0.4331 from feedback 0.5 to 2.0 and only 0.4929
+by 4.0, with sharpness flat from 2.0 up. **2.0 is the knee.**
+
+**4. The crest warp -- `margin_warp_m` and `margin_warp_wavelength_m`. REJECTED, DELETED, AND
+THEN REVIVED ONE TASK LATER BECAUSE THE REJECTION WAS MEASURED WITH THE WRONG INSTRUMENT.**
+That is the most valuable thing in this section, and it has its own headings below.
+
+### The straight line, and why it was geometry rather than tuning
+
+With the structure field on, the owner looked at a fresh world and said: *"how do we make them
+more random? they look like they were drawn with a straight line tool."*
+
+**They are drawn with a straight line tool, and the line is in `plates.rs`.** `margin_at`
+computes a margin's distance as `asin(|point . bisector_normal|) * radius_m`, and a bisector
+normal is the normal of a plane **through the origin** -- so the set of points at zero distance
+is that plane's intersection with the sphere, which is a **great circle**. Every margin in this
+engine is a perfect great-circle arc, and every belt built on one is dead straight by
+construction. No amount of amplitude, width, asymmetry, suture stacking or ridge noise can bend
+it, because none of them touches the distance field: they all decorate a profile evaluated
+*across* a line that is exactly straight.
+
+The fix moves the belt off the line. `margin_warp_m_at` samples an fbm field at a point on the
+margin's **own** great circle -- `along = normalise(p - (p . n) n)`, constant across the belt and
+varying only along it -- and subtracts the result from the across-margin distance the collision
+profile is asked about. One expression, one belt, translated sideways. Three octaves at gain 0.5
+and lacunarity 2.0, carrying 4/7, 2/7 and 1/7 of the amplitude.
+
+**Crest AND envelope sinuosity, before and after, on the bare 6,000 m / 100 km envelope** -- a
+great circle with nothing else happening on it. Every row is anchored on the *un-warped*
+configuration's peak and axis, so before and after describe the same ground:
+
+| | elevation at the anchor | grade | **crest sin** | **max dev (of belt)** | **envelope sin** |
+| --- | --- | --- | --- | --- | --- |
+| **no warp -- calibration** | 4,540.5 m | 7.030% | **1.0261** | **3.6 km (0.010)** | **1.0172 / 1.0139** |
+| + 20 km | 4,482.0 | 7.031% | 1.0293 | 5.2 (0.015) | 1.0163 / 1.0128 |
+| + 40 km | 4,362.7 | 6.875% | 1.0243 | 6.8 (0.020) | 1.0175 / 1.0130 |
+| **+ 80 km (shipped)** | 3,971.9 | 6.318% | **1.0470** | **15.5 (0.044)** | **1.0250 / 1.0223** |
+| + 120 km | 3,428.1 | 5.852% | **1.0648** | **34.1 (0.097)** | **1.0395 / 1.0420** |
+
+Three things this table says that an argument could not:
+
+- **The belt moved, not only the crest inside it.** Crest 1.0261 -> 1.0648 and envelope
+  1.0172/1.0139 -> 1.0395/1.0420: they rise together and by comparable fractions. The envelope
+  did not stay at 1.000 while the crest wandered.
+- **The elevation at a fixed anchor falls from 4,540.5 m to 3,428.1 m.** That is the belt leaving
+  the ground it used to stand on -- a translation, not a roughening.
+- **The grade goes DOWN, not up.** 7.030% -> 5.852%. The warp moves a belt; it does not steepen
+  one.
+
+**A bend longer than the belt is a tilt.** At an 80 km amplitude the crest sinuosity is 1.0470 at
+a 300 km wavelength, 1.0337 at 600 km and 1.0312 at 900 km on a 350 km belt: the endpoint chord
+absorbs the displacement. That is the same dead band `structure_wavelength_m` has above 120 km,
+and it is why the wavelength ceiling on the WASM channel is documented as a domain statement
+rather than as a useful setting.
+
+### The preset, and what it actually delivers
+
+`TectonicParams::ranges()`, read from source:
+
+| field | value | the ground for it |
+| --- | --- | --- |
+| `continent_collision_m` | 6,000 m | the top of the calibrated height travel |
+| `continent_collision_width_m` | 100 km | with the amplitude, the 7.030% pair -- the Himalayan surface slope, measured |
+| `collision_asymmetry` | 2.0 | Naylor & Sinclair's 1.67 **from the measured column**: 1.67 reads 1.50 on the ground, 2.00 reads 1.64 |
+| `suture_count` | 2 | the sutures table's one useful setting: crests 1 -> 2 with the peak unmoved |
+| `suture_spread_m` | 100 km | the same row; 235 km of reach, the largest margin under the 420 km gate in the useful band |
+| `structure_depth` | 0.7 | the biggest single effect; 0.9 buys three more summits for another 8% of the peak |
+| `structure_wavelength_m` | 80 km | **the one place the preset does not take the biggest number available**: 40 km measures 17.783% of grade, which no published surface slope supports, and 120-250 km does nothing at any depth |
+| `margin_warp_m` | 80 km | 0.124 of belt length against 0.204 at 120 km, for 9.293% of grade against 10.711% and 315 km of reach against 355 |
+| `margin_warp_wavelength_m` | 300 km | roughly the belt's own length: an orocline-scale bend plus two scales of kink |
+
+**Requested 6,000 m. DELIVERED 3,034.6 m**, at a 9.293% grade, with **10 summits and 2
+across-range crests**, a crest sinuosity of **1.3204** (44.6 km of lateral deviation, 0.124 of
+its belt) and a reach of **315 km** of the 420 km gate. That gap matters because the owner reads
+*6,000 m* on a panel slider and gets three kilometres of mountain: `structure_depth` costs 22%
+and the warp costs a further 9%, and both are multiplicative on the amplitude the slider names.
+The **delivered** peak is what has to stay inside the calibrated 1,500-6,000 m band, and it does.
+
+**A ledger figure that disagrees with the run, named rather than carried forward.** The slice
+ledger and three task briefs quote the preset as delivering **3,323.8 m**. That was true before
+the warp shipped and is not true now: 3,323.8 m is `ranges()` **with the warp switched off**,
+which this survey still prints as its own row, and the shipped preset delivers **3,034.6 m**.
+Every "preset with ..." row in the older tables carries the same offset, because they were
+measured on a preset that had no warp in it.
+
+**Three of the preset's columns did not compose, and that is why it is measured as a preset.**
+The techniques were each measured alone on the steep envelope; stacked, the flank ratio reads
+1.38 where the asymmetry sweep read 1.64 at the same setting, and the grade reads 9.293% where
+the 80 km wavelength row read 8.420%. What the sutures still buy is measured rather than assumed:
+dropping to one suture takes the summit count **10 -> 6**. A preset composed from three tables on
+paper would have been three columns wrong.
+
+### THE THINGS THIS SLICE GOT WRONG. THEY ARE WORTH MORE THAN WHAT IT GOT RIGHT
+
+**1. A technique was rejected on four metrics that could not see it.** The crest warp was built,
+swept, measured displacing the crest **49.2 -> 78.8 km** de-trended, and **deleted** -- because
+it moved no summit, no across-range crest and no flank ratio, and another technique produced a
+similar displacement as a side effect. Every one of those four metrics measures structure
+**across** a range. Straightness is a property **along** one, and nothing in the set looked
+along. One task later the owner reported the exact defect the deleted technique existed to fix,
+and it was rebuilt and shipped. **The gap was in the specification, not in the implementation**:
+the implementer noticed its probes were blind twice over and added two measurements before ruling
+on anything, and still ruled correctly against a brief whose metric set had a hole in it.
+
+**2. A sinuosity metric scored a perfect great circle at 2.13 before it was rebuilt.** Its first
+version re-found the crest independently at every station, as the highest sample in a +/-200 km
+scan, so on a preset world the global maximum jumped tens of kilometres between adjacent stations
+and a path length added every jump; and it walked off the end of the belt, where three stations
+turned 1.03 into 1.34. A measure that calls a straight line bendy would have validated anything.
+Rebuilt to **follow** the crest (each station within 40 km of the previous) and to **stop where
+the belt does**, it reads **1.0261** on the bare blade.
+
+**And it is still not trustworthy everywhere, which this write-up measured and the task reports
+did not.** On the **canonical** world -- a smooth symmetric swell on a great circle, the
+straightest thing this engine can draw -- the shipped metric reads **1.5250, with 66.4 km of
+deviation over a 310 km belt.** The canonical crest barely clears the 1,000 m line the walk stops
+at, so the tracker wanders on almost-flat ground. **The metric is calibrated on a belt and is
+only meaningful where there is one**: every sinuosity figure in this section is on the 6,000 m
+envelope or on the preset for that reason, and a canonical-world sinuosity means nothing.
+
+**3. The warp's first signed-side derivation cut a 913 m cliff down every bisector.** The side was
+taken from the ordered plate pair, which is stable across the margin it belongs to and **not**
+across a third plate's: crossing from plate A into plate C replaces the whole `(A, *)` margin
+set, and the index comparison can come out the other way and flip the displacement from `+w` to
+`-w` in one step. Measured at **913.52 m over a single 100 m step**, against 11.58 m for the same
+configuration unwarped. **Every other column looked plausible and all the sinuosity numbers went
+up.** The first hypothesis -- shear -- was wrong, and an octave sweep refuted it in one run. The
+fix takes the sign from the axis `from_margin` already has, so the profile is `P(x - w)` on both
+sides of one margin. `seam_probe` is now a permanent survey row, because **nothing else in this
+survey looks for a discontinuity**; today it reads 9.79 m for the shipped preset against 8.25 m
+with the warp off, and 7.23 m for the bare steep envelope.
+
+**4. `gates.yml` was found already wrong at a commit before this slice touched it**, by 2 on
+every row, because nothing had re-derived the pins since the commit that moved them. The count
+gate was red and green at the same time. Re-derive, never trust -- and every task since has
+re-derived the *baseline* before its first edit as well as the result after its last.
+
+**5. An agent died mid-task without reporting**, leaving an uncommitted, non-compiling tree. It
+was found by reconciling live children against the roster rather than by waiting for a
+notification that was never coming.
+
+**6. `cargo build ... | tail` reported exit 0 on a build with four errors**, because the exit
+status belonged to `tail`. This project's rule is "verify by exit status, never by grepping test
+output", and **a pipe is how that rule gets violated while appearing to be followed.**
+
+**7. A bit-identity test that could not fail was believed for a whole task.** `Tectonics::new`
+resolves `None` through `unwrap_or_else(TectonicParams::canonical)`, so the `None` arm and the
+`Some(canonical())` arm call the same function and agree no matter what the uplift path ignores;
+mutating `canonical()` cannot separate them. What proves the fields are read is a different test
+entirely -- one-ULP perturbation fixtures sweeping `from_margin` out to the range gate -- and the
+same fixtures prove that **two of the nine fields are not read at all.** See the open items.
+
+**8. The tectonic channel shipped to the owner's panel with no native-against-WASM parity
+coverage, and three tasks in a row said so without closing it.** A preset the owner presses
+crossed a boundary a 71,596-value corpus did not watch, for three commits. It is closed now --
+see the parity section above, and `parity/README.md` -- and the shape of the failure is worth
+more than the fix: **each of the three reports named the gap accurately, sized it correctly, and
+declined it for a good local reason** (the corpus size is a pinned count gate, and moving a gate
+is not a task's business unless the task owns the gate). Nobody was wrong; the work simply had no
+owner until a task was written whose subject it was.
+
+### What still does not look right, and what is still open
+
+- **`island_arc_m` and `island_arc_width_m` have no evidence the uplift path reads them.** The
+  one-ULP fixtures prove the other seven fields move the answer and **assert the arc pair's
+  blindness explicitly** rather than dropping the case: the arc term is multiplied by an oceanic
+  weight that no synthetic fixture, and no run of the survey, has produced -- the peak the survey
+  tracks is on a continental collision margin every time. **No slider binds to either**, and the
+  panel declares the omission, which is why this is a recorded gap and not a defect.
+- **The warp cannot be turned by the owner.** It is on the preset and in the query string and has
+  no widget, because it is jointly constrained with the steepness slider through
+  `collision_reach_m()`: at the panel's own widest steepness (canonical's 400 km) the 420 km gate
+  leaves 20 km of room, so a slider anchored there would offer one live position and then refuse
+  everything after it. A travel that depends on another slider's position is a real feature and
+  its own task.
+- **The delivered grade, 9.293%, is above the 3-8% band the panel's own note quotes**, and the
+  note still quotes it. They are different quantities -- a wedge's *mean surface taper* against
+  the steepest single 2 km step on a flank the structure field has deliberately carved into ridge
+  and valley -- and the 2 km step on a carved flank must be the larger. Stated rather than tuned
+  away; the alternative at a 40 km wavelength reads 12.233% on the shipped preset.
+- **The preset's envelope sinuosity is not a usable number** and no claim rests on it. It reads
+  **3.2724 / 1.1213** on the shipped preset and **1.9064 / 1.0773** with the warp off -- and a
+  belt straight by construction cannot have a 1.9 envelope, so on a structure-carved flank the
+  half-height contour is tracking the structure field rather than the belt's edge. The belt-moved
+  claim rests on the bare-envelope rows, where the base reads 1.0172.
+- **A snowline clamp is a real coupling and a later slice.** Egholm et al. (2009), *Nature* 460,
+  read in the source text: *"most summit elevations are confined to altitudes <1,500 m above the
+  local snowline"*, and range height *"mainly reflect[s] variations in local climate rather than
+  tectonic forces"*. Convergence sets width and uplift rate; **climate sets height.** Nothing here
+  implements it, and nothing here should be read as having tried.
+- **`MARGIN_WARP_OCTAVES`' doc comment names the Himalayan arc and the Bolivian orocline as the
+  long octave's motivation.** Neither is in the verified column of this project's literature note
+  -- both came back only as search paraphrases -- and **no number in this section was tuned to
+  either.** The octave schedule was chosen by sweeping 1, 2 and 3 octaves while diagnosing the
+  seam cliff. Read that comment as an intuition pump, not as a citation.
+- **`tectonics::continental` is dead code in a `--features wasm` build**, and the compiler says so
+  on every build of this crate. Pre-existing, untouched here, named so it is not rediscovered as
+  new.

@@ -169,9 +169,20 @@ fn blend_row(blend: f64, amp: f64, width_km: f64) {
 /// Method: the same 0.5-degree global grid, `elevation_m(point, None)` on two worlds that
 /// differ in exactly one block, reporting the site of the largest absolute difference.
 fn witness_for(label: &str, tectonics: TectonicParams) {
+    witness_between(label, None, tectonics);
+}
+
+/// The same scan between two *chosen* blocks rather than against canonical.
+///
+/// Task 6 needs it. The parity corpus samples a tectonic world where the block bites, and
+/// its negative control turns **one field** of that block off, so the site the corpus wants
+/// is the one where that single field moves the ground the most -- not where the whole
+/// preset does. Those are different places, and a corpus placed at the second would be a
+/// control that barely moved anything.
+fn witness_between(label: &str, base: Option<TectonicParams>, tectonics: TectonicParams) {
     let seed = 20_260_904;
     let radius_m = 6_371_000.0;
-    let base = Surface::new(seed, radius_m, 12, 0.29, None, None, None);
+    let base = Surface::new(seed, radius_m, 12, 0.29, None, None, base);
     let moved = Surface::new(seed, radius_m, 12, 0.29, None, None, Some(tectonics));
     let mut best = (0.0f64, 0.0, 0.0, 0.0, 0.0);
     let mut lat = -89.5;
@@ -243,5 +254,20 @@ fn main() {
     witness_for(
         "blend 0.10 (more)",
         TectonicParams { continental_blend: 0.1, ..TectonicParams::canonical() },
+    );
+
+    // ------------------------------------------------ where the parity corpus should sample
+    //
+    // The same fixture world the parity corpus uses (`examples/parity_dump.rs`'s SEED,
+    // RADIUS_M, PLATES, LAND are these four values). Two witnesses, because the corpus and
+    // its control want different things: the first says where `ranges()` bites at all, the
+    // second says where turning `margin_warp_m` off moves the ground -- which is the site the
+    // corpus's concentrated points and its tile are placed on, so that the control has
+    // something to move.
+    witness_for("ranges() vs canonical", TectonicParams::ranges());
+    witness_between(
+        "ranges() warp on vs off",
+        Some(TectonicParams { margin_warp_m: 0.0, ..TectonicParams::ranges() }),
+        TectonicParams::ranges(),
     );
 }

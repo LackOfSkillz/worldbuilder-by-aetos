@@ -6,17 +6,19 @@ generator, a pool of eight workers with an LRU tile cache, feature-aware refinem
 in-page checks and a `?fault=` switch that makes them fail on demand. No placement, no
 editing, no worldfile — **slice 3 owns those**.
 
-> **STALE FIGURES, NAMED RATHER THAN SILENTLY WRONG (slice 5b Task 6 / relief Task 5,
-> 2026-09-05, at `1004f4d`).** This file's *current-tense* engine and parity numbers were
-> written in slice 2b and have not moved since; several slices have landed on top of them.
-> Rather than leave a reader to trust them, here is what the same commands actually print
-> today, re-run on this host while writing this note:
+> **STALE FIGURES, NAMED RATHER THAN SILENTLY WRONG (re-measured at slice mountains Task 6,
+> 2026-09-05; first written at slice 5b Task 6 / relief Task 5, at `1004f4d`).** This file's
+> *current-tense* engine and parity numbers were written in slice 2b and have not moved since;
+> several slices have landed on top of them. Rather than leave a reader to trust them, here is
+> what the same commands actually print today, re-run on this host while writing this note --
+> **and the previous version of this note was itself stale by four exports and 18,265 corpus
+> values, which is the whole argument for re-deriving rather than carrying forward**:
 >
 > | this file says | measured today |
 > |---|---|
-> | the artifact is 84,856 bytes, 11 exports (`memory` + 10 functions) | **220,452 bytes, 16 exports** (`memory` + 15 functions), 0 imports |
-> | parity is 53,251 values, 0 divergent | **71,596 values, 0 divergent** |
-> | `--mutate seed` diverges 50,778 | **68,457 of 71,596** -- and there are now two further, narrower controls: `--mutate erosion-k` (216) and `--mutate water-pond` (60) |
+> | the artifact is 84,856 bytes, 11 exports (`memory` + 10 functions) | **225,277 bytes, 19 exports** (`memory` + 18 functions), 0 imports |
+> | parity is 53,251 values, 0 divergent | **89,861 values, 0 divergent** |
+> | `--mutate seed` diverges 50,778 | **86,190 of 89,861** -- and there are now three further, narrower controls: `--mutate erosion-k` (216), `--mutate water-pond` (60) and `--mutate tectonic-warp` (6,186, all of them on a world built from a tectonic block) |
 > | "There is no CI" | there is: `.github/workflows/gates.yml`, six gates plus two count gates, on every push. See `docs/ci.md`. |
 >
 > The *historical* narrative in this file -- the staleness-guard investigation, the
@@ -1750,6 +1752,113 @@ path's digest became `12f42dd1…`. Reverting *only* `relief.js` to its pre-`199
 every mountain-slice change still in place, returns exactly `79f11efe…` — which is what
 attributes the move to that commit and not to this one. `?relief=0` never moved at all, because
 it does not run `relief.js`'s shader.
+
+### Three more sliders, a preset, and two fields with no widget
+
+The three sliders above were the first half of the slice and they shipped deliberately early:
+the owner had twice said there were still no mountains, and the honest reason was that the task
+before them was *required* to change nothing. Giving them the knobs before choosing a preset for
+them was the point.
+
+The second half is the **structure field** -- what turns a smooth blade into a range -- and it
+needed the channel widened twice. `WB_TECTONIC_STRIDE` went **9 -> 14 -> 16**, and for a whole
+task none of the structure work was reachable from the browser at all: it existed in the engine,
+was measured in the engine, and `decode_tectonic` filled its fields from `canonical()` with a
+comment at that exact line saying what a later task had to do. **A feature that has not crossed
+this boundary does not exist as far as the owner is concerned**, and saying so in a comment at
+the line that drops it is the difference between a stop and an omission.
+
+| panel row | field | travel | positions |
+| --- | --- | --- | --- |
+| **vergence** | `collision_asymmetry` | canonical 1.00 **up to** 3.00, a quarter a step | 0…8 |
+| **structure** | `structure_depth` | canonical 0.0 **up to** 0.9, a tenth a step | 0…9 |
+| **massif size** | `structure_wavelength_m` | canonical 120 km **down to** 40 km, 20 km a step | 0…4 |
+
+Labelled for what they do to the picture rather than for what they are called in the engine,
+because "collision asymmetry" and "structure depth" name mechanisms and the owner is choosing
+between a smooth blade and two parallel belts of separate massifs.
+
+**`massif size` carries one dead position and it is the one that is required.** The measured
+working band is 40-80 km; at 120-250 km the summit count falls back to 0-4 at every depth. But
+position 0 has to be canonical **bit-for-bit**, because `tectonicToParams` drops every field
+still equal to canonical and a position-0 value one ULP off would write a wavelength into every
+shared link and take an untouched viewer off the engine's `None` path. So the travel begins at a
+value that does nothing, and stops well short of the 250 km that also does nothing. The same
+reasoning is why `structureDepth` is `position / 10` and not `position * 0.1`: `0.1 * 7` is
+`0.7000000000000001` and the preset's depth is `0.7`, so the multiplied form gives **a slider
+that cannot express the value its own preset button sets** -- the panel-default defect arriving
+through a new door for the fourth time.
+
+### The preset crosses as sixteen numbers and never as a name
+
+**ranges preset** reads `wb_tectonic_preset(WB_TECTONIC_RANGES)` and puts every field on the
+control that owns it. There is no tectonic literal anywhere in `viewer/`:
+`tectonic-params.test.mjs` strips comments out of `controls.js` and `main.js` and asserts that
+`6000`, `100000`, `0.7`, `80000` and `300000` appear in neither. The panel's slider anchors and
+its preset button are the same export's answer, so `tectonics.rs` stays the only place the
+numbers live.
+
+**Two of the sixteen have no widget, and they are shown rather than hidden.** The suture pair
+(`suture_count`, `suture_spread_m`) is jointly constrained -- a count slider at the canonical
+spread is a height knob, which the engine now refuses outright -- and its useful setting is a
+*point*, not a travel. The warp pair (`margin_warp_m`, `margin_warp_wavelength_m`) has a
+sharper reason: **a slider was built for it and the panel's own check went red at 40 km.**
+`margin_warp_m` is jointly constrained with the steepness slider through
+`collision_reach_m()`, and at the panel's widest steepness -- canonical's 400 km -- the 420 km
+range gate leaves 20 km of room. A control most of whose travel turns the viewer blank is worse
+than no control. The honest fix is a travel that depends on another slider's position, which
+this travel model cannot express and which is its own task.
+
+So both pairs are **driven, carried and read out**: the preset sets them, the query string
+carries them (`?mtnBelts=2&mtnBeltSpacing=100000&mtnWander=80000&mtnWanderWave=300000`), and the
+panel says *"2 parallel belts, 100 km apart · wander ±80 km over 300 km"*, or *"· no wander (the
+margin is a great circle)"* when it is off. A preset that changed something the panel never
+mentioned would be a preset the owner cannot reason about.
+
+**The status line names the whole block**, because that line is what a screenshot carries as its
+caption: `mtn 6000 m / 100 km blend 0.450 verg 2.00 belts 2x100km struct 0.70@80km wander
+80@300km`. It named three of eight fields when the block had eight, which would have said
+"canonical" about a world whose entire shape had changed.
+
+**And the panel can now produce a block the engine refuses**, which it could before this slice
+finished too: press **ranges preset**, then drag steepness back to 400 km, and the collision
+profile reaches 535 km against a 420 km gate. `admissibleNote` asks `wb_tectonic_check`
+**through the engine** -- never a reach re-derived in JavaScript -- and says so before generate.
+
+### What the owner actually gets when they press the button
+
+**The height slider says 6,000 m. The ground delivers 3,034.6 m**, at a 9.293% flank grade, with
+ten summits and two across-range crests. `structure_depth` costs 22% of the amplitude and the
+warp a further 9%, and both multiply the number the slider names. That is a real gap between a
+control's label and its result, and the panel's own note carries the reason
+(*"Structure carves the delivered peak down by up to a fifth; 40-80 km is where it bites."*)
+rather than leaving the owner to discover it -- and it carries it **without a number for the
+depth**, because a literal there is a literal the "no tectonic number written twice" test would
+have to allow through.
+
+**A figure to distrust if you meet it elsewhere:** several documents in this slice quote the
+preset as delivering **3,323.8 m**. That was the number before the warp shipped, and it is now
+the value of `ranges()` **with the warp switched off**. Re-measured for this write-up, the
+shipped preset delivers 3,034.6 m.
+
+### The pictures, and the one thing this slice could not photograph
+
+The preset's pictures are real: Cesium drawing the shipped `.wasm`, at 1600x900 in headless
+Chromium against the running dev server, taken by **clicking the panel** rather than by composing
+a query string -- canonical against the preset on one camera, and the same range from 900 km up.
+They show two parallel belts of separate massifs with a ridge-and-valley interior.
+
+**The warp's pictures are not.** The task that shipped the along-margin warp could not obtain a
+legible viewer frame: in its browser pane the globe rendered only while the pane was fronted, the
+relief-layer imagery would not refine past level 7 however long it waited, and every frame came
+out too blurred at 800x450 to show a belt's shape. Its before/after pair is therefore a
+`Surface::elevation_m` raster from `mountain_survey.rs` at a stated 8x vertical exaggeration --
+**the same physics the viewer draws, but not the viewer**. The channel and the panel *were*
+driven live on the owner's own world (the query string round-trips both warp fields, the readout
+says *"wander ±80 km over 300 km"*, and `wb_tectonic_check` accepts the preset and refuses a
+canonical-width 80 km warp), so what is missing is a picture and not a verification. **The
+1600x900 headless harness that took the preset's shots is the fix, and nobody has run it on the
+warp.** Recorded here so that the four rasters are not mistaken for screenshots.
 
 ## What still does not look like a photograph
 

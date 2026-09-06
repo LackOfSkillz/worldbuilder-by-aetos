@@ -1,9 +1,10 @@
 //! Dump a native corpus for the native-against-WASM parity harness.
 //!
 //! Every value crosses the *shipped* `extern "C"` surface -- `wb_world_new`,
-//! `wb_world_new_relief`, `wb_relief_preset`, `wb_elevation_m`, `wb_structural_m`,
-//! `wb_bottom_at`, `wb_fill_tile_f32`, `wb_erosion_run`, `wb_water_run` -- never an internal
-//! function, because the claim under test is about what the browser calls.
+//! `wb_world_new_relief`, `wb_world_new_tectonic`, `wb_relief_preset`, `wb_tectonic_preset`,
+//! `wb_tectonic_check`, `wb_elevation_m`, `wb_structural_m`, `wb_bottom_at`,
+//! `wb_fill_tile_f32`, `wb_erosion_run`, `wb_water_run` -- never an internal function,
+//! because the claim under test is about what the browser calls.
 //!
 //! **Two of those exist so that a module could be compared at all.** `wb_erosion_run` (slice
 //! 5a Task 5) is the only door into `erosion.rs`, and `wb_water_run` (slice 5b Task 5) is the
@@ -13,12 +14,23 @@
 //! `detail.rs`'s relief block after the relief slice's Task 4, and nothing here had ever sent
 //! one, because every world above is built through `wb_world_new`, which sends `None`.
 //!
-//! **One derivation here is NOT a compared value and is labelled as such:** the `WCTL` record
-//! carries the water control's predicted divergence, computed from
+//! **The tectonic entries are a third shape of gap: three tasks flagged it and none owned
+//! it.** Mountains Task 4, Task 3 and Task 5 each reported, correctly, that no value in this
+//! corpus went through a tectonic export -- while `TectonicParams::ranges()` is a preset the
+//! owner presses on the panel and drives seven of sixteen words across the boundary. Native
+//! and WASM are the same Rust over the same pure-Rust `libm`, so the comparison is *strict
+//! bit-for-bit* even with transcendentals in the path; what is boundary-only is the DECODE,
+//! and nothing exercised it.
+//!
+//! **Two derivations here are NOT compared values and are labelled as such:** the `WCTL`
+//! record carries the water control's predicted divergence, computed from
 //! `water::lake_body_surface_areas_m2` rather than from the classifier the control perturbs,
-//! and cross-checked against that classifier before it is written. A control gate read off
-//! the control's own run is a rubber stamp; this one is a prediction the replaying side has
-//! to meet.
+//! and cross-checked against that classifier before it is written; and the `TCTL` record
+//! carries the tectonic control's predicted divergence per group, computed through the
+//! exports *and* through the library's own `Surface` with blocks read from `tectonics.rs`
+//! rather than from the words that crossed the boundary, and cross-checked between the two
+//! before it is written. A control gate read off the control's own run is a rubber stamp;
+//! both of these are predictions the replaying side has to meet.
 //!
 //! The output is the corpus *and* its answers: every f64 is written as its 16-hex-digit
 //! bit pattern, so the replaying side parses no decimal text and the comparison is exact.
@@ -28,8 +40,10 @@
 //!
 //! Run: `cargo run --release --example parity_dump --features wasm > native.txt`
 
+use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use worldbuilder_engine::surface::Surface;
+use worldbuilder_engine::tectonics::TectonicParams;
 use worldbuilder_engine::wasm::*;
 use worldbuilder_engine::water;
 
@@ -514,6 +528,400 @@ fn main() {
         hex(WATER_POND_MAX_SURFACE_AREA_M2),
         hex(water_sea_level_m),
         water_hex.join(" ")
+    );
+
+    // --- the tectonic channel: the presets, the checker, and a world built from one -------
+    //
+    // Task 4 of the mountains slice flagged this gap, Task 3 flagged it again larger, and
+    // Task 5 flagged it a third time two fields larger still. **None of them owned it.** The
+    // corpus above compares 71,596 values and not one of them goes through
+    // `wb_tectonic_preset`, `wb_tectonic_check` or a tectonic block on
+    // `wb_world_new_tectonic` -- while `ranges()` is a preset the owner presses on the panel,
+    // and it drives seven of `TectonicParams`' sixteen words across this boundary.
+    //
+    // The shape is the relief channel's, one row for one row, because the relief channel is
+    // the thing this harness already got right: the presets first, field by field; then a
+    // world carrying a NON-canonical block; then scalars on it; then a tile, because the tile
+    // worker is the block's real consumer in the browser.
+    //
+    // **Why this is worth doing even though native and WASM are the same Rust.** They are --
+    // over the same pure-Rust `libm`, so this comparison is strict bit-for-bit even where
+    // transcendentals are in the path, which is a stronger contract than the bounded one
+    // Python-versus-Rust conformance holds. What is NOT shared is the *decode*: the block
+    // crosses as sixteen f64 in linear memory, is read back through a raw pointer, and is
+    // bounds-checked before it becomes a `TectonicParams`. That path exists only on this
+    // boundary, and until now nothing exercised it.
+    let mut tectonic_canonical = [0.0f64; WB_TECTONIC_STRIDE];
+    let mut tectonic_ranges = [0.0f64; WB_TECTONIC_STRIDE];
+    let tectonic_canonical_status = wb_tectonic_preset(
+        WB_TECTONIC_CANONICAL,
+        tectonic_canonical.as_mut_ptr(),
+        WB_TECTONIC_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    let tectonic_ranges_status = wb_tectonic_preset(
+        WB_TECTONIC_RANGES,
+        tectonic_ranges.as_mut_ptr(),
+        WB_TECTONIC_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    assert_eq!(tectonic_canonical_status, WB_OK, "the canonical tectonic preset must be readable");
+    assert_eq!(tectonic_ranges_status, WB_OK, "the ranges tectonic preset must be readable");
+    assert_ne!(
+        tectonic_ranges, tectonic_canonical,
+        "a preset identical to canonical would make every tectonic row below a second copy of \
+         the plain world's rows",
+    );
+    for (selector, status, record) in [
+        (WB_TECTONIC_CANONICAL, tectonic_canonical_status, &tectonic_canonical),
+        (WB_TECTONIC_RANGES, tectonic_ranges_status, &tectonic_ranges),
+    ] {
+        let encoded: Vec<String> = record.iter().map(|v| hex(*v)).collect();
+        println!("TP {selector} {status} {}", encoded.join(" "));
+    }
+
+    // The control's block: `ranges()` with `margin_warp_m` -- word 14, `encode_tectonic`'s
+    // own order -- turned off, and nothing else touched. Built from the preset the export
+    // just handed back, so the fifteen fields it keeps are not retyped either.
+    const TECTONIC_WARP_INDEX: usize = 14;
+    const TECTONIC_CONTROL_WARP_M: f64 = 0.0;
+    let mut tectonic_control = tectonic_ranges;
+    tectonic_control[TECTONIC_WARP_INDEX] = TECTONIC_CONTROL_WARP_M;
+    assert_ne!(
+        tectonic_ranges[TECTONIC_WARP_INDEX], TECTONIC_CONTROL_WARP_M,
+        "the control must actually change the field it names -- a preset that already ships \
+         the control's value would make the whole control a no-op wearing a control's name",
+    );
+
+    // `wb_tectonic_check`, the third tectonic export and the only one that answers *why* a
+    // record was refused. Six records, three accepted and three refused, so the group cannot
+    // be trivially uniform in either direction: a checker that refused everything and a
+    // checker that accepted everything would both pass a corpus of one kind.
+    //
+    // The refusals are the three the sweep found matter: the saturating `as u32` cast on a
+    // loop bound, a `structure_depth` outside `structure_at`'s documented range, and a warp
+    // amplitude that carries the collision profile past `MAX_TECTONIC_RANGE_M` on canonical's
+    // 400 km flank -- the reach check, which no per-field ceiling can see.
+    let mut tectonic_saturating = tectonic_ranges;
+    tectonic_saturating[10] = 1.0e300;
+    let mut tectonic_deep = tectonic_ranges;
+    tectonic_deep[12] = 1.5;
+    let mut tectonic_far = tectonic_canonical;
+    tectonic_far[TECTONIC_WARP_INDEX] = 400_000.0;
+    let check_records = [
+        ("canonical", tectonic_canonical),
+        ("ranges", tectonic_ranges),
+        ("control", tectonic_control),
+        ("saturating", tectonic_saturating),
+        ("deep", tectonic_deep),
+        ("far", tectonic_far),
+    ];
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for (name, record) in &check_records {
+        let status = wb_tectonic_check(
+            record.as_ptr(),
+            WB_TECTONIC_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+        );
+        if status == WB_OK {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+        let encoded: Vec<String> = record.iter().map(|v| hex(*v)).collect();
+        println!("TC {name} {status} {}", encoded.join(" "));
+    }
+    assert_eq!(accepted, 3, "three of the six check records are meant to be accepted");
+    assert_eq!(refused, 3, "three of the six check records are meant to be refused");
+
+    // A world carrying the non-canonical block, twice under two names. **Two names, one
+    // configuration, and that is deliberate**: the scattered points and the concentrated
+    // ones then tally as separate groups, so the control's report says in its own output
+    // that the belt moved and the rest of the planet did not. One mixed group would have
+    // hidden exactly that.
+    //
+    // `TWARP` goes out first because the replaying side needs it *here*, when it builds
+    // these worlds; the prediction it belongs to (`TCTL`) cannot be written until the corpus
+    // has been sampled, so the control arrives as two records rather than one.
+    println!("TWARP {}", hex(TECTONIC_CONTROL_WARP_M));
+    let tectonic_encoded: Vec<String> = tectonic_ranges.iter().map(|v| hex(*v)).collect();
+    for name in ["ranges", "belt"] {
+        println!(
+            "worldt {name} {SEED} {} {PLATES} {} {}",
+            hex(RADIUS_M),
+            hex(LAND),
+            tectonic_encoded.join(" ")
+        );
+    }
+    let tectonic_world = wb_world_new_tectonic(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        tectonic_ranges.as_ptr(),
+        WB_TECTONIC_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    assert!(tectonic_world != 0, "the ranges world must build");
+    let tectonic_control_world = wb_world_new_tectonic(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        tectonic_control.as_ptr(),
+        WB_TECTONIC_STRIDE as u32, // cast-ok: a compile-time stride into the export's u32 length
+    );
+    assert!(tectonic_control_world != 0, "the control world must build");
+
+    // WHERE THE BELT IS, AND WHY IT IS NOT A ROUND NUMBER.
+    //
+    // `src/bin/mountain_probe.rs`'s `witness_between` scans this exact fixture world on a
+    // 0.5-degree global grid for the site where turning `margin_warp_m` off moves
+    // `elevation_m` the most: **-5.00, 66.00, where the ground reads 821.955 m with the warp
+    // off and 2,432.773 m with it on.** A corpus scattered uniformly over a planet does not
+    // land on a 100 km belt -- the same reason this file already carries a second world for
+    // the placed harbour -- and a control that moves nothing proves nothing.
+    const BELT_LAT: f64 = -5.0;
+    const BELT_LON: f64 = 66.0;
+    const BELT_SPAN_DEG: f64 = 2.0;
+    {
+        let point_on = wb_elevation_m(tectonic_world, BELT_LAT, BELT_LON, RES_M);
+        let point_off = wb_elevation_m(tectonic_control_world, BELT_LAT, BELT_LON, RES_M);
+        let moved = if point_on > point_off { point_on - point_off } else { point_off - point_on };
+        assert!(
+            moved > 1_000.0,
+            "the belt site must be somewhere the control's one field actually moves the \
+             ground; it moved {moved} m, so either the witness is stale or the field no \
+             longer reaches this world",
+        );
+    }
+
+    // 5,000 scattered points, exactly as the relief world takes them: global, uniform, and
+    // mostly nowhere near a convergent continental margin. That is the point -- they are the
+    // corpus's evidence that the block does NOT reach the rest of the planet, and under the
+    // control they are the group that mostly stays equal.
+    let mut scattered_points = Vec::with_capacity(5_000);
+    for _ in 0..5_000 {
+        let latitude_deg = rng.unit() * 180.0 - 90.0;
+        let longitude_deg = rng.unit() * 360.0 - 180.0;
+        scattered_points.push((latitude_deg, longitude_deg));
+        println!(
+            "E ranges {} {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(RES_M),
+            hex(wb_elevation_m(tectonic_world, latitude_deg, longitude_deg, RES_M))
+        );
+        println!(
+            "S ranges {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(wb_structural_m(tectonic_world, latitude_deg, longitude_deg))
+        );
+    }
+
+    // 2,000 points on the belt itself, in a +/-1 degree box on the witness site.
+    let mut belt_points = Vec::with_capacity(2_000);
+    for _ in 0..2_000 {
+        let latitude_deg = BELT_LAT + (rng.unit() - 0.5) * BELT_SPAN_DEG;
+        let longitude_deg = BELT_LON + (rng.unit() - 0.5) * BELT_SPAN_DEG;
+        belt_points.push((latitude_deg, longitude_deg));
+        println!(
+            "E belt {} {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(RES_M),
+            hex(wb_elevation_m(tectonic_world, latitude_deg, longitude_deg, RES_M))
+        );
+        println!(
+            "S belt {} {} {}",
+            hex(latitude_deg),
+            hex(longitude_deg),
+            hex(wb_structural_m(tectonic_world, latitude_deg, longitude_deg))
+        );
+    }
+
+    // And a tile across the belt, because the tile worker is where a tectonic block lands in
+    // the browser exactly as a relief block does: the viewer attaches it to the spec before
+    // `TilePool.start` and every worker rebuilds the world from it.
+    let belt_tile = {
+        let (lat0, lat1) = (BELT_LAT + 0.5, BELT_LAT - 0.5);
+        let (lon0, lon1) = (BELT_LON - 0.5, BELT_LON + 0.5);
+        let (width, height) = (65u32, 65u32);
+        let mut tile = vec![0.0f32; 65 * 65];
+        let status = wb_fill_tile_f32(
+            tectonic_world,
+            lat0,
+            lat1,
+            lon0,
+            lon1,
+            width,
+            height,
+            RES_M,
+            tile.as_mut_ptr(),
+            width * height,
+        );
+        assert_eq!(status, WB_OK, "belt: the tile must fill");
+        let cells: Vec<String> = tile.iter().map(|v| hex32(*v)).collect();
+        println!(
+            "T belt {} {} {} {} {width} {height} {} {}",
+            hex(lat0),
+            hex(lat1),
+            hex(lon0),
+            hex(lon1),
+            hex(RES_M),
+            cells.join(" ")
+        );
+        (lat0, lat1, lon0, lon1, width, height, tile)
+    };
+
+    // THE TECTONIC CONTROL'S PREDICTION, PER GROUP, MADE HERE AND CHECKED ON THE OTHER SIDE.
+    //
+    // `--mutate tectonic-warp` replays the `worldt` records with word 14 set to 0.0 and
+    // touches nothing else, so `margin_warp_m` is the only thing that differs. Everything
+    // the mutation cannot reach must compare EQUAL, and that list is the informative half:
+    // the two `TP` preset groups (a world block cannot move an export that hands back
+    // `tectonics.rs`' own constants -- the same reason `preset/0` and `version` sit at zero
+    // under `--mutate seed`), the `TC` checker group, and every group of every world above.
+    //
+    // The counts are computed natively, per group, and `parity.mjs` must meet each of them
+    // exactly. Three things hold the prediction to something other than its own output:
+    //
+    //   1. **The library agrees with the exports.** The same counts are recomputed through
+    //      `Surface::elevation_m` / `structural_m` directly rather than through
+    //      `wb_elevation_m` / `wb_structural_m`, and the two must be equal. A disagreement
+    //      means the export layer adds or hides a difference, and it fails HERE rather than
+    //      being absorbed into a divergent tally later.
+    //   2. **A structural containment.** `margin_warp_m` reaches `elevation_m` only through
+    //      the tectonic offset, which is `structural_m`'s own content -- so every point whose
+    //      elevation moved must be a point whose structural moved. Asserted as a subset, not
+    //      as an equality: the reverse does not hold, and claiming it would be claiming
+    //      something false.
+    //   3. **Both ends refused.** Every group's count must be strictly between zero and the
+    //      group's size. A control that moves everything is as uninformative as one that
+    //      moves nothing, and this file will not write a corpus where either is true.
+    let (
+        control_elevation_ranges,
+        control_structural_ranges,
+        control_elevation_belt,
+        control_structural_belt,
+        control_tile_belt,
+    ) = {
+        // The library side reads its two blocks from `tectonics.rs` rather than from the
+        // sixteen words that crossed the boundary, which is what makes this a second
+        // derivation instead of the same one twice: if `encode_tectonic` and
+        // `decode_tectonic` disagreed anywhere, the two counts below would part company.
+        let on = Surface::new(
+            SEED,
+            RADIUS_M,
+            PLATES as usize, // cast-ok: a corpus-fixed plate count widened to usize
+            LAND,
+            None,
+            None,
+            Some(TectonicParams::ranges()),
+        );
+        let off = Surface::new(
+            SEED,
+            RADIUS_M,
+            PLATES as usize, // cast-ok: as above
+            LAND,
+            None,
+            None,
+            Some(TectonicParams {
+                margin_warp_m: TECTONIC_CONTROL_WARP_M,
+                ..TectonicParams::ranges()
+            }),
+        );
+
+        // Both scalar groups, both ways round, over the points actually dumped.
+        let mut moved = [0usize; 4];
+        let mut moved_lib = [0usize; 4];
+        for (slot, points) in [(0usize, &scattered_points), (2, &belt_points)] {
+            for (latitude_deg, longitude_deg) in points {
+                let e_on = wb_elevation_m(tectonic_world, *latitude_deg, *longitude_deg, RES_M);
+                let e_off =
+                    wb_elevation_m(tectonic_control_world, *latitude_deg, *longitude_deg, RES_M);
+                let s_on = wb_structural_m(tectonic_world, *latitude_deg, *longitude_deg);
+                let s_off = wb_structural_m(tectonic_control_world, *latitude_deg, *longitude_deg);
+                let e_moved = e_on.to_bits() != e_off.to_bits();
+                let s_moved = s_on.to_bits() != s_off.to_bits();
+                if e_moved {
+                    moved[slot] += 1;
+                }
+                if s_moved {
+                    moved[slot + 1] += 1;
+                }
+                assert!(
+                    !e_moved || s_moved,
+                    "the warp moved elevation at {latitude_deg},{longitude_deg} without moving \
+                     structural -- it reaches elevation only through the tectonic offset, so \
+                     this would mean it now reaches something else",
+                );
+                let point = SpherePoint::from_latlon(*latitude_deg, *longitude_deg);
+                if on.elevation_m(&point, Some(RES_M)).to_bits()
+                    != off.elevation_m(&point, Some(RES_M)).to_bits()
+                {
+                    moved_lib[slot] += 1;
+                }
+                if on.structural_m(&point).to_bits() != off.structural_m(&point).to_bits() {
+                    moved_lib[slot + 1] += 1;
+                }
+            }
+        }
+        assert_eq!(
+            moved, moved_lib,
+            "the exports and the library disagree about how many values the warp moves; the \
+             sixteen words that crossed the boundary and `TectonicParams::ranges()` itself \
+             are describing different worlds",
+        );
+
+        let (lat0, lat1, lon0, lon1, width, height, on_cells) = belt_tile;
+        let mut control_tile = vec![0.0f32; (width * height) as usize]; // cast-ok: a compile-time 65x65 back to a length
+        let status = wb_fill_tile_f32(
+            tectonic_control_world,
+            lat0,
+            lat1,
+            lon0,
+            lon1,
+            width,
+            height,
+            RES_M,
+            control_tile.as_mut_ptr(),
+            width * height,
+        );
+        assert_eq!(status, WB_OK, "belt: the control's tile must fill");
+        let tile_moved = on_cells
+            .iter()
+            .zip(control_tile.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+
+        (moved[0], moved[1], moved[2], moved[3], tile_moved)
+    };
+
+    for (label, moved, total) in [
+        ("elevation/ranges", control_elevation_ranges, 5_000usize),
+        ("structural/ranges", control_structural_ranges, 5_000),
+        ("elevation/belt", control_elevation_belt, 2_000),
+        ("structural/belt", control_structural_belt, 2_000),
+        ("tile/belt", control_tile_belt, 65 * 65),
+    ] {
+        assert!(
+            moved > 0 && moved < total,
+            "{label}: the control moved {moved} of {total}. A control that moves everything is \
+             as uninformative as one that moves nothing, and this corpus refuses to write \
+             either",
+        );
+    }
+
+    println!(
+        "TCTL {control_elevation_ranges} {control_structural_ranges} \
+         {control_elevation_belt} {control_structural_belt} {control_tile_belt}"
     );
 
     println!("version {}", wb_generator_version());
