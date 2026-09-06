@@ -28,7 +28,7 @@
 //! every number it uses is imported from the layer that owns it. `structural_m`,
 //! `elevation_m` and `bottom_at` arrive in later tasks, as do the bindings.
 
-use crate::continentality::Continentality;
+use crate::continentality::{Continentality, CoastParams};
 use crate::detail::{Detail, ReliefParams};
 use crate::features::{Feature, Features};
 use crate::generation::plates_for;
@@ -144,6 +144,48 @@ impl Surface {
         relief: Option<ReliefParams>,
         tectonics: Option<TectonicParams>,
     ) -> Self {
+        Self::with_coast(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features,
+            relief,
+            tectonics,
+            None,
+        )
+    }
+
+    /// The same world, with an opt-in coastal roughening block reaching `Continentality`.
+    ///
+    /// `coast`: `None` for today's coastline, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen `CoastParams`. The fourth opt-in parameter of the same kind, after
+    /// `features`, `relief` and `tectonics`.
+    ///
+    /// **Why this is a second constructor rather than an eighth parameter on `new`.** See
+    /// `Continentality::new`'s note: `Surface::new` has seventy call sites in this crate,
+    /// this crate's own C ABI already ships `wb_world_new` / `wb_world_new_relief` /
+    /// `wb_world_new_tectonic` as separate entry points for exactly this reason, and what
+    /// Ruling 1 requires -- opt-in, `None` canonical, `canonical()` inert and bit-identical
+    /// to `None` -- is a property of the parameter rather than of where it is spelled. That
+    /// bit-identity is pinned at this level by
+    /// `coast_none_matches_coast_some_canonical_bit_for_bit` below, over the full
+    /// `elevation_m` pipeline rather than only at `above_shore`.
+    ///
+    /// **It reaches `Tectonics` and `Shelf` too**, because both are built from this same
+    /// `Continentality` -- which is the point. A coastline only the land/sea test knew
+    /// about, with the shelf still hugging the old smooth one, would be a seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_coast(
+        world_seed: i64,
+        radius_m: f64,
+        plate_count: usize,
+        land_fraction: f64,
+        features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+        coast: Option<CoastParams>,
+    ) -> Self {
         let plates = plates_for(world_seed, plate_count);
         // `Noise::new` mixes first and masks second (`noise.py:38`, `h = (h ^ (seed * K)) &
         // MASK`), so only the low 64 bits of the mixed value survive and a negative seed's
@@ -152,7 +194,7 @@ impl Surface {
         // a tautology - all 2,049 give a negative unbounded `Noise.seed` before the mask.
         // See task-1-report.md sections 1a-1c.
         let noise_seed = world_seed as u64; // cast-ok: two's-complement reinterpretation, not a float truncation -- the mask comes AFTER the mixing, so nothing is rounded and nothing is lost
-        let land = Continentality::new(noise_seed, radius_m, land_fraction);
+        let land = Continentality::with_coast(noise_seed, radius_m, land_fraction, coast);
         // The `tectonics` on the right is still the `Option<TectonicParams>` parameter --
         // the binding this line introduces is not in scope until after it -- and from here
         // on the name means the built layer, as it did before this parameter existed.
@@ -557,6 +599,144 @@ mod tests {
             lat += 5.0;
         }
         assert_eq!(compared, 37 * 73 * 2, "grid population changed -- update the doc comment");
+    }
+
+    /// Task 5's version of the claim above, at the same level and over the same population:
+    /// a `Surface` built through `new` and one built through `with_coast(..., None)` or
+    /// `with_coast(..., Some(CoastParams::canonical()))` must be indistinguishable by bits
+    /// over the full `elevation_m` pipeline -- structure, shelf and detail included, not
+    /// merely at `above_shore` where the term lives.
+    ///
+    /// **Population**: the same 37 x 73 lat/lon grid at two resolutions, 5,402 comparisons
+    /// per pairing, two pairings. **Method**: `f64::to_bits` equality; both worlds from the
+    /// same `SEED` at `EARTH_RADIUS_M`, no features, canonical relief and tectonics.
+    /// **Host**: this port, seed -5.
+    ///
+    /// **Discriminated by its last block**: the identical grid under `CoastParams::fractal()`
+    /// is required to diverge at a substantial number of points. Without that, a
+    /// `with_coast` that ignored its argument entirely would pass this test perfectly.
+    #[test]
+    fn coast_none_matches_coast_some_canonical_bit_for_bit() {
+        let built_by_new = plain(None);
+        let explicit_none = Surface::with_coast(
+            SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None, None, None,
+        );
+        let explicit_canonical = Surface::with_coast(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            Some(CoastParams::canonical()),
+        );
+        let fractal = Surface::with_coast(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            Some(CoastParams::fractal()),
+        );
+
+        let mut compared = 0u32;
+        let mut moved = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(5_000.0_f64)] {
+                    let a = built_by_new.elevation_m(&p, resolution);
+                    let b = explicit_none.elevation_m(&p, resolution);
+                    let c = explicit_canonical.elevation_m(&p, resolution);
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "new() and with_coast(None) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {b}"
+                    );
+                    assert_eq!(
+                        a.to_bits(),
+                        c.to_bits(),
+                        "None and Some(canonical()) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {c}"
+                    );
+                    if a.to_bits() != fractal.elevation_m(&p, resolution).to_bits() {
+                        moved += 1;
+                    }
+                    compared += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 37 * 73 * 2, "grid population changed -- update the doc comment");
+        assert!(
+            moved > 100,
+            "fractal() moved only {moved} of {compared} readings -- a with_coast that ignored \
+             its argument would pass the two assertions above and this test would mean nothing"
+        );
+    }
+
+    /// The coastal block must reach the SHELF, not merely the land/sea test. `Shelf` is
+    /// built from this same `Continentality` and reads `above_shore` directly
+    /// (`shelf.rs::coastal_weight`), so a roughened coast that the shelf still hugged the
+    /// old smooth line of would be a seam in the bathymetry.
+    ///
+    /// Asserted on `structural_m` -- the shelf's own output, with detail excluded -- rather
+    /// than on `elevation_m`, so nothing here can pass on the back of the detail layer.
+    /// Discriminated by requiring a divergence at a substantial number of grid points AND by
+    /// requiring that the deep interior of the same grid does not move: a term that simply
+    /// perturbed everything would satisfy the first half and fail the second.
+    #[test]
+    fn the_coastal_block_reaches_the_structural_ground_and_only_near_the_coast() {
+        let canonical = plain(None);
+        let fractal = Surface::with_coast(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            Some(CoastParams::fractal()),
+        );
+        let reach = canonical.land.spread() * CoastParams::fractal().window_spreads;
+
+        let mut moved = 0u32;
+        let mut far = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a = canonical.structural_m(&p);
+                let b = fractal.structural_m(&p);
+                if canonical.land.above_shore(&p).abs() >= reach {
+                    far += 1;
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "structural ground moved at lat {lat} lon {lon}, well away from any \
+                         coast: {a} vs {b}"
+                    );
+                } else if a.to_bits() != b.to_bits() {
+                    moved += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        // Measured: 946 of the 2,701 points on this grid lie outside the band. The grid is
+        // lat/lon rather than area-uniform, so it over-samples the poles, and the bound is
+        // set from that measurement rather than from a guess at what a uniform sphere would
+        // give. It exists to stop the loop above passing vacuously, not to pin 946.
+        assert!(far > 900, "only {far} of 2,701 grid points lay outside the coastal band");
+        assert!(moved > 50, "the structural ground moved at only {moved} coastal points");
     }
 
     /// **The discrimination half of the test above.** A one-ULP nudge to

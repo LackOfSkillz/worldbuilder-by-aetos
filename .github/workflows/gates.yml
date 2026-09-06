@@ -504,25 +504,53 @@ jobs:
           # becomes 1,872 / 1,044, both re-derived and both asserted exactly.
           # The 'd1f022f' baseline (542/542/544/609/611) was re-derived BEFORE the first edit
           # and `gates.yml` was CORRECT at it.
+          #
+          # THE FRACTAL-COASTLINE TASK (photoreal slice, Task 5) takes 547/547/549/616/618 ->
+          # 556/556/558/625/627: **+9 on EVERY row, and nothing on the WASM rows alone** --
+          # the C ABI was NOT widened, so `tests/wasm_exports.rs` is untouched. All nine come
+          # from code that compiles unconditionally:
+          #   * `src/continentality.rs`, +7. `None` is bit-identical to
+          #     `Some(CoastParams::canonical())` over a 2,000-point area-uniform spiral AND
+          #     the same spiral is required to MOVE under `fractal()`, so the inertness claim
+          #     cannot pass vacuously; the window is the house smoothstep, asserted against
+          #     `detail::smooth` by bits and including the NaN arm; the term is bit-inert
+          #     outside its own band and bounded by its stated amplitude inside it; land
+          #     fraction is held to under 1 pp over 20,000 spiral points WHILE the coast is
+          #     required to have crossed in both directions; the second noise lattice is
+          #     unread on the canonical path (nudged in place, the sibling of the
+          #     `world_seed` test); every degenerate `window_spreads` closes the window
+          #     instead of poisoning the field, with an infinite width admitted rather than
+          #     swept in with them; and `fractal()` moves exactly one field.
+          #   * `src/surface.rs`, +2. The same bit-identity over the full `elevation_m`
+          #     pipeline on the 37x73 grid at two resolutions (5,402 comparisons per pairing,
+          #     two pairings, plus a moved-count discriminator), and the block reaching
+          #     `structural_m` at the coast while leaving the far field bit-identical.
+          # **`assert_counts.py` now reports THIRTEEN test binaries rather than twelve:**
+          # `src/bin/coastline_survey.rs` is a new `[[bin]]` and contributes 0 tests, exactly
+          # as `mountain_survey.rs` did. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` /
+          # `-- --list --ignored` output, AFTER the last source edit; the `5de0fd9` baseline
+          # (547/547/549/616/618) was re-derived the same way BEFORE the first edit and
+          # `gates.yml` was CORRECT at it. `expect_ignored` stays 5.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 547
+            expect: 556
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 547
+            expect: 556
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 549
+            expect: 558
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 616
+            expect: 625
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 618
+            expect: 627
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

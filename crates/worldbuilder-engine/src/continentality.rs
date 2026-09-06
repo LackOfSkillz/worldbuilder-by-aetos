@@ -37,6 +37,151 @@ pub const GRADIENT_STEP_M: f64 = 20000.0;
 /// Salted so this field is independent of any other on the same world.
 pub const NOISE_SALT: u64 = 0x0C0FFEE;
 
+/// Salt for the OPT-IN coastal roughening term below, so it is independent of the field it
+/// perturbs. Distinct from `NOISE_SALT` (`0x0C0FFEE`) and from `detail.rs`'s `0x5EABED` --
+/// a shared salt would correlate the coast's wobble with the field deciding where the coast
+/// is, which is the one correlation this term must not have.
+///
+/// **Nothing on the canonical path reaches it.** `CoastParams::canonical()` sets `amplitude`
+/// to exactly 0.0 and `above_shore` branches on that before sampling, so a canonical world
+/// never draws from this lattice at all.
+pub const COAST_NOISE_SALT: u64 = 0x0C0A575;
+
+/// The six values that decide how fractal a coastline is, broken out so a caller who wants
+/// a rougher coast can ask for one without touching what "canonical" means.
+///
+/// `Continentality::with_coast` takes `Option<CoastParams>`, following `ReliefParams` on
+/// `Detail::new` and `TectonicParams` on `Tectonics::new`: `None` is the canonical path, not
+/// an implicit `Default::default()` -- this codebase deliberately rejects defaults nobody
+/// chose (see `stream.rs::BuildParams`).
+///
+/// # Why a separate term rather than a fifth octave
+///
+/// The obvious way to roughen the land/sea field is to raise `OCTAVES`. Measured, it does
+/// not work, for two independent reasons, both recorded in
+/// `.superpowers/sdd/notes/research-worldgen.md` §5.3:
+///
+/// - **`noise.rs::fbm` normalises by the sum of amplitudes.** At `gain = 0.5` a fifth octave
+///   carries `0.5^4 / (1 + 0.5 + 0.25 + 0.125 + 0.0625) = 3.23%` of total amplitude and
+///   scales the four existing octaves by `30/31`. A coastline term worth 3.23% of the field
+///   is a sub-pixel wobble, not a fjord -- while every conformance digest moves.
+/// - **`CALIBRATION_SAMPLES = 4000` is already below Nyquist for octave four.** 4,000
+///   area-uniform samples over the sphere is a spacing of `sqrt(4*PI/4000)` rad, about 357 km
+///   at Earth's radius, against a finest-octave wavelength near 637 km: ~1.8 samples per
+///   wavelength. A fifth octave takes that to ~0.9 and degrades the land-fraction order
+///   statistic from quasi-Monte-Carlo to plain Monte-Carlo (+-0.72 pp at `land = 0.29`,
+///   +-0.58 pp at `land = 0.16`, 1 sigma).
+///
+/// So this is a **separate term with its own amplitude, windowed by `|above_shore|`**, added
+/// after calibration rather than inside it. Three consequences, and the third is the one
+/// worth reading twice:
+///
+/// 1. **Amplitude is a free parameter.** The coast can be roughened to a visible degree
+///    without redistributing anything.
+/// 2. **`shore` and `spread` do not move at all.** Calibration samples `at`, and `at` is
+///    untouched by this block -- so `calibration_reproduces_the_python_reference` holds
+///    by construction rather than by luck, and the Nyquist argument above never arises.
+/// 3. **Land fraction is preserved to first order for free.** The window is symmetric about
+///    the shore and the perturbation is zero-mean, so it moves the coast inland exactly as
+///    often as it moves it seaward. **Measured rather than believed** -- see
+///    `src/bin/coastline_survey.rs`, and `the_window_is_symmetric_about_the_shore` below.
+///
+/// **This block does not change what `None` means.** A changed default here is a change to
+/// `worldbuilder/terrain/continentality.py`, which `tests/test_conformance.py` treats as
+/// ground truth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoastParams {
+    /// How far the coast can be pushed, in multiples of `spread` -- the same unit
+    /// `base_elevation` normalises `above_shore` by, so an amplitude of 0.25 moves the
+    /// normalised field by at most a quarter of the way from the shore to a saturated
+    /// continental interior. **Exactly 0.0 is the inert value and is what `canonical()`
+    /// carries**; `above_shore` branches on it before touching the noise.
+    pub amplitude: f64,
+    /// How wide the coastal band is, in multiples of `spread`. The window is 1.0 at the
+    /// shore and exactly 0.0 at `window_spreads * spread` in either direction, so at 1.0
+    /// the term lives entirely inside the band where `elevation_from_above` has not yet
+    /// saturated -- past that, a perturbation could not move the drawn ground anyway.
+    pub window_spreads: f64,
+    /// Cycles per unit of noise space at the term's first octave. `BASE_FREQUENCY` is 1.25
+    /// and the existing field's finest octave is 10.0; this starts above that, which is the
+    /// whole point -- it is the band the four-octave field does not have.
+    pub frequency: f64,
+    /// How many octaves the term itself spans.
+    pub octaves: u32,
+    /// Amplitude ratio between successive octaves of the term.
+    pub gain: f64,
+    /// Frequency ratio between successive octaves of the term.
+    pub lacunarity: f64,
+}
+
+impl CoastParams {
+    /// Today's coastline exactly: **no coastal term at all**. `amplitude` is 0.0, and
+    /// `above_shore` returns the unperturbed value without sampling, so
+    /// `Some(CoastParams::canonical())` is bit-identical to `None` -- pinned by
+    /// `coast_none_matches_coast_some_canonical_bit_for_bit` below and, at the whole-world
+    /// level, by `surface.rs::coast_none_matches_coast_some_canonical_bit_for_bit`.
+    ///
+    /// The other five fields carry the shape a caller would want if they raised the
+    /// amplitude, so opting in is one field rather than six. They are inert until then.
+    pub fn canonical() -> Self {
+        Self {
+            amplitude: 0.0,
+            window_spreads: 1.0,
+            frequency: 20.0,
+            octaves: 4,
+            gain: 0.5,
+            lacunarity: 2.0,
+        }
+    }
+
+    /// A named, opt-in preset: a coastline with bays, offshore islands and peninsulas at
+    /// several scales. **`canonical()` above is untouched by this constructor and stays the
+    /// `None` path.**
+    ///
+    /// One field moves, and it was swept rather than chosen: `src/bin/coastline_survey.rs`
+    /// measures land fraction, coastline length against the unroughened coast at three
+    /// sample spacings, island count and largest-landmass share across
+    /// `amplitude = 0.0 .. 1.5`. The numbers and the reasoning for this value are in
+    /// `.superpowers/sdd/2026-09-05-slice-photoreal/task-5-report.md`.
+    ///
+    /// The frequency schedule is deliberately stated in `canonical()` rather than here, so
+    /// this preset is one number and a reader can see that it is.
+    pub fn fractal() -> Self {
+        Self { amplitude: FRACTAL_AMPLITUDE, ..Self::canonical() }
+    }
+}
+
+/// `CoastParams::fractal()`'s amplitude, named so the survey binary and the preset cannot
+/// drift apart. Swept, not chosen -- see `fractal()`.
+pub const FRACTAL_AMPLITUDE: f64 = 0.35;
+
+/// The coastal window: one at the shore, zero at and beyond the far edge of the band, a
+/// smoothstep between.
+///
+/// `reach_fraction` is `|above_shore| / (window_spreads * spread)`.
+///
+/// **Written as explicit branches, and that is not a style preference.** `f64::min`,
+/// `f64::max` and `.clamp` are NaN-asymmetric and this repository's own guard does not
+/// catch them; a window function is a clamp waiting to be written. The branch order here
+/// makes the NaN case a decision rather than an accident: NaN satisfies none of the three
+/// comparisons, so it falls to the final arm and the window closes. A NaN that reached the
+/// noise multiply instead would put a NaN into `above_shore` and from there into every
+/// elevation on the world.
+pub fn coast_window(reach_fraction: f64) -> f64 {
+    if reach_fraction > 0.0 && reach_fraction < 1.0 {
+        // The same smoothstep `detail.rs::smooth` applies, on `1 - x`, and pinned against
+        // it by `the_window_is_the_house_smoothstep` below rather than merely resembling it.
+        let x = 1.0 - reach_fraction;
+        x * x * (3.0 - 2.0 * x)
+    } else if reach_fraction <= 0.0 {
+        // At the shore, and on the negative side a caller cannot reach through `abs`.
+        1.0
+    } else {
+        // `reach_fraction >= 1.0`, and NaN -- outside the band, or unanswerable.
+        0.0
+    }
+}
+
 /// Which way continentality increases, here, and how sharply. Change per metre.
 #[derive(Debug, Clone, Copy)]
 pub struct Gradient {
@@ -67,6 +212,15 @@ pub struct Continentality {
     noise: Noise,
     shore: f64,
     spread: f64,
+    /// The opt-in coastal roughening block. `None` is canonical and is what every existing
+    /// caller gets; see `CoastParams`.
+    coast: Option<CoastParams>,
+    /// The lattice the coastal term draws from, salted with `COAST_NOISE_SALT`. Built
+    /// unconditionally -- `Noise::new` is a hash of two integers and stores nothing else
+    /// (see `surface.rs`: "empty at rest and empty forever") -- and **read only when
+    /// `coast` is `Some` with a non-zero amplitude**, so its existence cannot move a
+    /// canonical world. Pinned by `the_coast_lattice_is_not_read_on_the_canonical_path`.
+    coast_noise: Noise,
 }
 
 impl Continentality {
@@ -76,11 +230,45 @@ impl Continentality {
         self.world_seed
     }
 
+    /// The canonical field: exactly `worldbuilder/terrain/continentality.py`, no coastal
+    /// term. Delegates to `with_coast` with `None`.
+    ///
+    /// **Why this signature did not grow an eighth parameter.** `ReliefParams` and
+    /// `TectonicParams` each widened the constructor they attach to, and each had a handful
+    /// of call sites. `Continentality::new` has twenty-odd and `Surface::new` seventy;
+    /// widening both would put a mechanical `, None` at ninety sites in one commit whose
+    /// point is a coastline. The C ABI this crate already ships made the same call for the
+    /// same reason -- `wb_world_new`, `wb_world_new_relief` and `wb_world_new_tectonic` are
+    /// three entry points, not one widened three times -- so a delegating constructor is
+    /// the house form here rather than a fourth convention. What the pattern actually
+    /// requires is unchanged and is enforced below: the parameter is opt-in, `None` is
+    /// canonical, `canonical()` is inert, and `None` is bit-identical to
+    /// `Some(CoastParams::canonical())`.
     pub fn new(world_seed: u64, radius_m: f64, land_fraction: f64) -> Self {
+        Self::with_coast(world_seed, radius_m, land_fraction, None)
+    }
+
+    /// The same field, with an opt-in coastal roughening block.
+    ///
+    /// `coast`: `None` for today's coastline, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen `CoastParams`.
+    pub fn with_coast(
+        world_seed: u64,
+        radius_m: f64,
+        land_fraction: f64,
+        coast: Option<CoastParams>,
+    ) -> Self {
         // Calibration runs before the struct is built, so no partially-built value with
         // placeholder shore/spread can ever exist — mirroring the Python, where
         // `_calibrate()` runs inside `__init__` and there is no window to observe an
         // uncalibrated instance.
+        //
+        // **And `coast` is not one of its arguments, deliberately.** The window the coastal
+        // term is scaled by needs `shore` and `spread`, which calibration is what produces;
+        // feeding the perturbed field back into its own calibration would be circular. So
+        // the term is applied AFTER, in `above_shore`, and the calibration pair is
+        // identical on every path -- which is why `shore()` and `spread()`, both part of the
+        // conformance surface, cannot move no matter what a caller passes here.
         let noise = Noise::new(world_seed, NOISE_SALT);
         let (shore, spread) = Self::calibrate(&noise, land_fraction);
         Self {
@@ -90,6 +278,8 @@ impl Continentality {
             noise,
             shore,
             spread,
+            coast,
+            coast_noise: Noise::new(world_seed, COAST_NOISE_SALT),
         }
     }
 
@@ -144,8 +334,70 @@ impl Continentality {
 
     /// How far above the shoreline this point stands, in field units. Zero exactly at the
     /// coast, positive inland.
+    ///
+    /// **This is where the opt-in coastal term lives, and it is the only place it lives.**
+    /// `at` above stays the raw four-octave field: calibration reads it, `gradient` below
+    /// reads it, and `tectonics.rs` probes it inboard along a margin. Perturbing `at`
+    /// instead would push the roughening into all three, and into a calibration that
+    /// produced the very `shore` the perturbation is measured from.
+    ///
+    /// Everything that decides land from sea goes through this method or through
+    /// `base_elevation`, which calls it -- so the roughened boundary reaches `Shelf` and
+    /// `Surface` without either of them knowing this block exists.
     pub fn above_shore(&self, point: &SpherePoint) -> f64 {
-        self.at(point) - self.shore
+        let raw = self.at(point) - self.shore;
+        match self.coast {
+            None => raw,
+            // The zero-amplitude guard is an early return rather than a `+ 0.0`, and that
+            // is load-bearing: `-0.0 + 0.0` is `+0.0`, so adding an exactly-zero offset
+            // would flip the sign bit of a point sitting exactly on the calibrated shore
+            // and `Some(canonical())` would not be BIT-identical to `None`. Same shape as
+            // `detail.rs::offset_m`'s `amplitude_m <= 0.0` guard.
+            Some(params) if params.amplitude == 0.0 => raw,
+            Some(params) => raw + self.coast_offset(point, raw, &params),
+        }
+    }
+
+    /// The coastal term itself: a zero-mean fBm, scaled by `amplitude * spread`, windowed
+    /// by how far this point is from the calibrated shore.
+    ///
+    /// `raw_above` is the UNPERTURBED `above_shore`, and the window is a function of that
+    /// rather than of the answer -- the alternative is an implicit equation with no reason
+    /// to have a solution. It also keeps the window symmetric about the shore, which is the
+    /// property that holds land fraction: the perturbation is drawn from the same
+    /// distribution on both sides, so it moves the coast inland exactly as often as it
+    /// moves it seaward.
+    fn coast_offset(&self, point: &SpherePoint, raw_above: f64, params: &CoastParams) -> f64 {
+        let reach = self.spread * params.window_spreads;
+        // `spread` is a positive quantile difference by construction (`calibrate` falls
+        // back to 1e-6), but `window_spreads` is a caller's number. A non-positive or
+        // unanswerable reach closes the window rather than dividing by it.
+        let window = if reach > 0.0 { coast_window(raw_above.abs() / reach) } else { 0.0 };
+        if window > 0.0 {
+            let v = point.vector;
+            let field = self.coast_noise.fbm(
+                v.x,
+                v.y,
+                v.z,
+                params.frequency,
+                params.octaves,
+                params.gain,
+                params.lacunarity,
+            );
+            // `spread`, not `reach`: the amplitude is stated in the same unit
+            // `base_elevation` normalises by, so widening the window does not silently
+            // deepen the bays.
+            params.amplitude * self.spread * window * field
+        } else {
+            0.0
+        }
+    }
+
+    /// The coastal block this field was built with, if any. Exposed so a caller can see
+    /// what it asked for, and so the survey binary reports the configuration it measured
+    /// rather than the one it believes it passed.
+    pub fn coast(&self) -> Option<CoastParams> {
+        self.coast
     }
 
     /// Elevation relative to datum, before tectonics or detail.
@@ -222,6 +474,318 @@ mod tests {
         assert_eq!(CALIBRATION_SAMPLES, 4000);
         assert_eq!(GRADIENT_STEP_M.to_bits(), 20000.0f64.to_bits());
         assert_eq!(NOISE_SALT, 0x0C0FFEE);
+    }
+
+    // ---- Task 5: the opt-in coastal roughening block -----------------------------------
+
+    /// A fixed area-uniform spiral, the same construction `calibrate` uses, so every test
+    /// below has a population it can name rather than a handful of latitudes somebody liked.
+    fn spiral(count: usize) -> Vec<SpherePoint> {
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        let n = count as f64; // cast-ok: sample count to float, exact far below 2^53
+        (0..count)
+            .map(|index| {
+                let i = index as f64; // cast-ok: loop counter to float, exact far below 2^53
+                let z = 1.0 - 2.0 * (i + 0.5) / n;
+                let inner = 1.0 - z * z;
+                let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+                let angle = golden * i;
+                SpherePoint {
+                    vector: crate::vectors::Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z),
+                }
+            })
+            .collect()
+    }
+
+    /// Ruling 1's central claim at the point this task touches: adding `CoastParams` beside
+    /// the existing constructor must not perturb what `None` means, and `canonical()` must
+    /// be the inert value rather than merely a small one.
+    ///
+    /// **The last two assertions are what stop this passing vacuously.** A population where
+    /// nothing ever differs would satisfy the first loop under any implementation at all, so
+    /// the same population is re-measured under `fractal()` and required to differ at a
+    /// substantial number of points -- the field is demonstrably capable of moving, and it
+    /// did not move.
+    #[test]
+    fn coast_none_matches_coast_some_canonical_bit_for_bit() {
+        let none = Continentality::with_coast(20_260_905, EARTH_RADIUS_M, LAND_FRACTION, None);
+        let canonical = Continentality::with_coast(
+            20_260_905,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams::canonical()),
+        );
+        let fractal = Continentality::with_coast(
+            20_260_905,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams::fractal()),
+        );
+
+        let points = spiral(2000);
+        let mut moved = 0usize;
+        for (index, point) in points.iter().enumerate() {
+            assert_eq!(
+                none.above_shore(point).to_bits(),
+                canonical.above_shore(point).to_bits(),
+                "above_shore at spiral index {index}"
+            );
+            assert_eq!(
+                none.base_elevation(point).to_bits(),
+                canonical.base_elevation(point).to_bits(),
+                "base_elevation at spiral index {index}"
+            );
+            if none.above_shore(point).to_bits() != fractal.above_shore(point).to_bits() {
+                moved += 1;
+            }
+        }
+        assert!(
+            moved > 100,
+            "fractal() moved only {moved} of {} points -- this test cannot prove canonical() \
+             is inert if the mechanism it is inert AGAINST does nothing either",
+            points.len()
+        );
+        // And the shore itself is untouched on every path, because calibration never sees
+        // this block: `shore()` and `spread()` are part of the conformance surface.
+        assert_eq!(none.shore().to_bits(), fractal.shore().to_bits());
+        assert_eq!(none.spread().to_bits(), fractal.spread().to_bits());
+    }
+
+    /// The window is the same smoothstep the rest of the engine uses, on `1 - x`. Asserted
+    /// against `detail::smooth` by bits rather than described as resembling it, so a later
+    /// edit to either one shows up here.
+    #[test]
+    fn the_window_is_the_house_smoothstep() {
+        let mut fraction = -0.5f64;
+        while fraction <= 1.5 {
+            assert_eq!(
+                coast_window(fraction).to_bits(),
+                crate::detail::smooth(1.0 - fraction).to_bits(),
+                "at reach fraction {fraction}"
+            );
+            fraction += 0.01;
+        }
+        assert_eq!(coast_window(0.0).to_bits(), 1.0f64.to_bits());
+        assert_eq!(coast_window(1.0).to_bits(), 0.0f64.to_bits());
+        // The branch order's stated purpose: an unanswerable reach fraction CLOSES the
+        // window rather than putting a NaN into every elevation on the world. `smooth` gets
+        // there by its clamp order; this gets there by an explicit final arm, and the two
+        // agreeing is the point of the loop above.
+        assert_eq!(coast_window(f64::NAN).to_bits(), 0.0f64.to_bits());
+    }
+
+    /// The claim the whole technique rests on: the term acts at the coast and nowhere else.
+    /// Deep interiors and abyssal plains must come back BIT-identical.
+    ///
+    /// Discriminated by its own last assertion: the same sweep counts points inside the band
+    /// that DID move, so "nothing moved anywhere" cannot pass this.
+    #[test]
+    fn the_coastal_term_acts_only_inside_its_own_window() {
+        let none = Continentality::with_coast(20_260_905, EARTH_RADIUS_M, LAND_FRACTION, None);
+        let fractal = Continentality::with_coast(
+            20_260_905,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams::fractal()),
+        );
+        let reach = none.spread() * CoastParams::fractal().window_spreads;
+        let ceiling = CoastParams::fractal().amplitude * none.spread();
+
+        let mut outside = 0usize;
+        let mut inside_moved = 0usize;
+        for point in spiral(4000).iter() {
+            let raw = none.above_shore(point);
+            let got = fractal.above_shore(point);
+            if raw.abs() >= reach {
+                outside += 1;
+                assert_eq!(
+                    got.to_bits(),
+                    raw.to_bits(),
+                    "a point {} spreads from the shore must be untouched",
+                    raw.abs() / none.spread()
+                );
+            } else {
+                if got.to_bits() != raw.to_bits() {
+                    inside_moved += 1;
+                }
+                // `fbm` returns [-1, 1] and the window returns [0, 1], so the offset can
+                // never exceed `amplitude * spread`. A term that escaped its own stated
+                // amplitude would be a different technique from the one measured.
+                assert!(
+                    (got - raw).abs() <= ceiling,
+                    "offset {} exceeds the stated ceiling {ceiling}",
+                    (got - raw).abs()
+                );
+            }
+        }
+        assert!(outside > 1000, "only {outside} of 4000 points lay outside the band");
+        assert!(
+            inside_moved > 100,
+            "only {inside_moved} points inside the band moved -- the window cannot be shown \
+             to be selective if the term does nothing anywhere"
+        );
+    }
+
+    /// **The claim the brief said to measure rather than believe.** A window symmetric about
+    /// the shore, applied to a zero-mean field, moves the coast inland exactly as often as it
+    /// moves it seaward, so land fraction is preserved to first order without recalibration.
+    ///
+    /// Population: a 20,000-point area-uniform spiral -- 1 sigma binomial standard error at
+    /// `p = 0.29` is `sqrt(0.29*0.71/20000) = 0.32 pp`. The bound below is 1.0 pp, about
+    /// three sigma of that estimator, and the survey binary measures the same quantity at
+    /// 200,000 points (+-0.10 pp) on three worlds where the largest movement seen was
+    /// +0.146 pp. This is the cheap version of that check, kept in the suite so a later edit
+    /// that breaks the symmetry cannot reach a commit.
+    ///
+    /// **Discriminated, and this is the assertion that matters**: the same loop counts the
+    /// points whose CLASSIFICATION flipped. A term that did nothing would hold land fraction
+    /// perfectly and prove nothing, so the flips are required to be numerous.
+    #[test]
+    fn the_coastal_term_holds_land_fraction_while_moving_the_coast() {
+        let none = Continentality::with_coast(20_260_905, EARTH_RADIUS_M, LAND_FRACTION, None);
+        let fractal = Continentality::with_coast(
+            20_260_905,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams::fractal()),
+        );
+        let points = spiral(20_000);
+        let mut land_off = 0usize;
+        let mut land_on = 0usize;
+        let mut to_land = 0usize;
+        let mut to_sea = 0usize;
+        for point in points.iter() {
+            let was = none.above_shore(point) > 0.0;
+            let now = fractal.above_shore(point) > 0.0;
+            if was {
+                land_off += 1;
+            }
+            if now {
+                land_on += 1;
+            }
+            if !was && now {
+                to_land += 1;
+            }
+            if was && !now {
+                to_sea += 1;
+            }
+        }
+        let total = points.len() as f64; // cast-ok: count to float, exact far below 2^53
+        let off = land_off as f64; // cast-ok: count to float, exact far below 2^53
+        let on = land_on as f64; // cast-ok: count to float, exact far below 2^53
+        let shift_pp = (on - off) / total * 100.0;
+        assert!(
+            shift_pp.abs() < 1.0,
+            "land fraction moved {shift_pp} pp ({land_off} -> {land_on} of {}) -- the window \
+             is no longer symmetric about the shore",
+            points.len()
+        );
+        assert!(
+            to_land > 50 && to_sea > 50,
+            "the coast moved seaward at {to_sea} points and inland at {to_land} -- a term \
+             that moved nothing would hold land fraction perfectly and mean nothing"
+        );
+    }
+
+    /// The sibling of `the_recorded_seed_is_not_read_by_this_module`, for the second lattice:
+    /// a canonical world must not draw from `coast_noise` at all. The field is private, so
+    /// this child module is the only place that can nudge it after construction and watch the
+    /// outputs not move.
+    #[test]
+    fn the_coast_lattice_is_not_read_on_the_canonical_path() {
+        let canonical = Continentality::new(20_260_905, EARTH_RADIUS_M, LAND_FRACTION);
+        let mut nudged = canonical;
+        nudged.coast_noise = Noise::new(99, 99);
+
+        let points = spiral(400);
+        for (index, point) in points.iter().enumerate() {
+            assert_eq!(
+                canonical.above_shore(point).to_bits(),
+                nudged.above_shore(point).to_bits(),
+                "above_shore at spiral index {index}"
+            );
+        }
+
+        // And the nudge is real: the SAME nudge on a world that HAS opted in does move the
+        // answer, so this passes because the canonical path never reads the lattice, not
+        // because replacing a lattice is inert.
+        let opted_in = Continentality::with_coast(
+            20_260_905,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams::fractal()),
+        );
+        let mut opted_in_nudged = opted_in;
+        opted_in_nudged.coast_noise = Noise::new(99, 99);
+        let moved = points
+            .iter()
+            .filter(|p| opted_in.above_shore(p).to_bits() != opted_in_nudged.above_shore(p).to_bits())
+            .count();
+        assert!(moved > 10, "the nudge moved only {moved} points on an opted-in world");
+    }
+
+    /// The trap the constraints name by name: a window function is a clamp waiting to be
+    /// written, and a clamp is NaN-asymmetric. A caller's `window_spreads` is the one field
+    /// that reaches a division, so every degenerate value of it must close the window rather
+    /// than poison the world.
+    #[test]
+    fn a_degenerate_window_width_closes_the_window_instead_of_poisoning_the_field() {
+        let none = Continentality::with_coast(20_260_905, EARTH_RADIUS_M, LAND_FRACTION, None);
+        let points = spiral(200);
+        for width in [0.0, -1.0, f64::NAN] {
+            let odd = Continentality::with_coast(
+                20_260_905,
+                EARTH_RADIUS_M,
+                LAND_FRACTION,
+                Some(CoastParams { window_spreads: width, ..CoastParams::fractal() }),
+            );
+            for point in points.iter() {
+                let got = odd.above_shore(point);
+                assert!(got.is_finite(), "above_shore was {got} at window_spreads {width}");
+                assert_eq!(
+                    got.to_bits(),
+                    none.above_shore(point).to_bits(),
+                    "a window of width {width} must be closed, not merely finite"
+                );
+            }
+        }
+        // An infinite width is NOT degenerate -- it is a window that never closes -- so it
+        // must be admitted rather than swept into the branch above. Stated here so the
+        // assertion above cannot quietly grow to cover it.
+        let endless = Continentality::with_coast(
+            20_260_905,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams { window_spreads: f64::INFINITY, ..CoastParams::fractal() }),
+        );
+        let moved = points
+            .iter()
+            .filter(|p| endless.above_shore(p).to_bits() != none.above_shore(p).to_bits())
+            .count();
+        assert!(moved > 100, "an endless window moved only {moved} of 200 points");
+    }
+
+    /// `fractal()` must not be `canonical()` with the serial numbers filed off: exactly one
+    /// field moves, and it is the amplitude.
+    #[test]
+    fn fractal_only_moves_the_amplitude() {
+        let fractal = CoastParams::fractal();
+        let canonical = CoastParams::canonical();
+        assert_eq!(fractal.window_spreads, canonical.window_spreads);
+        assert_eq!(fractal.frequency, canonical.frequency);
+        assert_eq!(fractal.octaves, canonical.octaves);
+        assert_eq!(fractal.gain, canonical.gain);
+        assert_eq!(fractal.lacunarity, canonical.lacunarity);
+        assert_eq!(canonical.amplitude.to_bits(), 0.0f64.to_bits());
+        assert_eq!(fractal.amplitude.to_bits(), FRACTAL_AMPLITUDE.to_bits());
+        assert!(fractal.amplitude > 0.0);
+        // The salt must differ from the field it perturbs and from `detail.rs`'s, or the
+        // wobble correlates with the thing deciding where the coast is.
+        assert_ne!(COAST_NOISE_SALT, NOISE_SALT);
+        assert_ne!(COAST_NOISE_SALT, 0x5EABED);
+        // The term must start above the base field's own finest octave, or it is not the
+        // band the four-octave field is missing: BASE_FREQUENCY * lacunarity^(OCTAVES-1).
+        assert!(fractal.frequency > BASE_FREQUENCY * 8.0);
     }
 
     #[test]
