@@ -263,10 +263,13 @@ test("every quantiled band is occupied on the owner's world, at the width it was
       `moisture band ${i}: ${(share * 100).toFixed(1)}% vs the ${(expected[i] * 100).toFixed(1)}% it was given`,
     );
   });
-  LANDFORM_QUANTILES.forEach((q, i) => void q && void i);
+  // Landform against the quantiles it was given, read from the constant rather than
+  // restated: 25% coastal and the top 15% montane.
   const landformShare = scan.landform.map((c) => c / scan.land);
-  assert.ok(Math.abs(landformShare[0] - 0.25) < 0.04, `coastal ${landformShare[0].toFixed(3)}`);
-  assert.ok(Math.abs(landformShare[2] - 0.15) < 0.04, `montane ${landformShare[2].toFixed(3)}`);
+  assert.ok(Math.abs(landformShare[0] - LANDFORM_QUANTILES[0]) < 0.04,
+    `coastal ${landformShare[0].toFixed(3)} vs the ${LANDFORM_QUANTILES[0]} quantile it was cut at`);
+  assert.ok(Math.abs(landformShare[2] - (1 - LANDFORM_QUANTILES[1])) < 0.04,
+    `montane ${landformShare[2].toFixed(3)} vs the ${(1 - LANDFORM_QUANTILES[1]).toFixed(2)} it was cut at`);
   // Every temperature band too -- absolute, so this is a fact about the world rather than
   // about the calibration, and the world's span is what makes it true.
   scan.temp.forEach((c, i) => assert.ok(c > 0, `temperature band ${i} is empty on the owner's world`));
