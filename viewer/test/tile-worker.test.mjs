@@ -124,6 +124,30 @@ test("the relief branch is REACHED, and answers with a raster of the requested s
   );
 });
 
+test("the relief reply carries the lake counts the main thread cannot recompute", async () => {
+  // **The counter has to cross the wire or it does not exist.** The provider accumulates
+  // `stats.lakeTexels` from this reply; a worker that drew the lakes and did not report them
+  // would render a perfectly correct globe and tell the check that nothing was drawn -- which is
+  // exactly the "byte-identity proves the picture, never the path" failure, arrived at from the
+  // other side. The synthetic body floods the tile so the count cannot be zero by accident.
+  const flood = [{
+    rootNode: 1, kind: 0, levelM: 10000,
+    minLatitudeDeg: -90, maxLatitudeDeg: 90, minLongitudeDeg: -180, maxLongitudeDeg: 180,
+  }];
+  const base = { rectangle: RECTANGLE, level: 2, size: 24, radiusM: DEFAULT_WORLD.radiusM };
+  const dry = await send({ type: "relief", id: 21, request: base });
+  assert.equal(dry.message.lakeTexels, 0, "water was drawn with no manifest in the request");
+  assert.equal(dry.message.lakeTiles, 0);
+  const wet = await send({ type: "relief", id: 22, request: { ...base, lakes: flood } });
+  assert.equal(wet.message.lakeTiles, 1, "the body was not even considered for this tile");
+  assert.ok(
+    wet.message.lakeTexels > 0,
+    "the reply reports no lake texels for a body covering the whole planet",
+  );
+  // ...and the pixels moved too, so the count is not a number invented beside an unchanged raster.
+  assert.notDeepEqual(Array.from(wet.message.data), Array.from(dry.message.data));
+});
+
 test("the raster's buffer is TRANSFERRED, not copied", async () => {
   // 256 x 256 x 4 = 262,144 bytes per tile, and an orbital view asks for 26 to 79 of them.
   // Omitting the transfer list is invisible -- same pixels, same code path -- and costs a

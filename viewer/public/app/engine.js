@@ -36,6 +36,10 @@ export const WB_ERR_BUFFER = 2;
 export const WB_ERR_GRID = 3;
 export const WB_ERR_SUBSTRATE = 4;
 export const WB_ERR_PARAM = 5;
+/// `wasm.rs`'s sixth status, and it was missing from this table until the water manifest
+/// needed it. `wb_water_run` is the first export the viewer calls that can return it, and an
+/// unnamed status prints as a bare `6` in the one message that has to say what went wrong.
+export const WB_ERR_GRAPH = 6;
 
 const STATUS_NAMES = {
   0: "WB_OK",
@@ -44,6 +48,7 @@ const STATUS_NAMES = {
   3: "WB_ERR_GRID",
   4: "WB_ERR_SUBSTRATE",
   5: "WB_ERR_PARAM",
+  6: "WB_ERR_GRAPH",
 };
 
 /// Feature record codes, mirrored from `wasm.rs`. A record is eight f64.
@@ -55,6 +60,24 @@ export const SUBSTRATE = { derive: 0, sand: 1, mud: 2, rock: 3 };
 /// truth (the engine's `None`). `-1` is the spelling used here so it is obviously deliberate
 /// rather than an uninitialised variable that happened to be zero.
 export const CANONICAL_RESOLUTION = -1;
+
+/// f64 per body row `wb_water_run` writes, and the field order is the ABI. Mirrored from
+/// `WB_WATER_BODY_STRIDE`; `waterRun` below is the only place the order is spelled out, for
+/// the same reason `RELIEF_STRIDE` is imported rather than restated -- there is no type error
+/// for a latitude written into the level slot.
+export const WB_WATER_BODY_STRIDE = 7;
+
+/// `kind` codes in a body row. **The viewer reads neither**: it draws every body at its own
+/// level, and `pond` is a label this mesh never produces (see `waterRun`). They are named so
+/// a diagnostic can print a word, and so the fact that only one is reachable is stated where
+/// somebody would otherwise reintroduce a branch for the other.
+export const WB_BODY_KIND = { lake: 0, pond: 1 };
+
+/// The export's own ceiling on `node_count`, mirrored so a slider's travel can be bounded by
+/// it rather than by a guess. Chosen in `wasm.rs` **below** the erosion ceiling for a memory
+/// reason: the water path holds three neighbour structures at once and wasm32's linear memory
+/// is far smaller than the native heap that ceiling would otherwise be sized against.
+export const WB_MAX_WATER_NODES = 100000;
 
 export class Engine {
   constructor(instance) {
@@ -88,7 +111,7 @@ export class Engine {
       "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check",
       "wb_world_new_coast", "wb_coast_preset", "wb_coast_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
-      "wb_fill_tile_f32",
+      "wb_fill_tile_f32", "wb_water_run",
     ]) {
       if (typeof engine.exports[name] !== "function") {
         throw new Error(`engine wasm is missing export ${name}`);
@@ -377,6 +400,111 @@ export class Engine {
       return new Float32Array(this.memory.buffer, ptr, samples).slice();
     } finally {
       this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Resolve one world's water and hand back the **shipped** water manifest.
+  ///
+  /// This is slice 5b's whole output, read through the door it built: fill, overflow
+  /// resolution, the tied-plateau merge and classification, run over a stream graph sampled
+  /// from this world's own surface. It is not a step of that path and it is not a second
+  /// implementation of it -- `wb_water_run` dumps `water_manifest_from_graph`'s result, which
+  /// is the same object the parity corpus compares native against wasm.
+  ///
+  /// # One call, over-allocated, and the measurement that decided it
+  ///
+  /// `wb_water_run` is **all-or-nothing**: a short `out_bodies` is `WB_ERR_BUFFER` with
+  /// nothing written anywhere. Its doc offers two ways to avoid that -- a count-only query
+  /// (null pointer, `out_len == 0`) followed by a sized second call, or a single call sized
+  /// at `node_count * WB_WATER_BODY_STRIDE`, "which is always sufficient: no body holds fewer
+  /// than one node".
+  ///
+  /// **The count-only query costs a whole second resolution, and it was measured rather than
+  /// assumed.** The owner's world (seed 562423712, radius 4,500,000 m, 28 plates, land 0.16,
+  /// the `ranges` tectonic preset), node 22.17.0, this repository's checked-in
+  /// `worldbuilder_engine.wasm`: one call at `node_count = 30,000` takes **4.21 s**; the
+  /// two-call shape takes **8.36 s and 8.37 s** on two repeats, i.e. exactly twice. The
+  /// export does no caching between calls -- it re-samples the nodes, re-asks the surface for
+  /// 30,000 elevations and rebuilds the neighbour relation every time.
+  ///
+  /// The over-allocation it buys back is **1.68 MB** of transient linear memory
+  /// (`30,000 * 7 * 8` bytes) to receive 55 bodies' worth of rows. Four seconds of a
+  /// blocking boot against 1.7 MB freed immediately afterwards is not a close call.
+  ///
+  /// # Domains, restated here only as the messages a refusal produces
+  ///
+  /// Every bound below is the engine's and is checked *by* the engine; nothing here
+  /// re-derives one. `nodeCount` is `2..=100_000`, `seaLevelM` finite and within the world's
+  /// radius, `pondMaxSurfaceAreaM2` finite and `>= 0`.
+  ///
+  /// **`pondMaxSurfaceAreaM2` defaults to 0 and that is deliberate.** The engine calibrated
+  /// it at `1.0e5` m^2 and then measured that the smallest body this mesh produces is
+  /// `7.9e8` m^2 -- four orders larger -- so **no body is ever a pond at any resolution this
+  /// project bakes at**. The threshold's only effect is `kind`, which this viewer does not
+  /// read: it draws every body at its own level whatever the label. Passing 0 says that in
+  /// the parameter rather than restating an engine number the engine does not export, which
+  /// is this viewer's characteristic defect (a second copy of a number) in the shape it keeps
+  /// taking. There is no `wb_water_preset`, and that gap is reported rather than papered over
+  /// with a literal.
+  ///
+  /// Returns `{ seaLevelM, bodies }`, where each body is
+  /// `{ rootNode, kind, levelM, minLatitudeDeg, maxLatitudeDeg, minLongitudeDeg,
+  /// maxLongitudeDeg }` in `WB_WATER_BODY_STRIDE`'s documented order. Rows arrive ascending
+  /// by `rootNode` and are not re-sorted here: the engine says that order is the contract, so
+  /// a caller comparing two runs row by row is comparing the same body on both sides.
+  ///
+  /// **`minLongitudeDeg` may exceed `maxLongitudeDeg`.** That is not corruption: `Extent`
+  /// normalises to the smallest enclosing arc on the circle, and an arc crossing the
+  /// antimeridian is expressed by the pair being out of order. `water.js::bodyContains` is
+  /// the one place that branch is written.
+  waterRun({ handle, nodeCount, seaLevelM = 0, pondMaxSurfaceAreaM2 = 0 }) {
+    const words = nodeCount * WB_WATER_BODY_STRIDE;
+    const bodyBytes = words * 8;
+    const scalarBytes = 16; // one 8-aligned block: the u32 count at +0, the f64 datum at +8
+    const scalarPtr = this.exports.wb_alloc(scalarBytes);
+    if (scalarPtr === 0) throw new Error("wb_alloc refused the water scalar buffer");
+    let bodyPtr = 0;
+    try {
+      bodyPtr = this.exports.wb_alloc(bodyBytes);
+      if (bodyPtr === 0) {
+        throw new Error(`wb_alloc refused ${bodyBytes} bytes for up to ${nodeCount} bodies`);
+      }
+      const status = this.exports.wb_water_run(
+        handle, nodeCount, seaLevelM, pondMaxSurfaceAreaM2,
+        bodyPtr, words, scalarPtr, scalarPtr + 8,
+      ) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(
+          `wb_water_run returned ${statusName(status)} for nodeCount=${nodeCount} ` +
+          `seaLevel=${seaLevelM} pondMax=${pondMaxSurfaceAreaM2}`,
+        );
+      }
+      // Views after the allocation, read immediately, never cached -- the module doc's rule 1.
+      const bodyCount = new Uint32Array(this.memory.buffer, scalarPtr, 1)[0] >>> 0;
+      const seaLevelOut = new Float64Array(this.memory.buffer, scalarPtr + 8, 1)[0];
+      const bodies = [];
+      if (bodyCount > 0) {
+        const row = new Float64Array(this.memory.buffer, bodyPtr, bodyCount * WB_WATER_BODY_STRIDE);
+        for (let i = 0; i < bodyCount; i += 1) {
+          const o = i * WB_WATER_BODY_STRIDE;
+          bodies.push({
+            rootNode: row[o],
+            kind: row[o + 1],
+            levelM: row[o + 2],
+            minLatitudeDeg: row[o + 3],
+            maxLatitudeDeg: row[o + 4],
+            minLongitudeDeg: row[o + 5],
+            maxLongitudeDeg: row[o + 6],
+          });
+        }
+      }
+      // The datum is the ENGINE's echo, not the argument sent in. `wb_water_run` writes
+      // `WaterManifest::sea_level_m` back precisely so a host reads what the manifest was
+      // built at rather than assuming its own request survived.
+      return { seaLevelM: seaLevelOut, bodies };
+    } finally {
+      if (bodyPtr !== 0) this.exports.wb_dealloc(bodyPtr, bodyBytes);
+      this.exports.wb_dealloc(scalarPtr, scalarBytes);
     }
   }
 }

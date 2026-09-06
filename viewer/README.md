@@ -352,6 +352,7 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 ?relief=0 ?reliefSize= ?reliefMaxLevel=        the relief imagery layer
 ?biome=0                                       land colour off, back to the height ramp
 ?clouds= ?cloudSize= ?cloudMaxLevel=           the cloud layer -- see below
+?lakes=0 ?lakeNodes=                           the water manifest -- see below
 ?reliefPreset= ?mountainM= ?quietingStrength= ?octavePersistence=   the relief channel
 ?sse=                                          THE detail knob -- see below
 ?exaggeration= ?paint=0 ?rampMin= ?rampMax=    what it looks like
@@ -368,6 +369,44 @@ Every URL parameter, read from `main.js` and `boot.js` rather than remembered:
 
 `window.viewer` and `window.__viewerReady` are exposed for the trace harness and for the
 later tasks in this slice.
+
+### `?lakes=` -- the water manifest, drawn at last, and what it costs
+
+`wb_water_run` shipped in the artifact with slice 5b and nothing in the viewer called it. It does
+now: at boot, `main.js` resolves the whole shipped water path -- basin fill, overflow resolution,
+the tied-plateau merge, classification -- and `relief.js` draws every body as a **flat sheet at
+its own spill level**, coloured by the ocean's own twelve-stop table read at the depth below that
+level. A lake is shallow water and lands in the shelf and surf colours; it is not a fourth colour
+system.
+
+**The sea is not in the manifest and must not be added back.** Slice 5b's Ruling 6: the spec
+defines a mapping of *named* waters and a fallback for the unnamed, and the sea is the mapping's
+miss. The datum is carried once, in `sea_level_m`, and `main.js` echoes back the engine's value
+rather than assuming its own request survived.
+
+**`?lakeNodes=` decides how many lakes exist**, because the bodies are basins of a stream graph:
+the owner's world resolves **55 bodies at 30,000 nodes and 351 at 100,000**. It is also the most
+expensive setting in this viewer. Measured on the owner's world, node 22, this repository's
+checked-in wasm, one call each:
+
+| `?lakeNodes=` | bodies | drawable | wall clock |
+| --- | --- | --- | --- |
+| 8,000 | 11 | | 0.98 s |
+| 15,000 | 22 | | 2.05 s |
+| **30,000 (the default)** | **55** | **17** | **4.21 s** |
+| 60,000 | 164 | | 9.32 s |
+
+It is paid **synchronously, at boot**, and deliberately: Cesium caches the texture it is handed,
+so a manifest that arrived after the first tiles would leave permanently lake-free tiles wherever
+the camera looked first. `?lakes=0` skips the resolution entirely -- not resolved and ignored --
+so it restores both the previous picture and the previous boot time.
+
+**"Drawable" is smaller than "bodies", and that is a finding rather than a filter.** A body
+arrives as a surface level and a **bounding box**, and a single-node body's box is a *point*: 38
+of the owner's 55 bodies at 30,000 nodes, and 60 of `DEFAULT_WORLD`'s 156. No texel centre lands
+on a point, so those bodies cannot be drawn at all. The manifest exports no footprint, no radius,
+and no way to turn `rootNode` into a position, so there is nothing here to draw them with. The
+count is in the status line and on `window.__wb.water.facts` rather than hidden.
 
 ### `?clouds=` -- the coverage IS the slider, and it was calibrated rather than guessed
 

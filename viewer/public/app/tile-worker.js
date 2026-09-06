@@ -103,7 +103,12 @@ function fill(message) {
 /// nothing in another. A request that carried one would be reading someone else's world.
 function relief(message) {
   const started = performance.now();
-  const imageData = reliefTile({ ...message.request, engine, worldHandle: world });
+  // **The lake counter crosses the wire with the pixels.** A worker that received an empty
+  // manifest draws exactly the same bytes as one that received a full manifest for a tile with
+  // no water in it, so the picture cannot distinguish the two; this count can. The main thread
+  // accumulates it into the provider's stats, where a check reads it.
+  const counters = { lakeTexels: 0, lakeTiles: 0 };
+  const imageData = reliefTile({ ...message.request, engine, worldHandle: world, counters });
   const fillMs = performance.now() - started;
   return {
     message: {
@@ -111,6 +116,8 @@ function relief(message) {
       id: message.id,
       index,
       fillMs,
+      lakeTexels: counters.lakeTexels,
+      lakeTiles: counters.lakeTiles,
       data: imageData.data,
       width: imageData.width,
       height: imageData.height,

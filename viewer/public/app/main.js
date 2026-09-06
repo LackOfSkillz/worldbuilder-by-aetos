@@ -24,6 +24,9 @@ import {
   cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider,
 } from "./cloud-provider.js";
 import { CLOUD_MAX_LEVEL, CLOUD_TILE_SIZE } from "./clouds.js";
+import {
+  waterDiagnostics, waterEnabled, waterNodeCountFromParams,
+} from "./water.js";
 import { createTerrainProvider, FAULTS, HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { TileCache, TilePool, DEFAULT_WORKERS, DEFAULT_CACHE_TILES } from "./pool.js";
 import { createAvailability, FEATURE_CEILING } from "./availability.js";
@@ -217,6 +220,49 @@ async function boot() {
   // `?relief=0` turns it off. That branch, and the `paint` default below, are the only two
   // things this block changes about the page, and with `relief=0` both land on exactly the
   // code that ran before it existed.
+  // The water manifest -- **slice 5b, drawn at last.**
+  //
+  // `wb_water_run` has shipped in the artifact since that slice and nothing called it. This is
+  // the call. It runs the whole shipped water path over a stream graph sampled from this
+  // world's own surface -- basin fill, overflow resolution, the tied-plateau merge,
+  // classification -- and hands back the manifest: one row per body, carrying a **surface
+  // level** and a bounding box. `relief.js` draws each body as a flat sheet at its own level,
+  // in the ocean's own colour table read at the depth below that level.
+  //
+  // **The sea is deliberately not in it.** Slice 5b's Ruling 6: §13.2 defines a mapping of
+  // *named* waters and a fallback for the unnamed, and the sea is the mapping's miss rather
+  // than a row in it -- the datum is carried once, in `sea_level_m`, which is echoed back here
+  // rather than assumed. Ocean bodies were measured to be 86.1% of the manifest with 96.3% of
+  // their boxes overlapping another, so re-adding them would be re-adding the noise that
+  // removal deleted.
+  //
+  // # It is resolved SYNCHRONOUSLY, at boot, and that costs four seconds
+  //
+  // Measured on the owner's world through this repository's checked-in wasm: **4.21 s at
+  // 30,000 nodes**, 0.98 s at 8,000, 9.32 s at 60,000. That is a real cost and it is named in
+  // the status line rather than hidden.
+  //
+  // It is not moved into a worker, and the reason is correctness rather than effort. The
+  // manifest has to be complete *before* the first relief tile rasterises: Cesium caches the
+  // texture it is given, so any tile drawn while the manifest was still arriving would be a
+  // permanently lake-free tile in a world that has lakes, scattered wherever the camera
+  // happened to be looking first. That is the `stale-worker` fault shape arrived at by
+  // accident, and it would also make the screenshot digests a race. `?lakes=0` is the escape
+  // hatch and it skips the resolution entirely rather than resolving and discarding.
+  const lakesOn = waterEnabled(params);
+  const waterNodes = waterNodeCountFromParams(params);
+  const waterStarted = performance.now();
+  const water = lakesOn
+    ? engine.waterRun({ handle: world, nodeCount: waterNodes })
+    : { seaLevelM: null, bodies: [] };
+  const waterMs = performance.now() - waterStarted;
+  // What the manifest cannot say, counted rather than left to be rediscovered: bodies whose
+  // box is a single point (undrawable -- no footprint, no radius, and `rootNode` cannot be
+  // turned into a position by any export), boxes wider than half the planet (polar, not
+  // antimeridian -- see `water.js`), and pairs of boxes that overlap and therefore make
+  // `lakeLevelAt` choose.
+  const waterFacts = waterDiagnostics(water.bodies);
+
   const reliefOn = reliefLayerEnabled(params);
   let reliefProvider = null;
   if (reliefOn) {
@@ -228,6 +274,9 @@ async function boot() {
       // `undefined` means "calibrate this world's own band edges"; `null` is the height
       // ramp the layer drew before the land-colour work. See `biomeColourEnabled`.
       biome: biomeColourEnabled(params) ? undefined : null,
+      // The bodies, resolved above. `[]` under `?lakes=0`, which is the picture this task
+      // started from.
+      lakes: water.bodies,
       // Defaults to the *terrain's* cap, so imagery is never the thing that stops refining
       // first. Read from `maxLevel` above rather than restated, so `?maxLevel=` moves both.
       maximumLevel: number("reliefMaxLevel", maxLevel),
@@ -528,6 +577,19 @@ async function boot() {
         ? `${reliefProvider.tileWidth}px cap=${reliefProvider.maximumLevel} ${
           pool ? "workers" : "MAIN THREAD"}`
         : "off"} paint=${paint ? "ramp" : "off"} | ` +
+    // The water manifest, named with the numbers that decide what it can draw. A screenshot
+    // carries this line as its own caption, and "lakes=on" would say nothing: the body count
+    // depends entirely on the node count, and the DRAWABLE count is smaller than the body count
+    // because a single-node body's extent is a point. Both, plus the resolution's cost and the
+    // datum the engine echoed back, are here.
+    `lakes=${
+      lakesOn
+        ? `${waterFacts.drawable}/${waterFacts.bodies} drawable @${waterNodes} nodes ` +
+          `datum ${water.seaLevelM} m in ${(waterMs / 1000).toFixed(2)}s` +
+          `${waterFacts.wideBoxes > 0 ? ` WIDE=${waterFacts.wideBoxes}` : ""}` +
+          `${waterFacts.overlappingPairs > 0 ? ` overlap=${waterFacts.overlappingPairs}` : ""}` +
+          `${reliefOn ? "" : " (NOT DRAWN: relief layer off)"}`
+        : "off"} | ` +
     // The cloud layer, named with the number that decides its look. A screenshot carries this
     // line as its own caption, and "clouds=on" would say nothing about a layer whose entire
     // control is one coverage figure -- so the REQUESTED coverage and the threshold the
@@ -560,6 +622,21 @@ async function boot() {
     /// `null` under `?relief=0`. Its `worldbuilder.stats` is the per-tile cost this task
     /// reports and Task 4's worker move is measured against.
     reliefProvider,
+    /// **The water manifest as the engine handed it over**, plus what it cannot say.
+    ///
+    /// `bodies` is `wb_water_run`'s own rows, unsorted and unfiltered -- ascending by
+    /// `rootNode`, which the export documents as the contract -- so a driver picks a body BY
+    /// ITS ID out of this list and asserts the drawn surface against that body's own level and
+    /// box, rather than resolving a second manifest and comparing two guesses. `seaLevelM` is
+    /// the datum the engine echoed back, not the one this file asked for.
+    ///
+    /// `facts` is `waterDiagnostics`: the counts of what the box representation cannot express.
+    /// `ms` is what the resolution cost, so a report quotes the measurement rather than an
+    /// estimate.
+    water: {
+      enabled: lakesOn, nodeCount: waterNodes, ms: waterMs,
+      seaLevelM: water.seaLevelM, bodies: water.bodies, facts: waterFacts,
+    },
     /// `null` under `?clouds=0` and under any configuration where the ramp material would cover
     /// it. Its `worldbuilder.clouds` is the calibration the layer is drawing with -- read rather
     /// than recalibrated, so a check cannot arrive at a different threshold and compare against

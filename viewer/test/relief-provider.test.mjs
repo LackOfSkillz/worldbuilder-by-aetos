@@ -300,13 +300,19 @@ function fakePool({ fillMs = 190, reject = null } = {}) {
     relief(request) {
       this.requests.push(request);
       if (reject) return Promise.reject(reject);
-      const imageData = reliefTile({ ...request, engine, worldHandle: world });
+      // **The fake must reply with the same fields the real worker replies with.** `relief` in
+      // `tile-worker.js` hands `reliefTile` a counters object and puts the two lake counts in the
+      // message; a fake that omitted them would let a provider that never accumulates them pass.
+      const counters = { lakeTexels: 0, lakeTiles: 0 };
+      const imageData = reliefTile({ ...request, engine, worldHandle: world, counters });
       return Promise.resolve({
         data: imageData.data,
         width: imageData.width,
         height: imageData.height,
         fillMs,
         worker: 2,
+        lakeTexels: counters.lakeTexels,
+        lakeTiles: counters.lakeTiles,
       });
     },
   };
@@ -408,4 +414,60 @@ test("a rejected pool job REJECTS requestImage rather than throwing into the ren
   let result;
   assert.doesNotThrow(() => { result = provider.requestImage(0, 0, 2); });
   await assert.rejects(result, /out of memory/);
+});
+
+// ---------------------------------------------------------------------------------------
+// The water manifest, as far as this file is responsible for it.
+//
+// The manifest's CONTENT and the picture it produces are `water.test.mjs`'s subject; what is
+// asserted here is the PLUMBING, with a synthetic body rather than a four-second resolution: that
+// the bodies reach `relief.js` on both the synchronous and the pool path, that they cross the
+// worker boundary inside the request, and that the two counters come back and accumulate.
+
+/// One body covering the whole planet at a level no land on `DEFAULT_WORLD` reaches (its highest
+/// point is 1,979 m). Synthetic on purpose: this makes every land texel a lake texel, so the
+/// counter has a value that can be compared against the raster instead of a value that happens to
+/// be small.
+const FLOOD = [{
+  rootNode: 1, kind: 0, levelM: 10000,
+  minLatitudeDeg: -90, maxLatitudeDeg: 90, minLongitudeDeg: -180, maxLongitudeDeg: 180,
+}];
+
+test("the bodies reach the raster on the synchronous path, and the counters come back", async () => {
+  const dry = makeProvider({ tileSize: 32 });
+  await dry.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.equal(dry.worldbuilder.stats.lakeTexels, 0, "no manifest, and yet water was drawn");
+  assert.equal(dry.worldbuilder.stats.lakeTiles, 0);
+  assert.deepEqual(dry.worldbuilder.lakes, [], "the default must be the pre-water picture");
+
+  const wet = makeProvider({ tileSize: 32, lakes: FLOOD });
+  const image = await wet.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.equal(wet.worldbuilder.lakes, FLOOD, "a check must read the list the provider draws with");
+  assert.equal(wet.worldbuilder.stats.lakeTiles, 1);
+  assert.ok(
+    wet.worldbuilder.stats.lakeTexels > 0,
+    "a body covering the planet drew no water; the manifest never reached relief.js",
+  );
+  // ...and the picture moved with it, because a counter alone proves only that something counted.
+  const dryImage = await dry.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.notDeepEqual(Array.from(image.data), Array.from(dryImage.data));
+});
+
+test("the bodies cross the worker boundary inside the request, and the counts come back with the pixels", async () => {
+  // A handle cannot cross (it indexes another instance's memory) and neither can an `Engine`; the
+  // bodies are plain objects and DO cross, which is what lets the manifest be resolved once on the
+  // main thread rather than eight times in the workers.
+  const pool = fakePool({ fillMs: 190 });
+  const provider = makeProvider({ pool, tileSize: 32, lakes: FLOOD });
+  await provider.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.equal(pool.requests.length, 1);
+  assert.deepEqual(pool.requests[0].lakes, FLOOD, "the request carried no bodies");
+  assert.equal(pool.requests[0].engine, undefined, "an Engine is not structured-cloneable");
+  assert.equal(pool.requests[0].worldHandle, undefined, "a handle means nothing in another instance");
+  assert.equal(provider.worldbuilder.stats.lakeTiles, 1);
+  assert.ok(
+    provider.worldbuilder.stats.lakeTexels > 0,
+    "the worker's lake count did not reach the provider's stats",
+  );
+  assert.equal(provider.worldbuilder.stats.mainThreadRasters, 0, "this must be the pool path");
 });

@@ -141,10 +141,35 @@
 // **The rock and snow blends were not moved and were not duplicated.** They act on whatever
 // base colour arrives, biome or ramp; `biome.js` deliberately contains no second elevation
 // system, only a `montane` band feeding the base the blends then modify.
+//
+// # Lakes join the OCEAN's colour system, and do not become a fourth one
+//
+// `wb_water_run` hands back a body's **surface level**, and a lake surface is flat at that
+// level -- that is the whole of what slice 5b computed. So a lake texel is drawn by the two
+// rules the sea is already drawn by, evaluated at its own datum instead of at the planet's:
+//
+// - **Colour** is `OCEAN_BANDS` read at `heightM - levelM`, the depth below *that* lake's
+//   surface, with the same `coastDitherM` scattering its shore that the sea's gets. A lake is
+//   shallow water, so it lands in the pale end of the twelve stops the ocean retune placed
+//   against the measured depth distribution -- the shelf and surf colours -- which is where
+//   shallow water belongs. No new palette, no new blend, no fourth colour system.
+// - **Shading is switched off**, exactly as it is below the datum: `dot = sun.up`, the flat
+//   plane. That is not a saving, it is the point -- a lake surface is flat, and hillshading the
+//   drowned valley floor beneath it would put a ridge's shadow on standing water. It is the
+//   same reason, and the same one line, that stops seabed ridges reading as land.
+//
+// The land blends are skipped for the same reason they are skipped at sea: rock-on-a-steep-face
+// and a snowline are subaerial ideas.
+//
+// **The sea cannot move.** `lakeLevelAt` refuses any texel at or below the datum, so every
+// texel the ocean owned before this change is drawn by exactly the code that drew it before,
+// and `relief.test.mjs` asserts that byte-for-byte over a whole tile rather than asserting the
+// intent.
 
 import { biomeColor } from "./biome.js";
 import { OCEAN_STOPS } from "./panel-fields.js";
 import { metresPerDegree } from "./terrain.js";
+import { bodiesOverlappingRectangle, lakeLevelAt } from "./water.js";
 
 /// The cool-to-warm shading axis, applied as a multiplier on top of the shade fraction.
 ///
@@ -376,9 +401,27 @@ export function baseColor(heightM) {
 /// steep enough to read as bare rock is a face snow slides off. Together those two turn what
 /// would be a contour ring into a mottled cap that follows the terrain, which is what a
 /// photograph of a snowy range looks like.
+/// `lakeLevelM` is the surface level of the body covering this texel, from
+/// `water.js::lakeLevelAt`, or `null` for dry ground. It is a **level, not a flag**: the colour
+/// is read at the depth below that level, so two lakes at different levels are two different
+/// waters rather than one shade of "lake". `null` is byte-for-byte the pre-water function,
+/// which is what keeps every test written against the height-only baseline meaningful.
 export function slopeColor(
-  heightM, slopeDeg, latitudeDeg = 0, longitudeDeg = 0, calibration = null,
+  heightM, slopeDeg, latitudeDeg = 0, longitudeDeg = 0, calibration = null, lakeLevelM = null,
 ) {
+  // **A lake is the ocean's colour system read at the lake's own datum.** Same table, same
+  // dither, same clamp above the surf stop -- see the module doc. Placed before the land
+  // branch because a lake texel is water and must not reach the rock or snow blends.
+  //
+  // There is no branch here for a body of kind `pond`, and that is deliberate rather than an
+  // omission: the engine's calibrated threshold produces zero ponds at every resolution this
+  // project bakes at, so such a branch could not execute on this mesh. Dead code looks like a
+  // feature; a body is drawn at its level whatever its label.
+  if (lakeLevelM !== null && heightM > 0) {
+    return bandColor(
+      OCEAN_BANDS, (heightM - lakeLevelM) + coastDitherM(latitudeDeg, longitudeDeg),
+    );
+  }
   // **The land base colour is the only thing the biome layer replaces.** Water keeps
   // `OCEAN_BANDS` (no ocean retune in this task), and the rock and snow blends below act on
   // whatever the base is -- they are not duplicated over there. With `calibration` null this
@@ -465,6 +508,21 @@ export function reliefTile({
   /// once on the main thread and posts it with every tile request, rather than each worker
   /// spending its own 4,000 engine calls arriving at the same four numbers.
   biome = null,
+  /// The water manifest's bodies, from `engine.waterRun`, or an empty list for no lakes.
+  ///
+  /// Plain structured-cloneable objects for the same reason `biome` is: it is resolved **once**
+  /// on the main thread -- 4.2 s at 30,000 nodes -- and posted with every tile request, rather
+  /// than each of eight workers paying that again to arrive at the same 55 rows.
+  lakes = [],
+  /// An optional `{ lakeTexels, lakeTiles }` object this function INCREMENTS.
+  ///
+  /// **Byte-identity proves the picture, never the path.** This project has already had a
+  /// provider that ignored the worker pool pass a byte-identity test, because it drew the same
+  /// pixels, and only a counter caught it. A lake layer is worse in that respect than most: a
+  /// world with no bodies near the camera draws exactly the same bytes whether the manifest
+  /// reached this function or not. The counter is what separates "unchanged because there was
+  /// no water here" from "unchanged because the water never arrived".
+  counters = null,
 }) {
   if (!engine || typeof engine.fillTileF32 !== "function") {
     throw new Error("reliefTile: engine.fillTileF32 is required");
@@ -480,6 +538,14 @@ export function reliefTile({
 
   const { northDeg, westDeg } = rectangle;
   const data = new Uint8ClampedArray(size * size * 4);
+
+  // **One pass over the manifest per tile, not per texel.** 65,536 texels against 55 bodies
+  // would be 3.6 million box tests in a worker that already costs ~190 ms; almost every tile
+  // touches no body at all, so this filter turns the per-texel cost into a loop over an empty
+  // array. The list is captured once here because the tile's rectangle does not change.
+  const nearby = lakes.length > 0 ? bodiesOverlappingRectangle(lakes, rectangle) : lakes;
+  if (counters && nearby.length > 0) counters.lakeTiles = (counters.lakeTiles ?? 0) + 1;
+  let lakeTexels = 0;
 
   for (let row = 0; row < size; row += 1) {
     const g = row + 1; // this row's index in the (size+2) margined grid
@@ -519,14 +585,25 @@ export function reliefTile({
       // relief, and shading the seabed through it made ocean ridges read as land. `sun.up`
       // is exactly the dot product of the sun direction with a vertical normal, so this is
       // the same expression evaluated at zero slope rather than a second lighting model.
-      const dot = hHere <= 0 ? sun.up : nx * sun.east + ny * sun.north + nz * sun.up;
+      const lonDeg = westDeg + dLonStep * col;
+
+      // **The lake surface, and it is decided BEFORE the shading.** A lake is flat at its
+      // spill level, so it is lit as the flat plane the sea is lit as -- the same `sun.up`,
+      // the same one expression evaluated at zero slope, not a second lighting model.
+      // Hillshading the drowned valley floor under it would put a ridge's shadow on standing
+      // water, which is precisely the artefact the water branch below the datum exists to
+      // stop.
+      const lakeLevelM = nearby.length > 0 ? lakeLevelAt(nearby, latDeg, lonDeg, hHere) : null;
+      if (lakeLevelM !== null) lakeTexels += 1;
+
+      const flatWater = hHere <= 0 || lakeLevelM !== null;
+      const dot = flatWater ? sun.up : nx * sun.east + ny * sun.north + nz * sun.up;
       const shade = ambient + (1 - ambient) * Math.max(0, dot);
 
       const slopeRad = Math.atan(Math.sqrt(exEast * exEast + exNorth * exNorth));
       const slopeDeg = (slopeRad * 180) / Math.PI;
 
-      const lonDeg = westDeg + dLonStep * col;
-      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg, lonDeg, biome);
+      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg, lonDeg, biome, lakeLevelM);
 
       // **Shade is a COLOUR, not a brightness**, and this is the largest single change
       // between a relief map and a photograph.
@@ -553,6 +630,7 @@ export function reliefTile({
     }
   }
 
+  if (counters) counters.lakeTexels = (counters.lakeTexels ?? 0) + lakeTexels;
   return makeImageData(data, size);
 }
 

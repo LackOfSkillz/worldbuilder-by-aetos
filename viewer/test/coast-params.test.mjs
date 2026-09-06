@@ -338,10 +338,27 @@ test("the panel's not-wired list is honest about the two entries this task touch
   assert.match(controls, /coastline · rebuilds/);
   // **And the water entry was WRONG, not merely stale.** It said `no export yet`, which has been
   // false since slice 5b: `wb_water_run` ships in the committed artifact, as this test proves by
-  // asking the artifact rather than the comment. What is missing is a viewer that calls it.
+  // asking the artifact rather than the comment. What was missing was a viewer that calls it.
   assert.equal(typeof engine.exports.wb_water_run, "function");
   assert.ok(!list.includes("no export yet"), "the water entry still claims there is no export");
-  assert.ok(list.includes("wb_water_run"), "the water entry must name what actually ships");
+  // **The claim this line makes has been RAISED, not dropped.** It used to be "the list names the
+  // export that ships"; the water task then made the entry itself obsolete by wiring it, so
+  // asserting the old text would now pin a false statement. The stronger successor is that the
+  // entry is GONE and the thing that replaced it exists -- a viewer that calls the export, and a
+  // panel section for it. That is exactly what the coastline three lines above is held to, so the
+  // two wired capabilities are now checked the same way rather than one being a special case.
+  assert.ok(
+    !list.includes("wb_water_run"),
+    "the water entry still says nothing calls wb_water_run, but main.js does",
+  );
+  assert.match(appFile("main.js"), /engine\.waterRun\(/, "main.js must call the water export");
+  assert.match(controls, /water · rebuilds/);
+  // The two narrower entries that replaced it are real limitations, not a relabelling: a body
+  // arrives as a level and a box, and no body is ever classified a pond on this mesh.
+  assert.ok(list.includes('["lake shorelines"'), "the box limitation must stay on the list");
+  assert.ok(list.includes('["ponds"'), "the zero-ponds finding must stay on the list");
+  // And rivers must NOT have come off with them: reaches are carried and deliberately empty.
+  assert.ok(list.includes('["rivers"'), "rivers are schema-only and must stay listed");
 });
 
 test("the measured table is the one the panel reads, and it says what the band is", () => {

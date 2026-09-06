@@ -101,14 +101,33 @@ const FAULT_OPTIONS = [
 // section below is what turns it.
 //
 // The one that was WRONG is "lakes + water", which said `no export yet`. That has been false
-// since slice 5b: `wb_water_run` is in `WB_EXPORTS` and ships in the committed artifact. What is
-// actually missing is a viewer that CALLS it, which is a different sentence and a smaller claim,
-// and the entry now says that instead. A "not wired yet" list that is wrong about the engine is
-// worse than no list: it is the panel telling the owner a capability does not exist when it does.
+// since slice 5b: `wb_water_run` is in `WB_EXPORTS` and ships in the committed artifact. What was
+// actually missing was a viewer that CALLED it, which is a different sentence and a smaller claim,
+// and the entry was corrected to say that instead. A "not wired yet" list that is wrong about the
+// engine is worse than no list: it is the panel telling the owner a capability does not exist when
+// it does.
+//
+// **A FIFTH ENTRY HAS NOW COME OFF, AND IT IS THAT ONE.** The viewer calls `wb_water_run` at boot
+// and `relief.js` draws every body as a flat sheet at its resolved level. Its old text is kept
+// here for the same reason the mountains' two are -- it is the reason the "water" section below
+// exists:
+//
+//   ["lakes + water", "wb_water_run ships in the .wasm; nothing in the viewer calls it"]
+//
+// **Two narrower entries replace it, and both are measured rather than guessed.** A body arrives
+// as a level and a bounding BOX, so its true shoreline is not available at all -- what is drawn is
+// the box intersected with the level, which is exact only where no other depression shares the
+// box. And `LakeKind::Pond` cannot occur: the engine calibrated its threshold at 1.0e5 m^2 and
+// then measured the smallest body this mesh produces at 7.9e8 m^2.
+//
+// **What did NOT come off is "rivers", deliberately.** `WaterManifest` carries `reaches` and
+// slice 5b's Ruling 2 leaves them unpopulated at Mark 2 -- schema only. Drawing an empty
+// collection is not a feature, so that entry stays exactly as it was.
 const NOT_WIRED = [
   ["erosion", "wb_erosion_run ships in the .wasm; nothing in the viewer calls it"],
   ["island arcs", "TectonicParams carries them; Task 1 proved no coverage, so no slider"],
-  ["lakes + water", "wb_water_run ships in the .wasm; nothing in the viewer calls it"],
+  ["lake shorelines", "a body arrives as a level and a BOX; its true footprint is not exported"],
+  ["ponds", "the calibrated 1.0e5 m² threshold classifies none: the smallest body is 7.9e8 m²"],
   ["rivers", "schema only in Mark 2; reaches are carried, not populated"],
   ["place areas", "slice 3, the studio: not started"],
   ["export to Evennia", "slice 2a apply: not started"],
@@ -683,6 +702,43 @@ function build() {
   cloudCover.input.addEventListener("input", paintClouds);
   paintClouds();
 
+  // === water — this rebuilds ==============================================================
+  //
+  // **Rebuild-class, and the most expensive knob on this panel.** The node count is the stream
+  // graph's resolution, so moving it re-resolves every basin, every spill level and every merge:
+  // 4.2 s at the default and 9.3 s at 60,000 on the owner's world, measured through this
+  // repository's checked-in wasm. There is no uniform to poke and no partial answer to show, so
+  // the note says the seconds out loud — a cost an owner discovers by waiting is a cost the panel
+  // failed to state.
+  //
+  // The travel comes from `panel-fields.js`, whose top end is the engine's own
+  // `WB_MAX_WATER_NODES`, so this file holds no water number at all.
+  //
+  // **The readout names DRAWABLE bodies, not bodies.** A single-node body's extent is a point and
+  // no texel centre ever lands on one, so a count of bodies would promise water the picture cannot
+  // contain — 55 bodies on the owner's world at the default, of which 17 can be drawn. The live
+  // figures are read off `window.__wb.water`, which is what the boot path actually resolved,
+  // rather than recomputed here.
+  const waterSection = section(body, "water · rebuilds");
+  const lakeNodes = row(waterSection, "graph nodes", "wb-lake-nodes", "range", travelFor("lakeNodes"));
+  const waterNote = el("div", "wb-note", "");
+  waterSection.append(waterNote);
+  const resolved = window.__wb && window.__wb.water;
+  const paintWater = () => {
+    const n = Number(lakeNodes.input.value);
+    lakeNodes.out.textContent = n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
+    const live = resolved && resolved.nodeCount === n && resolved.enabled
+      ? `${resolved.facts.drawable} drawable of ${resolved.facts.bodies} bodies, resolved in ${
+        (resolved.ms / 1000).toFixed(2)} s. `
+      : "";
+    waterNote.textContent = `${live}A finer stream graph resolves more basins and therefore more `
+      + "lakes; it also costs roughly linearly — about 4.2 s at 30k nodes. Each body is drawn as "
+      + "a flat sheet at its own spill level. ?lakes=0 turns the whole thing off, including the "
+      + "resolution.";
+  };
+  lakeNodes.input.addEventListener("input", paintWater);
+  paintWater();
+
   // === appearance — live, no reload =======================================================
 
   const look = section(body, "appearance · live");
@@ -774,6 +830,11 @@ function build() {
     // the boot path takes `DEFAULT_CLOUD_COVER` from one place rather than from a query string
     // that agrees with it.
     clouds: cloudCover.input.value,
+    // The water manifest's node count. Written like every other range field: `apply` drops it
+    // when it still equals the panel default, so an untouched panel writes no `lakeNodes`
+    // parameter and the boot path takes `DEFAULT_WATER_NODES` from one place rather than from a
+    // query string that agrees with it.
+    lakeNodes: lakeNodes.input.value,
     // Every relief field still at canonical is dropped, so an untouched panel writes no
     // relief parameter at all and the reload takes the `None` path -- Ruling 1, held in the
     // one place a generate can break it.

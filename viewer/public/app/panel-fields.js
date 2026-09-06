@@ -34,6 +34,8 @@
 import { FEATURE_CEILING } from "./availability.js";
 import { HEIGHTMAP_SIZE, MAX_LEVEL } from "./terrain.js";
 import { DEFAULT_CLOUD_COVER } from "./clouds.js";
+import { DEFAULT_WATER_NODES } from "./water.js";
+import { WB_MAX_WATER_NODES } from "./engine.js";
 
 /// The default world is the one this slice's fixtures pin: `Surface::new(20260904,
 /// 6_371_000, 12, 0.29, None)`. The extraction witnessed an elevation on it three
@@ -108,6 +110,22 @@ export const PANEL_RANGES = [
   // trap, where `position * 0.05` could not express 0.35 and had to become `position / 20`.
   // Nothing here multiplies a slider position by a fraction: the position IS the value.
   { query: "clouds", min: 0, max: 1, step: 0.01, value: DEFAULT_CLOUD_COVER },
+  // The water manifest's node count, and **the only knob that decides how many lakes exist**:
+  // the owner's world resolves 55 bodies at 30,000 nodes and 351 at 100,000, because a finer
+  // stream graph resolves more basins. It rebuilds, and it is the most expensive knob on the
+  // panel -- 4.2 s at the default, 9.3 s at 60,000 -- which is why the panel's note quotes
+  // seconds rather than leaving them to be discovered.
+  //
+  // **The top end is the ENGINE's ceiling**, imported rather than written down:
+  // `WB_MAX_WATER_NODES` is 100,000 and sits below the erosion ceiling for a linear-memory
+  // reason `wasm.rs` argues at length. The bottom end is a LATTICE choice and not a bound --
+  // the engine accepts 2 -- because `min` must be congruent to the default modulo `step` or
+  // the slider cannot express its own default, which is defects 3 and 4 at the top of this
+  // file. The engine still owns every refusal; nothing here re-derives one.
+  {
+    query: "lakeNodes", min: 1000, max: WB_MAX_WATER_NODES, step: 1000,
+    value: DEFAULT_WATER_NODES,
+  },
 ];
 
 /// Panel defaults as the strings `controls.js` compares against and writes into the URL.

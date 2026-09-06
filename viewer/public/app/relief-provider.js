@@ -142,6 +142,15 @@ export function createReliefImageryProvider({
   /// numbers are identical in every worker, and a worker that calibrated its own would be a
   /// second place they could disagree.
   biome,
+  /// The water manifest's bodies, from `engine.waterRun`. `[]` -- the default -- is the
+  /// picture before this task, and it is what `?lakes=0` produces: no manifest is resolved at
+  /// all, so the resolution cost is not paid either.
+  ///
+  /// Resolved by the CALLER rather than here, unlike `biome`'s calibration, and for a reason:
+  /// `wb_water_run` takes 4.2 s at the default node count, and a provider constructor that
+  /// silently blocked a boot for four seconds would be a cost with no name in the status line.
+  /// `main.js` resolves it, times it, and says so.
+  lakes = [],
   toImage = imageDataToCanvas,
   onTile = null,
   /// The worker pool from `pool.js`, or `null` for the synchronous main-thread path.
@@ -176,6 +185,15 @@ export function createReliefImageryProvider({
     poolRasters: 0,
     workerMs: 0,
     wallMs: 0,
+    /// **The counters that prove the path, which the pixels cannot.** `lakeTiles` is how many
+    /// rasterised tiles had at least one body overlapping their rectangle; `lakeTexels` is how
+    /// many texels were actually drawn as a lake surface. A manifest that never reached the
+    /// workers renders identically over the (many) tiles with no water in them, and this
+    /// project has already shipped a byte-identity test that passed for exactly that reason.
+    /// Both are accumulated in both modes, from the same `counters` object `relief.js`
+    /// increments, so the synchronous path and the pool path cannot report different things.
+    lakeTiles: 0,
+    lakeTexels: 0,
   };
 
   /// The per-world band edges, calibrated once at construction unless the caller supplied
@@ -242,7 +260,7 @@ export function createReliefImageryProvider({
         try {
           imageData = reliefTile({
             rectangle, level, size: tileSize, engine, worldHandle, radiusM, sun,
-            biome: calibration,
+            biome: calibration, lakes, counters: stats,
           });
         } catch (error) {
           // Cesium's own failure path: reject, and it retries or falls back to the parent
@@ -264,7 +282,9 @@ export function createReliefImageryProvider({
       // an index into a table inside one wasm instance's linear memory and is meaningless
       // in another, and an `Engine` object is not structured-cloneable at all -- posting
       // one throws `DataCloneError` per tile. The worker supplies both from its own world.
-      const request = { rectangle, level, size: tileSize, radiusM, sun, biome: calibration };
+      const request = {
+        rectangle, level, size: tileSize, radiusM, sun, biome: calibration, lakes,
+      };
       const wallStarted = performance.now();
       return pool.relief(request).then((result) => {
         // The only main-thread work left. `makeImageData` is a view over the transferred
@@ -277,6 +297,10 @@ export function createReliefImageryProvider({
         record(elapsed);
         stats.poolRasters += 1;
         stats.workerMs += result.fillMs;
+        // The worker counted these while it rasterised; they are added here so both modes fill
+        // the same two fields from the same `relief.js` arithmetic.
+        stats.lakeTiles += result.lakeTiles ?? 0;
+        stats.lakeTexels += result.lakeTexels ?? 0;
         stats.wallMs += performance.now() - wallStarted;
         if (onTile) {
           onTile({
@@ -299,6 +323,10 @@ export function createReliefImageryProvider({
       /// The band edges this provider is drawing with, so a check reads them rather than
       /// recalibrating and hoping it got the same answer.
       biome: calibration,
+      /// The water bodies this provider is drawing with, for the same reason: a check picks a
+      /// body out of THIS list by its `rootNode` and asserts the raster, rather than resolving
+      /// its own manifest and comparing against that.
+      lakes,
       pool,
       stats,
       rectangleDegrees: (x, y, level) => tileRectangleDegrees(tilingScheme, x, y, level),

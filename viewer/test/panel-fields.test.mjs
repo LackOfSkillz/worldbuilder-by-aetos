@@ -72,15 +72,21 @@ test("the panel holds no copy of a default: controls.js writes none of them down
   // searched for. `12`, `65`, `18` and `1` occur inside unrelated arithmetic in any file that
   // formats numbers (`toFixed(1)`, `/ 1000`, `121.5`), so searching for them would fire on
   // correct code, and loosening the pattern until it stopped would make the check meaningless
-  // for the long values too. So this covers seed, radius, land and both ramp ends -- which is
-  // every default that has actually drifted -- and does not cover plates, posts, feature cap
-  // or exaggeration. Those four are still single-sourced; they are simply not *proved* to be
-  // by this assertion.
+  // for the long values too. So this covers seed, radius, land, both ramp ends and the water
+  // graph's node count -- every default that has actually drifted, plus the newest long-valued
+  // one -- and does not cover plates, posts, feature cap or exaggeration. Those four are still
+  // single-sourced; they are simply not *proved* to be by this assertion.
+  //
+  // **`lakeNodes` joined the covered set on its own**, by having a five-digit default rather than
+  // by anyone adding it here, which is the property this filter was written for: a new field with
+  // a long default is checked automatically and a new field with a short one is honestly reported
+  // as uncovered. The panel's water note says "30k", not "30000", for exactly this reason -- prose
+  // may describe a number, and this line is what stops the description becoming a second copy.
   const checked = Object.entries(PANEL_DEFAULTS)
     .filter(([, value]) => value.replace(/[^0-9]/g, "").length >= 3);
   assert.deepEqual(
     checked.map(([name]) => name).sort(),
-    ["land", "radius", "rampMax", "rampMin", "seed"],
+    ["lakeNodes", "land", "radius", "rampMax", "rampMin", "seed"],
     "the set this assertion actually covers changed; say so in the comment above",
   );
   for (const [name, value] of checked) {
