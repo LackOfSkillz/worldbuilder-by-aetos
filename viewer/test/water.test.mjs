@@ -805,8 +805,18 @@ test("the lake palette is one table in one place, and it is not the ocean's", ()
   // sixth time. Identity, not equality: a copy holding equal values today is exactly the state
   // the previous five started in.
   assert.equal(LAKE_BANDS.length, LAKE_STOPS.length);
+  // **Depth AND colour**, because a drifted copy is the failure mode and a copy that has drifted
+  // only in colour would satisfy a depth check alone. The hex is decoded here rather than asked
+  // of `relief.js`, so the two sides are arrived at independently.
+  const decode = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   for (let i = 0; i < LAKE_STOPS.length; i += 1) {
-    assert.equal(LAKE_BANDS[i][0], LAKE_STOPS[i][0], `lake band ${i} is at a different depth`);
+    const [metres, hex] = LAKE_STOPS[i];
+    assert.equal(LAKE_BANDS[i][0], metres, `lake band ${i} is at a different depth`);
+    assert.deepEqual(
+      LAKE_BANDS[i][1], decode(hex),
+      `lake band ${i} is ${LAKE_BANDS[i][1]} where the shared table's ${hex} decodes to ${
+        decode(hex)}`,
+    );
   }
   // Ascending, so `bandColor` interpolates rather than picking whichever stop it met first.
   for (let i = 1; i < LAKE_STOPS.length; i += 1) {
