@@ -564,25 +564,58 @@ jobs:
           # `assert_counts.py cargo-list` itself against fresh `-- --list` / `-- --list --ignored`
           # output, AFTER the last source edit; the `35531a9` baseline (556/556/558/625/627) was
           # re-derived the same way BEFORE the first edit and `gates.yml` was CORRECT at it.
+          #
+          # THE SILENT-ABYSS GUARD (photoreal slice, follow-up) takes 556/556/558/643/645 ->
+          # 557/557/559/644/646: **+1 on EVERY row and nothing on the WASM rows alone**, the
+          # Task 5 shape rather than the Task 6 shape, because the one new test is in
+          # `src/continentality.rs` and compiles unconditionally. `tests/wasm_exports.rs` gained
+          # NO test -- `a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one`
+          # was RENAMED and inverted, not added, so the two WASM rows move by the same +1 as the
+          # other three and by nothing else.
+          #
+          # The one test is `a_nan_above_the_shore_surfaces_as_a_nan_rather_than_as_the_abyss`.
+          # `Continentality::elevation_from_above` read `if above >= 0.0` and then
+          # `if depth < 1.0`, and a NaN is false for BOTH, so a NaN fell through to
+          # `ABYSS_M * 1.0`: every affected point silently became the deepest abyss and every
+          # `is_finite` assertion in the crate stayed green. Three entrants reach that function
+          # -- a non-finite lat/lon through the C ABI, a non-finite x/y/z through the Python
+          # bindings, and the opt-in coastal term -- and all three are exercised, alongside the
+          # invisibility half: sixteen finite inputs across both arms and both saturations,
+          # compared BY BITS against the pre-guard arithmetic transcribed in the test.
+          #
+          # **Four mutations, each reverted after, each run against the named test ALONE with
+          # `-- --exact`**: the guard disabled (RED), the guard narrowed to positive-sign NaN
+          # (RED), the guard widened to swallow `above > 1.0` (RED, and it is the invisibility
+          # half that catches it), and the guard returning `ABYSS_M` instead of NaN (RED). With
+          # the guard disabled and the WHOLE suite run, exactly TWO tests go red -- this one and
+          # the renamed WASM one -- and 625 others stay green. No sibling was standing there.
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` = 157,
+          # and parity 108,106 compared / 0 divergent with all five controls unchanged
+          # (103,931 / 216 / 60 / 6,186 / 13,128). `expect_ignored` stays 5 and
+          # `assert_counts.py` still reports thirteen binaries. Re-derived per configuration
+          # through `assert_counts.py cargo-list` AFTER the last source edit; the `64d73f3`
+          # baseline (556/556/558/643/645) was re-derived the same way BEFORE the first edit and
+          # `gates.yml` was CORRECT at it.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 556
+            expect: 557
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 556
+            expect: 557
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 558
+            expect: 559
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 643
+            expect: 644
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 645
+            expect: 646
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

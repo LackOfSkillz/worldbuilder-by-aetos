@@ -407,7 +407,54 @@ impl Continentality {
 
     /// The curve itself, separated so it can be exercised without hunting for a point that
     /// happens to land at a given height.
+    ///
+    /// # A NaN leaves here as a NaN, and that is the contract
+    ///
+    /// **Both arms below are NaN-asymmetric, and both of them are false for a NaN.** Before
+    /// the guard existed a NaN `above` fell through `above >= 0.0`, then through
+    /// `depth < 1.0`, and came out as `ABYSS_M * 1.0` -- a plausible abyssal metre rather
+    /// than an error. Every affected point silently became the deepest ocean on the planet,
+    /// and every `is_finite` assertion in this crate stayed green while it happened. That is
+    /// the worst failure shape this codebase has: wrong, quiet, and self-consistent.
+    ///
+    /// **The guard is here rather than at any one entrant because three of them converge on
+    /// this function**, and it is the only place all three meet:
+    ///
+    /// 1. **A non-finite `latitude_deg` or `longitude_deg` through the C ABI.**
+    ///    `wb_elevation_m`, `wb_structural_m`, `wb_tile_*` and `wb_bottom_at` take two bare
+    ///    `f64` and validate neither; `SpherePoint::from_latlon` turns a NaN *or an infinity*
+    ///    into an all-NaN vector, and `Noise::at` carries that straight through `at`.
+    ///    Measured: `base_elevation` at a NaN latitude returned exactly `-4600.0`.
+    /// 2. **A non-finite `x`, `y` or `z` through the Python bindings.**
+    ///    `bindings::continentality_base_elevation` builds a `SpherePoint` from the caller's
+    ///    three components and normalises nothing.
+    /// 3. **The opt-in coastal term.** `Noise::fbm` can reach `inf / inf` when the octave
+    ///    schedule overflows; refused at the C ABI by `WB_MAX_COAST_GAIN`, but reachable from
+    ///    any Rust caller of [`Continentality::with_coast`], and inherited by any future term
+    ///    that lands in `above_shore`.
+    ///
+    /// **Propagate rather than refuse, and the reason is `extern "C"`.** Every export that
+    /// reaches here is nounwind, so a refusal expressed as a panic is an abort; and
+    /// `wb_elevation_m` returns one scalar with no status channel, already documenting NaN as
+    /// the value it gives for a question it cannot answer. Propagation makes that answer
+    /// honest, and it makes every finiteness assertion downstream -- `sample_coast`'s among
+    /// them -- load-bearing instead of merely looking it.
+    ///
+    /// **Invisible on the canonical path, and that is checked rather than argued.**
+    /// `worldbuilder/terrain/continentality.py` is the oracle for 157 conformance tests, and
+    /// its `min(1.0, above)` would hand back `1.0` for a NaN exactly as the arms below did --
+    /// but no canonical input can produce one. `at` is finite at every finite point, `shore`
+    /// and `spread` come from a fixed spiral over the raw field (`calibrate`'s own sort
+    /// asserts no NaN reaches it), and `continentality_corpus()` is normalised sphere points.
+    /// See `a_nan_above_the_shore_surfaces_as_a_nan_rather_than_as_the_abyss` below.
     pub fn elevation_from_above(&self, above: f64) -> f64 {
+        // Explicit, and FIRST. This is `plates.rs::margin_at`'s house form turned around:
+        // there a NaN is floored deliberately because the value being guarded is a weight,
+        // and a floored weight is visible in the product. Here the value is a METRE, and a
+        // floored metre is indistinguishable from a real one.
+        if above.is_nan() {
+            return f64::NAN;
+        }
         if above >= 0.0 {
             // Python: CONTINENT_M * min(1.0, above) ** 0.75
             let capped = if above < 1.0 { above } else { 1.0 };
@@ -885,6 +932,116 @@ mod tests {
         let quarter = c.elevation_from_above(-0.25);
         let half = c.elevation_from_above(-0.5);
         assert!((half - 2.0 * quarter).abs() < 1e-9, "{} vs {}", half, quarter);
+    }
+
+    /// The test that would have caught the silent abyss.
+    ///
+    /// `elevation_from_above`'s two arms are `above >= 0.0` and `depth < 1.0`, and **a NaN
+    /// is false for both**, so before the guard a NaN fell through to `ABYSS_M * 1.0`. The
+    /// planet drowned and every `is_finite` assertion in this crate stayed green -- there was
+    /// no non-finite value left anywhere for one to find.
+    ///
+    /// **Why `assert!(is_nan)` here is not one of this project's decorative assertions.**
+    /// The value it displaces, `ABYSS_M`, is a GENUINE output of this same function at a
+    /// legitimate input -- asserted below before anything else, so "the drowned answer is
+    /// indistinguishable from a real one" is measured rather than asserted about. A test that
+    /// only checked `elevation != ABYSS_M` at a hostile point would be checking a bound the
+    /// function reaches on its own; this checks the *class* of the number instead.
+    ///
+    /// All three entrants named in `elevation_from_above`'s doc are exercised, because a
+    /// guard proved on one of them is a guard proved on the arithmetic and not on the reach.
+    #[test]
+    fn a_nan_above_the_shore_surfaces_as_a_nan_rather_than_as_the_abyss() {
+        let c = Continentality::new(12345, EARTH_RADIUS_M, LAND_FRACTION);
+
+        // FIRST: the value the old failure produced is a real answer this function gives at
+        // a real input. Without this line the assertions below are asserting against a
+        // number nothing produces, which is the shape of every check this project has found
+        // to be load-bearing in name only.
+        assert_eq!(c.elevation_from_above(-2.0).to_bits(), ABYSS_M.to_bits());
+        assert_eq!(c.elevation_from_above(-1.0).to_bits(), ABYSS_M.to_bits());
+
+        // The curve itself, both NaN sign bits.
+        for above in [f64::NAN, -f64::NAN] {
+            let e = c.elevation_from_above(above);
+            assert!(e.is_nan(), "elevation_from_above({above}) was {e}, not a NaN");
+        }
+
+        // ENTRANT 1: a non-finite latitude or longitude through the C ABI. Nothing between
+        // `wb_elevation_m` and here validates either, and `from_latlon` turns an INFINITY
+        // into a NaN vector just as readily as a NaN.
+        for (lat, lon) in [
+            (f64::NAN, 0.0),
+            (0.0, f64::NAN),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (0.0, f64::INFINITY),
+        ] {
+            let p = SpherePoint::from_latlon(lat, lon);
+            let e = c.base_elevation(&p);
+            assert!(e.is_nan(), "base_elevation at lat {lat} lon {lon} was {e}, not a NaN");
+        }
+
+        // ENTRANT 2: a non-finite vector component through the Python bindings, which build
+        // a `SpherePoint` from three caller floats and normalise nothing.
+        for v in [
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 0.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+        ] {
+            let e = c.base_elevation(&SpherePoint { vector: v });
+            assert!(e.is_nan(), "base_elevation at ({},{},{}) was {e}", v.x, v.y, v.z);
+        }
+
+        // ENTRANT 3: the opt-in coastal term's own NaN. `Noise::fbm` overflows its running
+        // amplitude to `+inf`, `loudest` with it, and `2*total/loudest` is `inf/inf`. The C
+        // ABI refuses this record; a Rust caller of `with_coast` is not held by that.
+        let drowning = Continentality::with_coast(
+            12345,
+            EARTH_RADIUS_M,
+            LAND_FRACTION,
+            Some(CoastParams { gain: 1.0e300, ..CoastParams::fractal() }),
+        );
+        let mut nan_above = 0usize;
+        for point in spiral(200).iter() {
+            if drowning.above_shore(point).is_nan() {
+                nan_above += 1;
+                let e = drowning.base_elevation(point);
+                assert!(e.is_nan(), "a NaN above_shore came out of the curve as {e}");
+            }
+        }
+        assert!(nan_above > 50, "only {nan_above} of 200 points had a NaN above_shore; the \
+                                 coastal entrant is no longer being exercised");
+
+        // AND THE OTHER HALF: the guard is invisible to every finite input. The two arms are
+        // transcribed here as they stood before it, and compared BY BITS -- so a guard that
+        // moved any real elevation, on either side of the shore or at either saturation,
+        // fails here rather than in the conformance suite an hour later.
+        let mut land = 0usize;
+        let mut sea = 0usize;
+        for above in [
+            -1.0e300, -3.0, -1.0, -0.9999999999999999, -0.5, -1.0e-300, -0.0, 0.0, 1.0e-300,
+            0.5, 0.9999999999999999, 1.0, 3.0, 1.0e300, f64::INFINITY, f64::NEG_INFINITY,
+        ] {
+            let want = if above >= 0.0 {
+                land += 1;
+                let capped = if above < 1.0 { above } else { 1.0 };
+                CONTINENT_M * m::powf(capped, 0.75)
+            } else {
+                sea += 1;
+                let depth = -above;
+                let capped = if depth < 1.0 { depth } else { 1.0 };
+                ABYSS_M * capped
+            };
+            assert_eq!(
+                c.elevation_from_above(above).to_bits(),
+                want.to_bits(),
+                "the guard moved a finite answer at above = {above}"
+            );
+        }
+        // Both arms were actually walked, including both infinities and both zeros -- an
+        // invisibility claim that only ever took one branch would be worth nothing.
+        assert_eq!((land, sea), (9, 7));
     }
 
     #[test]

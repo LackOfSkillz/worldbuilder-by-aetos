@@ -800,15 +800,22 @@ pub const WB_MAX_COAST_OCTAVES: u32 = 16;
 /// to `+inf`, `loudest` overflows with it, and `2.0 * total / loudest` is `inf / inf` -- **a NaN
 /// in `above_shore`**.
 ///
-/// **And a NaN there does NOT show up as a NaN, which is the reason this ceiling is drawn rather
-/// than left to a finiteness assertion downstream.** `Continentality::elevation_from_above` reads
-/// `if above >= 0.0` (false for NaN) and then `if depth < 1.0` (false for NaN), so a NaN falls
-/// through both comparisons to `ABYSS_M * 1.0`: **every affected point silently becomes the
-/// deepest abyss and every `is_finite` check in this crate stays green.** Measured, on the
-/// fixture world at `gain = 1e300`: `above_shore` is NaN at all three probes and `elevation_m`
-/// reads -4,599 m to -4,625 m. A drowned planet that passes its own health checks is worse than
-/// a refusal, and worse than a NaN. `a_nan_in_the_coastal_term_drowns_the_world_rather_than_
-/// showing_as_one` pins that behaviour so this paragraph cannot go stale.
+/// **A NaN there used NOT to show up as a NaN, which is why this ceiling was drawn rather than
+/// left to a finiteness assertion downstream.** `Continentality::elevation_from_above` read
+/// `if above >= 0.0` (false for NaN) and then `if depth < 1.0` (false for NaN), so a NaN fell
+/// through both comparisons to `ABYSS_M * 1.0`: **every affected point silently became the
+/// deepest abyss and every `is_finite` check in this crate stayed green.** Measured, on the
+/// fixture world at `gain = 1e300`: `above_shore` was NaN at all three probes and `elevation_m`
+/// read -4,599 m to -4,625 m. A drowned planet that passes its own health checks is worse than
+/// a refusal, and worse than a NaN.
+///
+/// **`elevation_from_above` now carries an explicit `is_nan` arm and propagates**, closing that
+/// swallowing for every future term as well as this one -- see its own doc for the three entrants
+/// it stands in front of. **The ceiling stays and is not made redundant by it.** A refusal names
+/// the offending *field* through `wb_coast_check`'s status; a NaN elevation tells a host only
+/// that something somewhere is wrong. This is the first line and the guard is the second.
+/// `a_nan_in_the_coastal_term_surfaces_as_a_nan_instead_of_drowning_the_world` pins the pair so
+/// this paragraph cannot go stale.
 ///
 /// Zero is admitted and is not a silence: at `gain = 0` the first octave still carries its full
 /// amplitude and `loudest` is 1.

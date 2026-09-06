@@ -22,7 +22,7 @@
 //! see an empty test binary rather than a missing symbol.
 #![cfg(feature = "wasm")]
 
-use worldbuilder_engine::continentality::CoastParams;
+use worldbuilder_engine::continentality::{CoastParams, Continentality};
 use worldbuilder_engine::features::{Feature, Features, CARVE, RAISE};
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::{FeatureInput, Surface};
@@ -4140,11 +4140,12 @@ fn the_amplitude_and_the_window_are_swept_together_not_one_at_a_time() {
 fn a_gain_above_one_is_refused_because_it_runs_the_octave_schedule_backwards_and_ends_in_a_nan() {
     // **The band, measured.** `Noise::fbm` multiplies its running amplitude by `gain` each
     // octave; far enough above one the amplitude overflows to `+inf`, `loudest` overflows with
-    // it, and `2.0 * total / loudest` is `inf / inf` -- a NaN in `above_shore`. That NaN does
-    // **not** surface as a NaN: `elevation_from_above` fails both of its comparisons and returns
-    // the abyssal floor, so the planet drowns silently and every finiteness assertion stays
-    // green. See `a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one`, which
-    // is why this ceiling is a refusal rather than something left to a downstream check.
+    // it, and `2.0 * total / loudest` is `inf / inf` -- a NaN in `above_shore`. That NaN used
+    // **not** to surface as a NaN: `elevation_from_above` failed both of its comparisons and
+    // returned the abyssal floor, so the planet drowned silently and every finiteness assertion
+    // stayed green. `elevation_from_above` now propagates instead; the refusal here stays because
+    // it names the offending FIELD, which a NaN elevation cannot. See
+    // `a_nan_in_the_coastal_term_surfaces_as_a_nan_instead_of_drowning_the_world`.
     //
     // Measured on the coast lattice at `frequency = 20`, `lacunarity = 2`, this host:
     //
@@ -4197,21 +4198,30 @@ fn a_gain_above_one_is_refused_because_it_runs_the_octave_schedule_backwards_and
 }
 
 #[test]
-fn a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one() {
-    // **Why `WB_MAX_COAST_GAIN` is a refusal and not a finiteness check downstream.**
+fn a_nan_in_the_coastal_term_surfaces_as_a_nan_instead_of_drowning_the_world() {
+    // **This test was written the other way up, and the engine changed under it.**
     //
-    // `sample_coast` asserts every accepted record produces a finite elevation, and that
-    // assertion is weaker than it looks: `Continentality::elevation_from_above` reads
-    // `if above >= 0.0` and then `if depth < 1.0`, and **a NaN fails both**, so it falls through
-    // to `ABYSS_M * 1.0`. A NaN in the coastal term therefore does not appear as a NaN anywhere
-    // a caller can see -- it appears as a planet whose coastal band is uniformly at the abyssal
-    // floor, passing every health check this crate has.
+    // It used to read `assert_eq!(nan_seen, 0, "the NaN surfaced after all -- this test's
+    // premise has changed")`, pinning the defect the coastline sweep found: a NaN in
+    // `above_shore` did NOT appear as a NaN anywhere a caller could see. It appeared as a
+    // planet whose coastal band sat uniformly on the abyssal floor, passing every health
+    // check this crate had, because `Continentality::elevation_from_above` read
+    // `if above >= 0.0` and then `if depth < 1.0` and **a NaN was false for both**, so it fell
+    // through to `ABYSS_M * 1.0`.
+    //
+    // `elevation_from_above` now carries an explicit `is_nan` arm and propagates instead. The
+    // premise line did its job: it went red on this commit, naming itself, rather than the
+    // change slipping through a test that had nothing to say about it. Both halves are kept
+    // and both are now the other way round.
+    //
+    // **`WB_MAX_COAST_GAIN` stays a refusal, and the guard does not make it redundant.** A
+    // refusal tells a host *which field* is wrong through `wb_coast_check`'s status; a NaN
+    // elevation only tells it that something is. The guard is the second line, for a term
+    // nobody has written yet.
     //
     // This is reached through the ENGINE rather than through the export, deliberately: the
-    // boundary now refuses every gain that can produce it, so there is no record
-    // `wb_world_new_coast` will accept that gets here. That is the point -- the refusal is what
-    // stands between a host and this world -- and the behaviour it stands in front of is pinned
-    // here so the constant's doc cannot drift away from the code.
+    // boundary refuses every gain that can produce it, so there is no record
+    // `wb_world_new_coast` will accept that gets here.
     let drowning = CoastParams { gain: 1.0e300, ..CoastParams::fractal() };
     // The boundary refuses it. If this ever stops being true, the rest of the test is the
     // description of what a host would then be able to build.
@@ -4221,23 +4231,69 @@ fn a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one() {
 
     let surface =
         Surface::with_coast(SEED, RADIUS_M, PLATES as usize, LAND, None, None, None, Some(drowning));
-    let mut drowned = 0usize;
-    let mut nan_seen = 0usize;
+    // The same field the surface above built, rebuilt here because `Shelf::land` is
+    // `pub(crate)` and this file is an integration test. `SEED as u64` is exactly what
+    // `Surface::new` does with its `i64` world seed -- a two's-complement reinterpretation.
+    let seed = SEED as u64; // cast-ok: two's-complement reinterpretation, matching Surface::new
+    let land = Continentality::with_coast(seed, RADIUS_M, LAND, Some(drowning));
+
+    // **The claim, probe by probe: a NaN `above_shore` must come out as a NaN elevation.**
+    // Written as a per-probe correspondence rather than as two counts, because the failure it
+    // guards against is precisely a NaN that arrives looking like a legitimate depth -- and
+    // one of these eleven probes IS legitimately below -4,000 m, so any assertion phrased on
+    // "how many probes are deep" would be comparing against a number the fixture reaches on
+    // its own.
+    let mut poisoned = 0usize;
+    let mut clean = 0usize;
+    let mut drowned = Vec::new();
     for (lat, lon) in COAST_PROBES {
         let point = SpherePoint::from_latlon(*lat, *lon);
         let elevation = surface.elevation_m(&point, Some(RES_M));
-        if elevation.is_nan() {
-            nan_seen += 1;
-        }
-        // The abyssal floor, within the detail and shelf terms that ride on top of it.
-        if elevation < -4_000.0 {
-            drowned += 1;
+        if land.above_shore(&point).is_nan() {
+            poisoned += 1;
+            if !elevation.is_nan() {
+                drowned.push((*lat, *lon, elevation));
+            }
+        } else {
+            clean += 1;
+            assert!(
+                elevation.is_finite(),
+                "a probe outside the coastal band went non-finite at {lat},{lon}: {elevation}",
+            );
         }
     }
-    assert_eq!(nan_seen, 0, "the NaN surfaced after all -- this test's premise has changed");
     assert!(
-        drowned >= COAST_PROBES.len() - 1,
-        "only {drowned} of {} probes drowned; the failure mode is not what the ceiling's doc says",
-        COAST_PROBES.len(),
+        drowned.is_empty(),
+        "the silent abyss is reachable again -- these probes have a NaN above_shore and a          plausible elevation: {drowned:?}",
     );
+    // **Both populations are non-empty, and the split is pinned exactly.** The coastal term is
+    // windowed by `|above_shore| <= window_spreads * spread`, so a probe outside the band never
+    // samples the overflowing fBm and has no NaN to surface. Pinned as a number rather than as
+    // `>= len - 1`: a threshold would let a second probe drift out of the band unnoticed, and a
+    // shrinking population is the failure this project keeps finding.
+    assert_eq!((poisoned, clean), (10, 1), "the probe population moved relative to the band");
+    // Before the guard, every one of the ten read between -4,599 m and -4,625 m -- ordinary
+    // abyssal ground, indistinguishable from the eleventh, which really is that deep.
+    let genuinely_deep = COAST_PROBES
+        .iter()
+        .filter(|(lat, lon)| {
+            let p = SpherePoint::from_latlon(*lat, *lon);
+            !land.above_shore(&p).is_nan() && surface.elevation_m(&p, Some(RES_M)) < -4_000.0
+        })
+        .count();
+    assert_eq!(
+        genuinely_deep, 1,
+        "the value the defect produced must be one this fixture also produces honestly, or          the assertions above are discriminating against nothing",
+    );
+
+    // And the same world at a canonical block is ordinary ground at every one of these
+    // probes -- so the two assertions above are discriminating between two outcomes this
+    // fixture can actually produce, rather than describing the only thing it ever does.
+    let ordinary =
+        Surface::with_coast(SEED, RADIUS_M, PLATES as usize, LAND, None, None, None, None);
+    for (lat, lon) in COAST_PROBES {
+        let point = SpherePoint::from_latlon(*lat, *lon);
+        let elevation = ordinary.elevation_m(&point, Some(RES_M));
+        assert!(elevation.is_finite(), "the canonical world is not finite at {lat},{lon}");
+    }
 }
