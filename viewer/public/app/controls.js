@@ -43,6 +43,7 @@
 // its styles live in `viewer.css`. See `index.html`'s comment.
 
 import { PANEL_DEFAULTS, PANEL_RANGES, panelFieldFaults } from "./panel-fields.js";
+import { mountWorldPanel } from "./world-panel.js";
 import {
   RELIEF_CONTROLS, RELIEF_PARAM_NAMES, HURST_BAND, hurst, sliderTravel, reliefToParams,
 } from "./relief-params.js";
@@ -1263,6 +1264,12 @@ function build() {
   const readout = el("div", "wb-readout");
   readout.id = "wb-readout";
   body.append(readout);
+
+  // === worlds: save it, get back to it, find things in it ===================================
+  //
+  // Mounted before "not wired yet" because it is wired, and because the thing it prevents -
+  // losing a world you liked to a browser refresh - has already happened once.
+  mountWorldPanel(body, () => window.viewer);
 
   // === not wired yet ======================================================================
 

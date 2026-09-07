@@ -10,6 +10,7 @@
 // a code change -- including the deliberately wrong ones.
 
 import { Engine } from "./engine.js";
+import { holdUntilRendered } from "./loading.js";
 import {
   DEFAULT_EXAGGERATION, DEFAULT_WORLD, HARBOUR, RAMP_STOPS, RAMP_WINDOW, rampStopFraction,
 } from "./panel-fields.js";
@@ -1176,6 +1177,17 @@ async function boot() {
   };
   window.__wbReady = { ok: true, line };
   console.log("[worldbuilder]", line);
+
+  // **Hold the globe back until it is actually finished.** Cesium refines from coarse to fine,
+  // so a half-loaded world looks like a finished one built badly - and the water solve lands
+  // after the first tiles do, which would show a world whose lakes appear later. `?loading=0`
+  // opts out, because the screenshot harness wants the canvas from the first frame and an
+  // overlay of its own is the last thing a byte-comparison needs.
+  if (params.get("loading") !== "0") {
+    window.__wbRendered = holdUntilRendered(viewer, {
+      waitFor: installed.water ? Promise.resolve(installed.water) : null,
+    });
+  }
 
   // `?trace=N` records N frame deltas starting the instant the provider is installed --
   // while tiles are actually being requested, which is the only time the fill can cost a

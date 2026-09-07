@@ -42,3 +42,52 @@ html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%;
 .wb-missing li { display: flex; flex-direction: column; opacity: .62; }
 .wb-missing-name { color: #ffb38a; }
 .wb-missing-why { font-size: 9.5px; opacity: .75; line-height: 1.3; }
+
+/* --- loading overlay -------------------------------------------------------------------
+   The globe is held back until it is finished, because Cesium draws coarse tiles first and a
+   half-loaded world looks like a finished one made badly. Opacity rather than `display`: a
+   zero-size canvas does not render, so hiding it that way would stop the load we are waiting
+   for from ever completing. */
+
+.wb-canvas-loading { opacity: 0; }
+
+#wb-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #0b1017;
+  z-index: 40;
+  transition: opacity 380ms ease;
+}
+
+#wb-loading.wb-loading-done { opacity: 0; pointer-events: none; }
+
+.wb-loading-card {
+  width: min(360px, 70vw);
+  font: 13px/1.5 system-ui, sans-serif;
+  color: #cfd8e3;
+}
+
+.wb-loading-title { font-size: 15px; margin-bottom: 10px; letter-spacing: 0.02em; }
+
+.wb-loading-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #1d2733;
+  overflow: hidden;
+}
+
+.wb-loading-fill {
+  height: 100%;
+  width: 0%;
+  background: #4db2ff;
+  transition: width 220ms ease;
+}
+
+.wb-loading-step { margin-top: 8px; color: #8494a6; font-variant-numeric: tabular-nums; }
+
+/* --- worlds section -------------------------------------------------------------------- */
+
+.wb-text, .wb-file { width: 100%; margin: 4px 0; }
+.wb-file { display: none; }
