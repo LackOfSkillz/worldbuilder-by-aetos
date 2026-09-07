@@ -129,13 +129,6 @@
           "source": 1076
         }
       ],
-      "land_check": {
-        "dry": 12,
-        "fits": true,
-        "offenders": [],
-        "wet_expected": 1,
-        "wet_unexpected": 0
-      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 2,
@@ -157,12 +150,12 @@
             -4,
             0
           ],
-          "elevation_m": 0.536,
+          "elevation_m": -403.51822793221413,
           "id": 1064,
           "key": "The Shingle Beach",
           "latitude_deg": -4.465619950143077,
           "longitude_deg": -2.5074829798008835,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -170,12 +163,12 @@
             -3,
             0
           ],
-          "elevation_m": 0.8,
+          "elevation_m": -403.00094596067623,
           "id": 1065,
           "key": "The Turf Lip",
           "latitude_deg": -4.4650091660440046,
           "longitude_deg": -2.508999769380417,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -183,12 +176,12 @@
             -2,
             0
           ],
-          "elevation_m": 0.77,
+          "elevation_m": -403.163969627674,
           "id": 1066,
           "key": "The Reed Walk",
           "latitude_deg": -4.46439837882843,
           "longitude_deg": -2.51051655643472,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -196,12 +189,12 @@
             -1,
             0
           ],
-          "elevation_m": 0.779,
+          "elevation_m": -403.3222924107308,
           "id": 1067,
           "key": "The Alder Carr",
           "latitude_deg": -4.463787588496788,
           "longitude_deg": -2.5120333409641273,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -209,12 +202,12 @@
             0,
             0
           ],
-          "elevation_m": 0.874,
+          "elevation_m": -403.4384339620558,
           "id": 1068,
           "key": "The Carr Edge",
           "latitude_deg": -4.4631767950495105,
           "longitude_deg": -2.51355012296898,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -222,12 +215,12 @@
             1,
             0
           ],
-          "elevation_m": 0.949,
+          "elevation_m": -403.6192904716879,
           "id": 1069,
           "key": "The Drove Road",
           "latitude_deg": -4.462565998487031,
           "longitude_deg": -2.5150669024496146,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -235,12 +228,12 @@
             2,
             0
           ],
-          "elevation_m": 0.603,
+          "elevation_m": -404.6320523509787,
           "id": 1070,
           "key": "The Ferry Green",
           "latitude_deg": -4.461955198809785,
           "longitude_deg": -2.51658367940637,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -248,12 +241,12 @@
             2,
             0
           ],
-          "elevation_m": 0.004,
+          "elevation_m": -405.55336199574754,
           "id": 1071,
           "key": "The Ferry Slip",
           "latitude_deg": -4.460443019887878,
           "longitude_deg": -2.5159710225975283,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -261,12 +254,12 @@
             3,
             0
           ],
-          "elevation_m": 0.643,
+          "elevation_m": -405.0889028339882,
           "id": 1072,
           "key": "The Waiting Shelter",
           "latitude_deg": -4.461344396018201,
           "longitude_deg": -2.5181004538395846,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -274,12 +267,12 @@
             0,
             0
           ],
-          "elevation_m": 0.225,
+          "elevation_m": -404.2204227696212,
           "id": 1073,
           "key": "The Wharf Track",
           "latitude_deg": -4.461664613610825,
           "longitude_deg": -2.512937471388363,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -287,12 +280,12 @@
             1,
             0
           ],
-          "elevation_m": 0.306,
+          "elevation_m": -404.5460007483099,
           "id": 1074,
           "key": "The Old Wharf",
           "latitude_deg": -4.461053818306616,
           "longitude_deg": -2.514454248254617,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -300,12 +293,12 @@
             0,
             0
           ],
-          "elevation_m": 0.296,
+          "elevation_m": -403.222280198863,
           "id": 1075,
           "key": "The Mainland Dock",
           "latitude_deg": -4.458640249209434,
           "longitude_deg": -2.511712175796309,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -313,7 +306,7 @@
             1,
             0
           ],
-          "elevation_m": -0.17,
+          "elevation_m": -404.69383082674295,
           "id": 1076,
           "key": "The Dock Road",
           "latitude_deg": -4.4580294564209675,
@@ -481,13 +474,6 @@
           "source": 1029
         }
       ],
-      "land_check": {
-        "dry": 9,
-        "fits": true,
-        "offenders": [],
-        "wet_expected": 2,
-        "wet_unexpected": 0
-      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -509,7 +495,7 @@
             -3,
             0
           ],
-          "elevation_m": -0.03,
+          "elevation_m": -405.23082194616296,
           "id": 1023,
           "key": "The Landing Stage",
           "latitude_deg": -4.471048939192139,
@@ -522,7 +508,7 @@
             -3,
             0
           ],
-          "elevation_m": -0.027,
+          "elevation_m": -405.28839467043827,
           "id": 1024,
           "key": "The Boat Ramp",
           "latitude_deg": -4.471048939215402,
@@ -535,12 +521,12 @@
             0,
             0
           ],
-          "elevation_m": 0.028,
+          "elevation_m": -405.02827064219724,
           "id": 1025,
           "key": "The Camp Yard",
           "latitude_deg": -4.470495,
           "longitude_deg": -2.49949,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -548,12 +534,12 @@
             -1,
             0
           ],
-          "elevation_m": 0.034,
+          "elevation_m": -405.0788556472547,
           "id": 1026,
           "key": "The Shore Path",
           "latitude_deg": -4.4706796464051335,
           "longitude_deg": -2.49949,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -561,12 +547,12 @@
             -1,
             0
           ],
-          "elevation_m": 0.035,
+          "elevation_m": -405.0129526424954,
           "id": 1027,
           "key": "The North Point",
           "latitude_deg": -4.470679646381872,
           "longitude_deg": -2.4993047900665286,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -574,12 +560,12 @@
             1,
             0
           ],
-          "elevation_m": 0.006,
+          "elevation_m": -404.997408753974,
           "id": 1028,
           "key": "The Bunkhouse",
           "latitude_deg": -4.470310353594866,
           "longitude_deg": -2.4994900000000007,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -587,12 +573,12 @@
             0,
             0
           ],
-          "elevation_m": 0.029,
+          "elevation_m": -404.95959431394436,
           "id": 1029,
           "key": "The Mess Hall",
           "latitude_deg": -4.470494999976738,
           "longitude_deg": -2.4993047901131953,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -600,12 +586,12 @@
             0,
             0
           ],
-          "elevation_m": 0.022,
+          "elevation_m": -405.1024736683445,
           "id": 1030,
           "key": "The Tackle Room",
           "latitude_deg": -4.470494999976738,
           "longitude_deg": -2.499675209886806,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -613,12 +599,12 @@
             1,
             0
           ],
-          "elevation_m": 0.001,
+          "elevation_m": -405.0716208551456,
           "id": 1031,
           "key": "The Smokehouse",
           "latitude_deg": -4.470310353571605,
           "longitude_deg": -2.4996752098401402,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -626,12 +612,12 @@
             1,
             0
           ],
-          "elevation_m": 0.008,
+          "elevation_m": -404.9271911722781,
           "id": 1032,
           "key": "The Warden's Office",
           "latitude_deg": -4.4703103535716044,
           "longitude_deg": -2.49930479015986,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -639,19 +625,4406 @@
             -2,
             0
           ],
-          "elevation_m": 0.016,
+          "elevation_m": -405.1645267032253,
           "id": 1033,
           "key": "The Boat Shed",
           "latitude_deg": -4.470864292810268,
           "longitude_deg": -2.4994899999999998,
+          "submerged": true
+        }
+      ]
+    },
+    {
+      "anchor": {
+        "bearing_deg": 0.0,
+        "latitude_deg": 8.411635,
+        "longitude_deg": -3.12778,
+        "room_spacing_m": 30.0
+      },
+      "exits": [
+        {
+          "destination": 1102,
+          "name": "south",
+          "source": 1101
+        },
+        {
+          "destination": 1168,
+          "name": "east",
+          "source": 1102
+        },
+        {
+          "destination": 1101,
+          "name": "north",
+          "source": 1102
+        },
+        {
+          "destination": 1103,
+          "name": "south",
+          "source": 1102
+        },
+        {
+          "destination": 1133,
+          "name": "west",
+          "source": 1102
+        },
+        {
+          "destination": 1102,
+          "name": "north",
+          "source": 1103
+        },
+        {
+          "destination": 1104,
+          "name": "south",
+          "source": 1103
+        },
+        {
+          "destination": 1103,
+          "name": "north",
+          "source": 1104
+        },
+        {
+          "destination": 1105,
+          "name": "south",
+          "source": 1104
+        },
+        {
+          "destination": 1104,
+          "name": "north",
+          "source": 1105
+        },
+        {
+          "destination": 1106,
+          "name": "south",
+          "source": 1105
+        },
+        {
+          "destination": 1138,
+          "name": "west",
+          "source": 1105
+        },
+        {
+          "destination": 1105,
+          "name": "north",
+          "source": 1106
+        },
+        {
+          "destination": 1107,
+          "name": "south",
+          "source": 1106
+        },
+        {
+          "destination": 1161,
+          "name": "west",
+          "source": 1106
+        },
+        {
+          "destination": 1106,
+          "name": "north",
+          "source": 1107
+        },
+        {
+          "destination": 1108,
+          "name": "south",
+          "source": 1107
+        },
+        {
+          "destination": 1160,
+          "name": "west",
+          "source": 1107
+        },
+        {
+          "destination": 1169,
+          "name": "east",
+          "source": 1108
+        },
+        {
+          "destination": 1107,
+          "name": "north",
+          "source": 1108
+        },
+        {
+          "destination": 1109,
+          "name": "south",
+          "source": 1108
+        },
+        {
+          "destination": 1143,
+          "name": "west",
+          "source": 1108
+        },
+        {
+          "destination": 1108,
+          "name": "north",
+          "source": 1109
+        },
+        {
+          "destination": 1110,
+          "name": "south",
+          "source": 1109
+        },
+        {
+          "destination": 1148,
+          "name": "west",
+          "source": 1109
+        },
+        {
+          "destination": 1109,
+          "name": "north",
+          "source": 1110
+        },
+        {
+          "destination": 1111,
+          "name": "south",
+          "source": 1110
+        },
+        {
+          "destination": 1165,
+          "name": "southwest",
+          "source": 1110
+        },
+        {
+          "destination": 1110,
+          "name": "north",
+          "source": 1111
+        },
+        {
+          "destination": 1112,
+          "name": "south",
+          "source": 1111
+        },
+        {
+          "destination": 1111,
+          "name": "north",
+          "source": 1112
+        },
+        {
+          "destination": 1113,
+          "name": "south",
+          "source": 1112
+        },
+        {
+          "destination": 1153,
+          "name": "southwest",
+          "source": 1112
+        },
+        {
+          "destination": 1170,
+          "name": "east",
+          "source": 1113
+        },
+        {
+          "destination": 1112,
+          "name": "north",
+          "source": 1113
+        },
+        {
+          "destination": 1114,
+          "name": "south",
+          "source": 1113
+        },
+        {
+          "destination": 1113,
+          "name": "north",
+          "source": 1114
+        },
+        {
+          "destination": 1135,
+          "name": "north",
+          "source": 1115
+        },
+        {
+          "destination": 1116,
+          "name": "south",
+          "source": 1115
+        },
+        {
+          "destination": 1162,
+          "name": "east",
+          "source": 1116
+        },
+        {
+          "destination": 1115,
+          "name": "north",
+          "source": 1116
+        },
+        {
+          "destination": 1140,
+          "name": "south",
+          "source": 1116
+        },
+        {
+          "destination": 1140,
+          "name": "north",
+          "source": 1117
+        },
+        {
+          "destination": 1118,
+          "name": "south",
+          "source": 1117
+        },
+        {
+          "destination": 1117,
+          "name": "north",
+          "source": 1118
+        },
+        {
+          "destination": 1158,
+          "name": "northeast",
+          "source": 1118
+        },
+        {
+          "destination": 1145,
+          "name": "south",
+          "source": 1118
+        },
+        {
+          "destination": 1167,
+          "name": "east",
+          "source": 1119
+        },
+        {
+          "destination": 1150,
+          "name": "north",
+          "source": 1119
+        },
+        {
+          "destination": 1120,
+          "name": "south",
+          "source": 1119
+        },
+        {
+          "destination": 1241,
+          "name": "east",
+          "source": 1120
+        },
+        {
+          "destination": 1119,
+          "name": "north",
+          "source": 1120
+        },
+        {
+          "destination": 1121,
+          "name": "south",
+          "source": 1120
+        },
+        {
+          "destination": 1120,
+          "name": "north",
+          "source": 1121
+        },
+        {
+          "destination": 1155,
+          "name": "south",
+          "source": 1121
+        },
+        {
+          "destination": 1137,
+          "name": "east",
+          "source": 1122
+        },
+        {
+          "destination": 1123,
+          "name": "south",
+          "source": 1122
+        },
+        {
+          "destination": 1238,
+          "name": "east",
+          "source": 1123
+        },
+        {
+          "destination": 1122,
+          "name": "north",
+          "source": 1123
+        },
+        {
+          "destination": 1124,
+          "name": "south",
+          "source": 1123
+        },
+        {
+          "destination": 1123,
+          "name": "north",
+          "source": 1124
+        },
+        {
+          "destination": 1125,
+          "name": "south",
+          "source": 1124
+        },
+        {
+          "destination": 1142,
+          "name": "east",
+          "source": 1125
+        },
+        {
+          "destination": 1124,
+          "name": "north",
+          "source": 1125
+        },
+        {
+          "destination": 1126,
+          "name": "south",
+          "source": 1125
+        },
+        {
+          "destination": 1239,
+          "name": "east",
+          "source": 1126
+        },
+        {
+          "destination": 1125,
+          "name": "north",
+          "source": 1126
+        },
+        {
+          "destination": 1127,
+          "name": "south",
+          "source": 1126
+        },
+        {
+          "destination": 1126,
+          "name": "north",
+          "source": 1127
+        },
+        {
+          "destination": 1128,
+          "name": "south",
+          "source": 1127
+        },
+        {
+          "destination": 1147,
+          "name": "east",
+          "source": 1128
+        },
+        {
+          "destination": 1127,
+          "name": "north",
+          "source": 1128
+        },
+        {
+          "destination": 1129,
+          "name": "south",
+          "source": 1128
+        },
+        {
+          "destination": 1152,
+          "name": "east",
+          "source": 1129
+        },
+        {
+          "destination": 1128,
+          "name": "north",
+          "source": 1129
+        },
+        {
+          "destination": 1130,
+          "name": "south",
+          "source": 1129
+        },
+        {
+          "destination": 1129,
+          "name": "north",
+          "source": 1130
+        },
+        {
+          "destination": 1131,
+          "name": "south",
+          "source": 1130
+        },
+        {
+          "destination": 1237,
+          "name": "east",
+          "source": 1131
+        },
+        {
+          "destination": 1130,
+          "name": "north",
+          "source": 1131
+        },
+        {
+          "destination": 1132,
+          "name": "south",
+          "source": 1131
+        },
+        {
+          "destination": 1131,
+          "name": "north",
+          "source": 1132
+        },
+        {
+          "destination": 1157,
+          "name": "southeast",
+          "source": 1132
+        },
+        {
+          "destination": 1102,
+          "name": "east",
+          "source": 1133
+        },
+        {
+          "destination": 1134,
+          "name": "west",
+          "source": 1133
+        },
+        {
+          "destination": 1133,
+          "name": "east",
+          "source": 1134
+        },
+        {
+          "destination": 1135,
+          "name": "west",
+          "source": 1134
+        },
+        {
+          "destination": 1134,
+          "name": "east",
+          "source": 1135
+        },
+        {
+          "destination": 1115,
+          "name": "south",
+          "source": 1135
+        },
+        {
+          "destination": 1136,
+          "name": "west",
+          "source": 1135
+        },
+        {
+          "destination": 1135,
+          "name": "east",
+          "source": 1136
+        },
+        {
+          "destination": 1164,
+          "name": "south",
+          "source": 1136
+        },
+        {
+          "destination": 1137,
+          "name": "west",
+          "source": 1136
+        },
+        {
+          "destination": 1136,
+          "name": "east",
+          "source": 1137
+        },
+        {
+          "destination": 1240,
+          "name": "north",
+          "source": 1137
+        },
+        {
+          "destination": 1122,
+          "name": "west",
+          "source": 1137
+        },
+        {
+          "destination": 1105,
+          "name": "east",
+          "source": 1138
+        },
+        {
+          "destination": 1139,
+          "name": "west",
+          "source": 1138
+        },
+        {
+          "destination": 1138,
+          "name": "east",
+          "source": 1139
+        },
+        {
+          "destination": 1162,
+          "name": "north",
+          "source": 1139
+        },
+        {
+          "destination": 1140,
+          "name": "west",
+          "source": 1139
+        },
+        {
+          "destination": 1139,
+          "name": "east",
+          "source": 1140
+        },
+        {
+          "destination": 1116,
+          "name": "north",
+          "source": 1140
+        },
+        {
+          "destination": 1117,
+          "name": "south",
+          "source": 1140
+        },
+        {
+          "destination": 1141,
+          "name": "west",
+          "source": 1140
+        },
+        {
+          "destination": 1140,
+          "name": "east",
+          "source": 1141
+        },
+        {
+          "destination": 1163,
+          "name": "north",
+          "source": 1141
+        },
+        {
+          "destination": 1142,
+          "name": "west",
+          "source": 1141
+        },
+        {
+          "destination": 1141,
+          "name": "east",
+          "source": 1142
+        },
+        {
+          "destination": 1125,
+          "name": "west",
+          "source": 1142
+        },
+        {
+          "destination": 1108,
+          "name": "east",
+          "source": 1143
+        },
+        {
+          "destination": 1159,
+          "name": "northwest",
+          "source": 1143
+        },
+        {
+          "destination": 1144,
+          "name": "west",
+          "source": 1143
+        },
+        {
+          "destination": 1143,
+          "name": "east",
+          "source": 1144
+        },
+        {
+          "destination": 1145,
+          "name": "west",
+          "source": 1144
+        },
+        {
+          "destination": 1144,
+          "name": "east",
+          "source": 1145
+        },
+        {
+          "destination": 1118,
+          "name": "north",
+          "source": 1145
+        },
+        {
+          "destination": 1150,
+          "name": "south",
+          "source": 1145
+        },
+        {
+          "destination": 1146,
+          "name": "west",
+          "source": 1145
+        },
+        {
+          "destination": 1145,
+          "name": "east",
+          "source": 1146
+        },
+        {
+          "destination": 1147,
+          "name": "west",
+          "source": 1146
+        },
+        {
+          "destination": 1146,
+          "name": "east",
+          "source": 1147
+        },
+        {
+          "destination": 1128,
+          "name": "west",
+          "source": 1147
+        },
+        {
+          "destination": 1109,
+          "name": "east",
+          "source": 1148
+        },
+        {
+          "destination": 1166,
+          "name": "south",
+          "source": 1148
+        },
+        {
+          "destination": 1149,
+          "name": "west",
+          "source": 1148
+        },
+        {
+          "destination": 1148,
+          "name": "east",
+          "source": 1149
+        },
+        {
+          "destination": 1167,
+          "name": "south",
+          "source": 1149
+        },
+        {
+          "destination": 1150,
+          "name": "west",
+          "source": 1149
+        },
+        {
+          "destination": 1149,
+          "name": "east",
+          "source": 1150
+        },
+        {
+          "destination": 1145,
+          "name": "north",
+          "source": 1150
+        },
+        {
+          "destination": 1119,
+          "name": "south",
+          "source": 1150
+        },
+        {
+          "destination": 1151,
+          "name": "west",
+          "source": 1150
+        },
+        {
+          "destination": 1150,
+          "name": "east",
+          "source": 1151
+        },
+        {
+          "destination": 1152,
+          "name": "west",
+          "source": 1151
+        },
+        {
+          "destination": 1151,
+          "name": "east",
+          "source": 1152
+        },
+        {
+          "destination": 1129,
+          "name": "west",
+          "source": 1152
+        },
+        {
+          "destination": 1112,
+          "name": "northeast",
+          "source": 1153
+        },
+        {
+          "destination": 1154,
+          "name": "west",
+          "source": 1153
+        },
+        {
+          "destination": 1153,
+          "name": "east",
+          "source": 1154
+        },
+        {
+          "destination": 1155,
+          "name": "west",
+          "source": 1154
+        },
+        {
+          "destination": 1154,
+          "name": "east",
+          "source": 1155
+        },
+        {
+          "destination": 1121,
+          "name": "north",
+          "source": 1155
+        },
+        {
+          "destination": 1242,
+          "name": "south",
+          "source": 1155
+        },
+        {
+          "destination": 1156,
+          "name": "west",
+          "source": 1155
+        },
+        {
+          "destination": 1155,
+          "name": "east",
+          "source": 1156
+        },
+        {
+          "destination": 1157,
+          "name": "west",
+          "source": 1156
+        },
+        {
+          "destination": 1156,
+          "name": "east",
+          "source": 1157
+        },
+        {
+          "destination": 1132,
+          "name": "northwest",
+          "source": 1157
+        },
+        {
+          "destination": 1161,
+          "name": "east",
+          "source": 1158
+        },
+        {
+          "destination": 1159,
+          "name": "south",
+          "source": 1158
+        },
+        {
+          "destination": 1118,
+          "name": "southwest",
+          "source": 1158
+        },
+        {
+          "destination": 1160,
+          "name": "east",
+          "source": 1159
+        },
+        {
+          "destination": 1158,
+          "name": "north",
+          "source": 1159
+        },
+        {
+          "destination": 1143,
+          "name": "southeast",
+          "source": 1159
+        },
+        {
+          "destination": 1107,
+          "name": "east",
+          "source": 1160
+        },
+        {
+          "destination": 1161,
+          "name": "north",
+          "source": 1160
+        },
+        {
+          "destination": 1159,
+          "name": "west",
+          "source": 1160
+        },
+        {
+          "destination": 1106,
+          "name": "east",
+          "source": 1161
+        },
+        {
+          "destination": 1160,
+          "name": "south",
+          "source": 1161
+        },
+        {
+          "destination": 1158,
+          "name": "west",
+          "source": 1161
+        },
+        {
+          "destination": 1243,
+          "name": "north",
+          "source": 1162
+        },
+        {
+          "destination": 1139,
+          "name": "south",
+          "source": 1162
+        },
+        {
+          "destination": 1116,
+          "name": "west",
+          "source": 1162
+        },
+        {
+          "destination": 1164,
+          "name": "north",
+          "source": 1163
+        },
+        {
+          "destination": 1141,
+          "name": "south",
+          "source": 1163
+        },
+        {
+          "destination": 1136,
+          "name": "north",
+          "source": 1164
+        },
+        {
+          "destination": 1163,
+          "name": "south",
+          "source": 1164
+        },
+        {
+          "destination": 1244,
+          "name": "southwest",
+          "source": 1164
+        },
+        {
+          "destination": 1166,
+          "name": "north",
+          "source": 1165
+        },
+        {
+          "destination": 1110,
+          "name": "northeast",
+          "source": 1165
+        },
+        {
+          "destination": 1148,
+          "name": "north",
+          "source": 1166
+        },
+        {
+          "destination": 1165,
+          "name": "south",
+          "source": 1166
+        },
+        {
+          "destination": 1167,
+          "name": "west",
+          "source": 1166
+        },
+        {
+          "destination": 1166,
+          "name": "east",
+          "source": 1167
+        },
+        {
+          "destination": 1149,
+          "name": "north",
+          "source": 1167
+        },
+        {
+          "destination": 1119,
+          "name": "west",
+          "source": 1167
+        },
+        {
+          "destination": 1172,
+          "name": "east",
+          "source": 1168
+        },
+        {
+          "destination": 1102,
+          "name": "west",
+          "source": 1168
+        },
+        {
+          "destination": 1178,
+          "name": "east",
+          "source": 1169
+        },
+        {
+          "destination": 1108,
+          "name": "west",
+          "source": 1169
+        },
+        {
+          "destination": 1183,
+          "name": "east",
+          "source": 1170
+        },
+        {
+          "destination": 1113,
+          "name": "west",
+          "source": 1170
+        },
+        {
+          "destination": 1256,
+          "name": "north",
+          "source": 1171
+        },
+        {
+          "destination": 1172,
+          "name": "south",
+          "source": 1171
+        },
+        {
+          "destination": 1206,
+          "name": "east",
+          "source": 1172
+        },
+        {
+          "destination": 1171,
+          "name": "north",
+          "source": 1172
+        },
+        {
+          "destination": 1173,
+          "name": "south",
+          "source": 1172
+        },
+        {
+          "destination": 1168,
+          "name": "west",
+          "source": 1172
+        },
+        {
+          "destination": 1172,
+          "name": "north",
+          "source": 1173
+        },
+        {
+          "destination": 1174,
+          "name": "south",
+          "source": 1173
+        },
+        {
+          "destination": 1173,
+          "name": "north",
+          "source": 1174
+        },
+        {
+          "destination": 1175,
+          "name": "south",
+          "source": 1174
+        },
+        {
+          "destination": 1211,
+          "name": "east",
+          "source": 1175
+        },
+        {
+          "destination": 1174,
+          "name": "north",
+          "source": 1175
+        },
+        {
+          "destination": 1176,
+          "name": "south",
+          "source": 1175
+        },
+        {
+          "destination": 1175,
+          "name": "north",
+          "source": 1176
+        },
+        {
+          "destination": 1177,
+          "name": "south",
+          "source": 1176
+        },
+        {
+          "destination": 1233,
+          "name": "east",
+          "source": 1177
+        },
+        {
+          "destination": 1176,
+          "name": "north",
+          "source": 1177
+        },
+        {
+          "destination": 1178,
+          "name": "south",
+          "source": 1177
+        },
+        {
+          "destination": 1216,
+          "name": "east",
+          "source": 1178
+        },
+        {
+          "destination": 1177,
+          "name": "north",
+          "source": 1178
+        },
+        {
+          "destination": 1179,
+          "name": "south",
+          "source": 1178
+        },
+        {
+          "destination": 1169,
+          "name": "west",
+          "source": 1178
+        },
+        {
+          "destination": 1221,
+          "name": "east",
+          "source": 1179
+        },
+        {
+          "destination": 1178,
+          "name": "north",
+          "source": 1179
+        },
+        {
+          "destination": 1180,
+          "name": "south",
+          "source": 1179
+        },
+        {
+          "destination": 1231,
+          "name": "east",
+          "source": 1180
+        },
+        {
+          "destination": 1179,
+          "name": "north",
+          "source": 1180
+        },
+        {
+          "destination": 1181,
+          "name": "south",
+          "source": 1180
+        },
+        {
+          "destination": 1180,
+          "name": "north",
+          "source": 1181
+        },
+        {
+          "destination": 1182,
+          "name": "south",
+          "source": 1181
+        },
+        {
+          "destination": 1181,
+          "name": "north",
+          "source": 1182
+        },
+        {
+          "destination": 1183,
+          "name": "south",
+          "source": 1182
+        },
+        {
+          "destination": 1182,
+          "name": "north",
+          "source": 1183
+        },
+        {
+          "destination": 1184,
+          "name": "south",
+          "source": 1183
+        },
+        {
+          "destination": 1170,
+          "name": "west",
+          "source": 1183
+        },
+        {
+          "destination": 1226,
+          "name": "east",
+          "source": 1184
+        },
+        {
+          "destination": 1183,
+          "name": "north",
+          "source": 1184
+        },
+        {
+          "destination": 1277,
+          "name": "south",
+          "source": 1184
+        },
+        {
+          "destination": 1208,
+          "name": "north",
+          "source": 1185
+        },
+        {
+          "destination": 1186,
+          "name": "south",
+          "source": 1185
+        },
+        {
+          "destination": 1185,
+          "name": "north",
+          "source": 1186
+        },
+        {
+          "destination": 1213,
+          "name": "south",
+          "source": 1186
+        },
+        {
+          "destination": 1213,
+          "name": "north",
+          "source": 1187
+        },
+        {
+          "destination": 1188,
+          "name": "south",
+          "source": 1187
+        },
+        {
+          "destination": 1187,
+          "name": "north",
+          "source": 1188
+        },
+        {
+          "destination": 1218,
+          "name": "south",
+          "source": 1188
+        },
+        {
+          "destination": 1251,
+          "name": "east",
+          "source": 1189
+        },
+        {
+          "destination": 1223,
+          "name": "north",
+          "source": 1189
+        },
+        {
+          "destination": 1190,
+          "name": "south",
+          "source": 1189
+        },
+        {
+          "destination": 1189,
+          "name": "north",
+          "source": 1190
+        },
+        {
+          "destination": 1191,
+          "name": "south",
+          "source": 1190
+        },
+        {
+          "destination": 1236,
+          "name": "west",
+          "source": 1190
+        },
+        {
+          "destination": 1190,
+          "name": "north",
+          "source": 1191
+        },
+        {
+          "destination": 1192,
+          "name": "south",
+          "source": 1191
+        },
+        {
+          "destination": 1191,
+          "name": "north",
+          "source": 1192
+        },
+        {
+          "destination": 1228,
+          "name": "south",
+          "source": 1192
+        },
+        {
+          "destination": 1194,
+          "name": "south",
+          "source": 1193
+        },
+        {
+          "destination": 1210,
+          "name": "west",
+          "source": 1193
+        },
+        {
+          "destination": 1193,
+          "name": "north",
+          "source": 1194
+        },
+        {
+          "destination": 1195,
+          "name": "south",
+          "source": 1194
+        },
+        {
+          "destination": 1194,
+          "name": "north",
+          "source": 1195
+        },
+        {
+          "destination": 1196,
+          "name": "south",
+          "source": 1195
+        },
+        {
+          "destination": 1195,
+          "name": "north",
+          "source": 1196
+        },
+        {
+          "destination": 1197,
+          "name": "south",
+          "source": 1196
+        },
+        {
+          "destination": 1215,
+          "name": "west",
+          "source": 1196
+        },
+        {
+          "destination": 1196,
+          "name": "north",
+          "source": 1197
+        },
+        {
+          "destination": 1198,
+          "name": "south",
+          "source": 1197
+        },
+        {
+          "destination": 1197,
+          "name": "north",
+          "source": 1198
+        },
+        {
+          "destination": 1199,
+          "name": "south",
+          "source": 1198
+        },
+        {
+          "destination": 1198,
+          "name": "north",
+          "source": 1199
+        },
+        {
+          "destination": 1200,
+          "name": "south",
+          "source": 1199
+        },
+        {
+          "destination": 1220,
+          "name": "west",
+          "source": 1199
+        },
+        {
+          "destination": 1199,
+          "name": "north",
+          "source": 1200
+        },
+        {
+          "destination": 1201,
+          "name": "south",
+          "source": 1200
+        },
+        {
+          "destination": 1225,
+          "name": "west",
+          "source": 1200
+        },
+        {
+          "destination": 1200,
+          "name": "north",
+          "source": 1201
+        },
+        {
+          "destination": 1202,
+          "name": "south",
+          "source": 1201
+        },
+        {
+          "destination": 1201,
+          "name": "north",
+          "source": 1202
+        },
+        {
+          "destination": 1203,
+          "name": "south",
+          "source": 1202
+        },
+        {
+          "destination": 1202,
+          "name": "north",
+          "source": 1203
+        },
+        {
+          "destination": 1204,
+          "name": "south",
+          "source": 1203
+        },
+        {
+          "destination": 1203,
+          "name": "north",
+          "source": 1204
+        },
+        {
+          "destination": 1205,
+          "name": "south",
+          "source": 1204
+        },
+        {
+          "destination": 1204,
+          "name": "north",
+          "source": 1205
+        },
+        {
+          "destination": 1255,
+          "name": "south",
+          "source": 1205
+        },
+        {
+          "destination": 1230,
+          "name": "west",
+          "source": 1205
+        },
+        {
+          "destination": 1207,
+          "name": "east",
+          "source": 1206
+        },
+        {
+          "destination": 1253,
+          "name": "north",
+          "source": 1206
+        },
+        {
+          "destination": 1172,
+          "name": "west",
+          "source": 1206
+        },
+        {
+          "destination": 1208,
+          "name": "east",
+          "source": 1207
+        },
+        {
+          "destination": 1248,
+          "name": "north",
+          "source": 1207
+        },
+        {
+          "destination": 1206,
+          "name": "west",
+          "source": 1207
+        },
+        {
+          "destination": 1209,
+          "name": "east",
+          "source": 1208
+        },
+        {
+          "destination": 1185,
+          "name": "south",
+          "source": 1208
+        },
+        {
+          "destination": 1207,
+          "name": "west",
+          "source": 1208
+        },
+        {
+          "destination": 1210,
+          "name": "east",
+          "source": 1209
+        },
+        {
+          "destination": 1208,
+          "name": "west",
+          "source": 1209
+        },
+        {
+          "destination": 1193,
+          "name": "east",
+          "source": 1210
+        },
+        {
+          "destination": 1254,
+          "name": "north",
+          "source": 1210
+        },
+        {
+          "destination": 1209,
+          "name": "west",
+          "source": 1210
+        },
+        {
+          "destination": 1212,
+          "name": "east",
+          "source": 1211
+        },
+        {
+          "destination": 1175,
+          "name": "west",
+          "source": 1211
+        },
+        {
+          "destination": 1213,
+          "name": "east",
+          "source": 1212
+        },
+        {
+          "destination": 1211,
+          "name": "west",
+          "source": 1212
+        },
+        {
+          "destination": 1214,
+          "name": "east",
+          "source": 1213
+        },
+        {
+          "destination": 1186,
+          "name": "north",
+          "source": 1213
+        },
+        {
+          "destination": 1187,
+          "name": "south",
+          "source": 1213
+        },
+        {
+          "destination": 1212,
+          "name": "west",
+          "source": 1213
+        },
+        {
+          "destination": 1215,
+          "name": "east",
+          "source": 1214
+        },
+        {
+          "destination": 1247,
+          "name": "north",
+          "source": 1214
+        },
+        {
+          "destination": 1213,
+          "name": "west",
+          "source": 1214
+        },
+        {
+          "destination": 1196,
+          "name": "east",
+          "source": 1215
+        },
+        {
+          "destination": 1214,
+          "name": "west",
+          "source": 1215
+        },
+        {
+          "destination": 1217,
+          "name": "east",
+          "source": 1216
+        },
+        {
+          "destination": 1178,
+          "name": "west",
+          "source": 1216
+        },
+        {
+          "destination": 1218,
+          "name": "east",
+          "source": 1217
+        },
+        {
+          "destination": 1234,
+          "name": "north",
+          "source": 1217
+        },
+        {
+          "destination": 1216,
+          "name": "west",
+          "source": 1217
+        },
+        {
+          "destination": 1219,
+          "name": "east",
+          "source": 1218
+        },
+        {
+          "destination": 1188,
+          "name": "north",
+          "source": 1218
+        },
+        {
+          "destination": 1223,
+          "name": "south",
+          "source": 1218
+        },
+        {
+          "destination": 1217,
+          "name": "west",
+          "source": 1218
+        },
+        {
+          "destination": 1220,
+          "name": "east",
+          "source": 1219
+        },
+        {
+          "destination": 1249,
+          "name": "north",
+          "source": 1219
+        },
+        {
+          "destination": 1218,
+          "name": "west",
+          "source": 1219
+        },
+        {
+          "destination": 1199,
+          "name": "east",
+          "source": 1220
+        },
+        {
+          "destination": 1219,
+          "name": "west",
+          "source": 1220
+        },
+        {
+          "destination": 1222,
+          "name": "east",
+          "source": 1221
+        },
+        {
+          "destination": 1179,
+          "name": "west",
+          "source": 1221
+        },
+        {
+          "destination": 1223,
+          "name": "east",
+          "source": 1222
+        },
+        {
+          "destination": 1232,
+          "name": "south",
+          "source": 1222
+        },
+        {
+          "destination": 1221,
+          "name": "west",
+          "source": 1222
+        },
+        {
+          "destination": 1224,
+          "name": "east",
+          "source": 1223
+        },
+        {
+          "destination": 1218,
+          "name": "north",
+          "source": 1223
+        },
+        {
+          "destination": 1189,
+          "name": "south",
+          "source": 1223
+        },
+        {
+          "destination": 1222,
+          "name": "west",
+          "source": 1223
+        },
+        {
+          "destination": 1225,
+          "name": "east",
+          "source": 1224
+        },
+        {
+          "destination": 1252,
+          "name": "southeast",
+          "source": 1224
+        },
+        {
+          "destination": 1223,
+          "name": "west",
+          "source": 1224
+        },
+        {
+          "destination": 1200,
+          "name": "east",
+          "source": 1225
+        },
+        {
+          "destination": 1224,
+          "name": "west",
+          "source": 1225
+        },
+        {
+          "destination": 1227,
+          "name": "east",
+          "source": 1226
+        },
+        {
+          "destination": 1245,
+          "name": "north",
+          "source": 1226
+        },
+        {
+          "destination": 1184,
+          "name": "west",
+          "source": 1226
+        },
+        {
+          "destination": 1228,
+          "name": "east",
+          "source": 1227
+        },
+        {
+          "destination": 1226,
+          "name": "west",
+          "source": 1227
+        },
+        {
+          "destination": 1229,
+          "name": "east",
+          "source": 1228
+        },
+        {
+          "destination": 1192,
+          "name": "north",
+          "source": 1228
+        },
+        {
+          "destination": 1227,
+          "name": "west",
+          "source": 1228
+        },
+        {
+          "destination": 1230,
+          "name": "east",
+          "source": 1229
+        },
+        {
+          "destination": 1246,
+          "name": "north",
+          "source": 1229
+        },
+        {
+          "destination": 1228,
+          "name": "west",
+          "source": 1229
+        },
+        {
+          "destination": 1205,
+          "name": "east",
+          "source": 1230
+        },
+        {
+          "destination": 1229,
+          "name": "west",
+          "source": 1230
+        },
+        {
+          "destination": 1232,
+          "name": "east",
+          "source": 1231
+        },
+        {
+          "destination": 1235,
+          "name": "south",
+          "source": 1231
+        },
+        {
+          "destination": 1180,
+          "name": "west",
+          "source": 1231
+        },
+        {
+          "destination": 1222,
+          "name": "north",
+          "source": 1232
+        },
+        {
+          "destination": 1231,
+          "name": "west",
+          "source": 1232
+        },
+        {
+          "destination": 1234,
+          "name": "east",
+          "source": 1233
+        },
+        {
+          "destination": 1177,
+          "name": "west",
+          "source": 1233
+        },
+        {
+          "destination": 1217,
+          "name": "south",
+          "source": 1234
+        },
+        {
+          "destination": 1233,
+          "name": "west",
+          "source": 1234
+        },
+        {
+          "destination": 1236,
+          "name": "east",
+          "source": 1235
+        },
+        {
+          "destination": 1231,
+          "name": "north",
+          "source": 1235
+        },
+        {
+          "destination": 1190,
+          "name": "east",
+          "source": 1236
+        },
+        {
+          "destination": 1250,
+          "name": "south",
+          "source": 1236
+        },
+        {
+          "destination": 1235,
+          "name": "west",
+          "source": 1236
+        },
+        {
+          "destination": 1131,
+          "name": "west",
+          "source": 1237
+        },
+        {
+          "destination": 1257,
+          "name": "shop",
+          "source": 1237
+        },
+        {
+          "destination": 1123,
+          "name": "west",
+          "source": 1238
+        },
+        {
+          "destination": 1258,
+          "name": "store",
+          "source": 1238
+        },
+        {
+          "destination": 1126,
+          "name": "west",
+          "source": 1239
+        },
+        {
+          "destination": 1259,
+          "name": "door",
+          "source": 1239
+        },
+        {
+          "destination": 1137,
+          "name": "south",
+          "source": 1240
+        },
+        {
+          "destination": 1260,
+          "name": "door",
+          "source": 1240
+        },
+        {
+          "destination": 1120,
+          "name": "west",
+          "source": 1241
+        },
+        {
+          "destination": 1261,
+          "name": "door",
+          "source": 1241
+        },
+        {
+          "destination": 1155,
+          "name": "north",
+          "source": 1242
+        },
+        {
+          "destination": 1262,
+          "name": "door",
+          "source": 1242
+        },
+        {
+          "destination": 1162,
+          "name": "south",
+          "source": 1243
+        },
+        {
+          "destination": 1263,
+          "name": "store",
+          "source": 1243
+        },
+        {
+          "destination": 1164,
+          "name": "northeast",
+          "source": 1244
+        },
+        {
+          "destination": 1264,
+          "name": "door",
+          "source": 1244
+        },
+        {
+          "destination": 1226,
+          "name": "south",
+          "source": 1245
+        },
+        {
+          "destination": 1265,
+          "name": "door",
+          "source": 1245
+        },
+        {
+          "destination": 1229,
+          "name": "south",
+          "source": 1246
+        },
+        {
+          "destination": 1266,
+          "name": "door",
+          "source": 1246
+        },
+        {
+          "destination": 1214,
+          "name": "south",
+          "source": 1247
+        },
+        {
+          "destination": 1267,
+          "name": "loft",
+          "source": 1247
+        },
+        {
+          "destination": 1207,
+          "name": "south",
+          "source": 1248
+        },
+        {
+          "destination": 1268,
+          "name": "door",
+          "source": 1248
+        },
+        {
+          "destination": 1219,
+          "name": "south",
+          "source": 1249
+        },
+        {
+          "destination": 1269,
+          "name": "office",
+          "source": 1249
+        },
+        {
+          "destination": 1236,
+          "name": "north",
+          "source": 1250
+        },
+        {
+          "destination": 1270,
+          "name": "shop",
+          "source": 1250
+        },
+        {
+          "destination": 1189,
+          "name": "west",
+          "source": 1251
+        },
+        {
+          "destination": 1271,
+          "name": "door",
+          "source": 1251
+        },
+        {
+          "destination": 1224,
+          "name": "northwest",
+          "source": 1252
+        },
+        {
+          "destination": 1272,
+          "name": "shop",
+          "source": 1252
+        },
+        {
+          "destination": 1206,
+          "name": "south",
+          "source": 1253
+        },
+        {
+          "destination": 1273,
+          "name": "loft",
+          "source": 1253
+        },
+        {
+          "destination": 1210,
+          "name": "south",
+          "source": 1254
+        },
+        {
+          "destination": 1274,
+          "name": "cellar",
+          "source": 1254
+        },
+        {
+          "destination": 1205,
+          "name": "north",
+          "source": 1255
+        },
+        {
+          "destination": 1275,
+          "name": "door",
+          "source": 1255
+        },
+        {
+          "destination": 1171,
+          "name": "south",
+          "source": 1256
+        },
+        {
+          "destination": 1276,
+          "name": "door",
+          "source": 1256
+        },
+        {
+          "destination": 1237,
+          "name": "out",
+          "source": 1257
+        },
+        {
+          "destination": 1238,
+          "name": "out",
+          "source": 1258
+        },
+        {
+          "destination": 1239,
+          "name": "out",
+          "source": 1259
+        },
+        {
+          "destination": 1240,
+          "name": "out",
+          "source": 1260
+        },
+        {
+          "destination": 1241,
+          "name": "out",
+          "source": 1261
+        },
+        {
+          "destination": 1242,
+          "name": "out",
+          "source": 1262
+        },
+        {
+          "destination": 1243,
+          "name": "out",
+          "source": 1263
+        },
+        {
+          "destination": 1244,
+          "name": "out",
+          "source": 1264
+        },
+        {
+          "destination": 1245,
+          "name": "out",
+          "source": 1265
+        },
+        {
+          "destination": 1246,
+          "name": "out",
+          "source": 1266
+        },
+        {
+          "destination": 1247,
+          "name": "out",
+          "source": 1267
+        },
+        {
+          "destination": 1248,
+          "name": "out",
+          "source": 1268
+        },
+        {
+          "destination": 1249,
+          "name": "out",
+          "source": 1269
+        },
+        {
+          "destination": 1250,
+          "name": "out",
+          "source": 1270
+        },
+        {
+          "destination": 1251,
+          "name": "out",
+          "source": 1271
+        },
+        {
+          "destination": 1252,
+          "name": "out",
+          "source": 1272
+        },
+        {
+          "destination": 1253,
+          "name": "out",
+          "source": 1273
+        },
+        {
+          "destination": 1254,
+          "name": "out",
+          "source": 1274
+        },
+        {
+          "destination": 1255,
+          "name": "out",
+          "source": 1275
+        },
+        {
+          "destination": 1256,
+          "name": "out",
+          "source": 1276
+        },
+        {
+          "destination": 1184,
+          "name": "north",
+          "source": 1277
+        }
+      ],
+      "layout_quality": {
+        "agreement": 1.0,
+        "components": 1,
+        "conflicts": 0,
+        "inferred_rooms": 0,
+        "root_room": 1102
+      },
+      "name": "the-landing-city",
+      "port": {
+        "has_port": false,
+        "port_area": "ferry_shore",
+        "port_distance_m": 2094171.7399991443,
+        "port_metric": "great-circle between anchors"
+      },
+      "rooms": [
+        {
+          "cell": [
+            -1,
+            7,
+            0
+          ],
+          "elevation_m": 32.9425866600599,
+          "id": 1101,
+          "key": "Slakeside, North Wall",
+          "latitude_deg": 8.41292752479194,
+          "longitude_deg": -3.1279666549340233,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            6,
+            0
+          ],
+          "elevation_m": 32.87967536368968,
+          "id": 1102,
+          "key": "Slakeside, Kettleman's End",
+          "latitude_deg": 8.412742878386805,
+          "longitude_deg": -3.1279666548450638,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            5,
+            0
+          ],
+          "elevation_m": 32.81290560785877,
+          "id": 1103,
+          "key": "Slakeside, Cordage Reach",
+          "latitude_deg": 8.41255823198167,
+          "longitude_deg": -3.127966654756105,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            4,
+            0
+          ],
+          "elevation_m": 32.73996892473707,
+          "id": 1104,
+          "key": "Slakeside, Netloft Stair",
+          "latitude_deg": 8.412373585576535,
+          "longitude_deg": -3.1279666546671483,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            3,
+            0
+          ],
+          "elevation_m": 32.661226526286704,
+          "id": 1105,
+          "key": "Slakeside, Crane Stand",
+          "latitude_deg": 8.412188939171404,
+          "longitude_deg": -3.127966654578193,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            2,
+            0
+          ],
+          "elevation_m": 32.57872926227199,
+          "id": 1106,
+          "key": "Slakeside, Salt Stair",
+          "latitude_deg": 8.412004292766271,
+          "longitude_deg": -3.127966654489239,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            1,
+            0
+          ],
+          "elevation_m": 32.49203699266822,
+          "id": 1107,
+          "key": "Slakeside, Locksmith's Corner",
+          "latitude_deg": 8.411819646361138,
+          "longitude_deg": -3.1279666544002853,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            0,
+            0
+          ],
+          "elevation_m": 32.400896305290324,
+          "id": 1108,
+          "key": "Slakeside, Span Head",
+          "latitude_deg": 8.411634999956002,
+          "longitude_deg": -3.1279666543113342,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            -1,
+            0
+          ],
+          "elevation_m": 32.30524919561875,
+          "id": 1109,
+          "key": "Slakeside, South Reach",
+          "latitude_deg": 8.411450353550869,
+          "longitude_deg": -3.1279666542223836,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            -2,
+            0
+          ],
+          "elevation_m": 32.205238635407326,
+          "id": 1110,
+          "key": "Slakeside, Timber Wharf",
+          "latitude_deg": 8.411265707145738,
+          "longitude_deg": -3.127966654133435,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            -3,
+            0
+          ],
+          "elevation_m": 32.10121258613977,
+          "id": 1111,
+          "key": "Slakeside, Tanner's Reach",
+          "latitude_deg": 8.411081060740601,
+          "longitude_deg": -3.1279666540444877,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            -4,
+            0
+          ],
+          "elevation_m": 31.993726454389684,
+          "id": 1112,
+          "key": "Slakeside, Ballast Ground",
+          "latitude_deg": 8.410896414335468,
+          "longitude_deg": -3.127966653955542,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            -5,
+            0
+          ],
+          "elevation_m": 31.88354398651762,
+          "id": 1113,
+          "key": "Slakeside, Longreach Landing",
+          "latitude_deg": 8.410711767930335,
+          "longitude_deg": -3.127966653866597,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            -6,
+            0
+          ],
+          "elevation_m": 31.77163660063162,
+          "id": 1114,
+          "key": "Slakeside, Reed End",
+          "latitude_deg": 8.4105271215252,
+          "longitude_deg": -3.1279666537776536,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            5,
+            0
+          ],
+          "elevation_m": 32.67100881250884,
+          "id": 1115,
+          "key": "Wold Street, North End",
+          "latitude_deg": 8.412558231321691,
+          "longitude_deg": -3.12852661902442,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            4,
+            0
+          ],
+          "elevation_m": 32.59710442129355,
+          "id": 1116,
+          "key": "Wold Street, Upper Wold",
+          "latitude_deg": 8.412373584916564,
+          "longitude_deg": -3.1285266186685914,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            2,
+            0
+          ],
+          "elevation_m": 32.433022150063486,
+          "id": 1117,
+          "key": "Wold Street, Mallow End",
+          "latitude_deg": 8.412004292106305,
+          "longitude_deg": -3.1285266179569517,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            1,
+            0
+          ],
+          "elevation_m": 32.34404538347063,
+          "id": 1118,
+          "key": "Wold Street, Lower Wold",
+          "latitude_deg": 8.411819645701177,
+          "longitude_deg": -3.128526617601141,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            -2,
+            0
+          ],
+          "elevation_m": 32.0505508624301,
+          "id": 1119,
+          "key": "Wold Street, Kiln End",
+          "latitude_deg": 8.411265706485793,
+          "longitude_deg": -3.1285266165337386,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            -3,
+            0
+          ],
+          "elevation_m": 31.945264252881262,
+          "id": 1120,
+          "key": "Wold Street, Tanyard End",
+          "latitude_deg": 8.411081060080663,
+          "longitude_deg": -3.1285266161779495,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            -4,
+            0
+          ],
+          "elevation_m": 31.837426372663987,
+          "id": 1121,
+          "key": "Wold Street, South Gate",
+          "latitude_deg": 8.410896413675536,
+          "longitude_deg": -3.1285266158221647,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            6,
+            0
+          ],
+          "elevation_m": 32.539746058198546,
+          "id": 1122,
+          "key": "Hafter's Row, Wall Gate",
+          "latitude_deg": 8.412742876274853,
+          "longitude_deg": -3.12908658391544,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            5,
+            0
+          ],
+          "elevation_m": 32.46660280966344,
+          "id": 1123,
+          "key": "Hafter's Row, Powder Yard",
+          "latitude_deg": 8.412558229869735,
+          "longitude_deg": -3.1290865832927315,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            4,
+            0
+          ],
+          "elevation_m": 32.38848095076182,
+          "id": 1124,
+          "key": "Hafter's Row, North End",
+          "latitude_deg": 8.412373583464618,
+          "longitude_deg": -3.129086582670032,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            3,
+            0
+          ],
+          "elevation_m": 32.30392588547661,
+          "id": 1125,
+          "key": "Hafter's Row, Upper Row",
+          "latitude_deg": 8.412188937059502,
+          "longitude_deg": -3.1290865820473424,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            2,
+            0
+          ],
+          "elevation_m": 32.21302642132494,
+          "id": 1126,
+          "key": "Hafter's Row, Well Court",
+          "latitude_deg": 8.412004290654382,
+          "longitude_deg": -3.1290865814246627,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            1,
+            0
+          ],
+          "elevation_m": 32.11647685388679,
+          "id": 1127,
+          "key": "Hafter's Row, Middle Row",
+          "latitude_deg": 8.411819644249267,
+          "longitude_deg": -3.1290865808019923,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            0,
+            0
+          ],
+          "elevation_m": 32.01510295787738,
+          "id": 1128,
+          "key": "Hafter's Row, Ledger End",
+          "latitude_deg": 8.411634997844148,
+          "longitude_deg": -3.1290865801793313,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            -1,
+            0
+          ],
+          "elevation_m": 31.909867774365512,
+          "id": 1129,
+          "key": "Hafter's Row, Kiln End",
+          "latitude_deg": 8.411450351439033,
+          "longitude_deg": -3.1290865795566805,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            -2,
+            0
+          ],
+          "elevation_m": 31.80187638637184,
+          "id": 1130,
+          "key": "Hafter's Row, Lower Row",
+          "latitude_deg": 8.411265705033914,
+          "longitude_deg": -3.12908657893404,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            -3,
+            0
+          ],
+          "elevation_m": 31.692379653371795,
+          "id": 1131,
+          "key": "Hafter's Row, South End",
+          "latitude_deg": 8.411081058628797,
+          "longitude_deg": -3.1290865783114077,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            -4,
+            0
+          ],
+          "elevation_m": 31.58277691248041,
+          "id": 1132,
+          "key": "Hafter's Row, Bakers' Corner",
+          "latitude_deg": 8.410896412223678,
+          "longitude_deg": -3.1290865776887857,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            6,
+            0
+          ],
+          "elevation_m": 32.84087787321434,
+          "id": 1133,
+          "key": "Gate Road, Water End",
+          "latitude_deg": 8.412742878254807,
+          "longitude_deg": -3.128153309690127,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            6,
+            0
+          ],
+          "elevation_m": 32.793716801558155,
+          "id": 1134,
+          "key": "Gate Road, Upper End",
+          "latitude_deg": 8.412742878034813,
+          "longitude_deg": -3.1283399645351904,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            6,
+            0
+          ],
+          "elevation_m": 32.73929239819322,
+          "id": 1135,
+          "key": "Gate Road at Wold Street",
+          "latitude_deg": 8.412742877726819,
+          "longitude_deg": -3.1285266193802537,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            6,
+            0
+          ],
+          "elevation_m": 32.678366775898766,
+          "id": 1136,
+          "key": "Gate Road, Wold Corner",
+          "latitude_deg": 8.412742877330828,
+          "longitude_deg": -3.128713274225316,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            6,
+            0
+          ],
+          "elevation_m": 32.61163900441727,
+          "id": 1137,
+          "key": "Gate Road, Gatehouse",
+          "latitude_deg": 8.41274287684684,
+          "longitude_deg": -3.128899929070378,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            3,
+            0
+          ],
+          "elevation_m": 32.62277195598609,
+          "id": 1138,
+          "key": "Dimmet Road, Warehouse End",
+          "latitude_deg": 8.41218893903941,
+          "longitude_deg": -3.1281533091563847,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            3,
+            0
+          ],
+          "elevation_m": 32.57438274552053,
+          "id": 1139,
+          "key": "Dimmet Road, Cooper's End",
+          "latitude_deg": 8.41218893881942,
+          "longitude_deg": -3.128339963734577,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            3,
+            0
+          ],
+          "elevation_m": 32.517334438494,
+          "id": 1140,
+          "key": "Dimmet Road at Wold Street",
+          "latitude_deg": 8.412188938511433,
+          "longitude_deg": -3.1285266183127693,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            3,
+            0
+          ],
+          "elevation_m": 32.45263697148447,
+          "id": 1141,
+          "key": "Dimmet Road, Chandler's End",
+          "latitude_deg": 8.41218893811545,
+          "longitude_deg": -3.1287132728909604,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            3,
+            0
+          ],
+          "elevation_m": 32.38121843709383,
+          "id": 1142,
+          "key": "Dimmet Road, Dead End",
+          "latitude_deg": 8.412188937631473,
+          "longitude_deg": -3.128899927469152,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            0,
+            0
+          ],
+          "elevation_m": 32.363053658444144,
+          "id": 1143,
+          "key": "Ledgergate, Green End",
+          "latitude_deg": 8.411634999824013,
+          "longitude_deg": -3.1281533086226676,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            0,
+            0
+          ],
+          "elevation_m": 32.31232275632738,
+          "id": 1144,
+          "key": "Ledgergate, Bank Steps",
+          "latitude_deg": 8.411634999604026,
+          "longitude_deg": -3.128339962934001,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            0,
+            0
+          ],
+          "elevation_m": 32.250455319592575,
+          "id": 1145,
+          "key": "Ledgergate at Wold Street",
+          "latitude_deg": 8.411634999296048,
+          "longitude_deg": -3.1285266172453348,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            0,
+            0
+          ],
+          "elevation_m": 32.179193917025366,
+          "id": 1146,
+          "key": "Ledgergate, Counting End",
+          "latitude_deg": 8.411634998900075,
+          "longitude_deg": -3.128713271556667,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            0,
+            0
+          ],
+          "elevation_m": 32.100209741756075,
+          "id": 1147,
+          "key": "Ledgergate, West End",
+          "latitude_deg": 8.41163499841611,
+          "longitude_deg": -3.1288999258679997,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            -1,
+            0
+          ],
+          "elevation_m": 32.267617340183605,
+          "id": 1148,
+          "key": "Kiln Street, Green End",
+          "latitude_deg": 8.411450353418882,
+          "longitude_deg": -3.1281533084447677,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            -1,
+            0
+          ],
+          "elevation_m": 32.21604772691035,
+          "id": 1149,
+          "key": "Kiln Street, Bottle Kiln",
+          "latitude_deg": 8.411450353198898,
+          "longitude_deg": -3.1283399626671504,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            -1,
+            0
+          ],
+          "elevation_m": 32.15248424148181,
+          "id": 1150,
+          "key": "Kiln Street at Wold Street",
+          "latitude_deg": 8.411450352890919,
+          "longitude_deg": -3.128526616889534,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            -1,
+            0
+          ],
+          "elevation_m": 32.07896359822955,
+          "id": 1151,
+          "key": "Kiln Street, Potter's End",
+          "latitude_deg": 8.41145035249495,
+          "longitude_deg": -3.1287132711119168,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            -1,
+            0
+          ],
+          "elevation_m": 31.997456483875283,
+          "id": 1152,
+          "key": "Kiln Street, Clay Yard",
+          "latitude_deg": 8.411450352010986,
+          "longitude_deg": -3.1288999253342986,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            -5,
+            0
+          ],
+          "elevation_m": 31.847197956736082,
+          "id": 1153,
+          "key": "Peel Row, Market End",
+          "latitude_deg": 8.410711767798349,
+          "longitude_deg": -3.1281533077331938,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            -5,
+            0
+          ],
+          "elevation_m": 31.79451314723788,
+          "id": 1154,
+          "key": "Peel Row, Middle Row",
+          "latitude_deg": 8.410711767578373,
+          "longitude_deg": -3.12833996159979,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            -5,
+            0
+          ],
+          "elevation_m": 31.72803321502179,
+          "id": 1155,
+          "key": "Peel Row at Wold Street",
+          "latitude_deg": 8.410711767270406,
+          "longitude_deg": -3.128526615466387,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            -5,
+            0
+          ],
+          "elevation_m": 31.650661620732592,
+          "id": 1156,
+          "key": "Peel Row, Bakers' End",
+          "latitude_deg": 8.41071176687445,
+          "longitude_deg": -3.1287132693329824,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            -5,
+            0
+          ],
+          "elevation_m": 31.565253921119815,
+          "id": 1157,
+          "key": "Peel Row, Wall End",
+          "latitude_deg": 8.4107117663905,
+          "longitude_deg": -3.128899923199578,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            2,
+            0
+          ],
+          "elevation_m": 32.491453513129855,
+          "id": 1158,
+          "key": "Mallow Green, North Side",
+          "latitude_deg": 8.41200429241429,
+          "longitude_deg": -3.128339963467714,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            1,
+            0
+          ],
+          "elevation_m": 32.40414418673523,
+          "id": 1159,
+          "key": "Mallow Green, the Common",
+          "latitude_deg": 8.411819646009159,
+          "longitude_deg": -3.128339963200856,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            1,
+            0
+          ],
+          "elevation_m": 32.453997340010396,
+          "id": 1160,
+          "key": "Mallow Green, East Walk",
+          "latitude_deg": 8.411819646229148,
+          "longitude_deg": -3.128153308800571,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            2,
+            0
+          ],
+          "elevation_m": 32.54049084419467,
+          "id": 1161,
+          "key": "Mallow Green, Northeast Corner",
+          "latitude_deg": 8.412004292634277,
+          "longitude_deg": -3.1281533089784763,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            4,
+            0
+          ],
+          "elevation_m": 32.65324618436737,
+          "id": 1162,
+          "key": "Bruntwold Square",
+          "latitude_deg": 8.41237358522455,
+          "longitude_deg": -3.128339964001444,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            4,
+            0
+          ],
+          "elevation_m": 32.533734682287985,
+          "id": 1163,
+          "key": "Vesper Square",
+          "latitude_deg": 8.412373584520578,
+          "longitude_deg": -3.128713273335739,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            5,
+            0
+          ],
+          "elevation_m": 32.60876941327665,
+          "id": 1164,
+          "key": "Temple Rise",
+          "latitude_deg": 8.412558230925704,
+          "longitude_deg": -3.128713273780524,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            -3,
+            0
+          ],
+          "elevation_m": 32.06410505353803,
+          "id": 1165,
+          "key": "Cinder Court",
+          "latitude_deg": 8.411081060608614,
+          "longitude_deg": -3.1281533080889745,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -2,
+            -2,
+            0
+          ],
+          "elevation_m": 32.167846752536846,
+          "id": 1166,
+          "key": "Whitstone Row, East End",
+          "latitude_deg": 8.411265707013747,
+          "longitude_deg": -3.12815330826687,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            -2,
+            0
+          ],
+          "elevation_m": 32.11557356426891,
+          "id": 1167,
+          "key": "Whitstone Row, West End",
+          "latitude_deg": 8.411265706793767,
+          "longitude_deg": -3.1283399624003043,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            6,
+            0
+          ],
+          "elevation_m": 32.90535348709641,
+          "id": 1168,
+          "key": "Kettleman's Bridge",
+          "latitude_deg": 8.412742878430803,
+          "longitude_deg": -3.12778,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            0,
+            0
+          ],
+          "elevation_m": 32.426004495410254,
+          "id": 1169,
+          "key": "Slakespan",
+          "latitude_deg": 8.411635,
+          "longitude_deg": -3.12778,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            -5,
+            0
+          ],
+          "elevation_m": 31.913380160814732,
+          "id": 1170,
+          "key": "Longreach Bridge",
+          "latitude_deg": 8.41071176797433,
+          "longitude_deg": -3.1277800000000004,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            7,
+            0
+          ],
+          "elevation_m": 32.97933875526091,
+          "id": 1171,
+          "key": "Blackstone Quay, North Wall",
+          "latitude_deg": 8.41292752479194,
+          "longitude_deg": -3.1275933450659767,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            6,
+            0
+          ],
+          "elevation_m": 32.91719728291842,
+          "id": 1172,
+          "key": "Blackstone Quay, Kettleman's End",
+          "latitude_deg": 8.412742878386805,
+          "longitude_deg": -3.1275933451549367,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            5,
+            0
+          ],
+          "elevation_m": 32.85012705556361,
+          "id": 1173,
+          "key": "Blackstone Quay, Ropery",
+          "latitude_deg": 8.41255823198167,
+          "longitude_deg": -3.1275933452438953,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            4,
+            0
+          ],
+          "elevation_m": 32.775821580846156,
+          "id": 1174,
+          "key": "Blackstone Quay, Cooper's Slip",
+          "latitude_deg": 8.412373585576535,
+          "longitude_deg": -3.127593345332852,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            3,
+            0
+          ],
+          "elevation_m": 32.69583274512702,
+          "id": 1175,
+          "key": "Blackstone Quay, Corn Wharf",
+          "latitude_deg": 8.412188939171404,
+          "longitude_deg": -3.1275933454218077,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            2,
+            0
+          ],
+          "elevation_m": 32.613428020886175,
+          "id": 1176,
+          "key": "Blackstone Quay, Fish Steps",
+          "latitude_deg": 8.412004292766271,
+          "longitude_deg": -3.1275933455107627,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            1,
+            0
+          ],
+          "elevation_m": 32.528075329843794,
+          "id": 1177,
+          "key": "Blackstone Quay, Custom Stair",
+          "latitude_deg": 8.411819646361138,
+          "longitude_deg": -3.127593345599715,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            0,
+            0
+          ],
+          "elevation_m": 32.43937144897462,
+          "id": 1178,
+          "key": "Blackstone Quay, Span Head",
+          "latitude_deg": 8.411634999956002,
+          "longitude_deg": -3.1275933456886666,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -1,
+            0
+          ],
+          "elevation_m": 32.34705071743808,
+          "id": 1179,
+          "key": "Blackstone Quay, Lower Quay",
+          "latitude_deg": 8.411450353550869,
+          "longitude_deg": -3.127593345777617,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -2,
+            0
+          ],
+          "elevation_m": 32.250990584448935,
+          "id": 1180,
+          "key": "Blackstone Quay, Culvert Mouth",
+          "latitude_deg": 8.41126570714574,
+          "longitude_deg": -3.1275933458665657,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -3,
+            0
+          ],
+          "elevation_m": 32.151216161434164,
+          "id": 1181,
+          "key": "Blackstone Quay, Bone Wharf",
+          "latitude_deg": 8.411081060740601,
+          "longitude_deg": -3.1275933459555127,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -4,
+            0
+          ],
+          "elevation_m": 32.04790375502481,
+          "id": 1182,
+          "key": "Blackstone Quay, Longreach End",
+          "latitude_deg": 8.41089641433547,
+          "longitude_deg": -3.1275933460444594,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -5,
+            0
+          ],
+          "elevation_m": 31.94138335772841,
+          "id": 1183,
+          "key": "Blackstone Quay, Withy Ground",
+          "latitude_deg": 8.410711767930335,
+          "longitude_deg": -3.1275933461334033,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -6,
+            0
+          ],
+          "elevation_m": 31.83214007332181,
+          "id": 1184,
+          "key": "Blackstone Quay, South Mud",
+          "latitude_deg": 8.4105271215252,
+          "longitude_deg": -3.127593346222347,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            5,
+            0
+          ],
+          "elevation_m": 32.8123115829557,
+          "id": 1185,
+          "key": "Brickfield Road, North End",
+          "latitude_deg": 8.412558231321691,
+          "longitude_deg": -3.1270333809755804,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            4,
+            0
+          ],
+          "elevation_m": 32.73402393726289,
+          "id": 1186,
+          "key": "Brickfield Road, Upper Brickfield",
+          "latitude_deg": 8.412373584916564,
+          "longitude_deg": -3.1270333813314086,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            2,
+            0
+          ],
+          "elevation_m": 32.57194499750023,
+          "id": 1187,
+          "key": "Brickfield Road, Kiln Bank",
+          "latitude_deg": 8.412004292106305,
+          "longitude_deg": -3.1270333820430483,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            1,
+            0
+          ],
+          "elevation_m": 32.494123129150026,
+          "id": 1188,
+          "key": "Brickfield Road, Market End",
+          "latitude_deg": 8.411819645701177,
+          "longitude_deg": -3.12703338239886,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -2,
+            0
+          ],
+          "elevation_m": 32.26138647886732,
+          "id": 1189,
+          "key": "Brickfield Road, Lower Brickfield",
+          "latitude_deg": 8.411265706485793,
+          "longitude_deg": -3.127033383466262,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -3,
+            0
+          ],
+          "elevation_m": 32.18028615689059,
+          "id": 1190,
+          "key": "Brickfield Road, Tinker End",
+          "latitude_deg": 8.411081060080662,
+          "longitude_deg": -3.127033383822051,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -4,
+            0
+          ],
+          "elevation_m": 32.095389270111916,
+          "id": 1191,
+          "key": "Brickfield Road, Boneyard End",
+          "latitude_deg": 8.410896413675536,
+          "longitude_deg": -3.1270333841778353,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -5,
+            0
+          ],
+          "elevation_m": 32.005391223075364,
+          "id": 1192,
+          "key": "Brickfield Road, South End",
+          "latitude_deg": 8.410711767270406,
+          "longitude_deg": -3.1270333845336142,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            6,
+            0
+          ],
+          "elevation_m": 32.76693598789118,
+          "id": 1193,
+          "key": "Kilnward Lane, Wall End",
+          "latitude_deg": 8.412742876274853,
+          "longitude_deg": -3.1264734160845604,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            5,
+            0
+          ],
+          "elevation_m": 32.69481354627971,
+          "id": 1194,
+          "key": "Kilnward Lane, Upper Lane",
+          "latitude_deg": 8.412558229869735,
+          "longitude_deg": -3.1264734167072694,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            4,
+            0
+          ],
+          "elevation_m": 32.61192889544941,
+          "id": 1195,
+          "key": "Kilnward Lane, Sawpit",
+          "latitude_deg": 8.412373583464618,
+          "longitude_deg": -3.1264734173299686,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            3,
+            0
+          ],
+          "elevation_m": 32.52762034147027,
+          "id": 1196,
+          "key": "Kilnward Lane, Almsgate End",
+          "latitude_deg": 8.412188937059502,
+          "longitude_deg": -3.126473417952658,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            2,
+            0
+          ],
+          "elevation_m": 32.452335264683256,
+          "id": 1197,
+          "key": "Kilnward Lane, Middle Lane",
+          "latitude_deg": 8.412004290654382,
+          "longitude_deg": -3.1264734185753382,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            1,
+            0
+          ],
+          "elevation_m": 32.38460763009637,
+          "id": 1198,
+          "key": "Kilnward Lane, Market Back",
+          "latitude_deg": 8.411819644249267,
+          "longitude_deg": -3.126473419198008,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            0,
+            0
+          ],
+          "elevation_m": 32.32268668318394,
+          "id": 1199,
+          "key": "Kilnward Lane, Faring End",
+          "latitude_deg": 8.411634997844148,
+          "longitude_deg": -3.126473419820669,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -1,
+            0
+          ],
+          "elevation_m": 32.264540319613104,
+          "id": 1200,
+          "key": "Kilnward Lane, Culvert End",
+          "latitude_deg": 8.411450351439033,
+          "longitude_deg": -3.12647342044332,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -2,
+            0
+          ],
+          "elevation_m": 32.2078548852477,
+          "id": 1201,
+          "key": "Kilnward Lane, Lower Lane",
+          "latitude_deg": 8.411265705033912,
+          "longitude_deg": -3.126473421065961,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -3,
+            0
+          ],
+          "elevation_m": 32.15003733224823,
+          "id": 1202,
+          "key": "Kilnward Lane, Tanpit End",
+          "latitude_deg": 8.411081058628797,
+          "longitude_deg": -3.1264734216885928,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -4,
+            0
+          ],
+          "elevation_m": 32.08821970660245,
+          "id": 1203,
+          "key": "Kilnward Lane, Boneyard Back",
+          "latitude_deg": 8.410896412223678,
+          "longitude_deg": -3.1264734223112156,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -5,
+            0
+          ],
+          "elevation_m": 32.01926594215355,
+          "id": 1204,
+          "key": "Kilnward Lane, Scrap End",
+          "latitude_deg": 8.410711765818563,
+          "longitude_deg": -3.1264734229338274,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -6,
+            0
+          ],
+          "elevation_m": 31.939780936146697,
+          "id": 1205,
+          "key": "Kilnward Lane, South Corner",
+          "latitude_deg": 8.410527119413445,
+          "longitude_deg": -3.12647342355643,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            6,
+            0
+          ],
+          "elevation_m": 32.91628078540453,
+          "id": 1206,
+          "key": "Gable Row, Quay End",
+          "latitude_deg": 8.412742878254807,
+          "longitude_deg": -3.127406690309874,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            6,
+            0
+          ],
+          "elevation_m": 32.903805740824524,
+          "id": 1207,
+          "key": "Gable Row, Middle Row",
+          "latitude_deg": 8.412742878034813,
+          "longitude_deg": -3.12722003546481,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            6,
+            0
+          ],
+          "elevation_m": 32.88110366524948,
+          "id": 1208,
+          "key": "Gable Row at Brickfield Road",
+          "latitude_deg": 8.412742877726819,
+          "longitude_deg": -3.1270333806197477,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            6,
+            0
+          ],
+          "elevation_m": 32.84963775280666,
+          "id": 1209,
+          "key": "Gable Row, the Descent",
+          "latitude_deg": 8.412742877330828,
+          "longitude_deg": -3.126846725774685,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            6,
+            0
+          ],
+          "elevation_m": 32.81100463452791,
+          "id": 1210,
+          "key": "Gable Row, Wall End",
+          "latitude_deg": 8.412742876846842,
+          "longitude_deg": -3.1266600709296224,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            3,
+            0
+          ],
+          "elevation_m": 32.69262360685521,
+          "id": 1211,
+          "key": "Almsgate Road, Quay End",
+          "latitude_deg": 8.41218893903941,
+          "longitude_deg": -3.1274066908436158,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            3,
+            0
+          ],
+          "elevation_m": 32.67740008148293,
+          "id": 1212,
+          "key": "Almsgate Road, Guild End",
+          "latitude_deg": 8.41218893881942,
+          "longitude_deg": -3.127220036265424,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            3,
+            0
+          ],
+          "elevation_m": 32.651604875036355,
+          "id": 1213,
+          "key": "Almsgate Road at Brickfield Road",
+          "latitude_deg": 8.412188938511433,
+          "longitude_deg": -3.1270333816872316,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            3,
+            0
+          ],
+          "elevation_m": 32.61684044377077,
+          "id": 1214,
+          "key": "Almsgate Road, Almshouse Row",
+          "latitude_deg": 8.41218893811545,
+          "longitude_deg": -3.1268467271090397,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            3,
+            0
+          ],
+          "elevation_m": 32.57487033311057,
+          "id": 1215,
+          "key": "Almsgate Road, Lane End",
+          "latitude_deg": 8.412188937631473,
+          "longitude_deg": -3.1266600725308487,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            0,
+            0
+          ],
+          "elevation_m": 32.44175912425418,
+          "id": 1216,
+          "key": "Faring Street, Bridge Head",
+          "latitude_deg": 8.411634999824013,
+          "longitude_deg": -3.1274066913773324,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            0,
+            0
+          ],
+          "elevation_m": 32.434029131196816,
+          "id": 1217,
+          "key": "Faring Street, Lower End",
+          "latitude_deg": 8.411634999604026,
+          "longitude_deg": -3.1272200370659995,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            0,
+            0
+          ],
+          "elevation_m": 32.41714339516537,
+          "id": 1218,
+          "key": "Faring Street at Brickfield Road",
+          "latitude_deg": 8.41163499929605,
+          "longitude_deg": -3.1270333827546666,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            0,
+            0
+          ],
+          "elevation_m": 32.39216471461748,
+          "id": 1219,
+          "key": "Faring Street, Upper End",
+          "latitude_deg": 8.411634998900077,
+          "longitude_deg": -3.1268467284433337,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            0,
+            0
+          ],
+          "elevation_m": 32.36025721274635,
+          "id": 1220,
+          "key": "Faring Street, Toll End",
+          "latitude_deg": 8.41163499841611,
+          "longitude_deg": -3.1266600741320008,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            -1,
+            0
+          ],
+          "elevation_m": 32.353433809053,
+          "id": 1221,
+          "key": "Culvert Road, the Grate",
+          "latitude_deg": 8.41145035341888,
+          "longitude_deg": -3.127406691555233,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            -1,
+            0
+          ],
+          "elevation_m": 32.35085504118571,
+          "id": 1222,
+          "key": "Culvert Road, Middle End",
+          "latitude_deg": 8.411450353198898,
+          "longitude_deg": -3.1272200373328496,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -1,
+            0
+          ],
+          "elevation_m": 32.3399412997098,
+          "id": 1223,
+          "key": "Culvert Road at Brickfield Road",
+          "latitude_deg": 8.411450352890919,
+          "longitude_deg": -3.127033383110467,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            -1,
+            0
+          ],
+          "elevation_m": 32.3213914504402,
+          "id": 1224,
+          "key": "Culvert Road, Yard End",
+          "latitude_deg": 8.41145035249495,
+          "longitude_deg": -3.1268467288880837,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            -1,
+            0
+          ],
+          "elevation_m": 32.295976606084004,
+          "id": 1225,
+          "key": "Culvert Road, Lane End",
+          "latitude_deg": 8.411450352010986,
+          "longitude_deg": -3.126660074665702,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            -6,
+            0
+          ],
+          "elevation_m": 31.860768804648316,
+          "id": 1226,
+          "key": "Tinker Street, Quay End",
+          "latitude_deg": 8.41052712139322,
+          "longitude_deg": -3.1274066924446933,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            -6,
+            0
+          ],
+          "elevation_m": 31.886771075169563,
+          "id": 1227,
+          "key": "Tinker Street, Middle End",
+          "latitude_deg": 8.41052712117324,
+          "longitude_deg": -3.1272200386670397,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -6,
+            0
+          ],
+          "elevation_m": 31.908939241336327,
+          "id": 1228,
+          "key": "Tinker Street at Brickfield Road",
+          "latitude_deg": 8.410527120865277,
+          "longitude_deg": -3.1270333848893874,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            -6,
+            0
+          ],
+          "elevation_m": 31.926026692118235,
+          "id": 1229,
+          "key": "Tinker Street, Forge End",
+          "latitude_deg": 8.410527120469323,
+          "longitude_deg": -3.1268467311117343,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            -6,
+            0
+          ],
+          "elevation_m": 31.936748302270296,
+          "id": 1230,
+          "key": "Tinker Street, Lane End",
+          "latitude_deg": 8.41052711998538,
+          "longitude_deg": -3.126660077334082,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            -2,
+            0
+          ],
+          "elevation_m": 32.26202486538384,
+          "id": 1231,
+          "key": "Needlewalk, Lower Path",
+          "latitude_deg": 8.411265707013747,
+          "longitude_deg": -3.127406691733131,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            -2,
+            0
+          ],
+          "elevation_m": 32.26541107685537,
+          "id": 1232,
+          "key": "Needlewalk, Guild End",
+          "latitude_deg": 8.411265706793767,
+          "longitude_deg": -3.127220037599696,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            1,
+            0
+          ],
+          "elevation_m": 32.52739832444715,
+          "id": 1233,
+          "key": "New Market Street, West End",
+          "latitude_deg": 8.411819646229146,
+          "longitude_deg": -3.12740669119943,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            1,
+            0
+          ],
+          "elevation_m": 32.51567432450682,
+          "id": 1234,
+          "key": "New Market Street, Market Hall",
+          "latitude_deg": 8.411819646009159,
+          "longitude_deg": -3.127220036799145,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            -3,
+            0
+          ],
+          "elevation_m": 32.16722308786525,
+          "id": 1235,
+          "key": "Pinch Lane, North End",
+          "latitude_deg": 8.411081060608614,
+          "longitude_deg": -3.1274066919110255,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            -3,
+            0
+          ],
+          "elevation_m": 32.176972571265736,
+          "id": 1236,
+          "key": "Pinch Lane, South End",
+          "latitude_deg": 8.411081060388636,
+          "longitude_deg": -3.1272200378665387,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            -3,
+            0
+          ],
+          "elevation_m": 31.78328943769297,
+          "id": 1237,
+          "key": "Cordwainer's Court",
+          "latitude_deg": 8.411081059200741,
+          "longitude_deg": -3.128899924266922,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            5,
+            0
+          ],
+          "elevation_m": 32.54040981399481,
+          "id": 1238,
+          "key": "Saltpetre Yard",
+          "latitude_deg": 8.412558230441718,
+          "longitude_deg": -3.128899928536628,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            2,
+            0
+          ],
+          "elevation_m": 32.292721823776525,
+          "id": 1239,
+          "key": "Well Court",
+          "latitude_deg": 8.412004291226353,
+          "longitude_deg": -3.1288999269354263,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            7,
+            0
+          ],
+          "elevation_m": 32.67933164994997,
+          "id": 1240,
+          "key": "Drover's Yard",
+          "latitude_deg": 8.412927523251962,
+          "longitude_deg": -3.128899929604137,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            -3,
+            0
+          ],
+          "elevation_m": 32.0113546550228,
+          "id": 1241,
+          "key": "Chapter Court",
+          "latitude_deg": 8.411081060388636,
+          "longitude_deg": -3.128339962133462,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            -6,
+            0
+          ],
+          "elevation_m": 31.618274569053106,
+          "id": 1242,
+          "key": "Fleece Yard",
+          "latitude_deg": 8.410527120865279,
+          "longitude_deg": -3.128526615110614,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -3,
+            5,
+            0
+          ],
+          "elevation_m": 32.72637987804084,
+          "id": 1243,
+          "key": "Lamplighter's Court",
+          "latitude_deg": 8.412558231629681,
+          "longitude_deg": -3.1283399642683154,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            4,
+            0
+          ],
+          "elevation_m": 32.46394965360683,
+          "id": 1244,
+          "key": "Almoner's Court",
+          "latitude_deg": 8.412373584036596,
+          "longitude_deg": -3.1288999280028857,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            -5,
+            0
+          ],
+          "elevation_m": 31.966667884645446,
+          "id": 1245,
+          "key": "Withy Yard",
+          "latitude_deg": 8.410711767798349,
+          "longitude_deg": -3.1274066922668067,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            -5,
+            0
+          ],
+          "elevation_m": 32.01691251864659,
+          "id": 1246,
+          "key": "Founder's Court",
+          "latitude_deg": 8.41071176687445,
+          "longitude_deg": -3.1268467306670176,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            4,
+            0
+          ],
+          "elevation_m": 32.70001022200363,
+          "id": 1247,
+          "key": "Pattern Yard",
+          "latitude_deg": 8.412373584520578,
+          "longitude_deg": -3.1268467266642617,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            7,
+            0
+          ],
+          "elevation_m": 32.96519795216388,
+          "id": 1248,
+          "key": "Bell Court",
+          "latitude_deg": 8.412927524439946,
+          "longitude_deg": -3.1272200351979302,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            1,
+            0
+          ],
+          "elevation_m": 32.46409114667716,
+          "id": 1249,
+          "key": "Kiln Court",
+          "latitude_deg": 8.411819645305203,
+          "longitude_deg": -3.1268467279985757,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            -4,
+            0
+          ],
+          "elevation_m": 32.08483513061449,
+          "id": 1250,
+          "key": "Tallow Court",
+          "latitude_deg": 8.410896413983505,
+          "longitude_deg": -3.1272200381333763,
+          "submerged": false
+        },
+        {
+          "cell": [
+            5,
+            -2,
+            0
+          ],
+          "elevation_m": 32.250230563522976,
+          "id": 1251,
+          "key": "Ferryman's Court",
+          "latitude_deg": 8.411265706089823,
+          "longitude_deg": -3.1268467293328275,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            -2,
+            0
+          ],
+          "elevation_m": 32.232265224353014,
+          "id": 1252,
+          "key": "Barge Yard",
+          "latitude_deg": 8.411265705605867,
+          "longitude_deg": -3.1266600751993945,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            7,
+            0
+          ],
+          "elevation_m": 32.977980170822754,
+          "id": 1253,
+          "key": "Ropemaker's Court",
+          "latitude_deg": 8.41292752465994,
+          "longitude_deg": -3.1274066901319544,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            7,
+            0
+          ],
+          "elevation_m": 32.873050263399676,
+          "id": 1254,
+          "key": "Vintner's Court",
+          "latitude_deg": 8.412927523251962,
+          "longitude_deg": -3.1266600703958636,
+          "submerged": false
+        },
+        {
+          "cell": [
+            7,
+            -7,
+            0
+          ],
+          "elevation_m": 31.846675585035733,
+          "id": 1255,
+          "key": "Sexton's Court",
+          "latitude_deg": 8.410342473008328,
+          "longitude_deg": -3.1264734241790233,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            8,
+            0
+          ],
+          "elevation_m": 33.03841858407063,
+          "id": 1256,
+          "key": "Gauger's Court",
+          "latitude_deg": 8.413112171197072,
+          "longitude_deg": -3.1275933449770164,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            -6,
+            1
+          ],
+          "elevation_m": 30.949266966688423,
+          "id": 1257,
+          "key": "Fentrey's, the Shoemaker",
+          "latitude_deg": 8.410527115233927,
+          "longitude_deg": -3.1300198453318187,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            10,
+            1
+          ],
+          "elevation_m": 32.46651092629365,
+          "id": 1258,
+          "key": "The Powder Store",
+          "latitude_deg": 8.413481457715285,
+          "longitude_deg": -3.1300198624109066,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            4,
+            1
+          ],
+          "elevation_m": 31.945810410662418,
+          "id": 1259,
+          "key": "The Well House",
+          "latitude_deg": 8.412373579284777,
+          "longitude_deg": -3.1300198560057524,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            14,
+            1
+          ],
+          "elevation_m": 32.84553521734883,
+          "id": 1260,
+          "key": "The Drovers' Room",
+          "latitude_deg": 8.414220043335625,
+          "longitude_deg": -3.1300198666813395,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            -6,
+            1
+          ],
+          "elevation_m": 31.45828712741947,
+          "id": 1261,
+          "key": "The Chapter House",
+          "latitude_deg": 8.41052711998538,
+          "longitude_deg": -3.128899922665919,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -8,
+            -12,
+            1
+          ],
+          "elevation_m": 30.674657339111818,
+          "id": 1262,
+          "key": "The Wool Room",
+          "latitude_deg": 8.40941924032285,
+          "longitude_deg": -3.129273225952177,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            10,
+            1
+          ],
+          "elevation_m": 32.87345492957749,
+          "id": 1263,
+          "key": "The Oil Store",
+          "latitude_deg": 8.413481462467328,
+          "longitude_deg": -3.1288999312054626,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            8,
+            1
+          ],
+          "elevation_m": 32.29219804602953,
+          "id": 1264,
+          "key": "The Almonry",
+          "latitude_deg": 8.413112164905117,
+          "longitude_deg": -3.1300198602757896,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            -10,
+            1
+          ],
+          "elevation_m": 31.443826729150764,
+          "id": 1265,
+          "key": "The Basket Loft",
+          "latitude_deg": 8.409788535244763,
+          "longitude_deg": -3.127033386312424,
+          "submerged": false
+        },
+        {
+          "cell": [
+            10,
+            -10,
+            1
+          ],
+          "elevation_m": 31.50431970745517,
+          "id": 1266,
+          "key": "The Foundry",
+          "latitude_deg": 8.409788531549305,
+          "longitude_deg": -3.125913465781071,
+          "submerged": false
+        },
+        {
+          "cell": [
+            10,
+            8,
+            1
+          ],
+          "elevation_m": 32.74559653587218,
+          "id": 1267,
+          "key": "The Pattern Loft",
+          "latitude_deg": 8.413112166841103,
+          "longitude_deg": -3.12591344977017,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            14,
+            1
+          ],
+          "elevation_m": 33.21860782886871,
+          "id": 1268,
+          "key": "The Ringing Room",
+          "latitude_deg": 8.414220048087813,
+          "longitude_deg": -3.1266600666593214,
+          "submerged": false
+        },
+        {
+          "cell": [
+            10,
+            2,
+            1
+          ],
+          "elevation_m": 32.301180572664414,
+          "id": 1269,
+          "key": "The Brickworks Office",
+          "latitude_deg": 8.412004288410502,
+          "longitude_deg": -3.125913455107633,
+          "submerged": false
+        },
+        {
+          "cell": [
+            6,
+            -8,
+            1
+          ],
+          "elevation_m": 31.732089909786616,
+          "id": 1270,
+          "key": "The Chandlery",
+          "latitude_deg": 8.410157827175135,
+          "longitude_deg": -3.126660078401376,
+          "submerged": false
+        },
+        {
+          "cell": [
+            10,
+            -4,
+            1
+          ],
+          "elevation_m": 32.009519144457926,
+          "id": 1271,
+          "key": "The Ferryman's House",
+          "latitude_deg": 8.410896409979902,
+          "longitude_deg": -3.1259134604446,
+          "submerged": false
+        },
+        {
+          "cell": [
+            12,
+            -4,
+            1
+          ],
+          "elevation_m": 31.913278137089243,
+          "id": 1272,
+          "key": "The Fitter's Shop",
+          "latitude_deg": 8.410896408044096,
+          "longitude_deg": -3.1255401525335276,
+          "submerged": false
+        },
+        {
+          "cell": [
+            4,
+            14,
+            1
+          ],
+          "elevation_m": 33.30466277502438,
+          "id": 1273,
+          "key": "The Rope Loft",
+          "latitude_deg": 8.414220048967849,
+          "longitude_deg": -3.12703337777288,
+          "submerged": false
+        },
+        {
+          "cell": [
+            12,
+            14,
+            1
+          ],
+          "elevation_m": 33.02533610096995,
+          "id": 1274,
+          "key": "The Wine Vault",
+          "latitude_deg": 8.414220043335625,
+          "longitude_deg": -3.1255401333186605,
+          "submerged": false
+        },
+        {
+          "cell": [
+            14,
+            -14,
+            1
+          ],
+          "elevation_m": 30.877744418899333,
+          "id": 1275,
+          "key": "The Sexton's Lodge",
+          "latitude_deg": 8.409049941705652,
+          "longitude_deg": -3.12516685707384,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            16,
+            1
+          ],
+          "elevation_m": 33.477304246624804,
+          "id": 1276,
+          "key": "The Watch-House",
+          "latitude_deg": 8.414589342306135,
+          "longitude_deg": -3.127406688530554,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -7,
+            0
+          ],
+          "elevation_m": 31.720110913656463,
+          "id": 1277,
+          "key": "Landfall Dock",
+          "latitude_deg": 8.41034247512007,
+          "longitude_deg": -3.1275933463112886,
           "submerged": false
         }
       ]
     }
   ],
   "elevation_source": {
-    "engine": "wasm, all 24 planet parameters",
-    "note": "The Python surface takes four of this world's parameters and placed these rooms 405 m under water. These come from the engine the viewer runs."
+    "engine": "python oracle, FOUR of this world's twenty-four parameters",
+    "warning": "The elevations in this file are WRONG and are left visible rather than hidden. The Python surface cannot build this planet, so it reports the island rooms 405 m under water and reported a city site as fully dry that is a third submerged. Correct ground comes from the WASM engine the viewer runs; the viewer's land check is the one to trust until the pyo3 exports take the same parameters the WASM ones do."
   },
   "generator": {
     "name": "worldbuilder",
@@ -683,22 +5056,6 @@
     "radius": "9309000",
     "seed": "949766019",
     "size": "129"
-  },
-  "route": {
-    "ferry_dock": {
-      "how": "picked by the owner in the viewer",
-      "latitude_deg": -4.460443,
-      "longitude_deg": -2.515971
-    },
-    "ferry_sea_m": 8500,
-    "kayak_lake_m": 1518,
-    "kayak_landing": {
-      "elevation_m": 0.54,
-      "how": "first land after the lake along the owner's own line, found by a run of six samples above +0.5 m rather than one",
-      "latitude_deg": -4.46562,
-      "longitude_deg": -2.507483
-    },
-    "walk_woods_m": 1610
   },
   "source": {
     "area_key_priority": [

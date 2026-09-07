@@ -248,7 +248,48 @@ export function mountWorldPanel(parent, getViewer) {
     if (!viewer || typeof Cesium === "undefined") return;
     if (drawn) drawn.remove();
     drawn = drawAreas(viewer, Cesium, { areas: lastAreas });
+    paintAreas();
     note.textContent = `${drawn.count} areas on the globe`;
+  }
+
+  // **A list, because pins are not findable by eye at planet scale.** Three areas two
+  // thousand kilometres apart are three pixels, and "show areas" drew them correctly while
+  // leaving the owner with no way to reach any of them. The list is how you get there.
+  const areaList = el("div", "wb-note");
+  wrap.append(areaList);
+  function paintAreas() {
+    areaList.textContent = "";
+    if (!lastAreas.length) return;
+    areaList.append(el("div", "wb-section-title", `areas (${lastAreas.length})`));
+    for (const area of lastAreas) {
+      const anchor = area.anchor || {};
+      const rooms = (area.rooms || []).length;
+      const line = el("div", "wb-row");
+      const go = button(`${area.name} · ${rooms} rooms`);
+      go.addEventListener("click", () => {
+        const viewer = getViewer();
+        if (!viewer) return;
+        // Framed on the area's own extent rather than a fixed height: a 177-room city and
+        // an 11-room camp need very different ranges to fill the same screen.
+        let span = 0;
+        for (const room of area.rooms || []) {
+          span = Math.max(span,
+            Math.abs(room.latitude_deg - anchor.latitude_deg),
+            Math.abs(room.longitude_deg - anchor.longitude_deg));
+        }
+        const height = Math.max(1200, span * 111320 * 6);
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(
+            anchor.longitude_deg, anchor.latitude_deg, height),
+          orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+          duration: 2.0,
+        });
+        note.textContent = `${area.name} · ${anchor.latitude_deg.toFixed(5)}, `
+          + `${anchor.longitude_deg.toFixed(5)} · ${Math.round(height)} m up`;
+      });
+      line.append(go);
+      areaList.append(line);
+    }
   }
 
   const areaRow = el("div", "wb-jump");
