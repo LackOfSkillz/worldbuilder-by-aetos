@@ -33,27 +33,48 @@ export const GENERATOR_VERSION = "0.1.0-roundtrip";
 /// thing you keep, this is the thing that saves you retyping a name.
 const STORE_KEY = "wb.worlds";
 
-/// The query parameters that describe the PLANET, as opposed to the camera or the panel's own
-/// presentation. A save carries these; it does not carry where you happened to be looking.
+/// Query parameters that describe the VIEW rather than the planet. Everything else is saved.
 ///
-/// Kept as a list rather than "everything except a denylist", because a new presentation
-/// parameter appearing in a save would make two identical planets compare unequal, and the
-/// version check would then refuse a file for no reason.
-const PLANET_KEYS = [
-  "seed", "radius", "plates", "land", "size", "maxLevel", "featureCeiling",
-  "mountainM", "quieting", "persistence", "coast",
-  "mtnHeight", "mtnWidth", "mtnAsym", "mtnBelts", "mtnBeltSpacing",
-  "mtnStructure", "mtnStructureWave", "mtnWander",
-  "lakeNodes", "gully", "harbour", "clouds", "climate",
-];
+/// **This was an allowlist and the allowlist was wrong, one save later.** The first version
+/// named the twenty-four parameters it believed described a planet, reasoning that a stray
+/// presentation key would make two identical worlds compare unequal. The owner's first real
+/// save dropped `mtnCount` and `mtnWanderWave` on the floor, silently, because they were not on
+/// the list - so the file described a DIFFERENT planet from the one on screen, and the version
+/// check that exists to prevent exactly that could not see it, because the file was perfectly
+/// well-formed.
+///
+/// An allowlist fails closed on the thing it knows and open on the thing it does not, which is
+/// backwards for a save format: a new engine parameter appears and every file written after it
+/// is quietly incomplete. A denylist fails the other way - a new presentation key gets saved
+/// harmlessly until somebody notices. **When the two failure modes are "loses the world" and
+/// "carries a spare field", the spare field wins.**
+const VIEW_ONLY_KEYS = new Set([
+  "fly", "trace", "loading", "net-probe", "bench", "verify", "digest", "shoot",
+]);
+
+/// Values that cannot be what they claim to be.
+///
+/// The same save carried `gully: '65"'` - a trailing quote the owner picked up copying a URL
+/// out of a shell command. The engine treated it as unparseable and fell back to canonical, so
+/// the world on screen was NOT the world the parameter named, and the file recorded the
+/// parameter rather than the world. A save that records an input the engine rejected is a save
+/// of a planet nobody has seen.
+export function suspectValues(planet) {
+  const suspect = [];
+  for (const [key, value] of Object.entries(planet)) {
+    if (key === "seed") continue;
+    if (value !== "" && !Number.isFinite(Number(value))) suspect.push([key, value]);
+  }
+  return suspect;
+}
 
 /// Read the planet out of a query string.
 export function planetFromSearch(search) {
   const params = new URLSearchParams(search);
   const planet = {};
-  for (const key of PLANET_KEYS) {
-    const value = params.get(key);
-    if (value !== null) planet[key] = value;
+  for (const [key, value] of params.entries()) {
+    if (VIEW_ONLY_KEYS.has(key)) continue;
+    planet[key] = value;
   }
   return planet;
 }

@@ -10,8 +10,8 @@
 // at all.
 
 import {
-  autosave, buildWorldfile, checkVersion, download, forget, planetFromSearch, remember,
-  savedWorlds, searchFromPlanet, startAutosave, trail, urlFor,
+  autosave, buildWorldfile, checkVersion, download, forget, remember,
+  savedWorlds, searchFromPlanet, startAutosave, suspectValues, trail, urlFor,
 } from "./worlds.js";
 import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
@@ -106,10 +106,18 @@ export function mountWorldPanel(parent, getViewer) {
   save.addEventListener("click", () => {
     const name = nameField.value.trim() || `world-${Date.now()}`;
     const document_ = buildWorldfile(name, location.search, lastAreas);
+    // **Say so before writing it, not after.** A parameter the engine could not parse fell back
+    // to canonical, so the world drawn is not the world the file names - and a save that records
+    // a rejected input is a save of a planet nobody has seen.
+    const suspect = suspectValues(document_.planet);
     remember(document_);
     const filename = download(document_);
     note.textContent = `saved ${filename} · ${Object.keys(document_.planet).length} parameters, `
-      + `${(document_.areas || []).length} areas`;
+      + `${(document_.areas || []).length} areas`
+      + (suspect.length
+        ? ` · WARNING: ${suspect.map(([k, v]) => `${k}=${v}`).join(", ")} `
+          + "is not a number, so the engine ignored it and drew its canonical value instead"
+        : "");
     paintSaved();
   });
 
