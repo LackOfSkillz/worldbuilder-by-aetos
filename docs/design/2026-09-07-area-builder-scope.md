@@ -69,6 +69,29 @@ anchors.
 **Option 1 keeps the promise small and is the default unless somebody argues otherwise.** It also matches
 the rule already chosen: *Evennia receives concrete values and never needs the engine at runtime.*
 
+### DECIDED 2026-09-07: OPTION 2. The worldfile becomes the authoring format of record.
+
+**The owner chose the larger schema over my recommendation**, and the reasoning is sound: a worldfile that
+carries rooms, exits, topology and descriptions is **one portable artefact an author can version, diff and
+share independently of any game**. Option 1 would have left the authored world trapped inside whichever
+Evennia instance produced it.
+
+**What this costs, stated plainly rather than discovered later:**
+
+- **A much larger public interface.** Every field an area needs is now a documented promise to strangers,
+  with a version and a compatibility policy. `2026-09-06-contrib-shape.md` called that the whole cost of the
+  contrib decision; this multiplies it.
+- **The format must survive Evennia changing.** A placement-only file is nearly immune to that; one carrying
+  rooms and exits is not.
+- **Two writers, one truth.** An author can now edit the worldfile *or* the game. **What happens when both
+  moved is a real question and it should be answered before the schema is written**, not after somebody
+  loses work. The version discipline already chosen -- fail closed, no silent substitution -- is the right
+  starting posture.
+
+**What it buys, and it is the reason to accept those costs:** an author's world stops being hostage to a
+running server. It can be checked into their own repository, reviewed, rolled back, and handed to somebody
+else. **That is a materially better product than a list of anchors.**
+
 ## Where this sits
 
 The owner has already chosen the Evennia round trip as the next slice after climate. **This changes that
@@ -92,3 +115,48 @@ A room-and-exit graph editor that enforces a validated law set is **not a small 
 project has just come out of a session where the owner asked, reasonably, whether it was getting too heavy
 for its purpose. **The mitigation is that it is the LAST step of five, not the first** -- and by then the
 spine will either have proven itself or not.
+
+---
+
+## Two further decisions, 2026-09-07
+
+### The generator: a generate-and-reject loop
+
+**Chosen over waiting for the law study and over hand-authored templates.**
+
+The attraction is that it **works whether or not the laws turn out to be constructive.** A validator answers
+"is this map bad?"; a generator needs "what must I emit?" -- and a rule set that can only reject is useless
+to a builder that must produce. **A generate-and-reject loop sidesteps that entirely**: emit a candidate,
+let the certifier score it, iterate until it passes. It reuses the linter as-is rather than needing the laws
+re-expressed as constructions.
+
+**The risk is convergence, and it must be measured rather than hoped.** Tight constraints can make a random
+proposer effectively never succeed. **Before this ships, measure the acceptance rate and the iteration
+count for a stated request** -- "80 rooms, shops and guild rooms" is the owner's own example and is the
+right first case. If it does not converge, the proposer needs to be law-aware rather than random, and the
+study that is running will say which laws could guide it.
+
+**This project has a habit worth applying here: measure the thing before assuming it works.** A generator
+that succeeds on a 20-room hamlet and never converges on an 80-room village would look fine in a demo.
+
+### The model may write names, descriptions AND ambient text
+
+**Chosen over names-only and over deferring the model entirely.**
+
+**This is consistent with a rule this project already holds** -- *room descriptions are eternal; only
+permanently-true things belong in a desc, and weather, light and season belong in ambient or stateful
+descs.* Writing ambient text is therefore not scope creep; **it is where the variable prose is supposed to
+live.** A model allowed only permanent descs would be tempted to smuggle weather into them, which is the
+defect the rule exists to prevent.
+
+**Three things this obliges:**
+
+1. **The seam must work offline.** A user with no API key gets a complete, certified area with empty or
+   placeholder prose. **The model is an enhancement, never a dependency** -- and that must be provable, not
+   assumed.
+2. **The model needs enough context to be consistent**: the room's type, its neighbours, and the area's
+   theme. A model writing each room blind produces eighty unrelated paragraphs.
+3. **Generated prose can contradict the world.** A description mentioning a river in an arid band, or a sea
+   view from an inland room, is wrong in a way no linter currently catches. **The engine knows the answer**
+   -- biome, elevation, distance to water -- so the context passed to the model should carry it, and a check
+   that generated text does not contradict it is worth more than better prompting.
