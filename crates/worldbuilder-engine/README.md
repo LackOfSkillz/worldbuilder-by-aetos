@@ -4603,24 +4603,27 @@ from `$?` directly, never through a pipe.**
 
 | configuration | listed | ignored | **run** |
 |---|---|---|---|
-| `--no-default-features` | 603 | 5 | **598** |
-| default | 603 | 5 | **598** |
-| `--features python` | 605 | 5 | **600** |
-| `--features wasm` | 690 | 5 | **685** |
-| `--features python,wasm` | 692 | 5 | **687** |
+| `--no-default-features` | 633 | 5 | **628** |
+| default | 633 | 5 | **628** |
+| `--features python` | 635 | 5 | **630** |
+| `--features wasm` | 729 | 5 | **724** |
+| `--features python,wasm` | 731 | 5 | **726** |
 
-All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **14 test
+All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
 every row** (it widened no C ABI), the coast channel **+18 on the two WASM rows only**
 (`tests/wasm_exports.rs` is `#![cfg(feature = "wasm")]` in its entirety), the three NaN guards
-**+1 then +2 on every row**, the climate slice's temperature task **+18 on every row**, and its
-moisture march **+21 on every row** -- each time because the tests live in `src/` (`climate.rs`,
-`surface.rs`) and compile unconditionally, and each time because no export was added.
+**+1 then +2 on every row**, the climate slice's temperature task **+18 on every row**, its
+moisture march **+21 on every row**, the merging slice **+3 on every row and +4 on the two WASM
+rows**, the local-reference slice **+2 on every row**, and the climate slice's band task **+13 on
+every row** -- each time because the tests live in `src/` and compile unconditionally, and each
+time because no export was added.
 
-**The binary count moved from 13 to 14 at the temperature task and has NOT moved since.**
-`src/bin/climate_survey.rs` is a `[[bin]]` carrying zero tests, so it is invisible to
-`--expect-passed` and visible only here; the moisture march **extended that binary rather than
-adding a fifteenth**, which is why this line reads 14 twice running.
+**The binary count moved from 13 to 14 at the temperature task and from 14 to 15 at the merging
+slice's `src/bin/gully_merging_survey.rs`.** A `[[bin]]` carries zero tests, so it is invisible to
+`--expect-passed` and visible only here; both the moisture march and the band task **extended
+`src/bin/climate_survey.rs` rather than adding another survey**, which is why the climate slice
+accounts for one binary across three tasks.
 
 **Conformance, re-derived:** `WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/` -- **398 passed, exit
 0** -- and `pytest tests/test_conformance.py` -- **157 passed, exit 0** -- against the extension
@@ -4637,14 +4640,15 @@ moment**, and one of the 398 is a millisecond wearing a count's clothes.
 
 | | compared | divergent |
 |---|---|---|
-| `parity` | **108,106** | **0** |
-| `--mutate seed` | 108,106 | 103,931 |
-| `--mutate erosion-k` | 108,106 | 216 |
-| `--mutate water-pond` | 108,106 | 60 |
-| `--mutate tectonic-warp` | 108,106 | 6,186 |
-| `--mutate coast-amplitude` | 108,106 | 13,128 |
+| `parity` | **126,363** | **0** |
+| `--mutate seed` | 126,363 | 121,682 |
+| `--mutate erosion-k` | 126,363 | 216 |
+| `--mutate water-pond` | 126,363 | 60 |
+| `--mutate tectonic-warp` | 126,363 | 6,186 |
+| `--mutate coast-amplitude` | 126,363 | 13,128 |
+| `--mutate gully-steer` | 126,363 | 3,752 |
 
-All six exited 0 and **every control matched its recorded figure exactly**, which is the statement
+All seven exited 0 and **every control matched its recorded figure exactly**, which is the statement
 that nothing in this slice moved a crossing value. `node scripts/build-wasm.mjs check` reports the
 committed artifact matches its manifest and the source that is here now.
 

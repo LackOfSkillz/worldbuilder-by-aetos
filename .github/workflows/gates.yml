@@ -777,6 +777,44 @@ jobs:
           # them. Re-derived per configuration through `assert_counts.py cargo-list` AFTER the
           # last source edit.
           #
+          # THE CLIMATE SLICE, TASK 3 -- BANDS (2026-09-07) takes these to 628/628/630/724/726,
+          # 5 ignored, over the same FIFTEEN binaries. **+13 in every configuration and nothing
+          # wasm-only**, because every new test is in `src/` and compiles unconditionally -- ten
+          # in `climate.rs` and three in `surface.rs`. That uniform shape is the check a task
+          # which adds no export must pass; a wasm-only movement here would mean an export had
+          # been added by accident. No `[[bin]]` was added: `src/bin/climate_survey.rs` was
+          # EXTENDED with the band-occupancy section, for the same reason Task 2 extended it
+          # rather than adding a fifteenth survey -- the measurement that sets the band edges
+          # belongs beside the measurement that sets the field they are cut out of.
+          #
+          # WHAT IT IS. Band edges for the two climate axes that have no unit, as per-world
+          # quantiles read by `continentality::calibrate`'s own Fibonacci order statistic -- no
+          # second mechanism, and no global array, which the spec rules out. The moisture
+          # quantiles are BELL-SPACED (the normal CDF of z = -1.5, -0.5, +0.5, +1.5, giving band
+          # widths 6.7 / 24.2 / 38.3 / 24.2 / 6.7 percent of land) and not evenly spaced, and
+          # that is measured rather than quoted: on the four survey worlds, edges evenly spaced
+          # in VALUE over [0, 1] put **43.6-68.4% of all land in the single driest band** and
+          # 3.8-5.9% in the wettest. Five moisture bands, not the roadmap's four, because
+          # `biome.js`'s interior table is a 5 x 5 rectangle and a fourth band would leave a
+          # column of it unreachable. Temperature stays ABSOLUTE (`TEMP_BAND_EDGES_C`), for the
+          # reason the photoreal slice measured and Task 1 inherited.
+          #
+          # THE ACCEPTANCE BAR IS A TEST AND NOT A SENTENCE.
+          # `every_band_on_all_three_axes_is_reached_on_two_worlds` bands 1,200 spiral points on
+          # each of two worlds against the shipped calibration and requires all 3 + 5 + 5 bands
+          # occupied. It is red under seven of this task's mutations, including the two that
+          # plant exactly the defect this project has shipped nine times -- MOISTURE_BELL_Z tails
+          # pushed to +-4 sigma, and TEMP_BAND_EDGES_C's top edge moved to 60 C. It costs about
+          # 9 s, which is the price of the two calibrations rather than of the occupancy loop.
+          #
+          # AND ONE FIX THAT CHANGES NO COMMITTED BYTE. `crates/worldbuilder-engine/src/
+          # detmath.rs` was sitting in the working tree with CRLF endings while the index held
+          # LF, so `source-fingerprint` -- which hashes WORKING-TREE bytes -- was blessed over
+          # bytes no clean checkout produces. `git diff` showed nothing (eol=lf normalises on
+          # comparison) and `check:wasm` passed locally, and it would have failed on any LF
+          # checkout including CI. The file is now LF, `git diff` still reports it unchanged,
+          # and the manifest is re-blessed over content that comes out of git.
+          #
           # WHAT THIS ONE IS. The pitchfork was keyed to `shaped - gate_elevation_m`, which made
           # `a = 1/4` ONE contour at ONE world elevation -- 825 m at the old preset -- so only the
           # flanks crossing that elevation branched at all, and a measured flank at 1,353-1,417 m
@@ -924,23 +962,23 @@ jobs:
           # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 615
+            expect: 628
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 615
+            expect: 628
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 617
+            expect: 630
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 711
+            expect: 724
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 713
+            expect: 726
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

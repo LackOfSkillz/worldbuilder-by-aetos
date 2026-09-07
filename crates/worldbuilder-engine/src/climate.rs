@@ -692,6 +692,374 @@ pub fn moisture_index(
     moisture
 }
 
+// ============================================================================================
+// Bands: three axes, and the non-uniform spacing that beats even spacing
+// ============================================================================================
+
+/// The absolute temperature band edges, in degrees C: polar / boreal / temperate /
+/// subtropical / tropical.
+///
+/// **This is the one axis of the three that is not quantiled, and that is a measurement
+/// rather than a preference.** The photoreal slice quantiled it, and the owner world's
+/// subtropical desert latitudes -- 25 degrees, 22 C -- fell into the *median* temperature
+/// band, so `hot desert`, the brightest land colour in that palette, became unreachable and
+/// the desert belt came out `cold desert`. The cause is structural: a quantile can only say
+/// "warmer than this fraction of *this* world's land", and water freezes at 0 C on every
+/// world. Holdridge -- the model WorldEngine says it implements -- puts its temperature axis
+/// in degrees for the same reason, and WorldEngine quantiles it only because its temperature
+/// layer is unitless noise. **This engine's is degrees**, from a profile fitted to Earth's
+/// zonal means and a standard lapse rate (see `temperature_c`).
+///
+/// The edges themselves are physical: 0 is freezing, 8 C is roughly the boreal/temperate
+/// annual-mean transition, 18 C is Koppen's own A/C boundary, and 24 C separates a
+/// subtropical mean from a tropical one.
+///
+/// **The honest cost, which is the reason this constant carries a survey and the two
+/// quantiled axes do not:** an absolute band can go unvisited on a world whose land is all
+/// one climate. That is correct rather than dead -- a world with no polar land should have
+/// no tundra -- and it is measured in `src/bin/climate_survey.rs` rather than hoped for.
+/// Task 1 found all five reached on all four survey worlds, the owner's thinnest at 2.7% of
+/// its land.
+///
+/// The value is byte-identical to `viewer/public/app/biome.js::TEMP_BAND_EDGES_C`, which
+/// Task 4 replaces with this one. That is checked by reading, not by a test: a test here
+/// that reads a viewer file would go red the moment Task 4 deletes the constant it asserts
+/// against, which is a gate that fires on the work it exists to admit.
+pub const TEMP_BAND_EDGES_C: [f64; 4] = [0.0, 8.0, 18.0, 24.0];
+
+/// How many temperature bands `TEMP_BAND_EDGES_C` cuts.
+pub const TEMPERATURE_BANDS: usize = TEMP_BAND_EDGES_C.len() + 1;
+
+/// **The bell, as equally spaced z-scores rather than as transcribed percentages.**
+///
+/// WorldEngine's `humidity.py` carries the finding and not the reason: *"These were
+/// originally evenly spaced at 12.5% each but changing them to a bell curve produced better
+/// results."* Its shipped humidity quantiles
+/// `[0.941, 0.778, 0.507, 0.236, 0.073, 0.014, 0.002]` are visibly that bell -- band widths
+/// 5.9 / 16.3 / 27.1 / 27.1 / 16.3 / 5.9 / 1.2 / 0.2 percent of land, narrow tails and a
+/// wide middle.
+///
+/// Rather than copy seven magic numbers, this derives the same shape from its generator:
+/// **the normal CDF of equally spaced z-scores**. At `+-0.5` and `+-1.5` that gives
+/// quantiles 0.0668 / 0.3085 / 0.6915 / 0.9332, i.e. band widths of
+/// **6.7 / 24.2 / 38.3 / 24.2 / 6.7 percent** of a world's land -- arid, dry, moist, wet,
+/// perhumid.
+///
+/// **Five bands, not the roadmap's four.** The roadmap wrote four evenly-spaced bands and the
+/// research note said to revise that on the evidence. Five is what the consumer needs:
+/// `biome.js`'s interior table is a 5 x 5 rectangle against the five temperature bands, so a
+/// fourth moisture band would leave a whole column of it unreachable -- the same defect this
+/// project has already shipped nine times in one palette. WorldEngine's eight would leave
+/// three columns empty.
+///
+/// **Why the tails are not narrower.** WorldEngine's own extremes are 1.2% and 0.2% of land,
+/// which at this engine's 4,000-point calibration would be read from about the 14th and 2nd
+/// order statistic of some 1,200 land samples -- an edge placed on a handful of points. 6.7%
+/// is about 80 samples, which is a quantile rather than an anecdote.
+pub const MOISTURE_BELL_Z: [f64; 4] = [-1.5, -0.5, 0.5, 1.5];
+
+/// How many moisture bands `MOISTURE_BELL_Z` cuts.
+pub const MOISTURE_BANDS: usize = MOISTURE_BELL_Z.len() + 1;
+
+/// The landform axis, as quantiles of a world's own land elevation: lowland / interior /
+/// montane.
+///
+/// **Placed against Earth's land hypsometry rather than picked**: roughly a quarter of
+/// Earth's land is coastal plain, and the ground that carries bare rock, alpine vegetation
+/// and permanent snow is the top 15% or so. Reading them as quantiles rather than as metres
+/// is what stops the family of dead bands this project has shipped three of -- a quantile is
+/// reached on every world by construction, however low that world's mountains.
+///
+/// **The bottom band is named `lowland` and not `coastal`, and that word is a finding.**
+/// `biome.js` calls it coastal, because the bottom quartile of land elevation is the best
+/// stand-in available to it, and the plan for this slice says Task 4 should replace it with
+/// "a real coastal term". **This task cannot supply one.** The engine exposes no
+/// distance-to-coast, the plan's brief for this task says that is a finding to report and not
+/// a field to invent, and a hypsometric quartile is a *lowland* test that correlates with
+/// coast rather than a coastal one -- an inland basin at 40 m is in it and a cliff coast at
+/// 400 m is not. The band is real and useful, and the name says what it measures rather than
+/// what a consumer would like it to mean.
+pub const LANDFORM_QUANTILES: [f64; 2] = [0.25, 0.85];
+
+/// How many landform bands `LANDFORM_QUANTILES` cuts.
+pub const LANDFORM_BANDS: usize = LANDFORM_QUANTILES.len() + 1;
+
+/// The calibration population, and it is `continentality::CALIBRATION_SAMPLES` on purpose.
+///
+/// **This is the grid-free order statistic this project already owns.** WorldEngine finds
+/// its band edges by bisecting over a global masked array; a global array is the one thing
+/// the spec rules out here, because the studio must not draw from a separately baked
+/// approximation that could disagree with the game. `continentality.rs::calibrate` has
+/// answered the same question -- "where does the q-th quantile of this field over this
+/// planet fall" -- since slice 0: a fixed area-uniform Fibonacci spiral, sorted, read at an
+/// order statistic. **No second mechanism was built.**
+///
+/// 4,000 points is not arbitrary there and is not arbitrary here. The spiral is area-uniform,
+/// so on a 29%-land world about 1,160 samples survive the land test, and the standard error
+/// of the q-th order statistic in probability is `sqrt(q(1-q)/n)` -- 0.7 percentage points at
+/// the 6.7% edge and 1.4 at the 30.9% edge. That is finer than the bands are wide.
+/// `the_band_calibration_uses_continentalitys_own_population` asserts the two constants are
+/// the same bits, so if that layer ever moves its population this says so rather than leaving
+/// the argument quietly false.
+pub const BAND_CALIBRATION_SAMPLES: usize = crate::continentality::CALIBRATION_SAMPLES;
+
+/// The standard normal CDF, Abramowitz & Stegun 26.2.17.
+///
+/// Maximum absolute error 7.5e-8, which is five orders of magnitude finer than the sampling
+/// error of the order statistic it feeds (see `BAND_CALIBRATION_SAMPLES`), so the
+/// approximation is invisible at the resolution these quantiles are read at.
+///
+/// It exists so `MOISTURE_BELL_Z` can be a bell rather than a table of transcribed
+/// percentages: **the spacing is derived from its generator here, and a reader changes the
+/// shape by moving one z-score.** `the_bell_quantiles_are_the_normal_cdf_of_the_z_scores`
+/// pins it against the textbook values.
+pub fn normal_cdf(z: f64) -> f64 {
+    let t = 1.0 / (1.0 + 0.231_641_9 * z.abs());
+    let d = 0.398_942_280_401_432_7 * m::exp(-0.5 * z * z);
+    let p = d
+        * t
+        * (0.319_381_530
+            + t * (-0.356_563_782
+                + t * (1.781_477_937 + t * (-1.821_255_978 + t * 1.330_274_429))));
+    if z >= 0.0 {
+        1.0 - p
+    } else {
+        p
+    }
+}
+
+/// `MOISTURE_BELL_Z` as quantiles: 0.0668 / 0.3085 / 0.6915 / 0.9332.
+pub fn moisture_quantiles() -> [f64; MOISTURE_BELL_Z.len()] {
+    let mut out = [0.0f64; MOISTURE_BELL_Z.len()];
+    let mut index = 0;
+    while index < MOISTURE_BELL_Z.len() {
+        out[index] = normal_cdf(MOISTURE_BELL_Z[index]);
+        index += 1;
+    }
+    out
+}
+
+/// The `q`-th order statistic of an ascending sample, by truncation.
+///
+/// `continentality::calibrate`'s own form -- `values[(q * last) as usize]` -- rather than a
+/// linear interpolation between neighbours. Truncating returns a value the field actually
+/// produced somewhere on the planet, which is what a band edge should be; interpolating
+/// invents one. On a thousand-odd samples the two differ by far less than the sampling error
+/// either way.
+fn order_statistic(sorted: &[f64], q: f64) -> f64 {
+    let last = (sorted.len() - 1) as f64; // cast-ok: count to float, exact far below 2^53
+    let index = (q * last) as usize; // cast-ok: truncation, matching continentality::calibrate
+    sorted[index]
+}
+
+/// One world's band edges: the two axes that are quantiles of its own land.
+///
+/// Temperature is not here, because it is not calibrated -- see `TEMP_BAND_EDGES_C`.
+///
+/// # What the quantile buys, stated as the defect it prevents
+///
+/// A band edge in absolute units is a band that can be empty. This project has shipped
+/// **nine of thirty-three palette colours unreachable** because a noise field's real standard
+/// deviation was a fifth of its nominal one, and **three colour blends that were never once
+/// selected**. Because a moisture or landform edge here is an order statistic of this world's
+/// own land, **every band it cuts is occupied by construction** -- and the only way that can
+/// fail is a *tie*, which is why `calibrate` reports `land_samples` and why
+/// `src/bin/climate_survey.rs` measures occupancy rather than assuming it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BandEdges {
+    moisture: [f64; MOISTURE_BELL_Z.len()],
+    landform: [f64; LANDFORM_QUANTILES.len()],
+    land_samples: usize,
+}
+
+impl BandEdges {
+    /// Calibrate against a world, by the same Fibonacci order statistic
+    /// `continentality::calibrate` uses.
+    ///
+    /// Args:
+    /// elevation_at: How high the ground is at a probe point. Sampled at every one of
+    /// `BAND_CALIBRATION_SAMPLES` points; the land test is `> 0.0`, matching every other
+    /// land test in this crate.
+    /// moisture_at: The moisture index at a probe point. Sampled **only on land**, which is
+    /// what makes this affordable: a moisture query is `MARCH_SAMPLES + 1` elevation
+    /// queries, so calibrating over the whole sphere would be three times the work for a
+    /// distribution nothing bands.
+    ///
+    /// Returns:
+    /// Edges for both quantiled axes, or **NaN edges** if any sample could not be answered,
+    /// or if the world has no land at all. Both cases are real: a NaN elevation makes a NaN
+    /// moisture by `moisture_index`'s own contract, and an all-ocean world has no land
+    /// distribution to take a quantile of. **A world with no land must not report the edges
+    /// of a world that has some** -- that is the shape of the NaN land fraction that produced
+    /// a world bit-identical to a legitimate all-land one, and `band_index` refuses a NaN
+    /// edge rather than banding against it.
+    pub fn calibrate(
+        elevation_at: &dyn Fn(&SpherePoint) -> f64,
+        moisture_at: &dyn Fn(&SpherePoint) -> f64,
+    ) -> Self {
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        let n = BAND_CALIBRATION_SAMPLES;
+        let mut heights: Vec<f64> = Vec::new();
+        let mut wetness: Vec<f64> = Vec::new();
+        let mut unanswerable = false;
+
+        for index in 0..n {
+            // The spiral, in `continentality::calibrate`'s own form: cell centres rather
+            // than edges, so neither pole is sampled twice, and the vector is deliberately
+            // NOT normalised -- that is what the Python oracle hands to `SpherePoint`, and
+            // this construction has to stay the same one for the claim in the doc comment to
+            // be true.
+            let z = 1.0 - 2.0 * (index as f64 + 0.5) / (n as f64); // cast-ok: loop counter to float, no truncation
+            let inner = 1.0 - z * z;
+            let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+            let angle = golden * index as f64; // cast-ok: loop counter to float, no truncation
+            let point = SpherePoint {
+                vector: crate::vectors::Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z),
+            };
+            let height = elevation_at(&point);
+            if height.is_nan() {
+                unanswerable = true;
+                continue;
+            }
+            if !(height > 0.0) {
+                continue;
+            }
+            let wet = moisture_at(&point);
+            if wet.is_nan() {
+                unanswerable = true;
+                continue;
+            }
+            heights.push(height);
+            wetness.push(wet);
+        }
+
+        let land_samples = heights.len();
+        if unanswerable || land_samples == 0 {
+            return Self {
+                moisture: [f64::NAN; MOISTURE_BELL_Z.len()],
+                landform: [f64::NAN; LANDFORM_QUANTILES.len()],
+                land_samples,
+            };
+        }
+
+        // `total_cmp` rather than `partial_cmp(..).expect(..)`: this crate is reached through
+        // `extern "C"`, where a panic is an abort rather than something a host can catch, and
+        // an ordering that panics on a value the guard above has already refused would be a
+        // second mechanism for the same fact -- which is how fourteen assertions in this
+        // project came to look load-bearing and not be. The guard is the load-bearing line;
+        // this is only a total order.
+        heights.sort_by(f64::total_cmp);
+        wetness.sort_by(f64::total_cmp);
+
+        let mut moisture = [0.0f64; MOISTURE_BELL_Z.len()];
+        let quantiles = moisture_quantiles();
+        let mut index = 0;
+        while index < quantiles.len() {
+            moisture[index] = order_statistic(&wetness, quantiles[index]);
+            index += 1;
+        }
+        let mut landform = [0.0f64; LANDFORM_QUANTILES.len()];
+        let mut index = 0;
+        while index < LANDFORM_QUANTILES.len() {
+            landform[index] = order_statistic(&heights, LANDFORM_QUANTILES[index]);
+            index += 1;
+        }
+
+        Self {
+            moisture,
+            landform,
+            land_samples,
+        }
+    }
+
+    /// The four moisture edges, ascending.
+    pub fn moisture(&self) -> &[f64] {
+        &self.moisture
+    }
+
+    /// The two landform edges, ascending, in metres.
+    pub fn landform(&self) -> &[f64] {
+        &self.landform
+    }
+
+    /// How many of `BAND_CALIBRATION_SAMPLES` were land. **Zero means the edges are NaN**,
+    /// and it is reported rather than inferred so a caller can tell an all-ocean world from
+    /// one whose samples could not be answered.
+    pub fn land_samples(&self) -> usize {
+        self.land_samples
+    }
+}
+
+/// Which band `value` falls in, given ascending `edges`. `edges.len() + 1` outcomes.
+///
+/// Returns `None` if `value` or any edge is NaN. **That is the whole reason this returns an
+/// `Option`**: a band index is a small non-negative integer with no way to spell "I could not
+/// tell", so an unanswerable moisture would otherwise land in band 0 and read as the driest
+/// ground on the planet -- the fifth appearance in this project of a NaN producing a
+/// plausible answer rather than an error. `BandEdges::calibrate` returns NaN edges for a
+/// world it could not calibrate, and this is what stops those being read as a real banding.
+///
+/// The comparison is `value >= edge`, so a value sitting exactly on an edge takes the
+/// **upper** band, matching `viewer/public/app/biome.js::bandIndex`.
+pub fn band_index(edges: &[f64], value: f64) -> Option<usize> {
+    if value.is_nan() {
+        return None;
+    }
+    let mut band = 0;
+    for edge in edges {
+        if edge.is_nan() {
+            return None;
+        }
+        if value >= *edge {
+            band += 1;
+        }
+    }
+    Some(band)
+}
+
+/// Which temperature band a temperature in degrees C falls in. Absolute, not calibrated.
+pub fn temperature_band(temperature_c: f64) -> Option<usize> {
+    band_index(&TEMP_BAND_EDGES_C, temperature_c)
+}
+
+/// Which moisture band a moisture index falls in, against this world's own edges.
+pub fn moisture_band(moisture_index: f64, edges: &BandEdges) -> Option<usize> {
+    band_index(edges.moisture(), moisture_index)
+}
+
+/// Which landform band an elevation in metres falls in, against this world's own edges.
+pub fn landform_band(elevation_m: f64, edges: &BandEdges) -> Option<usize> {
+    band_index(edges.landform(), elevation_m)
+}
+
+/// **Three axes at a point.** Landform x temperature x moisture, as band indices.
+///
+/// # Why three and not two
+///
+/// WorldEngine's classifier is `temperature x humidity`, and its manual says so outright: it
+/// implements the two axes of Holdridge it can compute. That is adequate for a picture and it
+/// is a regression for a game. **A two-axis model has no landform axis and therefore no
+/// coastal band at all**, so a wet tropical lowland gets the same answer whether or not it is
+/// on a shore -- and for a MUD, "tropical coastal" and "boreal coastal" are different places
+/// to stand and want different room descriptions. WorldEngine handles high ground as a
+/// draw-time colour modifier rather than as a classification input, which cannot be read back
+/// as metadata at all.
+///
+/// The cost is stated rather than hidden: 3 x 5 x 5 = 75 cells against WorldEngine's 56,
+/// before any collapsing. `biome.js` collapses them to 33 colours today, and this returns the
+/// bands rather than a colour precisely so the palette stays where the measured work already
+/// is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bands {
+    /// 0 lowland, 1 interior, 2 montane. See `LANDFORM_QUANTILES` for why it is not
+    /// "coastal".
+    pub landform: usize,
+    /// 0 polar .. 4 tropical, by `TEMP_BAND_EDGES_C`.
+    pub temperature: usize,
+    /// 0 arid .. 4 perhumid, by this world's `MOISTURE_BELL_Z` quantiles.
+    pub moisture: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1358,5 +1726,337 @@ mod tests {
         // 0.0113 so the pin is a ceiling and not a transcription of one run.
         assert!(worst < 0.015, "a factor of ten in the recharge scale moved it {worst}");
         assert!(worst > 0.0, "the recharge scale did not reach the answer at all");
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Task 3: bands
+    // ----------------------------------------------------------------------------------------
+
+    /// The textbook values of the standard normal CDF at the four shipped z-scores.
+    ///
+    /// The point of `normal_cdf` is that the bell spacing is DERIVED rather than transcribed,
+    /// which is only worth anything if the derivation is right. A&S 26.2.17 claims 7.5e-8;
+    /// this asserts 1e-7 against values read from the normal table, and asserts the symmetry
+    /// `F(-z) = 1 - F(z)` separately because the function's two arms are written separately.
+    #[test]
+    fn the_bell_quantiles_are_the_normal_cdf_of_the_z_scores() {
+        let expected = [0.066_807_2, 0.308_537_5, 0.691_462_5, 0.933_192_8];
+        let got = moisture_quantiles();
+        for (index, (a, b)) in got.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-7,
+                "quantile {index}: {a} against the tabulated {b}"
+            );
+        }
+        assert!((normal_cdf(0.0) - 0.5).abs() < 1e-7, "F(0) = {}", normal_cdf(0.0));
+        for z in [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5] {
+            let sum = normal_cdf(z) + normal_cdf(-z);
+            assert!((sum - 1.0).abs() < 1e-7, "F({z}) + F(-{z}) = {sum}");
+        }
+    }
+
+    /// **The spacing is a bell and not a ruler, and the ratio is the assertion.**
+    ///
+    /// Evenly spaced quantiles would make all five band widths 20% and every ratio 1. The
+    /// shipped spacing makes them 6.7 / 24.2 / 38.3 / 24.2 / 6.7, so the middle band is 5.7
+    /// times the tails. This pins the tails below 10%, the middle above 30%, and the widths
+    /// symmetric -- three statements a ruler fails and a bell passes.
+    #[test]
+    fn the_moisture_bands_are_bell_spaced_and_not_evenly_spaced() {
+        let quantiles = moisture_quantiles();
+        let mut widths = [0.0f64; MOISTURE_BANDS];
+        let mut previous = 0.0;
+        for (index, q) in quantiles.iter().enumerate() {
+            assert!(*q > previous, "quantiles must ascend: {q} after {previous}");
+            widths[index] = q - previous;
+            previous = *q;
+        }
+        widths[MOISTURE_BANDS - 1] = 1.0 - previous;
+
+        assert!(widths[0] < 0.10, "the arid band is {} of land", widths[0]);
+        assert!(
+            widths[MOISTURE_BANDS - 1] < 0.10,
+            "the perhumid band is {} of land",
+            widths[MOISTURE_BANDS - 1]
+        );
+        assert!(widths[2] > 0.30, "the middle band is {} of land", widths[2]);
+        assert!(
+            widths[2] / widths[0] > 4.0,
+            "middle/tail ratio {} -- evenly spaced bands give 1",
+            widths[2] / widths[0]
+        );
+        assert!(
+            (widths[0] - widths[MOISTURE_BANDS - 1]).abs() < 1e-9
+                && (widths[1] - widths[MOISTURE_BANDS - 2]).abs() < 1e-9,
+            "the bell must be symmetric: {widths:?}"
+        );
+    }
+
+    /// The calibration population is `continentality`'s, by bits, not by resemblance.
+    ///
+    /// The doc comment claims this is the same grid-free order statistic that layer already
+    /// uses. If `continentality` ever moves its sample count, this says so rather than
+    /// leaving the claim quietly false -- the same shape as
+    /// `canonical_moisture_params_match_the_constants` for the march step.
+    #[test]
+    fn the_band_calibration_uses_continentalitys_own_population() {
+        assert_eq!(
+            BAND_CALIBRATION_SAMPLES,
+            crate::continentality::CALIBRATION_SAMPLES,
+            "the band edges claim to use continentality's own spiral"
+        );
+    }
+
+    /// A field whose value is a strictly increasing function of the spiral's own `z`, so the
+    /// sample is uniform by construction and every edge has a known place.
+    fn ramp(point: &SpherePoint) -> f64 {
+        1000.0 * (point.vector.z + 1.0) + 1.0
+    }
+
+    /// **The edges are quantiles of the sample, and this counts rather than trusts.**
+    ///
+    /// For each edge, the fraction of land samples strictly below it must be the quantile it
+    /// was asked for, to within one sample. A calibration that returned the mean, the median
+    /// of everything, or the quantiles in the wrong order fails this.
+    #[test]
+    fn the_edges_are_the_quantiles_they_were_asked_for() {
+        let edges = BandEdges::calibrate(&ramp, &|p| 2.0 * ramp(p));
+        assert_eq!(
+            edges.land_samples(),
+            BAND_CALIBRATION_SAMPLES,
+            "the ramp is positive everywhere, so every sample is land"
+        );
+
+        // Rebuild the sample the same way `calibrate` does, so the fractions below are read
+        // off the same population and not a similar one.
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        let n = BAND_CALIBRATION_SAMPLES;
+        let mut heights = Vec::with_capacity(n);
+        for index in 0..n {
+            let z = 1.0 - 2.0 * (index as f64 + 0.5) / (n as f64); // cast-ok: loop counter to float
+            let inner = 1.0 - z * z;
+            let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+            let angle = golden * index as f64; // cast-ok: loop counter to float
+            heights.push(ramp(&SpherePoint {
+                vector: crate::vectors::Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z),
+            }));
+        }
+        let tolerance = 2.0 / n as f64; // cast-ok: count to float
+
+        for (edge, q) in edges.moisture().iter().zip(moisture_quantiles().iter()) {
+            let below = heights.iter().filter(|h| 2.0 * **h < *edge).count();
+            let fraction = below as f64 / n as f64; // cast-ok: counts to float
+            assert!(
+                (fraction - q).abs() < tolerance,
+                "moisture edge {edge} sits at quantile {fraction}, asked for {q}"
+            );
+        }
+        for (edge, q) in edges.landform().iter().zip(LANDFORM_QUANTILES.iter()) {
+            let below = heights.iter().filter(|h| **h < *edge).count();
+            let fraction = below as f64 / n as f64; // cast-ok: counts to float
+            assert!(
+                (fraction - q).abs() < tolerance,
+                "landform edge {edge} sits at quantile {fraction}, asked for {q}"
+            );
+        }
+    }
+
+    /// A value sitting exactly on an edge takes the upper band, and the count of outcomes is
+    /// `edges + 1`. `viewer/public/app/biome.js::bandIndex` does the same, and a classifier
+    /// whose two ends disagree about the boundary draws a one-texel seam along every edge.
+    #[test]
+    fn a_value_on_an_edge_takes_the_upper_band() {
+        let edges = [1.0, 2.0, 3.0];
+        assert_eq!(band_index(&edges, 0.5), Some(0));
+        assert_eq!(band_index(&edges, 1.0), Some(1), "exactly on the first edge");
+        assert_eq!(band_index(&edges, 1.5), Some(1));
+        assert_eq!(band_index(&edges, 3.0), Some(3), "exactly on the last edge");
+        assert_eq!(band_index(&edges, 1e300), Some(3));
+        assert_eq!(band_index(&edges, f64::INFINITY), Some(3));
+        assert_eq!(band_index(&edges, f64::NEG_INFINITY), Some(0));
+        assert_eq!(band_index(&[], 7.0), Some(0), "no edges is one band");
+    }
+
+    /// **The datum is not land, and the calibration's land test says so.**
+    ///
+    /// `> 0.0` and `>= 0.0` differ on exactly one value, and on a real world that value has
+    /// measure zero -- so the distinction is invisible to every test that uses real terrain,
+    /// which is how it stayed green under mutation until this fixture existed. It matters
+    /// anyway: the sea surface is AT the datum, so admitting it would put open water in the
+    /// land distribution both quantiled axes are taken over, and the landform axis's bottom
+    /// band would then be calibrated partly on ocean.
+    ///
+    /// Half this spiral is at exactly `0.0` and half is above it, so the land count is the
+    /// assertion.
+    #[test]
+    fn the_datum_is_not_land_to_the_calibration() {
+        let half = BandEdges::calibrate(
+            &|p| if p.vector.z > 0.0 { 100.0 } else { 0.0 },
+            &|_| 0.5,
+        );
+        assert_eq!(
+            half.land_samples(),
+            BAND_CALIBRATION_SAMPLES / 2,
+            "the datum itself must not count as land"
+        );
+    }
+
+    /// **An unanswerable value must not read as the driest ground on the planet.**
+    ///
+    /// A band index has no way to spell "I could not tell", so without the `Option` a NaN
+    /// moisture takes band 0 -- the fifth appearance in this project of a NaN producing a
+    /// plausible answer. It is asserted on all three axes because all three can see one.
+    #[test]
+    fn an_unanswerable_value_is_not_banded_as_the_driest_ground() {
+        let edges = BandEdges::calibrate(&ramp, &|p| 2.0 * ramp(p));
+        assert_eq!(band_index(&[1.0, 2.0], f64::NAN), None);
+        assert_eq!(temperature_band(f64::NAN), None);
+        assert_eq!(moisture_band(f64::NAN, &edges), None);
+        assert_eq!(landform_band(f64::NAN, &edges), None);
+        // And the answerable neighbours still answer, so the guard is a door and not a wall.
+        assert_eq!(temperature_band(-40.0), Some(0));
+        assert_eq!(temperature_band(30.0), Some(TEMPERATURE_BANDS - 1));
+        assert!(moisture_band(0.0, &edges).is_some());
+    }
+
+    /// **A world with no land must not report the edges of a world that has some.**
+    ///
+    /// The shape of the NaN land fraction that produced a world bit-identical to a legitimate
+    /// all-land one: a calibration with nothing to calibrate on has to say so, and the way it
+    /// says so is edges that refuse to band.
+    #[test]
+    fn a_world_that_cannot_be_calibrated_does_not_band() {
+        let ocean = BandEdges::calibrate(&|_| -1.0, &|_| 0.5);
+        assert_eq!(ocean.land_samples(), 0);
+        assert!(
+            ocean.moisture().iter().all(|e| e.is_nan())
+                && ocean.landform().iter().all(|e| e.is_nan()),
+            "an all-ocean world has no land distribution: {:?} {:?}",
+            ocean.moisture(),
+            ocean.landform()
+        );
+        assert_eq!(moisture_band(0.5, &ocean), None, "NaN edges must not band");
+        assert_eq!(landform_band(100.0, &ocean), None);
+    }
+
+    /// One unanswerable sample poisons the calibration, on either sampler.
+    ///
+    /// **A quantile taken over the samples that happened to answer is a quantile of a
+    /// different population**, silently. The march can answer NaN -- that is its stated
+    /// contract for a non-finite point or an out-of-domain parameter -- so this is reachable
+    /// rather than hypothetical, and dropping those samples would be the same swallow one
+    /// level up.
+    #[test]
+    fn one_unanswerable_sample_poisons_the_calibration() {
+        // The spiral's first point sits at z = 1 - 1/n, so exactly one sample is above 0.999.
+        let elevation_nan = BandEdges::calibrate(
+            &|p| if p.vector.z > 0.999 { f64::NAN } else { ramp(p) },
+            &|p| 2.0 * ramp(p),
+        );
+        assert!(
+            elevation_nan.moisture().iter().all(|e| e.is_nan()),
+            "a NaN elevation must not be quietly skipped: {:?}",
+            elevation_nan.moisture()
+        );
+        let moisture_nan = BandEdges::calibrate(&ramp, &|p| {
+            if p.vector.z > 0.999 {
+                f64::NAN
+            } else {
+                2.0 * ramp(p)
+            }
+        });
+        assert!(
+            moisture_nan.moisture().iter().all(|e| e.is_nan())
+                && moisture_nan.landform().iter().all(|e| e.is_nan()),
+            "a NaN moisture must not be quietly skipped: {:?}",
+            moisture_nan.moisture()
+        );
+        assert!(
+            moisture_nan.land_samples() > 0,
+            "and the land count still reports what was seen, so a caller can tell the two \
+             refusals apart"
+        );
+    }
+
+    /// **The acceptance bar of this task, asserted rather than described: every band on all
+    /// three axes is reached on two worlds.**
+    ///
+    /// Population: 1,200 Fibonacci-spiral points per world, the same construction the
+    /// calibration uses, over the two worlds `src/bin/climate_survey.rs` calls `default` and
+    /// `seed 424242`; land is `elevation_m > 0.0`. The edges come from
+    /// `Surface::band_edges(None, None)`, so this is the shipped calibration and not a
+    /// re-implementation of it -- and the occupancy population is deliberately NOT the
+    /// calibration population, because an edge that is only occupied on the points it was
+    /// fitted to is not an edge.
+    ///
+    /// **Two of the three axes are occupied by construction and the third is not**, which is
+    /// exactly why this asserts all three: moisture and landform are quantiles of the world's
+    /// own land and can only fail by TYING, and temperature is absolute and can fail by a
+    /// world simply not having that climate. The release survey measures the same property
+    /// over 20,000 points on four worlds; this is the part CI can afford.
+    #[test]
+    fn every_band_on_all_three_axes_is_reached_on_two_worlds() {
+        const POPULATION: usize = 1_200;
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        for (label, seed, plates, land_fraction) in
+            [("default", 20_260_904i64, 12usize, 0.29f64), ("seed 424242", 424_242, 18, 0.40)]
+        {
+            let surface = crate::surface::Surface::new(
+                seed,
+                crate::sphere::EARTH_RADIUS_M,
+                plates,
+                land_fraction,
+                None,
+                None,
+                None,
+            );
+            let edges = surface.band_edges(None, None);
+            assert!(
+                edges.land_samples() > 0,
+                "{label}: nothing to calibrate on"
+            );
+
+            let mut landform = [0usize; LANDFORM_BANDS];
+            let mut temperature = [0usize; TEMPERATURE_BANDS];
+            let mut moisture = [0usize; MOISTURE_BANDS];
+            let mut land = 0usize;
+            for index in 0..POPULATION {
+                let z = 1.0 - 2.0 * (index as f64 + 0.5) / (POPULATION as f64); // cast-ok: loop counter to float
+                let inner = 1.0 - z * z;
+                let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+                let angle = golden * index as f64; // cast-ok: loop counter to float
+                let point = SpherePoint {
+                    vector: crate::vectors::Vec3::new(
+                        m::cos(angle) * ring,
+                        m::sin(angle) * ring,
+                        z,
+                    ),
+                };
+                if !(surface.elevation_m(&point, None) > 0.0) {
+                    continue;
+                }
+                land += 1;
+                let bands = surface
+                    .bands_at(&point, None, None, None, &edges)
+                    .expect("real land on a calibrated world is answerable");
+                landform[bands.landform] += 1;
+                temperature[bands.temperature] += 1;
+                moisture[bands.moisture] += 1;
+            }
+            assert!(land > 200, "{label}: only {land} land points to band");
+            for (axis, counts) in [
+                ("landform", &landform[..]),
+                ("temperature", &temperature[..]),
+                ("moisture", &moisture[..]),
+            ] {
+                for (band, count) in counts.iter().enumerate() {
+                    assert!(
+                        *count > 0,
+                        "{label}: {axis} band {band} is UNREACHED over {land} land points \
+                         ({counts:?}) -- a band nobody can enter is a dead palette entry"
+                    );
+                }
+            }
+        }
     }
 }

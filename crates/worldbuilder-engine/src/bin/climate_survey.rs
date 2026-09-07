@@ -101,6 +101,10 @@ const FETCH_PROBE_STEPS: usize = 300;
 const BAND_EDGES_C: &[f64] = &[0.0, 8.0, 18.0, 24.0];
 const BAND_NAMES: &[&str] = &["polar", "boreal", "temperate", "subtropical", "tropical"];
 
+/// Task 3's two quantiled axes, for the occupancy table below.
+const MOISTURE_BAND_NAMES: &[&str] = &["arid", "dry", "moist", "wet", "perhumid"];
+const LANDFORM_BAND_NAMES: &[&str] = &["lowland", "interior", "montane"];
+
 /// Land at or below this height stands in for "sea level", isolating the latitude profile
 /// from the lapse term.
 const SEA_LEVEL_BAND_M: f64 = 20.0;
@@ -367,6 +371,166 @@ fn main() {
             println!();
             println!("  moisture span {:.3} .. {:.3}", d[0], d[d.len() - 1]);
         }
+
+        // ---- Task 3: the bands, on this world's own quantiles. ----
+        //
+        // Three things are measured here and none of them is assumed. (1) Where the shipped
+        // calibration puts the edges. (2) Whether every band on all three axes is actually
+        // occupied -- the quantiled axes are occupied by construction unless the field TIES,
+        // and Task 2 warned that a truncated drying integral puts a FLOOR at the dry end, so
+        // "by construction" is exactly the kind of sentence this project has been wrong about
+        // before. (3) What evenly-spaced edges would have done instead, in the same units, so
+        // the plan's instruction to revise the roadmap's four evenly-spaced bands is carried
+        // by arithmetic rather than by a quotation.
+        let edges = surface.band_edges(None, None);
+        println!("  --- bands (calibrated on {} land of {} spiral samples) ---",
+            edges.land_samples(), climate::BAND_CALIBRATION_SAMPLES);
+        print!("  moisture quantiles ");
+        for q in climate::moisture_quantiles() {
+            print!(" {q:.4}");
+        }
+        print!("   ->  edges");
+        for e in edges.moisture() {
+            print!(" {e:.4}");
+        }
+        println!();
+        print!("  landform quantiles ");
+        for q in climate::LANDFORM_QUANTILES {
+            print!(" {q:.4}");
+        }
+        print!("   ->  edges");
+        for e in edges.landform() {
+            print!(" {e:.1} m");
+        }
+        println!();
+
+        // Occupancy over the moisture population -- a DIFFERENT and five-times larger sample
+        // than the 4,000 the edges were read from, which is the point: an edge that is only
+        // occupied on the points it was fitted to is not an edge.
+        let mut moisture_bands = [0usize; climate::MOISTURE_BANDS];
+        let mut landform_bands = [0usize; climate::LANDFORM_BANDS];
+        let mut temp_bands = [0usize; climate::TEMPERATURE_BANDS];
+        let mut cube = [[[0usize; climate::MOISTURE_BANDS]; climate::TEMPERATURE_BANDS];
+            climate::LANDFORM_BANDS];
+        let mut unbanded = 0usize;
+        // Task 2's concern 3, made measurable: a point whose march never leaves land inside
+        // its own 3,200 km span has been dried by a TRUNCATED INTEGRAL rather than by a
+        // measured fetch, so its moisture is a fact about the budget as much as about the
+        // world. A band edge placed inside a population of those is placed inside an
+        // artefact. This counts how much of each band is made of them.
+        let mut truncated_by_band = [0usize; climate::MOISTURE_BANDS];
+        for index in 0..MARCH_SAMPLES_SURVEYED {
+            let point = fibonacci_point(index, MARCH_SAMPLES_SURVEYED);
+            if !(surface.elevation_m(&point, None) > 0.0) {
+                continue;
+            }
+            let reached_water = match upwind_fetch_steps(&surface, world.radius_m, &point) {
+                Some(steps) => steps <= usize::from(climate::MARCH_SAMPLES),
+                None => false,
+            };
+            match surface.bands_at(&point, None, None, None, &edges) {
+                Some(bands) => {
+                    if !reached_water {
+                        truncated_by_band[bands.moisture] += 1;
+                    }
+                    moisture_bands[bands.moisture] += 1;
+                    landform_bands[bands.landform] += 1;
+                    temp_bands[bands.temperature] += 1;
+                    cube[bands.landform][bands.temperature][bands.moisture] += 1;
+                }
+                None => unbanded += 1,
+            }
+        }
+        let pct = |count: usize| 100.0 * count as f64 / march_land as f64; // cast-ok: counts to float
+        print!("  moisture bands    ");
+        for (name, count) in MOISTURE_BAND_NAMES.iter().zip(moisture_bands.iter()) {
+            print!(" {name} {count} ({:.1}%)", pct(*count));
+        }
+        println!();
+        print!("  landform bands    ");
+        for (name, count) in LANDFORM_BAND_NAMES.iter().zip(landform_bands.iter()) {
+            print!(" {name} {count} ({:.1}%)", pct(*count));
+        }
+        println!();
+        print!("  temperature bands ");
+        for (name, count) in BAND_NAMES.iter().zip(temp_bands.iter()) {
+            print!(" {name} {count} ({:.1}%)", pct(*count));
+        }
+        println!();
+        print!("  dried by truncation");
+        for (name, count) in MOISTURE_BAND_NAMES.iter().zip(truncated_by_band.iter()) {
+            print!(" {name} {count} ({:.1}%)", pct(*count));
+        }
+        println!();
+        let empty_axes = moisture_bands.iter().filter(|c| **c == 0).count()
+            + landform_bands.iter().filter(|c| **c == 0).count()
+            + temp_bands.iter().filter(|c| **c == 0).count();
+        println!("  unreached bands across the three axes: {empty_axes}   unbanded points: {unbanded}");
+        let cells_used = cube
+            .iter()
+            .flat_map(|plane| plane.iter())
+            .flat_map(|row| row.iter())
+            .filter(|count| **count > 0)
+            .count();
+        println!("  cells of the {}x{}x{} cube occupied: {cells_used} of {}",
+            climate::LANDFORM_BANDS, climate::TEMPERATURE_BANDS, climate::MOISTURE_BANDS,
+            climate::LANDFORM_BANDS * climate::TEMPERATURE_BANDS * climate::MOISTURE_BANDS);
+
+        // The comparison the plan asks for, in one table. `wetness` is already sorted.
+        let survey_order = |sorted: &[f64], q: f64| sorted[((sorted.len() - 1) as f64 * q) as usize]; // cast-ok: quantile index
+        let occupancy = |edges: &[f64]| {
+            let mut counts = vec![0usize; edges.len() + 1];
+            for value in &wetness {
+                let mut band = 0;
+                for edge in edges {
+                    if value >= edge {
+                        band += 1;
+                    }
+                }
+                counts[band] += 1;
+            }
+            counts
+        };
+        let even_value: Vec<f64> = (1..=4).map(|i| i as f64 / 5.0).collect(); // cast-ok: loop counter to float
+        let even_quantile: Vec<f64> = (1..=4)
+            .map(|i| survey_order(&wetness, i as f64 / 5.0)) // cast-ok: loop counter to float
+            .collect();
+        let bell: Vec<f64> = climate::moisture_quantiles()
+            .iter()
+            .map(|q| survey_order(&wetness, *q))
+            .collect();
+        for (label, edges) in [
+            ("even in value   ", &even_value),
+            ("even in quantile", &even_quantile),
+            ("bell (shipped)  ", &bell),
+        ] {
+            print!("  spacing {label} edges");
+            for e in edges.iter() {
+                print!(" {e:.4}");
+            }
+            print!("   occupancy");
+            for count in occupancy(edges) {
+                print!(" {:.1}%", pct(count));
+            }
+            println!();
+        }
+
+        // The floor Task 2 warned about, measured rather than assumed: how much of this
+        // world's land sits within one percent of the driest point, and whether the driest
+        // decile is a tie.
+        let driest = wetness[0];
+        let near_floor = wetness.iter().filter(|w| **w <= driest * 1.01).count();
+        let distinct = {
+            let mut seen = 1usize;
+            for pair in wetness.windows(2) {
+                if pair[0] != pair[1] {
+                    seen += 1;
+                }
+            }
+            seen
+        };
+        println!("  dry floor: driest {driest:.6}, within 1% of it {near_floor} ({:.2}%), distinct values {distinct} of {}",
+            pct(near_floor), wetness.len());
         println!();
     }
 }

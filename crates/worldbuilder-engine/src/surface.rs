@@ -583,6 +583,82 @@ impl Surface {
         })
     }
 
+    /// This world's own band edges for the two quantiled climate axes.
+    ///
+    /// Args:
+    /// resolution_m: Passed to every elevation and every moisture query the calibration
+    /// makes, so a caller calibrating for a coarse consumer gets edges taken over the field
+    /// that consumer will actually see.
+    /// moisture: `None` for the canonical march.
+    ///
+    /// Returns:
+    /// `climate::BandEdges` -- four moisture edges and two landform edges, or NaN edges for
+    /// a world with no land or one whose samples could not be answered.
+    ///
+    /// **This is a per-world constant and it is not cheap: it is one elevation at each of
+    /// `climate::BAND_CALIBRATION_SAMPLES` points plus one march at each land point, and a
+    /// march is `MARCH_SAMPLES + 1` elevations.** On a 29%-land world that is roughly
+    /// 190,000 elevation queries. Call it once when the world is built and keep the answer;
+    /// calling it per texel would be several hundred times the cost of the texel.
+    ///
+    /// **There is no `bands` field on `Surface` and there is not going to be one.** The
+    /// edges depend on `resolution_m` and on the `MoistureParams` a caller asks for, so
+    /// there is no single answer to cache, and `lib.rs::the_surface_is_not_modified_by_this_slice`
+    /// pins this struct at eight fields by name. The caller owns the calibration, exactly as
+    /// `biome.js` owns the one it computes today.
+    pub fn band_edges(
+        &self,
+        resolution_m: Option<f64>,
+        moisture: Option<MoistureParams>,
+    ) -> climate::BandEdges {
+        climate::BandEdges::calibrate(
+            &|probe: &SpherePoint| self.elevation_m(probe, resolution_m),
+            &|probe: &SpherePoint| self.moisture_index(probe, resolution_m, moisture),
+        )
+    }
+
+    /// **All three climate axes at a point**, as band indices, against edges this world was
+    /// calibrated for.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: As `elevation_m`.
+    /// climate_params: `None` for the canonical temperature profile.
+    /// moisture: `None` for the canonical march.
+    /// edges: From `band_edges` on **this same surface**. Nothing checks that, because
+    /// nothing can: the edges are three arrays of `f64` and carry no world identity. Handing
+    /// in another world's edges gives another world's banding, which is a real thing a
+    /// caller might want (comparing two worlds on one scale) and a real way to be wrong.
+    ///
+    /// Returns:
+    /// `None` if any of the three axes could not be answered -- a NaN elevation, a NaN
+    /// moisture, or NaN edges from a world that could not be calibrated. See
+    /// `climate::band_index` for why this is an `Option` and not a triple of zeros.
+    ///
+    /// **This does not test for land.** Below the datum the landform axis reads whatever the
+    /// bathymetry says and the moisture march reads saturated marine air, which are answers
+    /// to a question nobody should be asking: `biome.js` short-circuits ocean before it
+    /// classifies anything and so must any other caller. Adding an ocean arm here would put a
+    /// second land test in a crate that already has one everywhere, and would have to invent
+    /// a meaning for `None` that is not "unanswerable".
+    pub fn bands_at(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        climate_params: Option<ClimateParams>,
+        moisture: Option<MoistureParams>,
+        edges: &climate::BandEdges,
+    ) -> Option<climate::Bands> {
+        let elevation_m = self.elevation_m(point, resolution_m);
+        let temperature_c = self.temperature_c(point, resolution_m, climate_params);
+        let wetness = self.moisture_index(point, resolution_m, moisture);
+        Some(climate::Bands {
+            landform: climate::landform_band(elevation_m, edges)?,
+            temperature: climate::temperature_band(temperature_c)?,
+            moisture: climate::moisture_band(wetness, edges)?,
+        })
+    }
+
     /// What the bottom is made of, as fractions of sand, mud and rock.
     ///
     /// Args:
@@ -2828,5 +2904,129 @@ mod tests {
         };
         let answer = surface.moisture_index(&point, Some(20_000.0), Some(widest));
         assert!(answer >= 0.0 && answer <= 1.0, "the widest march read {answer}");
+    }
+
+    /// **Both arguments of `band_edges` reach the field it calibrates over.**
+    ///
+    /// A calibration that ignored `resolution_m` or the `MoistureParams` would still return
+    /// plausible edges -- the failure mode is a silently canonical answer, not a wrong-looking
+    /// one -- so each is moved on its own and required to move the edges. `None` is pinned
+    /// bit-identical to `Some(canonical())` in the same test, because that is the promise the
+    /// opt-in pattern makes and it is the one an `Option` can quietly break.
+    #[test]
+    fn both_arguments_of_band_edges_reach_the_calibration() {
+        let surface = shaped();
+        let canonical = surface.band_edges(None, None);
+        assert!(canonical.land_samples() > 0, "the fixture world has land");
+
+        let explicit = surface.band_edges(None, Some(MoistureParams::canonical()));
+        for (a, b) in canonical.moisture().iter().zip(explicit.moisture().iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "None must be canonical, bit for bit");
+        }
+
+        let mut drier = MoistureParams::canonical();
+        drier.fetch_scale_m = climate::FETCH_SCALE_M / 8.0;
+        let moved = surface.band_edges(None, Some(drier));
+        assert!(
+            canonical
+                .moisture()
+                .iter()
+                .zip(moved.moisture().iter())
+                .any(|(a, b)| a.to_bits() != b.to_bits()),
+            "the moisture params did not reach the calibration: {:?} against {:?}",
+            canonical.moisture(),
+            moved.moisture()
+        );
+
+        let coarse = surface.band_edges(Some(80_000.0), None);
+        assert!(
+            canonical
+                .landform()
+                .iter()
+                .zip(coarse.landform().iter())
+                .any(|(a, b)| a.to_bits() != b.to_bits()),
+            "resolution_m did not reach the calibration: {:?} against {:?}",
+            canonical.landform(),
+            coarse.landform()
+        );
+    }
+
+    /// **All three axes of `bands_at` are read from this world, and none of them is a
+    /// constant.**
+    ///
+    /// Two claims, because either alone is weak. First, each band agrees with the axis
+    /// function applied to this surface's own answer, so an axis wired to the wrong quantity
+    /// is red. Second, each axis takes at least two distinct values over the population, so an
+    /// axis replaced by a constant is red as well -- an agreement test alone would happily
+    /// agree with a hard-coded zero if the field it was compared against were hard-coded too.
+    #[test]
+    fn bands_at_reads_all_three_axes_from_this_world() {
+        let surface = shaped();
+        let edges = surface.band_edges(None, None);
+        let mut seen: [std::collections::BTreeSet<usize>; 3] = Default::default();
+        let mut land = 0usize;
+        for index in 0..600usize {
+            let latitude = -80.0 + 160.0 * (index as f64) / 599.0; // cast-ok: loop counter to float
+            let longitude = -180.0 + 360.0 * ((index * 37) % 600) as f64 / 600.0; // cast-ok: loop counter to float
+            let point = SpherePoint::from_latlon(latitude, longitude);
+            let height = surface.elevation_m(&point, None);
+            if !(height > 0.0) {
+                continue;
+            }
+            land += 1;
+            let bands = surface
+                .bands_at(&point, None, None, None, &edges)
+                .expect("answerable land");
+            assert_eq!(
+                Some(bands.landform),
+                climate::landform_band(height, &edges),
+                "the landform axis is not this point's elevation"
+            );
+            assert_eq!(
+                Some(bands.temperature),
+                climate::temperature_band(surface.temperature_c(&point, None, None)),
+                "the temperature axis is not this point's temperature"
+            );
+            assert_eq!(
+                Some(bands.moisture),
+                climate::moisture_band(surface.moisture_index(&point, None, None), &edges),
+                "the moisture axis is not this point's moisture"
+            );
+            seen[0].insert(bands.landform);
+            seen[1].insert(bands.temperature);
+            seen[2].insert(bands.moisture);
+        }
+        assert!(land > 50, "only {land} land points on the fixture world");
+        for (axis, values) in ["landform", "temperature", "moisture"].iter().zip(seen.iter()) {
+            assert!(
+                values.len() > 1,
+                "the {axis} axis took one value ({values:?}) over {land} land points -- a \
+                 constant axis is a dead axis"
+            );
+        }
+    }
+
+    /// A point that cannot be answered is not banded, at the `Surface` level too.
+    ///
+    /// The same three non-finite vectors `a_nan_point_is_not_answered_with_marine_air` uses,
+    /// and for the same reason: `to_latlon` clamps two of them to latitude 90, which is a real
+    /// band with a real wind, so a banding that read only the latitude would hand back a
+    /// perfectly ordinary polar cell for a point that does not exist.
+    #[test]
+    fn a_nan_point_is_not_banded() {
+        let surface = shaped();
+        let edges = surface.band_edges(None, None);
+        for vector in [
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 1.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+        ] {
+            let point = SpherePoint { vector };
+            assert_eq!(
+                surface.bands_at(&point, None, None, None, &edges),
+                None,
+                "a NaN point was banded"
+            );
+        }
     }
 }
