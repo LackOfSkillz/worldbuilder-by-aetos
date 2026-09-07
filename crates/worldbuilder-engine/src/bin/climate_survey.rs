@@ -147,13 +147,33 @@ fn band_of(temperature_c: f64) -> usize {
     band
 }
 
-/// The elevation at which the closed form crosses zero at a latitude -- the freezing
-/// contour, which is the snow line Task 5 consumes. Negative means the sea surface itself
-/// is below freezing there and no elevation is needed.
-fn freezing_contour_m(latitude_deg: f64, params: &ClimateParams) -> f64 {
-    1000.0 * (params.pole_c + (params.equator_c - params.pole_c) * m::cos(m::to_radians(latitude_deg)))
-        / params.lapse_c_per_km
+/// The viewer's PREVIOUS snow band, transcribed from `viewer/public/app/relief.js` as it
+/// stood before Task 5 (`SNOW_LINE_EQUATOR_M = 4900`, `SNOW_LINE_ZERO_LAT_DEG = 80`), so the
+/// two can be counted against each other on the same population in the same run. **Nothing
+/// in the engine reads this**; it is here to be measured against and it is the only copy.
+fn legacy_snow_line_m(latitude_deg: f64) -> f64 {
+    let t = latitude_deg.abs() / 80.0;
+    let t = if t.is_nan() {
+        t
+    } else if t > 1.0 {
+        1.0
+    } else {
+        t
+    };
+    4900.0 * (1.0 - t)
 }
+
+/// Metres of height over which the viewer completes its snow blend once the line is crossed
+/// (`relief.js::SNOW_BAND_M`). Unchanged by Task 5 -- it is a blend width, not a placement --
+/// and reported here so "fully snow" and "in the blend" are the same two questions on both
+/// lines.
+const SNOW_BAND_M: f64 = 260.0;
+
+/// Egholm et al. (2009), Nature 460: *"most summit elevations are confined to altitudes
+/// <1,500 m above the local snowline"*. This is that 1,500 m, and it is a **measurement
+/// threshold in this binary and nothing else** -- no engine path reads it and no terrain is
+/// clamped by it. The count it produces is what Task 5 decided the clamp on.
+const EGHOLM_CEILING_ABOVE_SNOW_M: f64 = 1_500.0;
 
 /// The decile boundaries of a sorted sample, as a small table. Explicit indexing rather
 /// than interpolation: this is a distribution to look at, not a statistic to publish.
@@ -256,6 +276,25 @@ fn main() {
         let mut bands = [0usize; 5];
         let mut above_freezing_contour = 0usize;
         let mut highest = f64::NEG_INFINITY;
+        // ---- Task 5's snow section. Every counter below is arithmetic on `height` and
+        // `latitude`, both already in hand, so this section adds no elevation query and no
+        // measurable time to a survey that was already paying for 200,000 of them.
+        let mut legacy_full = 0usize;
+        let mut legacy_blend = 0usize;
+        let mut engine_full = 0usize;
+        let mut engine_blend = 0usize;
+        let mut over_egholm = 0usize;
+        let mut worst_egholm_excess = f64::NEG_INFINITY;
+        let mut worst_egholm_at = (0.0, 0.0);
+        // The same two counts restricted to latitudes where the snow line is ABOVE the datum
+        // -- the only places Egholm's sentence is about, since a range cannot have summits
+        // relative to a snowline that is three kilometres below sea level.
+        let mut over_egholm_subpolar = 0usize;
+        let mut worst_subpolar_excess = f64::NEG_INFINITY;
+        let mut worst_subpolar_at = (0.0, 0.0);
+        // How much of the engine line's snow is ground where the DATUM itself is frozen, as
+        // opposed to ground that is snowy because it is high.
+        let mut engine_snow_at_frozen_datum = 0usize;
 
         for index in 0..SAMPLES {
             let point = fibonacci_point(index, SAMPLES);
@@ -291,6 +330,38 @@ fn main() {
             if temperature < 0.0 {
                 above_freezing_contour += 1;
             }
+
+            let legacy = legacy_snow_line_m(latitude);
+            if height >= legacy + SNOW_BAND_M {
+                legacy_full += 1;
+            } else if height > legacy {
+                legacy_blend += 1;
+            }
+            let line = climate::freezing_elevation_m(latitude, &params);
+            if height >= line + SNOW_BAND_M {
+                engine_full += 1;
+            } else if height > line {
+                engine_blend += 1;
+            }
+            let excess = height - (line + EGHOLM_CEILING_ABOVE_SNOW_M);
+            if excess > 0.0 {
+                over_egholm += 1;
+            }
+            if excess > worst_egholm_excess {
+                worst_egholm_excess = excess;
+                worst_egholm_at = (latitude, height);
+            }
+            if line > 0.0 {
+                if excess > 0.0 {
+                    over_egholm_subpolar += 1;
+                }
+                if excess > worst_subpolar_excess {
+                    worst_subpolar_excess = excess;
+                    worst_subpolar_at = (latitude, height);
+                }
+            } else if height > line {
+                engine_snow_at_frozen_datum += 1;
+            }
         }
 
         println!("{}", world.label);
@@ -319,9 +390,28 @@ fn main() {
         println!("  land below freezing: {above_freezing_contour} points");
         print!("  freezing contour   ");
         for latitude in [0.0, 20.0, 45.0, 60.0, 70.0] {
-            print!(" {latitude:.0}deg {:.0}m", freezing_contour_m(latitude, &params));
+            print!(" {latitude:.0}deg {:.0}m", climate::freezing_elevation_m(latitude, &params));
         }
         println!();
+
+        // ---- Snow, and the Egholm ceiling. Task 5. ----
+        //
+        // Two lines counted over the SAME land population: the viewer's previous linear band
+        // and the engine's freezing contour. "full" is height at or above line + blend width;
+        // "blend" is inside the blend. Earth's permanent ice is about 10% of land area, and
+        // the Fibonacci spiral is area-uniform, so these fractions are directly comparable to
+        // that figure without any cos-latitude weighting.
+        let pct = |count: usize| 100.0 * count as f64 / land as f64; // cast-ok: counts to float, exact far below 2^53
+        println!("  snow, legacy linear band (4900 m at 0 deg, 0 at 80): full {legacy_full} ({:.2}%)  blend {legacy_blend} ({:.2}%)  total {:.2}%",
+            pct(legacy_full), pct(legacy_blend), pct(legacy_full + legacy_blend));
+        println!("  snow, engine freezing contour:                      full {engine_full} ({:.2}%)  blend {engine_blend} ({:.2}%)  total {:.2}%",
+            pct(engine_full), pct(engine_blend), pct(engine_full + engine_blend));
+        println!("  ... of which the datum itself is frozen: {engine_snow_at_frozen_datum} ({:.2}%) -- snow because it is polar, not because it is high",
+            pct(engine_snow_at_frozen_datum));
+        println!("  Egholm ceiling (snow line + {EGHOLM_CEILING_ABOVE_SNOW_M:.0} m): {over_egholm} land points above it ({:.4}%), worst excess {worst_egholm_excess:.0} m at lat {:.1} / {:.0} m",
+            pct(over_egholm), worst_egholm_at.0, worst_egholm_at.1);
+        println!("  ... where the snow line is above the datum (the only ground Egholm's sentence is about): {over_egholm_subpolar} ({:.4}%), worst excess {worst_subpolar_excess:.0} m at lat {:.1} / {:.0} m",
+            pct(over_egholm_subpolar), worst_subpolar_at.0, worst_subpolar_at.1);
 
         // ---- Moisture. Its own smaller population; see MARCH_SAMPLES_SURVEYED. ----
         let mut fetches: Vec<usize> = Vec::new();

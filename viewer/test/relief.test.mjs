@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Engine } from "../public/app/engine.js";
 import { OCEAN_STOPS, RAMP_STOPS } from "../public/app/panel-fields.js";
+import { biomeColor, engineCalibration } from "../public/app/biome.js";
 import {
   baseColor,
   coastDitherM,
@@ -30,6 +31,7 @@ import {
   hasStructure,
   slopeColor,
   snowLineM,
+  freezingLineM,
   sunDirectionEnu,
   AMBIENT,
   DEFAULT_SUN,
@@ -40,6 +42,7 @@ import {
   ROCK_COLOR,
   ROCK_SLOPE_HIGH_DEG,
   ROCK_SLOPE_LOW_DEG,
+  SNOW_BAND_M,
   SNOW_COLOR,
   SNOW_LINE_EQUATOR_M,
   SNOW_LINE_ZERO_LAT_DEG,
@@ -714,5 +717,139 @@ test("the water's edge is dithered, and the dither does not move the coastline",
   assert.ok(
     worst > FOAM_DITHER_M * 0.9,
     `the dither only ever reached ${worst} m of its ${FOAM_DITHER_M} m; it is not using its range`,
+  );
+});
+
+// ==============================================================================================
+// The snow line, replaced. Task 5 of the climate slice.
+// ==============================================================================================
+
+/// The freezing contour the engine's own `climate::freezing_elevation_m` produces, at the
+/// latitudes `climate_survey.rs` prints. **Transcribed nowhere**: `theEngineSnowLine` below
+/// derives every one of these from a real climate tile read out of the committed `.wasm`, and
+/// this table is only what the assertion is checked against.
+const ENGINE_CONTOUR_M = [[0, 4153.8], [20, 3671.4], [45, 1810.7], [60, 153.8], [70, -1110.0]];
+
+/// The engine's snow line at a latitude, read the way the viewer reads it: a 1x1 climate tile
+/// for the datum temperature and the world's calibration for the lapse rate. Nothing here
+/// knows 27, -25 or 6.5.
+function theEngineSnowLine(latitudeDeg, lapseCPerKm) {
+  const grid = engine.climateTileF32({
+    handle: world,
+    lat0Deg: latitudeDeg, lat1Deg: latitudeDeg, lon0Deg: 0, lon1Deg: 0,
+    width: 1, height: 1,
+    // A zero-step march: the moisture channel is not read here and the canonical 160-step
+    // budget would be 161 elevation queries for a number this test throws away.
+    marchSamples: 0,
+  });
+  return { datumC: grid[0], line: freezingLineM(grid[0], lapseCPerKm) };
+}
+
+test("the snow line is the engine's freezing contour, and it is a cosine where the old band was a line", async () => {
+  const cal = engine.climateCalibration({ handle: world, marchSamples: 0 });
+  assert.ok(Number.isFinite(cal.lapseCPerKm) && cal.lapseCPerKm > 0,
+    `the engine must report a lapse rate, got ${cal.lapseCPerKm}`);
+
+  // 1. THE LINE IS THE ENGINE'S, at five latitudes, read out of the shipped artifact.
+  for (const [latitudeDeg, expectedM] of ENGINE_CONTOUR_M) {
+    const { line } = theEngineSnowLine(latitudeDeg, cal.lapseCPerKm);
+    assert.ok(Math.abs(line - expectedM) < 1,
+      `at ${latitudeDeg} deg the engine snow line is ${line.toFixed(1)} m, not ${expectedM}`);
+  }
+
+  // 2. THE TWO DISAGREE BY THE MEASURED AMOUNTS, which is what makes this a replacement and
+  //    not a re-spelling. 746 m at the equator, and the old line's zero crossing is 18.74
+  //    degrees further north than the new one's.
+  const equator = theEngineSnowLine(0, cal.lapseCPerKm).line;
+  assert.ok(Math.abs((snowLineM(0) - equator) - 746) < 1,
+    `the old band was ${(snowLineM(0) - equator).toFixed(1)} m too high at the equator, not 746`);
+
+  let lo = 61;
+  let hi = 62;
+  for (let i = 0; i < 30; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (theEngineSnowLine(mid, cal.lapseCPerKm).line > 0) lo = mid; else hi = mid;
+  }
+  assert.ok(Math.abs(lo - 61.26) < 0.02,
+    `the engine line reaches the datum at ${lo.toFixed(2)} deg, not 61.26`);
+  assert.ok(Math.abs((SNOW_LINE_ZERO_LAT_DEG - lo) - 18.74) < 0.02,
+    `the old band crossed ${(SNOW_LINE_ZERO_LAT_DEG - lo).toFixed(2)} degrees late, not 18.74`);
+
+  // 3. SHAPE, not offset. A straight line through the ENGINE line's own two ends sits far
+  //    below it in the middle -- 708 m at 45 degrees. A snow line that had merely been
+  //    lowered by 746 m everywhere would fail this and pass everything above it.
+  const straightAt45 = equator * (1 - 45 / lo);
+  const gap = theEngineSnowLine(45, cal.lapseCPerKm).line - straightAt45;
+  assert.ok(gap > 700 && gap < 720,
+    `the contour stands ${gap.toFixed(1)} m above a line through its own ends at 45 deg, not ~708`);
+});
+
+test("the engine line paints snow the old band missed, and the old band is still what ?climate=0 draws", () => {
+  const cal = engineCalibration({
+    radiusM: DEFAULT_WORLD.radiusM,
+    climate: engine.climateCalibration({ handle: world, marchSamples: 0 }),
+  });
+  const equator = theEngineSnowLine(0, cal.lapseCPerKm);
+  const mid = theEngineSnowLine(45, cal.lapseCPerKm);
+
+  // The whiteness of a texel, isolated: `slopeColor` against `biomeColor` at the same point
+  // with the same inputs. `biomeColor` is the land base this file's snow blend acts ON, so
+  // the difference between the two IS the snow term and nothing else.
+  const snowGain = (heightM, latitudeDeg, climate) => {
+    const base = biomeColor({ heightM, latitudeDeg, longitudeDeg: 0, calibration: cal, climate });
+    const drawn = slopeColor(heightM, 0, latitudeDeg, 0, cal, null, climate);
+    return { base, drawn };
+  };
+
+  // 1. A 4,500 m EQUATORIAL SUMMIT. The old band puts its line at 4,900 m, so this peak is
+  //    bare on the `?climate=0` path; the engine puts it at 4,154 m, so a summit 346 m past
+  //    the blend width is fully snow. That one texel is half one of this task as a colour.
+  assert.ok(snowLineM(0) > 4500, "the old band must leave a 4,500 m equatorial peak bare");
+  assert.ok(equator.line + SNOW_BAND_M < 4500, "the engine line must bury a 4,500 m equatorial peak");
+  assert.deepEqual(slopeColor(4500, 0, 0), baseColor(4500), "no climate: the old band, unchanged");
+  assert.notDeepEqual(slopeColor(4500, 0, 0), [...SNOW_COLOR]);
+  assert.deepEqual(
+    slopeColor(4500, 0, 0, 0, cal, null, { datumC: equator.datumC, moisture: 0.5 }),
+    [...SNOW_COLOR],
+  );
+
+  // 2. A 1,900 m PEAK AT 45 DEGREES goes the same way -- old line 2,143.75 m, engine line
+  //    1,810.7 m. Two latitudes, because one of them would pass on a snow line that had
+  //    simply been LOWERED by a constant, which is the thing §the-contour-test rules out.
+  assert.ok(snowLineM(45) > 1900, "the old band must leave a 1,900 m peak at 45 deg bare");
+  assert.ok(mid.line < 1900, "the engine line must put a 1,900 m peak at 45 deg into snow");
+  const at45 = snowGain(1900, 45, { datumC: mid.datumC, moisture: 0.5 });
+  assert.notDeepEqual(at45.drawn, at45.base, "the snow term did not fire at 45 deg / 1,900 m");
+  assert.ok(
+    at45.drawn[0] > at45.base[0] && at45.drawn[1] > at45.base[1] && at45.drawn[2] > at45.base[2],
+    `the drawn texel ${at45.drawn} is not whiter than its biome base ${at45.base}`,
+  );
+
+  // 3. AND BELOW THE LINE NOTHING HAPPENS, so this is a line and not a global brightening.
+  const under = snowGain(mid.line - 1, 45, { datumC: mid.datumC, moisture: 0.5 });
+  assert.deepEqual(under.drawn, under.base, "a texel below the engine line must be untouched");
+
+  // 4. THE FALLBACK IS UNTOUCHED. `?climate=0` passes no climate, and every snow assertion
+  //    written before this task is written against that path.
+  assert.equal(snowLineM(0), SNOW_LINE_EQUATOR_M);
+  assert.deepEqual(slopeColor(1381, 0, 78), [...SNOW_COLOR]);
+});
+
+test("an engine climate with no lapse rate throws, rather than drawing a texel with silently no snow", () => {
+  // `freezingLineM` on a NaN or missing lapse gives a NaN line; `smoothstep` clamps through a
+  // comparison, every comparison against NaN is false, and the texel comes back with `snowT`
+  // NaN and therefore no snow at all -- a plausible picture for an unanswerable input, which
+  // is the failure family this project keeps finding. It throws instead.
+  const cal = engineCalibration({
+    radiusM: DEFAULT_WORLD.radiusM,
+    climate: engine.climateCalibration({ handle: world, marchSamples: 0 }),
+  });
+  const climate = { datumC: 5, moisture: 1 };
+  assert.throws(() => slopeColor(3000, 0, 0, 0, null, null, climate), /lapse rate/);
+  assert.throws(() => slopeColor(3000, 0, 0, 0, { ...cal, lapseCPerKm: NaN }, null, climate), /lapse rate/);
+  assert.throws(() => slopeColor(3000, 0, 0, 0, { ...cal, lapseCPerKm: 0 }, null, climate), /snow line is Infinity/);
+  assert.throws(
+    () => slopeColor(3000, 0, 0, 0, cal, null, { datumC: NaN, moisture: 1 }),
+    /snow line is NaN/,
   );
 });

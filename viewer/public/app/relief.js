@@ -119,15 +119,25 @@
 //   photographs show grey faces and green valleys at the *same* altitude. The band here is
 //   15-38 deg on the exaggerated surface. It is a minority accent at coarse levels and a
 //   real texture close in, and it is reported per level rather than claimed to be stable.
-// - **Bare/snow.** The snowline is not a contour. It falls with latitude (roughly 4,900 m in
-//   the tropics, ~2,100 m at 45 deg, sea level in the high Arctic) and snow is *shed*
+// - **Bare/snow.** The snowline is not a contour. It falls with latitude and snow is *shed*
 //   from steep faces, which is why alpine peaks read as mottled rock-and-white rather than a
-//   white cap with a hard rim. Both are modelled: a latitude-dependent line, and a shelter
-//   term that is one minus the rock fraction. A pure elevation threshold would draw a
-//   contour ring and read as a bug, which is what the brief asked to avoid.
+//   white cap with a hard rim. Both are modelled: a snow line, and a shelter term that is one
+//   minus the rock fraction. A pure elevation threshold would draw a contour ring and read as
+//   a bug, which is what the brief asked to avoid.
 //
-// Not modelled, and visible: no continentality or precipitation in the snowline (a desert
-// mountain and a maritime one get the same line), no sea ice, no clouds.
+//   **Task 5 of the climate slice replaced the line itself with the engine's own freezing
+//   contour** -- `climate::freezing_elevation_m`, evaluated here from the datum temperature
+//   the climate raster ships and the lapse rate the calibration reports. The straight line it
+//   replaces stood 746 m too high at the equator and reached the datum 18.74 degrees too far
+//   north, and was linear where the contour is a cosine. `snowLineM` is kept as the
+//   `?climate=0` fallback and `freezingLineM` is the engine path; both are below, with the
+//   measurements.
+//
+// Not modelled, and visible: **no continentality and no precipitation in the snowline** (a
+// desert mountain and a maritime one still get the same line -- the moisture axis reaches
+// biome.js's palette and does not reach this blend), **no season** (the line is the mean
+// annual 0 C isotherm, which sits below a real permanent snowline wherever there is a summer
+// to melt in, and the metre count for that is in `freezingLineM`), no sea ice, no clouds.
 //
 // # Land colour now comes from `biome.js`
 //
@@ -250,14 +260,16 @@ export const ROCK_SLOPE_LOW_DEG = 15;
 export const ROCK_SLOPE_HIGH_DEG = 38;
 export const ROCK_COLOR = [126, 118, 106];
 
-/// The snowline, as a function of latitude rather than a single contour.
+/// The snowline **when there is no climate to ask** -- the `?climate=0` path and any caller
+/// that passes no engine climate. `freezingLineM` below is what the engine path uses, and the
+/// two disagree by more than an offset.
 ///
 /// Earth's regional snowline runs about 4,900 m in the tropics and reaches sea level in the
-/// high Arctic around 78-80 degrees; this is the straight line through those two ends. It is
-/// a coarse approximation on purpose -- there is no climate model here to do better with,
-/// and a single global elevation threshold is the thing being avoided, not the thing being
-/// refined. On this generator (highest point 1,979 m) it puts no snow at all in the tropics,
-/// which is correct: nothing there is tall enough.
+/// high Arctic around 78-80 degrees; this is the straight line through those two ends. It was
+/// a coarse approximation on purpose -- there was no climate model here to do better with --
+/// and it is kept, unchanged, as the fallback rather than deleted, because deleting it would
+/// change what `?climate=0` draws and that flag's whole job is to be byte-identical to what
+/// shipped before the climate slice.
 ///
 /// **Checked against what it produces, not only against its ends.** A 0.5-degree global scan
 /// of `DEFAULT_WORLD` (259,200 samples, area-weighted by cos(latitude)) puts 7.4% of land
@@ -265,16 +277,55 @@ export const ROCK_COLOR = [126, 118, 106];
 /// ice cover is about 10% of land area, so this lands where it was aimed rather than
 /// painting half the planet white -- which the first pair of ends (zero at 72 degrees) did,
 /// at 30% full plus 10% partial.
+///
+/// **What Task 5 measured against it, on the same population the engine survey uses**
+/// (`climate_survey.rs`, 200,000 area-uniform Fibonacci points per world, land is
+/// `elevation_m > 0`): this line is **746 m too high at the equator** (4,900 against the
+/// engine's 4,154) and reaches the datum **18.74 degrees too far north** (80 against 61.26),
+/// and the disagreement is not one offset because this is **linear in latitude where the
+/// freezing contour is a cosine** -- a straight line through the contour's own two ends sits
+/// 708 m below it at 45 degrees.
 export const SNOW_LINE_EQUATOR_M = 4900;
 export const SNOW_LINE_ZERO_LAT_DEG = 80;
 /// Metres of height over which the snow blend completes, once the line is crossed.
+///
+/// **Unchanged by Task 5, deliberately.** It is a blend width, not a placement: what that
+/// task replaced is where the line sits, and re-tuning the fray at the same time would have
+/// made the before/after pictures a comparison of two changes.
 export const SNOW_BAND_M = 260;
 export const SNOW_COLOR = [246, 248, 250];
 
-/// Snowline height, in metres above the datum, at a latitude.
+/// Snowline height, in metres above the datum, at a latitude. The fallback line; see above.
 export function snowLineM(latitudeDeg) {
   const t = clamp01(Math.abs(latitudeDeg) / SNOW_LINE_ZERO_LAT_DEG);
   return SNOW_LINE_EQUATOR_M * (1 - t);
+}
+
+/// **The snowline the engine's own climate puts here**: the elevation at which this texel's
+/// mean annual temperature reaches freezing, in metres above the datum.
+///
+/// `datumC` is the engine's temperature channel -- the latitude profile evaluated AT the
+/// datum, which is what `wb_climate_tile_f32` writes and why it writes it there rather than
+/// at the ground. `lapseCPerKm` is the engine's own lapse rate out of the calibration
+/// payload. So this is `climate::freezing_elevation_m` evaluated on the same two numbers the
+/// engine used, and **there is no second copy of 6.5, of 27 or of -25 in this file**: change
+/// any of them in `climate.rs` and this line moves with it.
+///
+/// A negative answer is meaningful and is not an error: it says the datum itself is below
+/// freezing here, so all of this texel's ground is snow. On the canonical profile that starts
+/// at 61.26 degrees.
+///
+/// **What it costs, measured, because it is not free.** Over the four worlds
+/// `climate_survey.rs` builds, this line puts **22.7% to 41.7%** of land under snow where the
+/// linear band above put **9.5% to 15.7%** (and 0.0% on the owner's small-radius world, which
+/// has nothing tall enough for a 4,900 m line at its latitudes). Earth's permanent ice is
+/// about 10% of land area. **Three quarters to five sixths of that increase is ground where
+/// the DATUM is frozen** -- 22.6 of 24.2 points on the default world, 34.6 of 41.7 on seed 7
+/// -- so it is polar lowland, not new mountain caps. That is the mean annual 0 C isotherm
+/// standing in for a summer-melt line, which is a real gap and is named in the task report
+/// rather than papered over with an invented seasonal term.
+export function freezingLineM(datumC, lapseCPerKm) {
+  return (datumC * 1000) / lapseCPerKm;
 }
 
 /// `#rrggbb` to `[r, g, b]`. The ocean palette is written as hex because the *other* consumer of
@@ -412,11 +463,19 @@ export function baseColor(heightM) {
 /// face" is a subaerial idea and this generator does not model underwater sediment angle of
 /// repose.
 ///
-/// The snow term is deliberately **not** a pure elevation threshold. It is gated on the
-/// latitude-dependent snowline and then multiplied by `1 - rockT`, the shelter term: a face
-/// steep enough to read as bare rock is a face snow slides off. Together those two turn what
-/// would be a contour ring into a mottled cap that follows the terrain, which is what a
-/// photograph of a snowy range looks like.
+/// The snow term is deliberately **not** a pure elevation threshold. It is gated on the snow
+/// line -- `freezingLineM` from the engine's own climate when `climate` is given, and
+/// `snowLineM`'s straight fallback when it is not -- and then multiplied by `1 - rockT`, the
+/// shelter term: a face steep enough to read as bare rock is a face snow slides off. Together
+/// those two turn what would be a contour ring into a mottled cap that follows the terrain,
+/// which is what a photograph of a snowy range looks like.
+///
+/// **The line uses the MEAN field and not the frayed one.** `biome.js::engineTemperatureC`
+/// adds `TEMP_MACRO_C` and `TEMP_BREAKUP_C` over the engine's datum value before banding, and
+/// this does not. The fraying is there to break a band boundary in a palette; a snow line
+/// broken the same way would put 4 C -- about 600 m of lapse -- of noise into where the snow
+/// starts, on top of a shelter term that is already breaking the edge. One edge treatment per
+/// edge.
 /// `lakeLevelM` is the surface level of the body covering this texel, from
 /// `water.js::lakeLevelAt`, or `null` for dry ground. It is a **level, not a flag**: the colour
 /// is read at the depth below that level, so two lakes at different levels are two different
@@ -470,7 +529,25 @@ export function slopeColor(
   if (heightM <= 0) return color;
   const rockT = smoothstep(ROCK_SLOPE_LOW_DEG, ROCK_SLOPE_HIGH_DEG, slopeDeg);
   const withRock = rockT > 0 ? lerpColor(color, ROCK_COLOR, rockT) : color;
-  const line = snowLineM(latitudeDeg);
+  // **The snow line comes from the engine when there is an engine to ask.** `climate` and
+  // `calibration` arrive together from `reliefTile`, so a `climate` without a calibration is
+  // a wiring fault rather than a fallback case, and a lapse rate that is not a number would
+  // otherwise produce a NaN line, a NaN `snowT`, and -- because every comparison against NaN
+  // is false -- a texel with silently no snow at all. That is this project's characteristic
+  // failure: a plausible answer to an unanswerable question. It throws instead.
+  let line;
+  if (climate) {
+    const lapseCPerKm = calibration ? calibration.lapseCPerKm : undefined;
+    if (!Number.isFinite(lapseCPerKm)) {
+      throw new Error(`slopeColor: an engine climate needs the engine's lapse rate, got ${lapseCPerKm}`);
+    }
+    line = freezingLineM(climate.datumC, lapseCPerKm);
+    if (!Number.isFinite(line)) {
+      throw new Error(`slopeColor: the engine snow line is ${line} (datumC ${climate.datumC})`);
+    }
+  } else {
+    line = snowLineM(latitudeDeg);
+  }
   const snowT = smoothstep(line, line + SNOW_BAND_M, heightM) * (1 - rockT);
   return snowT > 0 ? lerpColor(withRock, SNOW_COLOR, snowT) : withRock;
 }

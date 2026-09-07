@@ -199,6 +199,53 @@ pub fn temperature_c(latitude_deg: f64, elevation_m: f64, params: &ClimateParams
     sea_level_c - params.lapse_c_per_km * above_datum_m / 1000.0
 }
 
+/// The elevation at which the mean annual temperature reaches freezing, in metres above the
+/// datum. **The snow line -- and the point of it is that it is not a global elevation
+/// threshold.**
+///
+/// Args:
+/// latitude_deg: Degrees, positive north. `temperature_c`'s profile is `cos`, which is even,
+/// so this is even too and no `abs` is needed to make it so.
+/// params: `ClimateParams::canonical()` for the fitted profile.
+///
+/// Returns:
+/// Metres above the datum. **A negative answer is meaningful and is not an error**: it says
+/// the sea surface itself is below freezing at that latitude, so every elevation there is
+/// frozen and a polar cap falls out with no rule of its own. On `canonical()` that begins at
+/// 61.26 degrees.
+///
+/// # It INVERTS `temperature_c` rather than restating it
+///
+/// The body calls `temperature_c(latitude_deg, 0.0, params)` and divides; it is not a second
+/// copy of the profile. That is worth a line of prose because a restated profile is a place
+/// for two formulae to drift, and this project has found eight transcription defects across
+/// six slices. `the_snow_line_is_where_the_temperature_says_it_is` asserts the **round
+/// trip** -- that the temperature at the returned elevation is zero -- rather than asserting
+/// the algebra, so a change to `temperature_c` that this function failed to follow is red.
+///
+/// # What it is NOT, stated because the difference is a metre count and not a nuance
+///
+/// It is the **mean annual** 0 C isotherm, because a mean annual field is all this module
+/// computes. Earth's observed *permanent* snowline sits above its mean annual 0 C isotherm
+/// wherever there is a summer to melt in, and the gap widens with latitude: in the tropics
+/// the two are within a few hundred metres of each other, while at 60 degrees the annual
+/// isotherm is at the datum and the observed snowline is a kilometre or more above it.
+/// Closing that needs a seasonal amplitude -- a term this engine does not have, and one this
+/// function does not invent. **The consequence is measured rather than argued**:
+/// `climate_survey.rs`'s snow section reports what fraction of each world's land this line
+/// puts under snow, against the fraction the viewer's previous linear band did and against
+/// Earth's roughly 10% permanent ice cover.
+///
+/// # The NaN and infinity contract, inherited rather than re-decided
+///
+/// A NaN latitude propagates through `temperature_c`. A `lapse_c_per_km` of zero describes a
+/// world where height does not cool, so there is no elevation at which it freezes: the answer
+/// is an infinity signed by the sea-level temperature, or NaN at the one latitude where that
+/// temperature is itself zero. Loud in every case, which is this module's standing contract.
+pub fn freezing_elevation_m(latitude_deg: f64, params: &ClimateParams) -> f64 {
+    1000.0 * temperature_c(latitude_deg, 0.0, params) / params.lapse_c_per_km
+}
+
 // ===========================================================================================
 // MOISTURE -- the bounded upwind march. Task 2 of the climate slice.
 // ===========================================================================================
@@ -1123,11 +1170,10 @@ mod tests {
     #[test]
     fn the_freezing_contour_falls_with_latitude_and_reaches_the_datum() {
         let params = ClimateParams::canonical();
-        let freeze_m = |latitude: f64| {
-            1000.0 * (params.pole_c + (params.equator_c - params.pole_c)
-                * m::cos(m::to_radians(latitude)))
-                / params.lapse_c_per_km
-        };
+        // Task 5 promoted this closure into `climate::freezing_elevation_m`, so this test
+        // now measures the shipped function rather than a copy of its algebra that could
+        // drift from it. The numbers below are unchanged from Task 1's run.
+        let freeze_m = |latitude: f64| freezing_elevation_m(latitude, &params);
         let equator = freeze_m(0.0);
         let mid = freeze_m(45.0);
         assert!(equator > mid, "the snow line must fall with latitude: {equator} then {mid}");
@@ -1138,6 +1184,110 @@ mod tests {
         // And every elevation is frozen beyond it, which is what "polar cap with no special
         // case" means: at 70 degrees even the sea surface is below zero.
         assert!(temperature_c(70.0, 0.0, &params) < 0.0);
+    }
+
+    /// **The round trip is the assertion, and it is the whole reason this function inverts
+    /// `temperature_c` instead of restating the profile.** Asserting the algebra would only
+    /// say the copy matches the copy. Asserting that the temperature AT the returned
+    /// elevation is zero says the two agree, so a change to the profile that this function
+    /// failed to follow is red here rather than discovered in a picture.
+    #[test]
+    fn the_snow_line_is_where_the_temperature_says_it_is() {
+        let params = ClimateParams::canonical();
+        for latitude in [0.0, 12.5, 20.0, 45.0, 55.0, 61.0, -33.0, -45.0] {
+            let line = freezing_elevation_m(latitude, &params);
+            assert!(line > 0.0, "at {latitude} deg the line should be above the datum, was {line}");
+            let at_the_line = temperature_c(latitude, line, &params);
+            assert!(
+                at_the_line.abs() < 1.0e-9,
+                "at {latitude} deg the line is {line} m and the temperature there is {at_the_line} C",
+            );
+        }
+        // **Past the crossing the round trip DOES NOT hold, and that is the datum floor
+        // doing its job rather than a failure.** `temperature_c` refuses to warm anything
+        // below the datum, so feeding it a negative line returns the sea-level temperature
+        // -- which is itself already below freezing, which is exactly what a negative line
+        // means. Pinned so a future removal of the floor is red in two places.
+        for latitude in [70.0, 89.0] {
+            let line = freezing_elevation_m(latitude, &params);
+            assert!(line < 0.0, "at {latitude} deg the sea surface should be frozen");
+            let at_the_line = temperature_c(latitude, line, &params);
+            assert_eq!(at_the_line.to_bits(), temperature_c(latitude, 0.0, &params).to_bits());
+            assert!(at_the_line < 0.0, "at {latitude} deg even the datum is above freezing");
+        }
+    }
+
+    /// **The shape claim, made checkable.** The band this replaces in `relief.js` was a
+    /// straight line in latitude; this is a cosine, and the two disagree by far more than
+    /// their endpoints do. A straight line drawn through THIS curve's own two ends -- 4,154 m
+    /// at the equator and the datum at its crossing -- sits 708 m below it at 45 degrees, so
+    /// "linear where the real thing is a cosine" is a metre count rather than a description.
+    #[test]
+    fn the_snow_line_falls_as_a_cosine_and_not_as_a_line() {
+        let params = ClimateParams::canonical();
+        let at = |latitude: f64| freezing_elevation_m(latitude, &params);
+
+        // The crossing, bisected rather than asserted, so the 61.26 in the docstrings is
+        // this run's number and not a transcription.
+        let (mut lo, mut hi) = (61.0, 62.0);
+        for _ in 0..40 {
+            let mid = 0.5 * (lo + hi);
+            if at(mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        assert!(
+            (lo - 61.26).abs() < 0.01,
+            "the freezing contour reaches the datum at {lo} deg, not 61.26",
+        );
+
+        let linear_through_the_same_ends = at(0.0) * (1.0 - 45.0 / lo);
+        let gap = at(45.0) - linear_through_the_same_ends;
+        assert!(
+            gap > 700.0 && gap < 720.0,
+            "a line through the same two ends is {gap:.1} m below the cosine at 45 deg",
+        );
+    }
+
+    /// The unanswerable entrants stay unanswerable, and a world where height does not cool
+    /// says so loudly instead of returning a plausible altitude.
+    #[test]
+    fn a_snow_line_nobody_can_answer_is_not_a_number() {
+        let mut params = ClimateParams::canonical();
+        assert!(freezing_elevation_m(f64::NAN, &params).is_nan(), "a NaN latitude");
+
+        // Height does not cool: there is no elevation at which this world freezes.
+        params.lapse_c_per_km = 0.0;
+        assert_eq!(freezing_elevation_m(0.0, &params), f64::INFINITY, "a warm zero-lapse world");
+        assert_eq!(freezing_elevation_m(89.0, &params), f64::NEG_INFINITY, "a cold zero-lapse world");
+        // And where the sea-level temperature is ITSELF exactly zero, `0/0`: a world that is
+        // everywhere at freezing and where height does not cool has no snow line anywhere,
+        // and the answer is NaN rather than a plausible zero.
+        params.equator_c = 0.0;
+        params.pole_c = 0.0;
+        assert_eq!(temperature_c(10.0, 0.0, &params).to_bits(), 0.0_f64.to_bits());
+        assert!(freezing_elevation_m(10.0, &params).is_nan(), "a world already at freezing");
+    }
+
+    /// The parameters are READ. A bit-identity test between `None` and `canonical()` cannot
+    /// say this, which is the `CoastParams` lesson and the reason `temperature_c` has the
+    /// same test.
+    #[test]
+    fn every_parameter_moves_the_snow_line() {
+        let canonical = ClimateParams::canonical();
+        let probe = |params: &ClimateParams| freezing_elevation_m(35.0, params);
+        let base = probe(&canonical);
+        for field in 0..3 {
+            let mut params = canonical;
+            match field {
+                0 => params.equator_c += 5.0,
+                1 => params.pole_c += 5.0,
+                _ => params.lapse_c_per_km += 1.0,
+            }
+            assert_ne!(probe(&params).to_bits(), base.to_bits(), "field {field} was not read");
+        }
     }
 
     /// `cos` is even, so the hemispheres agree bit-for-bit rather than approximately.

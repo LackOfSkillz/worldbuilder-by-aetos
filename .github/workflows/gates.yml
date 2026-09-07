@@ -831,6 +831,49 @@ jobs:
           # against **+140 to +148%**. 32^2 would make climate the largest single item in the
           # tile budget for a field whose spatial frequency is set by a 3,200 km march.
           #
+          # THE CLIMATE SLICE, TASK 5 -- THE SNOW LINE (2026-09-07) takes all five rows
+          # 628/628/630/731/733 -> 632/632/634/735/737, 5 ignored, over the same FIFTEEN
+          # binaries. **+4 in every configuration and nothing wasm-only**, which is the shape a
+          # task that adds NO export must have: all four new tests are in `src/climate.rs`,
+          # which compiles unconditionally. A movement on the wasm rows alone here would mean an
+          # export had been added by accident.
+          #
+          # WHAT IT IS. `climate::freezing_elevation_m` -- the elevation at which the mean
+          # annual temperature reaches freezing -- and the viewer's snow band reading it instead
+          # of a straight line. It **inverts `temperature_c` rather than restating the profile**,
+          # and the test is the ROUND TRIP (the temperature at the returned elevation is zero),
+          # not the algebra, so a change to the profile this function failed to follow is red.
+          # `relief.js` keeps `snowLineM` as the `?climate=0` fallback and gains `freezingLineM`,
+          # which divides the climate raster's own datum temperature by the calibration's own
+          # lapse rate: **there is no second copy of 27, -25 or 6.5 in the viewer.**
+          #
+          # NO EXPORT, NO PARITY MOVE, AND THE ARTIFACT MOVED BY ONE BYTE. The corpus stays at
+          # 127,659 / 0 divergent with all seven controls at their recorded figures, by
+          # construction rather than by luck -- no new crossing value was added. The shipped
+          # `.wasm` is 248,057 bytes before and after and **exactly one byte differs**: a panic
+          # `Location` line number in the data section, 0x354 -> 0x383, because a 47-line
+          # docstring pushed `climate.rs::order_statistic`'s slice index from line 852 to 899.
+          # No instruction changed. The manifest was re-blessed after the last source edit.
+          #
+          # THE CLAMP EGHOLM ET AL. (2009) IMPLIES WAS MEASURED AND NOT SHIPPED. "Most summit
+          # elevations are confined to altitudes <1,500 m above the local snowline" is a
+          # statement about ranges, and on the four survey worlds plus the owner's,
+          # **ZERO land points of 271,384 exceed snowline + 1,500 m at any latitude where the
+          # snowline is above the datum**; the closest approach is 51 m. Every one of the
+          # 8,465-11,584 apparent violations sits where the freezing contour is 2-4 km BELOW the
+          # datum -- polar lowland, where the ceiling is itself below sea level and clamping to
+          # it would delete the continent rather than limit a range. That is precisely the
+          # conflation Egholm's own paper warns against, so the clamp is dead code on every
+          # world this engine makes and none was written.
+          #
+          # THE COST OF THE NEW LINE, PAID AND COUNTED. It is the mean annual 0 C isotherm, and
+          # a real permanent snowline sits above that wherever there is a summer to melt in. On
+          # the four survey worlds the fraction of land under snow goes 0.00/10.79/15.66/9.53%
+          # -> 2.68/24.18/41.68/22.66% against Earth's ~10% permanent ice, and **75-83% of the
+          # increase is ground whose DATUM is frozen** -- polar lowland, not new mountain caps.
+          # Closing that needs a seasonal amplitude this engine does not have; it is reported in
+          # the task report, not invented here.
+          #
           # WHAT IT IS. Band edges for the two climate axes that have no unit, as per-world
           # quantiles read by `continentality::calibrate`'s own Fibonacci order statistic -- no
           # second mechanism, and no global array, which the spec rules out. The moisture
@@ -1006,23 +1049,23 @@ jobs:
           # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 628
+            expect: 632
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 628
+            expect: 632
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 630
+            expect: 634
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 731
+            expect: 735
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 733
+            expect: 737
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
