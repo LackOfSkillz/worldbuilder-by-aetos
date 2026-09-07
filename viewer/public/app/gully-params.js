@@ -45,7 +45,11 @@
 /// is the ABI: `wb_gully_preset` writes it and `wb_gully_check` reads it. There is no type error
 /// for a crest exponent written into the amplitude slot, which is why this order is imported by
 /// `engine.js` rather than restated there.
-export const GULLY_STRIDE = 10;
+/// **Ten until the second harmonic shipped, twelve now.** The engine appends rather than
+/// reorders -- words 0 through 9 mean exactly what they meant -- but `wb_gully_check` refuses a
+/// record of the wrong length outright rather than defaulting the tail, so a viewer left at ten
+/// would get `WB_ERR_PARAM` on every gully world and not a silently narrower one.
+export const GULLY_STRIDE = 12;
 export const GULLY_FIELDS = [
   // Metres of vertical displacement, and **the off switch**: `GullyParams::canonical()` is
   // `drainage()` with this field at 0.0, so there is one set of numbers in the engine and not
@@ -68,6 +72,16 @@ export const GULLY_FIELDS = [
   // The steering lattice's pitch. Second divisor in the record, guarded twice for the same
   // reason `cellM` is.
   "steerLatticeM",
+  // **The field that makes channels merge.** The weight on a second harmonic of the phase, at the
+  // top of its elevation band. `cos t + a cos 2t` has one minimum per period below `a = 1/4` and
+  // two above it, so the contour `a = 1/4` is a line of downhill Y-junctions. Zero is off and
+  // reproduces the single-cosine shaping bit for bit.
+  "harmonicWeight",
+  // Metres of structural ground above `gateElevationM` over which that weight climbs from zero.
+  // A band and not a scalar on purpose: a FIXED weight merges nothing however large it is -- the
+  // spike's control pinned it at 0.90 and counted 0 confluences in 319 contour-row pairs. The
+  // merging comes from the weight falling downhill.
+  "harmonicBandM",
 ];
 
 /// `wb_gully_preset` selectors, mirrored from `wasm.rs`.
@@ -82,12 +96,16 @@ export const GULLY_PRESET = { canonical: 0, drainage: 1 };
 
 /// The parameters the panel drives, and the query-string name each answers to.
 ///
-/// **All ten.** A shared link that could not carry the whole preset would be a link that loads a
-/// different planet from the one it was copied off, and the engine sweeps every one of the ten --
-/// 1,140 records on the per-field ladder, 738 accepted and 402 refused, pinned exactly -- plus a
-/// 7 x 7 x 6 cross product over `cellM`, `steerLatticeM` and `slopeReference`, because all three
-/// become a lattice index as `radius / length` and one abort in this file's sibling channel was
-/// reachable only through a product of individually-admissible fields.
+/// **All twelve.** A shared link that could not carry the whole preset would be a link that loads
+/// a different planet from the one it was copied off, and the engine sweeps every one of the
+/// twelve -- 1,368 records on the per-field ladder, 884 accepted and 484 refused, pinned exactly
+/// (738 of 1,140 while the record was ten wide; the 146 was re-derived by running the sweep and
+/// not scaled) -- plus TWO cross products, because one abort in this file's sibling channel was
+/// reachable only through a product of individually-admissible fields and a one-at-a-time sweep
+/// was blind to it by construction. The first is 7 x 7 x 6 over `cellM`, `steerLatticeM` and
+/// `slopeReference`, all three of which become a lattice index as `radius / length`. The second
+/// is 5 x 5 x 4 over `harmonicWeight`, `harmonicBandM` and `gateElevationM`, which is where the
+/// two new fields meet each other and the gate inside one expression.
 export const GULLY_CONTROLS = [
   "amplitudeM",
   "cellM",
@@ -99,6 +117,8 @@ export const GULLY_CONTROLS = [
   "gateElevationSpanM",
   "flatEnergyFloor",
   "steerLatticeM",
+  "harmonicWeight",
+  "harmonicBandM",
 ];
 
 /// The subset of `GULLY_CONTROLS` that gets a WIDGET. **One of the ten, and it is not the
@@ -115,14 +135,25 @@ export const GULLY_CONTROLS = [
 /// The three that are deliberately absent, each for a stated reason rather than for want of a
 /// widget:
 ///
-/// - **`amplitudeM`, and this is the one the owner will ask for first.** It is measured at
-///   **one point**: at 60 m the gated flank population's local relief over a 2 km run has a
-///   median of 112 m, inside Hammond's 80-160 m hills band, against 17 m with the kernel off.
-///   One point is not a travel. The obvious move -- assume the relief scales linearly with the
-///   amplitude and solve the band's ends -- is a derivation from an unmeasured proportionality,
-///   and inventing a calibration is the failure this whole family of comments exists to prevent.
-///   **An amplitude sweep is the next measurement this channel needs.** Until it exists the
-///   preset button is how the amplitude moves, and the readout prints it.
+/// - **`amplitudeM`. THE SWEEP THIS COMMENT USED TO ASK FOR HAS BEEN RUN, AND IT SAYS THE
+///   PROPORTIONALITY IS REAL** -- see `MEASURED_AMPLITUDE_SWEEP`. Nine amplitudes from 0 to 240 m,
+///   three flank sites, ground relief over a 2 km contour run: above about 30 m the response is a
+///   straight line at 1.28-1.39 m of relief per metre of amplitude, and the only departure from it
+///   is at the bottom of the range where the canonical ground's own 2-8 m of relief is comparable
+///   to the term's. **So the band can now be solved rather than assumed**, and the owner has
+///   earned this slider. It is still not built HERE: adding a second gully slider means a second
+///   travel, a second holds-canonical check and a second live-swap path in `controls.js`, which is
+///   a change to the panel rather than to the measurement, and shipping the number without the
+///   widget leaves the readout honest in the meantime. That is the next bounded step on this
+///   channel and it is the only one this comment still asks for.
+/// - **`harmonicWeight` and `harmonicBandM`, and the reason is the shape of their measurement
+///   rather than its absence.** They were swept as a CROSS PRODUCT (5 weights x 6 bands, three
+///   sites, two channel masks) and the effect is a RIDGE in the pair, not a travel in either: the
+///   pitchfork sits where `weight * smooth((h - gate) / band) = 1/4`, so moving one field alone
+///   walks straight off the ridge. At weight 0.9 a band of 1,800 m gives +64% of downhill width
+///   growth on the steepest site and bands of 1,500 and 2,100 m give +21% and +31%. A slider on
+///   one of a pair whose effect is joint is a slider that mostly turns the effect off, which is
+///   the same failure as a slider with no measured travel wearing a different hat.
 /// - **`slopeReference`.** Its measured population is a property of the *terrain* (500,000 spiral
 ///   points on each of three worlds), not a table of the kernel's response, and the kernel's
 ///   response to it is measured at exactly **two points**: the reference 0.005, where the term
@@ -167,6 +198,8 @@ export const GULLY_PARAM_NAMES = {
   gateElevationSpanM: "gullyGateSpan",
   flatEnergyFloor: "gullyFloor",
   steerLatticeM: "gullySteer",
+  harmonicWeight: "gullyHarmonic",
+  harmonicBandM: "gullyHarmonicBand",
 };
 
 /// **THE SLOPE MEASUREMENT, as the panel's readout quotes it.** Not a travel -- see
@@ -257,6 +290,38 @@ export const CARVE_BAND = { low: 0.50, high: 1.00 };
 /// This is texture on a generator whose mountains are tectonic (Ruling 4 of the relief-amplitude
 /// slice; the peak on the owner's world is 98.9% structural). **It is not a claim to have made
 /// mountains**, and the panel's note says so in those words.
+/// **The amplitude sweep, and it is the measurement `GULLY_SLIDERS` spent a slice asking for.**
+///
+/// - **Host:** Windows 11, i9-13900HX, `cargo run --release --bin gully_merging_survey`,
+///   single-threaded, native. No timing is claimed, so there are no spreads.
+/// - **World:** `Surface::new(20260904, 6371000, 12, 0.29)` -- `DEFAULT_WORLD`, the one this
+///   viewer draws.
+/// - **Population:** the three flank sites the merging survey uses (ranks 0, 1 and 200 of 1,854
+///   points above 800 m ranked by `|grad(structural_m)|`), each a 320 x 320 grid at 40 m spacing
+///   with the field asked at `resolution_m = 76.35`.
+/// - **Statistic:** the MEDIAN over the grid's 320 rows of `max - min` of `Surface::elevation_m`
+///   along a 2 km run across the contour. **Of the ground, not of the term** -- the term's own
+///   relief is linear in `amplitudeM` by construction, since the amplitude is a bare multiplier
+///   on it, so measuring that would have reported a linearity that says nothing.
+/// - **Checked, not assumed:** the term is added to the canonical ground exactly, so the field is
+///   evaluated once per site and scaled. `|Surface::with_gully(drainage) - (canonical +
+///   gully_offset_m)|` is **exactly 0** over 309 samples across the three sites.
+///
+/// The response is a straight line above about 30 m -- successive 15 m steps add 20.42, 20.72 and
+/// 20.67 m of relief on site 0 -- and the one departure is the first step, 18.96 m, where the
+/// canonical ground's own 2.43 m of relief is still a comparable share. **Hammond's hills band
+/// (80-160 m) is amplitude 58-115 m and his low-mountain floor (300 m) is amplitude 217 m**, on
+/// site 0's slope of 1.379 m of relief per metre of amplitude.
+export const MEASURED_AMPLITUDE_SWEEP = {
+  sites: [
+    { rank: 0, canonicalReliefM: 2.43, reliefPerMetre: 1.379 },
+    { rank: 1, canonicalReliefM: 6.97, reliefPerMetre: 1.374 },
+    { rank: 200, canonicalReliefM: 7.92, reliefPerMetre: 1.276 },
+  ],
+  amplitudesM: [0, 15, 30, 45, 60, 90, 120, 180, 240],
+  linearAboveM: 30,
+};
+
 export const MEASURED_RELIEF = {
   amplitudeM: 60.0,
   offP50: 17.03,

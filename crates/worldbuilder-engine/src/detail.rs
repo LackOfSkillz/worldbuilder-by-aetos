@@ -243,6 +243,66 @@ pub struct GullyParams {
     /// direction invariant to the step to a p95 of 0.02 degrees across a 26x range, so a step
     /// finer than the lattice buys nothing and costs four `structural_m` calls a node.
     pub steer_lattice_m: f64,
+    /// **The second harmonic's weight at the top of its band -- the field that makes channels
+    /// merge.** Zero is off, and off reproduces the single-cosine shaping bit for bit -- held
+    /// by a pinned table of eighteen pre-harmonic `f64` bit patterns, not by an argument.
+    ///
+    /// See [`harmonic_band_m`](Self::harmonic_band_m) for the mechanism and
+    /// `.superpowers/sdd/notes/gully-merging.md` for the measurement.
+    pub harmonic_weight: f64,
+    /// Over how many metres of structural ground above
+    /// [`gate_elevation_m`](Self::gate_elevation_m) the harmonic weight climbs from zero to
+    /// [`harmonic_weight`](Self::harmonic_weight), through the same `smooth` the gate uses.
+    ///
+    /// # Why a second harmonic makes a confluence, and why the weight must VARY
+    ///
+    /// The shipped shaping is a single-minimum, 2pi-periodic profile of the phase: **one
+    /// channel per period, always.** The number of channels crossing a contour of length `L`
+    /// is then the phase winding `L * |k|`, and `|k|` is tied to the structural slope, which
+    /// has no downhill trend on a flank. So the count cannot fall and nothing can merge --
+    /// measured, not argued: `.superpowers/sdd/notes/ridge-merging-spike.md` counts **0
+    /// confluences and 0 divergences in 319 contour-row pairs** on the steepest flank this
+    /// generator has, and shows that none of the ten fields above makes `|k|` fall.
+    ///
+    /// Add a second harmonic and the shaping is `cos t + a*cos 2t`, whose derivative is
+    /// `-sin t * (1 + 4a*cos t)`. The critical points are `sin t = 0` and `cos t = -1/(4a)`,
+    /// and the second pair **exists only for `a >= 1/4`**. Below that there is one minimum per
+    /// period; above it `t = pi` turns into a local maximum with two minima straddling it.
+    /// **The level set `a = 1/4` is therefore a locus of downhill Y-junctions**: two channels
+    /// above it, one below, joined continuously. Every merge is a Y; no defect, no state and
+    /// no neighbour lookup is involved, and the term stays `f(SpherePoint) -> value`.
+    ///
+    /// Making `a` a function of the query point's own structural elevation is what puts that
+    /// level set on the ground: it is a contour, and a flank crosses it going downhill.
+    /// **A fixed `a` merges nothing**, however large -- the spike's control pins `a` at 0.90,
+    /// gets twice as many channels as the shipped kernel, and still scores 0 confluences and
+    /// 0 divergences. The merging comes from the weight FALLING, not from the harmonic being
+    /// present, which is why this is a band and not a scalar.
+    ///
+    /// # What this delivers, and what it does not -- read this before extending it
+    ///
+    /// **This is branching keyed to ELEVATION. It is not a network keyed to CATCHMENT, and no
+    /// point-evaluable term will ever be one.** Contributing area `A(p)` is the measure of the
+    /// set of points whose flow path reaches `p`: a functional of the field over an upslope
+    /// domain of unbounded extent, not computable in bounded work from data local to `p`, no
+    /// matter how this expression is written. Two adjacent points at one height can drain
+    /// wildly different areas, so a term keyed to height correlates with catchment only
+    /// loosely.
+    ///
+    /// **That division is deliberate, not a gap.** Texture -- the branching V-notches at
+    /// 0.5-2 km that `erosion-architecture-spike.md` measured the stream graph cannot reach --
+    /// comes from this detail field. Real hydrology comes from the stream graph in `stream.rs`
+    /// and `water.rs`, which already resolves basins, spill levels and lake bodies over the
+    /// whole planet because it is allowed the traversal this term is not. **Do not try to make
+    /// this field do hydrology**: widening it towards accumulation is re-deriving the solver
+    /// that already exists, at a per-texel cost, and it cannot converge on one.
+    ///
+    /// Three further honest limits, all from the spike's section 6: the confluences on one
+    /// flank are **synchronised** (they sit on the one `a = 1/4` contour), the Y's are
+    /// **symmetric** (both tributaries the same width, where real ones are lopsided), and the
+    /// hierarchy is **shallow** (one harmonic is one halving; a fifth or sixth Strahler order
+    /// would want a fifth or sixth harmonic).
+    pub harmonic_band_m: f64,
 }
 
 impl GullyParams {
@@ -302,6 +362,27 @@ impl GullyParams {
     ///   reason: this is texture on a generator whose mountains are tectonic.
     /// - **`steer_lattice_m: 2000.0`.** `gradient-probe.md` section 1.3's measured
     ///   recommendation.
+    /// - **`harmonic_weight: 0.9` and `harmonic_band_m: 1800.0`.** Swept as a CROSS PRODUCT
+    ///   (5 weights x 6 bands, three flank sites, two channel masks) by
+    ///   `src/bin/gully_merging_survey.rs`, because the pitchfork's locus is
+    ///   `weight * smooth((h - gate) / band) = 1/4` and moves when EITHER field moves -- a
+    ///   one-at-a-time sweep would be measuring two different loci and calling it two axes.
+    ///   These two put that locus at **825 m** of structural ground, inside the gate's own
+    ///   band, and they are the pair that maximises the downhill fall in channel count and
+    ///   the downhill growth in channel width on the steepest two of the three sites:
+    ///   channels per contour **44.0 -> 37.7** (-14%) with width **50.4 -> 82.8 m** (+64%) on
+    ///   site 0, and **39.6 -> 34.8** (-12%) with **57.0 -> 86.7 m** (+52%) on site 1, against
+    ///   the single-cosine kernel's +5% and 0% on the same ground.
+    ///
+    ///   **Two honest things about this pair.** It is a RIDGE, not a plateau: at the same
+    ///   weight, a band of 1,500 or 2,100 m gives +21% and +31% of width growth instead of
+    ///   +64%, so the setting is sensitive to a few hundred metres. And **it does not fire on
+    ///   the third site**, whose flank sits at 1,353-1,417 m -- 500 m above the locus -- where
+    ///   the count rises downhill with the harmonic exactly as it does without it. That is
+    ///   not a tuning failure, it is [`harmonic_band_m`](Self::harmonic_band_m)'s mechanism
+    ///   seen from the side: `a = 1/4` is ONE contour at ONE world elevation, so the flanks
+    ///   that branch are the flanks that cross it. See the survey and
+    ///   `.superpowers/sdd/notes/gully-merging.md`.
     pub fn drainage() -> Self {
         Self {
             amplitude_m: 60.0,
@@ -314,6 +395,8 @@ impl GullyParams {
             gate_elevation_span_m: 900.0,
             flat_energy_floor: 0.25,
             steer_lattice_m: 2_000.0,
+            harmonic_weight: 0.9,
+            harmonic_band_m: 1_800.0,
         }
     }
 }
@@ -690,6 +773,7 @@ impl Detail {
         let (ix, iy, iz) = (bx as i64, by as i64, bz as i64); // cast-ok: guarded on the line above against the saturation `Noise::at` documents; each is finite and below 9e18
 
         let mut accumulated = 0.0;
+        let mut harmonic = 0.0;
         let mut weight_total = 0.0;
         for corner in 0..8u32 {
             let (sx, sy, sz) = (corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
@@ -722,7 +806,17 @@ impl Detail {
             let across = offset.dot(&frame.north) / cell
                 + (self.jitter_y.lattice_at(node.0, node.1, node.2) - 0.5)
                     * GULLY_PIVOT_JITTER_CELLS;
-            accumulated += weight * m::cos(TAU * (along * dir_x + across * dir_y));
+            let first = m::cos(TAU * (along * dir_x + across * dir_y));
+            accumulated += weight * first;
+            // **`cos 2t` by the double-angle identity, so the harmonic costs no transcendental
+            // at all.** The spike priced this change at eight more `cos` per texel per level;
+            // `2c^2 - 1` is exact arithmetic on a value already computed, so the real price is
+            // three flops a pivot. It also cannot introduce a native-against-WASM divergence:
+            // multiply and subtract are correctly rounded by IEEE-754 on every conforming
+            // implementation, which is the same argument `detmath::sqrt` makes for calling the
+            // hardware instruction -- and it is exactly the argument `cos` itself cannot make,
+            // which is why `cos` stays on libm and this does not add a second call to it.
+            harmonic += weight * (2.0 * first * first - 1.0);
             weight_total += weight;
         }
         // The nearest corner of a containing cell is at most sqrt(3)/2 lattice units away,
@@ -731,7 +825,32 @@ impl Detail {
         if !(weight_total > 0.0) {
             return 0.0;
         }
-        let signal = accumulated / weight_total;
+        // **The pitchfork.** `a` is the second harmonic's weight at this point, climbing with
+        // structural elevation over `harmonic_band_m` above the gate; the shaping is
+        // `(cos t + a*cos 2t) / (1 + a)`, which has one minimum per period below `a = 1/4` and
+        // two above it.
+        //
+        // **`a > 0.0` IS THE NaN DOOR, and that is the honest description of it.** The first
+        // draft of this line claimed the branch was what makes `harmonic_weight: 0.0`
+        // bit-identical to the kernel that had no harmonic, on the `x + 0.0 == x` argument
+        // `canonical()`'s early return makes. **A mutation showed that was false here**:
+        // making this unconditional left all eighteen pinned pre-harmonic bit patterns
+        // unmoved, because `a` is then exactly `0.0`, `a * harmonic` is `+0.0`, and
+        // `accumulated` is a sum of cosines that is never negative zero. The claim was
+        // decoration and the test that "proved" it proved nothing.
+        //
+        // What the branch does carry is the same thing every other negated test in this
+        // function carries: a NaN leaves by the refusing door. A NaN `harmonic_weight` or
+        // `harmonic_band_m` makes `a` NaN, `a > 0.0` is false, and the point gets the
+        // single-cosine shaping rather than a NaN height. That is what the pinned test
+        // asserts now, and it is what turns red when this branch is removed.
+        let a = gully.harmonic_weight
+            * smooth((shaped - gully.gate_elevation_m) / gully.harmonic_band_m);
+        let signal = if a > 0.0 {
+            (accumulated + a * harmonic) / (weight_total * (1.0 + a))
+        } else {
+            accumulated / weight_total
+        };
 
         // Crest against floor. `folded` is 0 at a crest and 1 at a floor; an exponent below
         // one pushes the bulk of the field towards the floor, so crests survive as narrow
@@ -865,6 +984,233 @@ mod tests {
             scaled > 40.0 * unscaled,
             "the scaled kernel must be at least a factor of forty livelier than the \
              unnormalised one; {scaled} against {unscaled}"
+        );
+    }
+
+    /// **The mechanism, tested on the shipped function rather than on the algebra.**
+    ///
+    /// `cos t + a*cos 2t` has one minimum per period below `a = 1/4` and two above it, so the
+    /// number of channels a contour crosses must RISE with elevation -- and therefore fall
+    /// going downhill, which is a confluence. This walks 6 km along the contour (the steer is
+    /// due east, so the stripes run east and the phase varies north) and counts local minima
+    /// of the kernel itself at two structural elevations that straddle the preset's `a = 1/4`
+    /// locus at 825 m: `a` is 0.183 at 700 m and 0.900 at 2,000 m. Measured, **11 minima
+    /// against 7** -- not the clean doubling the algebra predicts, because the eight-pivot
+    /// average damps the second harmonic more than the first (the corners agree on `cos t`
+    /// and disagree faster on `cos 2t`), which is a real property of this construction and
+    /// the reason the assertion is a ratio rather than a factor of two.
+    ///
+    /// **The control is in the same test and is what makes it a finding.** At
+    /// `harmonic_weight: 0.0` the shaping does not depend on elevation at all, so the two
+    /// walks must find EXACTLY the same number of minima -- the gate scales the term and
+    /// cannot move a stationary point. A test that only asserted the first half would pass on
+    /// a kernel whose count moved for any reason at all.
+    ///
+    /// **Proved red by mutation, siblings neutralised.** Three mutations, each reverted:
+    /// dropping `* smooth(...)` so `a` is the flat `harmonic_weight` turns the first
+    /// assertion red (counts equal) and leaves the control green; replacing `2c^2 - 1` with
+    /// `c` -- a second copy of the first harmonic, which is the shape a careless refactor
+    /// produces -- turns the first assertion red for the same reason; and pinning `a` at 0.9
+    /// turns it red too. None of the three moves the control, which is the point.
+    #[test]
+    fn the_second_harmonic_puts_more_channels_on_high_ground_than_on_low() {
+        let minima_at = |harmonic_weight: f64, shaped: f64| -> usize {
+            let detail = Detail::with_gully(
+                20260831,
+                EARTH_RADIUS_M,
+                None,
+                Some(GullyParams { harmonic_weight, ..GullyParams::drainage() }),
+            );
+            let origin = SpherePoint::from_latlon(24.0, 71.0);
+            let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+            // Due east, so the fall line is east, the contour is north, and walking north
+            // sweeps the phase. 0.005 m/m is the measured steepest decile of high ground.
+            let steer = (0.005, 0.0);
+            let walk: Vec<f64> = (0..300)
+                .map(|step| {
+                    // cast-ok: a loop counter to a float for a distance in metres
+                    let point = frame.local_to_sphere(0.0, step as f64 * 20.0);
+                    detail.gully_offset_m(&point, &frame, steer, shaped, None)
+                })
+                .collect();
+            (1..walk.len() - 1)
+                .filter(|&k| walk[k] < walk[k - 1] && walk[k] < walk[k + 1])
+                .count()
+        };
+        let preset = GullyParams::drainage().harmonic_weight;
+        let low = minima_at(preset, 700.0);
+        let high = minima_at(preset, 2_000.0);
+        assert!(
+            // cast-ok: two counts to floats for a ratio
+            high as f64 >= 1.4 * low as f64,
+            "the second harmonic must put substantially more channels on the ground above the \
+             a = 1/4 locus than below it; found {high} minima at 2,000 m against {low} at 700 m"
+        );
+        let flat_low = minima_at(0.0, 700.0);
+        let flat_high = minima_at(0.0, 2_000.0);
+        assert_eq!(
+            flat_low, flat_high,
+            "CONTROL: with the harmonic off the shaping does not read elevation at all, so the \
+             two walks must find exactly the same minima; found {flat_low} against {flat_high}"
+        );
+    }
+
+    /// **`harmonic_weight: 0.0` is the kernel exactly as it was before the harmonic existed,
+    /// bit for bit -- and this is the only test in the file that can say so.**
+    ///
+    /// The eighteen values below were produced by running `Detail::gully_offset_m` at
+    /// `GullyParams::drainage()` on the commit before this change (`910b69e`), through a
+    /// throwaway `[[bin]]` that printed `f64::to_bits`, and they are pasted here as hex. So
+    /// this is a genuine before-and-after oracle rather than a restatement of the code under
+    /// test: nothing in the expected column is derived from the expression it checks.
+    ///
+    /// **The second half of this test exists because the first half did not catch what it
+    /// was written to catch.** It originally claimed to prove the `a > 0.0` branch load-bearing
+    /// on the `x + 0.0 == x` argument. Making the branch unconditional left all eighteen
+    /// patterns unmoved -- `a` is exactly `0.0`, `a * harmonic` is `+0.0`, and `accumulated`
+    /// is a sum of cosines that is never negative zero -- so the assertion was green for a
+    /// reason unrelated to the claim. The branch's real job is the NaN door every other
+    /// negated test in `gully_offset_m` carries, so the same eighteen records are replayed
+    /// with a NaN in each of the two new fields and must give the SAME bits: a NaN weight is
+    /// a point that gets the single-cosine shaping, not a NaN height.
+    ///
+    /// **Proved red by mutation, siblings neutralised.** Removing the `a > 0.0` test turns the
+    /// NaN half red and leaves the first half green (that is the finding above). Removing the
+    /// `harmonic_weight` factor from `a` turns the first half red and leaves the NaN half
+    /// green. Neither mutation is caught by both, which is why both are here.
+    #[test]
+    fn the_kernel_with_the_harmonic_off_is_bit_for_bit_what_it_was_before_the_harmonic() {
+        let detail = Detail::with_gully(
+            20260831,
+            EARTH_RADIUS_M,
+            None,
+            Some(GullyParams { harmonic_weight: 0.0, ..GullyParams::drainage() }),
+        );
+        let origin = SpherePoint::from_latlon(24.0, 71.0);
+        let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+        let records: [((f64, f64), f64, Option<f64>); 6] = [
+            ((0.005, 0.0), 1_200.0, None),
+            ((0.005, 0.0), 1_200.0, Some(76.35)),
+            ((0.002, 0.004), 900.0, None),
+            ((-0.003, 0.008), 2_400.0, Some(250.0)),
+            ((0.012, -0.001), 1_500.0, None),
+            ((0.0004, 0.0003), 305.0, None),
+        ];
+        let want: [u64; 18] = [
+            0xc047e8c3b4f4a194,
+            0xc04898d43fffab1b,
+            0xc04623a805fde74a,
+            0xc047e8c3b4f4a194,
+            0xc04898d43fffab1b,
+            0xc04623a805fde74a,
+            0x4026f6fd9818530e,
+            0x4008d772ebdefb59,
+            0xc012219cc208e12e,
+            0xc02ce9d0289e1f25,
+            0xc042e9040e66364f,
+            0xc03dd836ae8d13a2,
+            0x4034fcfca68458c0,
+            0xc03953685eac7728,
+            0xc045a7c6ffe7e966,
+            0x3fe157218572f3e6,
+            0x3fe114c277f2958f,
+            0x3fe101767d760961,
+        ];
+        let mut seen = 0usize;
+        for (steer, shaped, resolution_m) in records {
+            for step in 0..3 {
+                // cast-ok: a loop counter to a float for a distance in metres
+                let point = frame.local_to_sphere(step as f64 * 137.0, step as f64 * 61.0);
+                let value = detail.gully_offset_m(&point, &frame, steer, shaped, resolution_m);
+                assert_eq!(
+                    value.to_bits(),
+                    want[seen],
+                    "record {seen} moved: {value} m. The kernel with the harmonic switched off \
+                     must be byte-identical to the kernel that had no harmonic at all."
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, want.len(), "every pinned record must have been compared");
+
+        // The NaN door. A NaN in either new field must land on the same single-cosine value,
+        // not on a NaN height -- and not on a different finite one either.
+        //
+        // Only the WEIGHT is replayed against the pins, and that asymmetry is `smooth`'s own
+        // documented clamp order rather than an omission: a NaN band makes the fraction NaN,
+        // `smooth` sends a NaN to its UPPER bound, and `a` comes out as a finite
+        // `harmonic_weight` -- the pinned-weight control, which is a texture and not a NaN
+        // height. That is asserted separately below rather than papered over.
+        for poisoned in [GullyParams { harmonic_weight: f64::NAN, ..GullyParams::drainage() }] {
+            let detail = Detail::with_gully(20260831, EARTH_RADIUS_M, None, Some(poisoned));
+            let mut seen = 0usize;
+            for (steer, shaped, resolution_m) in records {
+                for step in 0..3 {
+                    // cast-ok: a loop counter to a float for a distance in metres
+                    let point = frame.local_to_sphere(step as f64 * 137.0, step as f64 * 61.0);
+                    let value =
+                        detail.gully_offset_m(&point, &frame, steer, shaped, resolution_m);
+                    assert_eq!(
+                        value.to_bits(),
+                        want[seen],
+                        "record {seen} with a NaN harmonic field gave {value} m; a NaN must                          leave by the refusing door and land on the single-cosine shaping"
+                    );
+                    seen += 1;
+                }
+            }
+            assert_eq!(seen, want.len(), "every pinned record must have been replayed");
+        }
+
+        let nan_band = Detail::with_gully(
+            20260831,
+            EARTH_RADIUS_M,
+            None,
+            Some(GullyParams { harmonic_band_m: f64::NAN, ..GullyParams::drainage() }),
+        );
+        let value = nan_band.gully_offset_m(&frame.origin.clone(), &frame, (0.005, 0.0), 1_200.0, None);
+        assert!(
+            value.is_finite(),
+            "a NaN band must not reach a height; `smooth` sends it to the upper bound and the              point gets the pinned-weight shaping, but it got {value}"
+        );
+    }
+
+    /// **The preset's pitchfork must sit on ground the kernel actually runs on**, or the
+    /// harmonic is the same careful no-op that
+    /// `the_slope_scale_is_what_stops_the_kernel_being_a_constant` exists to refuse: a weight
+    /// that never crosses 1/4 inside the gate is exactly the spike's pinned-weight control,
+    /// which measured 0 confluences and 0 divergences over 319 contour-row pairs.
+    ///
+    /// **Proved red by mutation**: `harmonic_band_m: 6000.0` -- a plausible-looking rounder
+    /// number -- pushes the locus above the gate's own band and turns this red.
+    #[test]
+    fn the_preset_crosses_the_pitchfork_inside_the_gate_band() {
+        let gully = GullyParams::drainage();
+        let a_at = |shaped: f64| {
+            gully.harmonic_weight
+                * smooth((shaped - gully.gate_elevation_m) / gully.harmonic_band_m)
+        };
+        assert_eq!(a_at(gully.gate_elevation_m), 0.0, "the weight starts at zero on the gate");
+        let mut lo = gully.gate_elevation_m;
+        let mut hi = gully.gate_elevation_m + gully.harmonic_band_m;
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if a_at(mid) < 0.25 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let locus = 0.5 * (lo + hi);
+        let gate_top = gully.gate_elevation_m + gully.gate_elevation_span_m;
+        assert!(
+            locus > gully.gate_elevation_m && locus < gate_top,
+            "the a = 1/4 locus is at {locus:.1} m and must lie inside the gate's own band \
+             ({} m to {gate_top} m), or no flank in the gate ever crosses it",
+            gully.gate_elevation_m
+        );
+        assert!(
+            (locus - 825.0).abs() < 5.0,
+            "the surveyed locus is 825 m; this preset puts it at {locus:.1} m"
         );
     }
 

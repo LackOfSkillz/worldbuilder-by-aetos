@@ -4409,7 +4409,9 @@ fn gully_field_domain(field: usize) -> (f64, f64) {
         7 => (WB_MIN_GULLY_GATE_SPAN_M, WB_MAX_GULLY_GATE_SPAN_M),
         8 => (0.0, 1.0),
         9 => (WB_MIN_GULLY_LENGTH_M, WB_MAX_GULLY_LENGTH_M),
-        _ => unreachable!("WB_GULLY_STRIDE is 10"),
+        10 => (0.0, WB_MAX_GULLY_HARMONIC_WEIGHT),
+        11 => (WB_MIN_GULLY_HARMONIC_BAND_M, WB_MAX_GULLY_HARMONIC_BAND_M),
+        _ => unreachable!("WB_GULLY_STRIDE is 12"),
     }
 }
 
@@ -4621,9 +4623,11 @@ fn the_gully_sweep_is_the_size_it_claims_to_be() {
             accepted += 1;
         }
     }
-    // 2 bases x 10 fields x (20 hostile + 2 bounds x 6 + 25 ladder rungs) = 2 x 10 x 57.
-    assert_eq!(records.len(), 2 * 10 * 57, "the sweep changed size");
-    assert_eq!(records.len(), 1_140, "and the arithmetic above says 1,140");
+    // 2 bases x 12 fields x (20 hostile + 2 bounds x 6 + 25 ladder rungs) = 2 x 12 x 57.
+    // TEN fields until the second harmonic shipped; the two new ones are swept exactly as the
+    // other ten are, and the accepted/refused split below was re-derived rather than scaled.
+    assert_eq!(records.len(), 2 * 12 * 57, "the sweep changed size");
+    assert_eq!(records.len(), 1_368, "and the arithmetic above says 1,368");
     assert_eq!(
         accepted, GULLY_SWEEP_ACCEPTED,
         "the accepted/refused split moved: {accepted} of {}",
@@ -4632,7 +4636,127 @@ fn the_gully_sweep_is_the_size_it_claims_to_be() {
 }
 
 /// The accepted half of the gully sweep, pinned. Re-derived on this host by running the sweep.
-const GULLY_SWEEP_ACCEPTED: usize = 738;
+/// **738 while the record was ten fields wide; 884 now the second harmonic has added two.**
+/// The 146 is not scaled from the 738 and could not be: the two new fields have different
+/// domains from each other and from the ten, so their accepted fractions differ. It was run.
+const GULLY_SWEEP_ACCEPTED: usize = 884;
+
+/// **The two harmonic fields, swept against each other AND against a third -- the cross
+/// product, not one field at a time.**
+///
+/// This file already carries one abort that a one-field-at-a-time sweep was blind to by
+/// construction, which is why `every_gully_field_swept_across_its_whole_range_and_beyond_
+/// never_aborts` has a `cell x steer x reference` product beside its per-field ladders. The
+/// harmonic gets the same treatment and for the same reason: `harmonic_weight` and
+/// `harmonic_band_m` meet inside one expression -- `weight * smooth((h - gate) / band)` --
+/// and they meet `gate_elevation_m` there too, so the interesting records are the ones where
+/// a large weight lands on a tiny band on ground the gate has just opened. None of those is
+/// reachable by moving one field from the preset.
+///
+/// Every combination below is inside every per-field domain, so every one is expected to be
+/// accepted and then SAMPLED -- and sampling is where an abort behind `extern "C"` would
+/// happen, since that is what reaches the lattice index, the pivot window, the cosine's
+/// argument and `powf`'s exponent.
+///
+/// **The last assertion is the one with teeth, and the other two are recorded as weak
+/// rather than dropped.** Two mutations were run against this test:
+///
+///   * Substituting the double angle `2.0 * first * first - 1.0` with `1.0 / first`, so a
+///     pivot whose cosine is zero contributes an infinity, **stayed GREEN**. It should be
+///     recorded why: `gully_offset_m` folds the signal and then clamps `folded` into `[0, 1]`
+///     through two negated tests, so an infinite or NaN signal lands on a finite height by
+///     construction. The finiteness assertion inside `sample_gully` therefore cannot fail
+///     through this expression, and saying so is worth more than leaving a claim standing.
+///   * Removing the `harmonic_band_m` bound from `gully_is_admissible` turns
+///     `the_gully_sweep_is_the_size_it_claims_to_be` red (the accepted count moves) and
+///     leaves this test green, because a zero band is a step in the ground and not an abort.
+///
+/// So the assertion that carries this test is `the_new_words_reach_the_kernel`: it compares
+/// two records that differ ONLY in `harmonic_weight` and requires the elevation to move.
+/// **Proved red by mutation**: having `decode_gully` read `harmonic_weight` and
+/// `harmonic_band_m` from `GullyParams::drainage()` instead of from `fields[10]` and
+/// `fields[11]` -- which is precisely the silently-dropping-builder shape, a widened record
+/// whose new words look configured and go nowhere -- turns it red. It also moves the accepted
+/// count and so turns `the_gully_sweep_is_the_size_it_claims_to_be` red beside it; that is
+/// recorded rather than claimed away, because a mutation caught by two assertions is still
+/// only caught by the one whose message names the cause, and this is that one.
+#[test]
+fn the_two_harmonic_fields_are_swept_as_a_cross_product_with_the_gate() {
+    let mut records = 0usize;
+    let mut accepted = 0usize;
+    for weight in [0.0f64, 0.25, 0.9, 2.0, WB_MAX_GULLY_HARMONIC_WEIGHT] {
+        for band in [
+            WB_MIN_GULLY_HARMONIC_BAND_M,
+            10.0,
+            1_800.0,
+            100_000.0,
+            WB_MAX_GULLY_HARMONIC_BAND_M,
+        ] {
+            for gate in [-1_000.0f64, 0.0, 200.0, 5_000.0] {
+                records += 1;
+                let mut record = encode_drainage();
+                record[6] = gate;
+                record[10] = weight;
+                record[11] = band;
+                let label = format!("weight {weight:e} x band {band:e} x gate {gate:e}");
+                if wb_gully_check(record.as_ptr(), WB_GULLY_STRIDE as u32) == WB_OK {
+                    sample_gully(&record, &label);
+                    accepted += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(records, 5 * 5 * 4, "the cross product changed size");
+    assert_eq!(records, 100, "and the arithmetic above says 100");
+    assert_eq!(
+        accepted, records,
+        "every combination here is inside every per-field domain, so none may be refused"
+    );
+    the_new_words_reach_the_kernel();
+}
+
+/// Two records differing only in `harmonic_weight`, and the ground must not be the same.
+///
+/// Without this the whole widening could be a no-op at the boundary: the stride grows, the
+/// bounds check passes, the constructor returns a handle, and the two new words are never
+/// read. Every assertion above would still be green.
+fn the_new_words_reach_the_kernel() {
+    let mut off = encode_drainage();
+    off[10] = 0.0;
+    let mut on = encode_drainage();
+    on[10] = 2.0;
+    let handle_off = world_with_gully(&off);
+    let handle_on = world_with_gully(&on);
+    assert_ne!(handle_off, 0);
+    assert_ne!(handle_on, 0);
+    let mut moved = 0usize;
+    for (lat, lon) in GULLY_PROBES {
+        let a = wb_elevation_m(handle_off, *lat, *lon, 76.35);
+        let b = wb_elevation_m(handle_on, *lat, *lon, 76.35);
+        assert!(a.is_finite() && b.is_finite());
+        if a != b {
+            moved += 1;
+        }
+    }
+    assert_eq!(wb_world_free(handle_off), WB_OK);
+    assert_eq!(wb_world_free(handle_on), WB_OK);
+    assert!(
+        moved > 0,
+        "harmonic_weight crossed the boundary as a word and changed nothing: the two records          differ only at index 10 and all {} probes gave identical ground",
+        GULLY_PROBES.len()
+    );
+}
+
+/// `GullyParams::drainage()` as a record, through the engine's own exporter so this file
+/// never transcribes a preset's numbers.
+fn encode_drainage() -> [f64; WB_GULLY_STRIDE] {
+    let mut record = [0.0f64; WB_GULLY_STRIDE];
+    assert_eq!(
+        wb_gully_preset(WB_GULLY_DRAINAGE, record.as_mut_ptr(), WB_GULLY_STRIDE as u32),
+        WB_OK
+    );
+    record
+}
 
 #[test]
 fn the_gully_preset_is_the_engines_own_numbers_and_the_canonical_one_is_off() {

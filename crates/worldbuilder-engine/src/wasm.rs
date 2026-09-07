@@ -917,10 +917,18 @@ const WB_ALIGN: usize = 8;
 /// | 7 | `gate_elevation_span_m` |
 /// | 8 | `flat_energy_floor` |
 /// | 9 | `steer_lattice_m` |
+/// | 10 | `harmonic_weight` |
+/// | 11 | `harmonic_band_m` |
 ///
 /// That is `GullyParams`'s own declaration order, and [`wb_gully_preset`] writes it in exactly
 /// this order so a host never transcribes a preset's numbers.
-pub const WB_GULLY_STRIDE: usize = 10;
+///
+/// **The stride went from ten to twelve when the second harmonic shipped.** It is an
+/// append -- indices 0 through 9 mean exactly what they meant -- but this boundary refuses a
+/// record of the wrong length outright rather than defaulting the tail, which is the
+/// silently-dropping-builder shape the rest of this file refuses: a host that still sends ten
+/// words gets `WB_GULLY_REFUSED`, not a block whose new fields quietly read as zero.
+pub const WB_GULLY_STRIDE: usize = 12;
 
 /// [`wb_gully_preset`] selector: `GullyParams::canonical()` -- the drainage kernel switched
 /// off, and the `None` path's exact equivalent.
@@ -1009,6 +1017,30 @@ pub const WB_MAX_GULLY_GATE_ELEVATION_M: f64 = WB_MAX_RELIEF_AMPLITUDE_M;
 pub const WB_MIN_GULLY_GATE_SPAN_M: f64 = WB_MIN_QUIETING_SCALE_M;
 /// See [`WB_MIN_GULLY_GATE_SPAN_M`].
 pub const WB_MAX_GULLY_GATE_SPAN_M: f64 = WB_MAX_QUIETING_SCALE_M;
+
+/// The ceiling on `harmonic_weight`. The floor is `0.0`, and `0.0` is the off switch on the
+/// same argument `WB_MAX_GULLY_AMPLITUDE_M` makes for `amplitude_m`: a NEGATIVE weight is not
+/// merely a smaller effect, it moves the second harmonic's minima onto the first's maxima and
+/// splits every channel where it should join them -- a field that looks configured and
+/// inverts the term.
+///
+/// Four is chosen rather than one because the shaping stays bounded for any non-negative
+/// weight -- it is divided by `1 + a`, so `|signal| <= 1` however large `a` is -- and the
+/// surveyed cross product runs to 2.0. It is a domain, not a taste: the pitchfork is at
+/// `a = 1/4` and everything above it is two channels per period, so beyond a few units the
+/// field stops changing shape and only the ramp's position matters.
+pub const WB_MAX_GULLY_HARMONIC_WEIGHT: f64 = 4.0;
+
+/// The floor and ceiling on `harmonic_band_m`, the third length in this record. **Zero is
+/// refused and that is not politeness**: the band is a divisor, `(h - gate) / 0` is an
+/// infinity or -- at exactly the gate elevation -- a NaN, and while `smooth`'s clamp order
+/// makes both of those land on a finite weight rather than on a NaN height, a band of zero is
+/// a step function in elevation and a step in `a` is a step in the ground along a contour
+/// line. That is the artefact every smooth gate in `detail.rs` exists to avoid, so it is
+/// refused at the door. The ceiling is the two lengths' own, for the same reason theirs is.
+pub const WB_MIN_GULLY_HARMONIC_BAND_M: f64 = WB_MIN_GULLY_LENGTH_M;
+/// See [`WB_MIN_GULLY_HARMONIC_BAND_M`].
+pub const WB_MAX_GULLY_HARMONIC_BAND_M: f64 = WB_MAX_GULLY_LENGTH_M;
 
 /// **The export list, declared.** A native test run cannot see the artifact's export
 /// section, and a forgotten no-mangle attribute is invisible in a build that exits 0 -- so
@@ -1887,6 +1919,16 @@ fn gully_is_admissible(gully: &GullyParams) -> bool {
     ) {
         return false;
     }
+    if !within(gully.harmonic_weight, 0.0, WB_MAX_GULLY_HARMONIC_WEIGHT) {
+        return false;
+    }
+    if !within(
+        gully.harmonic_band_m,
+        WB_MIN_GULLY_HARMONIC_BAND_M,
+        WB_MAX_GULLY_HARMONIC_BAND_M,
+    ) {
+        return false;
+    }
     if !within(gully.gate_elevation_span_m, WB_MIN_GULLY_GATE_SPAN_M, WB_MAX_GULLY_GATE_SPAN_M) {
         return false;
     }
@@ -1910,6 +1952,8 @@ fn decode_gully(record: &[f64]) -> Option<GullyParams> {
         gate_elevation_span_m: fields[7],
         flat_energy_floor: fields[8],
         steer_lattice_m: fields[9],
+        harmonic_weight: fields[10],
+        harmonic_band_m: fields[11],
     };
     if gully_is_admissible(&gully) {
         Some(gully)
@@ -1931,6 +1975,8 @@ fn encode_gully(gully: &GullyParams) -> [f64; WB_GULLY_STRIDE] {
         gully.gate_elevation_span_m,
         gully.flat_energy_floor,
         gully.steer_lattice_m,
+        gully.harmonic_weight,
+        gully.harmonic_band_m,
     ]
 }
 

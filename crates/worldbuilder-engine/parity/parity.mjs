@@ -88,6 +88,13 @@ if (!dumpPath) {
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
 const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude', 'gully-steer'];
+
+/// f64 per gully record, mirroring `wasm.rs`'s `WB_GULLY_STRIDE`. Ten until the second
+/// harmonic shipped, twelve since -- and written once here rather than at each of the six
+/// call sites, because `wb_gully_check` and `wb_gully_preset` refuse a length they do not
+/// recognise while `wb_world_new_gully`'s buffer is allocated on this side: a stale literal at
+/// the wrong one of those would truncate the block that builds the world.
+const GULLY_STRIDE = 12;
 if (mutate !== null && !MUTATIONS.includes(mutate)) {
   console.error(`unknown mutation "${mutate}"; the controls are ${MUTATIONS.map((m) => `--mutate ${m}`).join(', ')}`);
   process.exit(2);
@@ -678,26 +685,33 @@ for (const raw of lines) {
       break;
     }
     case 'GP': {
-      // GP <selector> <status> <ten f64 hex>
+      // GP <selector> <status> <twelve f64 hex>
       //
       // `wb_gully_preset` itself, field by field, at both selectors. Same argument as the `P`
       // (relief) and `CP` (coast) preset records: this export exists so that no host ever
       // transcribes a preset, and on this channel the preset carries `slope_reference` -- the
       // one number in the record that is a MEASUREMENT of this generator rather than a
       // preference. A second copy of it in a panel would be a second answer to "how steep is
-      // steep here". So "both sides read the same ten f64" is the whole of this export's
+      // steep here". So "both sides read the same twelve f64" is the whole of this export's
       // value and therefore the thing a parity harness has most business checking.
+      //
+      // **TEN f64 until the second harmonic shipped; twelve since.** The stride is written as
+      // `GULLY_STRIDE` here rather than as a literal in four places, because the literal is how
+      // a widened record gets half-read: `wb_gully_preset` refuses a length it does not
+      // recognise, so a stale `10` would have turned this group red rather than silent -- but
+      // the `worldg` case below allocates its own buffer, and a stale `10` THERE would have
+      // truncated the block that builds the world.
       //
       // A world seed cannot move these, so this group sits at zero under `--mutate seed`.
       const selector = Number(f[1]);
-      const out = wb.wb_alloc(10 * 8);
+      const out = wb.wb_alloc(GULLY_STRIDE * 8);
       if (out === 0) throw new Error('wb_alloc refused the gully preset buffer');
-      const status = wb.wb_gully_preset(selector, out, 10);
+      const status = wb.wb_gully_preset(selector, out, GULLY_STRIDE);
       const view = mem();
       group = `gpreset/${selector}`;
       tally(String(status) === f[2]);
       if (String(status) !== f[2]) note(`gully preset status ${selector}`, f[2], String(status));
-      for (let k = 0; k < 10; k += 1) {
+      for (let k = 0; k < GULLY_STRIDE; k += 1) {
         const got = bitsOf(view.getFloat64(out + k * 8, true));
         tally(got === f[3 + k]);
         if (got !== f[3 + k]) note(`gully preset ${selector}[${k}]`, f[3 + k], got);
@@ -706,7 +720,7 @@ for (const raw of lines) {
       break;
     }
     case 'GC': {
-      // GC <name> <status> <ten f64 hex>
+      // GC <name> <status> <twelve f64 hex>
       //
       // `wb_gully_check`, the export that answers *why* a record was refused. Only the status
       // is compared, because the status is all it produces -- but a status is exactly where
@@ -714,12 +728,12 @@ for (const raw of lines) {
       // infinity that `WB_MIN_GULLY_SHARPNESS` exists to refuse. Three accepted and three
       // refused, asserted on the native side, so a checker stuck at either answer cannot pass.
       const record = f.slice(3);
-      if (record.length !== 10) throw new Error('a gully record must be ten f64');
-      const ptr = wb.wb_alloc(10 * 8);
+      if (record.length !== GULLY_STRIDE) throw new Error('a gully record must be twelve f64');
+      const ptr = wb.wb_alloc(GULLY_STRIDE * 8);
       if (ptr === 0) throw new Error('wb_alloc refused the gully check buffer');
       const view = mem();
       record.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
-      const status = wb.wb_gully_check(ptr, 10);
+      const status = wb.wb_gully_check(ptr, GULLY_STRIDE);
       group = 'gcheck';
       tally(String(status) === f[2]);
       if (String(status) !== f[2]) note(`gully check ${f[1]}`, f[2], String(status));
@@ -738,7 +752,7 @@ for (const raw of lines) {
       break;
     }
     case 'worldg': {
-      // worldg <name> <seed> <radius_hex> <plates> <land_hex> <ten gully f64 hex>
+      // worldg <name> <seed> <radius_hex> <plates> <land_hex> <twelve gully f64 hex>
       //
       // A world through `wb_world_new_gully`, carrying a NON-canonical block --
       // `GullyParams::drainage()`, the measured preset. Two records name the same
@@ -750,8 +764,8 @@ for (const raw of lines) {
       const [, name, seedText, radiusHex, platesText, landHex] = f;
       const seed = BigInt(seedText) + (mutate === 'seed' ? 1n : 0n);
       const block = f.slice(6);
-      if (block.length !== 10) throw new Error('a gully record must be ten f64');
-      const ptr = wb.wb_alloc(10 * 8);
+      if (block.length !== GULLY_STRIDE) throw new Error('a gully record must be twelve f64');
+      const ptr = wb.wb_alloc(GULLY_STRIDE * 8);
       if (ptr === 0) throw new Error('wb_alloc refused the gully buffer');
       const view = mem();
       block.forEach((hex, i) => view.setBigUint64(ptr + i * 8, BigInt('0x' + hex), true));
@@ -760,9 +774,10 @@ for (const raw of lines) {
         view.setFloat64(ptr + 9 * 8, gullySteer, true);
       }
       const handle = wb.wb_world_new_gully(
-        seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0, 0, 0, 0, 0, 0, 0, ptr, 10);
+        seed, f64of(radiusHex), Number(platesText), f64of(landHex), 0, 0, 0, 0, 0, 0, 0, 0,
+        ptr, GULLY_STRIDE);
       if (handle === 0) throw new Error(`gully world ${name} did not build in wasm`);
-      wb.wb_dealloc(ptr, 10 * 8);
+      wb.wb_dealloc(ptr, GULLY_STRIDE * 8);
       worlds.set(name, handle);
       break;
     }
