@@ -194,14 +194,21 @@ def place(layout, area, anchor, surface):
     placed = []
     for room_id in sorted(layout.cells):
         cell = layout.cells[room_id]
-        x_m, y_m = _rotate(
-            cell[0] * anchor.room_spacing_m, cell[1] * anchor.room_spacing_m,
-            anchor.bearing_deg,
-        )
-        point = frame.local_to_sphere(x_m, y_m)
-        latitude, longitude = point.to_latlon()
-        elevation = surface.elevation_m(point)
         room = area.rooms.get(room_id)
+        authored = getattr(room, "latlon", None) if room else None
+        if authored:
+            # The room already knows where it is. Anchoring, bearing and spacing describe how
+            # to place a lattice, and this room was not placed by one.
+            latitude, longitude = authored
+            point = SpherePoint.from_latlon(latitude, longitude)
+        else:
+            x_m, y_m = _rotate(
+                cell[0] * anchor.room_spacing_m, cell[1] * anchor.room_spacing_m,
+                anchor.bearing_deg,
+            )
+            point = frame.local_to_sphere(x_m, y_m)
+            latitude, longitude = point.to_latlon()
+        elevation = surface.elevation_m(point)
         placed.append(
             PlacedRoom(
                 id=room_id,

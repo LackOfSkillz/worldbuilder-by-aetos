@@ -90,6 +90,8 @@ class Room:
     desc: str = ""
     #: An authored lattice cell, when the game carries one. Read, never re-derived.
     cell: tuple = None
+    #: An authored position on the planet, when the game carries one.
+    latlon: tuple = None
 
 
 @dataclass
@@ -169,6 +171,15 @@ def read(path, area_keys=AREA_KEY_PRIORITY):
             if object_id in rooms and isinstance(cell, (list, tuple)) and len(cell) >= 2:
                 rooms[object_id].cell = (int(cell[0]), int(cell[1]),
                                          int(cell[2]) if len(cell) > 2 else 0)
+
+        # **A drawn route is not a lattice and cannot be recovered from one.** An area whose
+        # rooms were placed by clicking a line on the globe knows exactly where each room is;
+        # anchoring its lattice would straighten the line into a grid and lose the bends that
+        # were the whole point of drawing it. So a room may carry its own position, and when
+        # it does, that position wins over anything placement would compute.
+        for object_id, latlon in _attribute(connection, "wb_latlon").items():
+            if object_id in rooms and isinstance(latlon, (list, tuple)) and len(latlon) == 2:
+                rooms[object_id].latlon = (float(latlon[0]), float(latlon[1]))
 
         tags = {key: _attribute(connection, key) for key in area_keys}
         for object_id, room in rooms.items():

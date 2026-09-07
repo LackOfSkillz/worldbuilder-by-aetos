@@ -2,316 +2,1033 @@
   "areas": [
     {
       "anchor": {
-        "bearing_deg": 291.9945975922455,
-        "latitude_deg": -4.4631767950495105,
-        "longitude_deg": -2.51355012296898,
-        "room_spacing_m": 264.9731233620252
+        "bearing_deg": 0.0,
+        "latitude_deg": -4.464,
+        "longitude_deg": -2.5085,
+        "room_spacing_m": 30.0
       },
       "exits": [
         {
-          "destination": 1065,
+          "destination": 1826,
+          "name": "northeast",
+          "source": 1825
+        },
+        {
+          "destination": 1825,
+          "name": "southwest",
+          "source": 1826
+        },
+        {
+          "destination": 1827,
+          "name": "northeast",
+          "source": 1826
+        },
+        {
+          "destination": 1826,
+          "name": "southwest",
+          "source": 1827
+        },
+        {
+          "destination": 1828,
           "name": "north",
-          "source": 1064
+          "source": 1827
         },
         {
-          "destination": 1064,
+          "destination": 1827,
           "name": "south",
-          "source": 1065
+          "source": 1828
         },
         {
-          "destination": 1066,
+          "destination": 1829,
           "name": "north",
-          "source": 1065
+          "source": 1828
         },
         {
-          "destination": 1065,
+          "destination": 1828,
           "name": "south",
-          "source": 1066
+          "source": 1829
         },
         {
-          "destination": 1067,
+          "destination": 1830,
           "name": "north",
-          "source": 1066
+          "source": 1829
         },
         {
-          "destination": 1066,
+          "destination": 1829,
           "name": "south",
-          "source": 1067
+          "source": 1830
         },
         {
-          "destination": 1068,
+          "destination": 1831,
           "name": "north",
-          "source": 1067
+          "source": 1830
         },
         {
-          "destination": 1067,
+          "destination": 1830,
           "name": "south",
-          "source": 1068
+          "source": 1831
         },
         {
-          "destination": 1069,
+          "destination": 1832,
           "name": "north",
-          "source": 1068
+          "source": 1831
         },
         {
-          "destination": 1068,
+          "destination": 1831,
           "name": "south",
-          "source": 1069
+          "source": 1832
         },
         {
-          "destination": 1070,
-          "name": "north",
-          "source": 1069
+          "destination": 1833,
+          "name": "northwest",
+          "source": 1832
         },
         {
-          "destination": 1069,
-          "name": "south",
-          "source": 1070
+          "destination": 1832,
+          "name": "southeast",
+          "source": 1833
         },
         {
-          "destination": 1071,
-          "name": "east",
-          "source": 1070
+          "destination": 1834,
+          "name": "northwest",
+          "source": 1833
         },
         {
-          "destination": 1070,
+          "destination": 1833,
+          "name": "southeast",
+          "source": 1834
+        },
+        {
+          "destination": 1835,
+          "name": "northwest",
+          "source": 1834
+        },
+        {
+          "destination": 1834,
+          "name": "southeast",
+          "source": 1835
+        },
+        {
+          "destination": 1836,
+          "name": "northwest",
+          "source": 1835
+        },
+        {
+          "destination": 1835,
+          "name": "southeast",
+          "source": 1836
+        },
+        {
+          "destination": 1837,
+          "name": "northwest",
+          "source": 1836
+        },
+        {
+          "destination": 1836,
+          "name": "southeast",
+          "source": 1837
+        },
+        {
+          "destination": 1838,
           "name": "west",
-          "source": 1071
+          "source": 1837
         },
         {
-          "destination": 1072,
-          "name": "north",
-          "source": 1070
-        },
-        {
-          "destination": 1070,
-          "name": "south",
-          "source": 1072
-        },
-        {
-          "destination": 1073,
+          "destination": 1837,
           "name": "east",
-          "source": 1068
+          "source": 1838
         },
         {
-          "destination": 1068,
+          "destination": 1839,
           "name": "west",
-          "source": 1073
+          "source": 1838
         },
         {
-          "destination": 1074,
-          "name": "north",
-          "source": 1073
-        },
-        {
-          "destination": 1073,
-          "name": "south",
-          "source": 1074
-        },
-        {
-          "destination": 1069,
-          "name": "west",
-          "source": 1074
-        },
-        {
-          "destination": 1074,
+          "destination": 1838,
           "name": "east",
-          "source": 1069
+          "source": 1839
         },
         {
-          "destination": 1076,
-          "name": "north",
-          "source": 1075
+          "destination": 1840,
+          "name": "west",
+          "source": 1839
         },
         {
-          "destination": 1075,
+          "destination": 1839,
+          "name": "east",
+          "source": 1840
+        },
+        {
+          "destination": 1841,
+          "name": "west",
+          "source": 1840
+        },
+        {
+          "destination": 1840,
+          "name": "east",
+          "source": 1841
+        },
+        {
+          "destination": 1842,
+          "name": "west",
+          "source": 1841
+        },
+        {
+          "destination": 1841,
+          "name": "east",
+          "source": 1842
+        },
+        {
+          "destination": 1843,
+          "name": "west",
+          "source": 1842
+        },
+        {
+          "destination": 1842,
+          "name": "east",
+          "source": 1843
+        },
+        {
+          "destination": 1844,
+          "name": "west",
+          "source": 1843
+        },
+        {
+          "destination": 1843,
+          "name": "east",
+          "source": 1844
+        },
+        {
+          "destination": 1845,
+          "name": "west",
+          "source": 1844
+        },
+        {
+          "destination": 1844,
+          "name": "east",
+          "source": 1845
+        },
+        {
+          "destination": 1846,
+          "name": "west",
+          "source": 1845
+        },
+        {
+          "destination": 1845,
+          "name": "east",
+          "source": 1846
+        },
+        {
+          "destination": 1847,
+          "name": "west",
+          "source": 1846
+        },
+        {
+          "destination": 1846,
+          "name": "east",
+          "source": 1847
+        },
+        {
+          "destination": 1848,
+          "name": "west",
+          "source": 1847
+        },
+        {
+          "destination": 1847,
+          "name": "east",
+          "source": 1848
+        },
+        {
+          "destination": 1849,
+          "name": "west",
+          "source": 1848
+        },
+        {
+          "destination": 1848,
+          "name": "east",
+          "source": 1849
+        },
+        {
+          "destination": 1850,
+          "name": "west",
+          "source": 1849
+        },
+        {
+          "destination": 1849,
+          "name": "east",
+          "source": 1850
+        },
+        {
+          "destination": 1851,
+          "name": "west",
+          "source": 1850
+        },
+        {
+          "destination": 1850,
+          "name": "east",
+          "source": 1851
+        },
+        {
+          "destination": 1852,
+          "name": "west",
+          "source": 1851
+        },
+        {
+          "destination": 1851,
+          "name": "east",
+          "source": 1852
+        },
+        {
+          "destination": 1853,
+          "name": "west",
+          "source": 1852
+        },
+        {
+          "destination": 1852,
+          "name": "east",
+          "source": 1853
+        },
+        {
+          "destination": 1854,
+          "name": "west",
+          "source": 1853
+        },
+        {
+          "destination": 1853,
+          "name": "east",
+          "source": 1854
+        },
+        {
+          "destination": 1855,
+          "name": "west",
+          "source": 1854
+        },
+        {
+          "destination": 1854,
+          "name": "east",
+          "source": 1855
+        },
+        {
+          "destination": 1856,
+          "name": "west",
+          "source": 1855
+        },
+        {
+          "destination": 1855,
+          "name": "east",
+          "source": 1856
+        },
+        {
+          "destination": 1857,
+          "name": "west",
+          "source": 1856
+        },
+        {
+          "destination": 1856,
+          "name": "east",
+          "source": 1857
+        },
+        {
+          "destination": 1858,
+          "name": "west",
+          "source": 1857
+        },
+        {
+          "destination": 1857,
+          "name": "east",
+          "source": 1858
+        },
+        {
+          "destination": 1859,
+          "name": "west",
+          "source": 1858
+        },
+        {
+          "destination": 1858,
+          "name": "east",
+          "source": 1859
+        },
+        {
+          "destination": 1860,
+          "name": "southwest",
+          "source": 1828
+        },
+        {
+          "destination": 1828,
+          "name": "northeast",
+          "source": 1860
+        },
+        {
+          "destination": 1861,
           "name": "south",
-          "source": 1076
+          "source": 1846
+        },
+        {
+          "destination": 1846,
+          "name": "north",
+          "source": 1861
+        },
+        {
+          "destination": 1862,
+          "name": "south",
+          "source": 1834
+        },
+        {
+          "destination": 1834,
+          "name": "north",
+          "source": 1862
+        },
+        {
+          "destination": 1863,
+          "name": "south",
+          "source": 1849
+        },
+        {
+          "destination": 1849,
+          "name": "north",
+          "source": 1863
+        },
+        {
+          "destination": 1821,
+          "name": "northeast",
+          "source": 1829
+        },
+        {
+          "destination": 1829,
+          "name": "southwest",
+          "source": 1821
+        },
+        {
+          "destination": 1822,
+          "name": "north",
+          "source": 1821
+        },
+        {
+          "destination": 1821,
+          "name": "south",
+          "source": 1822
+        },
+        {
+          "destination": 1832,
+          "name": "northwest",
+          "source": 1822
+        },
+        {
+          "destination": 1822,
+          "name": "southeast",
+          "source": 1832
+        },
+        {
+          "destination": 1823,
+          "name": "northwest",
+          "source": 1844
+        },
+        {
+          "destination": 1844,
+          "name": "southeast",
+          "source": 1823
+        },
+        {
+          "destination": 1824,
+          "name": "west",
+          "source": 1823
+        },
+        {
+          "destination": 1823,
+          "name": "east",
+          "source": 1824
+        },
+        {
+          "destination": 1847,
+          "name": "southwest",
+          "source": 1824
+        },
+        {
+          "destination": 1824,
+          "name": "northeast",
+          "source": 1847
         }
       ],
+      "land_check": {
+        "dry": 43,
+        "fits": true,
+        "offenders": [],
+        "wet_expected": 0,
+        "wet_unexpected": 0
+      },
       "layout_quality": {
         "agreement": 1.0,
-        "components": 2,
+        "components": 1,
         "conflicts": 0,
         "inferred_rooms": 0,
-        "root_room": 1068
+        "root_room": 1828
       },
-      "name": "ferry_shore",
+      "name": "bayou_trace",
       "port": {
         "has_port": true,
-        "port_area": "ferry_shore",
+        "port_area": "bayou_trace",
         "port_distance_m": 0.0,
         "port_metric": "self"
       },
       "rooms": [
         {
           "cell": [
-            0,
-            -4,
+            3,
+            5,
             0
           ],
-          "elevation_m": -403.51822793221413,
-          "id": 1064,
-          "key": "The Shingle Beach",
-          "latitude_deg": -4.465619950143077,
-          "longitude_deg": -2.5074829798008835,
-          "submerged": true
+          "elevation_m": 0.453,
+          "id": 1821,
+          "key": "The Flooded Fork",
+          "latitude_deg": -4.464997,
+          "longitude_deg": -2.499659,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            6,
+            0
+          ],
+          "elevation_m": 0.41,
+          "id": 1822,
+          "key": "Brushwood Causeway",
+          "latitude_deg": -4.464416,
+          "longitude_deg": -2.499712,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -11,
+            13,
+            0
+          ],
+          "elevation_m": 1.01,
+          "id": 1823,
+          "key": "The Second Track",
+          "latitude_deg": -4.46005,
+          "longitude_deg": -2.508218,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            13,
+            0
+          ],
+          "elevation_m": 1.07,
+          "id": 1824,
+          "key": "Behind the Oaks",
+          "latitude_deg": -4.460029,
+          "longitude_deg": -2.508799,
+          "submerged": false
         },
         {
           "cell": [
             0,
-            -3,
+            0,
             0
           ],
-          "elevation_m": -403.00094596067623,
-          "id": 1065,
-          "key": "The Turf Lip",
-          "latitude_deg": -4.4650091660440046,
-          "longitude_deg": -2.508999769380417,
-          "submerged": true
+          "elevation_m": 0.002,
+          "id": 1825,
+          "key": "The Pirogue Landing",
+          "latitude_deg": -4.467836,
+          "longitude_deg": -2.50073,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            1,
+            0
+          ],
+          "elevation_m": 0.021,
+          "id": 1826,
+          "key": "Mudbank Steps",
+          "latitude_deg": -4.467391,
+          "longitude_deg": -2.500373,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            2,
+            0
+          ],
+          "elevation_m": 0.077,
+          "id": 1827,
+          "key": "Black Water Crossing",
+          "latitude_deg": -4.466946,
+          "longitude_deg": -2.500016,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            3,
+            0
+          ],
+          "elevation_m": 0.129,
+          "id": 1828,
+          "key": "The Tupelo Brake",
+          "latitude_deg": -4.466205,
+          "longitude_deg": -2.500201,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            4,
+            0
+          ],
+          "elevation_m": 0.201,
+          "id": 1829,
+          "key": "Standing Cypress",
+          "latitude_deg": -4.465463,
+          "longitude_deg": -2.500385,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            5,
+            0
+          ],
+          "elevation_m": 0.197,
+          "id": 1830,
+          "key": "Knee-Deep Reach",
+          "latitude_deg": -4.464845,
+          "longitude_deg": -2.500509,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            6,
+            0
+          ],
+          "elevation_m": 0.163,
+          "id": 1831,
+          "key": "Palmetto Thicket",
+          "latitude_deg": -4.464227,
+          "longitude_deg": -2.500632,
+          "submerged": false
+        },
+        {
+          "cell": [
+            2,
+            7,
+            0
+          ],
+          "elevation_m": 0.161,
+          "id": 1832,
+          "key": "The Reed Cut",
+          "latitude_deg": -4.463609,
+          "longitude_deg": -2.500755,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            8,
+            0
+          ],
+          "elevation_m": 0.161,
+          "id": 1833,
+          "key": "The Drowned Grove",
+          "latitude_deg": -4.463081,
+          "longitude_deg": -2.501174,
+          "submerged": false
         },
         {
           "cell": [
             0,
-            -2,
+            9,
             0
           ],
-          "elevation_m": -403.163969627674,
-          "id": 1066,
-          "key": "The Reed Walk",
-          "latitude_deg": -4.46439837882843,
-          "longitude_deg": -2.51051655643472,
-          "submerged": true
+          "elevation_m": 0.173,
+          "id": 1834,
+          "key": "Duckweed Flat",
+          "latitude_deg": -4.462554,
+          "longitude_deg": -2.501592,
+          "submerged": false
         },
         {
           "cell": [
-            0,
             -1,
+            10,
             0
           ],
-          "elevation_m": -403.3222924107308,
-          "id": 1067,
-          "key": "The Alder Carr",
-          "latitude_deg": -4.463787588496788,
-          "longitude_deg": -2.5120333409641273,
-          "submerged": true
+          "elevation_m": 0.184,
+          "id": 1835,
+          "key": "Saw Grass Bend",
+          "latitude_deg": -4.462027,
+          "longitude_deg": -2.502011,
+          "submerged": false
         },
         {
           "cell": [
-            0,
-            0,
+            -2,
+            11,
             0
           ],
-          "elevation_m": -403.4384339620558,
-          "id": 1068,
-          "key": "The Carr Edge",
-          "latitude_deg": -4.4631767950495105,
-          "longitude_deg": -2.51355012296898,
-          "submerged": true
+          "elevation_m": 0.143,
+          "id": 1836,
+          "key": "Willow Break",
+          "latitude_deg": -4.461693,
+          "longitude_deg": -2.502701,
+          "submerged": false
         },
         {
           "cell": [
-            0,
+            -3,
+            12,
+            0
+          ],
+          "elevation_m": 0.218,
+          "id": 1837,
+          "key": "The Low Boardwalk",
+          "latitude_deg": -4.461359,
+          "longitude_deg": -2.503391,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -4,
+            12,
+            0
+          ],
+          "elevation_m": 0.215,
+          "id": 1838,
+          "key": "Wax Myrtle Run",
+          "latitude_deg": -4.461194,
+          "longitude_deg": -2.504015,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -5,
+            12,
+            0
+          ],
+          "elevation_m": 0.187,
+          "id": 1839,
+          "key": "Cattail Reach",
+          "latitude_deg": -4.461029,
+          "longitude_deg": -2.504639,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -6,
+            12,
+            0
+          ],
+          "elevation_m": 0.23,
+          "id": 1840,
+          "key": "Chenier Rise",
+          "latitude_deg": -4.460865,
+          "longitude_deg": -2.505263,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -7,
+            12,
+            0
+          ],
+          "elevation_m": 0.324,
+          "id": 1841,
+          "key": "The Live Oak Stand",
+          "latitude_deg": -4.46076,
+          "longitude_deg": -2.505817,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -8,
+            12,
+            0
+          ],
+          "elevation_m": 0.435,
+          "id": 1842,
+          "key": "Moss Hollow",
+          "latitude_deg": -4.460654,
+          "longitude_deg": -2.506371,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -9,
+            12,
+            0
+          ],
+          "elevation_m": 0.528,
+          "id": 1843,
+          "key": "The Shell Ridge",
+          "latitude_deg": -4.460549,
+          "longitude_deg": -2.506925,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -10,
+            12,
+            0
+          ],
+          "elevation_m": 0.693,
+          "id": 1844,
+          "key": "Oak Alley",
+          "latitude_deg": -4.460444,
+          "longitude_deg": -2.50748,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -11,
+            12,
+            0
+          ],
+          "elevation_m": 0.905,
+          "id": 1845,
+          "key": "The Dry Camp",
+          "latitude_deg": -4.46042,
+          "longitude_deg": -2.508077,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -12,
+            12,
+            0
+          ],
+          "elevation_m": 1.036,
+          "id": 1846,
+          "key": "Hackberry Knoll",
+          "latitude_deg": -4.460395,
+          "longitude_deg": -2.508674,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -13,
+            12,
+            0
+          ],
+          "elevation_m": 1.004,
+          "id": 1847,
+          "key": "The Old Burn",
+          "latitude_deg": -4.46037,
+          "longitude_deg": -2.509271,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -14,
+            12,
+            0
+          ],
+          "elevation_m": 0.91,
+          "id": 1848,
+          "key": "Ridge Crown",
+          "latitude_deg": -4.460346,
+          "longitude_deg": -2.509869,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -15,
+            12,
+            0
+          ],
+          "elevation_m": 0.795,
+          "id": 1849,
+          "key": "Sandy Reach",
+          "latitude_deg": -4.460296,
+          "longitude_deg": -2.510485,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -16,
+            12,
+            0
+          ],
+          "elevation_m": 0.658,
+          "id": 1850,
+          "key": "Chenier Fall",
+          "latitude_deg": -4.460246,
+          "longitude_deg": -2.511101,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -17,
+            12,
+            0
+          ],
+          "elevation_m": 0.428,
+          "id": 1851,
+          "key": "Bitternut Bend",
+          "latitude_deg": -4.460197,
+          "longitude_deg": -2.511717,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -18,
+            12,
+            0
+          ],
+          "elevation_m": 0.232,
+          "id": 1852,
+          "key": "The Muck Walk",
+          "latitude_deg": -4.460205,
+          "longitude_deg": -2.512251,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -19,
+            12,
+            0
+          ],
+          "elevation_m": 0.129,
+          "id": 1853,
+          "key": "Marsh Elder Turn",
+          "latitude_deg": -4.460213,
+          "longitude_deg": -2.512785,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -20,
+            12,
+            0
+          ],
+          "elevation_m": 0.135,
+          "id": 1854,
+          "key": "Rushing Reach",
+          "latitude_deg": -4.460221,
+          "longitude_deg": -2.513319,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -21,
+            12,
+            0
+          ],
+          "elevation_m": 0.201,
+          "id": 1855,
+          "key": "The Soft Ground",
+          "latitude_deg": -4.460444,
+          "longitude_deg": -2.514033,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -22,
+            12,
+            0
+          ],
+          "elevation_m": 0.263,
+          "id": 1856,
+          "key": "Palmetto Thicket (13)",
+          "latitude_deg": -4.460667,
+          "longitude_deg": -2.514747,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -23,
+            12,
+            0
+          ],
+          "elevation_m": 0.213,
+          "id": 1857,
+          "key": "The Reed Cut (14)",
+          "latitude_deg": -4.460708,
+          "longitude_deg": -2.515265,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -24,
+            12,
+            0
+          ],
+          "elevation_m": 0.122,
+          "id": 1858,
+          "key": "Saw Grass Bend (15)",
+          "latitude_deg": -4.460749,
+          "longitude_deg": -2.515782,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -25,
+            12,
+            0
+          ],
+          "elevation_m": 0.052,
+          "id": 1859,
+          "key": "The Cut Bank",
+          "latitude_deg": -4.46079,
+          "longitude_deg": -2.5163,
+          "submerged": false
+        },
+        {
+          "cell": [
             1,
-            0
-          ],
-          "elevation_m": -403.6192904716879,
-          "id": 1069,
-          "key": "The Drove Road",
-          "latitude_deg": -4.462565998487031,
-          "longitude_deg": -2.5150669024496146,
-          "submerged": true
-        },
-        {
-          "cell": [
-            0,
             2,
             0
           ],
-          "elevation_m": -404.6320523509787,
-          "id": 1070,
-          "key": "The Ferry Green",
-          "latitude_deg": -4.461955198809785,
-          "longitude_deg": -2.51658367940637,
-          "submerged": true
+          "elevation_m": 0.012,
+          "id": 1860,
+          "key": "The Fishing Stand",
+          "latitude_deg": -4.466698,
+          "longitude_deg": -2.500664,
+          "submerged": false
         },
         {
           "cell": [
-            1,
-            2,
+            -12,
+            11,
             0
           ],
-          "elevation_m": -405.55336199574754,
-          "id": 1071,
-          "key": "The Ferry Slip",
-          "latitude_deg": -4.460443019887878,
-          "longitude_deg": -2.5159710225975283,
-          "submerged": true
+          "elevation_m": 0.863,
+          "id": 1861,
+          "key": "The Trapper's Shack",
+          "latitude_deg": -4.461191,
+          "longitude_deg": -2.508694,
+          "submerged": false
         },
         {
           "cell": [
             0,
-            3,
+            8,
             0
           ],
-          "elevation_m": -405.0889028339882,
-          "id": 1072,
-          "key": "The Waiting Shelter",
-          "latitude_deg": -4.461344396018201,
-          "longitude_deg": -2.5181004538395846,
-          "submerged": true
+          "elevation_m": 0.101,
+          "id": 1862,
+          "key": "The Cypress Overlook",
+          "latitude_deg": -4.46319,
+          "longitude_deg": -2.501561,
+          "submerged": false
         },
         {
           "cell": [
-            1,
-            0,
+            -15,
+            11,
             0
           ],
-          "elevation_m": -404.2204227696212,
-          "id": 1073,
-          "key": "The Wharf Track",
-          "latitude_deg": -4.461664613610825,
-          "longitude_deg": -2.512937471388363,
-          "submerged": true
-        },
-        {
-          "cell": [
-            1,
-            1,
-            0
-          ],
-          "elevation_m": -404.5460007483099,
-          "id": 1074,
-          "key": "The Old Wharf",
-          "latitude_deg": -4.461053818306616,
-          "longitude_deg": -2.514454248254617,
-          "submerged": true
-        },
-        {
-          "cell": [
-            3,
-            0,
-            0
-          ],
-          "elevation_m": -403.222280198863,
-          "id": 1075,
-          "key": "The Mainland Dock",
-          "latitude_deg": -4.458640249209434,
-          "longitude_deg": -2.511712175796309,
-          "submerged": true
-        },
-        {
-          "cell": [
-            3,
-            1,
-            0
-          ],
-          "elevation_m": -404.69383082674295,
-          "id": 1076,
-          "key": "The Dock Road",
-          "latitude_deg": -4.4580294564209675,
-          "longitude_deg": -2.5132289474352443,
-          "submerged": true
+          "elevation_m": 0.704,
+          "id": 1863,
+          "key": "The Shell Midden",
+          "latitude_deg": -4.461128,
+          "longitude_deg": -2.510437,
+          "submerged": false
         }
       ]
     },
@@ -474,6 +1191,13 @@
           "source": 1029
         }
       ],
+      "land_check": {
+        "dry": 9,
+        "fits": true,
+        "offenders": [],
+        "wet_expected": 2,
+        "wet_unexpected": 0
+      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -495,7 +1219,7 @@
             -3,
             0
           ],
-          "elevation_m": -405.23082194616296,
+          "elevation_m": -0.03,
           "id": 1023,
           "key": "The Landing Stage",
           "latitude_deg": -4.471048939192139,
@@ -508,7 +1232,7 @@
             -3,
             0
           ],
-          "elevation_m": -405.28839467043827,
+          "elevation_m": -0.027,
           "id": 1024,
           "key": "The Boat Ramp",
           "latitude_deg": -4.471048939215402,
@@ -521,12 +1245,12 @@
             0,
             0
           ],
-          "elevation_m": -405.02827064219724,
+          "elevation_m": 0.028,
           "id": 1025,
           "key": "The Camp Yard",
           "latitude_deg": -4.470495,
           "longitude_deg": -2.49949,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -534,12 +1258,12 @@
             -1,
             0
           ],
-          "elevation_m": -405.0788556472547,
+          "elevation_m": 0.034,
           "id": 1026,
           "key": "The Shore Path",
           "latitude_deg": -4.4706796464051335,
           "longitude_deg": -2.49949,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -547,12 +1271,12 @@
             -1,
             0
           ],
-          "elevation_m": -405.0129526424954,
+          "elevation_m": 0.035,
           "id": 1027,
           "key": "The North Point",
           "latitude_deg": -4.470679646381872,
           "longitude_deg": -2.4993047900665286,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -560,12 +1284,12 @@
             1,
             0
           ],
-          "elevation_m": -404.997408753974,
+          "elevation_m": 0.006,
           "id": 1028,
           "key": "The Bunkhouse",
           "latitude_deg": -4.470310353594866,
           "longitude_deg": -2.4994900000000007,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -573,12 +1297,12 @@
             0,
             0
           ],
-          "elevation_m": -404.95959431394436,
+          "elevation_m": 0.029,
           "id": 1029,
           "key": "The Mess Hall",
           "latitude_deg": -4.470494999976738,
           "longitude_deg": -2.4993047901131953,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -586,12 +1310,12 @@
             0,
             0
           ],
-          "elevation_m": -405.1024736683445,
+          "elevation_m": 0.022,
           "id": 1030,
           "key": "The Tackle Room",
           "latitude_deg": -4.470494999976738,
           "longitude_deg": -2.499675209886806,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -599,12 +1323,12 @@
             1,
             0
           ],
-          "elevation_m": -405.0716208551456,
+          "elevation_m": 0.001,
           "id": 1031,
           "key": "The Smokehouse",
           "latitude_deg": -4.470310353571605,
           "longitude_deg": -2.4996752098401402,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -612,12 +1336,12 @@
             1,
             0
           ],
-          "elevation_m": -404.9271911722781,
+          "elevation_m": 0.008,
           "id": 1032,
           "key": "The Warden's Office",
           "latitude_deg": -4.4703103535716044,
           "longitude_deg": -2.49930479015986,
-          "submerged": true
+          "submerged": false
         },
         {
           "cell": [
@@ -625,12 +1349,12 @@
             -2,
             0
           ],
-          "elevation_m": -405.1645267032253,
+          "elevation_m": 0.016,
           "id": 1033,
           "key": "The Boat Shed",
           "latitude_deg": -4.470864292810268,
           "longitude_deg": -2.4994899999999998,
-          "submerged": true
+          "submerged": false
         }
       ]
     },
@@ -2703,6 +3427,13 @@
           "source": 1277
         }
       ],
+      "land_check": {
+        "dry": 177,
+        "fits": true,
+        "offenders": [],
+        "wet_expected": 0,
+        "wet_unexpected": 0
+      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -2713,8 +3444,8 @@
       "name": "the-landing-city",
       "port": {
         "has_port": false,
-        "port_area": "ferry_shore",
-        "port_distance_m": 2094171.7399991443,
+        "port_area": "bayou_trace",
+        "port_distance_m": 2094344.3830790718,
         "port_metric": "great-circle between anchors"
       },
       "rooms": [
@@ -5023,8 +5754,8 @@
     }
   ],
   "elevation_source": {
-    "engine": "python oracle, FOUR of this world's twenty-four parameters",
-    "warning": "The elevations in this file are WRONG and are left visible rather than hidden. The Python surface cannot build this planet, so it reports the island rooms 405 m under water and reported a city site as fully dry that is a third submerged. Correct ground comes from the WASM engine the viewer runs; the viewer's land check is the one to trust until the pyo3 exports take the same parameters the WASM ones do."
+    "engine": "wasm, all 24 planet parameters, fetched per room",
+    "note": "The Python surface takes four of this world's parameters and cannot build it. Elevations here were read from the engine the viewer runs. The city's 177 rooms still carry the Python figures and are marked as such."
   },
   "generator": {
     "name": "worldbuilder",
