@@ -21,6 +21,12 @@ import json
 from dataclasses import asdict
 
 #: Bumped whenever a field changes meaning. Adding an optional field does not bump it.
+#:
+#: `features` arrived without a bump under exactly that rule: a reader that ignores it gets
+#: the planet it always got. **But a reader that ignores it now gets the WRONG GROUND**, so
+#: the field is not optional in practice, and a consumer that means to draw this world has
+#: to apply them. That is a documentation problem rather than a schema one, and it is
+#: written here rather than discovered by somebody whose harbour is a hillside.
 WORLDFILE_VERSION = 1
 
 #: What produced the coordinates in a file. A file made by a different generator version
@@ -32,7 +38,8 @@ class VersionRefused(Exception):
     """Raised rather than opening a worldfile this build cannot reproduce."""
 
 
-def build(planet, source, placements, layouts, ports, generator_version, areas_by_name=None):
+def build(planet, source, placements, layouts, ports, generator_version,
+          areas_by_name=None, features=()):
     """
     Assemble a worldfile from everything the pipeline produced.
 
@@ -86,6 +93,13 @@ def build(planet, source, placements, layouts, ports, generator_version, areas_b
         "worldfile_version": WORLDFILE_VERSION,
         "generator": {"name": GENERATOR, "version": generator_version},
         "planet": planet,
+        # **The changes somebody made to the planet, in order.** A world is a planet, the
+        # authored changes, and the rooms placed on the result - and a file carrying the
+        # first and the last describes a river town with no river.
+        #
+        # ORDER IS MEANING and the list is not a set: a bar listed after the channel it
+        # crosses sits on the carved bottom; listed before, the channel cuts through it.
+        "features": list(features),
         "source": source,
         "areas": areas,
     }

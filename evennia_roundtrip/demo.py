@@ -20,7 +20,7 @@ import sys
 from worldbuilder.terrain.surface import Surface
 
 from . import apply as apply_module
-from . import evdb, layout, place, worldfile
+from . import evdb, layout, place, river as river_module, worldfile
 
 #: The planet these coordinates are on. The same four numbers reproduce it exactly, which
 #: is why the worldfile carries them rather than a copy of the terrain.
@@ -70,6 +70,9 @@ def main(argv=None):
                         help="a worldfile whose planet these areas are placed on. Without it "
                              "the demo planet is used, and coordinates from one planet are "
                              "meaningless on another.")
+    parser.add_argument("--river", action="append", default=None, metavar="ROUTE.json",
+                        help="carve a saved route into the ground and carry it in the "
+                             "worldfile, so a game reading the file builds the same land")
     parser.add_argument("--fit", action="store_true",
                         help="shrink each area's room spacing until it sits on land, and "
                              "say so. Without it an area half in the sea exports clean.")
@@ -120,11 +123,26 @@ def main(argv=None):
           % (planet["seed"], planet["radius_m"], planet["plate_count"],
              planet["land_fraction"]))
 
+    # Authored changes, before the surface is built: they are part of the ground, not a
+    # layer over it, so everything downstream must see them.
+    authored = []
+    for path in arguments.river or []:
+        with open(path, encoding="utf-8") as handle:
+            route = json.load(handle)
+        shape = river_module.RiverShape(**(
+            {k: v for k, v in (route.get("river") or {}).items()
+             if k in {"mouth_depth_m", "head_depth_m", "mouth_width_m", "head_width_m"}}))
+        features, points = river_module.features_from_route(route, shape)
+        authored.extend(features)
+        print("river %r: %d segments over %d nodes"
+              % (route.get("name", path), len(features), len(points)))
+
     surface = Surface(
         planet["seed"],
         radius_m=planet["radius_m"],
         plate_count=planet["plate_count"],
         land_fraction=planet["land_fraction"],
+        features=river_module.to_engine(authored) if authored else None,
     )
 
     # Anchors are FOUND, not assumed. The first version of this demo reused a latitude and
@@ -303,6 +321,7 @@ def main(argv=None):
         ports=ports,
         generator_version=GENERATOR_VERSION,
         areas_by_name=area_by_name,
+        features=authored,
     )
     worldfile.write(document, arguments.out)
     print("\nwrote %s (%d bytes)" % (arguments.out, os.path.getsize(arguments.out)))

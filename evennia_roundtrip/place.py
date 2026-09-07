@@ -228,7 +228,13 @@ def place(layout, area, anchor, surface):
 #: A boat ramp runs into the water by definition, and a landing stage stands over it. Marking
 #: them wet is not an exception to the land check - it is the check knowing what it is looking
 #: at. Anything not named here that comes out submerged is a placement fault.
-WATER_ROOM_WORDS = ("ramp", "landing stage", "slip", "dock", "quay", "jetty", "wharf", "pier")
+#:
+#: **Bridges joined this list the moment a river was carved under a town.** The check
+#: reported `Kettleman's Bridge`, `Slakespan` and `Longreach Bridge` as misplaced, and all
+#: three were doing exactly what a bridge does. A check that calls a bridge over water a
+#: fault will be ignored, and a check that gets ignored is worse than none.
+WATER_ROOM_WORDS = ("ramp", "landing stage", "slip", "dock", "quay", "jetty", "wharf",
+                    "pier", "bridge", "span", "ford", "causeway", "steps", "stair")
 
 
 def water_room(key):

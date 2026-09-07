@@ -449,13 +449,6 @@
           "source": 1847
         }
       ],
-      "land_check": {
-        "dry": 43,
-        "fits": true,
-        "offenders": [],
-        "wet_expected": 0,
-        "wet_unexpected": 0
-      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -477,12 +470,12 @@
             5,
             0
           ],
-          "elevation_m": 0.453,
+          "elevation_m": -401.9484549351068,
           "id": 1821,
           "key": "The Flooded Fork",
           "latitude_deg": -4.464997,
           "longitude_deg": -2.499659,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -490,12 +483,12 @@
             6,
             0
           ],
-          "elevation_m": 0.41,
+          "elevation_m": -401.7270004584241,
           "id": 1822,
           "key": "Brushwood Causeway",
           "latitude_deg": -4.464416,
           "longitude_deg": -2.499712,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -503,12 +496,12 @@
             13,
             0
           ],
-          "elevation_m": 1.01,
+          "elevation_m": -400.82476397866486,
           "id": 1823,
           "key": "The Second Track",
           "latitude_deg": -4.46005,
           "longitude_deg": -2.508218,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -516,12 +509,12 @@
             13,
             0
           ],
-          "elevation_m": 1.07,
+          "elevation_m": -400.92754233316714,
           "id": 1824,
           "key": "Behind the Oaks",
           "latitude_deg": -4.460029,
           "longitude_deg": -2.508799,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -529,12 +522,12 @@
             0,
             0
           ],
-          "elevation_m": 0.002,
+          "elevation_m": -404.4302255230064,
           "id": 1825,
           "key": "The Pirogue Landing",
           "latitude_deg": -4.467836,
           "longitude_deg": -2.50073,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -542,12 +535,12 @@
             1,
             0
           ],
-          "elevation_m": 0.021,
+          "elevation_m": -404.06135556233363,
           "id": 1826,
           "key": "Mudbank Steps",
           "latitude_deg": -4.467391,
           "longitude_deg": -2.500373,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -555,12 +548,12 @@
             2,
             0
           ],
-          "elevation_m": 0.077,
+          "elevation_m": -403.623098366098,
           "id": 1827,
           "key": "Black Water Crossing",
           "latitude_deg": -4.466946,
           "longitude_deg": -2.500016,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -568,12 +561,12 @@
             3,
             0
           ],
-          "elevation_m": 0.129,
+          "elevation_m": -403.282041767006,
           "id": 1828,
           "key": "The Tupelo Brake",
           "latitude_deg": -4.466205,
           "longitude_deg": -2.500201,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -581,12 +574,12 @@
             4,
             0
           ],
-          "elevation_m": 0.201,
+          "elevation_m": -402.8891861624979,
           "id": 1829,
           "key": "Standing Cypress",
           "latitude_deg": -4.465463,
           "longitude_deg": -2.500385,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -594,12 +587,12 @@
             5,
             0
           ],
-          "elevation_m": 0.197,
+          "elevation_m": -402.63051365144224,
           "id": 1830,
           "key": "Knee-Deep Reach",
           "latitude_deg": -4.464845,
           "longitude_deg": -2.500509,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -607,12 +600,12 @@
             6,
             0
           ],
-          "elevation_m": 0.163,
+          "elevation_m": -402.3969676532041,
           "id": 1831,
           "key": "Palmetto Thicket",
           "latitude_deg": -4.464227,
           "longitude_deg": -2.500632,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -620,12 +613,12 @@
             7,
             0
           ],
-          "elevation_m": 0.161,
+          "elevation_m": -402.0944034604056,
           "id": 1832,
           "key": "The Reed Cut",
           "latitude_deg": -4.463609,
           "longitude_deg": -2.500755,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -633,12 +626,12 @@
             8,
             0
           ],
-          "elevation_m": 0.161,
+          "elevation_m": -401.9347534476435,
           "id": 1833,
           "key": "The Drowned Grove",
           "latitude_deg": -4.463081,
           "longitude_deg": -2.501174,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -646,12 +639,12 @@
             9,
             0
           ],
-          "elevation_m": 0.173,
+          "elevation_m": -401.74012625153193,
           "id": 1834,
           "key": "Duckweed Flat",
           "latitude_deg": -4.462554,
           "longitude_deg": -2.501592,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -659,12 +652,12 @@
             10,
             0
           ],
-          "elevation_m": 0.184,
+          "elevation_m": -401.55553673512793,
           "id": 1835,
           "key": "Saw Grass Bend",
           "latitude_deg": -4.462027,
           "longitude_deg": -2.502011,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -672,12 +665,12 @@
             11,
             0
           ],
-          "elevation_m": 0.143,
+          "elevation_m": -401.62141589526425,
           "id": 1836,
           "key": "Willow Break",
           "latitude_deg": -4.461693,
           "longitude_deg": -2.502701,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -685,12 +678,12 @@
             12,
             0
           ],
-          "elevation_m": 0.218,
+          "elevation_m": -401.4814729683874,
           "id": 1837,
           "key": "The Low Boardwalk",
           "latitude_deg": -4.461359,
           "longitude_deg": -2.503391,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -698,12 +691,12 @@
             12,
             0
           ],
-          "elevation_m": 0.215,
+          "elevation_m": -401.5263429311034,
           "id": 1838,
           "key": "Wax Myrtle Run",
           "latitude_deg": -4.461194,
           "longitude_deg": -2.504015,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -711,12 +704,12 @@
             12,
             0
           ],
-          "elevation_m": 0.187,
+          "elevation_m": -401.6128396679517,
           "id": 1839,
           "key": "Cattail Reach",
           "latitude_deg": -4.461029,
           "longitude_deg": -2.504639,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -724,12 +717,12 @@
             12,
             0
           ],
-          "elevation_m": 0.23,
+          "elevation_m": -401.6135565757954,
           "id": 1840,
           "key": "Chenier Rise",
           "latitude_deg": -4.460865,
           "longitude_deg": -2.505263,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -737,12 +730,12 @@
             12,
             0
           ],
-          "elevation_m": 0.324,
+          "elevation_m": -401.556158642556,
           "id": 1841,
           "key": "The Live Oak Stand",
           "latitude_deg": -4.46076,
           "longitude_deg": -2.505817,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -750,12 +743,12 @@
             12,
             0
           ],
-          "elevation_m": 0.435,
+          "elevation_m": -401.47371147855057,
           "id": 1842,
           "key": "Moss Hollow",
           "latitude_deg": -4.460654,
           "longitude_deg": -2.506371,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -763,12 +756,12 @@
             12,
             0
           ],
-          "elevation_m": 0.528,
+          "elevation_m": -401.42128183251384,
           "id": 1843,
           "key": "The Shell Ridge",
           "latitude_deg": -4.460549,
           "longitude_deg": -2.506925,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -776,12 +769,12 @@
             12,
             0
           ],
-          "elevation_m": 0.693,
+          "elevation_m": -401.2672668423085,
           "id": 1844,
           "key": "Oak Alley",
           "latitude_deg": -4.460444,
           "longitude_deg": -2.50748,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -789,12 +782,12 @@
             12,
             0
           ],
-          "elevation_m": 0.905,
+          "elevation_m": -401.1057652697485,
           "id": 1845,
           "key": "The Dry Camp",
           "latitude_deg": -4.46042,
           "longitude_deg": -2.508077,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -802,12 +795,12 @@
             12,
             0
           ],
-          "elevation_m": 1.036,
+          "elevation_m": -401.0859414032815,
           "id": 1846,
           "key": "Hackberry Knoll",
           "latitude_deg": -4.460395,
           "longitude_deg": -2.508674,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -815,12 +808,12 @@
             12,
             0
           ],
-          "elevation_m": 1.004,
+          "elevation_m": -401.34180780356684,
           "id": 1847,
           "key": "The Old Burn",
           "latitude_deg": -4.46037,
           "longitude_deg": -2.509271,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -828,12 +821,12 @@
             12,
             0
           ],
-          "elevation_m": 0.91,
+          "elevation_m": -401.7160283173304,
           "id": 1848,
           "key": "Ridge Crown",
           "latitude_deg": -4.460346,
           "longitude_deg": -2.509869,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -841,12 +834,12 @@
             12,
             0
           ],
-          "elevation_m": 0.795,
+          "elevation_m": -402.14240255985567,
           "id": 1849,
           "key": "Sandy Reach",
           "latitude_deg": -4.460296,
           "longitude_deg": -2.510485,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -854,12 +847,12 @@
             12,
             0
           ],
-          "elevation_m": 0.658,
+          "elevation_m": -402.61496067262084,
           "id": 1850,
           "key": "Chenier Fall",
           "latitude_deg": -4.460246,
           "longitude_deg": -2.511101,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -867,12 +860,12 @@
             12,
             0
           ],
-          "elevation_m": 0.428,
+          "elevation_m": -403.2380460714201,
           "id": 1851,
           "key": "Bitternut Bend",
           "latitude_deg": -4.460197,
           "longitude_deg": -2.511717,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -880,12 +873,12 @@
             12,
             0
           ],
-          "elevation_m": 0.232,
+          "elevation_m": -403.7785970836672,
           "id": 1852,
           "key": "The Muck Walk",
           "latitude_deg": -4.460205,
           "longitude_deg": -2.512251,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -893,12 +886,12 @@
             12,
             0
           ],
-          "elevation_m": 0.129,
+          "elevation_m": -404.16948665485063,
           "id": 1853,
           "key": "Marsh Elder Turn",
           "latitude_deg": -4.460213,
           "longitude_deg": -2.512785,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -906,12 +899,12 @@
             12,
             0
           ],
-          "elevation_m": 0.135,
+          "elevation_m": -404.3856537070678,
           "id": 1854,
           "key": "Rushing Reach",
           "latitude_deg": -4.460221,
           "longitude_deg": -2.513319,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -919,12 +912,12 @@
             12,
             0
           ],
-          "elevation_m": 0.201,
+          "elevation_m": -404.57166484833283,
           "id": 1855,
           "key": "The Soft Ground",
           "latitude_deg": -4.460444,
           "longitude_deg": -2.514033,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -932,12 +925,12 @@
             12,
             0
           ],
-          "elevation_m": 0.263,
+          "elevation_m": -404.7237374603209,
           "id": 1856,
           "key": "Palmetto Thicket (13)",
           "latitude_deg": -4.460667,
           "longitude_deg": -2.514747,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -945,12 +938,12 @@
             12,
             0
           ],
-          "elevation_m": 0.213,
+          "elevation_m": -404.96928284167535,
           "id": 1857,
           "key": "The Reed Cut (14)",
           "latitude_deg": -4.460708,
           "longitude_deg": -2.515265,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -958,12 +951,12 @@
             12,
             0
           ],
-          "elevation_m": 0.122,
+          "elevation_m": -405.27369901925505,
           "id": 1858,
           "key": "Saw Grass Bend (15)",
           "latitude_deg": -4.460749,
           "longitude_deg": -2.515782,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -971,12 +964,12 @@
             12,
             0
           ],
-          "elevation_m": 0.052,
+          "elevation_m": -405.5466248289508,
           "id": 1859,
           "key": "The Cut Bank",
           "latitude_deg": -4.46079,
           "longitude_deg": -2.5163,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -984,12 +977,12 @@
             2,
             0
           ],
-          "elevation_m": 0.012,
+          "elevation_m": -403.8731774858216,
           "id": 1860,
           "key": "The Fishing Stand",
           "latitude_deg": -4.466698,
           "longitude_deg": -2.500664,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -997,12 +990,12 @@
             11,
             0
           ],
-          "elevation_m": 0.863,
+          "elevation_m": -401.7079885777648,
           "id": 1861,
           "key": "The Trapper's Shack",
           "latitude_deg": -4.461191,
           "longitude_deg": -2.508694,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1010,12 +1003,12 @@
             8,
             0
           ],
-          "elevation_m": 0.101,
+          "elevation_m": -402.22903477454497,
           "id": 1862,
           "key": "The Cypress Overlook",
           "latitude_deg": -4.46319,
           "longitude_deg": -2.501561,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1023,12 +1016,12 @@
             11,
             0
           ],
-          "elevation_m": 0.704,
+          "elevation_m": -402.5076615658721,
           "id": 1863,
           "key": "The Shell Midden",
           "latitude_deg": -4.461128,
           "longitude_deg": -2.510437,
-          "submerged": false
+          "submerged": true
         }
       ]
     },
@@ -1191,13 +1184,6 @@
           "source": 1029
         }
       ],
-      "land_check": {
-        "dry": 9,
-        "fits": true,
-        "offenders": [],
-        "wet_expected": 2,
-        "wet_unexpected": 0
-      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -1219,7 +1205,7 @@
             -3,
             0
           ],
-          "elevation_m": -0.03,
+          "elevation_m": -405.23082194616296,
           "id": 1023,
           "key": "The Landing Stage",
           "latitude_deg": -4.471048939192139,
@@ -1232,7 +1218,7 @@
             -3,
             0
           ],
-          "elevation_m": -0.027,
+          "elevation_m": -405.28839467043827,
           "id": 1024,
           "key": "The Boat Ramp",
           "latitude_deg": -4.471048939215402,
@@ -1245,12 +1231,12 @@
             0,
             0
           ],
-          "elevation_m": 0.028,
+          "elevation_m": -405.02827064219724,
           "id": 1025,
           "key": "The Camp Yard",
           "latitude_deg": -4.470495,
           "longitude_deg": -2.49949,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1258,12 +1244,12 @@
             -1,
             0
           ],
-          "elevation_m": 0.034,
+          "elevation_m": -405.0788556472547,
           "id": 1026,
           "key": "The Shore Path",
           "latitude_deg": -4.4706796464051335,
           "longitude_deg": -2.49949,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1271,12 +1257,12 @@
             -1,
             0
           ],
-          "elevation_m": 0.035,
+          "elevation_m": -405.0129526424954,
           "id": 1027,
           "key": "The North Point",
           "latitude_deg": -4.470679646381872,
           "longitude_deg": -2.4993047900665286,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1284,12 +1270,12 @@
             1,
             0
           ],
-          "elevation_m": 0.006,
+          "elevation_m": -404.997408753974,
           "id": 1028,
           "key": "The Bunkhouse",
           "latitude_deg": -4.470310353594866,
           "longitude_deg": -2.4994900000000007,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1297,12 +1283,12 @@
             0,
             0
           ],
-          "elevation_m": 0.029,
+          "elevation_m": -404.95959431394436,
           "id": 1029,
           "key": "The Mess Hall",
           "latitude_deg": -4.470494999976738,
           "longitude_deg": -2.4993047901131953,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1310,12 +1296,12 @@
             0,
             0
           ],
-          "elevation_m": 0.022,
+          "elevation_m": -405.1024736683445,
           "id": 1030,
           "key": "The Tackle Room",
           "latitude_deg": -4.470494999976738,
           "longitude_deg": -2.499675209886806,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1323,12 +1309,12 @@
             1,
             0
           ],
-          "elevation_m": 0.001,
+          "elevation_m": -405.0716208551456,
           "id": 1031,
           "key": "The Smokehouse",
           "latitude_deg": -4.470310353571605,
           "longitude_deg": -2.4996752098401402,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1336,12 +1322,12 @@
             1,
             0
           ],
-          "elevation_m": 0.008,
+          "elevation_m": -404.9271911722781,
           "id": 1032,
           "key": "The Warden's Office",
           "latitude_deg": -4.4703103535716044,
           "longitude_deg": -2.49930479015986,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -1349,12 +1335,12 @@
             -2,
             0
           ],
-          "elevation_m": 0.016,
+          "elevation_m": -405.1645267032253,
           "id": 1033,
           "key": "The Boat Shed",
           "latitude_deg": -4.470864292810268,
           "longitude_deg": -2.4994899999999998,
-          "submerged": false
+          "submerged": true
         }
       ]
     },
@@ -3427,13 +3413,6 @@
           "source": 1277
         }
       ],
-      "land_check": {
-        "dry": 177,
-        "fits": true,
-        "offenders": [],
-        "wet_expected": 0,
-        "wet_unexpected": 0
-      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -3443,10 +3422,10 @@
       },
       "name": "the-landing-city",
       "port": {
-        "has_port": false,
-        "port_area": "bayou_trace",
-        "port_distance_m": 2094344.3830790718,
-        "port_metric": "great-circle between anchors"
+        "has_port": true,
+        "port_area": "the-landing-city",
+        "port_distance_m": 0.0,
+        "port_metric": "self"
       },
       "rooms": [
         {
@@ -3455,7 +3434,7 @@
             7,
             0
           ],
-          "elevation_m": 32.9425866600599,
+          "elevation_m": 27.870143511499315,
           "id": 1101,
           "key": "Slakeside, North Wall",
           "latitude_deg": 8.41292752479194,
@@ -3468,7 +3447,7 @@
             6,
             0
           ],
-          "elevation_m": 32.87967536368968,
+          "elevation_m": 10.05763926270545,
           "id": 1102,
           "key": "Slakeside, Kettleman's End",
           "latitude_deg": 8.412742878386805,
@@ -3481,12 +3460,12 @@
             5,
             0
           ],
-          "elevation_m": 32.81290560785877,
+          "elevation_m": -4.4967051711350035,
           "id": 1103,
           "key": "Slakeside, Cordage Reach",
           "latitude_deg": 8.41255823198167,
           "longitude_deg": -3.127966654756105,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -3494,7 +3473,7 @@
             4,
             0
           ],
-          "elevation_m": 32.73996892473707,
+          "elevation_m": 1.3638749017312963,
           "id": 1104,
           "key": "Slakeside, Netloft Stair",
           "latitude_deg": 8.412373585576535,
@@ -3507,7 +3486,7 @@
             3,
             0
           ],
-          "elevation_m": 32.661226526286704,
+          "elevation_m": 20.39332235745718,
           "id": 1105,
           "key": "Slakeside, Crane Stand",
           "latitude_deg": 8.412188939171404,
@@ -3520,7 +3499,7 @@
             2,
             0
           ],
-          "elevation_m": 32.57872926227199,
+          "elevation_m": 32.46940170883994,
           "id": 1106,
           "key": "Slakeside, Salt Stair",
           "latitude_deg": 8.412004292766271,
@@ -3533,7 +3512,7 @@
             1,
             0
           ],
-          "elevation_m": 32.49203699266822,
+          "elevation_m": 32.48992653127067,
           "id": 1107,
           "key": "Slakeside, Locksmith's Corner",
           "latitude_deg": 8.411819646361138,
@@ -3546,7 +3525,7 @@
             0,
             0
           ],
-          "elevation_m": 32.400896305290324,
+          "elevation_m": 32.152855092896814,
           "id": 1108,
           "key": "Slakeside, Span Head",
           "latitude_deg": 8.411634999956002,
@@ -3559,7 +3538,7 @@
             -1,
             0
           ],
-          "elevation_m": 32.30524919561875,
+          "elevation_m": 31.572257584354993,
           "id": 1109,
           "key": "Slakeside, South Reach",
           "latitude_deg": 8.411450353550869,
@@ -3572,7 +3551,7 @@
             -2,
             0
           ],
-          "elevation_m": 32.205238635407326,
+          "elevation_m": 31.532627354063067,
           "id": 1110,
           "key": "Slakeside, Timber Wharf",
           "latitude_deg": 8.411265707145738,
@@ -3585,7 +3564,7 @@
             -3,
             0
           ],
-          "elevation_m": 32.10121258613977,
+          "elevation_m": 31.916648263366135,
           "id": 1111,
           "key": "Slakeside, Tanner's Reach",
           "latitude_deg": 8.411081060740601,
@@ -3598,7 +3577,7 @@
             -4,
             0
           ],
-          "elevation_m": 31.993726454389684,
+          "elevation_m": 30.093737341480654,
           "id": 1112,
           "key": "Slakeside, Ballast Ground",
           "latitude_deg": 8.410896414335468,
@@ -3611,7 +3590,7 @@
             -5,
             0
           ],
-          "elevation_m": 31.88354398651762,
+          "elevation_m": 25.195044164946115,
           "id": 1113,
           "key": "Slakeside, Longreach Landing",
           "latitude_deg": 8.410711767930335,
@@ -3624,7 +3603,7 @@
             -6,
             0
           ],
-          "elevation_m": 31.77163660063162,
+          "elevation_m": 25.032475502847316,
           "id": 1114,
           "key": "Slakeside, Reed End",
           "latitude_deg": 8.4105271215252,
@@ -4326,12 +4305,12 @@
             6,
             0
           ],
-          "elevation_m": 32.90535348709641,
+          "elevation_m": -16.295082026873665,
           "id": 1168,
           "key": "Kettleman's Bridge",
           "latitude_deg": 8.412742878430803,
           "longitude_deg": -3.12778,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -4339,12 +4318,12 @@
             0,
             0
           ],
-          "elevation_m": 32.426004495410254,
+          "elevation_m": -16.271837053455425,
           "id": 1169,
           "key": "Slakespan",
           "latitude_deg": 8.411635,
           "longitude_deg": -3.12778,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -4352,12 +4331,12 @@
             -5,
             0
           ],
-          "elevation_m": 31.913380160814732,
+          "elevation_m": -13.372947155112628,
           "id": 1170,
           "key": "Longreach Bridge",
           "latitude_deg": 8.41071176797433,
           "longitude_deg": -3.1277800000000004,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -4365,7 +4344,7 @@
             7,
             0
           ],
-          "elevation_m": 32.97933875526091,
+          "elevation_m": 14.046064517930628,
           "id": 1171,
           "key": "Blackstone Quay, North Wall",
           "latitude_deg": 8.41292752479194,
@@ -4378,7 +4357,7 @@
             6,
             0
           ],
-          "elevation_m": 32.91719728291842,
+          "elevation_m": 14.66232699463591,
           "id": 1172,
           "key": "Blackstone Quay, Kettleman's End",
           "latitude_deg": 8.412742878386805,
@@ -4391,7 +4370,7 @@
             5,
             0
           ],
-          "elevation_m": 32.85012705556361,
+          "elevation_m": 22.64079736752211,
           "id": 1173,
           "key": "Blackstone Quay, Ropery",
           "latitude_deg": 8.41255823198167,
@@ -4404,7 +4383,7 @@
             4,
             0
           ],
-          "elevation_m": 32.775821580846156,
+          "elevation_m": 28.407366796455502,
           "id": 1174,
           "key": "Blackstone Quay, Cooper's Slip",
           "latitude_deg": 8.412373585576535,
@@ -4417,7 +4396,7 @@
             3,
             0
           ],
-          "elevation_m": 32.69583274512702,
+          "elevation_m": 31.549712352758068,
           "id": 1175,
           "key": "Blackstone Quay, Corn Wharf",
           "latitude_deg": 8.412188939171404,
@@ -4430,7 +4409,7 @@
             2,
             0
           ],
-          "elevation_m": 32.613428020886175,
+          "elevation_m": 32.37321100226163,
           "id": 1176,
           "key": "Blackstone Quay, Fish Steps",
           "latitude_deg": 8.412004292766271,
@@ -4443,7 +4422,7 @@
             1,
             0
           ],
-          "elevation_m": 32.528075329843794,
+          "elevation_m": 31.63766758704054,
           "id": 1177,
           "key": "Blackstone Quay, Custom Stair",
           "latitude_deg": 8.411819646361138,
@@ -4456,7 +4435,7 @@
             0,
             0
           ],
-          "elevation_m": 32.43937144897462,
+          "elevation_m": 32.32306319472315,
           "id": 1178,
           "key": "Blackstone Quay, Span Head",
           "latitude_deg": 8.411634999956002,
@@ -4469,7 +4448,7 @@
             -1,
             0
           ],
-          "elevation_m": 32.34705071743808,
+          "elevation_m": 30.945819039563997,
           "id": 1179,
           "key": "Blackstone Quay, Lower Quay",
           "latitude_deg": 8.411450353550869,
@@ -4482,7 +4461,7 @@
             -2,
             0
           ],
-          "elevation_m": 32.250990584448935,
+          "elevation_m": 15.861285230369134,
           "id": 1180,
           "key": "Blackstone Quay, Culvert Mouth",
           "latitude_deg": 8.41126570714574,
@@ -4495,12 +4474,12 @@
             -3,
             0
           ],
-          "elevation_m": 32.151216161434164,
+          "elevation_m": -0.6936777664672893,
           "id": 1181,
           "key": "Blackstone Quay, Bone Wharf",
           "latitude_deg": 8.411081060740601,
           "longitude_deg": -3.1275933459555127,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -4508,12 +4487,12 @@
             -4,
             0
           ],
-          "elevation_m": 32.04790375502481,
+          "elevation_m": -0.24641404306080705,
           "id": 1182,
           "key": "Blackstone Quay, Longreach End",
           "latitude_deg": 8.41089641433547,
           "longitude_deg": -3.1275933460444594,
-          "submerged": false
+          "submerged": true
         },
         {
           "cell": [
@@ -4521,7 +4500,7 @@
             -5,
             0
           ],
-          "elevation_m": 31.94138335772841,
+          "elevation_m": 16.42376543168861,
           "id": 1183,
           "key": "Blackstone Quay, Withy Ground",
           "latitude_deg": 8.410711767930335,
@@ -4534,7 +4513,7 @@
             -6,
             0
           ],
-          "elevation_m": 31.83214007332181,
+          "elevation_m": 30.617405779538387,
           "id": 1184,
           "key": "Blackstone Quay, South Mud",
           "latitude_deg": 8.4105271215252,
@@ -4573,7 +4552,7 @@
             2,
             0
           ],
-          "elevation_m": 32.57194499750023,
+          "elevation_m": 31.72073526975867,
           "id": 1187,
           "key": "Brickfield Road, Kiln Bank",
           "latitude_deg": 8.412004292106305,
@@ -4586,7 +4565,7 @@
             1,
             0
           ],
-          "elevation_m": 32.494123129150026,
+          "elevation_m": 32.416206302649925,
           "id": 1188,
           "key": "Brickfield Road, Market End",
           "latitude_deg": 8.411819645701177,
@@ -4820,7 +4799,7 @@
             6,
             0
           ],
-          "elevation_m": 32.91628078540453,
+          "elevation_m": 29.025263345807268,
           "id": 1206,
           "key": "Gable Row, Quay End",
           "latitude_deg": 8.412742878254807,
@@ -4833,7 +4812,7 @@
             6,
             0
           ],
-          "elevation_m": 32.903805740824524,
+          "elevation_m": 32.485321287193116,
           "id": 1207,
           "key": "Gable Row, Middle Row",
           "latitude_deg": 8.412742878034813,
@@ -4885,7 +4864,7 @@
             3,
             0
           ],
-          "elevation_m": 32.69262360685521,
+          "elevation_m": 27.19643284571007,
           "id": 1211,
           "key": "Almsgate Road, Quay End",
           "latitude_deg": 8.41218893903941,
@@ -4898,7 +4877,7 @@
             3,
             0
           ],
-          "elevation_m": 32.67740008148293,
+          "elevation_m": 32.54219996875361,
           "id": 1212,
           "key": "Almsgate Road, Guild End",
           "latitude_deg": 8.41218893881942,
@@ -4911,7 +4890,7 @@
             3,
             0
           ],
-          "elevation_m": 32.651604875036355,
+          "elevation_m": 31.79711359606273,
           "id": 1213,
           "key": "Almsgate Road at Brickfield Road",
           "latitude_deg": 8.412188938511433,
@@ -4963,7 +4942,7 @@
             0,
             0
           ],
-          "elevation_m": 32.434029131196816,
+          "elevation_m": 32.43317070462256,
           "id": 1217,
           "key": "Faring Street, Lower End",
           "latitude_deg": 8.411634999604026,
@@ -5080,7 +5059,7 @@
             -6,
             0
           ],
-          "elevation_m": 31.860768804648316,
+          "elevation_m": 18.074488734193828,
           "id": 1226,
           "key": "Tinker Street, Quay End",
           "latitude_deg": 8.41052712139322,
@@ -5171,7 +5150,7 @@
             1,
             0
           ],
-          "elevation_m": 32.52739832444715,
+          "elevation_m": 32.50227539605905,
           "id": 1233,
           "key": "New Market Street, West End",
           "latitude_deg": 8.411819646229146,
@@ -5184,7 +5163,7 @@
             1,
             0
           ],
-          "elevation_m": 32.51567432450682,
+          "elevation_m": 32.230970455140465,
           "id": 1234,
           "key": "New Market Street, Market Hall",
           "latitude_deg": 8.411819646009159,
@@ -5327,7 +5306,7 @@
             -5,
             0
           ],
-          "elevation_m": 31.966667884645446,
+          "elevation_m": 31.341418955283444,
           "id": 1245,
           "key": "Withy Yard",
           "latitude_deg": 8.410711767798349,
@@ -5379,7 +5358,7 @@
             1,
             0
           ],
-          "elevation_m": 32.46409114667716,
+          "elevation_m": 32.45042730117655,
           "id": 1249,
           "key": "Kiln Court",
           "latitude_deg": 8.411819645305203,
@@ -5431,7 +5410,7 @@
             7,
             0
           ],
-          "elevation_m": 32.977980170822754,
+          "elevation_m": 22.48462869185728,
           "id": 1253,
           "key": "Ropemaker's Court",
           "latitude_deg": 8.41292752465994,
@@ -5470,7 +5449,7 @@
             8,
             0
           ],
-          "elevation_m": 33.03841858407063,
+          "elevation_m": 25.00970490482996,
           "id": 1256,
           "key": "Gauger's Court",
           "latitude_deg": 8.413112171197072,
@@ -5743,7 +5722,7 @@
             -7,
             0
           ],
-          "elevation_m": 31.720110913656463,
+          "elevation_m": 31.45655080875673,
           "id": 1277,
           "key": "Landfall Dock",
           "latitude_deg": 8.41034247512007,
@@ -5754,12 +5733,1678 @@
     }
   ],
   "elevation_source": {
-    "engine": "wasm, all 24 planet parameters, fetched per room",
-    "note": "The Python surface takes four of this world's parameters and cannot build it. Elevations here were read from the engine the viewer runs. The city's 177 rooms still carry the Python figures and are marked as such."
+    "engine": "wasm, all 24 planet parameters, plus the authored features in this file",
+    "warning": "Room elevations for the camp and the bayou were written by the Python surface, which takes four of this world's parameters and cannot build it. The city, the river and the fairway were measured against the real engine."
   },
+  "features": [
+    {
+      "bearing_deg": 333.68177393723647,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.407363,
+      "length_m": 63.622703773070036,
+      "longitude_deg": -3.126166,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -17.0,
+      "width_m": 22.0
+    },
+    {
+      "bearing_deg": 317.8719335181685,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.407546,
+      "length_m": 103.51060870152021,
+      "longitude_deg": -3.1263009999999998,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.94736842105263,
+      "width_m": 21.87719298245614
+    },
+    {
+      "bearing_deg": 311.9411667564205,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.407747,
+      "length_m": 105.0144761320777,
+      "longitude_deg": -3.126505,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.894736842105264,
+      "width_m": 21.75438596491228
+    },
+    {
+      "bearing_deg": 314.38914523211406,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4079655,
+      "length_m": 128.03363021926236,
+      "longitude_deg": -3.1267395000000002,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.842105263157894,
+      "width_m": 21.63157894736842
+    },
+    {
+      "bearing_deg": 333.4469056910901,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.408426500000001,
+      "length_m": 276.6695616415106,
+      "longitude_deg": -3.127037,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.789473684210527,
+      "width_m": 21.50877192982456
+    },
+    {
+      "bearing_deg": 328.60538226129194,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.409043,
+      "length_m": 238.11324378306463,
+      "longitude_deg": -3.1273795,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.736842105263158,
+      "width_m": 21.385964912280702
+    },
+    {
+      "bearing_deg": 342.6904404917873,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.409530499999999,
+      "length_m": 160.43715704394444,
+      "longitude_deg": -3.127617,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.68421052631579,
+      "width_m": 21.263157894736842
+    },
+    {
+      "bearing_deg": 346.5385137387871,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4099735,
+      "length_m": 175.54089713858315,
+      "longitude_deg": -3.1277395,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.63157894736842,
+      "width_m": 21.140350877192983
+    },
+    {
+      "bearing_deg": 357.00908126796327,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.410491,
+      "length_m": 207.92334066846402,
+      "longitude_deg": -3.1278110000000003,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.57894736842105,
+      "width_m": 21.017543859649123
+    },
+    {
+      "bearing_deg": 7.078347867067805,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.411014,
+      "length_m": 176.08138142527096,
+      "longitude_deg": -3.127796,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.526315789473685,
+      "width_m": 20.894736842105264
+    },
+    {
+      "bearing_deg": 356.27328888576653,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4116175,
+      "length_m": 267.06056693014756,
+      "longitude_deg": -3.12779,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.473684210526315,
+      "width_m": 20.771929824561404
+    },
+    {
+      "bearing_deg": 1.6113083093311502,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4122985,
+      "length_m": 231.49327919396205,
+      "longitude_deg": -3.127805,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.42105263157895,
+      "width_m": 20.649122807017545
+    },
+    {
+      "bearing_deg": 3.4729926199358374,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4128595,
+      "length_m": 179.0894929944304,
+      "longitude_deg": -3.1277809999999997,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.36842105263158,
+      "width_m": 20.526315789473685
+    },
+    {
+      "bearing_deg": 350.40679097056875,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4134025,
+      "length_m": 221.33667632111542,
+      "longitude_deg": -3.127817,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.315789473684212,
+      "width_m": 20.403508771929825
+    },
+    {
+      "bearing_deg": 343.0237221928833,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.414294,
+      "length_m": 453.31116757491105,
+      "longitude_deg": -3.128051,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.263157894736842,
+      "width_m": 20.280701754385966
+    },
+    {
+      "bearing_deg": 337.498389519889,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.415804000000001,
+      "length_m": 725.691664164164,
+      "longitude_deg": -3.128618,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.210526315789473,
+      "width_m": 20.157894736842106
+    },
+    {
+      "bearing_deg": 346.3292603793579,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.428112,
+      "length_m": 8571.103724454266,
+      "longitude_deg": -3.1318029999999997,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.157894736842106,
+      "width_m": 20.035087719298247
+    },
+    {
+      "bearing_deg": 49.99839010596935,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.441481,
+      "length_m": 2249.781387519799,
+      "longitude_deg": -3.132221,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.105263157894736,
+      "width_m": 19.912280701754387
+    },
+    {
+      "bearing_deg": 40.00160338066314,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4458165,
+      "length_m": 2250.104628418031,
+      "longitude_deg": -3.1278379999999997,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.05263157894737,
+      "width_m": 19.789473684210527
+    },
+    {
+      "bearing_deg": 40.00125838283924,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4505315,
+      "length_m": 2250.093264438277,
+      "longitude_deg": -3.123838,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -16.0,
+      "width_m": 19.666666666666668
+    },
+    {
+      "bearing_deg": 39.993859316947066,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.455246500000001,
+      "length_m": 2249.8494797122826,
+      "longitude_deg": -3.1198385,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.947368421052632,
+      "width_m": 19.54385964912281
+    },
+    {
+      "bearing_deg": 50.00298401514226,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.459582000000001,
+      "length_m": 2249.996418299381,
+      "longitude_deg": -3.1154555,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.894736842105264,
+      "width_m": 19.42105263157895
+    },
+    {
+      "bearing_deg": 29.99846441882528,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.464224999999999,
+      "length_m": 2249.8510935890827,
+      "longitude_deg": -3.1115165,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.842105263157894,
+      "width_m": 19.29824561403509
+    },
+    {
+      "bearing_deg": 39.9998870091826,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.4692475,
+      "length_m": 2250.0480942904787,
+      "longitude_deg": -3.1079610000000004,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.789473684210526,
+      "width_m": 19.17543859649123
+    },
+    {
+      "bearing_deg": 20.004660910900384,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.474497,
+      "length_m": 2250.1873407189323,
+      "longitude_deg": -3.1048965,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.736842105263158,
+      "width_m": 19.05263157894737
+    },
+    {
+      "bearing_deg": 19.99573227455096,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.480281000000002,
+      "length_m": 2250.059714035065,
+      "longitude_deg": -3.102768,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.68421052631579,
+      "width_m": 18.92982456140351
+    },
+    {
+      "bearing_deg": 19.998638581455396,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.486064500000001,
+      "length_m": 2249.7122294592323,
+      "longitude_deg": -3.10064,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.631578947368421,
+      "width_m": 18.80701754385965
+    },
+    {
+      "bearing_deg": 20.003828699973838,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.491848000000001,
+      "length_m": 2250.175446619467,
+      "longitude_deg": -3.0985115,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.578947368421053,
+      "width_m": 18.68421052631579
+    },
+    {
+      "bearing_deg": 19.994899797335336,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.497632,
+      "length_m": 2250.0478225682114,
+      "longitude_deg": -3.096383,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.526315789473685,
+      "width_m": 18.56140350877193
+    },
+    {
+      "bearing_deg": 20.00645757978407,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5034155,
+      "length_m": 2249.823997520607,
+      "longitude_deg": -3.0942545,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.473684210526315,
+      "width_m": 18.43859649122807
+    },
+    {
+      "bearing_deg": 19.994343885666183,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.509198999999999,
+      "length_m": 2250.0398820131445,
+      "longitude_deg": -3.092126,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.421052631578947,
+      "width_m": 18.315789473684212
+    },
+    {
+      "bearing_deg": 20.002716428288693,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.514983,
+      "length_m": 2250.1595507665415,
+      "longitude_deg": -3.0899975,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.368421052631579,
+      "width_m": 18.19298245614035
+    },
+    {
+      "bearing_deg": 9.994061313153168,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.520905500000001,
+      "length_m": 2249.8207246610073,
+      "longitude_deg": -3.088393,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.31578947368421,
+      "width_m": 18.070175438596493
+    },
+    {
+      "bearing_deg": 10.002972803807324,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5269665,
+      "length_m": 2249.8824188891504,
+      "longitude_deg": -3.0873125,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.263157894736842,
+      "width_m": 17.94736842105263
+    },
+    {
+      "bearing_deg": 10.001200449413602,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.533028,
+      "length_m": 2250.2413492961305,
+      "longitude_deg": -3.0862315000000002,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.210526315789474,
+      "width_m": 17.824561403508774
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5391365,
+      "length_m": 2250.0438050685607,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.157894736842106,
+      "width_m": 17.70175438596491
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5452915,
+      "length_m": 2250.0438050685607,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.105263157894736,
+      "width_m": 17.578947368421055
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.551445999999999,
+      "length_m": 2249.678241493706,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.052631578947368,
+      "width_m": 17.45614035087719
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5576005,
+      "length_m": 2250.0438050691423,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -15.0,
+      "width_m": 17.333333333333336
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5637555,
+      "length_m": 2250.0438050691423,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.947368421052632,
+      "width_m": 17.210526315789473
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5699105,
+      "length_m": 2250.0438050685607,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.894736842105264,
+      "width_m": 17.087719298245617
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5760655,
+      "length_m": 2250.0438050691423,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.842105263157894,
+      "width_m": 16.964912280701753
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5822205,
+      "length_m": 2250.0438050685607,
+      "longitude_deg": -3.085691,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.789473684210527,
+      "width_m": 16.842105263157894
+    },
+    {
+      "bearing_deg": 10.001392826041808,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5883285,
+      "length_m": 2249.871480615873,
+      "longitude_deg": -3.0851505,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.736842105263158,
+      "width_m": 16.719298245614034
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.5944365,
+      "length_m": 2250.0438050685607,
+      "longitude_deg": -3.08461,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.68421052631579,
+      "width_m": 16.596491228070175
+    },
+    {
+      "bearing_deg": 0.0,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.6005915,
+      "length_m": 2250.0438050685607,
+      "longitude_deg": -3.08461,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.631578947368421,
+      "width_m": 16.473684210526315
+    },
+    {
+      "bearing_deg": 19.998283970978605,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.606561,
+      "length_m": 2250.096215492736,
+      "longitude_deg": -3.0835455,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.578947368421053,
+      "width_m": 16.350877192982455
+    },
+    {
+      "bearing_deg": 29.996819624187367,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.612117999999999,
+      "length_m": 2249.813899674015,
+      "longitude_deg": -3.0809249999999997,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.526315789473685,
+      "width_m": 16.228070175438596
+    },
+    {
+      "bearing_deg": 30.00444090403778,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.617448,
+      "length_m": 2249.9866963812233,
+      "longitude_deg": -3.0778125,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.473684210526315,
+      "width_m": 16.105263157894736
+    },
+    {
+      "bearing_deg": 29.99943632431672,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.622778499999999,
+      "length_m": 2250.295341983904,
+      "longitude_deg": -3.0746995,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.421052631578947,
+      "width_m": 15.982456140350877
+    },
+    {
+      "bearing_deg": 29.995769578920147,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.628109,
+      "length_m": 2249.790107691595,
+      "longitude_deg": -3.071587,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.368421052631579,
+      "width_m": 15.859649122807017
+    },
+    {
+      "bearing_deg": 60.0061043688288,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.632312500000001,
+      "length_m": 2250.1210052145384,
+      "longitude_deg": -3.067335,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.31578947368421,
+      "width_m": 15.736842105263158
+    },
+    {
+      "bearing_deg": 70.0003596612338,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.6349035,
+      "length_m": 2249.986784355854,
+      "longitude_deg": -3.0617140000000003,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.263157894736842,
+      "width_m": 15.614035087719298
+    },
+    {
+      "bearing_deg": 59.993100095504474,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.637495000000001,
+      "length_m": 2249.9676082939795,
+      "longitude_deg": -3.0560935000000002,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.210526315789473,
+      "width_m": 15.491228070175438
+    },
+    {
+      "bearing_deg": 60.000959567210316,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.640572500000001,
+      "length_m": 2249.771042684926,
+      "longitude_deg": -3.0507025,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.157894736842106,
+      "width_m": 15.368421052631579
+    },
+    {
+      "bearing_deg": 69.99995591664435,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.6431635,
+      "length_m": 2249.9432673148,
+      "longitude_deg": -3.045082,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.105263157894736,
+      "width_m": 15.24561403508772
+    },
+    {
+      "bearing_deg": 59.99715807127103,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.645755000000001,
+      "length_m": 2250.2436160785264,
+      "longitude_deg": -3.039461,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.052631578947368,
+      "width_m": 15.12280701754386
+    },
+    {
+      "bearing_deg": 60.005016703661,
+      "compose": "carve",
+      "kind": "river",
+      "latitude_deg": 8.648832500000001,
+      "length_m": 2250.0470567061025,
+      "longitude_deg": -3.0340689999999997,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -14.0,
+      "width_m": 15.0
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": -4.454296,
+      "length_m": 4499.4,
+      "longitude_deg": -2.516263,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": -4.442002,
+      "length_m": 4499.4,
+      "longitude_deg": -2.516848,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": -4.429707,
+      "length_m": 4499.4,
+      "longitude_deg": -2.517432,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": -4.417413,
+      "length_m": 4499.4,
+      "longitude_deg": -2.518016,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": -4.405119,
+      "length_m": 4499.4,
+      "longitude_deg": -2.518601,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": -4.392825,
+      "length_m": 4499.4,
+      "longitude_deg": -2.519185,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.700753,
+      "length_m": 4499.4,
+      "longitude_deg": -2.998932,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.713047,
+      "length_m": 4499.4,
+      "longitude_deg": -2.999516,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.725342,
+      "length_m": 4499.4,
+      "longitude_deg": -3.000101,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.737636,
+      "length_m": 4499.4,
+      "longitude_deg": -3.000685,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.74993,
+      "length_m": 4499.4,
+      "longitude_deg": -3.001269,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.762224,
+      "length_m": 4499.4,
+      "longitude_deg": -3.001854,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.774519,
+      "length_m": 4499.4,
+      "longitude_deg": -3.002438,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.786813,
+      "length_m": 4499.4,
+      "longitude_deg": -3.003022,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.799107,
+      "length_m": 4499.4,
+      "longitude_deg": -3.003607,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.811401,
+      "length_m": 4499.4,
+      "longitude_deg": -3.004191,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.823696,
+      "length_m": 4499.4,
+      "longitude_deg": -3.004775,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.83599,
+      "length_m": 4499.4,
+      "longitude_deg": -3.00536,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.848284,
+      "length_m": 4499.4,
+      "longitude_deg": -3.005944,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.860578,
+      "length_m": 4499.4,
+      "longitude_deg": -3.006528,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.872873,
+      "length_m": 4499.4,
+      "longitude_deg": -3.007113,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.885167,
+      "length_m": 4499.3,
+      "longitude_deg": -3.007697,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.897461,
+      "length_m": 4499.3,
+      "longitude_deg": -3.008281,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.909755,
+      "length_m": 4499.3,
+      "longitude_deg": -3.008866,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.92205,
+      "length_m": 4499.3,
+      "longitude_deg": -3.00945,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.934344,
+      "length_m": 4499.3,
+      "longitude_deg": -3.010035,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.946638,
+      "length_m": 4499.3,
+      "longitude_deg": -3.010619,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.958932,
+      "length_m": 4499.3,
+      "longitude_deg": -3.011203,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.971227,
+      "length_m": 4499.3,
+      "longitude_deg": -3.011788,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.983521,
+      "length_m": 4499.3,
+      "longitude_deg": -3.012372,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.29,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 5.995815,
+      "length_m": 4499.3,
+      "longitude_deg": -3.012956,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.319428,
+      "length_m": 4499.3,
+      "longitude_deg": -3.123397,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.331722,
+      "length_m": 4499.3,
+      "longitude_deg": -3.123982,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.344017,
+      "length_m": 4499.3,
+      "longitude_deg": -3.124566,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.356311,
+      "length_m": 4499.3,
+      "longitude_deg": -3.12515,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.368605,
+      "length_m": 4499.3,
+      "longitude_deg": -3.125735,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.380899,
+      "length_m": 4499.3,
+      "longitude_deg": -3.126319,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.393194,
+      "length_m": 4499.3,
+      "longitude_deg": -3.126903,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    },
+    {
+      "bearing_deg": 357.31,
+      "compose": "carve",
+      "kind": "dredged channel",
+      "latitude_deg": 8.405488,
+      "length_m": 4499.3,
+      "longitude_deg": -3.127488,
+      "marked": false,
+      "substrate": "derive",
+      "target_m": -12,
+      "width_m": 110
+    }
+  ],
   "generator": {
     "name": "worldbuilder",
     "version": "0.1.0-roundtrip"
+  },
+  "maritime": {
+    "docks": [
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 8.65,
+          "distM": 50,
+          "lat": 8.411573,
+          "lon": -3.127967
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.411265707145738,
+        "longitude_deg": -3.127966654133435,
+        "room": "Slakeside, Timber Wharf",
+        "room_id": 1110
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 7.67,
+          "distM": 50,
+          "lat": 8.413235,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41292752479194,
+        "longitude_deg": -3.1275933450659767,
+        "room": "Blackstone Quay, North Wall",
+        "room_id": 1171
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 7.95,
+          "distM": 50,
+          "lat": 8.413051,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.412742878386805,
+        "longitude_deg": -3.1275933451549367,
+        "room": "Blackstone Quay, Kettleman's End",
+        "room_id": 1172
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 10.07,
+          "distM": 50,
+          "lat": 8.412866,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41255823198167,
+        "longitude_deg": -3.1275933452438953,
+        "room": "Blackstone Quay, Ropery",
+        "room_id": 1173
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 9.25,
+          "distM": 50,
+          "lat": 8.412681,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.412373585576535,
+        "longitude_deg": -3.127593345332852,
+        "room": "Blackstone Quay, Cooper's Slip",
+        "room_id": 1174
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 8.14,
+          "distM": 50,
+          "lat": 8.412497,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.412188939171404,
+        "longitude_deg": -3.1275933454218077,
+        "room": "Blackstone Quay, Corn Wharf",
+        "room_id": 1175
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 7.86,
+          "distM": 50,
+          "lat": 8.412312,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.412004292766271,
+        "longitude_deg": -3.1275933455107627,
+        "room": "Blackstone Quay, Fish Steps",
+        "room_id": 1176
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 7.75,
+          "distM": 50,
+          "lat": 8.412127,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.411819646361138,
+        "longitude_deg": -3.127593345599715,
+        "room": "Blackstone Quay, Custom Stair",
+        "room_id": 1177
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 8.14,
+          "distM": 50,
+          "lat": 8.411943,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.411634999956002,
+        "longitude_deg": -3.1275933456886666,
+        "room": "Blackstone Quay, Span Head",
+        "room_id": 1178
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 8.49,
+          "distM": 50,
+          "lat": 8.411758,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.411450353550869,
+        "longitude_deg": -3.127593345777617,
+        "room": "Blackstone Quay, Lower Quay",
+        "room_id": 1179
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 8.73,
+          "distM": 50,
+          "lat": 8.411573,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41126570714574,
+        "longitude_deg": -3.1275933458665657,
+        "room": "Blackstone Quay, Culvert Mouth",
+        "room_id": 1180
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 9.57,
+          "distM": 50,
+          "lat": 8.411389,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.411081060740601,
+        "longitude_deg": -3.1275933459555127,
+        "room": "Blackstone Quay, Bone Wharf",
+        "room_id": 1181
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 11.5,
+          "distM": 50,
+          "lat": 8.411204,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41089641433547,
+        "longitude_deg": -3.1275933460444594,
+        "room": "Blackstone Quay, Longreach End",
+        "room_id": 1182
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 12.86,
+          "distM": 50,
+          "lat": 8.41102,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.410711767930335,
+        "longitude_deg": -3.1275933461334033,
+        "room": "Blackstone Quay, Withy Ground",
+        "room_id": 1183
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 12.05,
+          "distM": 50,
+          "lat": 8.410835,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.4105271215252,
+        "longitude_deg": -3.127593346222347,
+        "room": "Blackstone Quay, South Mud",
+        "room_id": 1184
+      },
+      {
+        "approach": {
+          "bearing": 191,
+          "depthM": 6.28,
+          "distM": 50,
+          "lat": 8.412441,
+          "lon": -3.127467
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.412742878254807,
+        "longitude_deg": -3.127406690309874,
+        "room": "Gable Row, Quay End",
+        "room_id": 1206
+      },
+      {
+        "approach": {
+          "bearing": 203,
+          "depthM": 6.43,
+          "distM": 50,
+          "lat": 8.411905,
+          "lon": -3.127526
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41218893903941,
+        "longitude_deg": -3.1274066908436158,
+        "room": "Almsgate Road, Quay End",
+        "room_id": 1211
+      },
+      {
+        "approach": {
+          "bearing": 169,
+          "depthM": 9.78,
+          "distM": 50,
+          "lat": 8.410225,
+          "lon": -3.127346
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41052712139322,
+        "longitude_deg": -3.1274066924446933,
+        "room": "Tinker Street, Quay End",
+        "room_id": 1226
+      },
+      {
+        "approach": {
+          "bearing": 0,
+          "depthM": 10.82,
+          "distM": 50,
+          "lat": 8.41065,
+          "lon": -3.127593
+        },
+        "area": "the-landing-city",
+        "latitude_deg": 8.41034247512007,
+        "longitude_deg": -3.1275933463112886,
+        "room": "Landfall Dock",
+        "room_id": 1277
+      }
+    ],
+    "docks_rejected": [
+      {
+        "area": "ranger_camp",
+        "room": "The Landing Stage",
+        "why": "no water 6.096 m deep within 600 m - a boat landing, not a berth"
+      },
+      {
+        "area": "ranger_camp",
+        "room": "The Boat Ramp",
+        "why": "no water 6.096 m deep within 600 m - a boat landing, not a berth"
+      }
+    ],
+    "note": "Maritime navigates between DOCKS, not coordinates. Each dock carries its approach - the nearest point offshore where a hull of the stated draught floats, and the bearing to reach it. A dock's own position is at the waterline where depth is nearly zero, so a passage that starts there is never navigable: the first attempt at one produced two waypoints and gave up for exactly that reason.",
+    "passages": [
+      {
+        "draught_m": 6.096,
+        "dredged": {
+          "bars": [
+            {
+              "from_km": 0,
+              "natural_shallowest_m": 0,
+              "to_km": 8
+            },
+            {
+              "from_km": 1656,
+              "natural_shallowest_m": -2.8,
+              "to_km": 1698
+            },
+            {
+              "from_km": 2082,
+              "natural_shallowest_m": 3,
+              "to_km": 2094
+            }
+          ],
+          "kilometres": 78,
+          "note": "three bars of a 2,094 km passage: the slip's approach, an island at 5.85 N, and the town's approach. 78 km cut, 3.7% of the route.",
+          "segments": 39
+        },
+        "from": {
+          "area": "ferry_shore",
+          "latitude_deg": -4.460443,
+          "longitude_deg": -2.515971,
+          "room": "The Ferry Slip"
+        },
+        "keel_clearance_m": 3,
+        "length_km": 2094,
+        "name": "ferry: the island slip to the river town",
+        "sounded": {
+          "below_clearance": 0,
+          "min_depth_m": 10.7,
+          "navigable": true,
+          "soundings": 1048
+        },
+        "to": {
+          "area": "the-landing-city",
+          "latitude_deg": 8.411635,
+          "longitude_deg": -3.12778
+        },
+        "waypoints": [
+          {
+            "latitude_deg": -4.460443,
+            "longitude_deg": -2.515971
+          },
+          {
+            "latitude_deg": -4.153087,
+            "longitude_deg": -2.53058
+          },
+          {
+            "latitude_deg": -3.845731,
+            "longitude_deg": -2.545188
+          },
+          {
+            "latitude_deg": -3.538374,
+            "longitude_deg": -2.559797
+          },
+          {
+            "latitude_deg": -3.231018,
+            "longitude_deg": -2.574405
+          },
+          {
+            "latitude_deg": -2.923662,
+            "longitude_deg": -2.589014
+          },
+          {
+            "latitude_deg": -2.616306,
+            "longitude_deg": -2.603623
+          },
+          {
+            "latitude_deg": -2.30895,
+            "longitude_deg": -2.618231
+          },
+          {
+            "latitude_deg": -2.001593,
+            "longitude_deg": -2.63284
+          },
+          {
+            "latitude_deg": -1.694237,
+            "longitude_deg": -2.647449
+          },
+          {
+            "latitude_deg": -1.386881,
+            "longitude_deg": -2.662057
+          },
+          {
+            "latitude_deg": -1.079525,
+            "longitude_deg": -2.676666
+          },
+          {
+            "latitude_deg": -0.772169,
+            "longitude_deg": -2.691274
+          },
+          {
+            "latitude_deg": -0.464812,
+            "longitude_deg": -2.705883
+          },
+          {
+            "latitude_deg": -0.157456,
+            "longitude_deg": -2.720492
+          },
+          {
+            "latitude_deg": 0.1499,
+            "longitude_deg": -2.7351
+          },
+          {
+            "latitude_deg": 0.457256,
+            "longitude_deg": -2.749709
+          },
+          {
+            "latitude_deg": 0.764613,
+            "longitude_deg": -2.764318
+          },
+          {
+            "latitude_deg": 1.071969,
+            "longitude_deg": -2.778926
+          },
+          {
+            "latitude_deg": 1.379325,
+            "longitude_deg": -2.793535
+          },
+          {
+            "latitude_deg": 1.686681,
+            "longitude_deg": -2.808143
+          },
+          {
+            "latitude_deg": 1.994037,
+            "longitude_deg": -2.822752
+          },
+          {
+            "latitude_deg": 2.301394,
+            "longitude_deg": -2.837361
+          },
+          {
+            "latitude_deg": 2.60875,
+            "longitude_deg": -2.851969
+          },
+          {
+            "latitude_deg": 2.916106,
+            "longitude_deg": -2.866578
+          },
+          {
+            "latitude_deg": 3.223462,
+            "longitude_deg": -2.881186
+          },
+          {
+            "latitude_deg": 3.530818,
+            "longitude_deg": -2.895795
+          },
+          {
+            "latitude_deg": 3.838175,
+            "longitude_deg": -2.910404
+          },
+          {
+            "latitude_deg": 4.145531,
+            "longitude_deg": -2.925012
+          },
+          {
+            "latitude_deg": 4.452887,
+            "longitude_deg": -2.939621
+          },
+          {
+            "latitude_deg": 4.760243,
+            "longitude_deg": -2.95423
+          },
+          {
+            "latitude_deg": 5.067599,
+            "longitude_deg": -2.968838
+          },
+          {
+            "latitude_deg": 5.374956,
+            "longitude_deg": -2.983447
+          },
+          {
+            "latitude_deg": 5.682312,
+            "longitude_deg": -2.998055
+          },
+          {
+            "latitude_deg": 5.989668,
+            "longitude_deg": -3.012664
+          },
+          {
+            "latitude_deg": 6.297024,
+            "longitude_deg": -3.027273
+          },
+          {
+            "latitude_deg": 6.60438,
+            "longitude_deg": -3.041881
+          },
+          {
+            "latitude_deg": 6.911737,
+            "longitude_deg": -3.05649
+          },
+          {
+            "latitude_deg": 7.219093,
+            "longitude_deg": -3.071099
+          },
+          {
+            "latitude_deg": 7.526449,
+            "longitude_deg": -3.085707
+          },
+          {
+            "latitude_deg": 7.833805,
+            "longitude_deg": -3.100316
+          },
+          {
+            "latitude_deg": 8.141162,
+            "longitude_deg": -3.114924
+          }
+        ]
+      }
+    ]
   },
   "name": "Aetosia - Ranger Camp",
   "planet": {
