@@ -15,7 +15,8 @@ import {
 } from "./worlds.js";
 import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
-import { enablePicking, flyFragment, markPick } from "./pick-point.js";
+import { enablePicking, flyFragment, markPick, pickAt } from "./pick-point.js";
+import { Route, drawRoute, saveRoute } from "./route.js";
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -502,6 +503,139 @@ export function mountWorldPanel(parent, getViewer) {
     pickToggle.textContent = "pick a point: ON - click the globe";
     pickToggle.classList.add("wb-pick-on");
   });
+
+  // --- route: click a path, describe each stop ------------------------------------------
+  //
+  // Separate from "pick a point" on purpose. Picking answers "where is this?" and replaces
+  // its answer each time; routing answers "what goes here, in what order?" and accumulates.
+  // One toggle doing both would mean every stray click while reading a coordinate silently
+  // extended a path somebody was authoring.
+
+  const routeTitle = el("div", "wb-section-title", "route");
+  const routeRow = el("div", "wb-jump");
+  const routeToggle = button("place nodes: off", "wb-mini wb-pick-toggle");
+  const routeClear = button("clear all");
+  const routeSave = button("save route");
+  routeRow.append(routeToggle, routeClear, routeSave);
+  const routeName = document.createElement("input");
+  routeName.type = "text";
+  routeName.placeholder = "name this route";
+  routeName.className = "wb-text";
+  const routeNote = el("div", "wb-note");
+  const routeNodes = el("div", "wb-note");
+  wrap.append(routeTitle, routeRow, routeName, routeNote, routeNodes);
+
+  const route = new Route();
+  let routeSource = null;
+  let routeHandler = null;
+
+  function paintRoute() {
+    const viewer = getViewer();
+    if (viewer && typeof Cesium !== "undefined") {
+      routeSource = drawRoute(viewer, Cesium, route, routeSource);
+    }
+    const radius = Number(new URLSearchParams(location.search).get("radius")) || 6371000;
+    const { legs, total } = route.legs(radius);
+    routeNote.textContent = route.nodes.length
+      ? `${route.nodes.length} nodes · ${(total / 1000).toFixed(2)} km total`
+        + (legs.length ? ` · longest leg ${(Math.max(...legs) / 1000).toFixed(2)} km` : "")
+      : "no nodes yet - turn placing on and click the globe";
+
+    routeNodes.textContent = "";
+    route.nodes.forEach((node, index) => {
+      const line = el("div", "wb-row");
+      const pick = button(
+        `${index + 1}. ${node.latitude_deg.toFixed(5)}, ${node.longitude_deg.toFixed(5)}`
+        + ` · ${node.elevation_m === null ? "?" : `${node.elevation_m.toFixed(1)} m`}`
+        + (node.elevation_m !== null && node.elevation_m < 0 ? " (water)" : ""),
+      );
+      pick.addEventListener("click", () => {
+        route.selected = index;
+        paintRoute();
+        const viewer = getViewer();
+        if (viewer) {
+          viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(
+              node.longitude_deg, node.latitude_deg, 2500),
+            orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+            duration: 1.2,
+          });
+        }
+      });
+      const drop = button("×");
+      drop.addEventListener("click", () => { route.remove(index); paintRoute(); });
+      const note = document.createElement("input");
+      note.type = "text";
+      note.className = "wb-text";
+      note.placeholder = "what should be here?";
+      note.value = node.note;
+      // Written straight onto the node as it is typed. A "save note" button is one more
+      // thing to forget, and a note that was typed and not saved is worse than no note.
+      note.addEventListener("input", () => { node.note = note.value; });
+      note.addEventListener("change", paintRoute);
+      line.append(pick, drop);
+      routeNodes.append(line, note);
+    });
+  }
+
+  routeToggle.addEventListener("click", () => {
+    if (routeHandler) {
+      routeHandler.stop();
+      routeHandler = null;
+      routeToggle.textContent = "place nodes: off";
+      routeToggle.classList.remove("wb-pick-on");
+      return;
+    }
+    const viewer = getViewer();
+    if (!viewer || typeof Cesium === "undefined") {
+      routeNote.textContent = "the globe is not ready yet";
+      return;
+    }
+    const wb = window.__wb;
+    const elevationAt = wb
+      ? (latitude, longitude) => {
+        try {
+          return wb.engine.elevationM(wb.world, latitude, longitude);
+        } catch {
+          return null;
+        }
+      }
+      : null;
+    routeHandler = enablePicking(viewer, Cesium, (pick) => {
+      route.add(pick.latitude, pick.longitude, pick.elevationM);
+      paintRoute();
+    }, elevationAt);
+    routeToggle.textContent = "place nodes: ON - click the globe";
+    routeToggle.classList.add("wb-pick-on");
+  });
+
+  routeClear.addEventListener("click", () => { route.clear(); paintRoute(); });
+
+  routeSave.addEventListener("click", async () => {
+    if (!route.nodes.length) {
+      routeNote.textContent = "nothing to save";
+      return;
+    }
+    route.name = routeName.value.trim() || `route-${Date.now()}`;
+    try {
+      const result = await saveRoute(route.toJSON(planetFromSearchLocal()));
+      routeNote.textContent = `saved ${result.saved} · ${result.nodes} nodes`;
+    } catch (error) {
+      routeNote.textContent = `save failed: ${error.message}`;
+    }
+  });
+
+  function planetFromSearchLocal() {
+    const params = new URLSearchParams(location.search);
+    const planet = {};
+    for (const [key, value] of params.entries()) {
+      if (key === "fly") continue;
+      planet[key] = value;
+    }
+    return planet;
+  }
+
+  paintRoute();
 
   parent.append(wrap);
 

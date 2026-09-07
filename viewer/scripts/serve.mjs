@@ -3,7 +3,7 @@
 // NOT in the log went somewhere else.
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
-import { stat, readdir, readFile } from "node:fs/promises";
+import { stat, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,6 +64,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 // Read-only, and containment-checked exactly like `root`: a path that escapes the directory is
 // refused before it reaches the filesystem.
 const worldsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "worlds");
+
+// Routes an author clicks onto the globe. Written from the browser, read from the shell -
+// which is the whole point: an intent somebody drew should not have to be handed over as a
+// file attachment before anything can be built from it.
+const routesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "routes");
 const port = Number(process.env.PORT || 8137);
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -159,6 +164,50 @@ createServer(async (req, res) => {
   // `/worlds/` lists what is on disk; `/worlds/<name>.json` serves one. The listing carries the
   // name and the area count out of each file, so the panel can label a row without fetching
   // every world to find out what is in it.
+  // POST /routes/ writes one authored route. The ONLY write this server accepts, and it
+  // accepts it into one directory under one extension - a dev server that can be made to
+  // write anywhere is a dev server that will eventually write somewhere bad.
+  if ((raw === "/routes/" || raw === "/routes") && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      // A route is a few dozen points. Anything larger is not a route.
+      if (body.length > 2_000_000) req.destroy();
+    });
+    req.on("end", async () => {
+      try {
+        const document_ = JSON.parse(body);
+        const safe = String(document_.name || "route")
+          .replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 60) || "route";
+        await mkdir(routesDir, { recursive: true });
+        const file = join(routesDir, `${safe}.json`);
+        if (!file.startsWith(routesDir)) throw new Error("path escape");
+        await writeFile(file, `${JSON.stringify(document_, null, 2)}
+`, "utf-8");
+        console.log(`200 POST /routes/ -> ${safe}.json (${(document_.nodes || []).length} nodes)`);
+        res.writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ saved: `${safe}.json`, nodes: (document_.nodes || []).length }));
+      } catch (error) {
+        console.log(`400 POST /routes/ ${error.message}`);
+        res.writeHead(400, { "content-type": "application/json" })
+          .end(JSON.stringify({ error: String(error.message) }));
+      }
+    });
+    return;
+  }
+
+  if (raw === "/routes/" || raw === "/routes") {
+    try {
+      const names = (await readdir(routesDir)).filter((n) => n.endsWith(".json"));
+      const body = JSON.stringify({ routes: names }, null, 2);
+      res.writeHead(200, { "content-type": "application/json",
+                           "cache-control": "no-store" }).end(body);
+    } catch {
+      res.writeHead(200, { "content-type": "application/json" }).end('{"routes":[]}');
+    }
+    return;
+  }
+
   if (raw === "/worlds/" || raw === "/worlds") {
     try {
       const names = (await readdir(worldsDir)).filter((n) => n.endsWith(".json"));
