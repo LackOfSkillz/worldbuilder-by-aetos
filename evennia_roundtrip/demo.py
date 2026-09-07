@@ -70,6 +70,14 @@ def main(argv=None):
                         help="a worldfile whose planet these areas are placed on. Without it "
                              "the demo planet is used, and coordinates from one planet are "
                              "meaningless on another.")
+    parser.add_argument("--fit", action="store_true",
+                        help="shrink each area's room spacing until it sits on land, and "
+                             "say so. Without it an area half in the sea exports clean.")
+    parser.add_argument("--anchor-room", action="append", default=None,
+                        metavar="AREA:ROOM=LAT,LON[,BEARING][,SPACING]",
+                        help="put one NAMED ROOM at a chosen point. A builder points at a "
+                             "dock, not at whichever room the graph walk happened to start "
+                             "from. ROOM matches a room key, case-insensitively.")
     parser.add_argument("--anchor", action="append", default=None, metavar="NAME=LAT,LON[,BEARING]",
                         help="place a named area at a chosen point instead of a found coast. "
                              "A builder's decision beats a search, and this is where that "
@@ -134,16 +142,26 @@ def main(argv=None):
         parts = [float(p) for p in rest.split(",")]
         fixed[name] = place.Anchor(parts[0], parts[1],
                                    parts[2] if len(parts) > 2 else 0.0, arguments.spacing)
-    if fixed:
-        print("anchors given by the builder: %s" % ", ".join(sorted(fixed)))
+    # Resolved after the layouts exist, because placing a named room needs its cell.
+    room_anchors = {}
+    for entry in arguments.anchor_room or []:
+        target, _, rest = entry.partition("=")
+        area_name, _, room_key = target.partition(":")
+        parts = [float(p) for p in rest.split(",")]
+        room_anchors[area_name] = (room_key, parts)
+
+    if fixed or room_anchors:
+        print("anchors given by the builder: %s"
+              % ", ".join(sorted(set(fixed) | set(room_anchors))))
 
     # **Naming an anchor is naming an area.** Without this the selector kept its own
     # ranking, placed two areas the builder had not asked for, ignored the two he had,
     # and then failed on an empty list - a confusing way to say "you asked for these and
     # I chose others".
-    if fixed:
-        named = [entry for entry in chosen if entry[0] in fixed]
-        for name in sorted(set(fixed) - {entry[0] for entry in chosen}):
+    wanted = set(fixed) | set(room_anchors)
+    if wanted:
+        named = [entry for entry in chosen if entry[0] in wanted]
+        for name in sorted(wanted - {entry[0] for entry in chosen}):
             if name in areas:
                 named.append((name, layout.spread(layout.build(areas[name])), areas[name]))
             else:
@@ -154,7 +172,7 @@ def main(argv=None):
             return 1
 
     points = []
-    if all(name in fixed for name, _built, _area in chosen):
+    if all(name in wanted for name, _built, _area in chosen):
         # Every area is placed by hand, so the coast search has nothing to decide. Running
         # it anyway is minutes of work whose answer is thrown away.
         print("every area is hand-anchored; no coast search needed")
@@ -174,11 +192,11 @@ def main(argv=None):
                     break
                 if all(point.distance_to(other, surface.radius_m) > 1.0 for other in points):
                     points.append(point)
-        unanchored = [name for name, _b, _a in chosen if name not in fixed]
+        unanchored = [name for name, _b, _a in chosen if name not in wanted]
         if len(points) < len(unanchored):
             print("found %d coastal anchors for %d areas that need one"
                   % (len(points), len(unanchored)))
-            keep = set(fixed) | set(unanchored[: len(points)])
+            keep = set(wanted) | set(unanchored[: len(points)])
             chosen = [entry for entry in chosen if entry[0] in keep]
 
     bearings = (0.0, 30.0, 300.0, 120.0, 210.0)
@@ -190,13 +208,50 @@ def main(argv=None):
     placements, layouts, area_by_name = {}, {}, {}
     next_found = 0
     for name, built, area in chosen:
-        if name in fixed:
+        if name in room_anchors:
+            room_key, parts = room_anchors[name]
+            match = [rid for rid, room in area.rooms.items()
+                     if room.key.lower().replace(" ", "_") == room_key.lower()
+                     or room.key.lower() == room_key.lower()]
+            if not match:
+                print("no room like %r in %s; skipping" % (room_key, name))
+                continue
+            anchor = place.anchor_for_room(
+                built, match[0], parts[0], parts[1],
+                parts[2] if len(parts) > 2 else 0.0,
+                parts[3] if len(parts) > 3 else arguments.spacing,
+                radius_m=planet["radius_m"],
+            )
+            print("  %s anchored on %r at %.6f, %.6f"
+                  % (name, area.rooms[match[0]].key, parts[0], parts[1]))
+        elif name in fixed:
             anchor = fixed[name]
         else:
             anchor = found_anchors[next_found]
             next_found += 1
         area_by_name[name] = area
+        if arguments.fit:
+            spacing, _ = place.fit_spacing(
+                built, area, anchor.latitude_deg, anchor.longitude_deg,
+                anchor.bearing_deg, surface,
+            )
+            if spacing and spacing != anchor.room_spacing_m:
+                print("  %s: %.0f m spacing puts rooms in the water; %.0f m fits"
+                      % (name, anchor.room_spacing_m, spacing))
+                anchor = place.Anchor(anchor.latitude_deg, anchor.longitude_deg,
+                                      anchor.bearing_deg, spacing)
+            elif spacing is None:
+                print("  %s: no spacing tried keeps this area on land" % name)
         rooms = place.place(built, area, anchor, surface)
+        fit = place.land_fit(rooms)
+        if not fit["fits"]:
+            print("  LAND CHECK FAILED for %s: %d rooms on water that should not be: %s"
+                  % (name, fit["wet_unexpected"],
+                     ", ".join("%s (%.1f m)" % o for o in fit["offenders"][:6])))
+        else:
+            print("  land check: %d dry, %d wet by design (%s)"
+                  % (fit["dry"], fit["wet_expected"],
+                     "ramps, slips and docks" if fit["wet_expected"] else "none"))
         placements[name] = (anchor, rooms)
         layouts[name] = built
         wet = sum(1 for room in rooms if room.submerged)

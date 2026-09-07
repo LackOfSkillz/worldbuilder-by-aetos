@@ -81,6 +81,44 @@ def _rotate(x, y, bearing_deg):
     return (x * cos + y * sin, -x * sin + y * cos)
 
 
+def anchor_for_room(layout, room_id, latitude_deg, longitude_deg, bearing_deg,
+                    room_spacing_m, radius_m=EARTH_RADIUS_M):
+    """
+    The anchor that puts ONE NAMED ROOM at a chosen place.
+
+    Args:
+        layout (Layout): From `layout.build`.
+        room_id (int): The room the builder is placing.
+        latitude_deg (float): Where that room goes.
+        longitude_deg (float): Where that room goes.
+        bearing_deg (float): Which way the lattice's +y points.
+        room_spacing_m (float): Metres per lattice step.
+        radius_m (float, optional): The planet's radius.
+
+    Returns:
+        anchor (Anchor): Anchored on the layout's root, such that `room_id` lands where asked.
+
+    Notes:
+        **A builder points at a dock, not at a root.** The anchor positions the layout's root
+        room, which is whichever room the graph walk started from - an implementation detail
+        the builder has no reason to know or care about. Asking somebody to work out where
+        the root must go so that the slip ends up on the coast is asking them to run this
+        function in their head.
+
+        It is exact rather than iterative: the room's offset from the root is known in local
+        metres, so the root is that offset applied backwards from the requested point in a
+        frame built there.
+    """
+    cell = layout.cells.get(room_id)
+    if cell is None:
+        raise KeyError("room %r is not in this layout" % room_id)
+    x_m, y_m = _rotate(cell[0] * room_spacing_m, cell[1] * room_spacing_m, bearing_deg)
+    frame = TangentFrame.at_latlon(latitude_deg, longitude_deg, radius_m)
+    root = frame.local_to_sphere(-x_m, -y_m)
+    root_latitude, root_longitude = root.to_latlon()
+    return Anchor(root_latitude, root_longitude, bearing_deg, room_spacing_m)
+
+
 def place(layout, area, anchor, surface):
     """
     Give every room in an area a latitude, a longitude and a ground height.
@@ -121,6 +159,90 @@ def place(layout, area, anchor, surface):
             )
         )
     return placed
+
+
+#: Room keys that are SUPPOSED to be at or below the waterline.
+#:
+#: A boat ramp runs into the water by definition, and a landing stage stands over it. Marking
+#: them wet is not an exception to the land check - it is the check knowing what it is looking
+#: at. Anything not named here that comes out submerged is a placement fault.
+WATER_ROOM_WORDS = ("ramp", "landing stage", "slip", "dock", "quay", "jetty", "wharf", "pier")
+
+
+def water_room(key):
+    """Whether a room is one the builder meant to be in the water."""
+    lowered = key.lower()
+    return any(word in lowered for word in WATER_ROOM_WORDS)
+
+
+def land_fit(rooms):
+    """
+    Which rooms are drawn on water that should not be.
+
+    Args:
+        rooms (list): `PlacedRoom`, from `place`.
+
+    Returns:
+        report (dict): `dry`, `wet_expected`, `wet_unexpected` and the offending rooms.
+
+    Notes:
+        **An area drawn half in the sea looks like a rendering bug and is a placement fault.**
+        The submerged flag has been computed since the first version of this pipeline and
+        nothing ever read it, so a camp whose bunkhouse sat two hundred metres offshore
+        exported clean, applied clean, and read back clean. Every check passed because none
+        of them was this one.
+    """
+    dry, expected, unexpected = [], [], []
+    for room in rooms:
+        if not room.submerged:
+            dry.append(room)
+        elif water_room(room.key):
+            expected.append(room)
+        else:
+            unexpected.append(room)
+    return {
+        "dry": len(dry),
+        "wet_expected": len(expected),
+        "wet_unexpected": len(unexpected),
+        "offenders": [(r.key, round(r.elevation_m, 2)) for r in unexpected],
+        "fits": not unexpected,
+    }
+
+
+def fit_spacing(layout, area, latitude_deg, longitude_deg, bearing_deg, surface,
+                candidates=(200.0, 150.0, 120.0, 90.0, 70.0, 55.0, 45.0, 35.0, 25.0,
+                            18.0, 12.0, 8.0)):
+    """
+    The largest room spacing at which an area sits on land.
+
+    Args:
+        layout (Layout): From `layout.build`.
+        area (Area): From `evdb.read`.
+        latitude_deg (float): The anchor.
+        longitude_deg (float): The anchor.
+        bearing_deg (float): The anchor's bearing.
+        surface (Surface): The generated planet.
+        candidates (tuple, optional): Spacings tried, largest first.
+
+    Returns:
+        result (tuple): `(spacing_m or None, report)` for the first spacing that fits.
+
+    Notes:
+        **Largest first, because a smaller area is a worse area.** Rooms crammed to eight
+        metres apart put a whole camp inside one building's footprint, so the search takes
+        the biggest spacing that still lands on ground rather than the smallest that
+        certainly will. If nothing fits, the honest answer is that the island is too small
+        for this area - which is a fact about the world, not a number to force.
+    """
+    best = None
+    for spacing in candidates:
+        anchor = Anchor(latitude_deg, longitude_deg, bearing_deg, spacing)
+        report = land_fit(place(layout, area, anchor, surface))
+        if report["fits"]:
+            return spacing, report
+        if best is None or report["wet_unexpected"] < best[1]["wet_unexpected"]:
+            best = (spacing, report)
+    return None, best[1] if best else {}
 
 
 def sea_reach(point, surface, reach_m=DEFAULT_PORT_REACH_M, depth_m=DEFAULT_PORT_DEPTH_M,
