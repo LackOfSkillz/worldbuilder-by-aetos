@@ -3,7 +3,7 @@
 // NOT in the log went somewhere else.
 import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { stat, readdir, readFile } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,6 +53,17 @@ function cacheHeaders(pathname, stats) {
 }
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+
+// **The world library, served from the repository rather than from `public/`.**
+//
+// A saved world is a file somebody keeps - checked into a repository, reviewed, handed to
+// somebody else - so it lives with the source and not inside the served tree. Serving it needs
+// one route rather than a copy, because a copy is a second answer to "which world is Aetosia"
+// and this project has been bitten by two copies of one thing before.
+//
+// Read-only, and containment-checked exactly like `root`: a path that escapes the directory is
+// refused before it reaches the filesystem.
+const worldsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "worlds");
 const port = Number(process.env.PORT || 8137);
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -144,6 +155,78 @@ const CSP = [
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   let raw = decodeURIComponent(url.pathname);
+
+  // `/worlds/` lists what is on disk; `/worlds/<name>.json` serves one. The listing carries the
+  // name and the area count out of each file, so the panel can label a row without fetching
+  // every world to find out what is in it.
+  if (raw === "/worlds/" || raw === "/worlds") {
+    try {
+      const names = (await readdir(worldsDir)).filter((n) => n.endsWith(".json"));
+      const rows = [];
+      for (const name of names) {
+        try {
+          const document_ = JSON.parse(await readFile(join(worldsDir, name), "utf-8"));
+          rows.push({
+            file: name,
+            name: document_.name || name.replace(/\.json$/, ""),
+            areas: (document_.areas || []).length,
+            saved_at: document_.saved_at || null,
+            seed: (document_.planet || {}).seed || null,
+          });
+        } catch {
+          // A world that will not parse is listed as unreadable rather than hidden. A library
+          // that silently omits a file is a library you cannot trust to be complete.
+          rows.push({ file: name, name, areas: null, saved_at: null, seed: null,
+                      error: "will not parse" });
+        }
+      }
+      rows.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const body = JSON.stringify({ worlds: rows }, null, 2);
+      console.log(`200 ${req.method} ${req.url} (${rows.length} worlds)`);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        "cache-control": "no-store",
+        "content-security-policy": CSP,
+        "cross-origin-resource-policy": "same-origin",
+        "cross-origin-opener-policy": "same-origin",
+        "cross-origin-embedder-policy": "require-corp",
+      }).end(body);
+    } catch {
+      console.log(`404 ${req.method} ${req.url} (no worlds directory)`);
+      res.writeHead(404, { "content-type": "application/json" })
+        .end(JSON.stringify({ worlds: [], error: "no worlds directory" }));
+    }
+    return;
+  }
+
+  if (raw.startsWith("/worlds/")) {
+    let name = normalize(raw.slice("/worlds/".length));
+    while (name.startsWith("..")) name = name.slice(2);
+    const file = join(worldsDir, name);
+    if (!file.startsWith(worldsDir) || !file.endsWith(".json")) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
+    try {
+      const body = await readFile(file);
+      console.log(`200 ${req.method} ${req.url}`);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": body.length,
+        "cache-control": "no-store",
+        "content-security-policy": CSP,
+        "cross-origin-resource-policy": "same-origin",
+        "cross-origin-opener-policy": "same-origin",
+        "cross-origin-embedder-policy": "require-corp",
+      }).end(body);
+    } catch {
+      console.log(`404 ${req.method} ${req.url}`);
+      res.writeHead(404, { "content-type": "text/plain" }).end("not found");
+    }
+    return;
+  }
+
   if (raw.endsWith("/")) raw += "index.html";
   let p = normalize(raw);
   while (p.startsWith("..")) p = p.slice(2);

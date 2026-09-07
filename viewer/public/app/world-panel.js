@@ -15,6 +15,7 @@ import {
 } from "./worlds.js";
 import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
+import { enablePicking, flyFragment, markPick } from "./pick-point.js";
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -43,6 +44,11 @@ function when(iso) {
 /// `getViewer` is a function rather than a viewer, because the panel is built before boot
 /// publishes `window.__wb` and a captured `undefined` would be permanent.
 export function mountWorldPanel(parent, getViewer) {
+  // Declared here rather than beside the area buttons: the save, the picker and the library all
+  // touch them, and `let` in a later block is a temporal-dead-zone error rather than undefined.
+  let lastAreas = [];
+  let drawn = null;
+
   const wrap = el("div", "wb-section");
   wrap.append(el("div", "wb-section-title", "worlds"));
   const note = el("div", "wb-note");
@@ -131,19 +137,7 @@ export function mountWorldPanel(parent, getViewer) {
     const file = openField.files && openField.files[0];
     if (!file) return;
     try {
-      const document_ = checkVersion(JSON.parse(await file.text()));
-      lastAreas = document_.areas || [];
-      note.textContent = `opened "${document_.name}" · ${lastAreas.length} areas`;
-      const search = searchFromPlanet(document_.planet);
-      if (search !== location.search) {
-        // The planet in the file is not the planet on screen, so the areas would be pinned to
-        // ground that does not exist. Reload onto the file's own world first; the areas are
-        // redrawn on the way back in.
-        sessionStorage.setItem("wb.pendingAreas", JSON.stringify(lastAreas));
-        location.href = search;
-        return;
-      }
-      redrawAreas();
+      await loadWorldfile(JSON.parse(await file.text()));
     } catch (error) {
       note.textContent = `refused: ${error.message}`;
     }
@@ -153,9 +147,77 @@ export function mountWorldPanel(parent, getViewer) {
 
   const saved = el("div", "wb-note");
   wrap.append(saved);
+
+  /// Load one worldfile by URL: check it, take its areas, and go to its planet.
+  ///
+  /// Shared by the file picker and the library list, because "open a file" and "open a file the
+  /// server already has" differ only in where the JSON comes from. Two copies of this would be
+  /// two chances for the library to load a world the picker would have refused.
+  async function loadWorldfile(document_) {
+    checkVersion(document_);
+    lastAreas = document_.areas || [];
+    const search = searchFromPlanet(document_.planet);
+    const here = new URLSearchParams(location.search);
+    const there = new URLSearchParams(search.replace(/^\?/, ""));
+    here.delete("fly");
+    // Compared as parsed parameters rather than as strings: the same planet written in a
+    // different order is the same planet, and a string test would reload the page forever.
+    const same = [...there.keys()].every((key) => here.get(key) === there.get(key))
+      && [...here.keys()].every((key) => there.get(key) === here.get(key));
+    if (!same) {
+      // The areas are pinned to ground that only exists on the file's own planet, so the world
+      // has to arrive before they are drawn.
+      sessionStorage.setItem("wb.pendingAreas", JSON.stringify(lastAreas));
+      location.href = search;
+      return;
+    }
+    note.textContent = `opened "${document_.name}" · ${lastAreas.length} areas`;
+    redrawAreas();
+  }
+
+  /// The library: worldfiles the server has on disk, listed by the server rather than guessed.
+  const library = el("div", "wb-note");
+  wrap.append(library);
+  async function paintLibrary() {
+    library.textContent = "";
+    let rows = [];
+    try {
+      const response = await fetch("/worlds/");
+      rows = (await response.json()).worlds || [];
+    } catch {
+      library.textContent = "no world library on this server";
+      return;
+    }
+    if (rows.length === 0) {
+      library.textContent = "the world library is empty";
+      return;
+    }
+    library.append(el("div", "wb-section-title", `on disk (${rows.length})`));
+    for (const row of rows) {
+      const line = el("div", "wb-row");
+      const label = row.error
+        ? `${row.file} · ${row.error}`
+        : `${row.name} · ${row.areas} areas${row.seed ? ` · seed ${row.seed}` : ""}`;
+      const go = button(label);
+      go.disabled = Boolean(row.error);
+      go.addEventListener("click", async () => {
+        try {
+          const response = await fetch(`/worlds/${encodeURIComponent(row.file)}`);
+          await loadWorldfile(await response.json());
+        } catch (error) {
+          note.textContent = `refused: ${error.message}`;
+        }
+      });
+      line.append(go);
+      library.append(line);
+    }
+  }
+  paintLibrary();
+
   function paintSaved() {
     const entries = savedWorlds();
     saved.textContent = "";
+    if (entries.length) saved.append(el("div", "wb-section-title", "saved in this browser"));
     for (const entry of entries.slice(0, 6)) {
       const line = el("div", "wb-row");
       const go = button(`${entry.name} · ${entry.areas} areas`);
@@ -170,8 +232,6 @@ export function mountWorldPanel(parent, getViewer) {
 
   // --- areas ---------------------------------------------------------------------------------
 
-  let lastAreas = [];
-  let drawn = null;
   function redrawAreas() {
     const viewer = getViewer();
     if (!viewer || typeof Cesium === "undefined") return;
@@ -251,6 +311,69 @@ export function mountWorldPanel(parent, getViewer) {
 
   const found = el("div", "wb-note");
   wrap.append(found);
+
+  // --- pick a point ---------------------------------------------------------------------------
+
+  const pickRow = el("div", "wb-jump");
+  const pickToggle = button("pick a point: off");
+  const pickOut = el("div", "wb-note");
+  let picking = null;
+  let pickMarker = null;
+  pickToggle.addEventListener("click", () => {
+    if (picking) {
+      picking.stop();
+      picking = null;
+      pickToggle.textContent = "pick a point: off";
+      return;
+    }
+    const viewer = getViewer();
+    if (!viewer || typeof Cesium === "undefined") {
+      note.textContent = "the globe is not ready yet";
+      return;
+    }
+    const wb = window.__wb;
+    const elevationAt = wb
+      ? (latitude, longitude) => {
+        try {
+          return wb.engine.elevationM(wb.world, latitude, longitude);
+        } catch {
+          return null;
+        }
+      }
+      : null;
+    picking = enablePicking(viewer, Cesium, (pick) => {
+      pickMarker = markPick(viewer, Cesium, pick, pickMarker);
+      const height = viewer.camera.positionCartographic.height;
+      pickOut.textContent = "";
+      const coords = el("div", "wb-row");
+      coords.textContent = `${pick.latitude.toFixed(6)}, ${pick.longitude.toFixed(6)}`
+        + `  ·  ground ${pick.elevationM === null ? "?" : `${Math.round(pick.elevationM)} m`}`;
+      pickOut.append(coords);
+      // The provenance, always. An ellipsoid fallback on a four-thousand-metre peak can be
+      // kilometres from what was clicked and looks identical to a good pick.
+      pickOut.append(el("div", "wb-row", `from ${pick.source}`));
+      const fragment = flyFragment(pick, height);
+      const copy = button(`copy ?${fragment}`);
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(fragment);
+          copy.textContent = "copied";
+        } catch {
+          // A clipboard the browser will not grant is not a reason to lose the number: it is
+          // already on screen above, selectable.
+          copy.textContent = "select the line above and copy it";
+        }
+      });
+      pickOut.append(copy);
+      autosave(location.search, [
+        Number(pick.latitude.toFixed(6)), Number(pick.longitude.toFixed(6)),
+        Math.round(height), 0, -90,
+      ]);
+    }, elevationAt);
+    pickToggle.textContent = "pick a point: ON - click the globe";
+  });
+  pickRow.append(pickToggle);
+  wrap.append(pickRow, pickOut);
 
   parent.append(wrap);
 
