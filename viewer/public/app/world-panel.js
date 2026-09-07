@@ -51,6 +51,17 @@ export function mountWorldPanel(parent, getViewer) {
 
   const wrap = el("div", "wb-section");
   wrap.append(el("div", "wb-section-title", "worlds"));
+
+  // **The pick readout goes FIRST, not last.** It was appended at the bottom of a section that
+  // already carried six control rows, so a click produced a correct answer below the fold and
+  // the feature read as broken. A result nobody can find has not been delivered.
+  const pickRow = el("div", "wb-jump");
+  const pickToggle = button("pick a point: off", "wb-mini wb-pick-toggle");
+  pickRow.append(pickToggle);
+  const pickOut = el("div", "wb-pick");
+  pickOut.hidden = true;
+  wrap.append(pickRow, pickOut);
+
   const note = el("div", "wb-note");
   wrap.append(note);
 
@@ -312,11 +323,9 @@ export function mountWorldPanel(parent, getViewer) {
   const found = el("div", "wb-note");
   wrap.append(found);
 
-  // --- pick a point ---------------------------------------------------------------------------
 
-  const pickRow = el("div", "wb-jump");
-  const pickToggle = button("pick a point: off");
-  const pickOut = el("div", "wb-note");
+  // --- pick a point: the wiring. The controls are mounted at the top of the section. --------
+
   let picking = null;
   let pickMarker = null;
   pickToggle.addEventListener("click", () => {
@@ -324,6 +333,7 @@ export function mountWorldPanel(parent, getViewer) {
       picking.stop();
       picking = null;
       pickToggle.textContent = "pick a point: off";
+      pickToggle.classList.remove("wb-pick-on");
       return;
     }
     const viewer = getViewer();
@@ -344,36 +354,60 @@ export function mountWorldPanel(parent, getViewer) {
     picking = enablePicking(viewer, Cesium, (pick) => {
       pickMarker = markPick(viewer, Cesium, pick, pickMarker);
       const height = viewer.camera.positionCartographic.height;
-      pickOut.textContent = "";
-      const coords = el("div", "wb-row");
-      coords.textContent = `${pick.latitude.toFixed(6)}, ${pick.longitude.toFixed(6)}`
-        + `  ·  ground ${pick.elevationM === null ? "?" : `${Math.round(pick.elevationM)} m`}`;
-      pickOut.append(coords);
-      // The provenance, always. An ellipsoid fallback on a four-thousand-metre peak can be
-      // kilometres from what was clicked and looks identical to a good pick.
-      pickOut.append(el("div", "wb-row", `from ${pick.source}`));
       const fragment = flyFragment(pick, height);
-      const copy = button(`copy ?${fragment}`);
+      pickOut.hidden = false;
+      pickOut.textContent = "";
+
+      // A selectable field rather than only a button. Clipboard access can be refused by the
+      // browser and by the page's own policy, and a number you cannot select is a number you
+      // have to retype off the screen.
+      const field = document.createElement("input");
+      field.type = "text";
+      field.readOnly = true;
+      field.className = "wb-text";
+      field.value = `${pick.latitude.toFixed(6)}, ${pick.longitude.toFixed(6)}`;
+      field.addEventListener("focus", () => field.select());
+
+      pickOut.append(field);
+      pickOut.append(el("div", "wb-pick-line",
+        `ground ${pick.elevationM === null ? "?" : `${Math.round(pick.elevationM)} m`}`
+        + `  ·  from ${pick.source}`
+        + (pick.offsetM > 1
+          ? `  ·  up to ${Math.round(pick.offsetM)} m out at this angle`
+            + " - look straight down to remove it"
+          : "")));
+
+      const flyField = document.createElement("input");
+      flyField.type = "text";
+      flyField.readOnly = true;
+      flyField.className = "wb-text";
+      flyField.value = `?${fragment}`;
+      flyField.addEventListener("focus", () => flyField.select());
+      pickOut.append(flyField);
+
+      const copy = button("copy both");
       copy.addEventListener("click", async () => {
+        const text = `${field.value}
+?${fragment}`;
         try {
-          await navigator.clipboard.writeText(fragment);
+          await navigator.clipboard.writeText(text);
           copy.textContent = "copied";
+          setTimeout(() => { copy.textContent = "copy both"; }, 1500);
         } catch {
-          // A clipboard the browser will not grant is not a reason to lose the number: it is
-          // already on screen above, selectable.
-          copy.textContent = "select the line above and copy it";
+          field.focus();
+          copy.textContent = "clipboard refused - the fields are selected";
         }
       });
       pickOut.append(copy);
+
       autosave(location.search, [
         Number(pick.latitude.toFixed(6)), Number(pick.longitude.toFixed(6)),
         Math.round(height), 0, -90,
       ]);
     }, elevationAt);
     pickToggle.textContent = "pick a point: ON - click the globe";
+    pickToggle.classList.add("wb-pick-on");
   });
-  pickRow.append(pickToggle);
-  wrap.append(pickRow, pickOut);
 
   parent.append(wrap);
 

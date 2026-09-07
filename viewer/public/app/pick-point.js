@@ -25,8 +25,10 @@
 // the engine's answer is canonical and is what the game and the exporter will use.
 
 /// How the position was obtained. Carried into the result, never inferred later.
-export const FROM_TERRAIN = "terrain";
-export const FROM_ELLIPSOID = "ellipsoid (terrain pick failed - may be off the ground you clicked)";
+export const FROM_TERRAIN = "terrain (depth buffer)";
+export const FROM_GLOBE_RAY = "terrain (ray cast)";
+export const FROM_ELLIPSOID = "ellipsoid - the terrain picks failed, so this may be off the "
+  + "ground you clicked";
 
 /// Turn a screen position into a place on the planet.
 ///
@@ -40,6 +42,26 @@ export function pickAt(viewer, Cesium, windowPosition, elevationAt = null) {
   if (scene.pickPositionSupported) {
     cartesian = scene.pickPosition(windowPosition);
   }
+
+  // **The depth buffer is not always readable, and it fails silently.** Measured in this
+  // project's own browser harness: `pickPositionSupported` true, `depthTexture` true,
+  // `depthTestAgainstTerrain` true, tiles loaded, camera 60 km over land - and
+  // `scene.pickPosition` returns undefined at the centre of the canvas. Software rasterisers
+  // and some drivers will not hand the depth attachment back.
+  //
+  // `globe.pick` intersects the loaded TERRAIN TILES with a ray instead. It needs no depth
+  // texture, so it works where the buffer will not, and it is still the real ground rather
+  // than the smooth ellipsoid. It has its own limit, and it is an honest one: it can only hit
+  // tiles that are loaded, so a click on a region still streaming falls through to the
+  // ellipsoid - which is exactly when the answer should be labelled as suspect.
+  if (!Cesium.defined(cartesian)) {
+    const ray = viewer.camera.getPickRay(windowPosition);
+    if (Cesium.defined(ray)) {
+      cartesian = scene.globe.pick(ray, scene);
+      if (Cesium.defined(cartesian)) source = FROM_GLOBE_RAY;
+    }
+  }
+
   if (!Cesium.defined(cartesian)) {
     cartesian = viewer.camera.pickEllipsoid(windowPosition, scene.globe.ellipsoid);
     source = FROM_ELLIPSOID;
@@ -49,13 +71,41 @@ export function pickAt(viewer, Cesium, windowPosition, elevationAt = null) {
   const carto = Cesium.Cartographic.fromCartesian(cartesian);
   const latitude = Cesium.Math.toDegrees(carto.latitude);
   const longitude = Cesium.Math.toDegrees(carto.longitude);
+  const ground = elevationAt ? elevationAt(latitude, longitude) : null;
+
+  // **How wrong the ellipsoid answer can be, as a distance rather than a warning.**
+  //
+  // An ellipsoid pick lands where the ray crosses sea level, but the ground is `ground` metres
+  // above that, so the point actually clicked is displaced along the ray by `ground * tan(t)`,
+  // where `t` is the angle between the ray and the local vertical. Straight down that is zero
+  // and the fallback is exact; at forty-five degrees over a kilometre of ground it is a
+  // kilometre out.
+  //
+  // Saying "may be off" tells somebody to worry. Saying "about 40 m" tells them whether to.
+  let offsetM = 0;
+  if (source === FROM_ELLIPSOID && ground !== null && Number.isFinite(ground)) {
+    const up = Cesium.Cartesian3.normalize(cartesian, new Cesium.Cartesian3());
+    const ray = viewer.camera.getPickRay(windowPosition);
+    if (Cesium.defined(ray)) {
+      const direction = Cesium.Cartesian3.normalize(ray.direction, new Cesium.Cartesian3());
+      // The ray points down into the planet, so the cosine against "up" is negative.
+      const cosine = -Cesium.Cartesian3.dot(direction, up);
+      const clamped = cosine > 1 ? 1 : cosine < 1e-6 ? 1e-6 : cosine;
+      const tangent = Math.sqrt(Math.max(0, 1 - clamped * clamped)) / clamped;
+      offsetM = Math.abs(ground) * tangent;
+    }
+  }
+
   return {
     latitude,
     longitude,
     renderedHeightM: carto.height,
+    /// Metres the ellipsoid fallback may be displaced from what was clicked. Zero for a terrain
+    /// pick, and zero looking straight down.
+    offsetM,
     // Canonical ground, from the engine. `renderedHeightM` is what the screen showed, which is
     // the same number only when exaggeration is 1 and the finest tile happens to be loaded.
-    elevationM: elevationAt ? elevationAt(latitude, longitude) : null,
+    elevationM: ground,
     source,
   };
 }
