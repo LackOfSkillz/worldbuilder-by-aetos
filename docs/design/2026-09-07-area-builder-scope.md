@@ -160,3 +160,54 @@ defect the rule exists to prevent.
    view from an inland room, is wrong in a way no linter currently catches. **The engine knows the answer**
    -- biome, elevation, distance to water -- so the context passed to the model should carry it, and a check
    that generated text does not contradict it is worth more than better prompting.
+
+---
+
+## Saving a world, 2026-09-07
+
+The owner:
+
+> "we need a way to save a world once we generate one we like so we can open it and continue thought
+> sessions and reboots"
+
+**This is the worldfile, not a new feature** -- and the decision above (the worldfile carries areas, not just
+placement) already committed to most of it. But the two halves of a world save very differently, and
+conflating them would build something bigger than necessary.
+
+### The planet half is already saved, and the mechanism is determinism
+
+**A generated planet is entirely described by its seed and its parameters.** That is the whole point of the
+point-evaluable, no-state design: the same seed and the same block reproduce the same planet bit for bit,
+which the parity corpus checks on **127,659 values** every run.
+
+**The URL is already a complete save format.** Every knob is a query parameter and the panel writes them
+back as they move -- which is why the owner has been pasting URLs into this conversation and getting the
+same world each time. **Bookmark it and the planet survives a reboot today.**
+
+**What is missing is not persistence but ergonomics:**
+
+- **A name**, so a world is "Aerthos" rather than a 400-character URL.
+- **A list** to reopen from, rather than browser history.
+- **A file** that can be checked into a repository, mailed, or handed to somebody.
+- **A generator version stamped in it**, so a saved world opened against a newer engine either reproduces or
+  **refuses** -- the VERSION-001 discipline already chosen: fail closed, no silent substitution. **A planet
+  that quietly renders differently after an engine change is worse than one that will not open.**
+
+### The authored half is the part that genuinely needs storage
+
+Placed areas, their anchors and bearings, built rooms and exits, descriptions, port mappings, and any
+builder overrides. **None of that is derivable from a seed** -- it is somebody's work, and losing it is
+losing the only copy.
+
+**So the save is: a small deterministic header plus everything a human decided.** The planet costs bytes;
+the authored world costs whatever it costs.
+
+### What this obliges
+
+1. **Save early, not at the end.** An author who places forty areas and loses them to a crashed tab will not
+   come back. **Autosave belongs in the first version of the builder, not a later one.**
+2. **The format is the worldfile**, so it inherits every obligation already recorded: a version, documented
+   semantics per field, and a compatibility policy for meeting a newer generator.
+3. **Two writers, one truth -- unchanged and still unanswered.** An author can now edit the worldfile *or*
+   the game. **That question was raised by the schema decision and it is the same question here**, arriving
+   sooner because saving makes it concrete.
