@@ -32,7 +32,7 @@ class VersionRefused(Exception):
     """Raised rather than opening a worldfile this build cannot reproduce."""
 
 
-def build(planet, source, placements, layouts, ports, generator_version):
+def build(planet, source, placements, layouts, ports, generator_version, areas_by_name=None):
     """
     Assemble a worldfile from everything the pipeline produced.
 
@@ -72,6 +72,14 @@ def build(planet, source, placements, layouts, ports, generator_version):
                 },
                 "port": ports.get(name, {}),
                 "rooms": [asdict(room) for room in rooms],
+                # **The exits travel with the rooms.** A worldfile carrying positions and no
+                # connections describes where a game's rooms are and not what its map is, and
+                # the studio cannot draw a path between two docks from a scatter of points.
+                "exits": [
+                    {"name": e.name, "source": e.source, "destination": e.destination}
+                    for e in ((areas_by_name or {}).get(name).exits
+                              if (areas_by_name or {}).get(name) else [])
+                ],
             }
         )
     return {

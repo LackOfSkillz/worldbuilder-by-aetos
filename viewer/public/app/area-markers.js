@@ -35,6 +35,29 @@ const FAR_M = 2.0e7;
 const NEAR_SCALE = 1.0;
 const FAR_SCALE = 0.45;
 
+// **Level of detail, and the ranges are the whole feature.**
+//
+// The owner's requirement, in his words: *"zoomed all the way out to planet scale you only see
+// a dot and a name"*, and close in *"you should be able to see area details, like the fishcamp,
+// the dock, and the path"*. That is three layers with three different visibilities, and Cesium
+// expresses it with `distanceDisplayCondition` - a near and far camera range outside which an
+// entity is not drawn at all.
+//
+// The one thing that must carry NO condition is the area pin, because it is what you navigate
+// by. Everything below it is detail that earns its way on screen as you approach:
+//
+//   pin + name        always            it is the dot at planet scale
+//   footprint         under 400 km      the area has a size worth seeing
+//   exits             under 60 km       the shape of the map
+//   rooms             under 60 km       where you can stand
+//   room names        under 8 km        legible without becoming a wall of text
+//
+// Ranges are camera DISTANCE TO THE ENTITY, not altitude, so they behave the same looking down
+// as looking along.
+const FOOTPRINT_MAX_M = 4.0e5;
+const DETAIL_MAX_M = 6.0e4;
+const ROOM_LABEL_MAX_M = 8.0e3;
+
 /// An area with a harbour and one without, so the map answers the port question without a click.
 const PORT_COLOUR = "#4db2ff";
 const INLAND_COLOUR = "#ffc857";
@@ -95,22 +118,78 @@ export function drawAreas(viewer, Cesium, document) {
       anchor.longitude_deg, anchor.latitude_deg,
     );
 
-    // The footprint. `heightReference: CLAMP_TO_GROUND` puts it on the terrain rather than
-    // through it, and it carries no distance condition of its own - at orbital range it is
-    // simply smaller than a pixel and costs nothing.
+    // The footprint, drawn only when the area is big enough on screen to be worth a shape.
     source.entities.add({
       name: area.name,
       position,
       ellipse: {
         semiMajorAxis: radius,
         semiMinorAxis: radius,
-        material: colour.withAlpha(0.22),
+        material: colour.withAlpha(0.18),
         outline: true,
         outlineColor: colour.withAlpha(0.9),
         outlineWidth: 2,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        distanceDisplayCondition:
+          new Cesium.DistanceDisplayCondition(0.0, FOOTPRINT_MAX_M),
       },
     });
+
+    // --- the detail layers -------------------------------------------------------------
+    //
+    // Exits first, so rooms draw over their own lines rather than under them.
+    const byId = new Map((area.rooms || []).map((room) => [room.id, room]));
+    for (const exit of area.exits || []) {
+      const from = byId.get(exit.source);
+      const to = byId.get(exit.destination);
+      if (!from || !to) continue;
+      source.entities.add({
+        name: `${from.key} ${exit.name} ${to.key}`,
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArray([
+            from.longitude_deg, from.latitude_deg, to.longitude_deg, to.latitude_deg,
+          ]),
+          width: 2,
+          material: colour.withAlpha(0.55),
+          clampToGround: true,
+          distanceDisplayCondition:
+            new Cesium.DistanceDisplayCondition(0.0, DETAIL_MAX_M),
+        },
+      });
+    }
+
+    for (const room of area.rooms || []) {
+      source.entities.add({
+        name: room.key,
+        position: Cesium.Cartesian3.fromDegrees(room.longitude_deg, room.latitude_deg),
+        point: {
+          pixelSize: 6,
+          color: colour.brighten(0.4, new Cesium.Color()),
+          outlineColor: Cesium.Color.BLACK.withAlpha(0.7),
+          outlineWidth: 1,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          distanceDisplayCondition:
+            new Cesium.DistanceDisplayCondition(0.0, DETAIL_MAX_M),
+        },
+        label: {
+          text: room.key,
+          font: "11px system-ui, sans-serif",
+          fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 3,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -12),
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          // Names come in last of all. Twenty-two of them at 60 km is a wall of text
+          // over a map you cannot then read.
+          distanceDisplayCondition:
+            new Cesium.DistanceDisplayCondition(0.0, ROOM_LABEL_MAX_M),
+        },
+      });
+    }
 
     // The pin. Never depth-tested, never range-culled, and scaled rather than fixed.
     source.entities.add({

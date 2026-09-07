@@ -13,6 +13,7 @@ Run it:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -63,6 +64,16 @@ def main(argv=None):
     parser.add_argument("--separation", type=float, default=80000.0,
                         help="metres between anchors; small values cluster the areas into "
                              "one region, which is what a single game's world looks like")
+    parser.add_argument("--region-radius", type=float, default=400000.0,
+                        help="how far from the first harbour the other areas may sit")
+    parser.add_argument("--world", default=None,
+                        help="a worldfile whose planet these areas are placed on. Without it "
+                             "the demo planet is used, and coordinates from one planet are "
+                             "meaningless on another.")
+    parser.add_argument("--anchor", action="append", default=None, metavar="NAME=LAT,LON[,BEARING]",
+                        help="place a named area at a chosen point instead of a found coast. "
+                             "A builder's decision beats a search, and this is where that "
+                             "decision lives until the studio exists.")
     arguments = parser.parse_args(argv)
 
     print("reading %s" % arguments.database)
@@ -75,11 +86,37 @@ def main(argv=None):
         print("no area had %d rooms" % arguments.min_rooms)
         return 1
 
+    planet = dict(DEMO_PLANET)
+    if arguments.world:
+        with open(arguments.world, encoding="utf-8") as handle:
+            saved = json.load(handle)["planet"]
+        planet = {
+            "seed": int(saved["seed"]),
+            "radius_m": float(saved.get("radius", DEMO_PLANET["radius_m"])),
+            "plate_count": int(saved.get("plates", DEMO_PLANET["plate_count"])),
+            "land_fraction": float(saved.get("land", DEMO_PLANET["land_fraction"])),
+        }
+        # **Say what is being ignored rather than ignoring it.** The Python oracle takes four
+        # parameters; a worldfile from the studio carries more, and the mountain and coast
+        # sliders are among them. Elevations here come from the four-parameter planet, so a
+        # world that uses the others gets ground from a DIFFERENT planet unless somebody is
+        # told. This is the same failure that put 226 rooms four kilometres under water.
+        ignored = sorted(k for k in saved
+                         if k not in {"seed", "radius", "plates", "land"})
+        if ignored:
+            print("WARNING: this build reads seed, radius, plates and land only.")
+            print("         %d parameters in the worldfile are NOT applied: %s"
+                  % (len(ignored), ", ".join(ignored)))
+            print("         Elevations below are from the four-parameter planet.")
+    print("planet: seed %s, radius %.0f m, %d plates, land %.2f"
+          % (planet["seed"], planet["radius_m"], planet["plate_count"],
+             planet["land_fraction"]))
+
     surface = Surface(
-        DEMO_PLANET["seed"],
-        radius_m=DEMO_PLANET["radius_m"],
-        plate_count=DEMO_PLANET["plate_count"],
-        land_fraction=DEMO_PLANET["land_fraction"],
+        planet["seed"],
+        radius_m=planet["radius_m"],
+        plate_count=planet["plate_count"],
+        land_fraction=planet["land_fraction"],
     )
 
     # Anchors are FOUND, not assumed. The first version of this demo reused a latitude and
@@ -88,29 +125,77 @@ def main(argv=None):
     # the studio exists, the planet is asked where its coasts are.
     # Ask for at least one anchor on a genuine harbour and let the rest fall where the
     # coast allows, so the port mapping has both cases to answer rather than neither.
-    print("searching for anchors: harbours first, then coast...")
-    harbours = place.coastal_anchors(surface, max(1, len(chosen) // 2),
-                                 separation_m=arguments.separation, require_port=True)
-    points = list(harbours)
-    for point in place.coastal_anchors(surface, len(chosen) + len(harbours),
-                                   separation_m=arguments.separation):
-        if len(points) >= len(chosen):
-            break
-        if all(point.distance_to(other, surface.radius_m) > 1.0 for other in points):
-            points.append(point)
-    print("  %d with a harbour, %d coastal" % (len(harbours), len(points) - len(harbours)))
-    if len(points) < len(chosen):
-        print("only found %d coastal anchors for %d areas" % (len(points), len(chosen)))
-        chosen = chosen[: len(points)]
+    # Hand-authored anchors first. Anything named here is placed where the builder said and
+    # never searched for, because the search answers "where COULD this go" and a builder
+    # answers "where does this go".
+    fixed = {}
+    for entry in arguments.anchor or []:
+        name, _, rest = entry.partition("=")
+        parts = [float(p) for p in rest.split(",")]
+        fixed[name] = place.Anchor(parts[0], parts[1],
+                                   parts[2] if len(parts) > 2 else 0.0, arguments.spacing)
+    if fixed:
+        print("anchors given by the builder: %s" % ", ".join(sorted(fixed)))
+
+    # **Naming an anchor is naming an area.** Without this the selector kept its own
+    # ranking, placed two areas the builder had not asked for, ignored the two he had,
+    # and then failed on an empty list - a confusing way to say "you asked for these and
+    # I chose others".
+    if fixed:
+        named = [entry for entry in chosen if entry[0] in fixed]
+        for name in sorted(set(fixed) - {entry[0] for entry in chosen}):
+            if name in areas:
+                named.append((name, layout.spread(layout.build(areas[name])), areas[name]))
+            else:
+                print("no area called %r in this database" % name)
+        chosen = named
+        if not chosen:
+            print("none of the anchored areas exist in this database")
+            return 1
+
+    points = []
+    if all(name in fixed for name, _built, _area in chosen):
+        # Every area is placed by hand, so the coast search has nothing to decide. Running
+        # it anyway is minutes of work whose answer is thrown away.
+        print("every area is hand-anchored; no coast search needed")
+    else:
+        print("searching for anchors: one harbour, then its neighbourhood...")
+        points = list(place.coastal_anchors(surface, 1, require_port=True))
+        if points:
+            # The rest are found NEAR the harbour, because a game's areas are one world and
+            # not pins scattered over a globe. `separation_m` cannot do this - it is a
+            # MINIMUM distance, so lowering it from 80 km to 12 km left the anchors 4,500 km
+            # apart, unchanged. A radius around a chosen centre is what actually clusters.
+            for point in place.coastal_anchors(
+                surface, len(chosen) * 3, separation_m=arguments.separation,
+                near=points[0], within_m=arguments.region_radius,
+            ):
+                if len(points) >= len(chosen):
+                    break
+                if all(point.distance_to(other, surface.radius_m) > 1.0 for other in points):
+                    points.append(point)
+        unanchored = [name for name, _b, _a in chosen if name not in fixed]
+        if len(points) < len(unanchored):
+            print("found %d coastal anchors for %d areas that need one"
+                  % (len(points), len(unanchored)))
+            keep = set(fixed) | set(unanchored[: len(points)])
+            chosen = [entry for entry in chosen if entry[0] in keep]
+
     bearings = (0.0, 30.0, 300.0, 120.0, 210.0)
-    anchors = [
+    found_anchors = [
         place.Anchor(lat, lon, bearings[index % len(bearings)], arguments.spacing)
         for index, (lat, lon) in enumerate(point.to_latlon() for point in points)
     ]
 
-    placements, layouts = {}, {}
-    for index, (name, built, area) in enumerate(chosen):
-        anchor = anchors[index]
+    placements, layouts, area_by_name = {}, {}, {}
+    next_found = 0
+    for name, built, area in chosen:
+        if name in fixed:
+            anchor = fixed[name]
+        else:
+            anchor = found_anchors[next_found]
+            next_found += 1
+        area_by_name[name] = area
         rooms = place.place(built, area, anchor, surface)
         placements[name] = (anchor, rooms)
         layouts[name] = built
@@ -136,7 +221,7 @@ def main(argv=None):
             print("  %-26s inland, and no placed area has a port" % name)
 
     document = worldfile.build(
-        planet=DEMO_PLANET,
+        planet=planet,
         source={
             "database": os.path.basename(arguments.database),
             "area_key_priority": list(evdb.AREA_KEY_PRIORITY),
@@ -145,6 +230,7 @@ def main(argv=None):
         layouts=layouts,
         ports=ports,
         generator_version=GENERATOR_VERSION,
+        areas_by_name=area_by_name,
     )
     worldfile.write(document, arguments.out)
     print("\nwrote %s (%d bytes)" % (arguments.out, os.path.getsize(arguments.out)))

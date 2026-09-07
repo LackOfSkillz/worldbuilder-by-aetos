@@ -1,0 +1,685 @@
+{
+  "areas": [
+    {
+      "anchor": {
+        "bearing_deg": 0.0,
+        "latitude_deg": -4.4705,
+        "longitude_deg": -2.532,
+        "room_spacing_m": 45.0
+      },
+      "exits": [
+        {
+          "destination": 1065,
+          "name": "north",
+          "source": 1064
+        },
+        {
+          "destination": 1064,
+          "name": "south",
+          "source": 1065
+        },
+        {
+          "destination": 1066,
+          "name": "north",
+          "source": 1065
+        },
+        {
+          "destination": 1065,
+          "name": "south",
+          "source": 1066
+        },
+        {
+          "destination": 1067,
+          "name": "north",
+          "source": 1066
+        },
+        {
+          "destination": 1066,
+          "name": "south",
+          "source": 1067
+        },
+        {
+          "destination": 1068,
+          "name": "north",
+          "source": 1067
+        },
+        {
+          "destination": 1067,
+          "name": "south",
+          "source": 1068
+        },
+        {
+          "destination": 1069,
+          "name": "north",
+          "source": 1068
+        },
+        {
+          "destination": 1068,
+          "name": "south",
+          "source": 1069
+        },
+        {
+          "destination": 1070,
+          "name": "north",
+          "source": 1069
+        },
+        {
+          "destination": 1069,
+          "name": "south",
+          "source": 1070
+        },
+        {
+          "destination": 1071,
+          "name": "east",
+          "source": 1070
+        },
+        {
+          "destination": 1070,
+          "name": "west",
+          "source": 1071
+        },
+        {
+          "destination": 1072,
+          "name": "north",
+          "source": 1070
+        },
+        {
+          "destination": 1070,
+          "name": "south",
+          "source": 1072
+        },
+        {
+          "destination": 1073,
+          "name": "east",
+          "source": 1068
+        },
+        {
+          "destination": 1068,
+          "name": "west",
+          "source": 1073
+        },
+        {
+          "destination": 1074,
+          "name": "north",
+          "source": 1073
+        },
+        {
+          "destination": 1073,
+          "name": "south",
+          "source": 1074
+        },
+        {
+          "destination": 1069,
+          "name": "west",
+          "source": 1074
+        },
+        {
+          "destination": 1074,
+          "name": "east",
+          "source": 1069
+        },
+        {
+          "destination": 1076,
+          "name": "north",
+          "source": 1075
+        },
+        {
+          "destination": 1075,
+          "name": "south",
+          "source": 1076
+        }
+      ],
+      "layout_quality": {
+        "agreement": 1.0,
+        "components": 2,
+        "conflicts": 0,
+        "inferred_rooms": 0,
+        "root_room": 1068
+      },
+      "name": "ferry_shore",
+      "port": {
+        "has_port": true,
+        "port_area": "ferry_shore",
+        "port_distance_m": 0.0,
+        "port_metric": "self"
+      },
+      "rooms": [
+        {
+          "cell": [
+            0,
+            -4,
+            0
+          ],
+          "elevation_m": 1.863,
+          "id": 1064,
+          "key": "The Shingle Beach",
+          "latitude_deg": -4.471607878430805,
+          "longitude_deg": -2.532,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            -3,
+            0
+          ],
+          "elevation_m": 2.001,
+          "id": 1065,
+          "key": "The Turf Lip",
+          "latitude_deg": -4.471330908823104,
+          "longitude_deg": -2.532,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            -2,
+            0
+          ],
+          "elevation_m": 2.116,
+          "id": 1066,
+          "key": "The Reed Walk",
+          "latitude_deg": -4.471053939215404,
+          "longitude_deg": -2.5320000000000005,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            -1,
+            0
+          ],
+          "elevation_m": 2.193,
+          "id": 1067,
+          "key": "The Alder Carr",
+          "latitude_deg": -4.4707769696077015,
+          "longitude_deg": -2.5320000000000005,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            0,
+            0
+          ],
+          "elevation_m": 2.215,
+          "id": 1068,
+          "key": "The Carr Edge",
+          "latitude_deg": -4.4705,
+          "longitude_deg": -2.5320000000000005,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            1,
+            0
+          ],
+          "elevation_m": 2.161,
+          "id": 1069,
+          "key": "The Drove Road",
+          "latitude_deg": -4.470223030392299,
+          "longitude_deg": -2.532,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            2,
+            0
+          ],
+          "elevation_m": 2.052,
+          "id": 1070,
+          "key": "The Ferry Green",
+          "latitude_deg": -4.469946060784601,
+          "longitude_deg": -2.532,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            2,
+            0
+          ],
+          "elevation_m": 2.025,
+          "id": 1071,
+          "key": "The Ferry Slip",
+          "latitude_deg": -4.469946060732262,
+          "longitude_deg": -2.5317221853778844,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            3,
+            0
+          ],
+          "elevation_m": 1.911,
+          "id": 1072,
+          "key": "The Waiting Shelter",
+          "latitude_deg": -4.469669091176898,
+          "longitude_deg": -2.5320000000000005,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            0,
+            0
+          ],
+          "elevation_m": 2.172,
+          "id": 1073,
+          "key": "The Wharf Track",
+          "latitude_deg": -4.470499999947661,
+          "longitude_deg": -2.531722185167897,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            1,
+            0
+          ],
+          "elevation_m": 2.125,
+          "id": 1074,
+          "key": "The Old Wharf",
+          "latitude_deg": -4.4702230303399615,
+          "longitude_deg": -2.531722185272893,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            0,
+            0
+          ],
+          "elevation_m": 1.944,
+          "id": 1075,
+          "key": "The Mainland Dock",
+          "latitude_deg": -4.470499999528948,
+          "longitude_deg": -2.531166555503691,
+          "submerged": false
+        },
+        {
+          "cell": [
+            3,
+            1,
+            0
+          ],
+          "elevation_m": 1.93,
+          "id": 1076,
+          "key": "The Dock Road",
+          "latitude_deg": -4.470223029921256,
+          "longitude_deg": -2.5311665558186784,
+          "submerged": false
+        }
+      ]
+    },
+    {
+      "anchor": {
+        "bearing_deg": 0.0,
+        "latitude_deg": -4.470495,
+        "longitude_deg": -2.49949,
+        "room_spacing_m": 45.0
+      },
+      "exits": [
+        {
+          "destination": 1028,
+          "name": "north",
+          "source": 1025
+        },
+        {
+          "destination": 1025,
+          "name": "south",
+          "source": 1028
+        },
+        {
+          "destination": 1029,
+          "name": "east",
+          "source": 1025
+        },
+        {
+          "destination": 1025,
+          "name": "west",
+          "source": 1029
+        },
+        {
+          "destination": 1030,
+          "name": "west",
+          "source": 1025
+        },
+        {
+          "destination": 1025,
+          "name": "east",
+          "source": 1030
+        },
+        {
+          "destination": 1032,
+          "name": "northeast",
+          "source": 1025
+        },
+        {
+          "destination": 1025,
+          "name": "southwest",
+          "source": 1032
+        },
+        {
+          "destination": 1031,
+          "name": "northwest",
+          "source": 1025
+        },
+        {
+          "destination": 1025,
+          "name": "southeast",
+          "source": 1031
+        },
+        {
+          "destination": 1026,
+          "name": "south",
+          "source": 1025
+        },
+        {
+          "destination": 1025,
+          "name": "north",
+          "source": 1026
+        },
+        {
+          "destination": 1032,
+          "name": "east",
+          "source": 1028
+        },
+        {
+          "destination": 1028,
+          "name": "west",
+          "source": 1032
+        },
+        {
+          "destination": 1031,
+          "name": "west",
+          "source": 1028
+        },
+        {
+          "destination": 1028,
+          "name": "east",
+          "source": 1031
+        },
+        {
+          "destination": 1032,
+          "name": "north",
+          "source": 1029
+        },
+        {
+          "destination": 1029,
+          "name": "south",
+          "source": 1032
+        },
+        {
+          "destination": 1031,
+          "name": "north",
+          "source": 1030
+        },
+        {
+          "destination": 1030,
+          "name": "south",
+          "source": 1031
+        },
+        {
+          "destination": 1033,
+          "name": "south",
+          "source": 1026
+        },
+        {
+          "destination": 1026,
+          "name": "north",
+          "source": 1033
+        },
+        {
+          "destination": 1024,
+          "name": "south",
+          "source": 1033
+        },
+        {
+          "destination": 1033,
+          "name": "north",
+          "source": 1024
+        },
+        {
+          "destination": 1023,
+          "name": "east",
+          "source": 1024
+        },
+        {
+          "destination": 1024,
+          "name": "west",
+          "source": 1023
+        },
+        {
+          "destination": 1027,
+          "name": "east",
+          "source": 1026
+        },
+        {
+          "destination": 1026,
+          "name": "west",
+          "source": 1027
+        },
+        {
+          "destination": 1029,
+          "name": "north",
+          "source": 1027
+        },
+        {
+          "destination": 1027,
+          "name": "south",
+          "source": 1029
+        }
+      ],
+      "layout_quality": {
+        "agreement": 1.0,
+        "components": 1,
+        "conflicts": 0,
+        "inferred_rooms": 0,
+        "root_room": 1025
+      },
+      "name": "ranger_camp",
+      "port": {
+        "has_port": true,
+        "port_area": "ranger_camp",
+        "port_distance_m": 0.0,
+        "port_metric": "self"
+      },
+      "rooms": [
+        {
+          "cell": [
+            1,
+            -3,
+            0
+          ],
+          "elevation_m": -0.136,
+          "id": 1023,
+          "key": "The Landing Stage",
+          "latitude_deg": -4.471325908770761,
+          "longitude_deg": -2.499212184854779,
+          "submerged": true
+        },
+        {
+          "cell": [
+            0,
+            -3,
+            0
+          ],
+          "elevation_m": -0.126,
+          "id": 1024,
+          "key": "The Boat Ramp",
+          "latitude_deg": -4.471325908823103,
+          "longitude_deg": -2.49949,
+          "submerged": true
+        },
+        {
+          "cell": [
+            0,
+            0,
+            0
+          ],
+          "elevation_m": 0.028,
+          "id": 1025,
+          "key": "The Camp Yard",
+          "latitude_deg": -4.470495,
+          "longitude_deg": -2.49949,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            -1,
+            0
+          ],
+          "elevation_m": 0.028,
+          "id": 1026,
+          "key": "The Shore Path",
+          "latitude_deg": -4.470771969607701,
+          "longitude_deg": -2.49949,
+          "submerged": false
+        },
+        {
+          "cell": [
+            1,
+            -1,
+            0
+          ],
+          "elevation_m": 0.026,
+          "id": 1027,
+          "key": "The North Point",
+          "latitude_deg": -4.470771969555362,
+          "longitude_deg": -2.4992121850647924,
+          "submerged": false
+        },
+        {
+          "cell": [
+            0,
+            1,
+            0
+          ],
+          "elevation_m": -0.009,
+          "id": 1028,
+          "key": "The Bunkhouse",
+          "latitude_deg": -4.470218030392299,
+          "longitude_deg": -2.49949,
+          "submerged": true
+        },
+        {
+          "cell": [
+            1,
+            0,
+            0
+          ],
+          "elevation_m": 0.028,
+          "id": 1029,
+          "key": "The Mess Hall",
+          "latitude_deg": -4.470494999947661,
+          "longitude_deg": -2.4992121851697924,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            0,
+            0
+          ],
+          "elevation_m": 0.017,
+          "id": 1030,
+          "key": "The Tackle Room",
+          "latitude_deg": -4.470494999947661,
+          "longitude_deg": -2.499767814830208,
+          "submerged": false
+        },
+        {
+          "cell": [
+            -1,
+            1,
+            0
+          ],
+          "elevation_m": -0.016,
+          "id": 1031,
+          "key": "The Smokehouse",
+          "latitude_deg": -4.470218030339961,
+          "longitude_deg": -2.499767814725212,
+          "submerged": true
+        },
+        {
+          "cell": [
+            1,
+            1,
+            0
+          ],
+          "elevation_m": -0.009,
+          "id": 1032,
+          "key": "The Warden's Office",
+          "latitude_deg": -4.470218030339962,
+          "longitude_deg": -2.499212185274788,
+          "submerged": true
+        },
+        {
+          "cell": [
+            0,
+            -2,
+            0
+          ],
+          "elevation_m": -0.027,
+          "id": 1033,
+          "key": "The Boat Shed",
+          "latitude_deg": -4.471048939215402,
+          "longitude_deg": -2.49949,
+          "submerged": true
+        }
+      ]
+    }
+  ],
+  "elevation_source": {
+    "engine": "wasm, all 24 planet parameters",
+    "fix": "Extend the pyo3 exports to take the same parameter blocks the WASM ones do. Until then a placement on a studio-authored world is not reproducible in Python, and this file records that rather than hiding it.",
+    "why": "The Python surface - oracle and pyo3 wheel alike - takes only seed, radius, plate_count and land_fraction. The opt-in tectonic, coast and gully parameters are exposed through the WASM exports only, so a Python placement on this world builds a DIFFERENT planet. It put these rooms at -406 m; the real ground is -0.14 to +2.2 m, an error of four hundred metres."
+  },
+  "generator": {
+    "name": "worldbuilder",
+    "version": "0.1.0-roundtrip"
+  },
+  "name": "Aetosia - Ranger Camp",
+  "planet": {
+    "clouds": "0.12",
+    "coast": "0.35",
+    "featureCeiling": "22",
+    "harbour": "1",
+    "lakeNodes": "86000",
+    "land": "0.4",
+    "maxLevel": "16",
+    "mountainM": "600",
+    "mtnAsym": "2.5",
+    "mtnBeltSpacing": "0",
+    "mtnBelts": "1",
+    "mtnCount": "0.45",
+    "mtnHeight": "6000",
+    "mtnStructure": "0.9",
+    "mtnStructureWave": "80000",
+    "mtnWander": "80000",
+    "mtnWanderWave": "300000",
+    "mtnWidth": "110000",
+    "persistence": "0.65",
+    "plates": "3",
+    "quieting": "0.39999999999999997",
+    "radius": "9309000",
+    "seed": "949766019",
+    "size": "129"
+  },
+  "source": {
+    "area_key_priority": [
+      "area_id",
+      "zone_id",
+      "zone",
+      "area",
+      "region"
+    ],
+    "database": "evennia.db3"
+  },
+  "worldfile_version": 1
+}

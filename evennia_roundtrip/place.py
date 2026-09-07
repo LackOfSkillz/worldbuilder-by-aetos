@@ -175,6 +175,46 @@ def sea_reach(point, surface, reach_m=DEFAULT_PORT_REACH_M, depth_m=DEFAULT_PORT
 COASTAL_SEARCH_REACH_M = 25000.0
 
 
+def _local_anchors(surface, count, near, within_m, samples, low_m, high_m, reach_m,
+                   separation_m, require_port):
+    """Search a disc around a point, at a spacing the disc can actually resolve.
+
+    **Filtering a global grid by distance is not a local search, and this is the second
+    time that confusion cost a run.** A forty-thousand-point sweep of an Earth-sized globe
+    puts a sample every 160 km or so. Ask it for anchors within 300 km of a chosen harbour
+    and roughly four of its samples fall inside the circle at all - so the search returned
+    one anchor for five areas and looked like a world with no coastline.
+
+    A disc of a few hundred kilometres needs its own sampling, not a subset of somebody
+    else's. The spiral below puts `samples` points inside the requested radius, which at
+    300 km and 40,000 points is a sample every 2.7 km - fine enough to find a harbour.
+    """
+    frame = TangentFrame.at(near, surface.radius_m)
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    found = []
+    for index in range(samples):
+        # A sunflower spiral: radius as the square root of the index keeps the points
+        # evenly dense rather than crowded at the middle.
+        radius = within_m * math.sqrt((index + 0.5) / samples)
+        angle = golden * index
+        point = frame.local_to_sphere(radius * math.cos(angle), radius * math.sin(angle))
+        elevation = surface.elevation_m(point)
+        if not (low_m <= elevation <= high_m):
+            continue
+        if sea_reach(point, surface, reach_m, DEFAULT_PORT_DEPTH_M, samples=8) is None:
+            continue
+        if require_port and sea_reach(point, surface, DEFAULT_PORT_REACH_M,
+                                      DEFAULT_PORT_DEPTH_M) is None:
+            continue
+        if any(point.distance_to(other, surface.radius_m) < separation_m
+               for other in found):
+            continue
+        found.append(point)
+        if len(found) >= count:
+            break
+    return found
+
+
 def _coprime_stride(samples):
     """A stride that visits every index of a cycle exactly once."""
     stride = max(1, int(samples * 0.618))
@@ -185,7 +225,7 @@ def _coprime_stride(samples):
 
 def coastal_anchors(surface, count, samples=40000, low_m=2.0, high_m=400.0,
                     reach_m=COASTAL_SEARCH_REACH_M, separation_m=80000.0,
-                    require_port=False):
+                    require_port=False, near=None, within_m=None):
     """
     Find places on a generated planet worth putting an area.
 
@@ -196,7 +236,12 @@ def coastal_anchors(surface, count, samples=40000, low_m=2.0, high_m=400.0,
         low_m (float, optional): Lowest ground a settlement will accept.
         high_m (float, optional): Highest.
         reach_m (float, optional): How near the sea has to be to call it coastal.
-        separation_m (float, optional): How far apart two anchors must be.
+        separation_m (float, optional): How far apart two anchors must be. This is a
+            MINIMUM and cannot pull anchors together - lowering it from 80 km to 12 km
+            changed nothing, because qualifying coasts are rarer than either figure.
+            Clustering needs `near` and `within_m`, which is a different constraint.
+        near (SpherePoint, optional): Keep anchors within `within_m` of this point.
+        within_m (float, optional): The radius that goes with `near`.
 
     Returns:
         anchors (list): `SpherePoint`, coastal land, spread out.
@@ -215,6 +260,10 @@ def coastal_anchors(surface, count, samples=40000, low_m=2.0, high_m=400.0,
         thousand points on an Earth-sized globe put a sample every 160 km or so, which
         finds coasts and would miss an island smaller than that.
     """
+    if near is not None and within_m is not None:
+        return _local_anchors(surface, count, near, within_m, samples, low_m, high_m,
+                              reach_m, separation_m, require_port)
+
     golden = math.pi * (3.0 - math.sqrt(5.0))
     found = []
     # Walk the sequence with a stride rather than in order. A Fibonacci sphere runs pole
@@ -232,6 +281,9 @@ def coastal_anchors(surface, count, samples=40000, low_m=2.0, high_m=400.0,
         point = SpherePoint.from_vector(
             Vec3(radius * math.cos(angle), radius * math.sin(angle), z)
         )
+        if near is not None and within_m is not None:
+            if point.distance_to(near, surface.radius_m) > within_m:
+                continue
         elevation = surface.elevation_m(point)
         if not (low_m <= elevation <= high_m):
             continue
