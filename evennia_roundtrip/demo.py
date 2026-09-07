@@ -148,7 +148,9 @@ def main(argv=None):
         target, _, rest = entry.partition("=")
         area_name, _, room_key = target.partition(":")
         parts = [float(p) for p in rest.split(",")]
-        room_anchors[area_name] = (room_key, parts)
+        # Two rooms of one area fix its bearing and spacing as well as its position, so a
+        # second entry is collected rather than overwriting the first.
+        room_anchors.setdefault(area_name, []).append((room_key, parts))
 
     if fixed or room_anchors:
         print("anchors given by the builder: %s"
@@ -209,21 +211,36 @@ def main(argv=None):
     next_found = 0
     for name, built, area in chosen:
         if name in room_anchors:
-            room_key, parts = room_anchors[name]
-            match = [rid for rid, room in area.rooms.items()
-                     if room.key.lower().replace(" ", "_") == room_key.lower()
-                     or room.key.lower() == room_key.lower()]
-            if not match:
-                print("no room like %r in %s; skipping" % (room_key, name))
+            def find(key):
+                hits = [rid for rid, room in area.rooms.items()
+                        if room.key.lower() == key.lower()
+                        or room.key.lower().replace(" ", "_") == key.lower()]
+                return hits[0] if hits else None
+
+            entries = room_anchors[name]
+            ids = [(find(key), key, parts) for key, parts in entries]
+            if any(rid is None for rid, _k, _p in ids):
+                print("no room like %r in %s; skipping"
+                      % ([k for r, k, _ in ids if r is None][0], name))
                 continue
-            anchor = place.anchor_for_room(
-                built, match[0], parts[0], parts[1],
-                parts[2] if len(parts) > 2 else 0.0,
-                parts[3] if len(parts) > 3 else arguments.spacing,
-                radius_m=planet["radius_m"],
-            )
-            print("  %s anchored on %r at %.6f, %.6f"
-                  % (name, area.rooms[match[0]].key, parts[0], parts[1]))
+            if len(ids) >= 2:
+                (id_a, key_a, parts_a), (id_b, key_b, parts_b) = ids[0], ids[1]
+                anchor = place.anchor_from_two_rooms(
+                    built, id_a, (parts_a[0], parts_a[1]),
+                    id_b, (parts_b[0], parts_b[1]), radius_m=planet["radius_m"],
+                )
+                print("  %s fixed by two rooms: %r and %r -> bearing %.1f, spacing %.0f m"
+                      % (name, key_a, key_b, anchor.bearing_deg, anchor.room_spacing_m))
+            else:
+                rid, key, parts = ids[0]
+                anchor = place.anchor_for_room(
+                    built, rid, parts[0], parts[1],
+                    parts[2] if len(parts) > 2 else 0.0,
+                    parts[3] if len(parts) > 3 else arguments.spacing,
+                    radius_m=planet["radius_m"],
+                )
+                print("  %s anchored on %r at %.6f, %.6f"
+                      % (name, key, parts[0], parts[1]))
         elif name in fixed:
             anchor = fixed[name]
         else:

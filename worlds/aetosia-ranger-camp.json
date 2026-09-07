@@ -2,10 +2,10 @@
   "areas": [
     {
       "anchor": {
-        "bearing_deg": 0.0,
-        "latitude_deg": -4.4705,
-        "longitude_deg": -2.532,
-        "room_spacing_m": 45.0
+        "bearing_deg": 291.9945975922455,
+        "latitude_deg": -4.4631767950495105,
+        "longitude_deg": -2.51355012296898,
+        "room_spacing_m": 264.9731233620252
       },
       "exits": [
         {
@@ -129,6 +129,13 @@
           "source": 1076
         }
       ],
+      "land_check": {
+        "dry": 12,
+        "fits": true,
+        "offenders": [],
+        "wet_expected": 1,
+        "wet_unexpected": 0
+      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 2,
@@ -150,11 +157,11 @@
             -4,
             0
           ],
-          "elevation_m": 1.863,
+          "elevation_m": 0.536,
           "id": 1064,
           "key": "The Shingle Beach",
-          "latitude_deg": -4.471607878430805,
-          "longitude_deg": -2.532,
+          "latitude_deg": -4.465619950143077,
+          "longitude_deg": -2.5074829798008835,
           "submerged": false
         },
         {
@@ -163,11 +170,11 @@
             -3,
             0
           ],
-          "elevation_m": 2.001,
+          "elevation_m": 0.8,
           "id": 1065,
           "key": "The Turf Lip",
-          "latitude_deg": -4.471330908823104,
-          "longitude_deg": -2.532,
+          "latitude_deg": -4.4650091660440046,
+          "longitude_deg": -2.508999769380417,
           "submerged": false
         },
         {
@@ -176,11 +183,11 @@
             -2,
             0
           ],
-          "elevation_m": 2.116,
+          "elevation_m": 0.77,
           "id": 1066,
           "key": "The Reed Walk",
-          "latitude_deg": -4.471053939215404,
-          "longitude_deg": -2.5320000000000005,
+          "latitude_deg": -4.46439837882843,
+          "longitude_deg": -2.51051655643472,
           "submerged": false
         },
         {
@@ -189,11 +196,11 @@
             -1,
             0
           ],
-          "elevation_m": 2.193,
+          "elevation_m": 0.779,
           "id": 1067,
           "key": "The Alder Carr",
-          "latitude_deg": -4.4707769696077015,
-          "longitude_deg": -2.5320000000000005,
+          "latitude_deg": -4.463787588496788,
+          "longitude_deg": -2.5120333409641273,
           "submerged": false
         },
         {
@@ -202,11 +209,11 @@
             0,
             0
           ],
-          "elevation_m": 2.215,
+          "elevation_m": 0.874,
           "id": 1068,
           "key": "The Carr Edge",
-          "latitude_deg": -4.4705,
-          "longitude_deg": -2.5320000000000005,
+          "latitude_deg": -4.4631767950495105,
+          "longitude_deg": -2.51355012296898,
           "submerged": false
         },
         {
@@ -215,11 +222,11 @@
             1,
             0
           ],
-          "elevation_m": 2.161,
+          "elevation_m": 0.949,
           "id": 1069,
           "key": "The Drove Road",
-          "latitude_deg": -4.470223030392299,
-          "longitude_deg": -2.532,
+          "latitude_deg": -4.462565998487031,
+          "longitude_deg": -2.5150669024496146,
           "submerged": false
         },
         {
@@ -228,11 +235,11 @@
             2,
             0
           ],
-          "elevation_m": 2.052,
+          "elevation_m": 0.603,
           "id": 1070,
           "key": "The Ferry Green",
-          "latitude_deg": -4.469946060784601,
-          "longitude_deg": -2.532,
+          "latitude_deg": -4.461955198809785,
+          "longitude_deg": -2.51658367940637,
           "submerged": false
         },
         {
@@ -241,11 +248,11 @@
             2,
             0
           ],
-          "elevation_m": 2.025,
+          "elevation_m": 0.004,
           "id": 1071,
           "key": "The Ferry Slip",
-          "latitude_deg": -4.469946060732262,
-          "longitude_deg": -2.5317221853778844,
+          "latitude_deg": -4.460443019887878,
+          "longitude_deg": -2.5159710225975283,
           "submerged": false
         },
         {
@@ -254,11 +261,11 @@
             3,
             0
           ],
-          "elevation_m": 1.911,
+          "elevation_m": 0.643,
           "id": 1072,
           "key": "The Waiting Shelter",
-          "latitude_deg": -4.469669091176898,
-          "longitude_deg": -2.5320000000000005,
+          "latitude_deg": -4.461344396018201,
+          "longitude_deg": -2.5181004538395846,
           "submerged": false
         },
         {
@@ -267,11 +274,11 @@
             0,
             0
           ],
-          "elevation_m": 2.172,
+          "elevation_m": 0.225,
           "id": 1073,
           "key": "The Wharf Track",
-          "latitude_deg": -4.470499999947661,
-          "longitude_deg": -2.531722185167897,
+          "latitude_deg": -4.461664613610825,
+          "longitude_deg": -2.512937471388363,
           "submerged": false
         },
         {
@@ -280,11 +287,11 @@
             1,
             0
           ],
-          "elevation_m": 2.125,
+          "elevation_m": 0.306,
           "id": 1074,
           "key": "The Old Wharf",
-          "latitude_deg": -4.4702230303399615,
-          "longitude_deg": -2.531722185272893,
+          "latitude_deg": -4.461053818306616,
+          "longitude_deg": -2.514454248254617,
           "submerged": false
         },
         {
@@ -293,11 +300,11 @@
             0,
             0
           ],
-          "elevation_m": 1.944,
+          "elevation_m": 0.296,
           "id": 1075,
           "key": "The Mainland Dock",
-          "latitude_deg": -4.470499999528948,
-          "longitude_deg": -2.531166555503691,
+          "latitude_deg": -4.458640249209434,
+          "longitude_deg": -2.511712175796309,
           "submerged": false
         },
         {
@@ -306,12 +313,12 @@
             1,
             0
           ],
-          "elevation_m": 1.93,
+          "elevation_m": -0.17,
           "id": 1076,
           "key": "The Dock Road",
-          "latitude_deg": -4.470223029921256,
-          "longitude_deg": -2.5311665558186784,
-          "submerged": false
+          "latitude_deg": -4.4580294564209675,
+          "longitude_deg": -2.5132289474352443,
+          "submerged": true
         }
       ]
     },
@@ -320,7 +327,7 @@
         "bearing_deg": 0.0,
         "latitude_deg": -4.470495,
         "longitude_deg": -2.49949,
-        "room_spacing_m": 45.0
+        "room_spacing_m": 30.0
       },
       "exits": [
         {
@@ -474,6 +481,13 @@
           "source": 1029
         }
       ],
+      "land_check": {
+        "dry": 9,
+        "fits": true,
+        "offenders": [],
+        "wet_expected": 2,
+        "wet_unexpected": 0
+      },
       "layout_quality": {
         "agreement": 1.0,
         "components": 1,
@@ -495,11 +509,11 @@
             -3,
             0
           ],
-          "elevation_m": -0.136,
+          "elevation_m": -0.03,
           "id": 1023,
           "key": "The Landing Stage",
-          "latitude_deg": -4.471325908770761,
-          "longitude_deg": -2.499212184854779,
+          "latitude_deg": -4.471048939192139,
+          "longitude_deg": -2.4993047899731917,
           "submerged": true
         },
         {
@@ -508,10 +522,10 @@
             -3,
             0
           ],
-          "elevation_m": -0.126,
+          "elevation_m": -0.027,
           "id": 1024,
           "key": "The Boat Ramp",
-          "latitude_deg": -4.471325908823103,
+          "latitude_deg": -4.471048939215402,
           "longitude_deg": -2.49949,
           "submerged": true
         },
@@ -534,10 +548,10 @@
             -1,
             0
           ],
-          "elevation_m": 0.028,
+          "elevation_m": 0.034,
           "id": 1026,
           "key": "The Shore Path",
-          "latitude_deg": -4.470771969607701,
+          "latitude_deg": -4.4706796464051335,
           "longitude_deg": -2.49949,
           "submerged": false
         },
@@ -547,11 +561,11 @@
             -1,
             0
           ],
-          "elevation_m": 0.026,
+          "elevation_m": 0.035,
           "id": 1027,
           "key": "The North Point",
-          "latitude_deg": -4.470771969555362,
-          "longitude_deg": -2.4992121850647924,
+          "latitude_deg": -4.470679646381872,
+          "longitude_deg": -2.4993047900665286,
           "submerged": false
         },
         {
@@ -560,12 +574,12 @@
             1,
             0
           ],
-          "elevation_m": -0.009,
+          "elevation_m": 0.006,
           "id": 1028,
           "key": "The Bunkhouse",
-          "latitude_deg": -4.470218030392299,
-          "longitude_deg": -2.49949,
-          "submerged": true
+          "latitude_deg": -4.470310353594866,
+          "longitude_deg": -2.4994900000000007,
+          "submerged": false
         },
         {
           "cell": [
@@ -573,11 +587,11 @@
             0,
             0
           ],
-          "elevation_m": 0.028,
+          "elevation_m": 0.029,
           "id": 1029,
           "key": "The Mess Hall",
-          "latitude_deg": -4.470494999947661,
-          "longitude_deg": -2.4992121851697924,
+          "latitude_deg": -4.470494999976738,
+          "longitude_deg": -2.4993047901131953,
           "submerged": false
         },
         {
@@ -586,11 +600,11 @@
             0,
             0
           ],
-          "elevation_m": 0.017,
+          "elevation_m": 0.022,
           "id": 1030,
           "key": "The Tackle Room",
-          "latitude_deg": -4.470494999947661,
-          "longitude_deg": -2.499767814830208,
+          "latitude_deg": -4.470494999976738,
+          "longitude_deg": -2.499675209886806,
           "submerged": false
         },
         {
@@ -599,12 +613,12 @@
             1,
             0
           ],
-          "elevation_m": -0.016,
+          "elevation_m": 0.001,
           "id": 1031,
           "key": "The Smokehouse",
-          "latitude_deg": -4.470218030339961,
-          "longitude_deg": -2.499767814725212,
-          "submerged": true
+          "latitude_deg": -4.470310353571605,
+          "longitude_deg": -2.4996752098401402,
+          "submerged": false
         },
         {
           "cell": [
@@ -612,12 +626,12 @@
             1,
             0
           ],
-          "elevation_m": -0.009,
+          "elevation_m": 0.008,
           "id": 1032,
           "key": "The Warden's Office",
-          "latitude_deg": -4.470218030339962,
-          "longitude_deg": -2.499212185274788,
-          "submerged": true
+          "latitude_deg": -4.4703103535716044,
+          "longitude_deg": -2.49930479015986,
+          "submerged": false
         },
         {
           "cell": [
@@ -625,20 +639,19 @@
             -2,
             0
           ],
-          "elevation_m": -0.027,
+          "elevation_m": 0.016,
           "id": 1033,
           "key": "The Boat Shed",
-          "latitude_deg": -4.471048939215402,
-          "longitude_deg": -2.49949,
-          "submerged": true
+          "latitude_deg": -4.470864292810268,
+          "longitude_deg": -2.4994899999999998,
+          "submerged": false
         }
       ]
     }
   ],
   "elevation_source": {
     "engine": "wasm, all 24 planet parameters",
-    "fix": "Extend the pyo3 exports to take the same parameter blocks the WASM ones do. Until then a placement on a studio-authored world is not reproducible in Python, and this file records that rather than hiding it.",
-    "why": "The Python surface - oracle and pyo3 wheel alike - takes only seed, radius, plate_count and land_fraction. The opt-in tectonic, coast and gully parameters are exposed through the WASM exports only, so a Python placement on this world builds a DIFFERENT planet. It put these rooms at -406 m; the real ground is -0.14 to +2.2 m, an error of four hundred metres."
+    "note": "The Python surface takes four of this world's parameters and placed these rooms 405 m under water. These come from the engine the viewer runs."
   },
   "generator": {
     "name": "worldbuilder",
@@ -670,6 +683,22 @@
     "radius": "9309000",
     "seed": "949766019",
     "size": "129"
+  },
+  "route": {
+    "ferry_dock": {
+      "how": "picked by the owner in the viewer",
+      "latitude_deg": -4.460443,
+      "longitude_deg": -2.515971
+    },
+    "ferry_sea_m": 8500,
+    "kayak_lake_m": 1518,
+    "kayak_landing": {
+      "elevation_m": 0.54,
+      "how": "first land after the lake along the owner's own line, found by a run of six samples above +0.5 m rather than one",
+      "latitude_deg": -4.46562,
+      "longitude_deg": -2.507483
+    },
+    "walk_woods_m": 1610
   },
   "source": {
     "area_key_priority": [

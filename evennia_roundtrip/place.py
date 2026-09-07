@@ -119,6 +119,61 @@ def anchor_for_room(layout, room_id, latitude_deg, longitude_deg, bearing_deg,
     return Anchor(root_latitude, root_longitude, bearing_deg, room_spacing_m)
 
 
+def anchor_from_two_rooms(layout, room_a, point_a, room_b, point_b,
+                          radius_m=EARTH_RADIUS_M):
+    """
+    The anchor that puts TWO named rooms at two chosen places.
+
+    Args:
+        layout (Layout): From `layout.build`.
+        room_a (int): The first room.
+        point_a (tuple): Its (latitude, longitude).
+        room_b (int): The second room.
+        point_b (tuple): Its (latitude, longitude).
+        radius_m (float, optional): The planet's radius.
+
+    Returns:
+        anchor (Anchor): With the bearing and spacing solved, and the root positioned so
+        `room_a` lands on `point_a`.
+
+    Notes:
+        **One point fixes where an area is; two fix how it lies.** A builder pointing at a
+        beach and a ferry slip has said everything needed - the direction between them is
+        the area's bearing and the distance between them sets the room spacing, so neither
+        has to be guessed and then corrected by eye.
+
+        The lattice is rigid, so the two rooms must be the distance apart the lattice makes
+        them. That is what `room_spacing_m` is solved for: whatever spacing makes the
+        lattice's own separation equal the real one. A third point would over-constrain it
+        and is not accepted for that reason.
+    """
+    cell_a, cell_b = layout.cells.get(room_a), layout.cells.get(room_b)
+    if cell_a is None or cell_b is None:
+        raise KeyError("both rooms must be in the layout")
+    dx, dy = cell_b[0] - cell_a[0], cell_b[1] - cell_a[1]
+    lattice_steps = math.hypot(dx, dy)
+    if lattice_steps == 0.0:
+        raise ValueError("the two rooms occupy one cell; they cannot fix a bearing")
+
+    start = SpherePoint.from_latlon(point_a[0], point_a[1])
+    end = SpherePoint.from_latlon(point_b[0], point_b[1])
+    separation_m = start.distance_to(end, radius_m)
+
+    # The geographic bearing from A to B, measured in A's own tangent frame so it is exact
+    # rather than a flat-earth approximation of a difference in degrees.
+    frame = TangentFrame.at(start, radius_m)
+    east_m, north_m = frame.sphere_to_local(end)
+    geographic_bearing = math.degrees(math.atan2(east_m, north_m)) % 360.0
+
+    # Where B sits from A in the LATTICE, as a bearing from lattice north.
+    lattice_bearing = math.degrees(math.atan2(dx, dy)) % 360.0
+
+    bearing = (geographic_bearing - lattice_bearing) % 360.0
+    spacing = separation_m / lattice_steps
+    return anchor_for_room(layout, room_a, point_a[0], point_a[1], bearing, spacing,
+                           radius_m=radius_m)
+
+
 def place(layout, area, anchor, surface):
     """
     Give every room in an area a latitude, a longitude and a ground height.
