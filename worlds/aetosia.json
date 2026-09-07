@@ -32,6 +32,34 @@
     "The feature it was kept for is an island in a lake, on that landmass - the intended site of a",
     "ranger fishing camp."
   ],
+  "places": [
+    {
+      "elevation_m": 0.03,
+      "fly": "fly=-4.470495,-2.499490,4726",
+      "intended_use": "a ranger fishing camp",
+      "latitude_deg": -4.470495,
+      "longitude_deg": -2.49949,
+      "measured": {
+        "enclosed": "the water around it does not reach the edge of a 15 km search box",
+        "enclosing_water_area_km2": 6.98,
+        "enclosing_water_km": "4.86 x 3.83",
+        "sampling_m": 65,
+        "surrounding_plain_m": "0 to 3.4 above datum for at least 48 km"
+      },
+      "name": "Ranger Camp Island",
+      "notes": [
+        "NOT in the water manifest. The engine enumerates lake BODIES; the sea is the",
+        "fallback rather than a body in it, so a lake sitting at datum level is",
+        "indistinguishable from sea and never gets a row. The lake-island finder searches",
+        "enumerated bodies and is therefore structurally blind to this one - it reported the",
+        "nearest lake as 2,260 km away, which was true and irrelevant.",
+        "",
+        "That is the gap to close if the finder is meant to find places like this: enclosure",
+        "has to be tested against the terrain, not looked up in the manifest."
+      ],
+      "picked_by": "owner, click-to-pick, camera 4,726 m"
+    }
+  ],
   "planet": {
     "clouds": "0.12",
     "coast": "0.35",
