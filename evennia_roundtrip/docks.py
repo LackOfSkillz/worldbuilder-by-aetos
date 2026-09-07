@@ -34,6 +34,18 @@ DEFAULT_APPROACH_M = 600.0
 #: What a hull needs under it. Twenty feet, the owner's own figure for the ferry.
 DEFAULT_DRAUGHT_M = 6.096
 
+#: What a kayak needs. A hand's breadth.
+#:
+#: **One draught for every vessel is why the camp's own landing was reported as "not a
+#: dock".** It is a perfectly good place to leave a kayak and has nowhere near six metres
+#: of water, and both of those are true at once. A berth and a landing are different
+#: questions about the same room, so they get different numbers and both are recorded.
+SMALL_CRAFT_DRAUGHT_M = 0.3
+
+#: Names that suggest a small boat comes ashore, whether or not a ship could.
+LANDING_WORDS = DOCK_WORDS + ("landing", "beach", "hard", "strand", "steps", "stair",
+                              "slipway", "boat shed", "shingle")
+
 
 def looks_like_a_dock(key):
     """Whether a room's name suggests a landing place."""
@@ -86,6 +98,14 @@ def approach(latitude_deg, longitude_deg, elevation_at, radius_m,
     return best
 
 
+def looks_like_a_landing(key):
+    """Whether a room's name suggests a small boat can come ashore."""
+    lowered = key.lower()
+    if any(word in lowered for word in NOT_A_DOCK):
+        return False
+    return any(word in lowered for word in LANDING_WORDS)
+
+
 def find(areas, elevation_at, radius_m, draught_m=DEFAULT_DRAUGHT_M,
          reach_m=DEFAULT_APPROACH_M):
     """
@@ -128,3 +148,26 @@ def find(areas, elevation_at, radius_m, draught_m=DEFAULT_DRAUGHT_M,
             })
     return {"docks": found, "rejected": rejected,
             "draught_m": draught_m, "approach_reach_m": reach_m}
+
+
+def find_landings(areas, elevation_at, radius_m, draught_m=SMALL_CRAFT_DRAUGHT_M,
+                  reach_m=200.0):
+    """Every room a small boat can be pulled up at.
+
+    The same measurement as `find`, at a draught a kayak actually has, and over a shorter
+    reach - somebody dragging a boat ashore walks it the last few metres.
+    """
+    found = []
+    for area in areas:
+        for room in area.get("rooms", []):
+            if not looks_like_a_landing(room["key"]):
+                continue
+            water = approach(room["latitude_deg"], room["longitude_deg"],
+                             elevation_at, radius_m, draught_m, reach_m)
+            if water is None:
+                continue
+            found.append({"area": area["name"], "room": room["key"], "id": room["id"],
+                          "latitude_deg": room["latitude_deg"],
+                          "longitude_deg": room["longitude_deg"],
+                          "approach": water, "draught_m": draught_m})
+    return found
