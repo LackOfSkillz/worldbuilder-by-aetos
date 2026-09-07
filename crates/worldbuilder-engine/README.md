@@ -4603,11 +4603,11 @@ from `$?` directly, never through a pipe.**
 
 | configuration | listed | ignored | **run** |
 |---|---|---|---|
-| `--no-default-features` | 633 | 5 | **628** |
-| default | 633 | 5 | **628** |
-| `--features python` | 635 | 5 | **630** |
-| `--features wasm` | 736 | 5 | **731** |
-| `--features python,wasm` | 738 | 5 | **733** |
+| `--no-default-features` | 637 | 5 | **632** |
+| default | 637 | 5 | **632** |
+| `--features python` | 639 | 5 | **634** |
+| `--features wasm` | 740 | 5 | **735** |
+| `--features python,wasm` | 742 | 5 | **737** |
 
 All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
@@ -4615,9 +4615,11 @@ every row** (it widened no C ABI), the coast channel **+18 on the two WASM rows 
 (`tests/wasm_exports.rs` is `#![cfg(feature = "wasm")]` in its entirety), the three NaN guards
 **+1 then +2 on every row**, the climate slice's temperature task **+18 on every row**, its
 moisture march **+21 on every row**, the merging slice **+3 on every row and +4 on the two WASM
-rows**, the local-reference slice **+2 on every row**, and the climate slice's band task **+13 on
-every row** -- each time because the tests live in `src/` and compile unconditionally, and each
-time because no export was added.
+rows**, the local-reference slice **+2 on every row**, the climate slice's band task **+13 on
+every row**, and its snow-line task **+4 on every row** -- each time because the tests live in
+`src/` and compile unconditionally, and each time because no export was added. The one exception
+is the climate slice's export task, **+7 on the two WASM rows alone**, which is the complementary
+shape and is the check that its tests all landed in `tests/wasm_exports.rs`.
 
 **The binary count moved from 13 to 14 at the temperature task and from 14 to 15 at the merging
 slice's `src/bin/gully_merging_survey.rs`.** A `[[bin]]` carries zero tests, so it is invisible to
