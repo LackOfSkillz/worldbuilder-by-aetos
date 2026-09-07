@@ -208,6 +208,113 @@ fn main() {
         );
     }
 
+    // --- climate: the two new doors onto climate.rs -----------------------------------
+    //
+    // Slice `2026-09-06-slice-climate`, Task 4. `wb_climate_tile_f32` and
+    // `wb_climate_calibration` are the only exports that reach `climate.rs`, so before they
+    // existed that module's native/WASM agreement was **unfalsifiable** in exactly the sense
+    // this file's own module doc gives for `wb_erosion_run` and `wb_water_run`.
+    //
+    // What is genuinely new in the arithmetic, rather than more of what is already compared:
+    // the march is an accumulation over up to `march_samples` `elevation_m` probes taken
+    // along a `TangentFrame`, so it compounds `detmath::exp` (never previously crossed at
+    // all) over a path -- a place where a single-ULP disagreement would grow rather than
+    // stay put. The calibration adds a **sort and an order statistic over a 4,000-point
+    // Fibonacci spiral**, whose answer depends on the ordering of values that a one-ULP
+    // difference could swap.
+    //
+    // **The control is `--mutate climate-samples`, and it is a control with a shape rather
+    // than a size**: one more upwind step changes the rain-out integral and cannot change a
+    // closed-form temperature or a quantile of elevation. So it must move every
+    // `climate-moist/*` group and leave every `climate-temp/*` and `climate-land/*` group at
+    // exactly zero. A control that moved all three would be indistinguishable from a
+    // harness bug; that prediction is asserted in `parity.mjs`, not observed.
+    //
+    // The budgets here are deliberately small (0, 8, 24) except for one canonical-width
+    // 16x16 tile: the cost is samples x budget and the replaying side runs in WASM at ~3x
+    // native. 16x16 is also the raster the viewer ships, so the compared grid is the grid
+    // that is drawn.
+    for (name, handle) in [("plain", plain), ("harbour", harbour)] {
+        // **The window is over a continent, and that is a finding rather than a preference.**
+        // The obvious choice -- the harbour, which every other section of this corpus uses --
+        // produced 640 f32 all equal to `3f800000`: the whole 3,200 km upwind path is open
+        // water there, so the march recharges to exactly 1.0 and STAYS there whatever the
+        // budget is. The first run of `--mutate climate-samples` therefore moved 8 values of
+        // 648, all of them calibration edges, and the tile records compared a constant to
+        // itself. That is this project's "an assertion that looked load-bearing and was not"
+        // arriving in a parity corpus.
+        //
+        // 6 N to 10 S, 40 E to 56 E is this world's largest dry interior: a global 72 x 36
+        // scan through this same export puts its driest land cells at moisture 0.009 against
+        // 1.0 offshore, so the window spans nearly the whole range the field has. The
+        // assertions below hold the corpus to that rather than trusting this comment.
+        let (lat0, lat1) = (6.0, -10.0);
+        let (lon0, lon1) = (40.0, 56.0);
+        // 16x16 at the shipped budget, then 8x8 at zero -- the identity march, whose answer
+        // is exactly 1.0 and which is therefore the one cell of this corpus that a wrong
+        // `exp` could not move. It is here so the control has something to be measured
+        // against that is NOT sensitive to the same term.
+        for (width, height, samples) in [(16u32, 16u32, 160u32), (8, 8, 0)] {
+            let values = (width * height) as usize * WB_CLIMATE_STRIDE; // cast-ok: a compile-time grid back to a length
+            let mut tile = vec![0.0f32; values];
+            let status = wb_climate_tile_f32(
+                handle,
+                lat0,
+                lat1,
+                lon0,
+                lon1,
+                width,
+                height,
+                RES_M,
+                samples,
+                tile.as_mut_ptr(),
+                values as u32, // cast-ok: a compile-time length back to the ABI's u32
+            );
+            assert_eq!(status, WB_OK, "{name}: the climate tile must fill");
+            // **A corpus of constants compares nothing.** The moisture channel of the
+            // canonical-budget tile must actually vary, and it must reach well below
+            // saturation, or `--mutate climate-samples` has nothing to move and the parity
+            // comparison is a constant against itself. Asserted here, in the generator, so
+            // the corpus cannot quietly become uninformative again.
+            if samples > 0 {
+                let mut distinct: Vec<u32> = tile.iter().skip(1).step_by(2).map(|v| v.to_bits()).collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                let driest = tile.iter().skip(1).step_by(2).fold(f32::INFINITY, |a, b| if *b < a { *b } else { a });
+                assert!(
+                    distinct.len() > 100,
+                    "{name}: only {} distinct moisture values in the climate tile",
+                    distinct.len(),
+                );
+                assert!(driest < 0.5, "{name}: the driest cell is {driest}; this window is all sea");
+            }
+            let cells: Vec<String> = tile.iter().map(|v| hex32(*v)).collect();
+            println!(
+                "CL {name} {} {} {} {} {width} {height} {} {samples} {}",
+                hex(lat0),
+                hex(lat1),
+                hex(lon0),
+                hex(lon1),
+                hex(RES_M),
+                cells.join(" ")
+            );
+        }
+        // The calibration, at a budget small enough to replay in WASM: 4,000 elevations plus
+        // one 8-step march at every land point.
+        let mut edges = [0.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+        let status = wb_climate_calibration(
+            handle,
+            RES_M,
+            8,
+            edges.as_mut_ptr(),
+            WB_CLIMATE_CALIBRATION_STRIDE as u32, // cast-ok: a compile-time stride back to the ABI's u32
+        );
+        assert_eq!(status, WB_OK, "{name}: the calibration must answer");
+        assert!(edges[6] > 100.0, "{name}: this corpus needs a world with real land");
+        let encoded: Vec<String> = edges.iter().map(|v| hex(*v)).collect();
+        println!("CK {name} {} 8 {}", hex(RES_M), encoded.join(" "));
+    }
+
     // --- erosion: one capped bake over a real graph, through wb_erosion_run -----------
     //
     // Task 5's corpus. `erosion.rs`'s module doc claims native and WASM agree bit-for-bit;

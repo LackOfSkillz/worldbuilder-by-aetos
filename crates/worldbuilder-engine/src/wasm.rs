@@ -93,6 +93,7 @@ use std::alloc as sys;
 use std::alloc::Layout;
 use std::cell::RefCell;
 
+use crate::climate;
 use crate::continentality::CoastParams;
 use crate::detail::{GullyParams, ReliefParams};
 use crate::erosion::{erode_to_convergence, receiver_distances_m, ErosionParams, ErosionRun};
@@ -1062,6 +1063,63 @@ pub const WB_MIN_GULLY_HARMONIC_BAND_M: f64 = 1.0e-3;
 /// See [`WB_MIN_GULLY_HARMONIC_BAND_M`].
 pub const WB_MAX_GULLY_HARMONIC_BAND_M: f64 = WB_MAX_GULLY_LENGTH_M;
 
+// ------------------------------------------------------------------------- climate
+
+/// f32 per sample [`wb_climate_tile_f32`] writes: `[temperature_c_at_datum, moisture_index]`,
+/// in that order, and **the order is the ABI**.
+///
+/// # Why the temperature channel is at the DATUM and not at the ground
+///
+/// `climate::temperature_c` is a latitude profile minus a lapse rate times the elevation, and
+/// the elevation term is the only one that varies at terrain frequencies. A consumer that
+/// rasterises this grid coarsely -- which is the entire reason this export exists; see the
+/// cost note below -- and then interpolates would get a temperature whose lapse term was
+/// smoothed over the coarse grid, so a 2,000 m peak inside one coarse cell would come back at
+/// its neighbourhood's mean height and lose its snow line. Writing the datum value instead
+/// lets the consumer apply the lapse at **its own** raster's resolution, against the heights it
+/// already has from [`wb_fill_tile_f32`]. The lapse rate it needs for that is reported by
+/// [`wb_climate_calibration`], so the consumer does not carry its own copy of the constant.
+///
+/// The datum channel is therefore a pure function of latitude and could be computed by the
+/// host. It is written anyway, per sample, because a host that computed it would be a second
+/// place `EQUATOR_C` and `POLE_C` live -- and this project has now found eight transcription
+/// defects across six slices.
+pub const WB_CLIMATE_STRIDE: usize = 2;
+
+/// f64 [`wb_climate_calibration`] writes: four moisture edges, two landform edges in metres,
+/// the land sample count, and the lapse rate in C per km -- in that order, and **the order is
+/// the ABI**.
+///
+/// It is `climate::MOISTURE_BELL_Z.len() + climate::LANDFORM_QUANTILES.len() + 2` rather than
+/// a literal 8, so a band added on either quantiled axis moves this and does not silently
+/// truncate the payload.
+pub const WB_CLIMATE_CALIBRATION_STRIDE: usize =
+    climate::MOISTURE_BELL_Z.len() + climate::LANDFORM_QUANTILES.len() + 2;
+
+/// The `march_samples` sentinel meaning "the engine's own canonical march", i.e. the `None`
+/// that `Surface::moisture_index` takes.
+///
+/// **It is `u32::MAX` and not `0`, and that is deliberate rather than perverse.**
+/// `climate::MarchBudget::new(0)` is admitted on purpose -- a zero-step march is the identity
+/// element, the air has travelled nowhere and is still saturated, and `climate.rs` pins that
+/// answer as `1.0` rather than as "the loop did not run". Spelling canonical as `0` would
+/// delete a value the engine deliberately admits, which is the shape of decision this project
+/// keeps having to undo.
+pub const WB_CLIMATE_CANONICAL_SAMPLES: u32 = u32::MAX;
+
+/// The ceiling on `march_samples`, and **it is a LOOP BOUND**: the march walks this many steps
+/// inside one uninterruptible `extern "C"` call, per sample, and a tile is `width * height`
+/// samples. The spike measured `count = 2^20` at 0.64 s, so an unbounded `u32` extrapolates to
+/// ~2,600 s inside a call a host cannot cancel -- a hang, not a slow answer. The same posture
+/// [`WB_MAX_SUTURE_COUNT`] and [`WB_MAX_COAST_OCTAVES`] take, and for the same measured reason.
+///
+/// This is `climate::MAX_MARCH_SAMPLES` and not an independent number: the type already refuses
+/// above it (`MarchBudget::new` returns `None`), so a larger ceiling here could not be honoured
+/// and a smaller one would be a second, disagreeing bound. What this constant adds over the
+/// type is a **named status** -- `WB_ERR_PARAM` says which argument was wrong, where the type
+/// alone could only decline to build.
+pub const WB_MAX_CLIMATE_MARCH_SAMPLES: u32 = climate::MAX_MARCH_SAMPLES as u32; // cast-ok: a u16 ceiling widened to the ABI's integer, exact for every u16
+
 /// **The export list, declared.** A native test run cannot see the artifact's export
 /// section, and a forgotten no-mangle attribute is invisible in a build that exits 0 -- so
 /// this list is checked against this file's own source by a test, and the built `.wasm` is
@@ -1089,6 +1147,8 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_structural_m",
     "wb_bottom_at",
     "wb_fill_tile_f32",
+    "wb_climate_tile_f32",
+    "wb_climate_calibration",
     "wb_erosion_run",
     "wb_water_run",
 ];
@@ -3019,6 +3079,257 @@ pub extern "C" fn wb_fill_tile_f32(
     });
 
     match filled {
+        Some(()) => WB_OK,
+        None => WB_ERR_HANDLE,
+    }
+}
+
+/// What a `march_samples` argument decoded to. Three outcomes and not two, because
+/// "canonical" and "explicitly 160 steps" are the same *field* and different *requests*:
+/// `None` is the path `Surface::moisture_index` guarantees bit-identical to the engine's own
+/// default, and a `Some` carrying `MoistureParams::canonical()` is only pinned equal to it by
+/// a test. Collapsing them here would make the export unable to ask for the guaranteed path.
+enum ClimateBudget {
+    /// `WB_CLIMATE_CANONICAL_SAMPLES`: the engine's `None`.
+    Canonical,
+    /// A bounded explicit march.
+    Explicit(climate::MoistureParams),
+    /// Out of domain. The caller returns `WB_ERR_PARAM`.
+    Refused,
+}
+
+/// Decode `march_samples`. See [`WB_MAX_CLIMATE_MARCH_SAMPLES`] for why the ceiling is the
+/// type's own and what this adds over it.
+fn climate_budget(march_samples: u32) -> ClimateBudget {
+    if march_samples == WB_CLIMATE_CANONICAL_SAMPLES {
+        return ClimateBudget::Canonical;
+    }
+    if march_samples > WB_MAX_CLIMATE_MARCH_SAMPLES {
+        return ClimateBudget::Refused;
+    }
+    let samples = march_samples as u16; // cast-ok: bounded above by WB_MAX_CLIMATE_MARCH_SAMPLES, which is a u16 constant widened, so this narrowing is exact
+    // The type is still asked, rather than trusted to agree with the comparison above: two
+    // bounds for one fact is how a ceiling and a constructor drift apart.
+    match climate::MarchBudget::new(samples) {
+        Some(budget) => {
+            let mut params = climate::MoistureParams::canonical();
+            params.budget = budget;
+            ClimateBudget::Explicit(params)
+        }
+        None => ClimateBudget::Refused,
+    }
+}
+
+/// Fill a rectangular grid of **climate** into linear memory, shaped for a `Float32Array`:
+/// two f32 per sample, `[temperature_c_at_datum, moisture_index]`. See [`WB_CLIMATE_STRIDE`]
+/// for why the temperature is at the datum.
+///
+/// # The grid
+///
+/// Exactly [`wb_fill_tile_f32`]'s: row-major, `width` columns by `height` rows, both endpoints
+/// included, `grid_coordinate` between the bounds, no hemisphere baked in. It is the same
+/// function and the same interpolation deliberately, so a consumer can lay this grid over that
+/// one without a second convention to get wrong. **Element `(row * width + col) * 2` is the
+/// temperature and `+ 1` is the moisture.**
+///
+/// # `march_samples`, and why it is the only climate parameter here
+///
+/// [`WB_CLIMATE_CANONICAL_SAMPLES`] for the engine's own march; otherwise `0 ..=`
+/// [`WB_MAX_CLIMATE_MARCH_SAMPLES`], and **it is a loop bound** -- see that constant. The other
+/// four `MoistureParams` fields and all three `ClimateParams` fields are canonical and have no
+/// argument: this export exists to feed a viewer's land colour, the viewer has no control that
+/// sets them, and a parameter nobody can move is a sweep surface with no consumer. A caller who
+/// wants them is calling the Rust API, not this door.
+///
+/// # Cost, and why a consumer must rasterise this COARSELY
+///
+/// One sample is one moisture march, and one march at the canonical budget is 161 elevation
+/// queries. Measured on this project's owner world (radius 9,309,000 m, `ranges` and `fractal`
+/// presets), a 160-sample query costs **560-770 us native**. Texels are quadratic in the raster
+/// edge and samples are linear in the budget, so **the raster is the lever and the budget is
+/// not**: at the relief layer's own 256-texel raster this grid would cost minutes per tile.
+/// The viewer draws it at **16 x 16** and interpolates -- see `viewer/public/app/biome.js`.
+///
+/// # Returns
+///
+/// `WB_OK`, or `WB_ERR_GRID` for a zero dimension or a non-finite bound, `WB_ERR_PARAM` for a
+/// `march_samples` outside its domain, `WB_ERR_BUFFER` for a null, misaligned or short buffer,
+/// `WB_ERR_HANDLE` for an unknown world. **Nothing is written on any refusal**, exactly as
+/// [`wb_fill_tile_f32`] writes nothing: a half-filled climate grid reads as a climate.
+///
+/// A NaN in the payload is **not** a refusal and is the contract working: `climate.rs`'s NaN
+/// posture is propagate, so a moisture nobody can compute arrives as NaN rather than as the
+/// saturated air the spike found it silently returning. A consumer must not band it.
+///
+/// # Safety
+/// `out` must be null, or a live 4-aligned allocation of at least `out_len` f32.
+#[no_mangle]
+pub extern "C" fn wb_climate_tile_f32(
+    handle: u32,
+    lat0_deg: f64,
+    lat1_deg: f64,
+    lon0_deg: f64,
+    lon1_deg: f64,
+    width: u32,
+    height: u32,
+    resolution_m: f64,
+    march_samples: u32,
+    out: *mut f32,
+    out_len: u32,
+) -> u32 {
+    if width == 0 || height == 0 {
+        return WB_ERR_GRID;
+    }
+    for bound in [lat0_deg, lat1_deg, lon0_deg, lon1_deg] {
+        if !bound.is_finite() {
+            return WB_ERR_GRID;
+        }
+    }
+    let (columns, rows) = match (usize::try_from(width), usize::try_from(height)) {
+        (Ok(columns), Ok(rows)) => (columns, rows),
+        _ => return WB_ERR_GRID,
+    };
+    // Both multiplications are checked. The stride one matters as much as the other: a
+    // `width * height` that fits and a `width * height * 2` that does not is exactly the
+    // cross-product shape this project's one surviving abort had.
+    let values = match columns
+        .checked_mul(rows)
+        .and_then(|samples| samples.checked_mul(WB_CLIMATE_STRIDE))
+    {
+        Some(values) => values,
+        None => return WB_ERR_GRID,
+    };
+    let moisture = match climate_budget(march_samples) {
+        ClimateBudget::Canonical => None,
+        ClimateBudget::Explicit(params) => Some(params),
+        ClimateBudget::Refused => return WB_ERR_PARAM,
+    };
+    if out.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out as usize; // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+    if address % core::mem::align_of::<f32>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(len) if len >= values => {}
+        _ => return WB_ERR_BUFFER,
+    }
+
+    let filled = with_world(handle, |world| {
+        let surface = world.surface();
+        let resolution_m = resolution(resolution_m);
+        let temperature = climate::ClimateParams::canonical();
+        let last_row = f64::from(height - 1);
+        let last_column = f64::from(width - 1);
+        let buffer = unsafe { core::slice::from_raw_parts_mut(out, values) };
+        for row in 0..rows {
+            let down = row as f64; // cast-ok: a grid row index to float, exact for any tile that fits in memory
+            let latitude_deg = grid_coordinate(lat0_deg, lat1_deg, down, last_row);
+            // Hoisted out of the column loop because it does not depend on longitude, not as
+            // an optimisation: the datum temperature IS a function of latitude alone, and
+            // computing it per column would invite a later edit to make it one of two.
+            let datum_c = climate::temperature_c(latitude_deg, 0.0, &temperature);
+            for column in 0..columns {
+                let across = column as f64; // cast-ok: a grid column index to float, exact for any tile that fits in memory
+                let longitude_deg = grid_coordinate(lon0_deg, lon1_deg, across, last_column);
+                let point = SpherePoint::from_latlon(latitude_deg, longitude_deg);
+                let wetness = surface.moisture_index(&point, resolution_m, moisture);
+                let base = (row * columns + column) * WB_CLIMATE_STRIDE;
+                buffer[base] = datum_c as f32; // cast-ok: narrowing a temperature for a Float32Array, and the consumer bands it against edges 6 to 10 C apart
+                buffer[base + 1] = wetness as f32; // cast-ok: narrowing a dimensionless index in [0, 1] for a Float32Array
+            }
+        }
+    });
+
+    match filled {
+        Some(()) => WB_OK,
+        None => WB_ERR_HANDLE,
+    }
+}
+
+/// This world's own climate calibration: the band edges both quantiled axes are cut at, plus
+/// the two numbers a consumer needs to use them. [`WB_CLIMATE_CALIBRATION_STRIDE`] f64, in that
+/// order:
+///
+/// | index | value |
+/// |---|---|
+/// | 0..3 | the four moisture edges, ascending, in the march's own dimensionless units |
+/// | 4..5 | the two landform edges, ascending, in metres of elevation |
+/// | 6 | how many of `climate::BAND_CALIBRATION_SAMPLES` were land |
+/// | 7 | the lapse rate, in C per km |
+///
+/// # The lapse rate is here because the temperature channel is at the datum
+///
+/// See [`WB_CLIMATE_STRIDE`]. The consumer applies the lapse at its own raster's resolution,
+/// so it needs the constant; getting it from here rather than writing `6.5` down again is what
+/// stops the viewer and the engine disagreeing about how fast air cools.
+///
+/// # It is a per-world constant and it is NOT cheap
+///
+/// `climate::BAND_CALIBRATION_SAMPLES` (4,000) elevations plus one march at every land point:
+/// roughly 190,000 elevation queries on a 29%-land world, and seconds in WASM at the canonical
+/// budget. **Call it once when the world is built and keep the answer.** In the viewer it runs
+/// in a pool worker for exactly that reason, as `wb_water_run` does.
+///
+/// # NaN edges are an answer, not a failure
+///
+/// A world with no land, or one any sample of which could not be answered, calibrates to NaN
+/// edges and `WB_OK` -- `climate::BandEdges::calibrate`'s own contract. Index 6 is what tells
+/// the two apart, and `climate::band_index` refuses a NaN edge rather than banding against it.
+/// A status code here would be a second mechanism for a fact the payload already carries.
+///
+/// # Returns
+///
+/// `WB_OK`, `WB_ERR_PARAM` for a `march_samples` outside its domain, `WB_ERR_BUFFER` for a
+/// null, misaligned or short buffer, `WB_ERR_HANDLE` for an unknown world. Nothing is written
+/// on any refusal.
+///
+/// # Safety
+/// `out` must be null, or a live 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_climate_calibration(
+    handle: u32,
+    resolution_m: f64,
+    march_samples: u32,
+    out: *mut f64,
+    out_len: u32,
+) -> u32 {
+    let moisture = match climate_budget(march_samples) {
+        ClimateBudget::Canonical => None,
+        ClimateBudget::Explicit(params) => Some(params),
+        ClimateBudget::Refused => return WB_ERR_PARAM,
+    };
+    if out.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out as usize; // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(len) if len >= WB_CLIMATE_CALIBRATION_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+
+    let written = with_world(handle, |world| {
+        let edges = world.surface().band_edges(resolution(resolution_m), moisture);
+        let buffer = unsafe { core::slice::from_raw_parts_mut(out, WB_CLIMATE_CALIBRATION_STRIDE) };
+        let mut index = 0;
+        for edge in edges.moisture() {
+            buffer[index] = *edge;
+            index += 1;
+        }
+        for edge in edges.landform() {
+            buffer[index] = *edge;
+            index += 1;
+        }
+        buffer[index] = edges.land_samples() as f64; // cast-ok: a count bounded by BAND_CALIBRATION_SAMPLES (4,000) to float, exact
+        index += 1;
+        buffer[index] = climate::LAPSE_C_PER_KM;
+    });
+
+    match written {
         Some(()) => WB_OK,
         None => WB_ERR_HANDLE,
     }

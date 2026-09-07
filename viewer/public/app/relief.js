@@ -171,7 +171,7 @@
 // and `relief.test.mjs` asserts that byte-for-byte over a whole tile rather than asserting the
 // intent.
 
-import { biomeColor } from "./biome.js";
+import { biomeColor, CLIMATE_RASTER, sampleClimateGrid } from "./biome.js";
 import { LAKE_STOPS, OCEAN_STOPS } from "./panel-fields.js";
 import { metresPerDegree } from "./terrain.js";
 import { bodiesOverlappingRectangle, lakeLevelAt } from "./water.js";
@@ -424,6 +424,10 @@ export function baseColor(heightM) {
 /// which is what keeps every test written against the height-only baseline meaningful.
 export function slopeColor(
   heightM, slopeDeg, latitudeDeg = 0, longitudeDeg = 0, calibration = null, lakeLevelM = null,
+  /// The engine's climate at this texel, `{ datumC, moisture }`, or `null` for the noise
+  /// approximation. A seventh positional argument rather than an options object because the
+  /// six before it are positional and one convention per function is the rule this file has.
+  climate = null,
 ) {
   // **A lake has its own table, and that is a measurement rather than a preference.** It used
   // to read `OCEAN_BANDS`; every lake this generator makes is shallower than that table's
@@ -460,7 +464,7 @@ export function slopeColor(
   // it; what is scattered is which side of the -6 m surf stop a water texel reads as.
   const color = heightM > 0
     ? (calibration
-      ? biomeColor({ heightM, latitudeDeg, longitudeDeg, calibration })
+      ? biomeColor({ heightM, latitudeDeg, longitudeDeg, calibration, climate })
       : baseColor(heightM))
     : bandColor(OCEAN_BANDS, heightM + coastDitherM(latitudeDeg, longitudeDeg));
   if (heightM <= 0) return color;
@@ -550,6 +554,18 @@ export function reliefTile({
   /// reached this function or not. The counter is what separates "unchanged because there was
   /// no water here" from "unchanged because the water never arrived".
   counters = null,
+  /// The engine climate configuration, or `null` for the noise approximation.
+  ///
+  /// `{ rasterSize, marchSamples, resolutionM }`. **It is a configuration and not a raster**:
+  /// the grid is filled HERE, from this side's own engine and world handle, exactly as the
+  /// heights are and for exactly the same reason -- a handle is an index into a table inside
+  /// one wasm instance's linear memory and means nothing in another, so a raster computed on
+  /// the main thread and posted would be a second planet's climate over this one's ground.
+  ///
+  /// It is filled per tile rather than cached because the tile's rectangle is what it is a
+  /// function of. The per-world half -- the band edges -- IS resolved once and arrives on
+  /// `biome`.
+  climate = null,
 }) {
   if (!engine || typeof engine.fillTileF32 !== "function") {
     throw new Error("reliefTile: engine.fillTileF32 is required");
@@ -564,6 +580,44 @@ export function reliefTile({
   const heights = engine.fillTileF32(request);
 
   const { northDeg, westDeg } = rectangle;
+
+  // **The climate grid is laid over the TEXEL lattice, not over the tile rectangle.** The
+  // texels run `north + dLat*row` for `row` in `0..size-1`, which stops one post short of the
+  // rectangle's south edge; filling the climate grid over the rectangle instead would put its
+  // last row one texel outside the picture and shift every interpolation weight by half a
+  // climate cell. Both endpoints are included on both grids, so cell 0 is texel 0 and the
+  // last cell is the last texel exactly.
+  let climateGrid = null;
+  let climateMs = 0;
+  if (climate) {
+    if (typeof engine.climateTileF32 !== "function") {
+      throw new Error("reliefTile: engine.climateTileF32 is required when climate is on");
+    }
+    const gridSize = climate.rasterSize ?? CLIMATE_RASTER;
+    const started = (typeof performance !== "undefined" ? performance.now() : 0);
+    climateGrid = engine.climateTileF32({
+      handle: worldHandle,
+      lat0Deg: northDeg,
+      lat1Deg: northDeg + dLatStep * (size - 1),
+      lon0Deg: westDeg,
+      lon1Deg: westDeg + dLonStep * (size - 1),
+      width: gridSize,
+      height: gridSize,
+      resolutionM: climate.resolutionM ?? request.resolutionM,
+      marchSamples: climate.marchSamples,
+    });
+    climateMs = (typeof performance !== "undefined" ? performance.now() : 0) - started;
+    if (counters) {
+      // **The climate cost is counted separately from the fill it sits inside.** A figure that
+      // folded it into `fillMs` could not answer the one question the raster size was chosen
+      // by -- what fraction of a relief tile is climate -- and this project has already
+      // shipped a counter that could not tell two costs apart.
+      counters.climateMs = (counters.climateMs ?? 0) + climateMs;
+      counters.climateTiles = (counters.climateTiles ?? 0) + 1;
+      counters.climateSamples = (counters.climateSamples ?? 0) + gridSize * gridSize;
+    }
+  }
+  const climateSize = climate ? (climate.rasterSize ?? CLIMATE_RASTER) : 0;
   const data = new Uint8ClampedArray(size * size * 4);
 
   // **One pass over the manifest per tile, not per texel.** 65,536 texels against 55 bodies
@@ -630,7 +684,10 @@ export function reliefTile({
       const slopeRad = Math.atan(Math.sqrt(exEast * exEast + exNorth * exNorth));
       const slopeDeg = (slopeRad * 180) / Math.PI;
 
-      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg, lonDeg, biome, lakeLevelM);
+      const climateHere = climateGrid
+        ? sampleClimateGrid(climateGrid, climateSize, row, col, size)
+        : null;
+      const [r, gr, b] = slopeColor(hHere, slopeDeg, latDeg, lonDeg, biome, lakeLevelM, climateHere);
 
       // **Shade is a COLOUR, not a brightness**, and this is the largest single change
       // between a relief map and a photograph.

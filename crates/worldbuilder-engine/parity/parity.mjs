@@ -6,7 +6,7 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
@@ -81,13 +81,13 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer] [--no-provenance]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude', 'gully-steer'];
+const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude', 'gully-steer', 'climate-samples'];
 
 /// f64 per gully record, mirroring `wasm.rs`'s `WB_GULLY_STRIDE`. Ten until the second
 /// harmonic shipped, twelve since -- and written once here rather than at each of the six
@@ -302,6 +302,63 @@ for (const raw of lines) {
         if (got !== cells[i]) note(`tile ${f[1]}[${i}]`, cells[i], got);
       }
       wb.wb_dealloc(out, width * height * 4);
+      break;
+    }
+    case 'CL': {
+      // CL <world> <lat0> <lat1> <lon0> <lon1> <width> <height> <res> <samples> <f32 hex>...
+      //
+      // The climate raster, two channels per sample: `[temperature_c_at_datum, moisture]`.
+      // They are tallied into two SEPARATE groups on purpose. `--mutate climate-samples`
+      // adds one upwind step, which changes the rain-out integral and cannot change a
+      // closed-form temperature -- so a control that moved both would be a harness fault
+      // wearing the costume of a divergence, and only a per-channel tally can say so.
+      const h = worlds.get(f[1]);
+      const width = Number(f[6]);
+      const height = Number(f[7]);
+      let samples = Number(f[9]);
+      if (mutate === 'climate-samples') samples += 1;
+      const cells = f.slice(10);
+      const values = width * height * 2;
+      if (cells.length !== values) throw new Error('climate tile line is the wrong length');
+      const out = wb.wb_alloc(values * 4);
+      if (out === 0) throw new Error('wb_alloc refused the climate tile buffer');
+      const status = wb.wb_climate_tile_f32(
+        h, f64of(f[2]), f64of(f[3]), f64of(f[4]), f64of(f[5]),
+        width, height, f64of(f[8]), samples, out, values);
+      if (status !== 0) throw new Error(`wb_climate_tile_f32 returned ${status}`);
+      const view = mem();
+      for (let i = 0; i < cells.length; i += 1) {
+        group = (i % 2 === 0) ? `climate-temp/${f[1]}` : `climate-moist/${f[1]}`;
+        const got = bits32Of(view.getFloat32(out + i * 4, true));
+        tally(got === cells[i]);
+        if (got !== cells[i]) note(`climate ${f[1]}[${i}]`, cells[i], got);
+      }
+      wb.wb_dealloc(out, values * 4);
+      break;
+    }
+    case 'CK': {
+      // CK <world> <res> <samples> <f64 hex>...  -- the per-world calibration.
+      //
+      // Split into two groups for the same reason `CL` is, and here the split is sharper:
+      // indices 0..3 are quantiles of the MARCH and indices 4..7 are two quantiles of
+      // elevation, a land count and a constant. One more upwind step must move the first
+      // four and none of the last four.
+      const h = worlds.get(f[1]);
+      let samples = Number(f[3]);
+      if (mutate === 'climate-samples') samples += 1;
+      const cells = f.slice(4);
+      const out = wb.wb_alloc(cells.length * 8);
+      if (out === 0) throw new Error('wb_alloc refused the calibration buffer');
+      const status = wb.wb_climate_calibration(h, f64of(f[2]), samples, out, cells.length);
+      if (status !== 0) throw new Error(`wb_climate_calibration returned ${status}`);
+      const view = mem();
+      for (let i = 0; i < cells.length; i += 1) {
+        group = (i < 4) ? `climate-moist/${f[1]}` : `climate-land/${f[1]}`;
+        const got = bitsOf(view.getFloat64(out + i * 8, true));
+        tally(got === cells[i]);
+        if (got !== cells[i]) note(`calibration ${f[1]}[${i}]`, cells[i], got);
+      }
+      wb.wb_dealloc(out, cells.length * 8);
       break;
     }
     case 'R': {
@@ -986,6 +1043,58 @@ if (mutate) {
       `control OK: ${named} moved, exactly as the native side predicted, and every other ` +
       'group -- both coast presets, the checker, and every world without a coast block -- ' +
       'moved nothing at all');
+    process.exit(0);
+  }
+  // THE CLIMATE CONTROL CHECKS A SHAPE RATHER THAN A COUNT, and the shape is the informative
+  // half. `--mutate climate-samples` adds ONE upwind step to every climate record. That
+  // changes the rain-out integral, so every `climate-moist/*` group must move; it cannot
+  // change `climate::temperature_c` (a closed form in latitude, with no march in it) and it
+  // cannot change a quantile of elevation, a land count or a lapse rate -- so every
+  // `climate-temp/*` and `climate-land/*` group must sit at exactly zero, and so must every
+  // group belonging to another channel.
+  //
+  // The prediction is stated here rather than carried in a record because it is not a
+  // number the native side has to compute: it is "all of one kind, none of the others", and
+  // a record would only be a second place for it to be written down.
+  //
+  // The one cell of the corpus that CANNOT move is the zero-budget tile -- a march of no
+  // steps returns exactly 1.0 whatever the budget becomes, because the mutation takes it to
+  // one step, which does march. So that tile is expected to move too, and the assertion is
+  // a lower bound on the moisture groups rather than an equality: what is asserted exactly
+  // is the zeros.
+  if (mutate === 'climate-samples') {
+    let bad = false;
+    let moistMoved = 0;
+    for (const [name, g] of groups) {
+      if (name.startsWith('climate-moist/')) {
+        moistMoved += g.divergent;
+        if (g.divergent === 0) {
+          console.error(`FAIL: group ${name} moved nothing; one more upwind step must change the march`);
+          bad = true;
+        }
+      } else if (g.divergent !== 0) {
+        console.error(`FAIL: group ${name} moved ${g.divergent} values; the march budget cannot reach it`);
+        bad = true;
+      }
+    }
+    if (moistMoved === 0) bad = true;
+    if (bad) {
+      console.error('  The climate control adds one step to the upwind march and touches');
+      console.error('  nothing else. It reaches the moisture channel and the four moisture');
+      console.error('  band edges, and nothing else in this corpus -- not the datum');
+      console.error('  temperature, which is a closed form in latitude; not the two landform');
+      console.error('  edges, which are quantiles of elevation; not the land count; not the');
+      console.error('  lapse rate; and not one value of any other channel. A group that moved');
+      console.error('  when it should not have is a finding, not a tolerance to widen.');
+      process.exit(1);
+    }
+    const named = [...groups]
+      .filter(([name]) => name.startsWith('climate-'))
+      .map(([name, g]) => `${name} ${g.divergent}/${g.compared}`)
+      .join(', ');
+    console.log(
+      `control OK: ${named} -- every moisture group moved, and every temperature group, ` +
+      'every landform group and every other channel in the corpus moved nothing at all');
     process.exit(0);
   }
   console.log('control OK: the harness can be made to fail');

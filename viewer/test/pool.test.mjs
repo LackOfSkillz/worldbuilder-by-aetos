@@ -322,3 +322,84 @@ test("clouds are NOT memoised either", () => {
   pool.cloud({ size: 128, level: 2 });
   assert.equal(pool.workers[0].sent.length, 2);
 });
+
+// ============================================================================================
+// The fifth consumer: the climate calibration
+// ============================================================================================
+
+test("climate() posts type 'climate' and keeps its own sample, apart from the water solve", async () => {
+  const pool = makePool(1);
+  const climatePromise = pool.climate({});
+  const cloudPromise = pool.cloud({ size: 2 });
+  const [climateId, cloudId] = pool.workers[0].sent.map((m) => m.id);
+  assert.deepEqual(
+    pool.workers[0].sent.map((m) => m.type), ["climate", "cloud"],
+    "the worker matches on message.type; a wrong name falls through to the unknown-type error " +
+    "and the calibration never arrives, which hangs installWorld forever",
+  );
+  pool.receive({
+    type: "climate", id: climateId, index: 0, fillMs: 3120,
+    moistureEdges: [0.01, 0.02, 0.14, 0.68], landformEdges: [277, 705],
+    landSamples: 1598, lapseCPerKm: 6.5, worldCount: 1,
+  });
+  pool.receive({
+    type: "cloud", id: cloudId, index: 0, fillMs: 74,
+    data: new Uint8ClampedArray(4), width: 1, height: 1,
+  });
+  await Promise.all([climatePromise, cloudPromise]);
+  // One calibration is 3,120 ms and one cloud tile is 74 ms. Same argument as the water solve
+  // above: a shared sample is a median that describes neither.
+  assert.deepEqual(pool.climateMs, [3120], "the calibration's duration belongs to climateMs");
+  assert.deepEqual(pool.cloudMs, [74], "the cloud duration belongs to cloudMs");
+  const stats = pool.stats();
+  assert.equal(stats.climates, 1);
+  assert.equal(stats.climateMs.median, 3120);
+  assert.equal(stats.clouds, 1);
+});
+
+test("a climate reply's four fields all survive the dispatcher", async () => {
+  // **The same fixed-key-set hazard the water and lake counters were lost to.** Three of these
+  // four would draw an entirely plausible planet if they arrived as `undefined`: NaN edges band
+  // everything into one colour (which looks like a very uniform world), a missing lapse rate
+  // makes every temperature NaN (which the classifier bands into the coldest cell), and
+  // `landSamples` is the only thing that says a calibration is worthless at all.
+  const pool = makePool(1);
+  const promise = pool.climate({});
+  const id = pool.workers[0].sent[0].id;
+  pool.receive({
+    type: "climate", id, index: 3, fillMs: 921,
+    moistureEdges: [0.011, 0.026, 0.139, 0.684], landformEdges: [277.5, 705.25],
+    landSamples: 1598, lapseCPerKm: 6.5, worldCount: 1,
+  });
+  const result = await promise;
+  assert.deepEqual(result.moistureEdges, [0.011, 0.026, 0.139, 0.684]);
+  assert.deepEqual(result.landformEdges, [277.5, 705.25]);
+  assert.equal(result.landSamples, 1598, "the land count was dropped by the pool");
+  assert.equal(result.lapseCPerKm, 6.5, "the lapse rate was dropped by the pool");
+  assert.equal(result.worker, 3, "which worker answered is what the status line reports");
+  assert.equal(result.fillMs, 921);
+});
+
+test("a relief reply's climate counters survive the dispatcher, and a cloud reply has none", async () => {
+  // The counters the raster size was chosen by. A relief reply that lost them reports a
+  // climate cost of zero, which reads as "climate is free" rather than as "climate never ran".
+  const pool = makePool(1);
+  const reliefPromise = pool.relief({ size: 2 });
+  const cloudPromise = pool.cloud({ size: 2 });
+  const [reliefId, cloudId] = pool.workers[0].sent.map((m) => m.id);
+  pool.receive({
+    type: "relief", id: reliefId, index: 0, fillMs: 300,
+    data: new Uint8ClampedArray(4), width: 1, height: 1,
+    lakeTexels: 5, lakeTiles: 1, climateMs: 86.4, climateSamples: 256,
+  });
+  pool.receive({
+    type: "cloud", id: cloudId, index: 0, fillMs: 74,
+    data: new Uint8ClampedArray(4), width: 1, height: 1,
+  });
+  const relief = await reliefPromise;
+  const cloud = await cloudPromise;
+  assert.equal(relief.climateMs, 86.4, "the climate cost was dropped by the pool");
+  assert.equal(relief.climateSamples, 256, "the march count was dropped by the pool");
+  assert.equal(cloud.climateMs, 0, "a cloud tile has no climate, and 0 is what says so");
+  assert.equal(cloud.climateSamples, 0);
+});

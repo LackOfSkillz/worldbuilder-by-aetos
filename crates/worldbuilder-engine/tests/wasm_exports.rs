@@ -4855,3 +4855,491 @@ fn a_wrongly_sized_or_misaligned_gully_buffer_is_refused_rather_than_read() {
     // The canonical pair.
     assert_eq!(wb_gully_check(core::ptr::null(), 0), WB_OK);
 }
+
+// ============================================================ the climate channel
+//
+// Slice `2026-09-06-slice-climate`, Task 4. Two exports open a door onto `climate.rs`:
+// `wb_climate_tile_f32` (a coarse raster of datum temperature and marched moisture) and
+// `wb_climate_calibration` (a per-world constant: the band edges, the land count, the lapse
+// rate).
+//
+// **`march_samples` is a LOOP BOUND and therefore a hang**, which is the hazard the spike
+// named in terms: `count = 2^20` took 0.64 s, so a `u32::MAX` march inside one
+// uninterruptible call extrapolates to ~2,600 s. It is bounded twice on purpose -- in the
+// type (`climate::MarchBudget::new` returns `None` above `MAX_MARCH_SAMPLES`) and at the
+// door (`WB_MAX_CLIMATE_MARCH_SAMPLES`, which names the offending argument in a status) --
+// and the sweep below crosses it with every other argument rather than walking one axis at
+// a time, because **this project's one abort that a per-axis sweep missed was reachable
+// only through the cross product of three individually-admissible fields**.
+//
+// Population/method/host: `Surface::new(20_260_904, 6_371_000, 12, 0.29, None)` (the file's
+// own `SEED`/`RADIUS_M`/`PLATES`/`LAND`) and the harbour world, native
+// `cargo test -p worldbuilder-engine --features wasm`.
+
+/// The grids the tile sweep crosses. Degenerate, single, non-square, square, and one whose
+/// **stride multiplication** is the thing that overflows a smaller integer -- `width * height`
+/// and `width * height * WB_CLIMATE_STRIDE` are two different questions and only the second
+/// one sizes the buffer.
+const CLIMATE_GRIDS: &[(u32, u32)] =
+    &[(0, 4), (4, 0), (1, 1), (2, 3), (4, 4), (u32::MAX, 2), (2, u32::MAX)];
+
+/// The bounds the sweep crosses: an ordinary tile, a degenerate one, a NaN, an infinity, and
+/// a pair far outside any real latitude. The last is admitted on purpose -- `wb_fill_tile_f32`
+/// admits it too, and `SpherePoint::from_latlon` is total.
+const CLIMATE_BOUNDS: &[(f64, f64, f64, f64)] = &[
+    (12.01, 11.99, 33.99, 34.01),
+    (HARBOUR_LAT + 0.005, HARBOUR_LAT - 0.005, HARBOUR_LON - 0.005, HARBOUR_LON + 0.005),
+    (12.0, 12.0, 34.0, 34.0),
+    (f64::NAN, 11.99, 33.99, 34.01),
+    (12.01, 11.99, 33.99, f64::INFINITY),
+    (1.0e300, -1.0e300, -1.0e300, 1.0e300),
+];
+
+/// The `resolution_m` values the sweep crosses. Four of the five are the sentinel by
+/// `wasm.rs::resolution`'s own definition and must all select canonical ground truth.
+const CLIMATE_RESOLUTIONS: &[f64] =
+    &[250.0, 0.0, -1.0, f64::INFINITY, f64::NAN, f64::NEG_INFINITY];
+
+/// The `march_samples` values the sweep crosses. Cheap on purpose except for one: this axis
+/// multiplies every other one, and a 160-step march at every cell of every cross product is
+/// a test that nobody runs.
+const CLIMATE_SAMPLES: &[u32] = &[
+    0,
+    1,
+    3,
+    WB_MAX_CLIMATE_MARCH_SAMPLES,     // the ceiling, admitted
+    WB_MAX_CLIMATE_MARCH_SAMPLES + 1, // one past it, refused
+    65_536,                           // past u16 entirely
+    u32::MAX - 1,                     // one below the sentinel, refused
+    WB_CLIMATE_CANONICAL_SAMPLES,     // the sentinel
+];
+
+/// Whether a `march_samples` is in domain. Written from the CONSTANTS rather than from the
+/// list above, so adding a value to the list cannot silently add an expectation too.
+fn climate_samples_admitted(samples: u32) -> bool {
+    samples == WB_CLIMATE_CANONICAL_SAMPLES || samples <= WB_MAX_CLIMATE_MARCH_SAMPLES
+}
+
+/// How many f32 a grid needs, or `None` if the product does not fit.
+fn climate_values(width: u32, height: u32) -> Option<usize> {
+    usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(WB_CLIMATE_STRIDE)
+}
+
+/// **The cross product, not the axes.** Every combination of handle, grid, bounds,
+/// resolution, `march_samples` and buffer shape, with the status checked against the
+/// contract rather than against whatever came back.
+///
+/// The two expensive `march_samples` (`WB_MAX_CLIMATE_MARCH_SAMPLES` and the canonical
+/// sentinel) are crossed with everything the same way; what keeps the run affordable is that
+/// the grids are at most 4 x 4, and the cost is samples x budget rather than either alone.
+#[test]
+fn the_climate_tile_survives_the_cross_product_of_its_arguments() {
+    let plain = plain_world();
+    let harbour = harbour_world();
+    assert!(plain != 0 && harbour != 0);
+    // A handle that was never issued, and one that was and is not any more.
+    let freed = plain_world();
+    assert_eq!(wb_world_free(freed), WB_OK);
+
+    let mut buffer = vec![0.0f32; 64];
+    let mut calls = 0u32;
+    let mut ok = 0u32;
+    let mut refused_grid = 0u32;
+    let mut refused_param = 0u32;
+    let mut refused_buffer = 0u32;
+    let mut refused_handle = 0u32;
+
+    for handle in [plain, harbour, 0, freed, 4_000_000_000] {
+        for (width, height) in CLIMATE_GRIDS {
+            for (lat0, lat1, lon0, lon1) in CLIMATE_BOUNDS {
+                for resolution_m in CLIMATE_RESOLUTIONS {
+                    for samples in CLIMATE_SAMPLES {
+                        // Four buffer shapes: good, null, misaligned, and one f32 short.
+                        // "Short" is expressed against the grid's own requirement so a grid
+                        // whose product does not fit is short by construction.
+                        let needed = climate_values(*width, *height);
+                        let fits = needed.map(|n| n <= buffer.len()).unwrap_or(false);
+                        let shapes: [(u32, bool); 4] = [
+                            (u32::try_from(needed.unwrap_or(usize::MAX)).unwrap_or(u32::MAX), fits),
+                            (16, false),
+                            (16, false),
+                            (
+                                u32::try_from(needed.unwrap_or(1).saturating_sub(1))
+                                    .unwrap_or(u32::MAX),
+                                false,
+                            ),
+                        ];
+                        for (index, (out_len, buffer_is_good)) in shapes.iter().enumerate() {
+                            let out = match index {
+                                1 => core::ptr::null_mut(),
+                                // A deliberately misaligned f32 pointer: one byte into the
+                                // allocation. `align_of::<f32>()` is 4 on every target this
+                                // ships to, so this is genuinely misaligned rather than
+                                // hopefully so.
+                                2 => unsafe { (buffer.as_mut_ptr() as *mut u8).add(1) as *mut f32 },
+                                _ => buffer.as_mut_ptr(),
+                            };
+                            let status = wb_climate_tile_f32(
+                                handle,
+                                *lat0,
+                                *lat1,
+                                *lon0,
+                                *lon1,
+                                *width,
+                                *height,
+                                *resolution_m,
+                                *samples,
+                                out,
+                                *out_len,
+                            );
+                            calls += 1;
+                            // The contract, in the order the function checks it: grid, then
+                            // parameter, then buffer, then handle. Asserting the ORDER is
+                            // what makes this a contract test rather than a "did not crash"
+                            // test -- a function that refused everything with one status
+                            // would pass the latter.
+                            let expected = if *width == 0
+                                || *height == 0
+                                || !lat0.is_finite()
+                                || !lat1.is_finite()
+                                || !lon0.is_finite()
+                                || !lon1.is_finite()
+                            {
+                                WB_ERR_GRID
+                            } else if !climate_samples_admitted(*samples) {
+                                WB_ERR_PARAM
+                            } else if !buffer_is_good {
+                                WB_ERR_BUFFER
+                            } else if handle == plain || handle == harbour {
+                                WB_OK
+                            } else {
+                                WB_ERR_HANDLE
+                            };
+                            assert_eq!(
+                                status, expected,
+                                "handle {handle} grid {width}x{height} bounds \
+                                 ({lat0},{lat1},{lon0},{lon1}) res {resolution_m} samples \
+                                 {samples} shape {index}",
+                            );
+                            match status {
+                                WB_OK => ok += 1,
+                                WB_ERR_GRID => refused_grid += 1,
+                                WB_ERR_PARAM => refused_param += 1,
+                                WB_ERR_BUFFER => refused_buffer += 1,
+                                _ => refused_handle += 1,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // **Every arm was actually reached.** A sweep whose expectations are all one status is a
+    // sweep that proves nothing, and this project has shipped one.
+    assert_eq!(calls, 5 * 7 * 6 * 6 * 8 * 4);
+    assert!(ok > 0 && refused_grid > 0 && refused_param > 0);
+    assert!(refused_buffer > 0 && refused_handle > 0);
+    assert_eq!(wb_world_free(plain), WB_OK);
+    assert_eq!(wb_world_free(harbour), WB_OK);
+}
+
+/// The ceiling is a band and not a cliff, so both sides of it are asserted at the smallest
+/// grid there is -- where the budget is the only thing that varies.
+#[test]
+fn the_march_budget_is_bounded_at_the_door_and_the_ceiling_is_the_types_own() {
+    let plain = plain_world();
+    let mut cell = [0.0f32; WB_CLIMATE_STRIDE];
+    // The ceiling itself is the same number the type refuses above.
+    assert_eq!(
+        u32::from(worldbuilder_engine::climate::MAX_MARCH_SAMPLES),
+        WB_MAX_CLIMATE_MARCH_SAMPLES,
+        "the door's ceiling and the type's must be one number, not two",
+    );
+    for (samples, expected) in [
+        (0u32, WB_OK),
+        (1, WB_OK),
+        (WB_MAX_CLIMATE_MARCH_SAMPLES - 1, WB_OK),
+        (WB_MAX_CLIMATE_MARCH_SAMPLES, WB_OK),
+        (WB_MAX_CLIMATE_MARCH_SAMPLES + 1, WB_ERR_PARAM),
+        (65_535, WB_ERR_PARAM),
+        (65_536, WB_ERR_PARAM),
+        (u32::MAX - 1, WB_ERR_PARAM),
+        (WB_CLIMATE_CANONICAL_SAMPLES, WB_OK),
+    ] {
+        let status = wb_climate_tile_f32(
+            plain,
+            12.0,
+            12.0,
+            34.0,
+            34.0,
+            1,
+            1,
+            250.0,
+            samples,
+            cell.as_mut_ptr(),
+            WB_CLIMATE_STRIDE as u32,
+        );
+        assert_eq!(status, expected, "march_samples = {samples}");
+    }
+    assert_eq!(wb_world_free(plain), WB_OK);
+}
+
+/// **Nothing is written on any refusal**, which byte-identity of the picture cannot show:
+/// a half-filled climate grid reads as a climate rather than as an error.
+#[test]
+fn a_refused_climate_call_writes_nothing_at_all() {
+    let plain = plain_world();
+    const POISON: f32 = -12_345.678;
+    let mut buffer = [POISON; 32];
+    let full = buffer.len() as u32;
+    // One refusal of each kind, in the order the function checks them.
+    for (label, status) in [
+        (
+            "grid",
+            wb_climate_tile_f32(plain, 12.0, 11.0, 33.0, 34.0, 0, 4, 250.0, 1, buffer.as_mut_ptr(), full),
+        ),
+        (
+            "bound",
+            wb_climate_tile_f32(plain, f64::NAN, 11.0, 33.0, 34.0, 2, 2, 250.0, 1, buffer.as_mut_ptr(), full),
+        ),
+        (
+            "param",
+            wb_climate_tile_f32(plain, 12.0, 11.0, 33.0, 34.0, 2, 2, 250.0, u32::MAX - 1, buffer.as_mut_ptr(), full),
+        ),
+        (
+            "short",
+            wb_climate_tile_f32(plain, 12.0, 11.0, 33.0, 34.0, 4, 4, 250.0, 1, buffer.as_mut_ptr(), 31),
+        ),
+        (
+            "handle",
+            wb_climate_tile_f32(0, 12.0, 11.0, 33.0, 34.0, 2, 2, 250.0, 1, buffer.as_mut_ptr(), full),
+        ),
+    ] {
+        assert_ne!(status, WB_OK, "the {label} case must be a refusal");
+        assert!(
+            buffer.iter().all(|v| v.to_bits() == POISON.to_bits()),
+            "the {label} refusal wrote into the caller's buffer",
+        );
+    }
+    // And the calibration's own refusals, same claim.
+    let mut edges = [-1.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+    for (label, status) in [
+        ("param", wb_climate_calibration(plain, 250.0, 1025, edges.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32)),
+        ("short", wb_climate_calibration(plain, 250.0, 1, edges.as_mut_ptr(), (WB_CLIMATE_CALIBRATION_STRIDE - 1) as u32)),
+        ("handle", wb_climate_calibration(0, 250.0, 1, edges.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32)),
+    ] {
+        assert_ne!(status, WB_OK, "the calibration's {label} case must be a refusal");
+        assert!(edges.iter().all(|v| *v == -1.0), "the calibration's {label} refusal wrote");
+    }
+    assert_eq!(wb_world_free(plain), WB_OK);
+}
+
+/// The two channels are the two functions they claim to be, at the resolution sentinel the
+/// rest of this module uses -- **read against the engine's own API rather than against a
+/// witnessed literal**, because the claim is that the door does not change the answer.
+#[test]
+fn the_climate_tile_is_the_surfaces_own_temperature_and_moisture() {
+    use worldbuilder_engine::climate;
+    let handle = plain_world();
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None);
+    let (width, height) = (3u32, 3u32);
+    let (lat0, lat1, lon0, lon1) = (12.02, 11.98, 33.98, 34.02);
+    let mut tile = vec![0.0f32; (width * height) as usize * WB_CLIMATE_STRIDE];
+    // A three-step march: the same march the engine runs, short enough to run twice here.
+    let budget = climate::MarchBudget::new(3).expect("3 is under the ceiling");
+    let mut params = climate::MoistureParams::canonical();
+    params.budget = budget;
+    let status = wb_climate_tile_f32(
+        handle, lat0, lat1, lon0, lon1, width, height, RES_M, 3,
+        tile.as_mut_ptr(), tile.len() as u32,
+    );
+    assert_eq!(status, WB_OK);
+    let mut checked = 0u32;
+    for row in 0..height {
+        let latitude_deg = grid_coordinate(lat0, lat1, f64::from(row), f64::from(height - 1));
+        for column in 0..width {
+            let longitude_deg =
+                grid_coordinate(lon0, lon1, f64::from(column), f64::from(width - 1));
+            let point = SpherePoint::from_latlon(latitude_deg, longitude_deg);
+            let base = ((row * width + column) as usize) * WB_CLIMATE_STRIDE;
+            let expected_c =
+                climate::temperature_c(latitude_deg, 0.0, &climate::ClimateParams::canonical());
+            assert_eq!(
+                tile[base].to_bits(),
+                (expected_c as f32).to_bits(),
+                "channel 0 is not the DATUM temperature at ({latitude_deg}, {longitude_deg})",
+            );
+            let expected_wet = surface.moisture_index(&point, Some(RES_M), Some(params));
+            assert_eq!(
+                tile[base + 1].to_bits(),
+                (expected_wet as f32).to_bits(),
+                "channel 1 is not the march at ({latitude_deg}, {longitude_deg})",
+            );
+            // The march's own range, which every band Task 3 cuts is taken inside.
+            assert!(
+                tile[base + 1] >= 0.0 && tile[base + 1] <= 1.0,
+                "moisture {} left [0, 1]",
+                tile[base + 1],
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, width * height);
+
+    // **The temperature channel is at the datum and not at the ground**, which is the whole
+    // reason the lapse rate is reported separately. A tile taken over a mountain must not
+    // vary with its elevation, and this is the assertion that catches a later edit that
+    // "helpfully" applies the lapse here.
+    let sea_level_c =
+        climate::temperature_c(grid_coordinate(lat0, lat1, 0.0, 2.0), 0.0, &climate::ClimateParams::canonical());
+    let ground_c = surface.temperature_c(
+        &SpherePoint::from_latlon(grid_coordinate(lat0, lat1, 0.0, 2.0), lon0),
+        Some(RES_M),
+        None,
+    );
+    assert_ne!(
+        sea_level_c.to_bits(),
+        ground_c.to_bits(),
+        "this probe is at sea level, so it cannot tell the datum channel from the ground one",
+    );
+    assert_eq!(tile[0].to_bits(), (sea_level_c as f32).to_bits());
+    assert_eq!(wb_world_free(handle), WB_OK);
+}
+
+/// The `resolution_m` sentinel selects canonical ground truth here exactly as it does for
+/// `wb_elevation_m` and `wb_fill_tile_f32` -- **asserted for this export separately**, for
+/// the reason `wasm.rs::resolution`'s own doc gives: a corpus that only ever passes 250
+/// let that mutation survive once already.
+#[test]
+fn the_climate_tile_reads_the_resolution_sentinel_exactly_as_the_other_exports_do() {
+    let handle = plain_world();
+    let mut cell = [0.0f32; WB_CLIMATE_STRIDE];
+    let mut readings = Vec::new();
+    for resolution_m in [0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        assert_eq!(
+            wb_climate_tile_f32(
+                handle, 12.0, 12.0, 34.0, 34.0, 1, 1, resolution_m, 8,
+                cell.as_mut_ptr(), WB_CLIMATE_STRIDE as u32,
+            ),
+            WB_OK,
+        );
+        readings.push(cell[1].to_bits());
+    }
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None);
+    let mut params = worldbuilder_engine::climate::MoistureParams::canonical();
+    params.budget = worldbuilder_engine::climate::MarchBudget::new(8).unwrap();
+    let canonical = surface.moisture_index(&SpherePoint::from_latlon(12.0, 34.0), None, Some(params));
+    for bits in &readings {
+        assert_eq!(*bits, (canonical as f32).to_bits(), "a sentinel did not select None");
+    }
+    // And a real resolution must give a DIFFERENT answer, or the assertion above is comparing
+    // a parameter nothing reads.
+    assert_eq!(
+        wb_climate_tile_f32(
+            handle, 12.0, 12.0, 34.0, 34.0, 1, 1, 20_000.0, 8,
+            cell.as_mut_ptr(), WB_CLIMATE_STRIDE as u32,
+        ),
+        WB_OK,
+    );
+    assert_ne!(
+        cell[1].to_bits(),
+        readings[0],
+        "resolution_m reached nothing: the sentinel test would pass with the argument ignored",
+    );
+    assert_eq!(wb_world_free(handle), WB_OK);
+}
+
+/// The calibration payload is `Surface::band_edges`, in the declared order, plus the two
+/// numbers a consumer cannot get anywhere else.
+#[test]
+fn the_climate_calibration_is_the_surfaces_own_band_edges_and_its_lapse_rate() {
+    use worldbuilder_engine::climate;
+    let handle = plain_world();
+    let surface = Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None);
+    let mut params = climate::MoistureParams::canonical();
+    params.budget = climate::MarchBudget::new(2).expect("2 is under the ceiling");
+    let expected = surface.band_edges(Some(RES_M), Some(params));
+
+    let mut out = [0.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+    assert_eq!(
+        wb_climate_calibration(handle, RES_M, 2, out.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32),
+        WB_OK,
+    );
+    assert_eq!(WB_CLIMATE_CALIBRATION_STRIDE, 8, "the declared payload is four, two, one, one");
+    for (index, edge) in expected.moisture().iter().enumerate() {
+        assert_eq!(out[index].to_bits(), edge.to_bits(), "moisture edge {index}");
+    }
+    for (index, edge) in expected.landform().iter().enumerate() {
+        assert_eq!(out[4 + index].to_bits(), edge.to_bits(), "landform edge {index}");
+    }
+    assert_eq!(out[6], expected.land_samples() as f64);
+    assert!(out[6] > 0.0 && out[6] < climate::BAND_CALIBRATION_SAMPLES as f64);
+    assert_eq!(out[7].to_bits(), climate::LAPSE_C_PER_KM.to_bits());
+    // The edges are ascending and the payload is not a row of zeros -- the shape of "the
+    // calibration silently did not run" that a length check cannot see.
+    assert!(out[0] < out[1] && out[1] < out[2] && out[2] < out[3], "moisture edges not ascending");
+    assert!(out[4] < out[5], "landform edges not ascending");
+
+    // **Both arguments reach the calibration.** A different budget must move the moisture
+    // edges and must NOT move the landform ones, which are quantiles of elevation and have
+    // nothing to do with the march.
+    let mut other = [0.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+    assert_eq!(
+        wb_climate_calibration(handle, RES_M, 6, other.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32),
+        WB_OK,
+    );
+    assert_ne!(other[0].to_bits(), out[0].to_bits(), "march_samples reached nothing");
+    assert_eq!(other[4].to_bits(), out[4].to_bits(), "the march moved a hypsometric edge");
+    let mut coarse = [0.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+    assert_eq!(
+        wb_climate_calibration(handle, 40_000.0, 2, coarse.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32),
+        WB_OK,
+    );
+    assert_ne!(coarse[4].to_bits(), out[4].to_bits(), "resolution_m reached nothing");
+    assert_eq!(wb_world_free(handle), WB_OK);
+}
+
+/// **A world with almost no land calibrates to a worthless banding and still says `WB_OK`,
+/// and index 6 is the only thing that says so.**
+///
+/// `land_fraction = 0.0` is the emptiest world this constructor makes and it is not empty:
+/// exactly one of `climate::BAND_CALIBRATION_SAMPLES` points comes back above the datum. So
+/// the edges are the order statistics of a sample of one -- four identical moisture edges,
+/// two identical landform edges -- and `climate::band_index`'s `>=` puts every point on the
+/// planet in the top band. That is the TIE Task 3 named as the only way a quantiled band can
+/// be empty, and here it is, reachable through the shipped door.
+///
+/// The status is deliberately not the signal: a caller reading only `WB_OK` gets a banding
+/// that looks like a banding. **Index 6 is what tells it apart**, which is why the payload
+/// carries it at all, and this test is the assertion that it does.
+#[test]
+fn the_land_sample_count_is_what_tells_a_worthless_calibration_from_a_real_one() {
+    let ocean = wb_world_new(SEED, RADIUS_M, PLATES, 0.0, core::ptr::null(), 0);
+    assert_ne!(ocean, 0);
+    let mut out = [0.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+    assert_eq!(
+        wb_climate_calibration(ocean, RES_M, 1, out.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32),
+        WB_OK,
+        "a world with one land point is a world, not a refusal",
+    );
+    assert_eq!(out[6], 1.0, "this fixture exists to be a sample of one");
+    assert_eq!(out[0].to_bits(), out[3].to_bits(), "four quantiles of one sample must tie");
+    assert_eq!(out[4].to_bits(), out[5].to_bits(), "two quantiles of one sample must tie");
+    // The lapse rate is a constant and is still reported: it does not depend on the world.
+    assert_eq!(out[7].to_bits(), worldbuilder_engine::climate::LAPSE_C_PER_KM.to_bits());
+    // And the ordinary world is NOT degenerate, or the assertions above would hold anywhere.
+    let plain = plain_world();
+    let mut real = [0.0f64; WB_CLIMATE_CALIBRATION_STRIDE];
+    assert_eq!(
+        wb_climate_calibration(plain, RES_M, 1, real.as_mut_ptr(), WB_CLIMATE_CALIBRATION_STRIDE as u32),
+        WB_OK,
+    );
+    assert!(real[6] > 100.0, "the ordinary fixture reported only {} land samples", real[6]);
+    assert_ne!(real[0].to_bits(), real[3].to_bits());
+    assert_eq!(wb_world_free(plain), WB_OK);
+    assert_eq!(wb_world_free(ocean), WB_OK);
+}

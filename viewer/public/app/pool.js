@@ -147,6 +147,12 @@ export class TilePool {
     /// number describing nothing at all. `n` is 1 per swap, not 72.
     this.waterMs = [];
     this.waterWallMs = [];
+    /// And once more for the climate calibration -- **the pool's FIFTH consumer**, and the
+    /// second that is not a tile. It is seconds where a cloud tile is milliseconds, for the
+    /// same reason the water solve is, so pooling it into any of the four samples above would
+    /// produce a median describing nothing.
+    this.climateMs = [];
+    this.climateWallMs = [];
   }
 
   /// Start `count` workers and wait for every one to have built its world.
@@ -193,7 +199,7 @@ export class TilePool {
 
   receive(message) {
     if (message.type !== "tile" && message.type !== "relief" && message.type !== "cloud"
-      && message.type !== "water" && message.type !== "error") return;
+      && message.type !== "water" && message.type !== "climate" && message.type !== "error") return;
     const entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);
@@ -229,6 +235,27 @@ export class TilePool {
         // neither; `pool.test.mjs` now asserts that a relief reply's counts survive this hop.
         lakeTexels: message.lakeTexels ?? 0,
         lakeTiles: message.lakeTiles ?? 0,
+        // **The third and fourth fields this fixed key set could have dropped**, and the
+        // comment above is the reason they are named here rather than spread. `?? 0` because
+        // a CLOUD reply carries neither, and because a relief reply with climate off carries
+        // them as zero rather than as absent -- which is the same number and a different
+        // fact, so `climateTiles` on the provider is what separates the two.
+        climateMs: message.climateMs ?? 0,
+        climateSamples: message.climateSamples ?? 0,
+      });
+      return;
+    }
+    // The climate calibration: a plain object of two small arrays and two scalars, rebuilt
+    // field by field with the same hazard the water reply above records.
+    if (message.type === "climate") {
+      entry.resolve({
+        moistureEdges: message.moistureEdges,
+        landformEdges: message.landformEdges,
+        landSamples: message.landSamples,
+        lapseCPerKm: message.lapseCPerKm,
+        fillMs: message.fillMs,
+        worker: message.index,
+        worldCount: message.worldCount,
       });
       return;
     }
@@ -328,6 +355,25 @@ export class TilePool {
   /// three numbers is a complete key. See `CloudRasterCache` for the measurement.
   cloud(request) {
     return this.dispatch("cloud", request, this.cloudMs, this.cloudWallMs);
+  }
+
+  /// **Calibrate this world's climate band edges in a worker.** Resolves
+  /// `{ moistureEdges, landformEdges, landSamples, lapseCPerKm, fillMs, worker, worldCount }`.
+  ///
+  /// # The fifth consumer, and the second that is not a tile
+  ///
+  /// `wb_climate_calibration` is 4,000 elevations plus one upwind march at every land point.
+  /// The noise calibration it replaces was 4,000 `wb_elevation_m` calls and ran on the main
+  /// thread at construction in tens of milliseconds; this one is **seconds**, and a
+  /// constructor that silently blocked a boot for that long would be a cost with no name in
+  /// the status line -- which is the exact sentence `relief-provider.js` already writes about
+  /// the water manifest. So it moves here, and `main.js` resolves it, times it and says so.
+  ///
+  /// One call, once per world. It is NOT per tile and not per worker: the edges are four plus
+  /// two numbers that are identical in every worker, and a worker that calibrated its own
+  /// would be a second place they could disagree.
+  climate(request) {
+    return this.dispatch("climate", request, this.climateMs, this.climateWallMs);
   }
 
   /// **Solve this world's water manifest in a worker.** Resolves
@@ -442,6 +488,9 @@ export class TilePool {
       waters: this.waterMs.length,
       waterMs: summarise(this.waterMs),
       waterWallMs: summarise(this.waterWallMs),
+      climates: this.climateMs.length,
+      climateMs: summarise(this.climateMs),
+      climateWallMs: summarise(this.climateWallMs),
     };
   }
 }

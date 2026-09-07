@@ -110,7 +110,7 @@ function relief(message) {
   // manifest draws exactly the same bytes as one that received a full manifest for a tile with
   // no water in it, so the picture cannot distinguish the two; this count can. The main thread
   // accumulates it into the provider's stats, where a check reads it.
-  const counters = { lakeTexels: 0, lakeTiles: 0 };
+  const counters = { lakeTexels: 0, lakeTiles: 0, climateMs: 0, climateSamples: 0 };
   const imageData = reliefTile({ ...message.request, engine, worldHandle: world, counters });
   const fillMs = performance.now() - started;
   return {
@@ -121,11 +121,46 @@ function relief(message) {
       fillMs,
       lakeTexels: counters.lakeTexels,
       lakeTiles: counters.lakeTiles,
+      // The climate half of `fillMs`, so the report can say what fraction of a relief tile
+      // the fourth pool consumer costs. Same hop, same hazard as the lake counters above.
+      climateMs: counters.climateMs,
+      climateSamples: counters.climateSamples,
       data: imageData.data,
       width: imageData.width,
       height: imageData.height,
     },
     buffer: imageData.data.buffer,
+  };
+}
+
+/// **Calibrate this world's climate band edges** -- the fifth job, and the second that is not
+/// a tile.
+///
+/// `wb_climate_calibration` is 4,000 elevations plus one upwind march at every land point:
+/// roughly 190,000 elevation queries, and seconds rather than milliseconds. It is here for
+/// exactly the reason `water` is: on the main thread it is a single uninterruptible task that
+/// freezes the tab, and the browser's own long-task observer records it as one.
+///
+/// **The world handle is supplied HERE and not sent**, as every other job does it, and here it
+/// has the same teeth `water`'s does: the main thread is about to hand these edges to every
+/// relief worker, so the only thing making them right is that `world` was built from the spec
+/// the main thread built its own world from.
+///
+/// **No world is built and none is freed.**
+function climate(message) {
+  const started = performance.now();
+  const result = engine.climateCalibration({ ...message.request, handle: world });
+  const fillMs = performance.now() - started;
+  return {
+    type: "climate",
+    id: message.id,
+    index,
+    fillMs,
+    moistureEdges: result.moistureEdges,
+    landformEdges: result.landformEdges,
+    landSamples: result.landSamples,
+    lapseCPerKm: result.lapseCPerKm,
+    worldCount: engine.worldCount(),
   };
 }
 
@@ -223,6 +258,11 @@ self.onmessage = async (event) => {
     // above without noticing the difference.
     if (message.type === "water") {
       self.postMessage(water(message));
+      return;
+    }
+    // No transfer list either: eight f64 in a plain object. See `climate` above.
+    if (message.type === "climate") {
+      self.postMessage(climate(message));
       return;
     }
     // **The live swap's worker half.** Each worker holds its own world in its own linear memory,

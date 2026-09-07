@@ -53,11 +53,18 @@ import {
   targetLuminance,
   temperatureC,
   unitVector,
+  CLIMATE_RASTER,
+  engineCalibration,
+  engineMoisture,
+  engineTemperatureC,
+  sampleClimateGrid,
 } from "../public/app/biome.js";
 import {
   coastDitherM, marginedTileRequest, OCEAN_BANDS, reliefTile, slopeColor,
 } from "../public/app/relief.js";
-import { biomeColourEnabled, reliefLayerEnabled } from "../public/app/relief-provider.js";
+import {
+  biomeColourEnabled, engineClimateEnabled, reliefLayerEnabled,
+} from "../public/app/relief-provider.js";
 
 const OWNER_WORLD = { seed: 562423712, radiusM: 4500000, plateCount: 28, landFraction: 0.16 };
 const SECOND_WORLD = { seed: 7, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
@@ -752,4 +759,173 @@ test("?biome=0 is the A/B switch, and it is off by default", () => {
   // And it must be its own switch, not a second name for the layer's.
   assert.equal(reliefLayerEnabled(new URLSearchParams("biome=0")), true);
   assert.equal(biomeColourEnabled(new URLSearchParams("relief=0")), true);
+});
+
+// ============================================================================================
+// The engine's own climate -- what the two approximations above were a stand-in for
+// ============================================================================================
+
+test("?climate=0 is the only thing that turns the engine climate off", () => {
+  assert.equal(engineClimateEnabled(new URLSearchParams("")), true);
+  assert.equal(engineClimateEnabled(new URLSearchParams("climate=1")), true);
+  assert.equal(engineClimateEnabled(new URLSearchParams("climate=false")), true,
+    "only the literal 0 turns it off, the same convention every other flag here uses");
+  assert.equal(engineClimateEnabled(new URLSearchParams("climate=0")), false);
+  // And it is independent of `?biome=0`, which is a different question -- one puts land on the
+  // height ramp, the other chooses which climate the bands are cut from.
+  assert.equal(biomeColourEnabled(new URLSearchParams("climate=0")), true);
+});
+
+test("the engine calibration keeps the ABSOLUTE temperature axis and replaces the two quantiled ones", async () => {
+  const climate = engine.climateCalibration({ handle: ownerHandle, marchSamples: 8 });
+  const cal = engineCalibration({ radiusM: OWNER_WORLD.radiusM, climate });
+  assert.equal(cal.engine, true);
+  assert.deepEqual(cal.tempEdges, TEMP_BAND_EDGES_C,
+    "temperature has a unit and is not quantiled -- the photoreal slice measured what happens " +
+    "when it is, and the brightest palette entry became unreachable");
+  assert.deepEqual(cal.moistEdges, climate.moistureEdges);
+  assert.deepEqual(cal.landformEdges, climate.landformEdges);
+  assert.equal(cal.lapseCPerKm, 6.5);
+  assert.equal(cal.landSamples, climate.landSamples);
+  assert.ok(cal.landSamples > 100, `only ${cal.landSamples} land samples on the owner's world`);
+  // Ascending, and NOT the noise field's edges: the whole point is that these are a different
+  // measurement of the same axis.
+  assert.ok(cal.moistEdges[0] < cal.moistEdges[3]);
+  assert.notDeepEqual(cal.moistEdges, ownerCal.moistEdges);
+});
+
+test("an engine calibration without a per-texel climate throws rather than drawing the noise field", () => {
+  // **The failure this guard exists for draws an entirely plausible planet**: the noise
+  // moisture is roughly 0..1 and the engine's band edges are cut out of 0..1, so a caller that
+  // forgot the per-texel sample would get a wrong biome at every texel and nothing anywhere
+  // would report it. It is the shape of every silent-plausible defect this project has shipped.
+  const climate = engine.climateCalibration({ handle: ownerHandle, marchSamples: 8 });
+  const cal = engineCalibration({ radiusM: OWNER_WORLD.radiusM, climate });
+  assert.throws(
+    () => biomeAt({ heightM: 400, latitudeDeg: 12, longitudeDeg: 34, calibration: cal }),
+    /per-texel climate/,
+  );
+  // And with one it answers.
+  const r = biomeAt({
+    heightM: 400, latitudeDeg: 12, longitudeDeg: 34, calibration: cal,
+    climate: { datumC: 20, moisture: 0.5 },
+  });
+  assert.ok(Number.isFinite(r.tempC) && Number.isFinite(r.moisture));
+});
+
+test("the engine path reads the engine's moisture and NOT the latitude-plus-noise one", () => {
+  const climate = engine.climateCalibration({ handle: ownerHandle, marchSamples: 8 });
+  const cal = engineCalibration({ radiusM: OWNER_WORLD.radiusM, climate });
+  const args = { heightM: 400, latitudeDeg: 12, longitudeDeg: 34, calibration: cal };
+  const wet = biomeAt({ ...args, climate: { datumC: 20, moisture: 0.97 } });
+  const dry = biomeAt({ ...args, climate: { datumC: 20, moisture: 0.001 } });
+  assert.equal(wet.moisture, 0.97, "the engine's moisture reached the classifier unaltered");
+  assert.equal(dry.moisture, 0.001);
+  assert.ok(wet.moist > dry.moist, "two ends of the axis must land in different bands");
+  assert.notEqual(wet.biome, dry.biome);
+  // The noise approximation at the same point answers something else entirely, which is what
+  // makes the substitution a substitution rather than a rename.
+  const noise = biomeAt({ ...args, calibration: ownerCal });
+  assert.notEqual(noise.moisture, wet.moisture);
+  // `engineMoisture` is the identity, deliberately and testably: the three noise terms the
+  // approximation adds are DELETED on this path, not re-weighted. See its own doc.
+  assert.equal(engineMoisture(0.371), 0.371);
+});
+
+test("the lapse rate is applied at the RELIEF raster's resolution, from the engine's own constant", () => {
+  // The whole reason the export writes the datum temperature rather than the ground one. A
+  // 2,000 m peak must be 13 C colder than sea level at the same latitude, and it must be so at
+  // every texel rather than at every climate cell.
+  const fields = { macro: 0, patch: 0, breakup: 0 };
+  assert.equal(engineTemperatureC(20, 0, 6.5, fields), 20);
+  assert.equal(engineTemperatureC(20, 2000, 6.5, fields), 20 - 13);
+  // Below the datum does NOT warm: the sea surface is at the datum, and giving a rift basin
+  // lapse warming would be an artefact of the arithmetic. Same floor `climate::temperature_c`
+  // has, and the same reason.
+  assert.equal(engineTemperatureC(20, -4000, 6.5, fields), 20);
+  // The rate is an argument and not a literal here: an engine that changed it must move this.
+  assert.equal(engineTemperatureC(20, 1000, 9.8, fields), 20 - 9.8);
+  // The two noise terms survive, because `climate.rs` is the MEAN FIELD and a rendering term
+  // over it stays where it is.
+  assert.notEqual(engineTemperatureC(20, 0, 6.5, { macro: 1, patch: 0, breakup: 0 }), 20);
+  assert.notEqual(engineTemperatureC(20, 0, 6.5, { macro: 0, patch: 0, breakup: 1 }), 20);
+});
+
+test("the climate grid's endpoints ARE the texel lattice's endpoints, with no half-cell offset", () => {
+  // A 4x4 grid of known values over a 7-texel raster. Corner texels must read the corner cells
+  // exactly; a half-texel offset anywhere shows up here as a corner that is interpolated.
+  const gridSize = 4;
+  const grid = new Float32Array(gridSize * gridSize * 2);
+  for (let r = 0; r < gridSize; r += 1) {
+    for (let c = 0; c < gridSize; c += 1) {
+      grid[(r * gridSize + c) * 2] = r * 10 + c;
+      grid[(r * gridSize + c) * 2 + 1] = (r * 10 + c) / 100;
+    }
+  }
+  const size = 7;
+  assert.deepEqual(sampleClimateGrid(grid, gridSize, 0, 0, size), { datumC: 0, moisture: 0 });
+  const last = sampleClimateGrid(grid, gridSize, size - 1, size - 1, size);
+  assert.equal(last.datumC, 33, "the last texel must read the last cell, not an extrapolation");
+  assert.ok(Math.abs(last.moisture - 0.33) < 1e-6);
+  const topRight = sampleClimateGrid(grid, gridSize, 0, size - 1, size);
+  assert.equal(topRight.datumC, 3);
+  const bottomLeft = sampleClimateGrid(grid, gridSize, size - 1, 0, size);
+  assert.equal(bottomLeft.datumC, 30);
+  // The interior is bilinear and monotone, not nearest-neighbour: texel 3 of 7 sits at cell
+  // 1.5, exactly between rows 1 and 2.
+  const middle = sampleClimateGrid(grid, gridSize, 3, 3, size);
+  assert.ok(Math.abs(middle.datumC - 16.5) < 1e-6, `middle read ${middle.datumC}`);
+  // A one-texel raster has no step to take and reads cell 0.
+  assert.equal(sampleClimateGrid(grid, gridSize, 0, 0, 1).datumC, 0);
+});
+
+test("a relief tile drawn with the engine's climate is a DIFFERENT picture, and one tile is one climate raster", async () => {
+  // **Byte-identity proves the picture and never the path**, so both are asserted: the raster
+  // must change, and the counter must say a climate grid was actually filled and how many
+  // marches it cost. A climate configuration that never reached `reliefTile` would draw the
+  // approximation and report zero, and the two are only distinguishable by the counter.
+  const climate = engine.climateCalibration({ handle: ownerHandle, marchSamples: 8 });
+  const cal = engineCalibration({ radiusM: OWNER_WORLD.radiusM, climate });
+  // **A window with land in it, found by scanning rather than picked.** The first draft of
+  // this test used 20N-10N, 30E-40E and measured 0 of 1024 texels moved -- that window is
+  // entirely ocean on a 16%-land world, and water is exactly what this change does not touch.
+  // A 10-degree sweep of the globe puts this world's densest land at 40N, 80E: 25 of 25 probes.
+  const rectangle = { northDeg: 40, southDeg: 30, westDeg: 80, eastDeg: 90 };
+  const shared = { rectangle, size: 32, engine, worldHandle: ownerHandle, radiusM: OWNER_WORLD.radiusM };
+  const counters = {};
+  const withClimate = reliefTile({
+    ...shared, biome: cal, counters,
+    climate: { rasterSize: CLIMATE_RASTER, marchSamples: 8 },
+  });
+  const withNoise = reliefTile({ ...shared, biome: ownerCal });
+  assert.equal(counters.climateTiles, 1, "no climate raster was filled at all");
+  assert.equal(counters.climateSamples, CLIMATE_RASTER * CLIMATE_RASTER);
+  assert.ok(counters.climateMs >= 0);
+  let moved = 0;
+  for (let i = 0; i < withClimate.data.length; i += 4) {
+    if (withClimate.data[i] !== withNoise.data[i]
+      || withClimate.data[i + 1] !== withNoise.data[i + 1]
+      || withClimate.data[i + 2] !== withNoise.data[i + 2]) moved += 1;
+  }
+  const texels = 32 * 32;
+  assert.ok(moved > texels * 0.2, `only ${moved} of ${texels} texels moved`);
+  assert.ok(moved < texels, "every texel moved, which would include the ocean -- water is untouched");
+});
+
+test("with climate null the tile is byte-identical to the pre-climate raster", () => {
+  // The `?climate=0` guarantee, at the one function that draws it. The digest in the task
+  // report is the end-to-end version; this is the unit that says nothing was rewritten.
+  const rectangle = { northDeg: 40, southDeg: 30, westDeg: 80, eastDeg: 90 };
+  const shared = {
+    rectangle, size: 24, engine, worldHandle: ownerHandle,
+    radiusM: OWNER_WORLD.radiusM, biome: ownerCal,
+  };
+  const a = reliefTile({ ...shared });
+  const b = reliefTile({ ...shared, climate: null });
+  assert.deepEqual(Array.from(a.data), Array.from(b.data));
+  // And `slopeColor`'s seventh argument defaults the same way.
+  assert.deepEqual(
+    slopeColor(400, 5, 12, 34, ownerCal, null),
+    slopeColor(400, 5, 12, 34, ownerCal, null, null),
+  );
 });

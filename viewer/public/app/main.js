@@ -19,7 +19,8 @@ import { coastFromParams } from "./coast-params.js";
 import { gullyFromParams } from "./gully-params.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
-  biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
+  biomeColourEnabled, engineClimateEnabled, createReliefImageryProvider,
+  reliefLayerEnabled, RELIEF_TILE_SIZE,
   COARSE_RELIEF_TILE_SIZE, COARSE_RELIEF_BELOW_LEVEL,
 } from "./relief-provider.js";
 import {
@@ -27,6 +28,7 @@ import {
   DEFAULT_CLOUD_CACHE_TILES,
 } from "./cloud-provider.js";
 import { CLOUD_MAX_LEVEL, CLOUD_TILE_SIZE } from "./clouds.js";
+import { CLIMATE_RASTER } from "./biome.js";
 import {
   dilateBodyExtents, waterDiagnostics, waterEnabled, waterNodeCountFromParams,
 } from "./water.js";
@@ -217,7 +219,7 @@ async function boot() {
   const installed = {
     state: null, world: 0, reference: 0, provider: null, cache: null, availability: null,
     reliefProvider: null, reliefLayer: null, cloudProvider: null, cloudLayer: null,
-    water: null, swaps: 0, lastSwap: null,
+    water: null, climate: null, swaps: 0, lastSwap: null,
   };
 
   /// The two world handles, owned. `reference` is what the checks compare against and is always
@@ -287,6 +289,45 @@ async function boot() {
   /// bit-identical -- so the worker's manifest is the main thread's manifest.
   /// `tile-worker.test.mjs` proves that against the real wasm, field by field, rather than
   /// resting on this paragraph.
+  /// **Calibrate this world's climate band edges, in a pool worker.**
+  ///
+  /// The fifth pool consumer and the second that is not a tile. It is the same shape as
+  /// `startWaterSolve` above and for the same measured reason: `wb_climate_calibration` is
+  /// 4,000 elevations plus one 160-step upwind march at every land point -- roughly 190,000
+  /// elevation queries -- and on the main thread that is a single uninterruptible task the
+  /// browser's own long-task observer records as one freeze.
+  ///
+  /// **It is started beside the water solve and awaited beside it**, so the two run in
+  /// parallel on different workers instead of in series. Both must be complete before the
+  /// relief layer is constructed, for the identical reason: `ImageryLayer` caches the texture
+  /// it is given, so a tile rasterised against edges that had not arrived would be a
+  /// permanently wrongly-banded tile.
+  ///
+  /// `?climate=0` skips it entirely rather than resolving and discarding. `?workers=0` and any
+  /// `?fault=` keep the main-thread call, exactly as the water solve does -- a faulted pool is
+  /// deliberately allowed to disagree with the main thread about which planet it is on, and a
+  /// calibration taken from it would then be a different world's edges.
+  async function startClimateCalibration() {
+    const request = {};
+    const started = performance.now();
+    if (!pool || fault || params.get("climateWorker") === "0") {
+      const climate = engine.climateCalibration({ handle: installed.world, ...request });
+      return { ...climate, ms: performance.now() - started, worker: null };
+    }
+    const result = await pool.climate(request);
+    return {
+      moistureEdges: result.moistureEdges,
+      landformEdges: result.landformEdges,
+      landSamples: result.landSamples,
+      lapseCPerKm: result.lapseCPerKm,
+      /// Wall clock, for the reason `startWaterSolve` gives: it is what the owner waited for.
+      ms: performance.now() - started,
+      worker: result.worker,
+      workerWorldCount: result.worldCount,
+      workerMs: result.fillMs,
+    };
+  }
+
   async function startWaterSolve(nextState) {
     const request = { nodeCount: nextState.waterNodes };
     const started = performance.now();
@@ -366,6 +407,13 @@ async function boot() {
     // the solve landed: that draws every relief tile twice, and a relief tile is 66,564 engine
     // samples.
     const waterJob = resolveWater ? startWaterSolve(nextState) : null;
+    // **Started here, beside the water solve, and awaited beside it.** Two independent jobs on
+    // two different workers: dispatching them one after the other would add their durations
+    // where running them together adds only the longer. Both are required before the relief
+    // layer is built and neither is required before the terrain mesh paints.
+    const climateJob = reliefOn && engineClimateEnabled(params) && biomeColourEnabled(params)
+      ? startClimateCalibration()
+      : null;
 
     if (rebuildTerrain) {
       // Feature-aware availability. With no features this is exactly the Task 4 cap: the
@@ -494,6 +542,9 @@ async function boot() {
       };
     }
 
+    // **The calibration, awaited at last**, next to the manifest and for the same reason.
+    installed.climate = climateJob ? await climateJob : null;
+
     if (reliefOn) {
       // **The old layer is removed and a new one added**, rather than the provider being mutated.
       // `ImageryLayer` caches the uploaded texture per tile and there is no public "invalidate";
@@ -517,6 +568,15 @@ async function boot() {
         // hypsometry, and reusing the previous world's would colour the new one by the old one's
         // heights -- a difference no counter would show and no exception would report.
         biome: biomeColourEnabled(params) ? undefined : null,
+        // **The engine's own climate, or `null` for the noise approximation this layer drew
+        // before the climate slice.** `null` is `?climate=0`, and it is byte-identical rather
+        // than merely similar -- which is what makes the digest in the task report a proof.
+        // Re-calibrated per swap and never carried over, for exactly the reason the band edges
+        // are: these are this world's own quantiles over this world's own march.
+        climate: installed.climate,
+        // The A/B for the raster-size measurement: `?climateRaster=32` is the arm the task
+        // report prices, one page and one flag apart.
+        climateRaster: number("climateRaster", CLIMATE_RASTER),
         // The bodies, resolved above. `[]` under `?lakes=0`, which is the picture this task
         // started from.
         lakes: installed.water.drawnBodies,
@@ -814,6 +874,7 @@ async function boot() {
     const reliefProvider = installed.reliefProvider;
     const cloudProvider = installed.cloudProvider;
     const water = installed.water;
+    const climate = installed.climate;
     return `Cesium ${Cesium.VERSION} | generator v${engine.generatorVersion()} | ` +
     `seed=${s.seed} plates=${s.plateCount} land=${s.landFraction} ` +
     `features=${s.features.length} relief=${
@@ -862,6 +923,24 @@ async function boot() {
         ? `${reliefProvider.tileWidth}px cap=${reliefProvider.maximumLevel} ${
           pool ? "workers" : "MAIN THREAD"}`
         : "off"} paint=${paint ? "ramp" : "off"} | ` +
+    // **The climate, named with the numbers that decide what the land is coloured by.** A
+    // caption saying "climate=on" would say nothing: the whole difference between this
+    // picture and the one before it is which four moisture edges the bands were cut at, how
+    // many land samples they were read from, and how coarse the raster that carries them is.
+    // The DRIEST edge is quoted because it is the one the report has to be honest about --
+    // Task 3 measured that 79-90% of the arid band on an Earth-sized world is dried by a
+    // truncated integral rather than by a measured fetch, so `arid` currently means "beyond
+    // the march's reach, and hilly" more than "measured driest".
+    `climate=${
+      climate
+        ? `moist edges ${climate.moistureEdges.map((e) => e.toFixed(3)).join("/")} ` +
+          `land ${climate.landformEdges.map((e) => Math.round(e)).join("/")} m ` +
+          `from ${climate.landSamples} land samples lapse ${climate.lapseCPerKm} C/km ` +
+          `${reliefProvider ? reliefProvider.worldbuilder.climateConfig.rasterSize : "?"}px raster ` +
+          `in ${(climate.ms / 1000).toFixed(2)}s on ${
+            climate.worker === null || climate.worker === undefined ? "main" : `w${climate.worker}`}` +
+          ` (ARID IS PARTLY A TRUNCATED MARCH -- see the task report)`
+        : "off (land colour is the noise approximation)"} | ` +
     // The water manifest, named with the numbers that decide what it can draw. A screenshot
     // carries this line as its own caption, and "lakes=on" would say nothing: the body count
     // depends entirely on the node count, and the DRAWABLE count is smaller than the body count

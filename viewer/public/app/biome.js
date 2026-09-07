@@ -542,6 +542,143 @@ export function moistureIndex(latitudeDeg, fields) {
 }
 
 // ============================================================================================
+// The engine's own climate -- what this module's two approximations above are a stand-in for
+// ============================================================================================
+
+/// **The raster the climate grid is filled at, and it was chosen by measurement rather than
+/// by taste.**
+///
+/// One climate sample is one upwind moisture march, and one march at the engine's canonical
+/// budget is 161 `elevation_m` queries. Texels are QUADRATIC in the raster edge and samples
+/// are LINEAR in the budget, so the raster is the only lever there is. Priced against this
+/// world's own elevation cost (a 160-sample query at 560-770 us; see the task report for the
+/// host and the population):
+///
+/// | raster | per tile | over 49 tiles | on the relief layer |
+/// |---|---|---|---|
+/// | **16 x 16 (shipped)** | 181-250 ms | 8.9-12.2 s | +33-45% |
+/// | 32 x 32 | 647-890 ms | 31.7-43.6 s | +116-160% |
+///
+/// 32 would make climate the largest single item in the tile budget, for a field whose
+/// spatial frequency is set by a 3,200 km march and cannot carry that detail. **The lever is
+/// fewer or cheaper samples and never more workers**: the pool is starved rather than
+/// saturated -- 23-40% utilisation, and sixteen workers settled *slower* than eight.
+export const CLIMATE_RASTER = 16;
+
+/// The band edges, in the shape `biomeAt` reads, taken from the ENGINE's calibration rather
+/// than from `calibrate` below.
+///
+/// `climate` is `engine.climateCalibration`'s return value. The temperature edges are still
+/// `TEMP_BAND_EDGES_C` and still absolute -- the engine bands temperature at the same four
+/// degrees, for the reason that constant's own doc gives -- and the moisture and landform
+/// edges are this world's own quantiles as the engine measured them, over a march rather than
+/// over noise.
+///
+/// `engine: true` is read by `biomeAt` and is not decoration: on this path a per-texel
+/// `climate` argument is REQUIRED, and a caller that forgot it would otherwise silently get
+/// the noise field it was asked to replace.
+export function engineCalibration({ radiusM, climate }) {
+  if (!Number.isFinite(radiusM) || radiusM <= 0) {
+    throw new Error(`engineCalibration: radiusM must be a positive number, got ${radiusM}`);
+  }
+  if (!climate || !Array.isArray(climate.moistureEdges) || !Array.isArray(climate.landformEdges)) {
+    throw new Error("engineCalibration: climate must be engine.climateCalibration's payload");
+  }
+  return {
+    engine: true,
+    radiusM,
+    samples: CALIBRATION_SAMPLES,
+    landSamples: climate.landSamples,
+    tempEdges: TEMP_BAND_EDGES_C.slice(),
+    /// **Not reported on this path**, and that is deliberate rather than an omission: the
+    /// engine's temperature is a closed form and its span over a world is a question about
+    /// that world's hypsometry, which nothing here samples. `calibrate` reports one because
+    /// it already had the 4,000 samples in hand.
+    tempSpanC: null,
+    moistEdges: climate.moistureEdges.slice(),
+    landformEdges: climate.landformEdges.slice(),
+    lapseCPerKm: climate.lapseCPerKm,
+  };
+}
+
+/// Where sample `(row, col)` of a `size`-texel raster sits in a `CLIMATE_RASTER`-cell climate
+/// grid laid over the same texel lattice, and the four-cell bilinear read of it.
+///
+/// **The two grids share their endpoints exactly.** `relief.js` puts texel `(0, 0)` at the
+/// tile's north-west corner and texel `(size-1, size-1)` at `north + dLat*(size-1)`,
+/// `west + dLon*(size-1)`; the climate grid is filled over precisely those bounds with both
+/// endpoints included, so cell 0 IS texel 0 and cell `CLIMATE_RASTER-1` IS texel `size-1`.
+/// There is no half-texel offset to get wrong, and that is why the provider passes the texel
+/// lattice's own bounds rather than the tile rectangle.
+///
+/// Returns `{ datumC, moisture }`.
+export function sampleClimateGrid(grid, gridSize, row, col, size) {
+  const last = size - 1;
+  const gLast = gridSize - 1;
+  const t = last > 0 ? (row * gLast) / last : 0;
+  const u = last > 0 ? (col * gLast) / last : 0;
+  const r0 = Math.min(gLast, Math.floor(t));
+  const c0 = Math.min(gLast, Math.floor(u));
+  const r1 = Math.min(gLast, r0 + 1);
+  const c1 = Math.min(gLast, c0 + 1);
+  const fr = t - r0;
+  const fc = u - c0;
+  const at = (r, c, channel) => grid[((r * gridSize + c) * 2) + channel];
+  const lerp2 = (channel) => {
+    const top = at(r0, c0, channel) + (at(r0, c1, channel) - at(r0, c0, channel)) * fc;
+    const bottom = at(r1, c0, channel) + (at(r1, c1, channel) - at(r1, c0, channel)) * fc;
+    return top + (bottom - top) * fr;
+  };
+  return { datumC: lerp2(0), moisture: lerp2(1) };
+}
+
+/// Mean annual temperature in degrees C from the ENGINE's datum profile, with the lapse rate
+/// applied here at the relief raster's own resolution.
+///
+/// **The lapse is applied on this side on purpose.** The climate grid is 16 x 16 over a tile
+/// the relief layer draws at 256; a temperature sampled coarsely and interpolated would carry
+/// a lapse term smoothed over 1/16 of the tile, so a peak inside one climate cell would come
+/// back at its neighbourhood's mean height and lose its snow line entirely. The engine writes
+/// the datum value for exactly this reason and reports `lapseCPerKm` alongside the edges, so
+/// there is no second copy of `6.5` here.
+///
+/// **The two noise terms stay.** `climate.rs`'s own module doc says it is *the mean field* and
+/// that a rendering term over it "stays where it is"; the temperature bands are 6 to 10 C wide
+/// and `TEMP_BREAKUP_C` is 2.5, so it still frays a boundary rather than dissolving a band --
+/// which is the sizing argument that constant was measured against and it is unchanged by
+/// where the mean came from.
+export function engineTemperatureC(datumC, heightM, lapseCPerKm, fields) {
+  const lapse = (lapseCPerKm * Math.max(0, heightM)) / 1000;
+  return datumC - lapse + fields.macro * TEMP_MACRO_C + fields.breakup * TEMP_BREAKUP_C;
+}
+
+/// **The engine's moisture carries no noise, and that is the one place this task deletes a
+/// term rather than replacing it.**
+///
+/// `MOISTURE_MACRO` and `MOISTURE_PATCH` exist for a reason stated in their own doc: *"the
+/// longitudinal term -- distance from an ocean, which side of a range you are on -- ... Nothing
+/// in the viewer can compute that term, so noise stands in for it."* The engine now computes
+/// it. Keeping the stand-in on top of the real thing would be adding noise to a measurement.
+///
+/// `MOISTURE_BREAKUP` goes too, and that is a sizing argument rather than a purity one. It was
+/// sized as "a fifth to a third of a band" against bands 0.24 to 0.37 wide in the noise field.
+/// The engine's field is heavily skewed dry -- Task 3 measured 44-68% of all land inside the
+/// bottom fifth of its VALUE range -- so this world's own band edges come out at 0.022 / 0.119
+/// / 0.408 / 0.759, i.e. an `arid` band 0.022 wide against a `perhumid` band 0.24 wide. One
+/// additive breakup amplitude cannot be a third of both: 0.075 would erase the dry end
+/// outright, and an amplitude small enough for the dry end would be invisible at the wet one.
+/// Fraying it correctly needs the noise applied in QUANTILE space, which needs the sorted
+/// sample the engine does not export. **Reported, not invented.**
+///
+/// What replaces it is not nothing: the march is an integral over real terrain, so its
+/// isolines already follow coasts and ranges, where the noise model's isolines were literally
+/// parallels of latitude. The transect measurement in the task report is what decides that,
+/// not this paragraph.
+export function engineMoisture(moisture) {
+  return moisture;
+}
+
+// ============================================================================================
 // Calibration: quantiles over a Fibonacci sample, no grid
 // ============================================================================================
 
@@ -747,13 +884,29 @@ export const MACRO_TONE = 0.07;
 /// Returns `{ rgb, biome, landform, temp, moist, tempC, moisture, fields }` -- the extra
 /// fields are what the test asserts band coverage over, and what a future ambient-occlusion
 /// or cloud pass would reuse rather than recompute.
-export function biomeAt({ heightM, latitudeDeg, longitudeDeg, calibration }) {
+export function biomeAt({ heightM, latitudeDeg, longitudeDeg, calibration, climate = null }) {
   const { radiusM, tempEdges, moistEdges, landformEdges } = calibration;
   const [px, py, pz] = unitVector(latitudeDeg, longitudeDeg);
   const fields = noiseFields(px, py, pz, radiusM);
 
-  const tempC = temperatureC(latitudeDeg, heightM, fields);
-  const moisture = moistureIndex(latitudeDeg, fields);
+  // **Two paths, one palette.** `calibration.engine` selects the engine's measured climate;
+  // anything else is the noise approximation this module shipped first, kept byte-for-byte so
+  // `?climate=0` is a real A/B rather than a claim. The palette, the classifier, the jitter
+  // and the tone are shared -- this task replaces the INPUTS.
+  //
+  // The two are not merged behind a null-coalescing default, deliberately: a caller that
+  // built an engine calibration and forgot to pass the per-texel `climate` would then get the
+  // noise field silently, against the engine's own band edges, which is a wrong picture that
+  // looks entirely plausible. It throws instead.
+  if (calibration.engine && !climate) {
+    throw new Error("biomeAt: an engine calibration needs a per-texel climate sample");
+  }
+  const tempC = climate
+    ? engineTemperatureC(climate.datumC, heightM, calibration.lapseCPerKm, fields)
+    : temperatureC(latitudeDeg, heightM, fields);
+  const moisture = climate
+    ? engineMoisture(climate.moisture)
+    : moistureIndex(latitudeDeg, fields);
   // **Every threshold's input carries a noise term.** For temperature and moisture the noise
   // is already inside the field itself; the landform threshold is a bare elevation
   // comparison, so it gets its own here.

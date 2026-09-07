@@ -2,7 +2,7 @@
 //
 // `viewer/public/wasm/worldbuilder_engine.wasm` has **zero imports** by design, so
 // `WebAssembly.instantiate(bytes, {})` is the entire loader: no wasm-bindgen, no glue
-// module, no bundler. Everything below is hand-written marshalling over the fourteen
+// module, no bundler. Everything below is hand-written marshalling over the twenty-six
 // `extern "C"` entry points documented in `crates/worldbuilder-engine/src/wasm.rs`
 // (`WB_EXPORTS` is the declared list; a Rust test holds that file's source to it).
 //
@@ -81,6 +81,27 @@ export const WB_BODY_KIND = { lake: 0, pond: 1 };
 /// reason: the water path holds three neighbour structures at once and wasm32's linear memory
 /// is far smaller than the native heap that ceiling would otherwise be sized against.
 export const WB_MAX_WATER_NODES = 100000;
+
+/// f32 per sample `wb_climate_tile_f32` writes, and **the order is the ABI**: index 0 is the
+/// temperature at the DATUM (not at the ground) and index 1 is the marched moisture. Mirrored
+/// from `WB_CLIMATE_STRIDE`; `climateTileF32` below is the only place the order is spelled
+/// out, for the same reason `RELIEF_STRIDE` is imported rather than restated.
+export const WB_CLIMATE_STRIDE = 2;
+
+/// f64 `wb_climate_calibration` writes: four moisture edges, two landform edges, the land
+/// sample count, the lapse rate. Mirrored from `WB_CLIMATE_CALIBRATION_STRIDE`.
+export const WB_CLIMATE_CALIBRATION_STRIDE = 8;
+
+/// The `march_samples` sentinel meaning "the engine's own canonical march". **Not 0**: the
+/// engine deliberately admits a zero-step march as the identity element (the air has
+/// travelled nowhere and is still saturated), so 0 is a real request and cannot double as a
+/// default. Mirrored from `WB_CLIMATE_CANONICAL_SAMPLES`.
+export const WB_CLIMATE_CANONICAL_SAMPLES = 0xffffffff;
+
+/// The export's own ceiling on `march_samples`, mirrored so a caller can be bounded by it
+/// rather than by a guess. **It is a loop bound**: the march walks this many steps inside one
+/// uninterruptible call, per sample, and a tile is `width * height` samples.
+export const WB_MAX_CLIMATE_MARCH_SAMPLES = 1024;
 
 export class Engine {
   constructor(instance) {
@@ -468,6 +489,87 @@ export class Engine {
       // The view is created here, after the allocation, and copied immediately: a view
       // taken before wb_alloc could be detached by heap growth.
       return new Float32Array(this.memory.buffer, ptr, samples).slice();
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Fill one **climate** tile and hand back a copy as a `Float32Array` on the JS heap: two
+  /// f32 per sample, `[temperatureCAtDatum, moisture]`, row-major, both endpoints included.
+  ///
+  /// The copy is taken for the same reason `fillTileF32` takes one -- the wasm view has to die
+  /// before the buffer is freed -- and the grid convention is byte-for-byte
+  /// `wb_fill_tile_f32`'s, deliberately, so a caller can lay this grid over a height grid
+  /// without a second convention to get wrong. `lat0Deg` is the row-0 latitude.
+  ///
+  /// **The temperature is at the DATUM.** Apply the lapse rate yourself, against the heights
+  /// you already have at your own raster's resolution; `climateCalibration` reports the rate.
+  /// See `WB_CLIMATE_STRIDE` in `wasm.rs` for why the engine does not do it for you.
+  ///
+  /// **One sample is one moisture march**, which is 161 elevation queries at the canonical
+  /// budget. Texels are quadratic in the raster edge and samples are linear in the budget, so
+  /// the raster is the lever. `biome.js::CLIMATE_RASTER` is the size this viewer ships and the
+  /// measurement that chose it.
+  climateTileF32({
+    handle, lat0Deg, lat1Deg, lon0Deg, lon1Deg, width, height,
+    resolutionM = CANONICAL_RESOLUTION, marchSamples = WB_CLIMATE_CANONICAL_SAMPLES,
+  }) {
+    const values = width * height * WB_CLIMATE_STRIDE;
+    const bytes = values * 4;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error(`wb_alloc refused ${bytes} bytes for a ${width}x${height} climate tile`);
+    try {
+      const status = this.exports.wb_climate_tile_f32(
+        handle, lat0Deg, lat1Deg, lon0Deg, lon1Deg, width, height, resolutionM,
+        marchSamples, ptr, values,
+      ) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_climate_tile_f32 returned ${STATUS_NAMES[status] ?? status}`);
+      }
+      return new Float32Array(this.memory.buffer, ptr, values).slice();
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// This world's own climate calibration: the band edges both quantiled axes are cut at,
+  /// how many of the engine's 4,000 spiral points were land, and the lapse rate.
+  ///
+  /// Returns `{ moistureEdges, landformEdges, landSamples, lapseCPerKm }` -- a plain
+  /// structured-cloneable object, because it is posted to every relief worker rather than
+  /// recomputed there.
+  ///
+  /// # It is seconds, not milliseconds, and it must not run on the main thread
+  ///
+  /// 4,000 elevations plus one march at every land point: roughly 190,000 elevation queries
+  /// on a 29%-land world. `main.js` dispatches it to a pool worker for the same reason it
+  /// dispatches `wb_water_run`, and times it.
+  ///
+  /// # NaN edges are an answer
+  ///
+  /// A world the engine could not calibrate reports NaN edges and `WB_OK`; `landSamples` is
+  /// what tells that apart from a real banding, and `bandIndex` must refuse a NaN edge rather
+  /// than band against it. Passed through unchanged rather than repaired here.
+  climateCalibration({
+    handle, resolutionM = CANONICAL_RESOLUTION, marchSamples = WB_CLIMATE_CANONICAL_SAMPLES,
+  }) {
+    const bytes = WB_CLIMATE_CALIBRATION_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the climate calibration buffer");
+    try {
+      const status = this.exports.wb_climate_calibration(
+        handle, resolutionM, marchSamples, ptr, WB_CLIMATE_CALIBRATION_STRIDE,
+      ) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_climate_calibration returned ${STATUS_NAMES[status] ?? status}`);
+      }
+      const words = new Float64Array(this.memory.buffer, ptr, WB_CLIMATE_CALIBRATION_STRIDE);
+      return {
+        moistureEdges: Array.from(words.subarray(0, 4)),
+        landformEdges: Array.from(words.subarray(4, 6)),
+        landSamples: words[6],
+        lapseCPerKm: words[7],
+      };
     } finally {
       this.exports.wb_dealloc(ptr, bytes);
     }

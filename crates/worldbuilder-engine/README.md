@@ -4606,8 +4606,8 @@ from `$?` directly, never through a pipe.**
 | `--no-default-features` | 633 | 5 | **628** |
 | default | 633 | 5 | **628** |
 | `--features python` | 635 | 5 | **630** |
-| `--features wasm` | 729 | 5 | **724** |
-| `--features python,wasm` | 731 | 5 | **726** |
+| `--features wasm` | 736 | 5 | **731** |
+| `--features python,wasm` | 738 | 5 | **733** |
 
 All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
@@ -4640,13 +4640,14 @@ moment**, and one of the 398 is a millisecond wearing a count's clothes.
 
 | | compared | divergent |
 |---|---|---|
-| `parity` | **126,363** | **0** |
-| `--mutate seed` | 126,363 | 121,682 |
-| `--mutate erosion-k` | 126,363 | 216 |
-| `--mutate water-pond` | 126,363 | 60 |
-| `--mutate tectonic-warp` | 126,363 | 6,186 |
-| `--mutate coast-amplitude` | 126,363 | 13,128 |
-| `--mutate gully-steer` | 126,363 | 3,752 |
+| `parity` | **127,659** | **0** |
+| `--mutate seed` | 127,659 | 122,208 |
+| `--mutate erosion-k` | 127,659 | 216 |
+| `--mutate water-pond` | 127,659 | 60 |
+| `--mutate tectonic-warp` | 127,659 | 6,186 |
+| `--mutate coast-amplitude` | 127,659 | 13,128 |
+| `--mutate gully-steer` | 127,659 | 3,752 |
+| `--mutate climate-samples` | 127,659 | 648 |
 
 All seven exited 0 and **every control matched its recorded figure exactly**, which is the statement
 that nothing in this slice moved a crossing value. `node scripts/build-wasm.mjs check` reports the

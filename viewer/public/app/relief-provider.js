@@ -60,7 +60,7 @@
 // fallback for a host without module workers and the A/B baseline every figure in the Task
 // 4 report is quoted against -- same page, same world, same tiles, one flag apart.
 
-import { calibrate } from "./biome.js";
+import { calibrate, engineCalibration, CLIMATE_RASTER } from "./biome.js";
 import { reliefTile, DEFAULT_SUN, makeImageData } from "./relief.js";
 import { MAX_LEVEL, tileRectangleDegrees } from "./terrain.js";
 
@@ -133,6 +133,16 @@ export function reliefLayerEnabled(params) {
   return params.get("relief") !== "0";
 }
 
+/// **`?climate=0` puts land colour back on the noise approximation**, and nothing else does.
+///
+/// The default is the engine's measured temperature and moisture. `climate=0` is the picture
+/// this viewer drew before the climate slice, byte for byte -- which is what makes the digest
+/// in the task report a proof rather than a claim, and what makes every before/after figure
+/// one page, one world, one camera, one flag apart.
+export function engineClimateEnabled(params) {
+  return params.get("climate") !== "0";
+}
+
 /// **`?biome=0` puts land back on the height ramp**, and nothing else does.
 ///
 /// Same shape and same convention as `reliefLayerEnabled` above, for the same reason: one
@@ -200,6 +210,19 @@ export function createReliefImageryProvider({
   /// numbers are identical in every worker, and a worker that calibrated its own would be a
   /// second place they could disagree.
   biome,
+  /// The engine's own climate calibration, from `engine.climateCalibration` -- resolved by the
+  /// CALLER, exactly as `lakes` is and for the identical reason: it is 4,000 elevations plus a
+  /// 160-step march at every land point, seconds rather than milliseconds, and a provider
+  /// constructor that silently blocked a boot for that long would be a cost with no name in
+  /// the status line. `main.js` dispatches it to a pool worker, times it, and says so.
+  ///
+  /// `null` -- the default -- is `?climate=0`: no calibration is resolved, no climate raster
+  /// is filled per tile, and the cost is not paid either.
+  climate = null,
+  /// How the per-tile climate raster is filled. See `biome.js::CLIMATE_RASTER` for the
+  /// measurement that chose 16, and `?climateRaster=` for the A/B that repeats it.
+  climateRaster = CLIMATE_RASTER,
+  climateMarchSamples = undefined,
   /// The water manifest's bodies, from `engine.waterRun`. `[]` -- the default -- is the
   /// picture before this task, and it is what `?lakes=0` produces: no manifest is resolved at
   /// all, so the resolution cost is not paid either.
@@ -252,6 +275,16 @@ export function createReliefImageryProvider({
     /// increments, so the synchronous path and the pool path cannot report different things.
     lakeTiles: 0,
     lakeTexels: 0,
+    /// **The climate half of the tile cost, counted apart from the tile.** `climateMs` is
+    /// worker-side milliseconds spent inside `wb_climate_tile_f32`; `climateTiles` is how many
+    /// rasters were actually filled and `climateSamples` how many marches they were. All three
+    /// are the counters that prove the path: a climate configuration that never reached the
+    /// workers draws a *different* picture, so unlike the lake counters these are not the only
+    /// witness -- but "how much of a relief tile is climate" is the question the raster size
+    /// was chosen by, and no other number can answer it.
+    climateMs: 0,
+    climateTiles: 0,
+    climateSamples: 0,
     /// **Per level: how many tiles, how many texels, and how much worker time.** The aggregate
     /// `tiles`/`workerMs` above cannot answer the question the coarse-level change is about --
     /// *which* levels the CPU went to, and whether those levels reach the render set -- and a
@@ -276,9 +309,22 @@ export function createReliefImageryProvider({
 
   /// The per-world band edges, calibrated once at construction unless the caller supplied
   /// its own (or `null` to turn the layer's biome colouring off).
+  ///
+  /// **Two calibrations, and only one of them is cheap.** With `climate` supplied, the band
+  /// edges come from the engine's own quantiles over its own march and nothing is computed
+  /// here at all; without it, `calibrate` runs its 4,000 `wb_elevation_m` calls over the noise
+  /// field, which is what this layer did before the climate slice and is kept unchanged so
+  /// `?climate=0` is byte-identical rather than merely similar.
   const calibration = biome === undefined
-    ? calibrate({ engine, worldHandle, radiusM })
+    ? (climate ? engineCalibration({ radiusM, climate }) : calibrate({ engine, worldHandle, radiusM }))
     : biome;
+
+  /// The per-tile climate configuration, or `null`. **A configuration and not a raster**: the
+  /// grid is filled inside `reliefTile`, on whichever side is rasterising, because a world
+  /// handle means nothing outside the wasm instance that issued it.
+  const climateConfig = climate
+    ? { rasterSize: climateRaster, marchSamples: climateMarchSamples }
+    : null;
 
   /// One place that accumulates the main-thread cost, so both paths cannot disagree about
   /// what `totalMs` and `maxMs` mean.
@@ -343,7 +389,7 @@ export function createReliefImageryProvider({
         try {
           imageData = reliefTile({
             rectangle, level, size, engine, worldHandle, radiusM, sun,
-            biome: calibration, lakes, counters: stats,
+            biome: calibration, lakes, counters: stats, climate: climateConfig,
           });
         } catch (error) {
           // Cesium's own failure path: reject, and it retries or falls back to the parent
@@ -371,6 +417,7 @@ export function createReliefImageryProvider({
       // one throws `DataCloneError` per tile. The worker supplies both from its own world.
       const request = {
         rectangle, level, size, radiusM, sun, biome: calibration, lakes,
+        climate: climateConfig,
       };
       const wallStarted = performance.now();
       return pool.relief(request).then((result) => {
@@ -392,6 +439,9 @@ export function createReliefImageryProvider({
         // the same two fields from the same `relief.js` arithmetic.
         stats.lakeTiles += result.lakeTiles ?? 0;
         stats.lakeTexels += result.lakeTexels ?? 0;
+        stats.climateMs += result.climateMs ?? 0;
+        stats.climateSamples += result.climateSamples ?? 0;
+        if ((result.climateSamples ?? 0) > 0) stats.climateTiles += 1;
         stats.wallMs += performance.now() - wallStarted;
         if (onTile) {
           onTile({
@@ -419,6 +469,15 @@ export function createReliefImageryProvider({
       /// The band edges this provider is drawing with, so a check reads them rather than
       /// recalibrating and hoping it got the same answer.
       biome: calibration,
+      /// The engine calibration this provider is drawing with, and the per-tile configuration
+      /// it is filling rasters from -- read by a check rather than reconstructed, for the same
+      /// reason `biome` is. `null` on both means `?climate=0`.
+      climate,
+      climateConfig,
+      /// Mean worker-side milliseconds spent in `wb_climate_tile_f32` per tile that filled one,
+      /// which is the numerator of "what fraction of a relief tile is climate". `null` before
+      /// any climate raster, so a `?climate=0` run reports an absence rather than a zero.
+      meanClimateMs: () => (stats.climateTiles > 0 ? stats.climateMs / stats.climateTiles : null),
       /// The water bodies this provider is drawing with, for the same reason: a check picks a
       /// body out of THIS list by its `rootNode` and asserts the raster, rather than resolving
       /// its own manifest and comparing against that.
