@@ -7,6 +7,51 @@ import { stat } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// ---------------------------------------------------------------------------------------
+// Caching: a VALIDATOR, not a lifetime.
+//
+// Measured on one cold load of the owner's world, this server's own log: **158 requests,
+// 11.79 MB, of which 4.08 MB is the same bytes fetched nine times.** The engine wasm goes
+// out 9 times and each of 13 `/app/*.js` modules goes out 9 times, because there are nine
+// engine instances -- the main thread plus eight pool workers -- and every one of them
+// fetches the whole `engine.js` module graph and the wasm for itself. `cache-control:
+// no-store` on every response is what defeats the HTTP cache and makes those eight repeats
+// real network transfers.
+//
+// **`no-store` was right about the thing it was protecting.** This is a dev server with no
+// build step: a file is edited and the page is reloaded, and a `max-age` would serve the
+// old bytes until it expired. Trading a working edit-reload loop for ~0.3 s of loopback
+// transfer would be a bad trade and it is not the one made here.
+//
+// What is used instead is a validator. `cache-control: no-cache` does NOT mean "do not
+// cache" -- it means *store it, but revalidate before every reuse*. Paired with an `ETag`
+// the browser sends `If-None-Match` and this server answers `304 Not Modified` with no
+// body, so:
+//
+//   * an edit changes the file's size or mtime, so it changes the ETag, so the very next
+//     request gets a 200 with the new bytes -- the edit-reload loop is bit-for-bit the
+//     behaviour `no-store` gave;
+//   * the eight repeat fetches per file become eight empty 304s.
+//
+// The request COUNT is unchanged (that is what "revalidate every time" means, and it is the
+// price of never being stale); the bytes are not.
+//
+// The ETag is `size-mtimeMs` in hex, which is exactly the pair that changes when a file is
+// edited, and it is weak (`W/`) because it is derived from the file's metadata rather than
+// from a hash of its bytes -- a touch with no edit rotates it, which costs one re-transfer
+// and cannot serve anything stale.
+//
+// **`/` and `*.html` keep `no-store`.** The document is the one response where a 304 buys
+// nothing (it is fetched once per load either way) and where a caching mistake is the one
+// that looks like "my edit did not appear".
+function cacheHeaders(pathname, stats) {
+  if (pathname === "/" || pathname.endsWith(".html")) return { "cache-control": "no-store" };
+  return {
+    "cache-control": "no-cache",
+    etag: `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`,
+  };
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 const port = Number(process.env.PORT || 8137);
 const TYPES = {
@@ -107,11 +152,33 @@ createServer(async (req, res) => {
   try {
     const s = await stat(file);
     if (!s.isFile()) throw new Error("not a file");
+    // `raw` and not `p`: `normalize` produces backslashes on Windows and the two `.html`
+    // and `/` tests below are written against a URL path.
+    const cache = cacheHeaders(raw, s);
+    // The conditional request. `If-None-Match` may carry a list, and Chrome sends back
+    // exactly the token this server issued, so a `split`/`trim` membership test is what
+    // matches rather than string equality -- equality would silently never hit and the
+    // saving would quietly not exist.
+    const inm = req.headers["if-none-match"];
+    if (cache.etag && inm && inm.split(",").some((t) => t.trim() === cache.etag)) {
+      console.log(`304 ${req.method} ${req.url}`);
+      // A 304 carries the validator and the caching policy and NO body and no
+      // content-length. The security headers go with it because a 304 refreshes the stored
+      // response's headers.
+      res.writeHead(304, {
+        ...cache,
+        "content-security-policy": CSP,
+        "cross-origin-resource-policy": "same-origin",
+        "cross-origin-opener-policy": "same-origin",
+        "cross-origin-embedder-policy": "require-corp",
+      }).end();
+      return;
+    }
     console.log(`200 ${req.method} ${req.url}`);
     res.writeHead(200, {
       "content-type": TYPES[extname(file).toLowerCase()] || "application/octet-stream",
       "content-length": s.size,
-      "cache-control": "no-store",
+      ...cache,
       "content-security-policy": CSP,
       "cross-origin-resource-policy": "same-origin",
       // COOP/COEP. These arrived in Task 5 labelled "for the SharedArrayBuffer worker
