@@ -51,3 +51,4 @@ crates/*/target/
 # somebody's game. Anchored, and the directory is ignored whole rather than by extension, so a
 # journal, a WAL file or an extracted table is covered too.
 /fixtures/dragonsire/
+routes/
