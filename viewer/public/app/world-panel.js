@@ -292,13 +292,66 @@ export function mountWorldPanel(parent, getViewer) {
     }
   }
 
+  /// The worldfile on disk whose planet is the one on screen, if any carries areas.
+  ///
+  /// Matched on the PLANET rather than the name, because a world can be saved under several
+  /// names and only the parameters decide whether the coordinates in it mean anything here.
+  /// A file for a different planet is skipped rather than drawn: its rooms would be pinned
+  /// to ground that does not exist on this one.
+  async function areasForThisPlanet() {
+    let rows = [];
+    try {
+      rows = (await (await fetch("/worlds/")).json()).worlds || [];
+    } catch {
+      return null;
+    }
+    const here = new URLSearchParams(location.search);
+    here.delete("fly");
+    let best = null;
+    for (const row of rows) {
+      if (!row.areas) continue;
+      let document_;
+      try {
+        document_ = await (await fetch(`/worlds/${encodeURIComponent(row.file)}`)).json();
+      } catch {
+        continue;
+      }
+      const there = new URLSearchParams(searchFromPlanet(document_.planet).replace(/^\?/, ""));
+      const same = [...there.keys()].every((key) => here.get(key) === there.get(key));
+      if (!same) continue;
+      if (!best || (document_.areas || []).length > best.areas.length) {
+        best = { name: document_.name || row.file, areas: document_.areas || [] };
+      }
+    }
+    return best;
+  }
+
   const areaRow = el("div", "wb-jump");
   const showAreas = button("show areas");
-  showAreas.addEventListener("click", redrawAreas);
+  showAreas.addEventListener("click", async () => {
+    // **"Show areas" with nothing loaded used to say "0 areas on the globe" and stop.**
+    // That is true and useless: the areas were on disk, in a worldfile for this very planet,
+    // and the button that says "show areas" is exactly where somebody expects that to be
+    // noticed. It looks for them now instead of reporting their absence.
+    if (!lastAreas.length) {
+      const found = await areasForThisPlanet();
+      if (found) {
+        lastAreas = found.areas;
+        note.textContent = `loaded ${lastAreas.length} areas from "${found.name}"`;
+      } else {
+        note.textContent = "no worldfile on this server carries areas for this planet";
+        return;
+      }
+    }
+    redrawAreas();
+  });
   const flyAreas = button("fly to areas");
-  flyAreas.addEventListener("click", () => {
+  flyAreas.addEventListener("click", async () => {
+    if (!drawn) {
+      showAreas.click();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
     if (drawn) drawn.flyToAll();
-    else note.textContent = "no areas loaded - open a worldfile with areas in it";
   });
   areaRow.append(showAreas, flyAreas);
   wrap.append(areaRow);
