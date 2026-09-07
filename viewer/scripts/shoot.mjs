@@ -220,6 +220,10 @@ const SETTLE_EXPRESSION = (settleMs) => `(async () => {
     // would be measuring this harness's patience.
     settleMs: quietAt,
     maxDepthVisited: typeof wb.maxDepthVisited === "function" ? wb.maxDepthVisited() : null,
+    // **What Cesium is drawing, by level** -- its own \`_tilesToRender\`, not a counter this
+    // project keeps. Reported next to \`relief.levels\` (what was rasterised, by level) because
+    // neither one alone can say whether a level's cost reached the picture.
+    renderedLevels: typeof wb.renderedLevels === "function" ? wb.renderedLevels() : null,
     pool: wb.pool ? wb.pool.stats() : null,
     relief: wb.reliefProvider ? {
       ...wb.reliefProvider.worldbuilder.stats,
@@ -351,6 +355,7 @@ async function main() {
         command, url, browser: version.Browser, viewport: `${WIDTH}x${HEIGHT}`,
         settleMs: settled.settleMs,
         maxDepthVisited: settled.maxDepthVisited,
+        renderedLevels: settled.renderedLevels,
         longTasks: settled.longTasks,
         longTaskMs: settled.longTaskMs,
         longTaskMax: settled.longTaskMax,

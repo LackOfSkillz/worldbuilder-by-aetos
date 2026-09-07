@@ -20,6 +20,7 @@ import { gullyFromParams } from "./gully-params.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, createReliefImageryProvider, reliefLayerEnabled, RELIEF_TILE_SIZE,
+  COARSE_RELIEF_TILE_SIZE, COARSE_RELIEF_BELOW_LEVEL,
 } from "./relief-provider.js";
 import {
   cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider,
@@ -504,6 +505,12 @@ async function boot() {
         worldHandle: installed.world,
         radiusM: nextSpec.radiusM,
         tileSize: number("reliefSize", RELIEF_TILE_SIZE),
+        // **The coarse-level escape hatch, and the A/B this change is quoted against.**
+        // `?reliefCoarseSize=256` restores the picture before it -- one page, one world, one
+        // camera, one flag apart -- and `?reliefCoarseBelow=0` does the same by turning the
+        // policy off at every level. Same shape as `?cloudCacheTiles=0` on the layer above.
+        coarseTileSize: number("reliefCoarseSize", COARSE_RELIEF_TILE_SIZE),
+        coarseBelowLevel: number("reliefCoarseBelow", COARSE_RELIEF_BELOW_LEVEL),
         // `undefined` means "calibrate this world's own band edges"; `null` is the height
         // ramp the layer drew before the land-colour work. See `biomeColourEnabled`.
         // **Recalibrated per swap, not carried over**: the band edges are this world's own
@@ -1072,6 +1079,21 @@ async function boot() {
     /// Deepest tile level the quadtree has actually visited since the page loaded. This is
     /// Cesium's own debug counter, not a number this code maintains.
     maxDepthVisited: () => viewer.scene.globe._surface._debug.maxDepthVisited,
+    /// **The levels Cesium is actually drawing right now**, as `{ level: tileCount }`, from its
+    /// own `_tilesToRender` array rather than from anything this code maintains.
+    ///
+    /// It exists because "a relief tile was rasterised for a level that never reaches the render
+    /// set" is otherwise an unfalsifiable claim: the provider's own `stats.levels` says what was
+    /// *asked for*, and only this says what was *shown*. The two together are the whole argument
+    /// for the coarse-level tile size, and either alone is a number that looks load-bearing and
+    /// is not.
+    renderedLevels: () => {
+      const counts = {};
+      for (const tile of viewer.scene.globe._surface._tilesToRender) {
+        counts[tile.level] = (counts[tile.level] || 0) + 1;
+      }
+      return counts;
+    },
   };
   window.__wbReady = { ok: true, line };
   console.log("[worldbuilder]", line);

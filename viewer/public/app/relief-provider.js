@@ -68,6 +68,59 @@ import { MAX_LEVEL, tileRectangleDegrees } from "./terrain.js";
 /// see the module doc for why that multiplier is free rather than paid for in geometry.
 export const RELIEF_TILE_SIZE = 256;
 
+/// **The tile edge used at levels the camera never displays**, and the whole of the coarse-level
+/// saving.
+///
+/// # What is actually discarded, measured rather than assumed
+///
+/// Cesium's quadtree refines level by level: it will not ask for level n+1 until level n has
+/// arrived. That is written for network providers, where the parent tile is a cheap cached fetch;
+/// here a relief tile is 256 x 256 = 65,536 texels of engine sampling and shading **whatever
+/// ground it covers**, so a level-0 tile costs the same as a level-12 one and covers a quarter of
+/// the planet. At the orbital camera the render set is levels 1 and 2 (`renderedLevels()` on
+/// `window.__wb` reports it, and `stats.levels` reports what was rasterised), so the two level-0
+/// tiles are refinement scaffolding: rasterised, uploaded, and then refined away before the
+/// picture settles.
+///
+/// # Why cheaper and not refused
+///
+/// **A provider that declines coarse levels is the recorded trap in this project** -- Cesium asks
+/// for them for a reason, and a layer whose `minimumLevel`/`minimumTerrainLevel` is raised simply
+/// has no imagery at all if the camera ever does render level 0 (zoom far enough out and it
+/// does). Quartering the texels and keeping every level painted makes the failure mode a blurrier
+/// placeholder for the fraction of a second it exists, rather than an unpainted globe.
+///
+/// **The provider's `tileWidth`/`tileHeight` stay 256.** Checked against the vendored 1.145.0
+/// source rather than assumed: `ImageryLayer._createTextureWebGL` builds the texture from
+/// `imagery.image` itself (`source: image`), so the canvas's own dimensions are what is uploaded,
+/// and `GeographicTilingScheme` means no reprojection reads them either. The declared size is
+/// read in exactly one place that matters here -- `getLevelWithMaximumTexelSpacing`, which
+/// chooses *which* imagery level a terrain tile asks for. Declaring the coarse size there would
+/// change that choice for every tile, which is a different and much larger change than this one.
+export const COARSE_RELIEF_TILE_SIZE = 64;
+
+/// Levels **below** this one get `COARSE_RELIEF_TILE_SIZE`. `1` means level 0 only.
+///
+/// Deliberately not 2. Level 1 *is* in the orbital render set (5 of its 13 tiles), so a coarse
+/// level 1 would change pixels the camera is looking at; level 0 is not in it. The digest is the
+/// proof of that, not this comment.
+export const COARSE_RELIEF_BELOW_LEVEL = 1;
+
+/// The tile edge for one level. Exported so the policy can be asserted directly rather than
+/// inferred from a raster's width -- it is also asserted end to end through `requestImage`, but a
+/// policy only ever read by the code that applies it is the shape that drifts (see
+/// `reliefLayerEnabled` for the same argument).
+export function reliefTileSizeForLevel(level, {
+  tileSize = RELIEF_TILE_SIZE,
+  coarseTileSize = COARSE_RELIEF_TILE_SIZE,
+  coarseBelowLevel = COARSE_RELIEF_BELOW_LEVEL,
+} = {}) {
+  if (!(level < coarseBelowLevel)) return tileSize;
+  // `min` rather than the coarse size outright: `?reliefSize=32` must not be *enlarged* by a
+  // policy whose entire purpose is to make tiles smaller.
+  return Math.min(coarseTileSize, tileSize);
+}
+
 /// **`?relief=0` turns the layer off, and nothing else does.**
 ///
 /// Deliberately the same shape as `main.js`'s existing `params.get("flat") !== "1"` and
@@ -124,6 +177,11 @@ export function createReliefImageryProvider({
   worldHandle,
   radiusM,
   tileSize = RELIEF_TILE_SIZE,
+  /// The coarse-level policy, both halves overridable so the A/B is **one page, one world, one
+  /// camera, one flag apart** -- the same convention `cacheTiles` uses on the cloud provider.
+  /// `coarseTileSize: tileSize` (or `?reliefCoarseSize=256`) is the picture before this change.
+  coarseTileSize = COARSE_RELIEF_TILE_SIZE,
+  coarseBelowLevel = COARSE_RELIEF_BELOW_LEVEL,
   minimumLevel = 0,
   // The terrain's own ground cap. Imagery must not stop refining before the mesh does, or
   // the colour goes soft exactly where the geometry gets sharp -- which is the reported
@@ -194,7 +252,27 @@ export function createReliefImageryProvider({
     /// increments, so the synchronous path and the pool path cannot report different things.
     lakeTiles: 0,
     lakeTexels: 0,
+    /// **Per level: how many tiles, how many texels, and how much worker time.** The aggregate
+    /// `tiles`/`workerMs` above cannot answer the question the coarse-level change is about --
+    /// *which* levels the CPU went to, and whether those levels reach the render set -- and a
+    /// report that quoted only the aggregate would be quoting a figure that moves for two
+    /// different reasons. Read against `window.__wb.renderedLevels()`, which is Cesium's own
+    /// render set: a level that appears here and not there was rasterised and thrown away.
+    ///
+    /// Keyed by level, filled in on first request at that level. `texels` is `size * size` per
+    /// tile, so it is the thing that actually scales the cost, and it is what shows a coarse
+    /// level got smaller rasters rather than fewer of them.
+    levels: {},
   };
+
+  /// One place that accumulates the per-level breakdown, so the two request paths cannot
+  /// disagree about what a level's numbers mean.
+  function recordLevel(level, size, workerMs) {
+    const bucket = stats.levels[level] || (stats.levels[level] = { tiles: 0, texels: 0, workerMs: 0 });
+    bucket.tiles += 1;
+    bucket.texels += size * size;
+    bucket.workerMs += workerMs;
+  }
 
   /// The per-world band edges, calibrated once at construction unless the caller supplied
   /// its own (or `null` to turn the layer's biome colouring off).
@@ -251,6 +329,11 @@ export function createReliefImageryProvider({
     requestImage(x, y, level) {
       if (level > stats.maxLevelRequested) stats.maxLevelRequested = level;
       const rectangle = tileRectangleDegrees(tilingScheme, x, y, level);
+      // **The one line the coarse-level saving is made of.** Everything downstream of here
+      // already carries the size: `tile-worker.js` rasterises whatever `request.size` says and
+      // replies with its own `width`, and `makeImageData(result.data, result.width)` reads that
+      // width rather than assuming the provider's.
+      const size = reliefTileSizeForLevel(level, { tileSize, coarseTileSize, coarseBelowLevel });
 
       if (!pool) {
         // `?workers=0`. Synchronous, on the main thread, and the baseline every worker
@@ -259,7 +342,7 @@ export function createReliefImageryProvider({
         let imageData;
         try {
           imageData = reliefTile({
-            rectangle, level, size: tileSize, engine, worldHandle, radiusM, sun,
+            rectangle, level, size, engine, worldHandle, radiusM, sun,
             biome: calibration, lakes, counters: stats,
           });
         } catch (error) {
@@ -271,6 +354,10 @@ export function createReliefImageryProvider({
         const elapsed = performance.now() - started;
         record(elapsed);
         stats.mainThreadRasters += 1;
+        // `?workers=0` has no worker, so the rasterisation *is* the main-thread time. Recording
+        // it here rather than 0 keeps `levels[l].workerMs` meaning "the rasterisation cost of
+        // this level" in both modes -- a zero would read as "level 0 was free".
+        recordLevel(level, size, elapsed);
         const image = toImage(imageData);
         if (onTile) {
           onTile({ x, y, level, rectangle, imageData, image, ms: elapsed, source: "main" });
@@ -283,7 +370,7 @@ export function createReliefImageryProvider({
       // in another, and an `Engine` object is not structured-cloneable at all -- posting
       // one throws `DataCloneError` per tile. The worker supplies both from its own world.
       const request = {
-        rectangle, level, size: tileSize, radiusM, sun, biome: calibration, lakes,
+        rectangle, level, size, radiusM, sun, biome: calibration, lakes,
       };
       const wallStarted = performance.now();
       return pool.relief(request).then((result) => {
@@ -297,6 +384,10 @@ export function createReliefImageryProvider({
         record(elapsed);
         stats.poolRasters += 1;
         stats.workerMs += result.fillMs;
+        // `result.width`, not `size`: a worker that ignored the requested size would be invisible
+        // to a counter that trusted the request, and "the coarse level really did rasterise fewer
+        // texels" is exactly the claim this counter exists to carry.
+        recordLevel(level, result.width, result.fillMs);
         // The worker counted these while it rasterised; they are added here so both modes fill
         // the same two fields from the same `relief.js` arithmetic.
         stats.lakeTiles += result.lakeTiles ?? 0;
@@ -319,6 +410,11 @@ export function createReliefImageryProvider({
       worldHandle,
       radiusM,
       tileSize,
+      /// The coarse-level policy in force, so a check or a report reads it rather than assuming
+      /// the module defaults are what this provider was built with.
+      coarseTileSize,
+      coarseBelowLevel,
+      sizeForLevel: (level) => reliefTileSizeForLevel(level, { tileSize, coarseTileSize, coarseBelowLevel }),
       sun,
       /// The band edges this provider is drawing with, so a check reads them rather than
       /// recalibrating and hoping it got the same answer.

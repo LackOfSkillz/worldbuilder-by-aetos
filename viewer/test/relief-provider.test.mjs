@@ -48,7 +48,10 @@ const { MAX_LEVEL } = await import("../public/app/terrain.js");
 const {
   createReliefImageryProvider,
   reliefLayerEnabled,
+  reliefTileSizeForLevel,
   RELIEF_TILE_SIZE,
+  COARSE_RELIEF_TILE_SIZE,
+  COARSE_RELIEF_BELOW_LEVEL,
 } = await import("../public/app/relief-provider.js");
 
 const DEFAULT_WORLD = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
@@ -470,4 +473,109 @@ test("the bodies cross the worker boundary inside the request, and the counts co
     "the worker's lake count did not reach the provider's stats",
   );
   assert.equal(provider.worldbuilder.stats.mainThreadRasters, 0, "this must be the pool path");
+});
+
+// ---------------------------------------------------------------------------------------
+// The coarse-level tile size
+//
+// A relief tile is `size * size` texels of engine sampling and shading whatever ground it
+// covers, so a level-0 tile costs what a level-12 tile costs and then gets refined away.
+// These four tests pin the policy, the fact that it reaches the worker request, the fact
+// that it does NOT touch the levels the camera renders, and the counters that would show a
+// coarse level that quietly stayed 256.
+// ---------------------------------------------------------------------------------------
+
+test("the coarse tile size applies below the threshold and nowhere else", () => {
+  assert.equal(COARSE_RELIEF_BELOW_LEVEL, 1, "level 0 only: level 1 IS in the orbital render set");
+  assert.ok(
+    COARSE_RELIEF_TILE_SIZE < RELIEF_TILE_SIZE,
+    "a coarse size that is not smaller saves nothing and would pass every other test here",
+  );
+  assert.equal(reliefTileSizeForLevel(0), COARSE_RELIEF_TILE_SIZE);
+  for (const level of [1, 2, 3, 8, 12]) {
+    assert.equal(
+      reliefTileSizeForLevel(level), RELIEF_TILE_SIZE,
+      `level ${level} must keep the full tile; it is a level the camera can be looking at`,
+    );
+  }
+  assert.equal(
+    reliefTileSizeForLevel(0, { coarseBelowLevel: 0 }), RELIEF_TILE_SIZE,
+    "?reliefCoarseBelow=0 must turn the policy off entirely -- it is the A/B baseline",
+  );
+  assert.equal(
+    reliefTileSizeForLevel(0, { tileSize: 32 }), 32,
+    "a tileSize already smaller than the coarse size must not be ENLARGED by a policy whose " +
+    "whole purpose is to make tiles smaller",
+  );
+});
+
+test("the coarse size crosses to the worker, and the rendered levels keep the full one", async () => {
+  // The request, not the raster: `tile-worker.js` rasterises whatever `request.size` says, so a
+  // policy that computed the right number and then sent `tileSize` anyway would render an
+  // identical globe, cost exactly what it cost before, and pass a test that only looked at
+  // pixels.
+  //
+  // 128/32 rather than the module's own 256/64 keeps this suite cheap (a 256-texel tile is
+  // 258^2 engine samples and ~120 ms); the module defaults themselves are pinned by the test
+  // above, which needs no raster at all.
+  const pool = fakePool();
+  const provider = makeProvider({ pool, tileSize: 128, coarseTileSize: 32 });
+  await provider.requestImage(0, 0, 0);
+  await provider.requestImage(1, 0, 1);
+  await provider.requestImage(mountainTile.x, mountainTile.y, 2);
+  assert.deepEqual(pool.requests.map((r) => [r.level, r.size]), [[0, 32], [1, 128], [2, 128]]);
+  assert.equal(
+    provider.tileWidth, 128,
+    "the DECLARED size must stay the full one: Cesium reads it in " +
+    "getLevelWithMaximumTexelSpacing to choose which imagery level a terrain tile asks for, " +
+    "which is a different and much larger change",
+  );
+  assert.equal(provider.tileHeight, 128);
+});
+
+test("stats.levels counts tiles, texels and rasterisation cost per level", async () => {
+  // `stats.tiles` and `stats.workerMs` cannot say WHICH levels the CPU went to, and the
+  // coarse-level claim is entirely about which. Compared against `window.__wb.renderedLevels()`
+  // in the browser, this is what makes "rasterised for a level that is never displayed"
+  // falsifiable rather than an assertion in a comment.
+  const provider = makeProvider({ pool: fakePool({ fillMs: 7 }), tileSize: 128, coarseTileSize: 32 });
+  await provider.requestImage(0, 0, 0);
+  await provider.requestImage(1, 0, 1);
+  await provider.requestImage(mountainTile.x, mountainTile.y, 2);
+  const { levels } = provider.worldbuilder.stats;
+  assert.deepEqual(levels[0], { tiles: 1, texels: 32 * 32, workerMs: 7 });
+  assert.deepEqual(levels[1], { tiles: 1, texels: 128 * 128, workerMs: 7 });
+  assert.deepEqual(levels[2], { tiles: 1, texels: 128 * 128, workerMs: 7 });
+  assert.ok(
+    levels[0].texels * 4 < levels[1].texels,
+    "the coarse level must have rasterised FEWER TEXELS, not merely fewer tiles -- a policy " +
+    "that dropped a tile instead of shrinking it would leave the globe unpainted there",
+  );
+});
+
+test("the level breakdown is taken from the raster that came back, not from the request", async () => {
+  // A worker that ignored `request.size` would still be counted as coarse by a stats block that
+  // trusted the request, and the report would claim a saving the pool never made. `result.width`
+  // is the only witness on this side of the wire.
+  const pool = fakePool();
+  const honest = pool.relief.bind(pool);
+  pool.relief = (request) => honest({ ...request, size: 128 });
+  const provider = makeProvider({ pool, tileSize: 128, coarseTileSize: 32 });
+  await provider.requestImage(0, 0, 0);
+  assert.equal(
+    provider.worldbuilder.stats.levels[0].texels, 128 * 128,
+    "the worker rasterised 128 texels a side; the counter must say so rather than repeat the " +
+    "size that was asked for",
+  );
+});
+
+test("?workers=0 fills the same level breakdown as the pool path", async () => {
+  // Two modes that reported different things here would be two populations, and the before/after
+  // in the report is quoted from whichever one the run happened to take.
+  const provider = makeProvider({ tileSize: 128, coarseTileSize: 32 });
+  await provider.requestImage(0, 0, 0);
+  const { levels } = provider.worldbuilder.stats;
+  assert.equal(levels[0].tiles, 1);
+  assert.equal(levels[0].texels, 32 * 32);
+  assert.ok(levels[0].workerMs > 0, "the synchronous path must record its own cost, not zero");
 });
