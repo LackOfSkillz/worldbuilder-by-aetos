@@ -93,11 +93,17 @@ weight is computed - which preserves point-evaluability exactly.
    What a river needs beyond a path is **width and depth**, either per route or per node -
    a river that narrows upstream is two numbers per node, not a new tool.
 
-3. **The WASM exports take a harbour flag, not a feature list.** The Python side accepts
-   `features=` today; the browser takes `harbour=1` and builds a fixed one. Authored
-   features have to cross that boundary as data.
+3. ~~**The WASM exports take a harbour flag, not a feature list.**~~ **WRONG, and checked
+   after the claim was written rather than before.** `Engine.newWorld` has taken a
+   `features` array all along - `WB_FEATURE_STRIDE = 8`, `COMPOSE = {raise, carve, shape}`,
+   packed into a `Float64Array` and handed to `wb_world_new_gully`. The viewer only ever
+   passed `HARBOUR`, which is a different thing from the boundary not existing. **It is
+   wired now**: `?river=<route>` reads a saved route, turns each leg into a carve segment,
+   and hands them to the constructor before the world is built - so the tiles, the water
+   solve, the biome colours and every elevation query see one ground with the river in it.
 
-4. **Nothing checks that an authored change is navigable.** A game saying "ships sail up to
+4. ~~**Nothing checks that an authored change is navigable.**~~ **Built, and it immediately
+   failed the first river.** A game saying "ships sail up to
    this town" is asserting a depth along a path, and that assertion can be tested exactly
    the way the port mapping tests a harbour: walk the channel and confirm the depth holds.
    **An unchecked river is a river that is eight metres deep except in the one place a hull
@@ -126,3 +132,40 @@ That is the right trade for a game - a river town needs a navigable channel wher
 says one is, not a simulation of erosion. But it should be **stated rather than discovered**,
 and a check that a drawn river runs downhill is cheap and worth having next to the depth
 check.
+
+
+---
+
+## What building it actually taught, 2026-09-07
+
+**The first river looked perfect and was impassable.** It had banks, a bed and a clean
+cross-section at the town - and the sounding walk found **34 of 90 soundings shoal**, with
+the bottom rising above the waterline at every node.
+
+The cause is the shape of a feature's weight: one at its own middle, nothing at its stated
+reach. So a chain of segments carves **deepest at the midpoints and shallowest at the nodes
+between them**, and a river is a row of dredged pools with bars across it. Nothing about the
+cross-section shows this, because a cross-section is taken at a midpoint.
+
+Sounded along a 3.51 km channel of 25 segments at 2.5 m draught, 90 soundings:
+
+    overlap   min depth   shoaling soundings
+      1.35     -21.30 m        65
+      2.0       -9.34 m        19
+      3.0       -0.53 m         1
+      4.5       +5.99 m         0   <- navigable
+      6.0       +8.26 m         0
+
+**`OVERLAP = 4.5`**, measured. Below it a hull finds the gaps; above it nothing improves
+that a deeper target would not do better, and every extra metre of reach widens the
+disturbance either side of the river.
+
+Finished, through the town, banks to bed and back:
+
+    4.89  5.11  5.29  5.42  -3.78  -6.38  -3.47  5.55  5.42  5.19  4.84
+
+    90 soundings, min depth 4.91 m, max 9.5 m, 0 shoalings, navigable
+
+**The check is the part worth keeping.** The river that failed was indistinguishable from
+the river that worked by every means except walking it. A game asserting that ships reach a
+town is asserting a depth along a path, and only a walk along that path tests the assertion.

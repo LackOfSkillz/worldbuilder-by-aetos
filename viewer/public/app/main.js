@@ -11,6 +11,7 @@
 
 import { Engine } from "./engine.js";
 import { holdUntilRendered } from "./loading.js";
+import { riverFromRoute, soundChannel } from "./river.js";
 import {
   DEFAULT_EXAGGERATION, DEFAULT_WORLD, HARBOUR, RAMP_STOPS, RAMP_WINDOW, rampStopFraction,
 } from "./panel-fields.js";
@@ -55,6 +56,9 @@ function worldSpecFromParams() {
     radiusM: number("radius", DEFAULT_WORLD.radiusM),
     plateCount: number("plates", DEFAULT_WORLD.plateCount),
     landFraction: number("land", DEFAULT_WORLD.landFraction),
+    // `?river=<route name>` carves a saved route into the ground before the world is
+    // built. It is filled in during boot, because reading the route is a fetch and this
+    // function is not async - see `boot`, which awaits it and rebuilds the spec.
     features: params.has("harbour") ? HARBOUR : [],
     // `relief` and `tectonics` are filled in during boot, once the engine can be asked what
     // canonical is. Absent here on purpose: there is no relief or tectonic default in this
@@ -684,6 +688,37 @@ async function boot() {
     maxLevel,
     featureCeiling: number("featureCeiling", FEATURE_CEILING),
   };
+  // **The river, carved into the ground before the world is built.**
+  //
+  // Not a layer over the terrain and not a decoration: `?river=<route>` reads a route the
+  // owner drew, turns each leg into a `carve` feature, and hands them to the constructor. So
+  // the tiles, the water solve, the biome colours and every elevation query all see the same
+  // channel, because there is only one ground and the river is in it.
+  //
+  // Awaited here rather than in `worldSpecFromParams`, which is not async. A failure is
+  // reported and the world is built without it - a river that will not load is a reason to
+  // say so, not a reason to show nothing.
+  if (params.has("river")) {
+    try {
+      const wanted = await riverFromRoute(params.get("river"), bootState.spec.radiusM, {
+        mouthDepthM: number("riverDepth", -9),
+        headDepthM: number("riverHeadDepth", -3),
+        mouthWidthM: number("riverWidth", 110),
+        headWidthM: number("riverHeadWidth", 45),
+      });
+      bootState.spec = {
+        ...bootState.spec,
+        features: [...bootState.spec.features, ...wanted.features],
+      };
+      window.__wbRiver = { name: wanted.name, points: wanted.points,
+                           segments: wanted.features.length };
+      console.log(`[worldbuilder] river "${wanted.name}": ${wanted.features.length} segments`);
+    } catch (error) {
+      window.__wbRiver = { error: String(error.message) };
+      console.warn(`[worldbuilder] river refused: ${error.message}`);
+    }
+  }
+
   await installWorld(bootState, null);
 
   // Two scheduling knobs, neither of which changes a generated height.

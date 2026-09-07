@@ -208,6 +208,29 @@ createServer(async (req, res) => {
     return;
   }
 
+  // One saved route. Listing them and serving one are different requests and the second
+  // was missing, so a river could be written and never read back.
+  if (raw.startsWith("/routes/") && req.method === "GET") {
+    let name = normalize(raw.slice("/routes/".length));
+    while (name.startsWith("..")) name = name.slice(2);
+    const file = join(routesDir, name);
+    if (!file.startsWith(routesDir) || !file.endsWith(".json")) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
+    try {
+      const body = await readFile(file);
+      console.log(`200 GET ${req.url}`);
+      res.writeHead(200, { "content-type": "application/json",
+                           "content-length": body.length,
+                           "cache-control": "no-store" }).end(body);
+    } catch {
+      console.log(`404 GET ${req.url}`);
+      res.writeHead(404, { "content-type": "text/plain" }).end("not found");
+    }
+    return;
+  }
+
   if (raw === "/worlds/" || raw === "/worlds") {
     try {
       const names = (await readdir(worldsDir)).filter((n) => n.endsWith(".json"));
