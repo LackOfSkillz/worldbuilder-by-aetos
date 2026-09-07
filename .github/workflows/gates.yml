@@ -764,6 +764,31 @@ jobs:
           # spread is +3/+3/+3/+4/+4. Re-derived per configuration through `assert_counts.py
           # cargo-list` AFTER the last source edit.
           #
+          # THE LOCAL-REFERENCE SLICE (2026-09-07) takes these to 615/615/617/711/713, 5 ignored,
+          # over the same FIFTEEN binaries. **+2 in every configuration and nothing wasm-only**,
+          # because both new tests are in `src/steer.rs`: the lattice grew a local elevation
+          # reference beside its gradient, and the two tests are that the reference is the CELL's
+          # mean rather than the point's (a quadratic field, whose closed-form offset is
+          # `c*h^2/2`; measured mean 101.8 m against 100.0 m) and that it is continuous across a
+          # cell face, which it must be because it reaches a height. Two of `detail.rs`'s existing
+          # tests were REWRITTEN rather than added to -- the mechanism test now straddles the
+          # locus in local relief with `shaped` held identical in both walks, and the preset test
+          # now asks real ground whether the locus is crossed -- so the count does not move for
+          # them. Re-derived per configuration through `assert_counts.py cargo-list` AFTER the
+          # last source edit.
+          #
+          # WHAT THIS ONE IS. The pitchfork was keyed to `shaped - gate_elevation_m`, which made
+          # `a = 1/4` ONE contour at ONE world elevation -- 825 m at the old preset -- so only the
+          # flanks crossing that elevation branched at all, and a measured flank at 1,353-1,417 m
+          # got nothing at any setting in a 5x6 cross product. It is now keyed to
+          # `shaped - steer.reference_m`: the containing steer cell's own mean `structural_m`,
+          # which is the mean of the four samples the gradient already differences and therefore
+          # costs NO extra `structural_m` call. Its zero is flat ground rather than sea level, so
+          # every flank crosses it. `WB_GULLY_STRIDE` does NOT move -- the expression is the one
+          # that shipped with a different datum in it -- but `harmonic_band_m` changes meaning
+          # from thousands of metres of world elevation to a fraction of a metre of local relief,
+          # and `WB_MIN_GULLY_HARMONIC_BAND_M` moves 1 m -> 1e-3 m to admit the shipped 0.12.
+          #
           # WHAT IT IS. `GullyParams` gains `harmonic_weight` and `harmonic_band_m`: a second
           # harmonic on the drainage kernel's shaping whose weight climbs with structural
           # elevation. `cos t + a cos 2t` has one minimum per period below `a = 1/4` and two
@@ -899,23 +924,23 @@ jobs:
           # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 613
+            expect: 615
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 613
+            expect: 615
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 615
+            expect: 617
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 709
+            expect: 711
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 711
+            expect: 713
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -1319,6 +1344,19 @@ jobs:
       # are byte-for-byte unmoved at 121,682 / 216 / 60 / 6,186 / 13,128, which is what says the
       # change is confined to the channel it was made in.
       #
+      # THE LOCAL-REFERENCE SLICE ADDS NOTHING to the corpus -- `WB_GULLY_STRIDE` is still twelve
+      # and no group gained or lost a point -- and **moves the gully control from 3,203 to
+      # 3,752**, all of it in one group. `--mutate gully-steer` bumps `steer_lattice_m` by a ULP,
+      # and that word now feeds TWO terms rather than one: the fall line, as before, and the
+      # local elevation reference the pitchfork is measured against, which is the mean of the same
+      # four samples. So a moved lattice moves more cells. The breakdown says exactly where:
+      # elevation/drainage 1,235 of 5,000 and elevation/flank 993 of 2,000 are **unmoved** -- both
+      # are sampled at 250 m, where the term is faded and the reference barely reaches the height
+      # -- while tile/flank goes 975 -> 1,524 of 4,225, and the tile is the only group asked at a
+      # resolution fine enough for the reference to bite. **Both structural zeros are still zero**,
+      # which is the claim below and is what says the term has not escaped its layer. The other
+      # five controls are byte-for-byte unmoved again.
+      #
       # **The gully channel is the first that ADDS a term to `elevation_m` rather than changing
       # one**, and it was written in the same commit as these rows for the reason the coast
       # channel was: a new crossing value with no corpus coverage is a crossing value nothing
@@ -1619,11 +1657,11 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate gully-steer 2>&1 | tee gully-control.out
 
-      - name: Assert the gully control -- 3,203 of 126,363 divergent, none of them structural
+      - name: Assert the gully control -- 3,752 of 126,363 divergent, none of them structural
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
           python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
             --output gully-control.out --expect-label "CONTROL (--mutate gully-steer)" \
-            --expect-compared 126363 --expect-divergent 3203
+            --expect-compared 126363 --expect-divergent 3752

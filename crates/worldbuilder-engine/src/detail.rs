@@ -8,6 +8,7 @@
 use crate::detmath as m;
 use crate::noise::Noise;
 use crate::sphere::SpherePoint;
+use crate::steer::Steer;
 use crate::tangent::TangentFrame;
 use crate::vectors::Vec3;
 
@@ -250,9 +251,35 @@ pub struct GullyParams {
     /// See [`harmonic_band_m`](Self::harmonic_band_m) for the mechanism and
     /// `.superpowers/sdd/notes/gully-merging.md` for the measurement.
     pub harmonic_weight: f64,
-    /// Over how many metres of structural ground above
-    /// [`gate_elevation_m`](Self::gate_elevation_m) the harmonic weight climbs from zero to
+    /// Over how many metres of **local relief** the harmonic weight climbs from zero to
     /// [`harmonic_weight`](Self::harmonic_weight), through the same `smooth` the gate uses.
+    ///
+    /// # Local relief, not world elevation -- and that is the whole of this field's history
+    ///
+    /// `a = harmonic_weight * smooth((shaped - reference) / harmonic_band_m)`, where
+    /// `reference` is [`steer::Steer::reference_m`](crate::steer::Steer::reference_m): the
+    /// containing steer cell's own mean `structural_m`. **The expression is the one that
+    /// shipped with `gate_elevation_m` in the reference's place; only the datum moved.** So
+    /// this band is still "the metres over which the weight climbs from zero", and they are
+    /// now metres of height above the ground's own local mean rather than above sea level.
+    ///
+    /// **The zero of that datum is flat ground, and that is why a world constant can aim at
+    /// it.** `shaped - reference` is `-(h^2/4) * laplacian(structural)` over the lattice's
+    /// own stencil, so it is positive on a convex spur, negative in a concave hollow, and
+    /// crosses zero on every flank on every planet regardless of how high that flank is. Sea
+    /// level has no such property, which is the whole of why the old form fired on one
+    /// contour. Its SCALE is small -- a p10-to-p90 of a few tenths of a metre on this
+    /// generator's flanks, measured -- so this band is a fraction of a metre where the old
+    /// one was thousands, and [`crate::wasm::WB_MIN_GULLY_HARMONIC_BAND_M`] moved down to
+    /// admit that.
+    ///
+    /// **It used to be `shaped - gate_elevation_m`, and that was a real defect rather than a
+    /// coarser version of this.** With a world reference, `a = 1/4` is ONE contour at ONE
+    /// world elevation -- 825 m at the shipped preset -- so only the flanks that cross that
+    /// elevation branch at all, and a measured flank at 1,353-1,417 m got nothing at any
+    /// setting in a 5x6 cross product. With a local reference the locus is a contour of local
+    /// relief, which every flank has at every elevation. Measured both ways on the same three
+    /// sites: `.superpowers/sdd/notes/gully-local-reference.md`.
     ///
     /// # Why a second harmonic makes a confluence, and why the weight must VARY
     ///
@@ -272,22 +299,27 @@ pub struct GullyParams {
     /// above it, one below, joined continuously. Every merge is a Y; no defect, no state and
     /// no neighbour lookup is involved, and the term stays `f(SpherePoint) -> value`.
     ///
-    /// Making `a` a function of the query point's own structural elevation is what puts that
-    /// level set on the ground: it is a contour, and a flank crosses it going downhill.
-    /// **A fixed `a` merges nothing**, however large -- the spike's control pins `a` at 0.90,
-    /// gets twice as many channels as the shipped kernel, and still scores 0 confluences and
-    /// 0 divergences. The merging comes from the weight FALLING, not from the harmonic being
-    /// present, which is why this is a band and not a scalar.
+    /// Making `a` a function of the query point's height above its own cell mean is what puts
+    /// that level set on the ground: it is a contour of local relief, and a flank crosses it
+    /// wherever the ground turns from spur into hollow. **A fixed `a` merges nothing**,
+    /// however large -- the spike's control pins `a` at 0.90, gets twice as many channels as
+    /// the shipped kernel, and still scores 0 confluences and 0 divergences. The merging
+    /// comes from the weight FALLING, not from the harmonic being present, which is why this
+    /// is a band and not a scalar.
     ///
     /// # What this delivers, and what it does not -- read this before extending it
     ///
-    /// **This is branching keyed to ELEVATION. It is not a network keyed to CATCHMENT, and no
-    /// point-evaluable term will ever be one.** Contributing area `A(p)` is the measure of the
-    /// set of points whose flow path reaches `p`: a functional of the field over an upslope
-    /// domain of unbounded extent, not computable in bounded work from data local to `p`, no
-    /// matter how this expression is written. Two adjacent points at one height can drain
-    /// wildly different areas, so a term keyed to height correlates with catchment only
-    /// loosely.
+    /// **This is branching keyed to LOCAL RELIEF. It is not a network keyed to CATCHMENT, and
+    /// no point-evaluable term will ever be one.** The reference moved from sea level to the
+    /// cell's own mean, and that changed WHICH ground branches -- all of it, rather than one
+    /// contour -- without moving that line one inch. Contributing area `A(p)` is the measure
+    /// of the set of points whose flow path reaches `p`: a functional of the field over an
+    /// upslope domain of unbounded extent, not computable in bounded work from data local to
+    /// `p`, no matter how this expression is written. The cell mean is bounded local work
+    /// over a fixed 2 km stencil and is exactly the kind of thing that IS reachable;
+    /// catchment is not, and the distinction is the size of the domain rather than the choice
+    /// of datum. Two adjacent points at one local relief can drain wildly different areas, so
+    /// a term keyed to relief correlates with catchment only loosely.
     ///
     /// **That division is deliberate, not a gap.** Texture -- the branching V-notches at
     /// 0.5-2 km that `erosion-architecture-spike.md` measured the stream graph cannot reach --
@@ -297,11 +329,13 @@ pub struct GullyParams {
     /// this field do hydrology**: widening it towards accumulation is re-deriving the solver
     /// that already exists, at a per-texel cost, and it cannot converge on one.
     ///
-    /// Three further honest limits, all from the spike's section 6: the confluences on one
-    /// flank are **synchronised** (they sit on the one `a = 1/4` contour), the Y's are
-    /// **symmetric** (both tributaries the same width, where real ones are lopsided), and the
-    /// hierarchy is **shallow** (one harmonic is one halving; a fifth or sixth Strahler order
-    /// would want a fifth or sixth harmonic).
+    /// Two honest limits survive the change: the Y's are **symmetric** (both tributaries the
+    /// same width, where real ones are lopsided), and the hierarchy is **shallow** (one
+    /// harmonic is one halving; a fifth or sixth Strahler order would want a fifth or sixth
+    /// harmonic). The third -- that the confluences on a flank are **synchronised** onto one
+    /// contour -- is the one this field's local reference was built to remove, and the
+    /// measurement that says whether it did is in
+    /// `.superpowers/sdd/notes/gully-local-reference.md`.
     pub harmonic_band_m: f64,
 }
 
@@ -362,27 +396,36 @@ impl GullyParams {
     ///   reason: this is texture on a generator whose mountains are tectonic.
     /// - **`steer_lattice_m: 2000.0`.** `gradient-probe.md` section 1.3's measured
     ///   recommendation.
-    /// - **`harmonic_weight: 0.9` and `harmonic_band_m: 1800.0`.** Swept as a CROSS PRODUCT
+    /// - **`harmonic_weight: 2.4` and `harmonic_band_m: 0.12`.** Swept as a CROSS PRODUCT
     ///   (5 weights x 6 bands, three flank sites, two channel masks) by
     ///   `src/bin/gully_merging_survey.rs`, because the pitchfork's locus is
-    ///   `weight * smooth((h - gate) / band) = 1/4` and moves when EITHER field moves -- a
-    ///   one-at-a-time sweep would be measuring two different loci and calling it two axes.
-    ///   These two put that locus at **825 m** of structural ground, inside the gate's own
-    ///   band, and they are the pair that maximises the downhill fall in channel count and
-    ///   the downhill growth in channel width on the steepest two of the three sites:
-    ///   channels per contour **44.0 -> 37.7** (-14%) with width **50.4 -> 82.8 m** (+64%) on
-    ///   site 0, and **39.6 -> 34.8** (-12%) with **57.0 -> 86.7 m** (+52%) on site 1, against
-    ///   the single-cosine kernel's +5% and 0% on the same ground.
+    ///   `weight * smooth((shaped - reference) / band) = 1/4` and moves when EITHER field
+    ///   moves -- a one-at-a-time sweep would be measuring two different loci and calling it
+    ///   two axes.
     ///
-    ///   **Two honest things about this pair.** It is a RIDGE, not a plateau: at the same
-    ///   weight, a band of 1,500 or 2,100 m gives +21% and +31% of width growth instead of
-    ///   +64%, so the setting is sensitive to a few hundred metres. And **it does not fire on
-    ///   the third site**, whose flank sits at 1,353-1,417 m -- 500 m above the locus -- where
-    ///   the count rises downhill with the harmonic exactly as it does without it. That is
-    ///   not a tuning failure, it is [`harmonic_band_m`](Self::harmonic_band_m)'s mechanism
-    ///   seen from the side: `a = 1/4` is ONE contour at ONE world elevation, so the flanks
-    ///   that branch are the flanks that cross it. See the survey and
-    ///   `.superpowers/sdd/notes/gully-merging.md`.
+    ///   **The band is a fraction of a metre because the quantity it divides is.** It is
+    ///   metres of LOCAL relief -- `shaped - steer.reference_m` -- whose measured p10-to-p90
+    ///   over the gated texels of the steepest surveyed flank is **+0.022 m to +0.163 m**.
+    ///   The pair puts the locus at **+0.024 m**, inside that distribution on all three sites,
+    ///   and the share of texels above it FALLS downhill on all three, which is the merge.
+    ///
+    ///   Measured at mask 30%, channels per contour Q1 -> Q4 against the single-cosine
+    ///   kernel's own baseline on the same ground:
+    ///
+    ///   - site 0: **70.4 -> 46.2 (-34%)**, width **51.6 -> 97.9 m (+90%)**, 28 confluences
+    ///     against the comb's +4% / 0% / 0 confluences
+    ///   - site 1: **51.1 -> 35.4 (-31%)**, width **66.9 -> 116.5 m (+74%)**, 39 confluences
+    ///     against the comb's +2% / +4% / 0
+    ///   - site 200: **15.8 -> 15.1 (-4%)**, width **195.7 -> 294.5 m (+50%)**, 33 confluences
+    ///     against the comb's +20% / +3% / 5. **This is the site that got nothing at any
+    ///     setting under the world-keyed form**, and it is the one the change was made for.
+    ///
+    ///   **Two honest things about this pair.** It is still a RIDGE, not a plateau: at the
+    ///   same weight, a band of 0.10 or 0.15 m takes site 1's channel count from +4% to +19%
+    ///   and +20% at mask 20%. And **the picture at 25 km is not better for it** -- the extra
+    ///   branching reads as a finer stipple from that distance, which is a finding about what
+    ///   this term can be rather than about these two numbers. See
+    ///   `.superpowers/sdd/notes/gully-local-reference.md`.
     pub fn drainage() -> Self {
         Self {
             amplitude_m: 60.0,
@@ -395,8 +438,8 @@ impl GullyParams {
             gate_elevation_span_m: 900.0,
             flat_energy_floor: 0.25,
             steer_lattice_m: 2_000.0,
-            harmonic_weight: 0.9,
-            harmonic_band_m: 1_800.0,
+            harmonic_weight: 2.4,
+            harmonic_band_m: 0.12,
         }
     }
 }
@@ -628,9 +671,11 @@ impl Detail {
     /// - `frame`: the tangent frame at `point`. Passed in rather than built here because
     ///   `Surface::elevation_m` already has one and building a second is the same six
     ///   transcendentals twice.
-    /// - `steer`: `grad(structural_m)` at `point`, in `frame`'s basis, in m/m. From
+    /// - `steer`: the steering reading at `point` -- `grad(structural_m)` in `frame`'s
+    ///   basis in m/m, **and the containing lattice cell's own mean `structural_m`**. From
     ///   `steer::SteerLattice`, which is where every word about *why* it is the structural
-    ///   gradient lives.
+    ///   gradient lives, and where the reference costs no extra `structural_m` call because
+    ///   it is the mean of the four samples the gradient already differences.
     /// - `shaped`: the structural, feature-composed ground at `point`. What the gate reads.
     /// - `resolution_m`: the caller's sample spacing, on the same contract as
     ///   [`Detail::offset_m`]'s.
@@ -668,7 +713,7 @@ impl Detail {
         &self,
         point: &SpherePoint,
         frame: &TangentFrame,
-        steer: (f64, f64),
+        steer: Steer,
         shaped: f64,
         resolution_m: Option<f64>,
     ) -> f64 {
@@ -689,7 +734,7 @@ impl Detail {
         if !(land > 0.0) {
             return 0.0;
         }
-        let slope = m::hypot(steer.0, steer.1);
+        let slope = m::hypot(steer.grad_x, steer.grad_y);
         let energy = gully.flat_energy_floor
             + (1.0 - gully.flat_energy_floor) * smooth(slope / gully.slope_reference);
         let gate = land * energy;
@@ -752,7 +797,7 @@ impl Detail {
         // pattern degenerates to the pivot lattice's own blobs rather than to a discontinuity
         // in an undefined direction.
         let (dir_x, dir_y) = if slope > 0.0 {
-            (steer.1 / slope * stripes, -steer.0 / slope * stripes)
+            (steer.grad_y / slope * stripes, -steer.grad_x / slope * stripes)
         } else {
             (0.0, 0.0)
         };
@@ -825,10 +870,23 @@ impl Detail {
         if !(weight_total > 0.0) {
             return 0.0;
         }
-        // **The pitchfork.** `a` is the second harmonic's weight at this point, climbing with
-        // structural elevation over `harmonic_band_m` above the gate; the shaping is
-        // `(cos t + a*cos 2t) / (1 + a)`, which has one minimum per period below `a = 1/4` and
-        // two above it.
+        // **The pitchfork, keyed to the LOCAL ground.** `a` is the second harmonic's weight at
+        // this point; the shaping is `(cos t + a*cos 2t) / (1 + a)`, which has one minimum per
+        // period below `a = 1/4` and two above it.
+        //
+        // **`shaped - steer.reference_m`, not `shaped - gate_elevation_m`, and that is this
+        // slice.** The first form is height above the containing steer cell's own mean
+        // structural ground -- positive on a spur, negative in a hollow, at EVERY world
+        // elevation. The second was height above sea level, so `a = 1/4` was one contour on
+        // the whole planet and only the flanks that happened to cross it branched at all: a
+        // flank measured at 1,353-1,417 m got nothing at any setting. See
+        // `harmonic_band_m`'s doc, and `.superpowers/sdd/notes/gully-local-reference.md`.
+        //
+        // The `0.5 +` centres the ramp on the reference itself, so the band is the FULL width
+        // of the ramp in metres of local relief and the locus sits a fixed fraction of it
+        // below the cell mean. `gate_elevation_m` no longer appears here at all -- it gates,
+        // and it no longer also sets where channels merge, which is two jobs one number was
+        // doing.
         //
         // **`a > 0.0` IS THE NaN DOOR, and that is the honest description of it.** The first
         // draft of this line claimed the branch was what makes `harmonic_weight: 0.0`
@@ -845,7 +903,7 @@ impl Detail {
         // single-cosine shaping rather than a NaN height. That is what the pinned test
         // asserts now, and it is what turns red when this branch is removed.
         let a = gully.harmonic_weight
-            * smooth((shaped - gully.gate_elevation_m) / gully.harmonic_band_m);
+            * smooth((shaped - steer.reference_m) / gully.harmonic_band_m);
         let signal = if a > 0.0 {
             (accumulated + a * harmonic) / (weight_total * (1.0 + a))
         } else {
@@ -876,6 +934,20 @@ const GULLY_LATTICE_LIMIT: f64 = 9.0e18;
 mod tests {
     use super::*;
     use crate::sphere::EARTH_RADIUS_M;
+
+    /// **The local relief the tests below hand the kernel, and it is a measurement.** The
+    /// median of `shaped - steer.reference_m` over the gated texels of the steepest flank
+    /// `src/bin/gully_merging_survey.rs` finds on `DEFAULT_WORLD` is **+0.092 m**. Every test
+    /// that wants the kernel running as it runs on the ground uses this, rather than a zero
+    /// that would silently switch the harmonic off and leave the test measuring the
+    /// single-cosine kernel while claiming to measure the shipped one.
+    const MEASURED_LOCAL_RELIEF_M: f64 = 0.092;
+
+    /// A steer at a chosen gradient, on ground sitting [`MEASURED_LOCAL_RELIEF_M`] above its
+    /// own cell mean.
+    fn steer_at(grad_x: f64, grad_y: f64, shaped: f64) -> Steer {
+        Steer::new(grad_x, grad_y, shaped - MEASURED_LOCAL_RELIEF_M)
+    }
 
     #[test]
     fn the_band_table_is_seven_octaves_from_twenty_kilometres_down() {
@@ -952,7 +1024,7 @@ mod tests {
             let origin = SpherePoint::from_latlon(24.0, 71.0);
             let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
             // 0.005 m/m: the steepest decile of high ground on the default world, measured.
-            let steer = (0.005, 0.0);
+            let steer = steer_at(0.005, 0.0, 1_200.0);
             let mut low = f64::INFINITY;
             let mut high = f64::NEG_INFINITY;
             for step in 0..100 {
@@ -987,34 +1059,38 @@ mod tests {
         );
     }
 
-    /// **The mechanism, tested on the shipped function rather than on the algebra.**
+    /// **The mechanism, tested on the shipped function rather than on the algebra -- and it
+    /// is keyed to LOCAL relief now, which is the whole of this slice.**
     ///
     /// `cos t + a*cos 2t` has one minimum per period below `a = 1/4` and two above it, so the
-    /// number of channels a contour crosses must RISE with elevation -- and therefore fall
-    /// going downhill, which is a confluence. This walks 6 km along the contour (the steer is
-    /// due east, so the stripes run east and the phase varies north) and counts local minima
-    /// of the kernel itself at two structural elevations that straddle the preset's `a = 1/4`
-    /// locus at 825 m: `a` is 0.183 at 700 m and 0.900 at 2,000 m. Measured, **11 minima
-    /// against 7** -- not the clean doubling the algebra predicts, because the eight-pivot
-    /// average damps the second harmonic more than the first (the corners agree on `cos t`
-    /// and disagree faster on `cos 2t`), which is a real property of this construction and
-    /// the reason the assertion is a ratio rather than a factor of two.
+    /// number of channels a contour crosses must RISE with the point's height above its own
+    /// steer cell's mean -- and therefore fall going downhill, where the measured local
+    /// relief falls (+0.159 m to +0.027 m over the steepest surveyed flank). This walks 6 km
+    /// along the contour (the steer is due east, so the stripes run east and the phase varies
+    /// north) and counts local minima at two LOCAL reliefs straddling the preset's locus at
+    /// +0.023 m: `a` is 0.045 at +0.010 m and 2.03 at +0.090 m.
+    ///
+    /// **The `shaped` argument is IDENTICAL in the two walks, and that is the assertion this
+    /// test could not make before.** Under the old world-keyed form the two walks had to sit
+    /// at 700 m and 2,000 m of world elevation, so the gate, the amplitude curve and the
+    /// harmonic all moved together. Here the only thing that differs is the local datum,
+    /// which is exactly the argument this slice added -- the probe mutates the ARGUMENT and
+    /// not the stage.
     ///
     /// **The control is in the same test and is what makes it a finding.** At
-    /// `harmonic_weight: 0.0` the shaping does not depend on elevation at all, so the two
-    /// walks must find EXACTLY the same number of minima -- the gate scales the term and
-    /// cannot move a stationary point. A test that only asserted the first half would pass on
-    /// a kernel whose count moved for any reason at all.
+    /// `harmonic_weight: 0.0` the shaping does not read the reference at all, so the two
+    /// walks must find EXACTLY the same number of minima.
     ///
-    /// **Proved red by mutation, siblings neutralised.** Three mutations, each reverted:
+    /// **Proved red by mutation, siblings neutralised.** Four mutations, each reverted:
     /// dropping `* smooth(...)` so `a` is the flat `harmonic_weight` turns the first
-    /// assertion red (counts equal) and leaves the control green; replacing `2c^2 - 1` with
-    /// `c` -- a second copy of the first harmonic, which is the shape a careless refactor
-    /// produces -- turns the first assertion red for the same reason; and pinning `a` at 0.9
-    /// turns it red too. None of the three moves the control, which is the point.
+    /// assertion red and leaves the control green; replacing `2c^2 - 1` with `c` turns it red
+    /// the same way; pinning `a` at 0.9 turns it red; and **reading `gully.gate_elevation_m`
+    /// instead of `steer.reference_m`** -- the pre-slice expression, and the one mutation
+    /// that matters here -- makes the two walks identical and turns it red, because `shaped`
+    /// is the same in both.
     #[test]
-    fn the_second_harmonic_puts_more_channels_on_high_ground_than_on_low() {
-        let minima_at = |harmonic_weight: f64, shaped: f64| -> usize {
+    fn the_second_harmonic_puts_more_channels_on_a_spur_than_in_a_hollow() {
+        let minima_at = |harmonic_weight: f64, local_m: f64| -> usize {
             let detail = Detail::with_gully(
                 20260831,
                 EARTH_RADIUS_M,
@@ -1025,7 +1101,8 @@ mod tests {
             let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
             // Due east, so the fall line is east, the contour is north, and walking north
             // sweeps the phase. 0.005 m/m is the measured steepest decile of high ground.
-            let steer = (0.005, 0.0);
+            let shaped = 1_200.0;
+            let steer = Steer::new(0.005, 0.0, shaped - local_m);
             let walk: Vec<f64> = (0..300)
                 .map(|step| {
                     // cast-ok: a loop counter to a float for a distance in metres
@@ -1038,20 +1115,22 @@ mod tests {
                 .count()
         };
         let preset = GullyParams::drainage().harmonic_weight;
-        let low = minima_at(preset, 700.0);
-        let high = minima_at(preset, 2_000.0);
+        let hollow = minima_at(preset, 0.010);
+        let spur = minima_at(preset, 0.090);
         assert!(
             // cast-ok: two counts to floats for a ratio
-            high as f64 >= 1.4 * low as f64,
-            "the second harmonic must put substantially more channels on the ground above the \
-             a = 1/4 locus than below it; found {high} minima at 2,000 m against {low} at 700 m"
+            spur as f64 >= 1.4 * hollow as f64,
+            "the second harmonic must put substantially more channels on ground above its own \
+             cell mean than on ground level with it; found {spur} minima at +0.090 m of local \
+             relief against {hollow} at +0.010 m"
         );
-        let flat_low = minima_at(0.0, 700.0);
-        let flat_high = minima_at(0.0, 2_000.0);
+        let flat_hollow = minima_at(0.0, 0.010);
+        let flat_spur = minima_at(0.0, 0.090);
         assert_eq!(
-            flat_low, flat_high,
-            "CONTROL: with the harmonic off the shaping does not read elevation at all, so the \
-             two walks must find exactly the same minima; found {flat_low} against {flat_high}"
+            flat_hollow, flat_spur,
+            "CONTROL: with the harmonic off the shaping does not read the local reference at \
+             all, so the two walks must find exactly the same minima; found {flat_hollow} \
+             against {flat_spur}"
         );
     }
 
@@ -1088,6 +1167,12 @@ mod tests {
         );
         let origin = SpherePoint::from_latlon(24.0, 71.0);
         let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+        //
+        // **The steer carries a third word now and the pins did not move**, which is worth
+        // one sentence: with `harmonic_weight: 0.0` the reference is multiplied by a zero
+        // weight, so the pre-harmonic bits are still the right answer and this table did not
+        // have to be regenerated. If a future change makes the reference reach the height on
+        // the harmonic-off path, this table goes red, which is what it is for.
         let records: [((f64, f64), f64, Option<f64>); 6] = [
             ((0.005, 0.0), 1_200.0, None),
             ((0.005, 0.0), 1_200.0, Some(76.35)),
@@ -1121,7 +1206,13 @@ mod tests {
             for step in 0..3 {
                 // cast-ok: a loop counter to a float for a distance in metres
                 let point = frame.local_to_sphere(step as f64 * 137.0, step as f64 * 61.0);
-                let value = detail.gully_offset_m(&point, &frame, steer, shaped, resolution_m);
+                let value = detail.gully_offset_m(
+                    &point,
+                    &frame,
+                    steer_at(steer.0, steer.1, shaped),
+                    shaped,
+                    resolution_m,
+                );
                 assert_eq!(
                     value.to_bits(),
                     want[seen],
@@ -1148,8 +1239,13 @@ mod tests {
                 for step in 0..3 {
                     // cast-ok: a loop counter to a float for a distance in metres
                     let point = frame.local_to_sphere(step as f64 * 137.0, step as f64 * 61.0);
-                    let value =
-                        detail.gully_offset_m(&point, &frame, steer, shaped, resolution_m);
+                    let value = detail.gully_offset_m(
+                        &point,
+                        &frame,
+                        steer_at(steer.0, steer.1, shaped),
+                        shaped,
+                        resolution_m,
+                    );
                     assert_eq!(
                         value.to_bits(),
                         want[seen],
@@ -1167,31 +1263,100 @@ mod tests {
             None,
             Some(GullyParams { harmonic_band_m: f64::NAN, ..GullyParams::drainage() }),
         );
-        let value = nan_band.gully_offset_m(&frame.origin.clone(), &frame, (0.005, 0.0), 1_200.0, None);
+        let value = nan_band.gully_offset_m(
+            &frame.origin.clone(),
+            &frame,
+            steer_at(0.005, 0.0, 1_200.0),
+            1_200.0,
+            None,
+        );
         assert!(
             value.is_finite(),
             "a NaN band must not reach a height; `smooth` sends it to the upper bound and the              point gets the pinned-weight shaping, but it got {value}"
         );
+
+        // **The third NaN, and it does NOT take the refusing door -- measured, and recorded
+        // as the asymmetry it is rather than asserted into the shape the other two have.**
+        //
+        // The reference is an ARGUMENT rather than a field, so no `gully_is_admissible` bound
+        // stands between a caller and a NaN in it. It reaches `smooth`, whose clamp order
+        // sends a NaN to its UPPER bound -- exactly as it does for a NaN `harmonic_band_m` --
+        // so `a` comes out as a finite `harmonic_weight` and the point gets the SATURATED
+        // shaping, not the single-cosine one. The first draft of this test asserted the pins
+        // here and went red; the pins were right and the claim was wrong.
+        //
+        // What is asserted instead is the true statement, and it is still load-bearing: a NaN
+        // reference must be bit-for-bit a reference sitting far enough below the point to
+        // saturate the ramp. Swapping `smooth`'s two clamps turns this red.
+        let live =
+            Detail::with_gully(20260831, EARTH_RADIUS_M, None, Some(GullyParams::drainage()));
+        let band = GullyParams::drainage().harmonic_band_m;
+        for (steer, shaped, resolution_m) in records {
+            for step in 0..3 {
+                // cast-ok: a loop counter to a float for a distance in metres
+                let point = frame.local_to_sphere(step as f64 * 137.0, step as f64 * 61.0);
+                let poisoned = live.gully_offset_m(
+                    &point,
+                    &frame,
+                    Steer::new(steer.0, steer.1, f64::NAN),
+                    shaped,
+                    resolution_m,
+                );
+                let saturated = live.gully_offset_m(
+                    &point,
+                    &frame,
+                    Steer::new(steer.0, steer.1, shaped - 10.0 * band),
+                    shaped,
+                    resolution_m,
+                );
+                assert!(
+                    poisoned.is_finite(),
+                    "a NaN local reference must not reach a height; it gave {poisoned}"
+                );
+                assert_eq!(
+                    poisoned.to_bits(),
+                    saturated.to_bits(),
+                    "a NaN local reference must land exactly on the saturated shaping \
+                     `smooth`'s clamp order sends it to; {poisoned} against {saturated}"
+                );
+            }
+        }
     }
 
-    /// **The preset's pitchfork must sit on ground the kernel actually runs on**, or the
-    /// harmonic is the same careful no-op that
+    /// **The preset's pitchfork must sit inside the local relief this generator's flanks
+    /// actually have**, or the harmonic is the same careful no-op that
     /// `the_slope_scale_is_what_stops_the_kernel_being_a_constant` exists to refuse: a weight
-    /// that never crosses 1/4 inside the gate is exactly the spike's pinned-weight control,
-    /// which measured 0 confluences and 0 divergences over 319 contour-row pairs.
+    /// that never crosses 1/4 on real ground is exactly the pinned-weight control, which
+    /// measures 0 confluences and 0 divergences over 319 contour-row pairs.
     ///
-    /// **Proved red by mutation**: `harmonic_band_m: 6000.0` -- a plausible-looking rounder
-    /// number -- pushes the locus above the gate's own band and turns this red.
+    /// **This is the test the world-keyed form could not have.** It used to ask whether the
+    /// locus lay inside the GATE's elevation band -- a question about two constants, which
+    /// says nothing about whether any flank crosses it, and which passed on a preset that did
+    /// nothing at all on a measured flank 500 m above the locus. This asks the ground.
+    ///
+    /// - **Population:** the 225 texels of a 15 x 15 grid at 400 m spacing centred on the
+    ///   steepest flank `src/bin/gully_merging_survey.rs` finds on `DEFAULT_WORLD` (rank 0,
+    ///   lat -8.9780, lon 65.0630), all of them above the gate.
+    /// - **Method:** `structural_m` at each texel minus the shipped `SteerLattice`'s own
+    ///   `reference_m` there, at `drainage().steer_lattice_m`. The lattice under test, not a
+    ///   reimplementation of it.
+    ///
+    /// **Proved red by mutation**: `harmonic_band_m: 6.0` -- fifty times the preset and still
+    /// a plausible-looking number -- puts the locus at +1.14 m, above every texel on the
+    /// flank, and turns the share assertion to 0%.
     #[test]
-    fn the_preset_crosses_the_pitchfork_inside_the_gate_band() {
+    fn the_preset_crosses_the_pitchfork_on_real_ground() {
         let gully = GullyParams::drainage();
-        let a_at = |shaped: f64| {
-            gully.harmonic_weight
-                * smooth((shaped - gully.gate_elevation_m) / gully.harmonic_band_m)
-        };
-        assert_eq!(a_at(gully.gate_elevation_m), 0.0, "the weight starts at zero on the gate");
-        let mut lo = gully.gate_elevation_m;
-        let mut hi = gully.gate_elevation_m + gully.harmonic_band_m;
+        let a_at = |local_m: f64| gully.harmonic_weight * smooth(local_m / gully.harmonic_band_m);
+        assert_eq!(a_at(0.0), 0.0, "the weight starts at zero on the cell's own mean");
+        assert!(
+            a_at(gully.harmonic_band_m) >= 0.25,
+            "the preset must reach the pitchfork somewhere inside its own band, or it merges \
+             nothing anywhere; a at the top of the band is {}",
+            a_at(gully.harmonic_band_m)
+        );
+        let mut lo = 0.0;
+        let mut hi = gully.harmonic_band_m;
         for _ in 0..80 {
             let mid = 0.5 * (lo + hi);
             if a_at(mid) < 0.25 {
@@ -1201,16 +1366,73 @@ mod tests {
             }
         }
         let locus = 0.5 * (lo + hi);
-        let gate_top = gully.gate_elevation_m + gully.gate_elevation_span_m;
-        assert!(
-            locus > gully.gate_elevation_m && locus < gate_top,
-            "the a = 1/4 locus is at {locus:.1} m and must lie inside the gate's own band \
-             ({} m to {gate_top} m), or no flank in the gate ever crosses it",
-            gully.gate_elevation_m
+
+        // The ground. `Surface::new` here is `DEFAULT_WORLD`, the world the survey measured
+        // and the viewer draws.
+        let world = crate::surface::Surface::new(
+            20_260_904,
+            EARTH_RADIUS_M,
+            12,
+            0.29,
+            None,
+            None,
+            None,
         );
+        let lattice = crate::steer::SteerLattice::new(EARTH_RADIUS_M, gully.steer_lattice_m);
+        let structural = |p: &SpherePoint| world.structural_m(p);
+        let origin = SpherePoint::from_latlon(-8.9780, 65.0630);
+        let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
+        // The grid is oriented on the fall line, exactly as the survey's is: `+v` is the
+        // negated steering gradient, so a row is a contour and walking `+v` is walking
+        // downhill. Taken from the lattice rather than assumed.
+        let here0 = lattice.at(&origin, &frame, &structural);
+        let slope = m::hypot(here0.grad_x, here0.grad_y);
+        let down = (-here0.grad_x / slope, -here0.grad_y / slope);
+        let across = (-down.1, down.0);
+        let share_over = |rows: std::ops::Range<i64>| -> (f64, f64) {
+            let mut above = 0.0;
+            let mut total = 0.0;
+            for row in rows {
+                for column in -10..=10 {
+                    // cast-ok: small loop counters to floats for distances in metres
+                    let (u, v) = (column as f64 * 640.0, row as f64 * 640.0);
+                    let point = frame
+                        .local_to_sphere(u * across.0 + v * down.0, u * across.1 + v * down.1);
+                    let at = TangentFrame::at(&point, EARTH_RADIUS_M);
+                    let shaped = world.structural_m(&point);
+                    if shaped <= gully.gate_elevation_m {
+                        continue;
+                    }
+                    total += 1.0;
+                    if shaped - lattice.at(&point, &at, &structural).reference_m > locus {
+                        above += 1.0;
+                    }
+                }
+            }
+            (above / total, total)
+        };
+        let (uphill, uphill_n) = share_over(-10..-4);
+        let (downhill, downhill_n) = share_over(4..11);
         assert!(
-            (locus - 825.0).abs() < 5.0,
-            "the surveyed locus is 825 m; this preset puts it at {locus:.1} m"
+            uphill_n > 100.0 && downhill_n > 100.0,
+            "the surveyed flank must be gated ground; {uphill_n} and {downhill_n} texels"
+        );
+        // **The mechanism, on the ground, in one number.** Two channels per period above the
+        // locus and one below it, so a share that FALLS downhill is the merge itself.
+        // Measured at this preset on this flank: **100% uphill against 64% downhill.**
+        //
+        // Under the pre-slice expression -- `shaped - gate_elevation_m` in the reference's
+        // place -- both thirds sit around 1,170 m of world elevation, `a` saturates at the
+        // weight on all of it, and the two shares are 100% and 100%. That mutation is what
+        // this assertion is aimed at, and the old test could not have been aimed at it.
+        assert!(
+            uphill > 0.90 && downhill < 0.75 && uphill - downhill > 0.25,
+            "the pitchfork locus is at {locus:+.4} m of local relief; {:.0}% of the uphill \
+             third of this flank sits above it and {:.0}% of the downhill third does. A locus \
+             every texel or no texel crosses is a locus nothing merges at, and a share that \
+             does not fall downhill is a locus nothing merges ACROSS.",
+            uphill * 100.0,
+            downhill * 100.0
         );
     }
 
@@ -1226,7 +1448,7 @@ mod tests {
             Detail::with_gully(20260831, EARTH_RADIUS_M, None, Some(GullyParams::drainage()));
         let origin = SpherePoint::from_latlon(-13.0, 155.0);
         let frame = TangentFrame::at(&origin, EARTH_RADIUS_M);
-        let steer = (0.004, 0.002);
+        let steer = steer_at(0.004, 0.002, 1_200.0);
         let mut previous: Option<f64> = None;
         let mut worst: f64 = 0.0;
         // Half-metre steps over 3 km: several 1,000 m pivot cells, sampled two thousand times
@@ -1263,7 +1485,8 @@ mod tests {
         for step in 0..50 {
             // cast-ok: a loop counter to a float for a distance in metres
             let point = frame.local_to_sphere(step as f64 * 137.0, 0.0);
-            let value = detail.gully_offset_m(&point, &frame, (0.01, -0.004), 1_500.0, None);
+            let value =
+                detail.gully_offset_m(&point, &frame, steer_at(0.01, -0.004, 1_500.0), 1_500.0, None);
             assert_eq!(value.to_bits(), 0.0f64.to_bits(), "canonical must be exactly +0.0");
         }
         assert_eq!(GullyParams::canonical().amplitude_m, 0.0);
@@ -1301,7 +1524,13 @@ mod tests {
                     // cast-ok: loop counters to floats for distances in metres
                     let point =
                         frame.local_to_sphere(column as f64 * 97.0, row as f64 * 97.0);
-                    total += detail.gully_offset_m(&point, &frame, (0.005, 0.0), 1_200.0, None);
+                    total += detail.gully_offset_m(
+                        &point,
+                        &frame,
+                        steer_at(0.005, 0.0, 1_200.0),
+                        1_200.0,
+                        None,
+                    );
                     count += 1.0;
                 }
             }

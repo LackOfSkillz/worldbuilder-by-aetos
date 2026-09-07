@@ -928,6 +928,17 @@ const WB_ALIGN: usize = 8;
 /// record of the wrong length outright rather than defaulting the tail, which is the
 /// silently-dropping-builder shape the rest of this file refuses: a host that still sends ten
 /// words gets `WB_GULLY_REFUSED`, not a block whose new fields quietly read as zero.
+///
+/// **The stride did NOT move when the pitchfork moved to a local datum**, and that is worth
+/// saying because the change was larger than the one that did move it. Word 11 kept its slot
+/// and its name and changed its MEANING -- metres of local relief above the steer cell's own
+/// mean `structural_m`, where it used to be metres of world elevation above
+/// `gate_elevation_m` -- so a host that stored a gully record from before that slice and
+/// replays it will be accepted and will get a different planet. There is no version word in
+/// this record to catch that, and there is nowhere to put one without moving the stride; the
+/// mitigation is that [`WB_MIN_GULLY_HARMONIC_BAND_M`] and the preset both moved by three
+/// orders of magnitude, so a stale band of 1,800 saturates `a` rather than doing something
+/// subtle. See `GullyParams::harmonic_band_m`.
 pub const WB_GULLY_STRIDE: usize = 12;
 
 /// [`wb_gully_preset`] selector: `GullyParams::canonical()` -- the drainage kernel switched
@@ -1031,14 +1042,23 @@ pub const WB_MAX_GULLY_GATE_SPAN_M: f64 = WB_MAX_QUIETING_SCALE_M;
 /// field stops changing shape and only the ramp's position matters.
 pub const WB_MAX_GULLY_HARMONIC_WEIGHT: f64 = 4.0;
 
-/// The floor and ceiling on `harmonic_band_m`, the third length in this record. **Zero is
-/// refused and that is not politeness**: the band is a divisor, `(h - gate) / 0` is an
-/// infinity or -- at exactly the gate elevation -- a NaN, and while `smooth`'s clamp order
-/// makes both of those land on a finite weight rather than on a NaN height, a band of zero is
-/// a step function in elevation and a step in `a` is a step in the ground along a contour
-/// line. That is the artefact every smooth gate in `detail.rs` exists to avoid, so it is
-/// refused at the door. The ceiling is the two lengths' own, for the same reason theirs is.
-pub const WB_MIN_GULLY_HARMONIC_BAND_M: f64 = WB_MIN_GULLY_LENGTH_M;
+/// The floor and ceiling on `harmonic_band_m`. **Zero is refused and that is not
+/// politeness**: the band is a divisor, `(shaped - reference) / 0` is an infinity or -- at
+/// exactly the reference -- a NaN, and while `smooth`'s clamp order makes both of those land
+/// on a finite weight rather than on a NaN height, a band of zero is a step function in the
+/// local relief and a step in `a` is a step in the ground. That is the artefact every smooth
+/// gate in `detail.rs` exists to avoid, so it is refused at the door.
+///
+/// **The floor moved from 1 m to a millimetre when the band stopped being a world elevation
+/// and became a LOCAL relief**, and that is a domain correction rather than a loosening. It
+/// is no longer one of this record's lengths: the other two divide the planet's radius on
+/// their way to a lattice index, and this one divides `shaped - reference`, whose measured
+/// p10-to-p90 on this generator's flanks is **0.14 m** -- so the old floor sat an order of
+/// magnitude ABOVE every useful setting and the shipped preset of 0.12 m would have been
+/// refused by the door it came through. A millimetre is three orders below that measured
+/// spread, which is already a step in practice; the floor's job is to refuse the division,
+/// not to express a taste. The ceiling is unchanged and is still the two lengths' own.
+pub const WB_MIN_GULLY_HARMONIC_BAND_M: f64 = 1.0e-3;
 /// See [`WB_MIN_GULLY_HARMONIC_BAND_M`].
 pub const WB_MAX_GULLY_HARMONIC_BAND_M: f64 = WB_MAX_GULLY_LENGTH_M;
 

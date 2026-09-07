@@ -66,11 +66,24 @@
 //! - **Channel mask.** The lowest `q` of gated texels by field value, `q` swept over
 //!   `MASKS`, so every variant is compared at equal channel AREA and no conclusion rests on
 //!   one threshold.
+//!
+//! # The control is an ARGUMENT mutation now, and that is forced rather than chosen
+//!
+//! The merging slice's control pinned `harmonic_band_m` so `a` could not fall. That door closed
+//! when the datum became local: `a = weight * smooth((shaped - reference) / band)` and the
+//! reference rides the ground, so no `GullyParams` pins `a` flat and non-zero. A huge band gives
+//! `a = 0` everywhere, which is the single cosine and is already in the list.
+//!
+//! So the control hands the SHIPPED kernel a doctored `Steer` -- a reference a fixed distance
+//! below every query point, chosen by bisection to put `a` at **0.90**, the spike's own pinned
+//! value. It measures **54.34 -> 55.40 channels, width 46.7 -> 46.7 m, 0 confluences : 0
+//! divergences** on site 0, which is the parameter-mutation control's number to the digit. Two
+//! ways of pinning `a`, one answer.
 
 use worldbuilder_engine::detail::{Detail, GullyParams};
 use worldbuilder_engine::detmath as m;
 use worldbuilder_engine::sphere::{SpherePoint, EARTH_RADIUS_M};
-use worldbuilder_engine::steer::SteerLattice;
+use worldbuilder_engine::steer::{Steer, SteerLattice};
 use worldbuilder_engine::surface::Surface;
 use worldbuilder_engine::tangent::TangentFrame;
 use worldbuilder_engine::vectors::Vec3;
@@ -267,7 +280,7 @@ struct Site {
     slope: f64,
     points: Vec<SpherePoint>,
     frames: Vec<TangentFrame>,
-    steer: Vec<(f64, f64)>,
+    steer: Vec<Steer>,
     shaped: Vec<f64>,
     gated: Vec<bool>,
     /// `Surface::elevation_m` at `RES_M` on the CANONICAL surface -- no drainage term at all.
@@ -283,9 +296,9 @@ fn build_site(plain: &Surface, lattice: &SteerLattice, gate_m: f64, rank: usize,
     let (lat, lon) = site.to_latlon();
     let frame = TangentFrame::at(&site, EARTH_RADIUS_M);
     let g0 = lattice.at(&site, &frame, &structural);
-    let s0 = m::sqrt(g0.0 * g0.0 + g0.1 * g0.1);
+    let s0 = m::sqrt(g0.grad_x * g0.grad_x + g0.grad_y * g0.grad_y);
     // +j is the fall line (the negated steering gradient); +i runs along the contour.
-    let down = (-g0.0 / s0, -g0.1 / s0);
+    let down = (-g0.grad_x / s0, -g0.grad_y / s0);
     let across = (-down.1, down.0);
 
     let mut points = Vec::with_capacity(N * N);
@@ -341,6 +354,37 @@ impl Site {
             .collect()
     }
 
+    /// **The control that makes this a finding, and it is an ARGUMENT mutation rather than a
+    /// parameter one.**
+    ///
+    /// The old pinned-weight control set `harmonic_band_m` so that `a` could not fall. That
+    /// door is shut now: `a` is `weight * smooth((shaped - reference) / band)`, so with the
+    /// reference riding the ground there is no `GullyParams` that pins `a` flat and non-zero.
+    /// A band of `1e9` makes `a` zero everywhere and is therefore the single cosine again --
+    /// which is a real control, but it is the one already in the list.
+    ///
+    /// So the control hands the SHIPPED kernel a doctored reference instead: one that sits a
+    /// fixed distance below the query point everywhere, so `a` is the same non-zero number at
+    /// every texel. If merging came from the harmonic being PRESENT rather than from its
+    /// weight falling, this row would merge too.
+    fn field_at_constant_a(&self, detail: &Detail, offset_m: f64) -> Vec<f64> {
+        (0..N * N)
+            .map(|k| {
+                detail.gully_offset_m(
+                    &self.points[k],
+                    &self.frames[k],
+                    Steer::new(
+                        self.steer[k].grad_x,
+                        self.steer[k].grad_y,
+                        self.shaped[k] - offset_m,
+                    ),
+                    self.shaped[k],
+                    Some(RES_M),
+                )
+            })
+            .collect()
+    }
+
     fn row_mean(&self, j: usize) -> f64 {
         (0..N).map(|i| self.shaped[j * N + i]).sum::<f64>() / N as f64 // cast-ok: a count to a float
     }
@@ -369,10 +413,67 @@ impl Site {
             (0..N * N).filter(|&k| self.gated[k]).map(|k| self.shaped[k]).collect();
         hs.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
         println!(
-            "  gated structural p20 {:.1} m .. p80 {:.1} m (the elevation band the harmonic weight must vary across here)",
+            "  gated structural p20 {:.1} m .. p80 {:.1} m (the WORLD elevation band -- what the pitchfork used to be keyed to)",
             quantile(&hs, 0.20),
             quantile(&hs, 0.80)
         );
+        let (p10, p50, p90) = self.local_quantiles();
+        println!(
+            "  LOCAL relief `shaped - steer.reference_m` over gated texels: p10 {p10:+.3} m, p50 {p50:+.3} m, p90 {p90:+.3} m,              Q1 row mean {:+.3} m -> Q4 {:+.3} m -- THIS is what the pitchfork is keyed to now",
+            self.local_quarter_mean(0),
+            self.local_quarter_mean(3),
+        );
+    }
+
+    /// The p10, p50 and p90 of `shaped - reference` over this site's gated texels: the band
+    /// of local relief a `harmonic_band_m` has to span to reach anything here.
+    fn local_quantiles(&self) -> (f64, f64, f64) {
+        let mut ls: Vec<f64> = (0..N * N)
+            .filter(|&k| self.gated[k])
+            .map(|k| self.shaped[k] - self.steer[k].reference_m)
+            .collect();
+        ls.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        (quantile(&ls, 0.10), quantile(&ls, 0.50), quantile(&ls, 0.90))
+    }
+
+    /// The mean local relief over one quarter of the grid's rows, uphill quarter 0 to
+    /// downhill quarter 3.
+    fn local_quarter_mean(&self, quarter: usize) -> f64 {
+        let mut total = 0.0;
+        let mut count = 0.0;
+        for j in quarter * N / 4..(quarter + 1) * N / 4 {
+            for i in 0..N {
+                total += self.shaped[j * N + i] - self.steer[j * N + i].reference_m;
+                count += 1.0;
+            }
+        }
+        total / count
+    }
+
+    /// **The mechanism check, without evaluating the field at all**: what fraction of this
+    /// site's gated texels sit ABOVE the pitchfork locus, in the uphill quarter and in the
+    /// downhill quarter. Two channels per period above the locus and one below it, so this
+    /// fraction FALLING is the necessary condition for a downhill merge -- and a block whose
+    /// fraction is 0 or 1 in both quarters cannot merge anything whatever the field does.
+    fn above_locus(&self, gully: &GullyParams) -> (f64, f64) {
+        let share = |quarter: usize| -> f64 {
+            let mut above = 0.0;
+            let mut count = 0.0;
+            for j in quarter * N / 4..(quarter + 1) * N / 4 {
+                for i in 0..N {
+                    let k = j * N + i;
+                    if !self.gated[k] {
+                        continue;
+                    }
+                    count += 1.0;
+                    if weight_at(gully, self.shaped[k] - self.steer[k].reference_m) > 0.25 {
+                        above += 1.0;
+                    }
+                }
+            }
+            above / count
+        };
+        (share(0), share(3))
     }
 }
 
@@ -380,12 +481,31 @@ fn detail_for(gully: GullyParams) -> Detail {
     Detail::with_gully(SEED as u64, EARTH_RADIUS_M, None, Some(gully)) // cast-ok: the same two's-complement reinterpretation `Surface::with_gully` does
 }
 
-/// The harmonic weight this block puts on a point at `shaped` metres of structural ground.
-fn weight_at(gully: &GullyParams, shaped: f64) -> f64 {
+/// The harmonic weight this block puts on a point sitting `local_m` metres above its own
+/// steer cell's mean structural ground. **The argument is a local relief, not a world
+/// elevation, and that is this slice**: see `GullyParams::harmonic_band_m`.
+fn weight_at(gully: &GullyParams, local_m: f64) -> f64 {
     gully.harmonic_weight
-        * worldbuilder_engine::detail::smooth(
-            (shaped - gully.gate_elevation_m) / gully.harmonic_band_m,
-        )
+        * worldbuilder_engine::detail::smooth(local_m / gully.harmonic_band_m)
+}
+
+/// The local relief at which `a` crosses 1/4 -- the pitchfork locus, in metres above the
+/// cell mean. `None` when the block never reaches 1/4 anywhere, which is a block that merges
+/// nothing and is worth saying out loud rather than printing as a number.
+fn locus_of(gully: &GullyParams) -> Option<f64> {
+    if weight_at(gully, gully.harmonic_band_m) < 0.25 {
+        return None;
+    }
+    let (mut lo, mut hi) = (0.0, gully.harmonic_band_m);
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if weight_at(gully, mid) < 0.25 {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    Some(0.5 * (lo + hi))
 }
 
 fn main() {
@@ -395,17 +515,12 @@ fn main() {
         "world Surface::new({SEED}, {EARTH_RADIUS_M}, {PLATES}, {LAND}); field = Detail::gully_offset_m at resolution_m = {RES_M}"
     );
     println!(
-        "shipped preset: harmonic_weight {}, harmonic_band_m {} -> the pitchfork a = 1/4 sits at structural {:.0} m",
+        "shipped preset: harmonic_weight {}, harmonic_band_m {} -> the pitchfork a = 1/4 sits at {} m of LOCAL relief above the steer cell's own mean",
         drainage.harmonic_weight,
         drainage.harmonic_band_m,
-        {
-            // invert a(h) = w * smooth((h - gate)/band) = 0.25 by bisection on the band
-            let (mut lo, mut hi) = (drainage.gate_elevation_m, drainage.gate_elevation_m + drainage.harmonic_band_m);
-            for _ in 0..80 {
-                let mid = 0.5 * (lo + hi);
-                if weight_at(&drainage, mid) < 0.25 { lo = mid } else { hi = mid }
-            }
-            0.5 * (lo + hi)
+        match locus_of(&drainage) {
+            Some(locus) => format!("{locus:+.1}"),
+            None => "NOWHERE -- this block merges nothing".to_string(),
         }
     );
 
@@ -421,7 +536,7 @@ fn main() {
         }
         let fr = TangentFrame::at(&p, EARTH_RADIUS_M);
         let g = lattice.at(&p, &fr, &structural);
-        candidates.push((m::sqrt(g.0 * g.0 + g.1 * g.1), i));
+        candidates.push((m::sqrt(g.grad_x * g.grad_x + g.grad_y * g.grad_y), i));
     }
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).expect("finite"));
     println!(
@@ -437,11 +552,17 @@ fn main() {
     let variants: Vec<(String, GullyParams)> = vec![
         ("SHIPPED single cosine (a = 0)".to_string(), GullyParams { harmonic_weight: 0.0, ..drainage }),
         ("harmonic, the preset".to_string(), drainage),
-        (
-            "CONTROL: weight pinned, no fall".to_string(),
-            GullyParams { harmonic_band_m: 1.0, ..drainage },
-        ),
     ];
+    // The offset that pins `a` at 0.90 -- the spike's own pinned value -- under the shipped
+    // preset, found by bisection on the shipped `smooth` rather than written down.
+    let pinned_offset = {
+        let (mut lo, mut hi) = (0.0, drainage.harmonic_band_m);
+        for _ in 0..80 {
+            let mid = 0.5 * (lo + hi);
+            if weight_at(&drainage, mid) < 0.90 { lo = mid } else { hi = mid }
+        }
+        0.5 * (lo + hi)
+    };
 
     let mut sites: Vec<Site> = Vec::new();
     for rank in SITE_RANKS {
@@ -450,19 +571,13 @@ fn main() {
 
     for site in &sites {
         site.report();
+        let local = site.local_quantiles();
         for (name, gully) in &variants {
             println!(
-                "  -- {name}: a at this site's p20/p80 = {:.3} / {:.3}",
-                weight_at(gully, {
-                    let mut hs: Vec<f64> = (0..N * N).filter(|&k| site.gated[k]).map(|k| site.shaped[k]).collect();
-                    hs.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-                    quantile(&hs, 0.20)
-                }),
-                weight_at(gully, {
-                    let mut hs: Vec<f64> = (0..N * N).filter(|&k| site.gated[k]).map(|k| site.shaped[k]).collect();
-                    hs.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-                    quantile(&hs, 0.80)
-                })
+                "  -- {name}: a at this site's local-relief p10/p50/p90 = {:.3} / {:.3} / {:.3}",
+                weight_at(gully, local.0),
+                weight_at(gully, local.1),
+                weight_at(gully, local.2)
             );
         }
         for fraction in MASKS {
@@ -471,7 +586,66 @@ fn main() {
                 let field = site.field(&detail_for(*gully));
                 print_row(name, &analyse(&field, &site.gated, fraction));
             }
+            let pinned = site.field_at_constant_a(&detail_for(drainage), pinned_offset);
+            print_row(
+                &format!("CONTROL: a pinned at {:.2}, cannot fall", weight_at(&drainage, pinned_offset)),
+                &analyse(&pinned, &site.gated, fraction),
+            );
         }
+    }
+
+    // ------------------------------------------- the reference-span sweep, which comes first
+    //
+    // The pitchfork is keyed to `shaped - steer.reference_m`, so the FIRST question is what
+    // that quantity's dynamic range and downhill trend actually are -- a band cannot be aimed
+    // at a distribution nobody has measured, and the four-point mean at the lattice pitch has
+    // a range of about 0.2 m, which is not a distribution a 1 m ABI floor can even reach.
+    //
+    // Population: the three sites' gated texels, re-steered on a lattice whose reference
+    // stencil is the swept span and whose GRADIENT stencil is untouched at
+    // `steer_lattice_m`. Q1/Q4 are the uphill and downhill quarters of the grid's rows.
+    println!("
+================ the reference-span sweep: what `shaped - reference_m` actually is");
+    println!(
+        "  {:<10} {:>8} | {}",
+        "span (m)", "cells", "per site: local relief p10 / p50 / p90, and its Q1 -> Q4 row means"
+    );
+    for span_cells in [1.0f64, 2.0, 4.0, 8.0, 16.0, 32.0] {
+        let span = span_cells * drainage.steer_lattice_m;
+        let probe = SteerLattice::with_reference_span(EARTH_RADIUS_M, drainage.steer_lattice_m, span);
+        let mut cells: Vec<String> = Vec::new();
+        for site in &sites {
+            let local: Vec<f64> = (0..N * N)
+                .map(|k| {
+                    site.shaped[k]
+                        - probe.at(&site.points[k], &site.frames[k], &structural).reference_m
+                })
+                .collect();
+            let mut sorted: Vec<f64> =
+                (0..N * N).filter(|&k| site.gated[k]).map(|k| local[k]).collect();
+            sorted.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+            let row_mean = |rows: std::ops::Range<usize>| -> f64 {
+                let mut total = 0.0;
+                let mut count = 0.0;
+                for j in rows {
+                    for i in 0..N {
+                        total += local[j * N + i];
+                        count += 1.0;
+                    }
+                }
+                total / count
+            };
+            cells.push(format!(
+                "r{}: {:>+8.1} {:>+8.1} {:>+8.1} | {:>+8.1} -> {:>+8.1}",
+                site.index,
+                quantile(&sorted, 0.10),
+                quantile(&sorted, 0.50),
+                quantile(&sorted, 0.90),
+                row_mean(0..N / 4),
+                row_mean(3 * N / 4..N)
+            ));
+        }
+        println!("  {span:<10.0} {span_cells:>8.0} | {}", cells.join("   "));
     }
 
     // ------------------------------------------------------------------ the cross product
@@ -485,23 +659,22 @@ fn main() {
         "weight",
         "band_m",
         "a=1/4 at",
-        "per site: channels Q1->Q4 (slope), width Q1->Q4, conf:div"
+        "per site: channels Q1->Q4, width Q1->Q4, conf:div, and the share of texels above the locus"
     );
-    for weight in [0.6f64, 0.9, 1.2, 1.6, 2.0] {
-        for band in [1_500.0f64, 1_800.0, 2_100.0, 2_400.0, 2_800.0, 3_400.0] {
+    for weight in [1.4f64, 1.6, 1.8, 2.0, 2.4] {
+        for band in [0.07f64, 0.09, 0.10, 0.12, 0.15, 0.20] {
             let gully = GullyParams { harmonic_weight: weight, harmonic_band_m: band, ..drainage };
-            let (mut lo, mut hi) = (drainage.gate_elevation_m, drainage.gate_elevation_m + band);
-            for _ in 0..80 {
-                let mid = 0.5 * (lo + hi);
-                if weight_at(&gully, mid) < 0.25 { lo = mid } else { hi = mid }
-            }
-            let crossing = 0.5 * (lo + hi);
+            let crossing = match locus_of(&gully) {
+                Some(locus) => format!("{locus:+.3}"),
+                None => "never".to_string(),
+            };
             let detail = detail_for(gully);
             let mut cells: Vec<String> = Vec::new();
             for site in &sites {
                 let t = analyse(&site.field(&detail), &site.gated, MASKS[0]);
+                let (a1, a4) = site.above_locus(&gully);
                 cells.push(format!(
-                    "r{}: n {:>5.1}->{:>5.1} ({:>+5.0}%) w {:>5.1}->{:>5.1} ({:>+5.0}%) {:>3}:{:<3}",
+                    "r{}: n {:>5.1}->{:>5.1} ({:>+5.0}%) w {:>5.1}->{:>5.1} ({:>+5.0}%) {:>3}:{:<3} above {:>4.0}%->{:<4.0}%",
                     site.index,
                     t.runs_q1,
                     t.runs_q4,
@@ -510,11 +683,13 @@ fn main() {
                     t.width_q4,
                     (t.width_q4 / t.width_q1 - 1.0) * 100.0,
                     t.confluences,
-                    t.divergences
+                    t.divergences,
+                    a1 * 100.0,
+                    a4 * 100.0
                 ));
             }
             println!(
-                "  {weight:<10.2} {band:<10.0} {crossing:>10.0} | {}",
+                "  {weight:<10.2} {band:<10.3} {crossing:>10} | {}",
                 cells.join("  ")
             );
         }

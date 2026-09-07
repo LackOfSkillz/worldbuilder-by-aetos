@@ -42,6 +42,9 @@ import {
   MEASURED_SLOPE,
   MEASURED_RELIEF,
   CARVE_BAND,
+  AMPLITUDE_BAND,
+  AMPLITUDE_METRES_PER_STEP,
+  MEASURED_AMPLITUDE_SWEEP,
   CREST_MIN_TWENTIETHS,
   CREST_MAX_TWENTIETHS,
   CREST_TWENTIETHS,
@@ -115,13 +118,18 @@ test("the preset crosses as twelve numbers and moves exactly one of them", () =>
   assert.deepEqual(Object.keys(canonical), GULLY_FIELDS);
   const moved = GULLY_FIELDS.filter((f) => !Object.is(canonical[f], drainage[f]));
   assert.deepEqual(moved, ["amplitudeM"], "drainage() must move the amplitude and nothing else");
-  // Which is the fact the panel's design turns on: **the field that switches the kernel on is the
-  // one with no slider**, so the drainage button has to write the whole block rather than move
-  // widgets. A preset half-applied because nine of its fields had no widget is the
-  // silently-dropping-builder shape.
+  // Which is the fact the panel's design turns on: **the field that switches the kernel on is a
+  // slider whose bottom position is that switch**, so the drainage button still has to write the
+  // whole block rather than move widgets -- ten of the twelve fields have no widget at all. A
+  // preset half-applied because most of its fields had no widget is the silently-dropping-builder
+  // shape.
   assert.equal(canonical.amplitudeM, 0);
   assert.ok(drainage.amplitudeM > 0);
-  assert.ok(!GULLY_SLIDERS.includes("amplitudeM"));
+  // **The amplitude gained a slider when its sweep was run twice and held.** It is asserted to be
+  // ON the list now, and asserted to reach zero, because a depth slider that could not reach the
+  // engine's canonical amplitude would put a gully block into every shared link from an untouched
+  // panel -- RULING 1, through the door this channel opens widest.
+  assert.ok(GULLY_SLIDERS.includes("amplitudeM"));
   // And the record round-trips through the ABI order without drifting, which is the property a
   // second copy of a field order would break silently: there is no type error for a crest exponent
   // written into the amplitude slot.
@@ -227,16 +235,20 @@ test("the term fades out with the sampling, so a coarse caller pays nothing and 
   // And it is emphatically alive at a level-12 tile's own spacing, or the fade would be a switch
   // that is off everywhere.
   //
-  // **THE FLOOR MOVED FROM 30 m TO 20 m WHEN THE SECOND HARMONIC SHIPPED, AND THE REASON IS A
-  // FINDING RATHER THAN A TOLERANCE.** Measured on these six probes at 76.35 m: the largest
-  // |offset| is **29.24 m with the harmonic on and 54.97 m with `harmonicWeight` set to 0** on
-  // the otherwise identical preset. The harmonic costs about half the peak excursion at a fixed
-  // `amplitudeM`, and it must: the shaping is divided by `1 + a`, and the second harmonic's
-  // minima sit where the first's are shallower, so the deepest point of a channel gets shallower
-  // even as the channels branch. The RELIEF over a 2 km run does not halve with it -- the
-  // amplitude sweep puts the drainage preset at 83.2 m of median local relief on this same flank,
-  // still inside Hammond's 80-160 m hills band -- because relief is a spread over a run and this
-  // is a single deepest point. Both numbers are true and they are not the same number.
+  // **THE FLOOR MOVED FROM 30 m TO 20 m WHEN THE SECOND HARMONIC SHIPPED, AND IT IS RE-MEASURED
+  // HERE RATHER THAN LEFT STANDING.** Measured on these probes at 76.35 m: the largest |offset|
+  // is **23.98 m with the harmonic on and 54.97 m with `harmonicWeight` set to 0** on the
+  // otherwise identical preset. It was 29.24 m before the pitchfork moved to a local datum, and
+  // it fell because the new preset's weight is 2.4 rather than 0.9 -- the shaping is divided by
+  // `1 + a`, and the second harmonic's minima sit where the first's are shallower, so a deeper
+  // ramp buys branching and pays in the depth of a single channel. **The 20 m floor still holds
+  // and its margin is now 20% rather than 46%**, which is worth writing down: the next thing that
+  // raises the weight will go through this line.
+  //
+  // The RELIEF over a 2 km run does not fall with it -- the amplitude sweep puts the drainage
+  // preset at 85.5 m of median local relief on this flank, still inside Hammond's 80-160 m hills
+  // band -- because relief is a spread over a run and this is a single deepest point. Both numbers
+  // are true and they are not the same number.
   const fine = FLANK.map(([lat, lon]) =>
     engine.elevationM(drained, lat, lon, 76.35) - engine.elevationM(plain, lat, lon, 76.35));
   assert.equal(fine.filter((d) => d !== 0).length, FLANK.length);
@@ -326,6 +338,83 @@ test("the slider travel is the band the sweep measured, not the domain the engin
   assert.equal(engine.checkGully({ ...drainage, crestSharpness: 0.001 }), WB_OK);
   assert.equal(engine.checkGully({ ...drainage, crestSharpness: 100 }), WB_OK);
   assert.equal(CREST_TWENTIETHS, 20);
+});
+
+test("the depth slider's travel is the amplitude sweep solved, and its floor is the off switch", () => {
+  // **The second gully slider, and the one this channel's comment spent two slices asking for.**
+  // Its travel is not a taste: `MEASURED_AMPLITUDE_SWEEP` measured 1.417 m of 2 km ground relief
+  // per metre of amplitude on the steepest of three flank sites, linear above 30 m, so Hammond's
+  // 80-160 m hills band inverts to 56.5-112.9 m of depth and his 300 m mountain floor to 211.7 m.
+  // The travel stops at 120 m, just past the hills band, because past there the term is claiming
+  // to be mountains on a generator whose mountains are tectonic.
+  const values = [];
+  for (let p = travel.amplitudeM.min; p <= travel.amplitudeM.max; p += 1) {
+    values.push(travel.amplitudeM.toValue(p));
+  }
+  assert.equal(values.length, 25);
+  assert.equal(values[0], AMPLITUDE_BAND.low);
+  assert.equal(values[values.length - 1], AMPLITUDE_BAND.high);
+  assert.equal(AMPLITUDE_METRES_PER_STEP, 5);
+  // **Every position lands on its own value exactly**, which is what an integer step buys and what
+  // `0.05 * 7` cost this viewer four times. Asserted with `Object.is` rather than a tolerance,
+  // because a tolerance here would pass on precisely the defect.
+  for (const v of values) assert.ok(Object.is(travel.amplitudeM.toValue(travel.amplitudeM.toPosition(v)), v));
+  // The engine's canonical amplitude is position zero, and it is the off switch. Both halves
+  // matter: a travel that could not reach it would put a gully block in every untouched link, and
+  // a travel whose bottom was not OFF would leave the owner no way back to today's picture.
+  assert.ok(travel.amplitudeM.holdsCanonical);
+  assert.equal(travel.amplitudeM.toPosition(canonical.amplitudeM), 0);
+  assert.equal(travel.amplitudeM.toPosition(drainage.amplitudeM), 12);
+  assert.ok(values.some((v) => Object.is(v, drainage.amplitudeM)),
+    "the preset's own amplitude is not a value this slider can produce");
+  // And the measured band is inside the travel rather than the travel being inside the band --
+  // the hills band is what the owner is aiming at, so the slider must be able to bracket it.
+  assert.ok(AMPLITUDE_BAND.hammondHillsLow > AMPLITUDE_BAND.low);
+  assert.ok(AMPLITUDE_BAND.hammondHillsHigh < AMPLITUDE_BAND.high);
+  assert.ok(AMPLITUDE_BAND.hammondMountainFloor > AMPLITUDE_BAND.high,
+    "the low-mountain floor must be past the end of this travel, not inside it");
+  // The engine would accept an order of magnitude more, so this is a choice from the sweep and not
+  // the widest thing that happens to work.
+  assert.equal(engine.checkGully({ ...drainage, amplitudeM: 1000 }), WB_OK);
+  for (const v of values) {
+    assert.equal(engine.checkGully({ ...drainage, amplitudeM: v }), WB_OK,
+      `depth position ${v} asks for a block the engine refuses`);
+  }
+  assert.deepEqual(panelFieldFaults(gullyPanelFields(canonical)), []);
+});
+
+test("the depth slider moves the ground in proportion, and its floor is bit-for-bit canonical", () => {
+  // **The assertion a travel table cannot make for itself.** `MEASURED_AMPLITUDE_SWEEP` says the
+  // response is linear above 30 m; this asks the shipped artifact, through the viewer's own
+  // constructor, on the eight flank witnesses.
+  const plain = engine.newWorld({ ...DEFAULT_WORLD });
+  const at = (amplitudeM) => {
+    const h = engine.newWorld({ ...DEFAULT_WORLD, gully: { ...drainage, amplitudeM } });
+    const d = FLANK.map(([lat, lon]) =>
+      engine.elevationM(h, lat, lon, 76.35) - engine.elevationM(plain, lat, lon, 76.35));
+    assert.equal(engine.freeWorld(h), WB_OK);
+    return d;
+  };
+  // The TERM is a bare multiple of the amplitude -- that is true by construction and is asserted
+  // here only because it is the property the slider's linearity claim rests on. The sweep's own
+  // figure is about the GROUND's relief, which is a different question and is measured in Rust.
+  const sixty = at(60);
+  const one_twenty = at(120);
+  for (let i = 0; i < FLANK.length; i += 1) {
+    assert.ok(Math.abs(one_twenty[i] - 2 * sixty[i]) < 1e-9,
+      `doubling the depth did not double the displacement at flank ${i}`);
+  }
+  assert.ok(Math.max(...sixty.map(Math.abs)) > 20);
+  // Position zero is the engine's `None` path, exactly. Not "small", not "close": the amplitude is
+  // the off switch and `Detail::gully_offset_m` returns before it reads anything else.
+  const off = engine.newWorld({
+    ...DEFAULT_WORLD, gully: { ...drainage, amplitudeM: travel.amplitudeM.toValue(0) },
+  });
+  for (const [lat, lon] of FLANK) {
+    assert.equal(engine.elevationM(off, lat, lon, 76.35), engine.elevationM(plain, lat, lon, 76.35),
+      `the depth slider at zero moved the ground at ${lat},${lon}`);
+  }
+  for (const h of [plain, off]) assert.equal(engine.freeWorld(h), WB_OK);
 });
 
 test("the carve slider satisfies panelFieldFaults", () => {
@@ -466,16 +555,15 @@ test("no gully number is written down twice in the viewer", () => {
 
 test("every driven gully field appears somewhere the owner can see it", () => {
   // A preset that changed something the panel never mentioned would be a parameter the owner cannot
-  // see -- and on this channel that would include the field that turns the whole term on. One field
-  // has a slider; the other nine are printed. The union must be the whole driven set, so an
-  // eleventh field cannot arrive silently.
+  // see. Two fields have sliders; the other ten are printed. The union must be the whole driven
+  // set, so a thirteenth field cannot arrive silently.
   const shown = gullyReadoutFields();
   const union = [...GULLY_SLIDERS, ...shown];
   assert.deepEqual([...union].sort(), [...GULLY_CONTROLS].sort());
   // Disjoint as well as exhaustive: an inverted filter would still cover the set by counting the
   // slider's own field twice, and that is the mutation this line exists for.
   assert.equal(new Set(union).size, union.length, "a field is both a slider and a readout");
-  assert.ok(shown.includes("amplitudeM"), "the amplitude is neither a slider nor a readout");
+  assert.ok(GULLY_SLIDERS.includes("amplitudeM"), "the amplitude is neither a slider nor a readout");
   assert.ok(shown.includes("slopeReference"), "the measured slope is nowhere the owner can see it");
   const controls = appFile("controls.js");
   assert.match(controls, /gullyReadoutFields\(\)/, "the readout must be driven by the field list");

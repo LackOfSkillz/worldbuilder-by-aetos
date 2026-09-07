@@ -4685,10 +4685,15 @@ fn the_two_harmonic_fields_are_swept_as_a_cross_product_with_the_gate() {
     let mut records = 0usize;
     let mut accepted = 0usize;
     for weight in [0.0f64, 0.25, 0.9, 2.0, WB_MAX_GULLY_HARMONIC_WEIGHT] {
+        // **The band's scale moved with its meaning.** It is metres of LOCAL relief now, so
+        // the preset is 0.12 and the useful range is a fraction of a metre; 10 m and 100 km
+        // are still swept because they are still admissible and a host can still send them,
+        // but a product that did not contain the shipped scale would be sweeping only the
+        // places nothing lives.
         for band in [
             WB_MIN_GULLY_HARMONIC_BAND_M,
+            0.12,
             10.0,
-            1_800.0,
             100_000.0,
             WB_MAX_GULLY_HARMONIC_BAND_M,
         ] {

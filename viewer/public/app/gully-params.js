@@ -77,10 +77,15 @@ export const GULLY_FIELDS = [
   // two above it, so the contour `a = 1/4` is a line of downhill Y-junctions. Zero is off and
   // reproduces the single-cosine shaping bit for bit.
   "harmonicWeight",
-  // Metres of structural ground above `gateElevationM` over which that weight climbs from zero.
-  // A band and not a scalar on purpose: a FIXED weight merges nothing however large it is -- the
-  // spike's control pinned it at 0.90 and counted 0 confluences in 319 contour-row pairs. The
-  // merging comes from the weight falling downhill.
+  // Metres of LOCAL RELIEF -- height above the steer cell's own mean `structural_m` -- over which
+  // that weight climbs from zero. **It used to be metres above `gateElevationM`, which made
+  // `a = 1/4` one contour at one WORLD elevation, so only the flanks crossing 825 m branched at
+  // all and a measured flank at 1,353-1,417 m got nothing at any setting.** A local datum has its
+  // zero on flat ground rather than at sea level, so every flank on every planet crosses it; the
+  // scale is a fraction of a metre rather than thousands, because the measured p10-to-p90 of that
+  // local relief on this generator's flanks is 0.14 m. A band and not a scalar on purpose: a FIXED
+  // weight merges nothing however large it is -- the control that pins `a` at 0.90 counts 0
+  // confluences in 319 contour-row pairs. The merging comes from the weight falling downhill.
   "harmonicBandM",
 ];
 
@@ -135,25 +140,29 @@ export const GULLY_CONTROLS = [
 /// The three that are deliberately absent, each for a stated reason rather than for want of a
 /// widget:
 ///
-/// - **`amplitudeM`. THE SWEEP THIS COMMENT USED TO ASK FOR HAS BEEN RUN, AND IT SAYS THE
-///   PROPORTIONALITY IS REAL** -- see `MEASURED_AMPLITUDE_SWEEP`. Nine amplitudes from 0 to 240 m,
-///   three flank sites, ground relief over a 2 km contour run: above about 30 m the response is a
-///   straight line at 1.28-1.39 m of relief per metre of amplitude, and the only departure from it
-///   is at the bottom of the range where the canonical ground's own 2-8 m of relief is comparable
-///   to the term's. **So the band can now be solved rather than assumed**, and the owner has
-///   earned this slider. It is still not built HERE: adding a second gully slider means a second
-///   travel, a second holds-canonical check and a second live-swap path in `controls.js`, which is
-///   a change to the panel rather than to the measurement, and shipping the number without the
-///   widget leaves the readout honest in the meantime. That is the next bounded step on this
-///   channel and it is the only one this comment still asks for.
+/// **`amplitudeM` IS THE SECOND SLIDER, AND IT IS BUILT.** The sweep this comment spent two
+/// slices asking for has been run twice -- see `MEASURED_AMPLITUDE_SWEEP` -- and the travel it
+/// earned is `AMPLITUDE_BAND`. Nine amplitudes from 0 to 240 m, three flank sites, ground relief
+/// over a 2 km contour run: above about 30 m the response is a straight line at **1.34-1.56 m of
+/// relief per metre of amplitude**, and the only departure is at the bottom of the range where the
+/// canonical ground's own 2-8 m of relief is comparable to the term's. So Hammond's hills band is
+/// solved rather than assumed, and it is where the travel's upper half sits.
+///
+/// **It is the field that turns the whole term on, so its slider is the one that can turn it
+/// off**, and position zero is exactly `GullyParams::canonical()`'s amplitude. That is not a
+/// coincidence to be papered over: the travel has to hold the engine's default the way every other
+/// travel in this viewer does, and here the default is the off switch.
+///
+/// The three that remain deliberately absent, each for a stated reason:
 /// - **`harmonicWeight` and `harmonicBandM`, and the reason is the shape of their measurement
-///   rather than its absence.** They were swept as a CROSS PRODUCT (5 weights x 6 bands, three
-///   sites, two channel masks) and the effect is a RIDGE in the pair, not a travel in either: the
-///   pitchfork sits where `weight * smooth((h - gate) / band) = 1/4`, so moving one field alone
-///   walks straight off the ridge. At weight 0.9 a band of 1,800 m gives +64% of downhill width
-///   growth on the steepest site and bands of 1,500 and 2,100 m give +21% and +31%. A slider on
-///   one of a pair whose effect is joint is a slider that mostly turns the effect off, which is
-///   the same failure as a slider with no measured travel wearing a different hat.
+///   rather than its absence.** They were swept as a CROSS PRODUCT twice (5 weights x 6 bands,
+///   three sites, two channel masks, once per datum) and the effect is a RIDGE in the pair, not a
+///   travel in either: the pitchfork sits where `weight * smooth((h - reference) / band) = 1/4`,
+///   so moving one field alone walks straight off the ridge. At weight 2.4 a band of 0.12 m puts
+///   every one of the three sites' channel counts below its own single-cosine baseline, and bands
+///   of 0.10 and 0.15 m take the middle site from +4% to +19% and +20%. A slider on one of a pair
+///   whose effect is joint is a slider that mostly turns the effect off, which is the same failure
+///   as a slider with no measured travel wearing a different hat.
 /// - **`slopeReference`.** Its measured population is a property of the *terrain* (500,000 spiral
 ///   points on each of three worlds), not a table of the kernel's response, and the kernel's
 ///   response to it is measured at exactly **two points**: the reference 0.005, where the term
@@ -171,7 +180,7 @@ export const GULLY_CONTROLS = [
 ///   `flatEnergyFloor`, `steerLatticeM`.** Each is chosen on external ground (the photographs'
 ///   0.5-2 km feature band; `CANONICAL_WAVELENGTH_M`; `amplitude_m`'s own existing "high" curve;
 ///   the gradient probe's measured 2 km step) and none of them was swept for effect.
-export const GULLY_SLIDERS = ["crestSharpness"];
+export const GULLY_SLIDERS = ["crestSharpness", "amplitudeM"];
 
 /// The driven fields that have no widget and are therefore PRINTED, derived from the two lists
 /// above rather than written as a third.
@@ -314,13 +323,41 @@ export const CARVE_BAND = { low: 0.50, high: 1.00 };
 /// site 0's slope of 1.379 m of relief per metre of amplitude.
 export const MEASURED_AMPLITUDE_SWEEP = {
   sites: [
-    { rank: 0, canonicalReliefM: 2.43, reliefPerMetre: 1.379 },
-    { rank: 1, canonicalReliefM: 6.97, reliefPerMetre: 1.374 },
-    { rank: 200, canonicalReliefM: 7.92, reliefPerMetre: 1.276 },
+    { rank: 0, canonicalReliefM: 2.43, reliefPerMetre: 1.417 },
+    { rank: 1, canonicalReliefM: 6.97, reliefPerMetre: 1.555 },
+    { rank: 200, canonicalReliefM: 7.92, reliefPerMetre: 1.335 },
   ],
   amplitudesM: [0, 15, 30, 45, 60, 90, 120, 180, 240],
   linearAboveM: 30,
 };
+
+/// **THE AMPLITUDE SLIDER'S TRAVEL, SOLVED FROM THE SWEEP ABOVE RATHER THAN CHOSEN.**
+///
+/// `reliefPerMetre` on the steepest site is **1.417 m of 2 km ground relief per metre of
+/// amplitude**, so Hammond's landform classification inverts directly:
+///
+/// - **hills, 80-160 m of local relief** -> amplitude **56.5 to 112.9 m**
+/// - **the low-mountain floor, 300 m** -> amplitude **211.7 m**
+///
+/// The travel is `0` to `120` m in 5 m steps, and each end is a statement:
+///
+/// - **`0` is the engine's canonical amplitude and therefore the off switch.** Every other travel
+///   in this viewer holds its channel's default; this one holds a default that happens to be a
+///   switch, and `holdsCanonical` asks the same question of it as of any other.
+/// - **`120` is just past the top of the hills band.** Above it the term is claiming to be
+///   mountains on a generator whose mountains are tectonic -- Ruling 4 of the relief-amplitude
+///   slice -- and the engine would happily accept 1,000.
+///
+/// **Five metres a position, and the map is `position * 5` rather than `position * 0.05`-shaped.**
+/// The hazard `relief-params.js` opens with is a step that is not exactly representable; an
+/// INTEGER step is exact in f64 at every position this slider can reach, so multiplication is safe
+/// here in a way `0.05 * 7` is not. The preset's 60 m is position 12 and canonical's 0 is position
+/// 0, both exactly.
+export const AMPLITUDE_BAND = { low: 0, high: 120, hammondHillsLow: 56.5, hammondHillsHigh: 112.9,
+  hammondMountainFloor: 211.7 };
+export const AMPLITUDE_MIN_STEPS = 0;
+export const AMPLITUDE_MAX_STEPS = 24;
+export const AMPLITUDE_METRES_PER_STEP = 5;
 
 export const MEASURED_RELIEF = {
   amplitudeM: 60.0,
@@ -361,6 +398,17 @@ export const CREST_TWENTIETHS = 20;
 /// asserts the canonical value lands on this lattice rather than assuming it.
 export function gullyTravel(canonical) {
   return {
+    amplitudeM: {
+      min: AMPLITUDE_MIN_STEPS,
+      max: AMPLITUDE_MAX_STEPS,
+      toValue: (position) => position * AMPLITUDE_METRES_PER_STEP,
+      toPosition: (value) => Math.round(value / AMPLITUDE_METRES_PER_STEP),
+      format: (value) => `${value.toFixed(0)} m`,
+      holdsCanonical: Object.is(
+        Math.round(canonical.amplitudeM / AMPLITUDE_METRES_PER_STEP) * AMPLITUDE_METRES_PER_STEP,
+        canonical.amplitudeM,
+      ),
+    },
     crestSharpness: {
       min: CREST_MIN_TWENTIETHS,
       max: CREST_MAX_TWENTIETHS,

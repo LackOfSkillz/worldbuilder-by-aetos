@@ -91,6 +91,19 @@ struct Slot {
     /// node's own frame so that interpolating between nodes never has to reconcile two
     /// tangent frames -- which is the term that would misbehave at a pole.
     value: Vec3,
+    /// **The node's own mean `structural_m`, in metres -- the local elevation reference.**
+    ///
+    /// It is the mean of the FOUR samples the central difference above already took, at
+    /// `+-spacing_m` east and north of the node. So it costs **no extra `structural_m`
+    /// call**: the gradient and the reference are two moments of one four-point stencil, and
+    /// a lattice that answers only one of them is paying for both already.
+    ///
+    /// Being a four-point mean rather than the node's own height is what makes it a
+    /// *reference* instead of a copy: `mean - centre` is `(h^2 / 4) * laplacian(structural)`
+    /// exactly, so a point in a hollow sits BELOW its own cell's mean and a point on a spur
+    /// sits above it. That is the quantity the gully kernel's pitchfork needs and the one a
+    /// world elevation cannot supply -- see `detail::GullyParams::harmonic_band_m`.
+    reference: f64,
 }
 
 /// A fixed lattice of `grad(structural_m)` over the whole planet.
@@ -102,16 +115,30 @@ pub struct SteerLattice {
     spacing_m: f64,
     /// `spacing_m / radius_m` -- the lattice pitch in unit-sphere units.
     cell: f64,
+    /// **The reference stencil's half-width, in metres**, and the one number in this struct
+    /// that is not the lattice's own pitch. See [`REFERENCE_SPAN_CELLS`].
+    reference_span_m: f64,
     cache: Mutex<Vec<Slot>>,
 }
 
 impl SteerLattice {
     pub fn new(radius_m: f64, spacing_m: f64) -> Self {
+        Self::with_reference_span(radius_m, spacing_m, REFERENCE_SPAN_CELLS * spacing_m)
+    }
+
+    /// The same lattice with a chosen reference stencil, so the span can be SWEPT rather
+    /// than asserted. `new` is this with [`REFERENCE_SPAN_CELLS`], and the sweep that chose
+    /// that constant is in `src/bin/gully_merging_survey.rs`.
+    pub fn with_reference_span(radius_m: f64, spacing_m: f64, reference_span_m: f64) -> Self {
         Self {
             radius_m,
             spacing_m,
             cell: spacing_m / radius_m,
-            cache: Mutex::new(vec![Slot { key: None, value: Vec3::new(0.0, 0.0, 0.0) }; CACHE_SLOTS]),
+            reference_span_m,
+            cache: Mutex::new(vec![
+                Slot { key: None, value: Vec3::new(0.0, 0.0, 0.0), reference: 0.0 };
+                CACHE_SLOTS
+            ]),
         }
     }
 
@@ -133,7 +160,8 @@ impl SteerLattice {
         (h as usize) % CACHE_SLOTS // cast-ok: a hash to an index, immediately reduced modulo the slot count
     }
 
-    /// The gradient at one lattice node, in world space.
+    /// The gradient and the mean at one lattice node -- **one four-point stencil, two
+    /// moments.**
     ///
     /// The node's integer coordinates name a point in the cubic lattice; it is normalised
     /// onto the sphere before anything is evaluated there, because `structural_m` is a
@@ -141,30 +169,66 @@ impl SteerLattice {
     /// eight corners of a cell containing a unit vector all have a magnitude within
     /// `cell * sqrt(3)` of 1, so the normalisation is never near zero -- but it is guarded
     /// anyway and answers a flat gradient rather than a NaN if it ever were.
-    fn node_gradient<F: Fn(&SpherePoint) -> f64>(&self, key: (i64, i64, i64), structural: &F) -> Vec3 {
+    ///
+    /// The four samples are differenced for the gradient and averaged for the reference.
+    /// **The reference is therefore free**: adding it moved this function's `structural_m`
+    /// count from four to four, which is the whole argument for putting it on THIS lattice
+    /// rather than building a second one beside it.
+    fn node_reading<F: Fn(&SpherePoint) -> f64>(
+        &self,
+        key: (i64, i64, i64),
+        structural: &F,
+    ) -> (Vec3, f64) {
         let (ix, iy, iz) = key;
         // cast-ok: a lattice coordinate to a float for the node's position; |i| <= radius/spacing, far below 2^53
         let raw = Vec3::new(ix as f64 * self.cell, iy as f64 * self.cell, iz as f64 * self.cell);
         let node = match SpherePoint::from_vector(&raw) {
             Some(node) => node,
-            None => return Vec3::new(0.0, 0.0, 0.0),
+            // A flat gradient switches the gully term off; a reference of zero is what a
+            // point with no local ground to be measured against deserves, and the gate above
+            // it in `gully_offset_m` has already refused any such point.
+            None => return (Vec3::new(0.0, 0.0, 0.0), 0.0),
         };
         let frame = TangentFrame::at(&node, self.radius_m);
         let h = self.spacing_m;
-        let gx = (structural(&frame.local_to_sphere(h, 0.0)) - structural(&frame.local_to_sphere(-h, 0.0)))
-            / (2.0 * h);
-        let gy = (structural(&frame.local_to_sphere(0.0, h)) - structural(&frame.local_to_sphere(0.0, -h)))
-            / (2.0 * h);
-        frame.east.scaled(gx).add(&frame.north.scaled(gy))
+        let east_plus = structural(&frame.local_to_sphere(h, 0.0));
+        let east_minus = structural(&frame.local_to_sphere(-h, 0.0));
+        let north_plus = structural(&frame.local_to_sphere(0.0, h));
+        let north_minus = structural(&frame.local_to_sphere(0.0, -h));
+        let gx = (east_plus - east_minus) / (2.0 * h);
+        let gy = (north_plus - north_minus) / (2.0 * h);
+        // The reference's own stencil. At `reference_span_m == spacing_m` these are the four
+        // samples above and this costs nothing; the sweep chose a wider span, so it is four
+        // more `structural_m` calls PER NODE -- not per texel, which is the whole reason the
+        // lattice exists. A tile of 66,564 texels touches on the order of 250 nodes.
+        let r = self.reference_span_m;
+        let reference = if r == h {
+            (east_plus + east_minus + north_plus + north_minus) * 0.25
+        } else {
+            (structural(&frame.local_to_sphere(r, 0.0))
+                + structural(&frame.local_to_sphere(-r, 0.0))
+                + structural(&frame.local_to_sphere(0.0, r))
+                + structural(&frame.local_to_sphere(0.0, -r)))
+                * 0.25
+        };
+        (frame.east.scaled(gx).add(&frame.north.scaled(gy)), reference)
     }
 
-    /// The steering gradient at `point`, in `frame`'s basis, as `(d/dx, d/dy)` in m/m.
+    /// The steering reading at `point`: the gradient in `frame`'s basis, and the containing
+    /// cell's own mean `structural_m`.
     ///
     /// Trilinear between the eight nodes of the containing cubic cell, then projected onto
     /// the query point's own tangent plane. The interpolation is continuous everywhere, so
     /// the height field this steers is continuous everywhere; its *derivative* is not
     /// continuous across a cell face, which is a property of trilinear interpolation and is
     /// invisible in a height.
+    ///
+    /// **The reference rides the same eight corners, the same weights and the same lock.**
+    /// It is the trilinear blend of the eight node means -- a weighted mean of the cell's
+    /// own structural ground, continuous across a cell face for exactly the reason the
+    /// gradient is. An UNWEIGHTED eight-corner mean would be piecewise constant per cell and
+    /// would put a step in the ground along every lattice plane, which is the crease
+    /// `the_steer_is_continuous_across_a_lattice_cell_boundary` exists to refuse.
     ///
     /// `frame` is the caller's frame at `point` rather than one built here, because
     /// `elevation_m` already has one and building a second would be the same six
@@ -174,7 +238,7 @@ impl SteerLattice {
         point: &SpherePoint,
         frame: &TangentFrame,
         structural: &F,
-    ) -> (f64, f64) {
+    ) -> Steer {
         let v = point.vector;
         let (fx, fy, fz) = (v.x / self.cell, v.y / self.cell, v.z / self.cell);
         let (bx, by, bz) = (m::floor(fx), m::floor(fy), m::floor(fz));
@@ -185,7 +249,7 @@ impl SteerLattice {
             // term off rather than propagating a NaN into a height. Unreachable on any
             // record the C ABI admits -- the bound there is a spacing of at least a metre
             // on a planet of at most 1e9 m, which is 1e9 indices against this 9e18.
-            return (0.0, 0.0);
+            return Steer { grad_x: 0.0, grad_y: 0.0, reference_m: 0.0 };
         }
         let (ix, iy, iz) = (bx as i64, by as i64, bz as i64); // cast-ok: guarded above against the saturation `Noise::at` documents; each is a finite value below 9e18
         let (tx, ty, tz) = (fx - bx, fy - by, fz - bz);
@@ -201,6 +265,7 @@ impl SteerLattice {
         };
 
         let mut total = Vec3::new(0.0, 0.0, 0.0);
+        let mut reference = 0.0;
         for corner in 0..8u32 {
             let (dx, dy, dz) = (corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
             let key = (ix + dx as i64, iy + dy as i64, iz + dz as i64); // cast-ok: a 0-or-1 corner selector widened for lattice arithmetic, no float anywhere near it
@@ -209,16 +274,54 @@ impl SteerLattice {
             let wz = if dz == 1 { tz } else { 1.0 - tz };
             let weight = wx * wy * wz;
             let slot = Self::slot_of(key);
-            let value = if cache[slot].key == Some(key) {
-                cache[slot].value
+            let entry = if cache[slot].key == Some(key) {
+                cache[slot]
             } else {
-                let value = self.node_gradient(key, structural);
-                cache[slot] = Slot { key: Some(key), value };
-                value
+                let (value, node_reference) = self.node_reading(key, structural);
+                let entry = Slot { key: Some(key), value, reference: node_reference };
+                cache[slot] = entry;
+                entry
             };
-            total = total.add(&value.scaled(weight));
+            total = total.add(&entry.value.scaled(weight));
+            reference += weight * entry.reference;
         }
-        (total.dot(&frame.east), total.dot(&frame.north))
+        Steer {
+            grad_x: total.dot(&frame.east),
+            grad_y: total.dot(&frame.north),
+            reference_m: reference,
+        }
+    }
+}
+
+/// One steering reading: which way the ground falls, and **what to call level here.**
+///
+/// The two travel together because they come out of one lattice query, one lock and one
+/// four-point stencil per node. Splitting them into two calls would double the lock traffic
+/// and buy nothing: every caller that wants the fall line on a flank wants the flank's own
+/// datum too, and `detail::Detail::gully_offset_m` is that caller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Steer {
+    /// `d(structural_m)/dx` at the query point, in `frame`'s east direction, in m/m.
+    pub grad_x: f64,
+    /// `d(structural_m)/dy`, in `frame`'s north direction, in m/m.
+    pub grad_y: f64,
+    /// **The local elevation reference: the containing cell's own mean `structural_m`, in
+    /// metres.**
+    ///
+    /// `shaped - reference_m` is height above the ground's own local datum rather than
+    /// above sea level, and that difference is the whole of what this field exists for. A
+    /// term keyed to `shaped` alone fires on the flanks that happen to cross one world
+    /// contour and on no others -- measured, and it is why this field exists: see
+    /// `.superpowers/sdd/notes/gully-merging.md` section 5 and
+    /// `detail::GullyParams::harmonic_band_m`.
+    pub reference_m: f64,
+}
+
+impl Steer {
+    /// A reading spelled out, for tests and probes that hand a kernel a chosen steer rather
+    /// than one taken from a lattice.
+    pub fn new(grad_x: f64, grad_y: f64, reference_m: f64) -> Self {
+        Self { grad_x, grad_y, reference_m }
     }
 }
 
@@ -227,6 +330,18 @@ impl SteerLattice {
 /// about 9.223e18, and a saturating `as i64` followed by `+ 1` is the abort that constant
 /// exists to refuse.
 const LATTICE_LIMIT: f64 = 9.0e18;
+
+/// **How wide the local elevation reference's stencil is, in lattice cells.** Measured, not
+/// chosen: see `src/bin/gully_merging_survey.rs`'s reference-span sweep and
+/// `.superpowers/sdd/notes/gully-local-reference.md`.
+///
+/// The gradient's stencil is the lattice pitch itself, because `gradient-probe.md` measured
+/// the gradient's direction invariant to the step. The reference's is NOT the same question:
+/// a four-point mean at the pitch is a curvature detector whose whole dynamic range on this
+/// generator's flanks is about **0.2 m**, which is three orders below anything a band can be
+/// aimed at. A wider stencil answers a different and useful question -- how high is this
+/// point above the ground around it -- and its range grows with the span.
+pub const REFERENCE_SPAN_CELLS: f64 = 1.0;
 
 #[cfg(test)]
 mod tests {
@@ -259,8 +374,8 @@ mod tests {
                 let lon = lon_step as f64 * 22.5; // cast-ok: as above
                 let point = SpherePoint::from_latlon(lat, lon);
                 let frame = TangentFrame::at(&point, EARTH_RADIUS_M);
-                let (gx, gy) = lattice.at(&point, &frame, &field);
-                let error = m::hypot(gx - 0.0, gy - 0.005);
+                let reading = lattice.at(&point, &frame, &field);
+                let error = m::hypot(reading.grad_x - 0.0, reading.grad_y - 0.005);
                 if error > worst {
                     worst = error;
                 }
@@ -310,12 +425,152 @@ mod tests {
                 let point = SpherePoint::from_latlon(lat, lon);
                 let frame = TangentFrame::at(&point, EARTH_RADIUS_M);
                 let cold = SteerLattice::new(EARTH_RADIUS_M, 2_000.0);
-                let (cx, cy) = cold.at(&point, &frame, &field);
-                let (wx, wy) = warm.at(&point, &frame, &field);
-                assert_eq!(cx.to_bits(), wx.to_bits(), "cached x at {lat},{lon}");
-                assert_eq!(cy.to_bits(), wy.to_bits(), "cached y at {lat},{lon}");
+                let cold_reading = cold.at(&point, &frame, &field);
+                let warm_reading = warm.at(&point, &frame, &field);
+                assert_eq!(
+                    cold_reading.grad_x.to_bits(),
+                    warm_reading.grad_x.to_bits(),
+                    "cached x at {lat},{lon}"
+                );
+                assert_eq!(
+                    cold_reading.grad_y.to_bits(),
+                    warm_reading.grad_y.to_bits(),
+                    "cached y at {lat},{lon}"
+                );
+                assert_eq!(
+                    cold_reading.reference_m.to_bits(),
+                    warm_reading.reference_m.to_bits(),
+                    "cached reference at {lat},{lon}"
+                );
             }
         }
+    }
+
+    /// **The reference is the CELL's ground, not the point's.** A field with curvature is the
+    /// only field that can tell the two apart: for `f = c * n^2` in northing, the mean of the
+    /// four central-difference samples exceeds the node's own height by exactly
+    /// `c * h^2 / 2`, and that offset is the entire reason this field is a reference rather
+    /// than a copy of `structural_m`.
+    ///
+    /// A LINEAR field is the control in the same test: it has no curvature, so its cell mean
+    /// and its point value must agree, and a reference that had drifted off the ground it is
+    /// supposed to describe would fail there instead.
+    ///
+    /// The measured bounds below carry the trilinear interpolation error of a quadratic,
+    /// which is why the window is a window and not a point -- see the assertion's own text.
+    #[test]
+    fn the_reference_is_the_cells_own_mean_rather_than_the_point_it_is_asked_at() {
+        let spacing = 2_000.0;
+        let lattice = SteerLattice::new(EARTH_RADIUS_M, spacing);
+        // `c` is chosen so the closed-form offset `c * h^2 / 2` is a round 100 m, which is
+        // the scale of a real flank's curvature over 2 km rather than an arbitrary number.
+        let c = 100.0 * 2.0 / (spacing * spacing);
+        let curved = move |p: &SpherePoint| {
+            let (lat, _) = p.to_latlon();
+            let n = m::to_radians(lat) * EARTH_RADIUS_M;
+            c * n * n
+        };
+        let mut worst_low = f64::INFINITY;
+        let mut worst_high = f64::NEG_INFINITY;
+        let mut total = 0.0;
+        let mut count = 0.0;
+        for lat_step in -6..=6 {
+            for lon_step in -6..=6 {
+                let lat = lat_step as f64 * 7.0; // cast-ok: a small loop counter to a float for a probe coordinate
+                let lon = lon_step as f64 * 29.0; // cast-ok: as above
+                let point = SpherePoint::from_latlon(lat, lon);
+                let frame = TangentFrame::at(&point, EARTH_RADIUS_M);
+                let residual = lattice.at(&point, &frame, &curved).reference_m - curved(&point);
+                if residual < worst_low {
+                    worst_low = residual;
+                }
+                if residual > worst_high {
+                    worst_high = residual;
+                }
+                total += residual;
+                count += 1.0;
+            }
+        }
+        let mean = total / count;
+        // **The MEAN is the load-bearing statistic and the spread is not.** Trilinear
+        // interpolation of a quadratic carries an error of either sign that is a large
+        // fraction of the offset at any single point -- measured, the 169 sites span
+        // 22.5 m to 137.7 m -- but it very nearly cancels over them: the measured mean is
+        // **101.8 m against the closed form's 100.0 m**. A reference that returned the
+        // node's own height instead of the four-sample mean carries the same interpolation
+        // error and NONE of the offset, so its mean is that 1.8 m rather than this 101.8 m,
+        // and this bound is three quarters of the way between them.
+        assert!(
+            (mean - 100.0).abs() < 5.0,
+            "the cell mean must sit c*h^2/2 = 100 m above a quadratic's own value; the mean              residual over these {count} sites is {mean} m (spread {worst_low} ..              {worst_high})"
+        );
+
+        // CONTROL: no curvature, no offset. The lattice's own interpolation error on a field
+        // that is linear in latitude rather than in the cubic lattice's coordinates is what
+        // sets this bound, and it is three orders below the offset above.
+        //
+        // **A SECOND LATTICE, and the first draft of this test did not build one.** The cache
+        // is keyed on the node's coordinates alone -- the field is an argument, not part of
+        // the key -- so a lattice asked about two different fields answers the second with
+        // the first's cached nodes. That is sound for the one lattice per `Surface` the
+        // generator actually builds, and it is a trap for any probe that reuses one. Reusing
+        // `lattice` here reported a 9.8e8 m residual on a field whose whole range is 2.3e4 m.
+        let control = SteerLattice::new(EARTH_RADIUS_M, spacing);
+        let flat = linear_north(0.005);
+        let mut worst: f64 = 0.0;
+        for lat_step in -6..=6 {
+            for lon_step in -6..=6 {
+                let lat = lat_step as f64 * 7.0; // cast-ok: a small loop counter to a float for a probe coordinate
+                let lon = lon_step as f64 * 29.0; // cast-ok: as above
+                let point = SpherePoint::from_latlon(lat, lon);
+                let frame = TangentFrame::at(&point, EARTH_RADIUS_M);
+                let residual =
+                    (control.at(&point, &frame, &flat).reference_m - flat(&point)).abs();
+                if residual > worst {
+                    worst = residual;
+                }
+            }
+        }
+        assert!(
+            worst < 0.5,
+            "CONTROL: a field with no curvature must have no offset between its cell mean              and its own value; worst {worst} m"
+        );
+    }
+
+    /// The reference reaches a HEIGHT, so a step in it is a step in the ground -- the same
+    /// crease the gradient's own continuity test refuses, and the reason the reference is a
+    /// trilinear blend rather than the unweighted eight-corner mean the words "cell mean"
+    /// would otherwise suggest.
+    ///
+    /// **Proved red by mutation**: replacing the trilinear blend with the mean of the eight
+    /// corner references (`reference += entry.reference * 0.125`) makes this jump by metres
+    /// at every cell face.
+    #[test]
+    fn the_reference_is_continuous_across_a_lattice_cell_boundary() {
+        let lattice = SteerLattice::new(EARTH_RADIUS_M, 2_000.0);
+        let field = linear_north(0.004);
+        let origin = SpherePoint::from_latlon(31.0, 17.0);
+        let walk = TangentFrame::at(&origin, EARTH_RADIUS_M);
+        let mut previous: Option<f64> = None;
+        let mut worst: f64 = 0.0;
+        for step in 0..2_000 {
+            let point = walk.local_to_sphere(step as f64 * 10.0, 0.0); // cast-ok: a loop counter to a float for a distance in metres
+            let frame = TangentFrame::at(&point, EARTH_RADIUS_M);
+            let here = lattice.at(&point, &frame, &field).reference_m;
+            if let Some(before) = previous {
+                let jump = (here - before).abs();
+                if jump > worst {
+                    worst = jump;
+                }
+            }
+            previous = Some(here);
+        }
+        // A 10 m step on a 0.004 m/m slope moves the ground 0.04 m, so anything approaching
+        // that is a discontinuity and not the field.
+        assert!(
+            worst < 0.05,
+            "a 10 m step must never move the local reference by more than the ground moves;              worst jump {worst} m"
+        );
     }
 
     #[test]
@@ -334,7 +589,8 @@ mod tests {
         for step in 0..2_000 {
             let point = walk.local_to_sphere(step as f64 * 10.0, 0.0); // cast-ok: a loop counter to a float for a distance in metres
             let frame = TangentFrame::at(&point, EARTH_RADIUS_M);
-            let here = lattice.at(&point, &frame, &field);
+            let reading = lattice.at(&point, &frame, &field);
+            let here = (reading.grad_x, reading.grad_y);
             if let Some((px, py)) = previous {
                 let jump = m::hypot(here.0 - px, here.1 - py);
                 if jump > worst {

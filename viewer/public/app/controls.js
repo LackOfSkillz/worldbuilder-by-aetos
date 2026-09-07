@@ -56,6 +56,7 @@ import {
 } from "./coast-params.js";
 import {
   GULLY_SLIDERS, MEASURED_CREST, MEASURED_RELIEF, MEASURED_SLOPE, CARVE_BAND,
+  AMPLITUDE_BAND, MEASURED_AMPLITUDE_SWEEP,
   gullyReadoutFields, gullyTravel, gullyPanelFields, gullyToParams, gullyFromParams,
 } from "./gully-params.js";
 import { debounceLatest, nextQueryString, RELOAD_ONLY, SWAP_DEBOUNCE_MS } from "./live-swap.js";
@@ -786,6 +787,9 @@ function build() {
     // looking at a hillside; what the measured sweep actually moves is whether the term carves
     // valleys or blankets the whole flank.
     crestSharpness: "carve vs blanket",
+    // Labelled for its effect too, and for the fact that its bottom position is the off switch.
+    // The measured band is on the readout beside it.
+    amplitudeM: "channel depth",
   };
   const gullyRows = {};
   for (const field of GULLY_SLIDERS) {
@@ -817,8 +821,8 @@ function build() {
   drainageButton.type = "button";
   drainageButton.disabled = true;
   drainageButton.title =
-    "GullyParams::drainage(), read from the engine — all ten of its numbers, on the slider and in "
-    + "the readout above";
+    "GullyParams::drainage(), read from the engine — all twelve of its numbers, on the two sliders "
+    + "and in the readout above";
   const gullyReset = el("button", "wb-mini", "canonical");
   gullyReset.type = "button";
   gullyReset.disabled = true;
@@ -855,9 +859,14 @@ function build() {
       return;
     }
     const travel = gullyTravel(presets.canonical);
-    if (!travel.crestSharpness.holdsCanonical) {
+    // **Asked of EVERY slider, not of the one that had it first.** The second gully slider
+    // arrived a slice after this check did, and a check named after one field is a check the next
+    // field silently escapes -- which is the silently-dropping-builder shape wearing a panel's
+    // clothes.
+    const notHeld = GULLY_SLIDERS.filter((field) => !travel[field].holdsCanonical);
+    if (notHeld.length > 0) {
       gullyNote.textContent =
-        "slider travel refused: the engine's canonical crest exponent is not on this lattice";
+        `slider travel refused: the engine's canonical ${notHeld.join(", ")} is not on this lattice`;
       return;
     }
     gullyState = { ...presets.canonical, ...(presets.chosen ?? {}) };
@@ -894,11 +903,15 @@ function build() {
           + `on 400 flank points is ${measured.mean.toFixed(2)} m `
           + `(p05 ${measured.p05.toFixed(1)}, p95 ${measured.p95.toFixed(1)}); a symmetric kernel `
           + `would read ${MEASURED_CREST[MEASURED_CREST.length - 1].mean.toFixed(2)} m. `
-          + `At ${MEASURED_RELIEF.amplitudeM} m of amplitude the gated flanks measure `
-          + `${MEASURED_RELIEF.onP50} m of local relief over a 2 km run against `
-          + `${MEASURED_RELIEF.offP50} m with the term off — inside Hammond's `
-          + `${MEASURED_RELIEF.hammondHills.low}-${MEASURED_RELIEF.hammondHills.high} m hills `
-          + `band, and nowhere near the ${MEASURED_RELIEF.hammondMountainFloor} m mountain floor. `
+          + `The depth slider is at ${gullyState.amplitudeM} m, which the measured sweep puts at `
+          + `about ${(gullyState.amplitudeM * MEASURED_AMPLITUDE_SWEEP.sites[0].reliefPerMetre)
+            .toFixed(0)} m of local relief over a 2 km run `
+          + `(${MEASURED_AMPLITUDE_SWEEP.sites[0].reliefPerMetre} m per metre of amplitude, `
+          + `linear above ${MEASURED_AMPLITUDE_SWEEP.linearAboveM} m). Hammond's `
+          + `${MEASURED_RELIEF.hammondHills.low}-${MEASURED_RELIEF.hammondHills.high} m hills band `
+          + `is ${AMPLITUDE_BAND.hammondHillsLow}-${AMPLITUDE_BAND.hammondHillsHigh} m of depth `
+          + `and his ${MEASURED_RELIEF.hammondMountainFloor} m mountain floor is `
+          + `${AMPLITUDE_BAND.hammondMountainFloor} m, past the end of this travel. `
           + `This is texture on a generator whose mountains are tectonic; it is not a claim to `
           + `have made mountains. The steering bites at a slope of ${gullyState.slopeReference} `
           + `m/m (${MEASURED_SLOPE.degrees}°), measured on this generator — the published `

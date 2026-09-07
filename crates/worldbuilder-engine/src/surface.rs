@@ -411,16 +411,24 @@ impl Surface {
         // structure with features composed, before any texture -- and steered off
         // `structural_m`, which is defined before detail exists. Neither reads the value
         // this line is computing, so nothing here steers on itself.
+        //
+        // The reading carries a LOCAL ELEVATION REFERENCE as well as the fall line -- the
+        // steer cell's own mean `structural_m`, which is the mean of the four samples the
+        // gradient already differences and so costs no extra `structural_m` call. It is the
+        // datum the gully kernel's pitchfork is measured against; see
+        // `detail::GullyParams::harmonic_band_m`. It is a mean of `structural_m` for the same
+        // reason the gradient is: it is defined before detail exists, so nothing here reads
+        // the value this line is computing.
         match &self.steer {
             None => roughened,
             Some(steer) => {
                 let frame = TangentFrame::at(point, self.radius_m);
-                let gradient = steer.at(point, &frame, &|probe| self.structural_m(probe));
+                let reading = steer.at(point, &frame, &|probe| self.structural_m(probe));
                 roughened
                     + (1.0 - authority)
                         * self
                             .detail
-                            .gully_offset_m(point, &frame, gradient, shaped, resolution_m)
+                            .gully_offset_m(point, &frame, reading, shaped, resolution_m)
             }
         }
     }

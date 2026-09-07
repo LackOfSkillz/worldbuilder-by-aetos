@@ -74,12 +74,18 @@ The last four rows are slice 5b Task 5's, and each closes a hole rather than add
 
 **The gully control's five counts are measurements too.** 1,235 of 5,000 scattered
 elevations, 0 of 5,000 scattered structurals, 993 of 2,000 in the flank box, 0 of 2,000 flank
-structurals, and **975** of 4,225 tile cells -- `--expect-divergent 3203`. **The tile count was
-962 and the total 3,190 until the merging slice**, and the four extra corpus values are NOT the
-difference: a preset cannot move under a steering mutation and `--mutate gully-steer` never
-touches the two new words. The second harmonic reshapes the drainage world's own ground, so the
-set of tile cells at which a moved `steer_lattice_m` changes the height is a different set of the
-same size. The other four counts are unmoved, and so are all five other controls. The 24.7% on a uniform
+structurals, and **1,524** of 4,225 tile cells -- `--expect-divergent 3752`. **The tile count has
+been 962, then 975, then 1,524**, and the two moves have different causes worth keeping apart.
+The merging slice's 962 -> 975 was the second harmonic reshaping the drainage world's own ground,
+so a moved `steer_lattice_m` changed a different set of cells of the same size. The
+local-reference slice's 975 -> 1,524 is a change in what the mutated word DOES: `steer_lattice_m`
+now feeds the local elevation reference as well as the fall line -- the reference is the mean of
+the four samples the gradient differences -- so bumping it by a ULP moves strictly more ground.
+The two scalar counts did not move at all, and that is the same fact seen from the other side:
+both are sampled at 250 m, where the term is faded almost out, and the tile is the only group
+asked at a resolution fine enough for the reference to bite. In neither slice were the extra
+preset words the difference: a preset cannot move under a steering mutation and
+`--mutate gully-steer` never touches words 10 and 11. The other four counts are unmoved, and so are all five other controls. The 24.7% on a uniform
 global scatter is the right shape: the gate is `smooth((structural - 200) / 900)` and 29.15% of
 this world is land whose median is 441 m, so about a quarter of a scatter is gated ground and
 the rest is sea and shore where the kernel does not run. **The first cut of the flank box was
