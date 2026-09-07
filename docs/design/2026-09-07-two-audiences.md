@@ -9,6 +9,31 @@ The owner, after a session of building intricate controls:
 **This is a product decision and it is correct.** It also costs almost nothing, because it is mostly a
 question of what to *show*, not what to build.
 
+## REFINED BY THE OWNER: easy and advanced, both user-facing
+
+The first version of this document put the intricate controls behind a **developer** toggle -- ours, not
+theirs. **The owner corrected it:**
+
+> "I think we should have a easy mode and advanced. that way a user that wants all the levers can experiment
+> with them, but a user that wants to just create a world fast and use mostly defaults with the basic
+> sliders can"
+
+**This is better, and the difference is not cosmetic.**
+
+- **Nobody is locked out.** A curious author gets the same instrument we have, rather than hitting a wall
+  where the tool stops explaining itself.
+- **Advanced becomes a documented feature rather than a debug backdoor**, which changes what it owes:
+  labels an outsider can read, grouping that means something, and travel on every slider that a stranger can
+  aim. **A dev panel may be cryptic; a shipped advanced mode may not.**
+- **Easy mode is the default**, so the fast path is the one somebody falls into.
+
+**The cost is real and worth stating**: a *hidden* dev panel needs no polish, and a *shipped* advanced panel
+does. Every control in it becomes a promise. That is a larger job than hiding one -- but it is the right
+one, because the alternative is a tool that quietly implies its users cannot be trusted with it.
+
+**What does not change:** the engine keeps every parameter either way, and the measured defaults matter
+more, not less. **An author in easy mode is trusting the hundred sliders they chose not to open.**
+
 ## The two audiences
 
 **The developer** -- us, now -- needs every knob, because finding a good baseline is exactly what this
