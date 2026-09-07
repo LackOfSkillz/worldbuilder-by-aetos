@@ -88,6 +88,8 @@ class Room:
     area: str = ""
     area_key: str = ""
     desc: str = ""
+    #: An authored lattice cell, when the game carries one. Read, never re-derived.
+    cell: tuple = None
 
 
 @dataclass
@@ -160,6 +162,13 @@ def read(path, area_keys=AREA_KEY_PRIORITY):
         for object_id, text in _attribute(connection, "desc").items():
             if object_id in rooms and isinstance(text, str):
                 rooms[object_id].desc = text
+        # **An authored lattice beats an inferred one.** Graph inference exists for games
+        # that have no coordinates, not as a preference: a map somebody drew is right by
+        # construction, and walking its exits can only reproduce it or disagree with it.
+        for object_id, cell in _attribute(connection, "wb_cell").items():
+            if object_id in rooms and isinstance(cell, (list, tuple)) and len(cell) >= 2:
+                rooms[object_id].cell = (int(cell[0]), int(cell[1]),
+                                         int(cell[2]) if len(cell) > 2 else 0)
 
         tags = {key: _attribute(connection, key) for key in area_keys}
         for object_id, room in rooms.items():

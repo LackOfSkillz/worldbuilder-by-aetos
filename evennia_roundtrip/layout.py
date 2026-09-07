@@ -39,6 +39,8 @@ class Layout:
     conflicts: list = field(default_factory=list)
     #: Rooms in the area no exit reaches from the root.
     unreached: set = field(default_factory=set)
+    #: True when the coordinates were read from the game rather than walked out of it.
+    authored: bool = False
     #: How many disconnected pieces the area's exit graph turned out to be.
     #:
     #: An area with no boundary exits still need not be one map. `spawn_smoke` has 179
@@ -102,6 +104,17 @@ def build(area, root=None):
     start = _root_of(area) if root is None else root
     layout = Layout(root=start)
     if not area.rooms:
+        return layout
+
+    # **Authored coordinates, when the whole area has them.** Partial coverage is refused
+    # rather than mixed: the game this pipeline was written against carries `map_x`/`map_y`
+    # on 1,169 of 1,616 rooms across several disagreeing systems, and splicing an inferred
+    # lattice onto an authored one produces a map that is neither.
+    authored = {rid: room.cell for rid, room in area.rooms.items() if room.cell}
+    if len(authored) == len(area.rooms) and authored:
+        layout.cells.update(authored)
+        layout.authored = True
+        layout.components = 1
         return layout
 
     # Each pass walks one connected piece. A second piece starts to the right of every
