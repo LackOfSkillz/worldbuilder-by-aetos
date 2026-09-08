@@ -226,6 +226,29 @@ export function splitColumns(document) {
   };
   move();
   new MutationObserver(move).observe(right, { childList: true, subtree: true });
+
+  // The layer stack lives at the bottom of the left column, under the world it describes.
+  // Read lazily from whatever worldfile the viewer last opened, so it repaints when a new
+  // one is loaded rather than needing to be told.
+  import("./layers.js").then((mod) => {
+    const features = () => {
+      const wb = window.__wb || {};
+      const doc = wb.lastWorldfile || wb.document || null;
+      return (doc && doc.features) || [];
+    };
+    const panel = mod.buildLayers(left, features, (order, hidden) => {
+      // Reordering and hiding are real operations on the world, not view state - but
+      // applying them means rebuilding the terrain, so the intent is published and the
+      // swap is left to whoever owns the engine. Nothing here silently re-authors a world.
+      window.__wb = window.__wb || {};
+      window.__wb.layerOrder = order;
+      window.__wb.layersHidden = hidden;
+      window.dispatchEvent(new CustomEvent("wb-layers", { detail: { order, hidden } }));
+    });
+    window.__wb = window.__wb || {};
+    window.__wb.refreshLayers = panel.refresh;
+  }).catch(() => {});
+
   return { left, move };
 }
 
