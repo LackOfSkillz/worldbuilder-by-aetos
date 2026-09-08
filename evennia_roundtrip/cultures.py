@@ -17,11 +17,17 @@ placed says so by leaving its quota unfilled rather than by quietly becoming som
 else. That is what happened to "castle" when its test asked for a steepness this planet
 does not have, and the symptom read as a preference rather than as an impossible gate.
 
-**Hunting grounds are placed by distance, because that is what level means.** A ground for
-new characters belongs within reach of where they start; one for veterans belongs where
-getting there is itself the journey. So the band is assigned from how far the site is from
-the world's origin rather than declared, and a world with one continent cannot accidentally
-put its hardest ground next to its capital.
+**Level is a radius from where characters start, and the world is built that way round.**
+Ground for new characters sits within reach of the starting city; each band outward is a
+longer journey than the last, so a character's reach grows with them and the map rewards
+going further. The bands are concentric rings, not a ranking - a site does not get a level
+because it happened to be the furthest thing found, it gets one because of which ring it
+falls in, and every ring is sought out rather than hoped for.
+
+That distinction is the whole of it. Dividing by the furthest ground that turned up gave a
+site thirty-three kilometres out the same band as the starting city and one nineteen
+thousand kilometres away the top band, with nothing in between - a scale set by an
+accident of sampling rather than by a design.
 """
 
 import math
@@ -30,6 +36,47 @@ import math
 FRIENDLY = "friendly"
 NEUTRAL = "neutral"
 HOSTILE = "hostile"
+
+
+#: The rings, outward from where characters start: `(low, high, outer edge)`.
+#:
+#: The edge is a FRACTION of the furthest any two points on the planet can be - half the
+#: circumference - so the same rings describe a moon and a gas giant without anybody
+#: retyping kilometres. Geometric rather than even: each ring is a longer journey than the
+#: last, which is what makes going further feel like progress rather than like more walking.
+LEVEL_RINGS = (
+    (1, 5, 0.02),
+    (6, 10, 0.05),
+    (11, 20, 0.12),
+    (21, 40, 0.25),
+    (41, 60, 0.50),
+    (61, 100, 1.00),
+)
+
+
+def ring_at(distance_m, radius_m, rings=LEVEL_RINGS):
+    """
+    Which level band a place this far from the origin belongs to.
+
+    Args:
+        distance_m (float): Great-circle distance from where characters start.
+        radius_m (float): The planet's radius.
+        rings (tuple, optional): The bands.
+
+    Returns:
+        band (tuple): `(low, high)`.
+    """
+    antipode = math.pi * radius_m
+    for low, high, edge in rings:
+        if distance_m <= edge * antipode:
+            return (low, high)
+    return (rings[-1][0], rings[-1][1])
+
+
+def ring_radii(radius_m, rings=LEVEL_RINGS):
+    """The outer edge of each band in metres, for placing rather than labelling."""
+    antipode = math.pi * radius_m
+    return [(low, high, edge * antipode) for low, high, edge in rings]
 
 
 class Culture:
@@ -110,8 +157,7 @@ def _haversine(lat1, lon1, lat2, lon2, radius_m):
     return 2 * math.asin(math.sqrt(h)) * radius_m
 
 
-def describe(sites, table, radius_m, origin=None, bands=((1, 10), (10, 25), (25, 50),
-                                                         (50, 80), (80, 100))):
+def describe(sites, table, radius_m, origin=None, bands=LEVEL_RINGS):
     """
     Attach culture, faction and level band to sited places.
 
@@ -129,14 +175,6 @@ def describe(sites, table, radius_m, origin=None, bands=((1, 10), (10, 25), (25,
     by_name = {culture.name: culture for culture in table}
     if origin is None and sites:
         origin = sites[0]
-    hunting = [s for s in sites if by_name.get(s.get("kind")) is not None
-               and by_name[s["kind"]].purpose == "hunting"]
-    reach = 1.0
-    if hunting and origin:
-        reach = max(_haversine(origin["latitude_deg"], origin["longitude_deg"],
-                               s["latitude_deg"], s["longitude_deg"], radius_m)
-                    for s in hunting) or 1.0
-
     placed = []
     for site in sites:
         culture = by_name.get(site.get("kind"))
@@ -146,12 +184,7 @@ def describe(sites, table, radius_m, origin=None, bands=((1, 10), (10, 25), (25,
             if culture.purpose == "hunting" and origin:
                 gap = _haversine(origin["latitude_deg"], origin["longitude_deg"],
                                  site["latitude_deg"], site["longitude_deg"], radius_m)
-                # **The band comes from the distance, not from the table.** A ground for
-                # new characters within reach of where they start, a veterans' ground where
-                # getting there is the journey - so a world cannot put its hardest ground
-                # next to its capital by accident.
-                index = min(len(bands) - 1, int(len(bands) * gap / (reach * 1.001)))
-                record["level_band"] = list(bands[index])
+                record["level_band"] = list(ring_at(gap, radius_m, bands))
                 record["km_from_origin"] = round(gap / 1000)
         placed.append(record)
     return placed

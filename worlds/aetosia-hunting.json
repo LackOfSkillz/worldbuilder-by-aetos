@@ -1,0 +1,393 @@
+[
+ {
+  "latitude_deg": 8.873163,
+  "longitude_deg": -4.887681,
+  "elevation_m": 19.57,
+  "slope_m": 0.54,
+  "prominence_m": -4.65,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.8
+   ],
+   [
+    "stands clear of the water",
+    9.7
+   ]
+  ],
+  "score": 34.5,
+  "kinds": [
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   1,
+   5
+  ]
+ },
+ {
+  "latitude_deg": 8.673986,
+  "longitude_deg": -1.60378,
+  "elevation_m": 36.39,
+  "slope_m": 0.7,
+  "prominence_m": 4.63,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    9.4
+   ]
+  ],
+  "score": 34.1,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   1,
+   5
+  ]
+ },
+ {
+  "latitude_deg": 8.360105,
+  "longitude_deg": -9.495909,
+  "elevation_m": 9.37,
+  "slope_m": 1.68,
+  "prominence_m": -5.66,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.3
+   ],
+   [
+    "stands clear of the water",
+    9.2
+   ]
+  ],
+  "score": 33.5,
+  "kinds": [
+   "halfling farm hamlet",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   6,
+   10
+  ]
+ },
+ {
+  "latitude_deg": 10.823179,
+  "longitude_deg": 3.801832,
+  "elevation_m": 53.37,
+  "slope_m": 1.3,
+  "prominence_m": 0.74,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.5
+   ],
+   [
+    "stands clear of the water",
+    8.6
+   ]
+  ],
+  "score": 33.0,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   6,
+   10
+  ]
+ },
+ {
+  "latitude_deg": 12.043476,
+  "longitude_deg": -18.234709,
+  "elevation_m": 65.95,
+  "slope_m": 1.86,
+  "prominence_m": 3.47,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.2
+   ],
+   [
+    "stands clear of the water",
+    8.0
+   ]
+  ],
+  "score": 32.2,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "gnome workshop village",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   11,
+   20
+  ]
+ },
+ {
+  "latitude_deg": -4.545043,
+  "longitude_deg": -2.000596,
+  "elevation_m": 95.6,
+  "slope_m": 0.96,
+  "prominence_m": -3.06,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.6
+   ],
+   [
+    "stands clear of the water",
+    6.5
+   ]
+  ],
+  "score": 31.1,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "gnome workshop village",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   11,
+   20
+  ]
+ },
+ {
+  "latitude_deg": -18.922791,
+  "longitude_deg": 4.326269,
+  "elevation_m": 1.28,
+  "slope_m": 0.63,
+  "prominence_m": -4.57,
+  "harbour_m": null,
+  "landing_m": 600.0,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    2.5
+   ],
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    8.8
+   ]
+  ],
+  "score": 36.0,
+  "kinds": [
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "shore hunting ground"
+  ],
+  "kind": "shore hunting ground",
+  "level_band": [
+   21,
+   40
+  ]
+ },
+ {
+  "latitude_deg": 19.088203,
+  "longitude_deg": 23.920429,
+  "elevation_m": 1.14,
+  "slope_m": 1.1,
+  "prominence_m": -6.09,
+  "harbour_m": null,
+  "landing_m": 600.0,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    2.5
+   ],
+   [
+    "ground a street can run on",
+    24.5
+   ],
+   [
+    "stands clear of the water",
+    8.8
+   ]
+  ],
+  "score": 35.8,
+  "kinds": [
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "shore hunting ground"
+  ],
+  "kind": "shore hunting ground",
+  "level_band": [
+   21,
+   40
+  ]
+ },
+ {
+  "latitude_deg": -48.687815,
+  "longitude_deg": -9.511948,
+  "elevation_m": 29.96,
+  "slope_m": 0.74,
+  "prominence_m": -2.84,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    9.8
+   ]
+  ],
+  "score": 34.4,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   41,
+   60
+  ]
+ },
+ {
+  "latitude_deg": -48.963734,
+  "longitude_deg": -3.127967,
+  "elevation_m": 74.85,
+  "slope_m": 0.68,
+  "prominence_m": 1.23,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    7.5
+   ]
+  ],
+  "score": 32.2,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "gnome workshop village",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   41,
+   60
+  ]
+ },
+ {
+  "latitude_deg": 51.531996,
+  "longitude_deg": -153.174272,
+  "elevation_m": 22.08,
+  "slope_m": 1.16,
+  "prominence_m": 3.3,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.5
+   ],
+   [
+    "stands clear of the water",
+    9.9
+   ]
+  ],
+  "score": 34.4,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   61,
+   100
+  ]
+ },
+ {
+  "latitude_deg": -3.51102,
+  "longitude_deg": -117.643208,
+  "elevation_m": 81.22,
+  "slope_m": 0.72,
+  "prominence_m": -0.62,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    7.2
+   ]
+  ],
+  "score": 31.9,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "gnome workshop village",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "level_band": [
+   61,
+   100
+  ]
+ }
+]

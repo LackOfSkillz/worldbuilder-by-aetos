@@ -325,6 +325,56 @@ def local_sites(at, radius_m, near, within_m, rivers=(), rings=6, rays=12,
     return found
 
 
+def sites_at_range(at, radius_m, origin, distance_m, bearings=72, spread=0.15,
+                   rivers=(), classify=None):
+    """
+    Candidates lying about `distance_m` from a point, all the way round.
+
+    Args:
+        at (callable): The elevation oracle.
+        radius_m (float): The planet's radius.
+        origin (tuple): `(lat, lon)` the ring is measured from.
+        distance_m (float): How far out the ring lies.
+        bearings (int, optional): How many directions are tried.
+        spread (float, optional): How much nearer and further to also look, as a fraction
+            of the distance, so a ring that lands entirely in the sea still finds ground.
+        rivers (iterable, optional): Authored river points.
+        classify (callable, optional): Culture matcher.
+
+    Returns:
+        sites (list): Scored candidates on that ring, best first.
+
+    Notes:
+        **A ring is walked on the sphere, not on the tangent plane.** At a third of the way
+        round a planet the flat-earth offset used elsewhere in this module is nonsense - it
+        is fine for a settlement's own streets and wrong for a journey - so this steps along
+        a great circle from the origin on each bearing, which is exact at every distance.
+    """
+    lat0, lon0 = math.radians(origin[0]), math.radians(origin[1])
+    found = []
+    for near in (1.0 - spread, 1.0, 1.0 + spread):
+        angular = (distance_m * near) / radius_m
+        for index in range(bearings):
+            bearing = 2.0 * math.pi * index / bearings
+            lat = math.asin(math.sin(lat0) * math.cos(angular)
+                            + math.cos(lat0) * math.sin(angular) * math.cos(bearing))
+            lon = lon0 + math.atan2(
+                math.sin(bearing) * math.sin(angular) * math.cos(lat0),
+                math.cos(angular) - math.sin(lat0) * math.sin(lat))
+            latitude, longitude = math.degrees(lat), math.degrees(lon)
+            height = at(latitude, longitude)
+            if height < LOW_M or height > HIGH_M + CASTLE_M:
+                continue
+            site = score_point(at, latitude, longitude, radius_m, rivers=rivers,
+                               classify=classify,
+                               look_for_water=_sea_nearby(at, latitude, longitude,
+                                                          radius_m, COAST_GATE_M))
+            if site is not None and site["kind"] is not None:
+                found.append(site)
+    found.sort(key=lambda s: -s["score"])
+    return found
+
+
 def survey(at, radius_m, count=12, samples=20000, rivers=(),
            separation_m=SEPARATION_M, land_link_m=LAND_LINK_M,
            coast_reach_m=COAST_GATE_M, quotas=None, classify=None):
