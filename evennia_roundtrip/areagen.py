@@ -55,7 +55,30 @@ def _neighbours(cell):
         yield name, (cell[0] + dx, cell[1] + dy)
 
 
-def lattice(size, rng, loop_target=0.14):
+#: How a settlement grew, which decides its shape.
+#:
+#: **A planned city and a village are not the same graph.** The Landing is engineered - a
+#: grid of streets laid out by somebody, compact, cardinal, richly looped. A village
+#: happened: it straggles along a track, wanders round a green, has a lane that goes
+#: nowhere and a barn on the end of it. Growing both the same way produced a world of
+#: identical blobs, which is the tell that a map was generated rather than settled.
+#:
+#: `reach` is how far back along the frontier the walk will pick. Small means it extends
+#: whatever it just built, which snakes; large means it picks anywhere, which fills.
+STYLES = {
+    "planned":  {"reach": 1.00, "diagonals": 0.00, "loops": (0.16, 0.24)},
+    "town":     {"reach": 0.55, "diagonals": 0.10, "loops": (0.12, 0.20)},
+    "organic":  {"reach": 0.22, "diagonals": 0.25, "loops": (0.07, 0.14)},
+    "straggle": {"reach": 0.12, "diagonals": 0.35, "loops": (0.05, 0.11)},
+}
+
+#: Which style each archetype grew in.
+TYPE_STYLE = {"city": "planned", "seat": "planned", "town": "town",
+              "village": "organic", "hamlet": "straggle",
+              "camp": "straggle", "hunting": "straggle"}
+
+
+def lattice(size, rng, loop_target=0.14, style="organic"):
     """
     A connected room lattice with loops, junctions and a few dead ends.
 
@@ -76,13 +99,22 @@ def lattice(size, rng, loop_target=0.14):
     cells = {(0, 0)}
     frontier = [(0, 0)]
     edges = set()
+    rules = STYLES.get(style, STYLES["organic"])
     while len(cells) < size and frontier:
-        base = frontier[rng.randrange(len(frontier))]
+        # **Where along the frontier the walk picks is the whole difference in shape.**
+        # Picking anywhere fills a compact block - a planned town. Picking near the end
+        # extends what was just built, which straggles and wanders, and is what a village
+        # that grew along a track actually looks like.
+        span = max(1, int(len(frontier) * rules["reach"]))
+        base = frontier[len(frontier) - 1 - rng.randrange(span)]
         options = [(d, c) for d, c in _neighbours(base) if c not in cells]
-        # Cardinals first: the laws cap diagonal share, and a lattice grown on diagonals
-        # reads as a diamond nobody can navigate.
+        # The laws cap diagonal share, so cardinals are preferred - but a settlement that
+        # never turns off the compass reads as graph paper, so a style may allow some.
         cardinal = [(d, c) for d, c in options if d in CARDINALS]
-        pool = cardinal or options
+        if cardinal and rng.random() >= rules["diagonals"]:
+            pool = cardinal
+        else:
+            pool = options or cardinal
         if not pool:
             frontier.remove(base)
             continue
@@ -154,13 +186,14 @@ def fits_laws(shape):
     return problems
 
 
-def build_lattice(size, rng, attempts=40):
+def build_lattice(size, rng, attempts=40, style="organic"):
     """A lattice that passes the shape laws, or the best attempt and why it failed."""
     best, best_problems = None, None
     for _ in range(attempts):
         # The loop target is nudged per attempt: too few loops fails density, too many
         # fails mean degree, and where the window sits depends on the shape that grew.
-        built = lattice(size, rng, loop_target=rng.uniform(0.10, 0.22))
+        low, high = STYLES.get(style, STYLES["organic"])["loops"]
+        built = lattice(size, rng, loop_target=rng.uniform(low, high), style=style)
         shape = shape_of(built)
         problems = fits_laws(shape)
         if not problems:
