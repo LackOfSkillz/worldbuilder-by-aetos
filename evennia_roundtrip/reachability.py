@@ -30,6 +30,9 @@ run sometimes is a law that gets skipped.
 BY_LAND = "land"
 BY_SEA = "sea"
 
+#: Joined by a boat service somebody authored - a kayak on a bank, a ferry on a timetable.
+BY_BOAT = "boat"
+
 
 def _room_owners(world):
     """Which area each room id belongs to."""
@@ -108,6 +111,22 @@ def check(world, origin=None):
     sea = sea_connections(world)
     afloat = {name for name, record in sea.items() if record["docks"]}
 
+    # **A boat service joins places exactly as a road does.** Without this the law reported
+    # two of three areas unreachable in a world you can paddle across, which is a law that
+    # will be ignored rather than obeyed - and a law nobody trusts catches nothing.
+    #
+    # Only a route whose every endpoint is a room this file actually contains counts. An
+    # incomplete route is worse than no route: it asserts a connection, satisfies the check,
+    # and leads to a room that is not there.
+    connections = world.get("connections", {})
+    boats = {}
+    for record in connections.get("routes", []):
+        if not record.get("complete", True):
+            continue
+        called_at = {end["area"] for end in record["endpoints"]}
+        for name in called_at:
+            boats.setdefault(name, set()).update(called_at - {name})
+
     if origin is None:
         origin = next((name for name in areas if name in afloat), areas[0] if areas else None)
     if origin is None:
@@ -121,6 +140,8 @@ def check(world, origin=None):
         neighbours.setdefault(here, set()).add(there)
     for name in afloat:
         neighbours.setdefault(name, set()).update(afloat - {name})
+    for name, reached in boats.items():
+        neighbours.setdefault(name, set()).update(reached)
 
     seen, frontier = {origin}, [origin]
     while frontier:
@@ -137,6 +158,8 @@ def check(world, origin=None):
             how.append(BY_LAND)
         if name in afloat:
             how.append(BY_SEA)
+        if name in boats:
+            how.append(BY_BOAT)
         record = sea.get(name, {"docks": [], "rejected": []})
         verdicts[name] = {
             "reachable": name in seen,
@@ -164,6 +187,8 @@ def report(world, origin=None):
         lines.append("  %s %-22s by %-9s in:%-2d out:%-2d docks:%d%s"
                      % (mark, name, how, len(verdict["ways_in"]),
                         len(verdict["ways_out"]), verdict["docks"], note))
+    for problem in world.get("connections", {}).get("problems", []):
+        lines.append("  !! %s" % problem)
     if found["unreachable"]:
         lines.append("UNREACHABLE: %s" % ", ".join(found["unreachable"]))
     else:

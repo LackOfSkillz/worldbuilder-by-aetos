@@ -447,6 +447,11 @@
      "destination": 1824,
      "name": "northeast",
      "source": 1847
+    },
+    {
+     "destination": 1071,
+     "name": "west",
+     "source": 1859
     }
    ],
    "layout_quality": {
@@ -1022,6 +1027,256 @@
      "latitude_deg": -4.461128,
      "longitude_deg": -2.510437,
      "submerged": true
+    }
+   ]
+  },
+  {
+   "anchor": {
+    "bearing_deg": 0.0,
+    "latitude_deg": -4.460443,
+    "longitude_deg": -2.515971,
+    "note": "anchored on the ferry slip, which is the passage first mark",
+    "spacing_m": 40.0
+   },
+   "exits": [
+    {
+     "destination": 1070,
+     "name": "west",
+     "source": 1071
+    },
+    {
+     "destination": 1069,
+     "name": "south",
+     "source": 1070
+    },
+    {
+     "destination": 1071,
+     "name": "east",
+     "source": 1070
+    },
+    {
+     "destination": 1072,
+     "name": "north",
+     "source": 1070
+    },
+    {
+     "destination": 1068,
+     "name": "south",
+     "source": 1069
+    },
+    {
+     "destination": 1070,
+     "name": "north",
+     "source": 1069
+    },
+    {
+     "destination": 1074,
+     "name": "east",
+     "source": 1069
+    },
+    {
+     "destination": 1070,
+     "name": "south",
+     "source": 1072
+    },
+    {
+     "destination": 1067,
+     "name": "south",
+     "source": 1068
+    },
+    {
+     "destination": 1069,
+     "name": "north",
+     "source": 1068
+    },
+    {
+     "destination": 1073,
+     "name": "east",
+     "source": 1068
+    },
+    {
+     "destination": 1073,
+     "name": "south",
+     "source": 1074
+    },
+    {
+     "destination": 1069,
+     "name": "west",
+     "source": 1074
+    },
+    {
+     "destination": 1068,
+     "name": "west",
+     "source": 1073
+    },
+    {
+     "destination": 1074,
+     "name": "north",
+     "source": 1073
+    },
+    {
+     "destination": 1066,
+     "name": "south",
+     "source": 1067
+    },
+    {
+     "destination": 1068,
+     "name": "north",
+     "source": 1067
+    },
+    {
+     "destination": 1065,
+     "name": "south",
+     "source": 1066
+    },
+    {
+     "destination": 1067,
+     "name": "north",
+     "source": 1066
+    },
+    {
+     "destination": 1064,
+     "name": "south",
+     "source": 1065
+    },
+    {
+     "destination": 1066,
+     "name": "north",
+     "source": 1065
+    },
+    {
+     "destination": 1065,
+     "name": "north",
+     "source": 1064
+    },
+    {
+     "destination": 1859,
+     "name": "east",
+     "source": 1071
+    }
+   ],
+   "name": "ferry_shore",
+   "rooms": [
+    {
+     "cell": [
+      0,
+      0,
+      0
+     ],
+     "id": 1071,
+     "key": "The Ferry Slip",
+     "latitude_deg": -4.460443,
+     "longitude_deg": -2.515971
+    },
+    {
+     "cell": [
+      -1,
+      0,
+      0
+     ],
+     "id": 1070,
+     "key": "The Ferry Green",
+     "latitude_deg": -4.460443,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      -1,
+      -1,
+      0
+     ],
+     "id": 1069,
+     "key": "The Drove Road",
+     "latitude_deg": -4.460689,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      -1,
+      1,
+      0
+     ],
+     "id": 1072,
+     "key": "The Waiting Shelter",
+     "latitude_deg": -4.460197,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      -1,
+      -2,
+      0
+     ],
+     "id": 1068,
+     "key": "The Carr Edge",
+     "latitude_deg": -4.460935,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      0,
+      -1,
+      0
+     ],
+     "id": 1074,
+     "key": "The Old Wharf",
+     "latitude_deg": -4.460689,
+     "longitude_deg": -2.515971
+    },
+    {
+     "cell": [
+      0,
+      -2,
+      0
+     ],
+     "id": 1073,
+     "key": "The Wharf Track",
+     "latitude_deg": -4.460935,
+     "longitude_deg": -2.515971
+    },
+    {
+     "cell": [
+      -1,
+      -3,
+      0
+     ],
+     "id": 1067,
+     "key": "The Alder Carr",
+     "latitude_deg": -4.461182,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      -1,
+      -4,
+      0
+     ],
+     "id": 1066,
+     "key": "The Reed Walk",
+     "latitude_deg": -4.461428,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      -1,
+      -5,
+      0
+     ],
+     "id": 1065,
+     "key": "The Turf Lip",
+     "latitude_deg": -4.461674,
+     "longitude_deg": -2.516218
+    },
+    {
+     "cell": [
+      -1,
+      -6,
+      0
+     ],
+     "id": 1064,
+     "key": "The Shingle Beach",
+     "latitude_deg": -4.46192,
+     "longitude_deg": -2.516218
     }
    ]
   },
@@ -5732,6 +5987,93 @@
    ]
   }
  ],
+ "connections": {
+  "landings": [
+   {
+    "area": "ranger_camp",
+    "draught_m": 0.3,
+    "id": 1024,
+    "note": "gravel slipway, kayaks only",
+    "room": "The Boat Ramp"
+   },
+   {
+    "area": "bayou_trace",
+    "draught_m": 0.3,
+    "id": 1825,
+    "note": "cut bank with a tie-root",
+    "room": "The Pirogue Landing"
+   }
+  ],
+  "problems": [],
+  "routes": [
+   {
+    "complete": true,
+    "craft": "a cedar kayak / a battered pirogue",
+    "distance_m": 1518.0,
+    "endpoints": [
+     {
+      "area": "ranger_camp",
+      "id": 1024,
+      "room": "The Boat Ramp"
+     },
+     {
+      "area": "bayou_trace",
+      "id": 1825,
+      "room": "The Pirogue Landing"
+     }
+    ],
+    "kind": "small craft",
+    "name": "the camp crossing",
+    "passage": null,
+    "seconds": 60
+   },
+   {
+    "complete": true,
+    "craft": "the Reed Walker / the Chenier Belle",
+    "distance_m": 2094000.0,
+    "endpoints": [
+     {
+      "area": "ferry_shore",
+      "id": 1071,
+      "room": "The Ferry Slip"
+     },
+     {
+      "area": "the-landing-city",
+      "id": 1173,
+      "room": "Blackstone Quay, Ropery"
+     }
+    ],
+    "kind": "service",
+    "name": "the bayou ferry",
+    "passage": 0,
+    "seconds": 1800
+   }
+  ],
+  "seams": [
+   {
+    "from": {
+     "area": "bayou_trace",
+     "room": "The Cut Bank"
+    },
+    "name": "west",
+    "to": {
+     "area": "ferry_shore",
+     "room": "The Ferry Slip"
+    }
+   },
+   {
+    "from": {
+     "area": "ferry_shore",
+     "room": "The Ferry Slip"
+    },
+    "name": "east",
+    "to": {
+     "area": "bayou_trace",
+     "room": "The Cut Bank"
+    }
+   }
+  ]
+ },
  "elevation_source": {
   "engine": "wasm, all 24 planet parameters, plus the authored features in this file",
   "measured_areas": [
@@ -5739,6 +6081,7 @@
   ],
   "unmeasured_areas": [
    "bayou_trace",
+   "ferry_shore",
    "ranger_camp"
   ],
   "warning": "Rooms in unmeasured_areas were placed by the Python surface, which takes four of this world's twenty-four parameters and cannot build it. Their elevation_m describes a different planet. Anything reading elevations must consult measured_areas and refuse the rest."
