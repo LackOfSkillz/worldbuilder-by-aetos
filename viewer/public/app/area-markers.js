@@ -290,7 +290,7 @@ const AREA_VIEW_M = 2500.0;
 ///
 /// Installed on LEFT_CLICK rather than mouse-down, for the reason `pick-point` records: a
 /// drag to rotate the globe must not count as a click.
-function enableAreaInput(viewer, Cesium, document, source) {
+export function enableAreaInput(viewer, Cesium, document, source, place = null) {
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   const card = makeCard();
 
@@ -326,21 +326,11 @@ function enableAreaInput(viewer, Cesium, document, source) {
     // that promise never settles. The camera never moved and nothing was thrown - the
     // click simply did nothing, which reads as a dead handler rather than as a pending
     // promise. Flying to a coordinate asks nothing of the terrain and cannot wait.
-    const anchor = entity.properties && entity.properties.wbAnchor
-      ? entity.properties.wbAnchor.getValue()
-      : null;
-    if (!anchor) return;
-    viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(
-        anchor.longitude_deg, anchor.latitude_deg, AREA_VIEW_M,
-      ),
-      orientation: {
-        heading: 0.0,
-        pitch: Cesium.Math.toRadians(-55.0),
-        roll: 0.0,
-      },
-      duration: 1.8,
-    });
+    const where = place ? place(entity) : (
+      entity.properties && entity.properties.wbAnchor
+        ? entity.properties.wbAnchor.getValue() : null);
+    if (!where) return;
+    flyToPlace(viewer, Cesium, where.latitude_deg, where.longitude_deg);
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
   return {
@@ -352,6 +342,46 @@ function enableAreaInput(viewer, Cesium, document, source) {
   };
 }
 
+
+/// Put a place in the MIDDLE of the screen and look at it.
+///
+/// **A pitched camera does not look at what is beneath it, and that was the bug.** Flying
+/// to `fromDegrees(lon, lat, height)` with a pitch of -55 puts the CAMERA over the target
+/// and then tilts it, so the target slides out of frame and you arrive looking at the
+/// country beyond it - which is exactly "the zoom doesn't centre, I have to scroll to find
+/// the area". `flyToBoundingSphere` solves the other problem: it positions the camera
+/// around a target at a given heading, pitch and range, so the thing stays in the middle
+/// however the view is tilted.
+///
+/// Not `viewer.flyTo(entity)`, which is the obvious call and hangs: it waits on the data
+/// source and on terrain under a clamped pin, and against an offline terrain provider that
+/// promise never settles. A bounding sphere built from a coordinate asks nothing of either.
+export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
+                           rangeM = AREA_VIEW_M, pitchDeg = -50.0, durationS = 1.8) {
+  const camera = viewer.camera;
+  const centre = Cesium.Cartesian3.fromDegrees(longitudeDeg, latitudeDeg);
+  const hpr = new Cesium.HeadingPitchRange(0.0, Cesium.Math.toRadians(pitchDeg), rangeM);
+
+  // **`lookAt` is used to COMPUTE the pose, not to move the camera.** It is the only call
+  // that reliably works out where a camera must stand to hold a target in the middle of
+  // the screen at a given pitch - flying to `fromDegrees(lon, lat, height)` and then
+  // tilting puts the camera *over* the target and looks past it, which is the whole "the
+  // zoom does not centre, I have to scroll to find the area" complaint. Measured: the
+  // computed pose lands the target 0 px from centre; the pitched fly-to left it 392 px off.
+  //
+  // `flyToBoundingSphere` is the documented way to do this in one call and did nothing
+  // here - called without throwing, camera never moved - so the pose is taken from
+  // `lookAt` and flown to explicitly, which does work.
+  camera.lookAt(centre, hpr);
+  const destination = Cesium.Cartesian3.clone(camera.position);
+  const orientation = { heading: camera.heading, pitch: camera.pitch, roll: camera.roll };
+  // **Release the transform before flying.** `lookAt` locks the camera to a reference
+  // frame around the target; left set, every later movement is interpreted in that frame
+  // and the globe stops dragging normally.
+  camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+
+  camera.flyTo({ destination, orientation, duration: durationS });
+}
 
 /// The hover card. One per draw, reused, hidden when nothing is under the cursor.
 function makeCard() {

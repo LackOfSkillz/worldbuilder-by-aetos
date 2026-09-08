@@ -69,6 +69,7 @@ const worldsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "wor
 // which is the whole point: an intent somebody drew should not have to be handed over as a
 // file attachment before anything can be built from it.
 const routesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "routes");
+const runsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "runs");
 const port = Number(process.env.PORT || 8137);
 const TYPES = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -193,6 +194,55 @@ createServer(async (req, res) => {
           .end(JSON.stringify({ error: String(error.message) }));
       }
     });
+    return;
+  }
+
+  // GET /progress/?run=<id>&from=<n> - the populate feed.
+  //
+  // **Polling a growing file, not a socket.** A run writes one JSON line per area as it
+  // lands; the viewer asks for everything past the line it has already drawn. That
+  // survives a page reload, a viewer opened halfway through, and a generator that dies -
+  // all of which a socket handles badly and a cursor handles for free.
+  if (raw === "/progress/" || raw === "/progress") {
+    const runId = (url.searchParams.get("run") || "").replace(/[^A-Za-z0-9_.-]/g, "");
+    const from = Math.max(0, Number(url.searchParams.get("from") || 0) | 0);
+    if (!runId) {
+      res.writeHead(400, { "content-type": "application/json" })
+         .end('{"error":"run is required"}');
+      return;
+    }
+    const file = join(runsDir, runId, "progress.ndjson");
+    if (!file.startsWith(runsDir)) {
+      res.writeHead(400, { "content-type": "application/json" }).end('{"error":"bad run"}');
+      return;
+    }
+    try {
+      const text = await readFile(file, "utf8");
+      const lines = text.split("\n").filter((l) => l.trim().length);
+      const areas = lines.slice(from).map((l) => { try { return JSON.parse(l); }
+                                                  catch { return null; } })
+                         .filter(Boolean);
+      const body = JSON.stringify({ total: lines.length, from, areas });
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+         .end(body);
+    } catch {
+      // No file yet is not an error: the run may not have written its first area.
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+         .end(JSON.stringify({ total: 0, from, areas: [] }));
+    }
+    return;
+  }
+
+  // GET /runs/ - what runs exist, so the viewer can offer the live one.
+  if (raw === "/runs/" || raw === "/runs") {
+    try {
+      const names = (await readdir(runsDir, { withFileTypes: true }))
+        .filter((d) => d.isDirectory()).map((d) => d.name).sort().reverse();
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+         .end(JSON.stringify({ runs: names }));
+    } catch {
+      res.writeHead(200, { "content-type": "application/json" }).end('{"runs":[]}');
+    }
     return;
   }
 
