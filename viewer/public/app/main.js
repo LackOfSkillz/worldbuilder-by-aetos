@@ -10,7 +10,7 @@
 // a code change -- including the deliberately wrong ones.
 
 import { Engine } from "./engine.js";
-import { holdUntilRendered } from "./loading.js";
+import { holdUntilRendered, buildOverlay } from "./loading.js";
 import { riverFromRoute, soundChannel } from "./river.js";
 import {
   DEFAULT_EXAGGERATION, DEFAULT_WORLD, HARBOUR, RAMP_STOPS, RAMP_WINDOW, rampStopFraction,
@@ -106,6 +106,18 @@ function elevationRamp(minimumHeight, maximumHeight) {
 async function boot() {
   const status = document.getElementById("status");
   const viewer = window.viewer;
+
+  // **Up before anything is loaded, because the wait starts before anything is loaded.** The
+  // wasm, the worker pool and the plate generation all happen before there is a world to
+  // hold back, and a bar armed after them describes a wait that is already over. This is on
+  // screen from the first frame and is handed to `holdUntilRendered` below to finish.
+  const overlay = params.get("loading") === "0" ? null : buildOverlay(document);
+  if (overlay) {
+    const canvas = viewer && viewer.canvas;
+    ((canvas && canvas.parentElement) || document.body).append(overlay.element);
+    if (canvas) canvas.classList.add("wb-canvas-loading");
+    overlay.update(0.02, "loading the engine");
+  }
   const spec = worldSpecFromParams();
   const fault = params.get("fault");
   if (fault && !Object.values(FAULTS).includes(fault)) {
@@ -721,7 +733,20 @@ async function boot() {
     }
   }
 
-  await installWorld(bootState, null);
+  // **The bar is armed before the work, not after it.** It used to be built at the very end
+  // of `boot`, by which time the world had been generated, the terrain provider installed,
+  // the water solved and the relief layer rasterised - so for the several seconds that
+  // actually cost something the page showed an empty canvas and no card at all, and the
+  // overlay appeared just in time to say "ready". A loading bar that starts once the loading
+  // is over is worse than none: it teaches you the blank screen means something is broken.
+  //
+  // Armed here, with the boot install as its `waitFor`, it covers the whole wait.
+  const bootJob = installWorld(bootState, null);
+  if (overlay) {
+    overlay.update(0.08, "building the world");
+    window.__wbRendered = holdUntilRendered(viewer, { waitFor: bootJob, overlay });
+  }
+  await bootJob;
 
   // Two scheduling knobs, neither of which changes a generated height.
   //
@@ -1046,6 +1071,28 @@ async function boot() {
   /// conflating the two is how a swap that hangs for twenty seconds gets reported as fast. A
   /// driver measuring repaint waits on Cesium's own tile-load queue, which is what
   /// `scripts/shoot.mjs measure` already does.
+  /// Rebuild the world with the same loading hold a boot gets.
+  ///
+  /// **A rebuild blanks the globe, and until now it did so in silence.** `holdUntilRendered`
+  /// was called once, at boot, so every later rebuild - a slider moved, a stroke applied -
+  /// dropped every tile and showed an empty canvas with no bar, no card and no way to tell a
+  /// world being rebuilt from a viewer that had died. The rebuild is the moment somebody is
+  /// most likely to think the tool is broken, and it was the one moment with no feedback.
+  ///
+  /// The hold is armed BEFORE the work starts and is given the work as its `waitFor`, so it
+  /// cannot reveal in the gap between hiding the canvas and the first new tile being
+  /// requested - it waits for the queue to stay empty AND for the rebuild to have finished.
+  /// `?loading=0` opts out here exactly as it does at boot, because the screenshot harness
+  /// wants the canvas and not a card in front of it.
+  async function reinstallWorld(nextState, plan) {
+    if (params.get("loading") === "0") return installWorld(nextState, plan);
+    const job = installWorld(nextState, plan);
+    window.__wbRendered = holdUntilRendered(viewer, {
+      waitFor: job, title: "rebuilding the world", label: "composing the ground",
+    });
+    return job;
+  }
+
   async function swap(next) {
     const previous = installed.state;
     const nextState = {
@@ -1056,7 +1103,7 @@ async function boot() {
     const plan = swapPlan(previous, nextState);
     if (plan.kind === "none") return { ...plan, ms: 0, line: statusLine() };
     const started = performance.now();
-    await installWorld(nextState, plan);
+    await reinstallWorld(nextState, plan);
     installed.lastSwap = { kind: plan.kind, ms: performance.now() - started, changed: plan.changed };
     const swapped = statusLine();
     if (status) status.textContent = swapped;
@@ -1254,7 +1301,7 @@ async function boot() {
       // generator reads rather than the engine's internal field names.
       const doc = window.__wb.lastWorldfile || (window.__wb.lastWorldfile = {});
       doc.features = (doc.features || []).concat(worldfileRecords);
-      await installWorld(bootState, null);
+      await reinstallWorld(bootState, null);
       if (window.__wb.refreshLayers) window.__wb.refreshLayers();
       window.dispatchEvent(new CustomEvent("wb-world-rebuilt",
         { detail: { applied: engineRecords.length,
@@ -1263,17 +1310,6 @@ async function boot() {
     };
   }
 
-
-  // **Hold the globe back until it is actually finished.** Cesium refines from coarse to fine,
-  // so a half-loaded world looks like a finished one built badly - and the water solve lands
-  // after the first tiles do, which would show a world whose lakes appear later. `?loading=0`
-  // opts out, because the screenshot harness wants the canvas from the first frame and an
-  // overlay of its own is the last thing a byte-comparison needs.
-  if (params.get("loading") !== "0") {
-    window.__wbRendered = holdUntilRendered(viewer, {
-      waitFor: installed.water ? Promise.resolve(installed.water) : null,
-    });
-  }
 
   // `?trace=N` records N frame deltas starting the instant the provider is installed --
   // while tiles are actually being requested, which is the only time the fill can cost a
