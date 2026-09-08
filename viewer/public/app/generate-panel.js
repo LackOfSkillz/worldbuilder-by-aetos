@@ -83,6 +83,12 @@ export function buildGeneratePanel(parent, getViewer) {
   const follow = (runId, wanted, worldName) => {
     const viewer = getViewer();
     if (!viewer || !window.Cesium) return null;
+    // **The previous run's pins come off before this one's go on.** Each run adds its own
+    // data source and nothing removed the last, so running three times stacked three worlds
+    // on one globe - the same good sites picked repeatedly, drawn as clumps of overlapping
+    // dots with the labels on top of each other. It reads as a generator that piles areas
+    // up, and it is a viewer that never cleared the table.
+    if (watching) watching.remove();
     go.textContent = "stop watching";
     return watchRun(viewer, window.Cesium, runId, (drawn, total, finished) => {
       if (!finished) {

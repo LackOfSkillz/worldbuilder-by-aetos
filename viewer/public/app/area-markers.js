@@ -299,19 +299,37 @@ export function enableAreaInput(viewer, Cesium, document, source, place = null) 
 
   const areaAt = (windowPosition) => {
     const picked = viewer.scene.pick(windowPosition);
-    if (!picked || !picked.id || !picked.id.properties) return null;
+    if (!picked || !picked.id) return null;
     const owner = picked.id;
+    // **Belonging to this source is the test, and `properties` never was.** Pins drawn
+    // from a worldfile carry a `wbAnchor` property and pins drawn from a populate feed
+    // carry their position directly, so demanding `properties` silently ignored every
+    // live pin: no hover card, no click, on exactly the areas somebody had just watched
+    // land. The source membership check below is the one that means anything.
     if (!source.entities.contains(owner)) return null;
     return owner;
   };
 
+  //: Which source last put something in the shared card.
+  //
+  // **One card, several handlers, and a miss must not erase a hit.** The worldfile's pins
+  // and a live run's pins each run their own handler over the same mouse move, so the one
+  // that finds nothing hides the card the other has just filled - and which of them goes
+  // last is a matter of registration order. A handler now only clears the card if the card
+  // is showing ITS pin.
+  const mine = source.name || String(Math.random());
+
   handler.setInputAction((movement) => {
     const entity = areaAt(movement.endPosition);
     if (!entity) {
-      card.style.display = "none";
+      if (card.dataset.owner === mine) {
+        card.style.display = "none";
+        card.dataset.owner = "";
+      }
       viewer.scene.canvas.style.cursor = "";
       return;
     }
+    card.dataset.owner = mine;
     card.textContent = entity.description ? entity.description.getValue() : entity.name;
     card.style.display = "block";
     card.style.left = `${movement.endPosition.x + 16}px`;
@@ -469,8 +487,14 @@ export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
 
 /// The hover card. One per draw, reused, hidden when nothing is under the cursor.
 function makeCard() {
+  // **Reused, not replaced.** There is more than one set of pins on the globe - the
+  // worldfile's areas and a live populate run each get their own input handler - and each
+  // one built a card with the same id, removing the other's. The handler that lost the
+  // race then wrote every hover into a node detached from the document, so hovering the
+  // areas somebody had just watched land showed nothing at all while the code ran
+  // perfectly. One card, shared.
   const existing = window.document.getElementById("wb-area-card");
-  if (existing) existing.remove();
+  if (existing) return existing;
   const card = window.document.createElement("div");
   card.id = "wb-area-card";
   card.style.cssText = [

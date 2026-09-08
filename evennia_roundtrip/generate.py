@@ -367,6 +367,287 @@ def grow_sites(at, radius_m, seeds, count, region=None, near_m=NEAR_M,
     return chosen
 
 
+#: How finely a proposed road is sounded before it is believed to be dry.
+#:
+#: Five kilometres. A strait narrower than that is a ford or a bridge, not a crossing a road
+#: has to go round.
+ROUTE_STEP_M = 5000.0
+
+#: How far off the straight line a road may be bent to keep out of the water, as a fraction
+#: of the distance being spanned, and how many bends are tried.
+DETOUR_REACH = (0.25, 0.5, 0.8, 1.2)
+
+
+def _dry_between(at, a, b, radius_m, step_m=ROUTE_STEP_M):
+    """Whether every point on the great circle from `a` to `b` stands above the water."""
+    span = _haversine(a[0], a[1], b[0], b[1], radius_m)
+    steps = max(1, int(span / step_m))
+    for index in range(steps + 1):
+        point = _point_between(a, b, index / steps, radius_m)
+        if at(point[0], point[1]) <= 0.0:
+            return False
+    return True
+
+
+#: How steep a road may climb before it stops being a road, as metres risen per metre run.
+#:
+#: Twelve per cent. A cart road tops out around ten; a pack trail will take fifteen. Above
+#: this the pathfinder goes round, which is what a road actually does - the pass, not the
+#: peak.
+MAX_GRADE = 0.12
+
+#: What a climb costs, against the flat distance. Ten means a hundred metres of ascent is
+#: worth a kilometre of level going, which is roughly how a road behaves: it will happily
+#: run a long way sideways to avoid a hill.
+CLIMB_COST = 10.0
+
+#: The grid the search runs on. Five kilometres, and a box a third larger than the gap being
+#: spanned so there is room to go round something.
+GRID_M = 5000.0
+GRID_MARGIN = 0.35
+
+#: The most nodes one search may open. A road that needs more than this is a road round an
+#: ocean, and the answer there is a boat.
+GRID_BUDGET = 20000
+
+
+def route_between(at, a, b, radius_m, passable, step_cost, grid_m=GRID_M,
+                  budget=GRID_BUDGET):
+    """
+    A way from `a` to `b` across whatever surface `passable` accepts.
+
+    Args:
+        passable (callable): `(height_m) -> bool`. Land for a road, water for a boat.
+        step_cost (callable): `(here_m, there_m, run_m) -> cost or None`. None refuses the
+            step, which is how a grade limit is expressed.
+
+    Returns:
+        route (list): `[(lat, lon), ...]` from `a` to `b`, or None if there is no way -
+            which for a road is the answer that means "this one needs a boat".
+
+    Notes:
+        **A road across the sea is not a road, and eighteen per cent of them were.** The
+        spanning tree joins each area to the nearest one already on the network, and nearest
+        was measured through the ground rather than over it - so a settlement across a bay
+        was joined by a road running along the sea floor, in one case two thousand eight
+        hundred metres below the water.
+
+        **And a road over a mountain is not one either.** Water is impassable and a slope
+        steeper than `MAX_GRADE` is too, so the search finds the pass rather than the peak;
+        climbing is merely expensive, which is what makes it prefer the long way round a
+        hill and take the short way over a rise.
+
+        A* on a five-kilometre grid, eight-connected, with great-circle distance as the
+        heuristic. The grid is a box around the two ends with a third again of margin, and
+        the search is budgeted: something that needs more than twenty thousand nodes is
+        going round an ocean.
+    """
+    import heapq
+
+    metres_per_degree = math.pi * radius_m / 180.0
+    lat0 = (a[0] + b[0]) / 2.0
+    coslat = max(0.15, math.cos(math.radians(lat0)))
+    d_lat = grid_m / metres_per_degree
+    d_lon = grid_m / (metres_per_degree * coslat)
+
+    span = _haversine(a[0], a[1], b[0], b[1], radius_m)
+    margin = span * GRID_MARGIN
+    lo_lat = min(a[0], b[0]) - margin / metres_per_degree
+    hi_lat = max(a[0], b[0]) + margin / metres_per_degree
+    lo_lon = min(a[1], b[1]) - margin / (metres_per_degree * coslat)
+    hi_lon = max(a[1], b[1]) + margin / (metres_per_degree * coslat)
+
+    def cell(point):
+        return (int(round((point[0] - lo_lat) / d_lat)),
+                int(round((point[1] - lo_lon) / d_lon)))
+
+    def where(node):
+        return (lo_lat + node[0] * d_lat, lo_lon + node[1] * d_lon)
+
+    rows = int((hi_lat - lo_lat) / d_lat) + 1
+    columns = int((hi_lon - lo_lon) / d_lon) + 1
+    if rows * columns > budget:
+        # **Coarsen rather than give up.** A fixed five-kilometre grid over a two-thousand
+        # kilometre span is seventy thousand cells, and the guard turned that into an
+        # instant None - which the caller read as "no way over land" and answered with a
+        # straight road across the sea. A long road is allowed to be surveyed coarsely; it
+        # is not allowed to be surveyed not at all.
+        # The grid is coarsened until the whole box fits inside the node budget, so the
+        # search can actually cross it rather than run out of nodes halfway. A four-
+        # thousand-kilometre crossing ends up surveyed at about forty kilometres, which is
+        # coarse for a road and exactly right for deciding whether one is possible at all.
+        coarser = grid_m * math.sqrt(rows * columns / float(budget)) * 1.1
+        if coarser > grid_m * 40.0:
+            return None
+        return route_between(at, a, b, radius_m, passable, step_cost,
+                             grid_m=coarser, budget=budget)
+
+    start, goal = cell(a), cell(b)
+    goal_at = where(goal)
+
+    heights = {}
+    def height(node):
+        if node not in heights:
+            point = where(node)
+            heights[node] = at(point[0], point[1])
+        return heights[node]
+
+    def guess(node):
+        point = where(node)
+        return _haversine(point[0], point[1], goal_at[0], goal_at[1], radius_m)
+
+    open_set = [(guess(start), 0.0, start)]
+    came, best = {}, {start: 0.0}
+    opened = 0
+    while open_set:
+        _, cost, node = heapq.heappop(open_set)
+        if cost > best.get(node, float("inf")):
+            continue
+        if node == goal:
+            route = [where(node)]
+            while node in came:
+                node = came[node]
+                route.append(where(node))
+            route.reverse()
+            # The real ends, not the grid cells nearest to them.
+            route[0], route[-1] = a, b
+            return route
+        opened += 1
+        if opened > budget:
+            return None
+        here = height(node)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                neighbour = (node[0] + dr, node[1] + dc)
+                if not (0 <= neighbour[0] < rows and 0 <= neighbour[1] < columns):
+                    continue
+                there = height(neighbour)
+                if not passable(there):
+                    continue
+                run = grid_m * (1.414 if dr and dc else 1.0)
+                step = step_cost(here, there, run)
+                if step is None:
+                    continue
+                through = cost + step
+                if through < best.get(neighbour, float("inf")):
+                    best[neighbour] = through
+                    came[neighbour] = node
+                    heapq.heappush(open_set, (through + guess(neighbour), through, neighbour))
+    return None
+
+
+#: How deep the water must be for a hull to pass. See `place.DEFAULT_PORT_DEPTH_M` for the
+#: same idea at a quay; out in the fairway the requirement is only that it is not a beach.
+SEA_DEPTH_M = -3.0
+
+
+def overland_route(at, a, b, radius_m, **kwargs):
+    """A way over land that never enters the water and never climbs what it can go round."""
+    def passable(height):
+        return height > 0.0
+
+    def step_cost(here, there, run):
+        climb = there - here
+        if abs(climb) / run > MAX_GRADE:
+            return None
+        return run + CLIMB_COST * max(0.0, climb)
+
+    return route_between(at, a, b, radius_m, passable, step_cost, **kwargs)
+
+
+def sea_route(at, a, b, radius_m, **kwargs):
+    """
+    A way over the water that never crosses land.
+
+    Notes:
+        **Passengers will hate the portage.** A ferry line drawn straight from one ramp to
+        the other looks fine on a globe and runs over whatever headland lies between - so
+        the same search runs again with the surfaces swapped: water is passable, land is
+        not, and there is nothing to climb. What comes out is a line a hull could actually
+        follow, which is also the only honest thing to draw.
+    """
+    def passable(height):
+        return height < SEA_DEPTH_M
+
+    def step_cost(_here, _there, run):
+        return run
+
+    return route_between(at, a, b, radius_m, passable, step_cost, **kwargs)
+
+
+def _along(latitude_deg, longitude_deg, bearing_deg, distance_m, radius_m):
+    """Walk `distance_m` from a point along a bearing."""
+    lat, lon = math.radians(latitude_deg), math.radians(longitude_deg)
+    brg = math.radians(bearing_deg)
+    d = distance_m / radius_m
+    lat2 = math.asin(math.sin(lat) * math.cos(d)
+                     + math.cos(lat) * math.sin(d) * math.cos(brg))
+    lon2 = lon + math.atan2(math.sin(brg) * math.sin(d) * math.cos(lat),
+                            math.cos(d) - math.sin(lat) * math.sin(lat2))
+    return (math.degrees(lat2), (math.degrees(lon2) + 540) % 360 - 180)
+
+
+def shoreline_toward(at, start, toward, radius_m, step_m=2000.0, reach_m=60000.0):
+    """
+    The last dry ground between `start` and the water in the direction of `toward`.
+
+    This is where a boat ramp goes: on land, at the edge of the water somebody would launch
+    into. Returns `start` unchanged when the walk never reaches water.
+    """
+    heading = _bearing(start[0], start[1], toward[0], toward[1])
+    last_dry = start
+    steps = max(1, int(reach_m / step_m))
+    for index in range(1, steps + 1):
+        point = _along(start[0], start[1], heading, step_m * index, radius_m)
+        if at(point[0], point[1]) <= 0.0:
+            return last_dry
+        last_dry = point
+    return last_dry
+
+
+def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
+    """
+    Give an area a ramp at its own waterside, joined to the room nearest the water.
+
+    Returns:
+        ramp (dict): The room that was added.
+
+    Notes:
+        **A ramp is a room, like a shop is a room.** It is somewhere a player stands to
+        board, which is what makes a sea crossing something they do rather than something
+        that happens to them - and it is what the maritime side already expects to find.
+    """
+    rooms = area.get("rooms") or []
+    here = _where(area)
+    anchor_room = min(rooms, key=lambda room: _haversine(
+        room["latitude_deg"], room["longitude_deg"], toward[0], toward[1], radius_m))
+    edge = shoreline_toward(at, (anchor_room["latitude_deg"], anchor_room["longitude_deg"]),
+                            toward, radius_m)
+    ramp = {
+        "id": room_id,
+        "key": "a boat ramp",
+        "latitude_deg": round(edge[0], 6),
+        "longitude_deg": round(edge[1], 6),
+        "cell": [0, 0, 0],
+        "elevation_m": round(at(edge[0], edge[1]), 3),
+        "ramp": True,
+    }
+    ramp["desc"] = naming.describe([], "human", rng)
+    rooms.append(ramp)
+    heading = _bearing(anchor_room["latitude_deg"], anchor_room["longitude_deg"],
+                       edge[0], edge[1])
+    direction = COMPASS[int((heading + 22.5) % 360 // 45)]
+    area.setdefault("exits", []).append({
+        "source": anchor_room["id"], "name": _free_name(anchor_room, area, direction),
+        "destination": ramp["id"], "ramp": True})
+    area["exits"].append({
+        "source": ramp["id"], "name": OPPOSITE[direction],
+        "destination": anchor_room["id"], "ramp": True})
+    return ramp
+
+
 #: How far a road may run between two areas before it stops being a walk.
 #:
 #: Three hundred and forty kilometres - a little past the far end of the settlement spacing,
@@ -468,7 +749,32 @@ def _point_between(a, b, fraction, radius_m):
     return (math.degrees(math.atan2(z, math.hypot(x, y))), math.degrees(math.atan2(y, x)))
 
 
-def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_id, at=None):
+def _line_length(line, radius_m):
+    """How long a polyline is, in metres."""
+    return sum(_haversine(line[i][0], line[i][1], line[i + 1][0], line[i + 1][1], radius_m)
+               for i in range(len(line) - 1))
+
+
+def _point_on_line(line, fraction, radius_m):
+    """The point a given fraction of the way along a polyline."""
+    total = _line_length(line, radius_m)
+    if total <= 0.0:
+        return line[0]
+    target = total * fraction
+    walked = 0.0
+    for index in range(len(line) - 1):
+        a, b = line[index], line[index + 1]
+        leg = _haversine(a[0], a[1], b[0], b[1], radius_m)
+        if leg <= 0.0:
+            continue
+        if walked + leg >= target:
+            return _point_between(a, b, (target - walked) / leg, radius_m)
+        walked += leg
+    return line[-1]
+
+
+def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_id,
+                 at=None, route=None):
     """
     The road itself: an area of its own, with a room every five miles.
 
@@ -480,6 +786,8 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
         rng (random.Random): The world's own generator.
         base_id (int): The first free room id.
         at (callable, optional): The oracle, so a road room knows its own height.
+        route (list, optional): `[(lat, lon), ...]` the way round the obstacles,
+            from `overland_route`. Without it the rooms fall on the straight line.
 
     Returns:
         road (dict or None): An area with `purpose` "road", or None if the two rooms are
@@ -492,17 +800,23 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
         record keeps every area honest about what it is. It carries `purpose` "road" so a
         tally can count settlements without counting the ways between them.
     """
-    rooms_wanted = int(gap_m // ROAD_ROOM_M)
+    walked = _line_length(list(route), radius_m) if route else gap_m
+    rooms_wanted = int(walked // ROAD_ROOM_M)
     if rooms_wanted < 1:
         return None
     rooms_wanted = min(rooms_wanted, ROAD_ROOM_CAP)
 
     ends = ((room_a["latitude_deg"], room_a["longitude_deg"]),
             (room_b["latitude_deg"], room_b["longitude_deg"]))
+    # **The rooms follow the route, not the crow.** A straight line between two rooms is
+    # what put roads on the sea floor and over four-thousand-metre peaks; the route handed
+    # in has already gone round both. Without one the line is used, which is right for the
+    # short links where a search would find nothing to avoid.
+    line = list(route) if route else [ends[0], ends[1]]
     rooms = []
     for index in range(rooms_wanted):
         fraction = (index + 1) / (rooms_wanted + 1)
-        latitude, longitude = _point_between(ends[0], ends[1], fraction, radius_m)
+        latitude, longitude = _point_on_line(line, fraction, radius_m)
         rooms.append({
             "id": base_id + index,
             "latitude_deg": round(latitude, 6),
@@ -511,6 +825,16 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
             "key": "the road",
             "elevation_m": round(at(latitude, longitude), 3) if at else None,
         })
+
+    # **Checked at room resolution, not at grid resolution.** The route is searched on a
+    # grid that coarsens for long spans, so a strait narrower than one cell reads as land
+    # and the rooms interpolated between two dry cells land in the water. Forty road rooms
+    # were under the sea this way. A road with a wet room is refused here and the caller
+    # asks for a boat instead.
+    if at is not None:
+        for room in rooms:
+            if at(room["latitude_deg"], room["longitude_deg"]) <= 0.0:
+                return None
 
     name = "the road from %s to %s" % (from_area.get("display_name") or from_area["name"],
                                        to_area.get("display_name") or to_area["name"])
@@ -553,6 +877,185 @@ def finish_road(road, rng):
     """Name and describe a road, once every one of its exits exists."""
     naming.name_and_describe(road, "road", rng, settled=False)
     return road
+
+
+def ferry_between(from_area, to_area, room_a, room_b, at, radius_m, rng, base_id):
+    """
+    A boat crossing: a ramp on each shore, and the water track between them.
+
+    Returns:
+        crossing (dict or None): A record with `from`, `to`, the two ramp rooms and the
+            `track` the hull follows, or None when even the water has no way through.
+
+    Notes:
+        **A ferry is not a road drawn in another colour.** It needs somewhere to board at
+        each end, which is a room; it needs a line a hull could actually follow, which is
+        the sea route rather than the straight one - passengers hate the portage; and it
+        needs to be visible to the reachability check as a sea connection, or an island
+        reads as stranded while the boat is sitting there.
+    """
+    from_point = (room_a["latitude_deg"], room_a["longitude_deg"])
+    to_point = (room_b["latitude_deg"], room_b["longitude_deg"])
+
+    # **The crossing is found before anything is built.** Adding the ramps first and then
+    # discovering there is no water route left two areas each carrying a boat ramp to
+    # nowhere - a room a player can walk to, stand on, and never leave by.
+    start = _water_off(at, from_point, to_point, radius_m)
+    end = _water_off(at, to_point, from_point, radius_m)
+    if start is None or end is None:
+        return None
+    track = sea_route(at, start, end, radius_m)
+    if track is None:
+        return None
+
+    near_ramp = add_boat_ramp(from_area, start, at, radius_m, rng, base_id)
+    far_ramp = add_boat_ramp(to_area, end, at, radius_m, rng, base_id + 1)
+    return {
+        "from": from_area["name"], "to": to_area["name"],
+        "from_room": near_ramp["id"], "to_room": far_ramp["id"],
+        "from_ramp": [near_ramp["latitude_deg"], near_ramp["longitude_deg"]],
+        "to_ramp": [far_ramp["latitude_deg"], far_ramp["longitude_deg"]],
+        "track": [[round(p[0], 6), round(p[1], 6)] for p in track],
+        "metres": round(_line_length(track, radius_m)),
+    }
+
+
+def _water_off(at, start, toward, radius_m, step_m=2000.0, reach_m=150000.0):
+    """
+    The nearest navigable water out from a place, preferring the far shore's direction.
+
+    Notes:
+        **A fan, not a line.** Walking straight at the far shore found nothing whenever the
+        coast ran the other way - a town a hundred metres up with the sea round a headland
+        answered "no water" and the crossing was refused. The bearings are tried nearest the
+        target first, so the answer is still the sensible side of the town when there is
+        one.
+    """
+    straight = _bearing(start[0], start[1], toward[0], toward[1])
+    steps = max(1, int(reach_m / step_m))
+    for spread in (0, 20, 40, 60, 90, 120, 150, 180):
+        for side in ((0,) if spread == 0 else (1, -1)):
+            heading = straight + side * spread
+            for index in range(1, steps + 1):
+                point = _along(start[0], start[1], heading, step_m * index, radius_m)
+                if at(point[0], point[1]) < SEA_DEPTH_M:
+                    return point
+    return None
+
+
+#: How near two road rooms must be to count as the same crossing.
+#:
+#: Four kilometres - comfortably under the five-mile room spacing, so two ways that merely
+#: run beside each other are not welded together, and two that actually cross are.
+CROSSING_M = 4000.0
+
+
+def _segments_cross(a1, a2, b1, b2, lat0):
+    """
+    Where two short segments cross, in degrees, or None.
+
+    Flat geometry on a local scale factor: over the few kilometres a road segment spans,
+    the curvature of the planet is far smaller than the four-kilometre tolerance this is
+    deciding, so the standard planar test is exact enough and enormously cheaper than a
+    spherical one.
+    """
+    k = max(0.15, math.cos(math.radians(lat0)))
+    ax, ay = a1[1] * k, a1[0]
+    bx, by = a2[1] * k, a2[0]
+    cx, cy = b1[1] * k, b1[0]
+    dx, dy = b2[1] * k, b2[0]
+    r = (bx - ax, by - ay)
+    sdir = (dx - cx, dy - cy)
+    denominator = r[0] * sdir[1] - r[1] * sdir[0]
+    if abs(denominator) < 1e-12:
+        return None
+    t = ((cx - ax) * sdir[1] - (cy - ay) * sdir[0]) / denominator
+    u = ((cx - ax) * r[1] - (cy - ay) * r[0]) / denominator
+    if not (0.0 <= t <= 1.0 and 0.0 <= u <= 1.0):
+        return None
+    return (ay + t * r[1], (ax + t * r[0]) / k)
+
+
+def join_crossings(roads, radius_m, rng, base_id, at=None):
+    """
+    Put a room where two ways cross, and join it to both.
+
+    Args:
+        roads (list): The road and path areas, each with `rooms` and `exits`.
+        radius_m (float): The planet's radius.
+        rng (random.Random): The world's own generator.
+        base_id (int): The first free room id.
+        at (callable, optional): The oracle, for the crossing's own height.
+
+    Returns:
+        crossings (list): One record per junction made.
+
+    Notes:
+        **Two roads that cross and do not meet are two roads a player cannot change
+        between.** Drawn on a globe it looks like a junction; walked, it is a flyover with
+        no slip road - you can see the other way and you cannot take it. Every crossing is
+        given a room of its own, joined to the nearest room on each way.
+
+        **Segment intersection, not proximity.** The first version asked whether two rooms
+        on different ways stood within four kilometres of each other, and found nothing: the
+        rooms are five miles apart, so two ways can cross cleanly with the nearest room on
+        each a full four kilometres from the crossing and from one another. Where the lines
+        actually cross is a question with an exact answer, so it is asked exactly.
+    """
+    made = []
+    next_id = base_id
+    for index, road in enumerate(roads):
+        here_rooms = road.get("rooms") or []
+        if len(here_rooms) < 2:
+            continue
+        for other in roads[index + 1:]:
+            there_rooms = other.get("rooms") or []
+            if len(there_rooms) < 2:
+                continue
+            hit = None
+            for i in range(len(here_rooms) - 1):
+                a1 = (here_rooms[i]["latitude_deg"], here_rooms[i]["longitude_deg"])
+                a2 = (here_rooms[i + 1]["latitude_deg"], here_rooms[i + 1]["longitude_deg"])
+                for j in range(len(there_rooms) - 1):
+                    b1 = (there_rooms[j]["latitude_deg"], there_rooms[j]["longitude_deg"])
+                    b2 = (there_rooms[j + 1]["latitude_deg"],
+                          there_rooms[j + 1]["longitude_deg"])
+                    point = _segments_cross(a1, a2, b1, b2, a1[0])
+                    if point is not None:
+                        hit = (point, here_rooms[i], there_rooms[j])
+                        break
+                if hit:
+                    break
+            if not hit:
+                continue
+            point, here, there = hit
+            junction = {
+                "id": next_id,
+                "key": "a crossroads",
+                "latitude_deg": round(point[0], 6),
+                "longitude_deg": round(point[1], 6),
+                "cell": [0, 0, 0],
+                "elevation_m": round(at(point[0], point[1]), 3) if at else None,
+                "crossing": True,
+            }
+            next_id += 1
+            junction["desc"] = naming.describe([], "road", rng)
+            road.setdefault("rooms", []).append(junction)
+            for host, room in ((road, here), (other, there)):
+                heading = _bearing(junction["latitude_deg"], junction["longitude_deg"],
+                                   room["latitude_deg"], room["longitude_deg"])
+                direction = COMPASS[int((heading + 22.5) % 360 // 45)]
+                road.setdefault("exits", []).append({
+                    "source": junction["id"], "name": direction,
+                    "destination": room["id"], "road": True})
+                host.setdefault("exits", []).append({
+                    "source": room["id"],
+                    "name": _free_name(room, host, OPPOSITE[direction]),
+                    "destination": junction["id"], "road": True})
+            made.append({"ways": [road.get("display_name"), other.get("display_name")],
+                         "room": junction["id"],
+                         "at": [junction["latitude_deg"], junction["longitude_deg"]]})
+    return made
 
 
 def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
@@ -598,19 +1101,33 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
     outside = list(placed[1:])
     roads = []
     built_roads = []
+    ferries = []
     next_id = base_id
+    #: Pairs already tried and found impossible, so the search does not retry them forever.
+    refused_pairs = set()
     while outside:
-        best = None
+        # **The nearest pair that can actually be joined, not simply the nearest pair.**
+        # A link over open sea can be neither a road nor a ferry, and the first version
+        # still marked that area joined - so its whole subtree hung off nothing and
+        # thirty-nine areas came out unreachable while the manifest said two links were
+        # missing. Taking the next-best partner instead is what a spanning tree is for.
+        candidates = []
         for area in outside:
             here = _where(area)
             for other in joined:
+                if (id(area), id(other)) in refused_pairs:
+                    continue
                 there = _where(other)
-                gap = _haversine(here[0], here[1], there[0], there[1], radius_m)
-                if best is None or gap < best[0]:
-                    best = (gap, area, other)
-        gap, area, other = best
-        outside.remove(area)
-        joined.append(area)
+                candidates.append((_haversine(here[0], here[1], there[0], there[1],
+                                              radius_m), area, other))
+        if not candidates:
+            for area in outside:
+                roads.append({"from": "(nothing reachable)", "to": area["name"],
+                              "metres": 0, "laid": False,
+                              "why": "no partner could be joined by road or by boat"})
+            break
+        candidates.sort(key=lambda row: row[0])
+        gap, area, other = candidates[0]
         # **The road is always laid, and a long one is flagged rather than skipped.** The
         # first version refused links over the reach and left those areas unjoined, which
         # made connectivity a matter of whether some later area happened to bridge them -
@@ -629,10 +1146,46 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                            room_b["latitude_deg"], room_b["longitude_deg"])
         direction = COMPASS[int((heading + 22.5) % 360 // 45)]
 
-        # The road is a place of its own with a room every five miles; only a very short
-        # link joins two settlements door to door.
+        # **Overland if there is an overland way, and a boat if there is not.** The route
+        # is searched before anything is built, because whether these two places are joined
+        # by a road or by a ferry is a fact about the ground between them, not a style.
+        route = overland_route(at, (room_a["latitude_deg"], room_a["longitude_deg"]),
+                               (room_b["latitude_deg"], room_b["longitude_deg"]),
+                               radius_m) if at else None
+        if at and route is None:
+            crossing = ferry_between(other, area, room_a, room_b, at, radius_m, rng, next_id)
+            if crossing:
+                next_id += 10
+                ferries.append(crossing)
+                roads.append({"from": other["name"], "to": area["name"],
+                              "metres": crossing["metres"], "laid": True, "sea": True,
+                              "rooms": 0, "long": False})
+                outside.remove(area)
+                joined.append(area)
+                continue
+            # **No land route and no water route means no link, and that is the answer.**
+            # Falling through to the straight line is what put roads on the sea floor: six
+            # of thirty of them, one two thousand eight hundred metres under. An unjoined
+            # pair is a fact the manifest can carry and somebody can act on; a road across
+            # a sea is a lie the map tells every time it is looked at.
+            refused_pairs.add((id(area), id(other)))
+            continue
         road = road_between(other, area, room_a, room_b, room_gap, radius_m, rng, next_id,
-                            at=at)
+                            at=at, route=route)
+        if road is None and route is not None and room_gap > ROAD_ROOM_M:
+            # The route looked dry on the grid and was not once the rooms were placed on it.
+            crossing = ferry_between(other, area, room_a, room_b, at, radius_m, rng, next_id)
+            if crossing:
+                next_id += 10
+                ferries.append(crossing)
+                roads.append({"from": other["name"], "to": area["name"],
+                              "metres": crossing["metres"], "laid": True, "sea": True,
+                              "rooms": 0, "long": False})
+                outside.remove(area)
+                joined.append(area)
+                continue
+            refused_pairs.add((id(area), id(other)))
+            continue
         if road is None:
             out_name = _free_name(room_a, other, direction)
             back_name = _free_name(room_b, area, OPPOSITE[direction])
@@ -663,6 +1216,8 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
         roads.append({"from": other["name"], "to": area["name"],
                       "metres": round(room_gap), "laid": True, "direction": direction,
                       "rooms": rooms_on_it, "long": room_gap > reach_m})
+        outside.remove(area)
+        joined.append(area)
     # Every wild place now gets its own path to the nearest road room, or to the nearest
     # settlement if the roads are all too far. A path is a road by another name - same
     # five-mile rooms, different word - so it is built by the same function.
@@ -728,7 +1283,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                       "laid": True, "rooms": len(trail["rooms"]), "path": True,
                       "long": gap > reach_m})
 
-    return roads, built_roads
+    return roads, built_roads, ferries
 
 
 def gate(area, culture, at, shape):
@@ -1044,19 +1599,35 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
 
         # **Roads before the check, because the check can only report.** Every area is
         # joined to the nearest area already on the network; see `connect_areas`.
-        roads, road_areas = connect_areas(document["areas"], radius_m, rng,
-                                          base_id + 10000, at=at)
+        roads, road_areas, ferries = connect_areas(document["areas"], radius_m, rng,
+                                                   base_id + 10000, at=at)
+        # Ferries are neither areas nor roads: they are the water between two ramps.
+        document["ferries"] = ferries
+        # Every ramp is a dock as far as reachability is concerned, which is what
+        # stops an island reading as stranded when a boat serves it.
+        maritime = document.setdefault("maritime", {})
+        docks = maritime.setdefault("docks", [])
+        for crossing in ferries:
+            docks.append({"area": crossing["from"], "room": crossing["from_room"],
+                          "ferry": crossing["to"]})
+            docks.append({"area": crossing["to"], "room": crossing["to_room"],
+                          "ferry": crossing["from"]})
         # **Roads go in their own list, not among the areas.** Asking for a hundred areas
         # should give a hundred places, not a hundred places plus the eighty-six ways
         # between them - a road connects areas, it is not one. Everything that walks rooms
         # reads `reachability.places`, which sees both.
         document["roads"] = list(document.get("roads") or ()) + road_areas
+        # Where two ways cross, they now meet. See `join_crossings`.
+        crossings = join_crossings(document["roads"], radius_m, rng, base_id + 90000, at=at)
+        run.write_json("crossings.json", crossings)
         # **Every room's prose is brought back into line with its exits.** The roads were
         # laid after the descriptions were written, so a settlement room that gained one now
         # has a door its own text does not mention - the exact fault the law forbids.
         for area in reachability.places(document):
             if area.get("culture") or area.get("purpose") in ("road", "path"):
-                naming.retell_exits(area)
+                naming.retell_exits(area, area.get("voice")
+                                    or ("road" if area.get("purpose") in ("road", "path")
+                                        else area.get("race")))
         run.write_json("roads.json", roads)
         stranded = reachability.check(document)
         run.write_json("worldfile.json", document)
@@ -1073,6 +1644,9 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "roads": sum(1 for road in roads if road["laid"]),
             "road_rooms": sum(len(road["rooms"]) for road in road_areas),
             "paths": sum(1 for road in roads if road.get("path")),
+            "ferries": len(ferries),
+            "crossings": len(crossings),
+            "unjoined": sum(1 for road in roads if not road["laid"]),
             "long_roads": sum(1 for road in roads if road.get("long")),
             "stranded": len(stranded.get("unreachable", ())),
             "unfilled": {key: quota[key] - filled[key]

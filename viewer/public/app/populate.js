@@ -10,7 +10,7 @@
 // "clear all" there were three sources on the globe with two still holding pins. This owns
 // exactly one source and only ever pushes into it.
 
-import { enableAreaInput } from "./area-markers.js";
+import { drawAreas, enableAreaInput } from "./area-markers.js";
 import { buildTally } from "./tally.js";
 import { fillFor, outlineFor, outlineWidthFor, legendRows } from "./palette.js";
 
@@ -143,9 +143,98 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   // Hover to read and click to fly down, the same as the worldfile pins - and through the
   // same handler, so the two cannot drift apart. `place` tells it where a live pin is,
   // since these carry their coordinates directly rather than an area anchor.
+  //: The rooms of the areas this run made, fetched once and kept.
+  //
+  // **The feed carries counts, not contents, and that is right** - a hundred areas of fifty
+  // rooms is five thousand descriptions and this file is polled every two seconds. But it
+  // leaves a live pin knowing how many rooms it has and not where any of them are, so
+  // clicking one showed a place with no streets while the fish camp and the city showed
+  // theirs. The run's own worldfile has them; it is read the first time somebody asks.
+  let rooms = null;
+  let roomsDrawn = null;
+  let roadsSource = null;
+
+  /// Draw the roads and paths this run laid, as lines through their own rooms.
+  ///
+  /// **A network you cannot see is a claim, not a picture.** The generator joins every area
+  /// to the nearest one already on the network and the manifest says nothing is stranded -
+  /// but a globe of unconnected dots shows none of that, and the roads are the part that
+  /// makes a hundred places read as a country rather than a scatter. They are drawn from
+  /// their own rooms, so what appears is the road that exists, five miles a room.
+  const drawRoads = (doc) => {
+    const roads = doc.roads || [];
+    if (!roads.length && !(doc.ferries || []).length) return;
+    if (roadsSource) viewer.dataSources.remove(roadsSource, true);
+    roadsSource = new Cesium.CustomDataSource(`wb-roads-${runId}`);
+    viewer.dataSources.add(roadsSource);
+    // **Ferries are dotted, and only over water.** A boat crossing is not a road drawn in
+    // another colour: the line follows the sea route the generator found, which is why it
+    // goes round headlands instead of through them, and it is dashed because nobody walks
+    // it. The taupe is shared with the roads so the network reads as one system.
+    for (const crossing of doc.ferries || []) {
+      const track = (crossing.track || []).flatMap((p) => [p[1], p[0]]);
+      if (track.length < 4) continue;
+      roadsSource.entities.add({
+        name: `the crossing from ${crossing.from} to ${crossing.to}`,
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArray(track),
+          width: 2.0,
+          material: new Cesium.PolylineDashMaterialProperty({
+            color: Cesium.Color.fromCssColorString("rgba(168,150,133,0.85)"),
+            dashLength: 14,
+          }),
+          clampToGround: true,
+        },
+      });
+    }
+    for (const road of roads) {
+      const points = (road.rooms || [])
+        .filter((r) => r.longitude_deg !== undefined)
+        .flatMap((r) => [r.longitude_deg, r.latitude_deg]);
+      if (points.length < 4) continue;
+      const path = road.purpose === "path";
+      roadsSource.entities.add({
+        name: road.display_name || road.name,
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArray(points),
+          // A path to a hunting ground is thinner and dimmer than a road between towns,
+          // which is the difference somebody is looking for at a glance.
+          width: path ? 1.6 : 2.6,
+          // Taupe: a road is dust and stone, not gold leaf. Light enough to read against
+          // dark forest and dark enough not to compete with the coloured area pins, which
+          // are the thing being connected and should stay the brightest marks on the globe.
+          material: Cesium.Color.fromCssColorString(
+            path ? "rgba(139,125,112,0.62)" : "rgba(168,150,133,0.92)"),
+          clampToGround: true,
+        },
+      });
+    }
+  };
+  const openRooms = async (name) => {
+    if (rooms === null) {
+      try {
+        const doc = await (await fetch(`/runs/${encodeURIComponent(runId)}/worldfile.json`,
+                                       { cache: "no-store" })).json();
+        rooms = doc;
+        drawRoads(doc);
+      } catch {
+        rooms = false;
+      }
+    }
+    if (!rooms) return;
+    const area = (rooms.areas || []).find((a) => a.name === name
+                                          || a.display_name === name);
+    if (!area) return;
+    if (roomsDrawn) roomsDrawn.remove();
+    // Drawn by the same function the worldfile pins use, so a generated area's streets
+    // look and behave exactly like the fish camp's.
+    roomsDrawn = drawAreas(viewer, Cesium, { areas: [area] });
+  };
+
   const input = enableAreaInput(viewer, Cesium, window.document, source, (entity) => {
     const p = entity.position && entity.position.getValue(Cesium.JulianDate.now());
     if (!p) return null;
+    if (entity.name) openRooms(entity.name);
     const c = Cesium.Cartographic.fromCartesian(p);
     return { latitude_deg: Cesium.Math.toDegrees(c.latitude),
              longitude_deg: Cesium.Math.toDegrees(c.longitude) };
@@ -203,8 +292,14 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
         if (counts) counts.add(area);
         if (onTick) onTick(drawn(), cursor, done());
       } else if (done() && !announced) {
-        // The last pin has appeared and the run is over. Said once.
+        // The last pin has appeared and the run is over. Said once - and the roads are
+        // drawn now, because the network is the point and nobody should have to click a
+        // pin to discover it exists.
         announced = true;
+        fetch(`/runs/${encodeURIComponent(runId)}/worldfile.json`, { cache: "no-store" })
+          .then((r) => r.json())
+          .then((doc) => { rooms = doc; drawRoads(doc); })
+          .catch(() => { /* the roads are a picture, not a promise */ });
         if (onTick) onTick(drawn(), cursor, done());
       }
     } catch (error) {
@@ -271,6 +366,8 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
     status: () => ({ status: runStatus, summary: runSummary }),
     remove: () => {
       halt();
+      if (roomsDrawn) roomsDrawn.remove();
+      if (roadsSource) viewer.dataSources.remove(roadsSource, true);
       input.stop();
       if (counts) counts.remove();
       viewer.dataSources.remove(source, true);

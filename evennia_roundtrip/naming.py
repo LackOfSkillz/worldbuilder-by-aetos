@@ -599,15 +599,30 @@ def name_and_describe(area, race, rng, settled=True):
     exits_by_room = {}
     for exit_ in area.get("exits") or ():
         exits_by_room.setdefault(exit_["source"], []).append(exit_["name"])
-    for room, name in zip(rooms, room_names(race, len(rooms), rng, settled=settled)):
-        room["key"] = name
+    # **Streets first, then the places that open off them.** See `street_plan`: a run of
+    # rooms along one row of the lattice is one street with one name, and only the part of
+    # it changes. The trades are dealt among them at the cadence the building laws ask for,
+    # and a shop keeps its own name because a shop is not a stretch of street.
+    plan = street_plan(rooms, race, rng) if settled else {}
+    trades = list(TRADES if settled else WILD_TRADES)
+    rng.shuffle(trades)
+    trade_at = 0
+    for index, room in enumerate(rooms):
+        if index and index % 3 == 0 and trade_at < len(trades):
+            _, template = trades[trade_at]
+            trade_at += 1
+            room["key"] = (template % place_name(race, rng) if "%s" in template
+                           else template)
+        else:
+            room["key"] = plan.get(room["id"]) or room_names(race, 1, rng,
+                                                             settled=settled)[0]
         room["desc"] = describe(exits_by_room.get(room["id"], []), race, rng)
     if not area.get("display_name"):
         area["display_name"] = place_name(race, rng)
     return area
 
 
-def retell_exits(area):
+def retell_exits(area, race=None):
     """
     Rewrite each room's last sentence so it names the exits the room actually has.
 
@@ -632,10 +647,86 @@ def retell_exits(area):
         head, _, tail = text.rpartition(". ")
         if not head or not _is_ways_sentence(tail):
             continue
-        room["desc"] = "%s. %s" % (head, ways_sentence(by_room.get(room["id"], [])))
+        retold = "%s. %s" % (head, ways_sentence(by_room.get(room["id"], [])))
+        # **Rewriting the closing sentence changes the word count, and the gate has already
+        # run.** "Ways lead south and north" is shorter than what it replaced, so a room
+        # that passed the 34-word floor before the roads were laid could fall under it
+        # afterwards - and nothing downstream looks again. One measured at 33 words in a
+        # thirty-area run. The voice's own details make it up rather than filler.
+        details = list(voice_for(race).get("detail") or ())
+        used = 0
+        while len(retold.split()) < 34 and used < len(details):
+            addition = details[used]
+            used += 1
+            if addition in retold:
+                continue
+            retold = "%s %s" % (head + ".", addition) + " " + ways_sentence(
+                by_room.get(room["id"], []))
+        room["desc"] = retold
     return area
 
 
 def _is_ways_sentence(text):
     """Whether a sentence is one this module wrote about the ways out."""
     return text.startswith(("Ways lead ", "The only way on lies ", "There is no way on"))
+
+
+#: What a settlement's through-ways are called, by culture. A street keeps its name for its
+#: whole length; only the part of it changes.
+STREET_HEAD = ("Market", "Mill", "Bridge", "Kings", "Old", "Nether", "Upper", "Salt",
+               "Peel", "Kiln", "Cooper", "Draper", "Water", "Long", "Broad", "Chapel")
+
+#: Which end of a street a room stands at. A street of one or two rooms takes no suffix -
+#: nobody says "West End" of a street you can see the whole of.
+ENDS = ("West End", "Middle", "East End")
+
+
+def street_plan(rooms, race, rng, streets=None):
+    """
+    Give every room a street, so a town reads as streets rather than as a list of rooms.
+
+    Args:
+        rooms (list): Room records carrying `cell` as `[x, y, z]`.
+        race (str): Whose place this is, for the street vocabulary.
+        rng (random.Random): The world's own generator.
+        streets (dict, optional): Names already chosen, so two calls agree.
+
+    Returns:
+        plan (dict): `room id -> name`.
+
+    Notes:
+        **A road does not change its name at every corner.** Naming each room
+        independently gave a village where four rooms in a row were "a lane", "the street",
+        "a row" and "the market" - four streets that are really one, and a player who
+        cannot say where they are because nowhere has a name that lasts more than one step.
+
+        A street here is a ROW of the lattice: walk east and you stay on it. Its parts are
+        named for the end you are at, which is what the existing hand-built city does -
+        "Peel Row, Market End" and "New Market Street, West End" are the same street twice.
+    """
+    voice = voice_for(race)
+    kinds = voice.get("street", ("street",))
+    chosen = streets if streets is not None else {}
+    rows = {}
+    for room in rooms:
+        cell = room.get("cell") or [0, 0, 0]
+        rows.setdefault(cell[1], []).append(room)
+
+    plan = {}
+    for row, along in rows.items():
+        along.sort(key=lambda room: (room.get("cell") or [0, 0, 0])[0])
+        if row not in chosen:
+            head = rng.choice(STREET_HEAD)
+            kind = rng.choice(kinds)
+            chosen[row] = "%s %s" % (head, kind.title())
+        name = chosen[row]
+        if len(along) <= 2:
+            for room in along:
+                plan[room["id"]] = name
+            continue
+        third = max(1, len(along) // 3)
+        for index, room in enumerate(along):
+            end = ENDS[0] if index < third else (ENDS[2] if index >= len(along) - third
+                                                 else ENDS[1])
+            plan[room["id"]] = "%s, %s" % (name, end)
+    return plan

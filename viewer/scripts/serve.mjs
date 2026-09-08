@@ -407,6 +407,36 @@ createServer(async (req, res) => {
     return;
   }
 
+  // One file out of one run - the worldfile in practice, which is the only place the
+  // ROOMS of a generated area live.
+  //
+  // **The progress feed carries counts, not contents, and deliberately so**: a hundred
+  // areas of fifty rooms is five thousand descriptions and the viewer polls that file every
+  // two seconds. But it means a pin drawn from the feed knows how many rooms an area has
+  // and not where any of them are, so clicking one could never show its streets the way
+  // the fish camp and the city show theirs. This is where the rooms come from when
+  // somebody asks for them.
+  if (raw.startsWith("/runs/") && req.method === "GET") {
+    let rest = normalize(raw.slice("/runs/".length));
+    while (rest.startsWith("..")) rest = rest.slice(2);
+    const file = join(runsDir, rest);
+    if (!file.startsWith(runsDir) || !file.endsWith(".json")) {
+      res.writeHead(403, { "content-type": "text/plain" }).end("forbidden");
+      return;
+    }
+    try {
+      const body = await readFile(file);
+      console.log(`200 GET ${req.url} (${body.length} bytes)`);
+      res.writeHead(200, { "content-type": "application/json",
+                           "content-length": body.length,
+                           "cache-control": "no-store" }).end(body);
+    } catch {
+      console.log(`404 GET ${req.url}`);
+      res.writeHead(404, { "content-type": "text/plain" }).end("not found");
+    }
+    return;
+  }
+
   if (raw === "/routes/" || raw === "/routes") {
     try {
       const names = (await readdir(routesDir)).filter((n) => n.endsWith(".json"));
