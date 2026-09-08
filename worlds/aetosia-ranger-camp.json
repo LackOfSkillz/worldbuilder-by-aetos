@@ -1032,11 +1032,11 @@
   },
   {
    "anchor": {
-    "bearing_deg": 0.0,
-    "latitude_deg": -4.460443,
-    "longitude_deg": -2.515971,
-    "note": "anchored on the ferry slip, which is the passage first mark",
-    "spacing_m": 40.0
+    "bearing_deg": 210.0,
+    "latitude_deg": -4.460759,
+    "longitude_deg": -2.515101,
+    "note": "on the bank beside the ferry berth, not on it. The berth is the passage's first mark and lies in an 11 m cut; a room pinned there is a room under water.",
+    "spacing_m": 30.0
    },
    "exits": [
     {
@@ -1163,12 +1163,12 @@
       0,
       0
      ],
-     "elevation_m": -10.837032,
+     "elevation_m": 0.247911,
      "id": 1071,
      "key": "The Ferry Slip",
-     "latitude_deg": -4.460443,
-     "longitude_deg": -2.515971,
-     "submerged": true
+     "latitude_deg": -4.460759,
+     "longitude_deg": -2.515101,
+     "submerged": false
     },
     {
      "cell": [
@@ -1176,12 +1176,12 @@
       0,
       0
      ],
-     "elevation_m": -8.123777,
+     "elevation_m": 0.281543,
      "id": 1070,
      "key": "The Ferry Green",
-     "latitude_deg": -4.460443,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.460851,
+     "longitude_deg": -2.51494,
+     "submerged": false
     },
     {
      "cell": [
@@ -1189,12 +1189,12 @@
       -1,
       0
      ],
-     "elevation_m": -7.759258,
+     "elevation_m": 0.261929,
      "id": 1069,
      "key": "The Drove Road",
-     "latitude_deg": -4.460689,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.460691,
+     "longitude_deg": -2.514848,
+     "submerged": false
     },
     {
      "cell": [
@@ -1202,12 +1202,12 @@
       1,
       0
      ],
-     "elevation_m": -8.473346,
+     "elevation_m": 0.311981,
      "id": 1072,
      "key": "The Waiting Shelter",
-     "latitude_deg": -4.460197,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.461011,
+     "longitude_deg": -2.515033,
+     "submerged": false
     },
     {
      "cell": [
@@ -1215,12 +1215,12 @@
       -2,
       0
      ],
-     "elevation_m": -7.379358,
+     "elevation_m": 0.251106,
      "id": 1068,
      "key": "The Carr Edge",
-     "latitude_deg": -4.460935,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.460531,
+     "longitude_deg": -2.514755,
+     "submerged": false
     },
     {
      "cell": [
@@ -1228,12 +1228,12 @@
       -1,
       0
      ],
-     "elevation_m": -10.718745,
+     "elevation_m": 0.235245,
      "id": 1074,
      "key": "The Old Wharf",
-     "latitude_deg": -4.460689,
-     "longitude_deg": -2.515971,
-     "submerged": true
+     "latitude_deg": -4.460599,
+     "longitude_deg": -2.515008,
+     "submerged": false
     },
     {
      "cell": [
@@ -1241,12 +1241,12 @@
       -2,
       0
      ],
-     "elevation_m": -10.578095,
+     "elevation_m": 0.231147,
      "id": 1073,
      "key": "The Wharf Track",
-     "latitude_deg": -4.460935,
-     "longitude_deg": -2.515971,
-     "submerged": true
+     "latitude_deg": -4.460439,
+     "longitude_deg": -2.514916,
+     "submerged": false
     },
     {
      "cell": [
@@ -1254,12 +1254,12 @@
       -3,
       0
      ],
-     "elevation_m": -6.980993,
+     "elevation_m": 0.246426,
      "id": 1067,
      "key": "The Alder Carr",
-     "latitude_deg": -4.461182,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.460371,
+     "longitude_deg": -2.514663,
+     "submerged": false
     },
     {
      "cell": [
@@ -1267,12 +1267,12 @@
       -4,
       0
      ],
-     "elevation_m": -6.565102,
+     "elevation_m": 0.244931,
      "id": 1066,
      "key": "The Reed Walk",
-     "latitude_deg": -4.461428,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.460211,
+     "longitude_deg": -2.51457,
+     "submerged": false
     },
     {
      "cell": [
@@ -1280,12 +1280,12 @@
       -5,
       0
      ],
-     "elevation_m": -6.133328,
+     "elevation_m": 0.245346,
      "id": 1065,
      "key": "The Turf Lip",
-     "latitude_deg": -4.461674,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.460052,
+     "longitude_deg": -2.514477,
+     "submerged": false
     },
     {
      "cell": [
@@ -1293,12 +1293,12 @@
       -6,
       0
      ],
-     "elevation_m": -5.690017,
+     "elevation_m": 0.245799,
      "id": 1064,
      "key": "The Shingle Beach",
-     "latitude_deg": -4.46192,
-     "longitude_deg": -2.516218,
-     "submerged": true
+     "latitude_deg": -4.459892,
+     "longitude_deg": -2.514385,
+     "submerged": false
     }
    ]
   },
