@@ -390,8 +390,16 @@ export function mountWorldPanel(parent, getViewer) {
   }
 
   const areaRow = el("div", "wb-jump");
-  const showAreas = button("show areas");
-  showAreas.addEventListener("click", async () => {
+  const showAreas = button("hide areas");
+
+  /// Load the areas for this planet and put them on the globe.
+  ///
+  /// **On by default, and turned OFF by choice.** A world with areas in it that shows an
+  /// empty globe until somebody finds the right button is a world that looks empty - and
+  /// after a reload the first thing anybody wants is the thing they were just looking at.
+  /// The button now says what pressing it will DO, so its label is the state you are not
+  /// in.
+  async function loadAndDrawAreas() {
     let warning = "";
     // **"Show areas" with nothing loaded used to say "0 areas on the globe" and stop.**
     // That is true and useless: the areas were on disk, in a worldfile for this very planet,
@@ -417,6 +425,18 @@ export function mountWorldPanel(parent, getViewer) {
     }
     redrawAreas();
     if (warning) note.textContent += ` (${warning})`;
+  }
+
+  showAreas.addEventListener("click", async () => {
+    if (drawn) {
+      drawn.remove();
+      drawn = null;
+      showAreas.textContent = "show areas";
+      note.textContent = "areas hidden";
+      return;
+    }
+    showAreas.textContent = "hide areas";
+    await loadAndDrawAreas();
   });
   const flyAreas = button("fly to areas");
   flyAreas.addEventListener("click", async () => {
@@ -719,6 +739,11 @@ export function mountWorldPanel(parent, getViewer) {
     if (!viewer) return;
     clearInterval(arm);
     stop = startAutosave(viewer);
+    // Areas are shown without being asked for; see `loadAndDrawAreas`.
+    loadAndDrawAreas().catch((error) => {
+      note.textContent = `could not show areas: ${error.message}`;
+    });
+
     const pending = sessionStorage.getItem("wb.pendingAreas");
     if (pending) {
       sessionStorage.removeItem("wb.pendingAreas");

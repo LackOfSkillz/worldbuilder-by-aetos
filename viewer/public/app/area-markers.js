@@ -279,6 +279,9 @@ export function drawAreas(viewer, Cesium, document) {
 /// enough that the whole area is on screen.
 const AREA_VIEW_M = 2500.0;
 
+//: How far above the ground the camera must end up, whatever the pitch and the range.
+const CLEARANCE_M = 700.0;
+
 
 /// Hover to read, click to fly down.
 ///
@@ -343,6 +346,44 @@ export function enableAreaInput(viewer, Cesium, document, source, place = null) 
 }
 
 
+//: The pending arrival snap, so a second click cancels the first one's.
+let arrivalTimer = null;
+
+/// How high the ground stands at a place, and around it, in metres above datum.
+///
+/// **The camera has to clear the terrain, not the datum.** `fromDegrees` with no height
+/// puts a target at sea level, so a fly-to at two and a half kilometres range and fifty
+/// degrees of pitch stands the camera about nineteen hundred metres above SEA LEVEL - which
+/// is fine over a bayou and is two kilometres inside the rock once somebody paints a
+/// four-thousand-metre range. Clicking an area then flew the camera into the mountain.
+///
+/// The neighbourhood is sampled as well as the point, because the peak that swallows the
+/// camera is rarely the one directly under the pin.
+function groundAround(latitudeDeg, longitudeDeg, reachM = 4000.0, rays = 8) {
+  const wb = window.__wb;
+  if (!wb || !wb.engine || typeof wb.engine.elevationM !== "function") return 0;
+  const radiusM = (wb.spec && wb.spec.radiusM) || 6371000;
+  const degrees = (180 / Math.PI) * (reachM / radiusM);
+  let highest = 0;
+  const look = (lat, lon) => {
+    try {
+      const height = wb.engine.elevationM(wb.world, lat, lon);
+      if (Number.isFinite(height) && height > highest) highest = height;
+    } catch {
+      // A world mid-swap answers nothing; sea level is the safe floor.
+    }
+  };
+  look(latitudeDeg, longitudeDeg);
+  const here = highest;
+  for (let i = 0; i < rays; i += 1) {
+    const bearing = (2 * Math.PI * i) / rays;
+    look(latitudeDeg + degrees * Math.cos(bearing),
+         longitudeDeg + degrees * Math.sin(bearing) / Math.max(0.2, Math.cos(
+           (latitudeDeg * Math.PI) / 180)));
+  }
+  return { here, highest };
+}
+
 /// Put a place in the MIDDLE of the screen and look at it.
 ///
 /// **A pitched camera does not look at what is beneath it, and that was the bug.** Flying
@@ -359,8 +400,28 @@ export function enableAreaInput(viewer, Cesium, document, source, place = null) 
 export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
                            rangeM = AREA_VIEW_M, pitchDeg = -50.0, durationS = 1.8) {
   const camera = viewer.camera;
-  const centre = Cesium.Cartesian3.fromDegrees(longitudeDeg, latitudeDeg);
-  const hpr = new Cesium.HeadingPitchRange(0.0, Cesium.Math.toRadians(pitchDeg), rangeM);
+  // **Land the previous flight before starting another.** `lookAt` computes a pose from the
+  // camera's current state, and a camera still in flight - or still locked to the last
+  // target's reference frame - gives a pose that is neither where it was nor where it is
+  // going. Measured: the first click flew correctly and every click after it left the
+  // camera exactly where it stood, at a height belonging to neither place. Two lines, and
+  // they have to be the first two.
+  if (typeof camera.cancelFlight === "function") camera.cancelFlight();
+  camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+  if (arrivalTimer) clearTimeout(arrivalTimer);
+
+  // Anchored to the ground, not to the datum, and given room to clear the highest thing
+  // nearby. See `groundAround`.
+  const ground = groundAround(latitudeDeg, longitudeDeg);
+  const base = Math.max(0, ground.here);
+  const centre = Cesium.Cartesian3.fromDegrees(longitudeDeg, latitudeDeg, base);
+  // The camera ends up `base + range * sin(pitch)` above the datum, and that has to clear
+  // the HIGHEST ground nearby, not the ground under the pin - the peak that swallows a
+  // camera is rarely the one directly beneath it. Solved for range rather than nudged.
+  const lift = Math.abs(Math.sin(Cesium.Math.toRadians(pitchDeg))) || 0.5;
+  const wanted = (Math.max(0, ground.highest) + CLEARANCE_M - base) / lift;
+  const range = Math.max(rangeM, wanted);
+  const hpr = new Cesium.HeadingPitchRange(0.0, Cesium.Math.toRadians(pitchDeg), range);
 
   // **`lookAt` is used to COMPUTE the pose, not to move the camera.** It is the only call
   // that reliably works out where a camera must stand to hold a target in the middle of
@@ -373,14 +434,37 @@ export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
   // here - called without throwing, camera never moved - so the pose is taken from
   // `lookAt` and flown to explicitly, which does work.
   camera.lookAt(centre, hpr);
-  const destination = Cesium.Cartesian3.clone(camera.position);
+  // **`positionWC`, not `position`.** Under `lookAt` the camera is locked to a reference
+  // frame around the target and `camera.position` is expressed IN that frame; cloning it
+  // and then releasing the transform hands `flyTo` a local offset to be read as a world
+  // coordinate. Measured: the pose itself was right - 5,879 m over a 3,964 m peak - and the
+  // camera flew from it back to where it had started, every time, for every target. The
+  // world-coordinate reading is the same point without the frame.
+  const destination = Cesium.Cartesian3.clone(camera.positionWC);
   const orientation = { heading: camera.heading, pitch: camera.pitch, roll: camera.roll };
   // **Release the transform before flying.** `lookAt` locks the camera to a reference
   // frame around the target; left set, every later movement is interpreted in that frame
   // and the globe stops dragging normally.
   camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
 
-  camera.flyTo({ destination, orientation, duration: durationS });
+  // **The flight is the animation; the arrival is set.** `flyTo` follows an arc and does
+  // not always finish on the pose it was given - measured, the same target reached from two
+  // different starting points landed at 1,917 m from one and 2,502 m from the other, with
+  // the computed pose identical to the metre in both cases and the second sitting 226 px
+  // off centre. Snapping at the end costs nothing visually, because it is the frame the
+  // flight was already trying to reach.
+  //
+  // `complete` does not fire on a cancelled flight, so a second click interrupting a first
+  // does not fight it.
+  const arrive = () => camera.setView({ destination, orientation });
+  camera.flyTo({ destination, orientation, duration: durationS, complete: arrive });
+  // **A timer as well as `complete`, because `complete` does not always run.** Measured:
+  // arriving at the coast from a four-thousand-metre peak left the camera at the PEAK's
+  // altitude, moved horizontally and 572 px off centre, with `complete` never firing - the
+  // flight had ended by another route. The timer fires just past the flight's own duration
+  // and sets the pose the flight was aiming at; it is cleared by the next click, so two
+  // clicks in quick succession do not fight.
+  arrivalTimer = setTimeout(arrive, durationS * 1000 + 150);
 }
 
 /// The hover card. One per draw, reused, hidden when nothing is under the cursor.
