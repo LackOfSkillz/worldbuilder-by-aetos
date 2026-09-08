@@ -229,6 +229,16 @@ DEMO_TABLE = [
             wants={"elevation_m": (20.0, 800.0), "relief_m": (250.0, 1e9)}),
     Culture("gnome workshop village", race="gnome", size="village", purpose="home",
             wants={"elevation_m": (60.0, 300.0), "prominence_m": (5.0, 1e9)}),
+    # **Moved up, by this table's own rule.** The order is priority and the note above says
+    # the rarer and more particular peoples go first - and a halfling hamlet, which needs
+    # fresh water, is more particular than a volgrin steading, which needs a gentle slope.
+    # Listed below them it never got a turn: measured on a riverside site that fitted all
+    # three, the classifier answered volgrin, lunari, halfling in that order, so the two
+    # permissive cultures filled their quotas from the riverbanks and every halfling hamlet
+    # in a hundred-area run went unplaced.
+    Culture("halfling farm hamlet", race="halfling", size="hamlet", purpose="home",
+            wants={"elevation_m": (5.0, 120.0), "slope_m": (0.0, 8.0),
+                   "needs": ("fresh",)}),
     Culture("volgrin steading", race="volgrin", size="town", purpose="home",
             wants={"elevation_m": (20.0, 200.0), "slope_m": (0.0, 6.0)}),
     Culture("aethari coastal city", race="aethari", size="city", purpose="trade",
@@ -243,9 +253,6 @@ DEMO_TABLE = [
             wants={"needs": ("landing",), "elevation_m": (1.0, 40.0)}),
     Culture("lunari pack holt", race="lunari", size="village", purpose="home",
             wants={"elevation_m": (30.0, 250.0), "forbids": ("harbour",)}),
-    Culture("halfling farm hamlet", race="halfling", size="hamlet", purpose="home",
-            wants={"elevation_m": (5.0, 120.0), "slope_m": (0.0, 8.0),
-                   "needs": ("fresh",)}),
     Culture("elf woodland village", race="elf", size="village", purpose="home",
             wants={"elevation_m": (25.0, 250.0), "slope_m": (0.0, 12.0),
                    "forbids": ("harbour",)}),

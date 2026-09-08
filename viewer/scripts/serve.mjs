@@ -2,9 +2,10 @@
 // anything the page fetches from this origin appears in the log below, and anything
 // NOT in the log went somewhere else.
 import { createServer } from "node:http";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { stat, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------------------
@@ -64,6 +65,30 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
 // Read-only, and containment-checked exactly like `root`: a path that escapes the directory is
 // refused before it reaches the filesystem.
 const worldsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "worlds");
+
+/// Which interpreter runs the generator.
+///
+/// **`python` on PATH is not necessarily the one with the engine in it.** The pyo3 module
+/// is built into a virtualenv by maturin, and a stale system install answers imports
+/// perfectly well while missing everything added since - measured here as
+/// `module 'worldbuilder_engine' has no attribute 'relief_canonical'`, which reads like a
+/// broken build and is a wrong interpreter. `WB_PYTHON` overrides; otherwise the venvs
+/// this project actually uses are tried in order before falling back.
+function pythonForGenerator() {
+  if (process.env.WB_PYTHON) return process.env.WB_PYTHON;
+  const root = join(worldsDir, "..");
+  const candidates = [
+    join(root, ".venv", "Scripts", "python.exe"),
+    join(root, ".venv", "bin", "python"),
+    join(root, "..", "worldbuilder_by_aetos", ".venv", "Scripts", "python.exe"),
+    join(root, "..", "worldbuilder_by_aetos", ".venv", "bin", "python"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return "python";
+}
+
 
 // Routes an author clicks onto the globe. Written from the browser, read from the shell -
 // which is the whole point: an intent somebody drew should not have to be handed over as a
@@ -235,6 +260,86 @@ createServer(async (req, res) => {
         res.writeHead(400, { "content-type": "application/json" })
           .end(JSON.stringify({ error: String(error.message) }));
       }
+    });
+    return;
+  }
+
+  // POST /generate/ starts a populate run and answers with its id.
+  //
+  // **The generator is Python and the viewer is a browser**, so something has to stand
+  // between them. This spawns the runner, reads the run id off its first line of stdout -
+  // which the runner flushes before it starts work, for exactly this - and answers with it
+  // so the page can begin following `/progress/` while the run is still going.
+  //
+  // The process is deliberately NOT waited on. A hundred areas takes seconds and could take
+  // minutes on a bigger count; holding the response open until it finished would make the
+  // live feed pointless and would time out the fetch.
+  if ((raw === "/generate/" || raw === "/generate") && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; if (body.length > 100_000) req.destroy(); });
+    req.on("end", () => {
+      let request;
+      try {
+        request = JSON.parse(body || "{}");
+      } catch (error) {
+        res.writeHead(400, { "content-type": "application/json" })
+           .end(JSON.stringify({ error: String(error.message) }));
+        return;
+      }
+      const world = String(request.world || "").replace(/[^A-Za-z0-9_.-]/g, "");
+      if (!world) {
+        res.writeHead(400, { "content-type": "application/json" })
+           .end('{"error":"world is required"}');
+        return;
+      }
+      const count = Math.max(1, Math.min(500, Number(request.count) || 100));
+      const label = String(request.label || "populate")
+        .replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 40) || "populate";
+      const args = [
+        "-m", "evennia_roundtrip.generate",
+        "--world", join(worldsDir, world),
+        "--root", join(worldsDir, ".."),
+        "--count", String(count),
+        "--label", label,
+      ];
+      // `--region=-26.5,...` and not `--region -26.5,...`: a value beginning with a minus
+      // is read by argparse as the next FLAG, and the runner exits 2 saying the option
+      // expected an argument. Every region south of the equator starts with a minus.
+      if (request.region) args.push(`--region=${request.region}`);
+      if (request.sea) args.push(`--sea=${request.sea}`);
+      const python = pythonForGenerator();
+      const child = spawn(python, args, { cwd: join(worldsDir, ".."), windowsHide: true });
+      let out = "";
+      let answered = false;
+      const fail = (why) => {
+        if (answered) return;
+        answered = true;
+        console.log(`500 POST /generate/ ${why}`);
+        res.writeHead(500, { "content-type": "application/json" })
+           .end(JSON.stringify({ error: why }));
+      };
+      child.stdout.on("data", (chunk) => {
+        out += chunk;
+        const line = out.split("\n")[0];
+        if (answered || !out.includes("\n")) return;
+        try {
+          const first = JSON.parse(line);
+          if (!first.run_id) throw new Error("no run_id");
+          answered = true;
+          console.log(`200 POST /generate/ -> ${first.run_id} (${count} areas of ${world})`);
+          res.writeHead(200, { "content-type": "application/json" })
+             .end(JSON.stringify({ run_id: first.run_id, count, world }));
+        } catch (error) {
+          fail(`the generator's first line was not a run id: ${line.slice(0, 120)}`);
+        }
+      });
+      let errors = "";
+      child.stderr.on("data", (chunk) => { errors += chunk; });
+      child.on("error", (error) => fail(String(error.message)));
+      child.on("close", (code) => {
+        if (code !== 0) console.log(`generator exited ${code}: ${errors.slice(-400)}`);
+        if (code !== 0) fail(`the generator exited ${code}: ${errors.slice(-300)}`);
+      });
     });
     return;
   }

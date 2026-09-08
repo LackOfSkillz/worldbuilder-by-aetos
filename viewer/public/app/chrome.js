@@ -288,6 +288,16 @@ export function splitColumns(document) {
     // to attach its picker to, and without one it throws. Which it did - and the catch
     // below swallowed it, so the paint section simply never appeared and looked like a
     // feature nobody had written.
+    // The populate section, above the brushes: the order somebody works in is choose a
+    // world, fill it, then adjust what came out.
+    import("./generate-panel.js").then((mod) => {
+      mod.buildGeneratePanel(left, () => (window.__wb || {}).viewer);
+      const stack = left.querySelector(".wb-section:last-child");
+      if (stack) left.append(stack);
+    }).catch((error) => {
+      console.error("worldbuilder: populate panel failed to build", error);
+    });
+
     const whenReady = (attempt = 0) => {
       const wb = window.__wb || {};
       if (!wb.viewer || !window.Cesium) {
