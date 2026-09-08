@@ -34,10 +34,25 @@ BY_SEA = "sea"
 BY_BOAT = "boat"
 
 
+def places(world):
+    """
+    Every area a player can stand in: the settlements AND the roads between them.
+
+    Notes:
+        **Roads are not areas and they are still full of rooms.** A worldfile keeps them
+        under `roads` rather than `areas`, because asking for a hundred areas should give a
+        hundred places and not a hundred places plus the eighty-six ways between them. But
+        every check that walks rooms - who owns which id, which exit crosses a boundary -
+        has to see both, or a road becomes a hole in the map and every settlement beyond it
+        reads as unreachable.
+    """
+    return list(world.get("areas") or ()) + list(world.get("roads") or ())
+
+
 def _room_owners(world):
     """Which area each room id belongs to."""
     owner = {}
-    for area in world.get("areas", []):
+    for area in places(world):
         for room in area.get("rooms", []):
             owner[room["id"]] = area["name"]
     return owner
@@ -57,7 +72,7 @@ def land_seams(world):
     """
     owner = _room_owners(world)
     seams = {}
-    for area in world.get("areas", []):
+    for area in places(world):
         for exit_ in area.get("exits", []):
             here = owner.get(exit_["source"])
             there = owner.get(exit_["destination"])
@@ -106,7 +121,7 @@ def check(world, origin=None):
         no player can get to. So this walks outward from one origin rather than counting
         components, which is the question a player is really asking.
     """
-    areas = [area["name"] for area in world.get("areas", [])]
+    areas = [area["name"] for area in places(world)]
     seams = land_seams(world)
     sea = sea_connections(world)
     afloat = {name for name, record in sea.items() if record["docks"]}

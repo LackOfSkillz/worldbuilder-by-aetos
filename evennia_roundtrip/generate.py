@@ -106,6 +106,25 @@ def voice_race(culture):
     return "human"
 
 
+def people_of(culture):
+    """
+    Whose place this is, for the map key and the palette.
+
+    **Not the same as the voice it is written in.** `voice_race` answers which vocabulary
+    the prose uses and now returns things like `wild_upland` and `game_wood`, because a fen
+    and a crag do not read alike. Storing that in `race` put `game_moor` in the legend
+    beside `dwarf` and left the palette without a colour for it. The voice is a fact about
+    the writing; this is a fact about who lives there.
+    """
+    if culture.race:
+        return culture.race
+    if culture.purpose == "hunting":
+        return "wild" if culture.faction == cultures.HOSTILE else "game"
+    if "goblin" in culture.name:
+        return "goblin"
+    return "human"
+
+
 def _haversine(lat1, lon1, lat2, lon2, radius_m):
     a1, o1, a2, o2 = map(math.radians, (lat1, lon1, lat2, lon2))
     h = (math.sin((a2 - a1) / 2) ** 2
@@ -803,8 +822,8 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin):
                    "bearing_deg": 0.0, "spacing_m": populate.ROOM_SPACING_M},
         "layout_quality": lattice["shape"],
     }
-    race = voice_race(culture)
-    naming.name_and_describe(area, race, rng,
+    voice = voice_race(culture)
+    naming.name_and_describe(area, voice, rng,
                              settled=culture.purpose not in ("hunting",))
     area["name"] = area["display_name"].lower()
 
@@ -818,7 +837,8 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin):
         "latitude_deg": area["anchor"]["latitude_deg"],
         "longitude_deg": area["anchor"]["longitude_deg"],
         "culture": culture.name,
-        "race": race,
+        "race": people_of(culture),
+        "voice": voice,
         "purpose": culture.purpose,
         "faction": culture.faction,
         "size": culture.size,
@@ -984,6 +1004,41 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     on_area(area)
                 break
 
+        # **A second pass, because the number asked for is the number wanted.** The first
+        # pass respects the quotas, and quotas are a shape rather than a target: when the
+        # ground runs out of swamp there are no more saurathi towns, and the run used to
+        # simply stop short - a hundred asked for and eighty-six delivered, with the
+        # shortfall explained but not made up. Somebody who types a hundred and twenty-three
+        # wants a hundred and twenty-three.
+        #
+        # So whatever is still missing is filled from the sites that are left with whichever
+        # culture actually fits them, quota ignored. The manifest records how many were
+        # placed this way, because a world whose last twenty areas are all human villages is
+        # a fact worth being able to see rather than one to discover by reading it.
+        over_quota = 0
+        if len(made) < count:
+            for site in sites:
+                if len(made) >= count:
+                    break
+                if any(_haversine(site["latitude_deg"], site["longitude_deg"],
+                                  area["latitude_deg"], area["longitude_deg"],
+                                  radius_m) < NEAR_M for area in made):
+                    continue
+                for name in classify(site):
+                    culture = by_name[name]
+                    built = build_area(site, culture, at, radius_m, rng, base_id, origin)
+                    if built["area"] is None:
+                        continue
+                    area = built["area"]
+                    filled[_key_for(culture)] = filled.get(_key_for(culture), 0) + 1
+                    over_quota += 1
+                    base_id += len(area["rooms"]) + 10
+                    made.append(area)
+                    progress.write(json.dumps(feed_line(area)) + "\n")
+                    if on_area:
+                        on_area(area)
+                    break
+
         progress.close()
         document["areas"] = existing + made
 
@@ -991,11 +1046,15 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # joined to the nearest area already on the network; see `connect_areas`.
         roads, road_areas = connect_areas(document["areas"], radius_m, rng,
                                           base_id + 10000, at=at)
-        document["areas"] = document["areas"] + road_areas
+        # **Roads go in their own list, not among the areas.** Asking for a hundred areas
+        # should give a hundred places, not a hundred places plus the eighty-six ways
+        # between them - a road connects areas, it is not one. Everything that walks rooms
+        # reads `reachability.places`, which sees both.
+        document["roads"] = list(document.get("roads") or ()) + road_areas
         # **Every room's prose is brought back into line with its exits.** The roads were
         # laid after the descriptions were written, so a settlement room that gained one now
         # has a door its own text does not mention - the exact fault the law forbids.
-        for area in document["areas"]:
+        for area in reachability.places(document):
             if area.get("culture") or area.get("purpose") in ("road", "path"):
                 naming.retell_exits(area)
         run.write_json("roads.json", roads)
@@ -1009,6 +1068,8 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "npcs": sum(a["npcs"] for a in made),
             "shops": sum(a["shops"] for a in made),
             "refused": len(refused),
+            "over_quota": over_quota,
+            "short_of": max(0, count - len(made)),
             "roads": sum(1 for road in roads if road["laid"]),
             "road_rooms": sum(len(road["rooms"]) for road in road_areas),
             "paths": sum(1 for road in roads if road.get("path")),
