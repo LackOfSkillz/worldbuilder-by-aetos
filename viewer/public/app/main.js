@@ -1215,6 +1215,55 @@ async function boot() {
   window.__wbReady = { ok: true, line };
   console.log("[worldbuilder]", line);
 
+  // **Strokes are held, not applied.** A brush shows a ghost the instant it is drawn and
+  // the ground does not move until somebody commits, because rebuilding the globe costs
+  // seconds and a drag lays a node every twenty-six pixels. Cheap preview, one expensive
+  // commit - which is how every editor with a brush behaves, and is what makes painting
+  // feel like painting rather than like waiting.
+  //
+  // Held records are in the *worldfile's* shape, not the engine's, so `paint.js`, the
+  // layers panel and the exporter all keep reading one vocabulary. Only the commit renames
+  // the fields, and only at the moment they reach `installWorld`.
+  {
+    let held = [];
+    window.__wb.holdFeatures = (records) => {
+      held = held.concat(records);
+      return held.length;
+    };
+    window.__wb.heldFeatures = () => held.slice();
+    window.__wb.discardFeatures = () => { const n = held.length; held = []; return n; };
+    window.__wb.commitFeatures = async () => {
+      if (!held.length) return { applied: 0 };
+      const worldfileRecords = held.slice();
+      held = [];
+      const engineRecords = worldfileRecords.map((f) => ({
+        latitudeDeg: f.latitude_deg,
+        longitudeDeg: f.longitude_deg,
+        targetM: f.target_m,
+        lengthM: f.length_m,
+        widthM: f.width_m,
+        bearingDeg: f.bearing_deg || 0,
+        compose: f.compose || "raise",
+        substrate: f.substrate || "derive",
+      }));
+      bootState.spec = {
+        ...bootState.spec,
+        features: [...bootState.spec.features, ...engineRecords],
+      };
+      // The worldfile keeps its own copy in its own shape, so a save writes what the
+      // generator reads rather than the engine's internal field names.
+      const doc = window.__wb.lastWorldfile || (window.__wb.lastWorldfile = {});
+      doc.features = (doc.features || []).concat(worldfileRecords);
+      await installWorld(bootState, null);
+      if (window.__wb.refreshLayers) window.__wb.refreshLayers();
+      window.dispatchEvent(new CustomEvent("wb-world-rebuilt",
+        { detail: { applied: engineRecords.length,
+                    features: bootState.spec.features.length } }));
+      return { applied: engineRecords.length };
+    };
+  }
+
+
   // **Hold the globe back until it is actually finished.** Cesium refines from coarse to fine,
   // so a half-loaded world looks like a finished one built badly - and the water solve lands
   // after the first tiles do, which would show a world whose lakes appear later. `?loading=0`

@@ -352,3 +352,15 @@ html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%;
 .wb-swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
              border: 1px solid rgba(0,0,0,.55); flex: none; }
 .wb-legend-label { font-size: 9px; color: #93aac1; }
+
+/* The one button in the paint tools that costs something. Apply rebuilds the globe; every
+   other control there is free, and a person about to spend seconds should be able to see
+   which button that is without reading it. */
+#wb-panel-left .wb-mini-go {
+  background: rgba(120,180,240,.28);
+  border-color: rgba(150,200,255,.55);
+  color: #eaf3ff;
+}
+#wb-panel-left .wb-mini-go:hover { background: rgba(140,200,255,.40); }
+#wb-panel-left .wb-mini-go:disabled,
+#wb-panel-left button:disabled { opacity: .38; cursor: default; }

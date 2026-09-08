@@ -302,14 +302,23 @@ export function splitColumns(document) {
       const wb = window.__wb;
       const tools = paint.buildTools(left, wb.viewer, window.Cesium,
                                      (features, brush) => {
-        // A stroke goes into the worldfile's own feature list, which is what the engine
-        // composites and what the layers panel reads - so a painted mountain is the same
-        // kind of thing as a generated one, not a parallel system that has to be merged.
-        const doc = wb.lastWorldfile || (wb.lastWorldfile = { features: [] });
-        doc.features = (doc.features || []).concat(features);
-        panel.refresh();
+        // **A stroke is held, not applied.** It is ghosted on the globe and parked; nothing
+        // touches the worldfile or the terrain until somebody presses apply. Painting stays
+        // instant and the one expensive operation happens once, when it is asked for.
+        const total = wb.holdFeatures ? wb.holdFeatures(features) : features.length;
         window.dispatchEvent(new CustomEvent("wb-painted",
-          { detail: { brush, features, total: doc.features.length } }));
+          { detail: { brush, features, held: total } }));
+      }, {
+        // Apply is the moment a painted mountain becomes real ground: the held records go
+        // into the same spec the seed built, the world is rebuilt, and the layers panel
+        // reads them like any other feature - one system, not two.
+        onApply: async () => {
+          if (!wb.commitFeatures) return;
+          const result = await wb.commitFeatures();
+          panel.refresh();
+          window.dispatchEvent(new CustomEvent("wb-paint-applied", { detail: result }));
+        },
+        onDiscard: () => { if (wb.discardFeatures) wb.discardFeatures(); },
       });
       wb.paintTools = tools;
       // The stack belongs under the tools; moving it after keeps that order as sections

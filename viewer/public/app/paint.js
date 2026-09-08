@@ -107,6 +107,102 @@ export function stroke(brush, points, radiusM, { size, target, layer } = {}) {
   return out;
 }
 
+//: What a held stroke looks like before it is real ground.
+//:
+//: **A ghost is not a preview of the terrain, it is a preview of the intent.** Rebuilding
+//: the globe to show one dab costs seconds, so the honest cheap thing to draw is the
+//: feature's own footprint - where it is, how big it is, which way it lies and whether it
+//: raises or carves. That is exactly the record the engine will composite, drawn flat.
+const GHOST = {
+  raise: { fill: "rgba(214,166,96,0.34)", edge: "rgba(214,166,96,0.85)" },
+  carve: { fill: "rgba(86,150,214,0.34)", edge: "rgba(86,150,214,0.85)" },
+};
+
+/// Walk `distanceM` from a point along a bearing, on a sphere of `radiusM`.
+function along(latDeg, lonDeg, bearingDeg, distanceM, radiusM) {
+  const rad = Math.PI / 180;
+  const lat = latDeg * rad, lon = lonDeg * rad, brg = bearingDeg * rad;
+  const d = distanceM / radiusM;
+  const lat2 = Math.asin(Math.sin(lat) * Math.cos(d)
+    + Math.cos(lat) * Math.sin(d) * Math.cos(brg));
+  const lon2 = lon + Math.atan2(Math.sin(brg) * Math.sin(d) * Math.cos(lat),
+                                Math.cos(d) - Math.sin(lat) * Math.sin(lat2));
+  return [lat2 / rad, ((lon2 / rad + 540) % 360) - 180];
+}
+
+/// Draw held features as translucent footprints, and take them away again.
+///
+/// Returns `{ show, clear, count }`. Entities are clamped to the ground so a ghost sits on
+/// the terrain that is there now, which is the terrain the stroke is about to change.
+///
+/// **A footprint alone is invisible at the zoom people paint from.** A forty-kilometre
+/// brush is under a pixel wide from twenty thousand kilometres up, so the first ghosts
+/// were drawn correctly and could not be seen - which is indistinguishable from a brush
+/// that does nothing. So every feature also gets a screen-space mark: a line along its own
+/// axis if it is a stroke, a dot if it is a dab. Those keep their width in pixels, so a
+/// ghost is legible from orbit and the true footprint appears underneath it on approach.
+function ghostLayer(viewer, Cesium) {
+  const entities = [];
+  const radiusM = viewer.scene.globe.ellipsoid.maximumRadius;
+  return {
+    show(features) {
+      for (const f of features) {
+        const paint = GHOST[f.compose] || GHOST.raise;
+        const edge = Cesium.Color.fromCssColorString(paint.edge);
+        if (f.length_m > f.width_m * 1.5) {
+          const half = f.length_m / 2;
+          const a = along(f.latitude_deg, f.longitude_deg, f.bearing_deg || 0, half, radiusM);
+          const b = along(f.latitude_deg, f.longitude_deg,
+                          (f.bearing_deg || 0) + 180, half, radiusM);
+          entities.push(viewer.entities.add({
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray([a[1], a[0], b[1], b[0]]),
+              width: 3,
+              material: edge,
+              clampToGround: true,
+            },
+          }));
+        } else {
+          entities.push(viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(f.longitude_deg, f.latitude_deg),
+            point: {
+              pixelSize: 8,
+              color: Cesium.Color.fromCssColorString(paint.fill),
+              outlineColor: edge,
+              outlineWidth: 1.5,
+              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            },
+          }));
+        }
+        entities.push(viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(f.longitude_deg, f.latitude_deg),
+          ellipse: {
+            // The engine reads `length_m` and `width_m` as full extents; Cesium wants
+            // semi-axes, so both are halved here rather than in the record.
+            semiMajorAxis: Math.max(f.length_m, f.width_m) / 2,
+            semiMinorAxis: Math.min(f.length_m, f.width_m) / 2,
+            rotation: Cesium.Math.toRadians(90 - (f.bearing_deg || 0)),
+            material: Cesium.Color.fromCssColorString(paint.fill),
+            // **Flat at datum, not clamped.** Cesium refuses an outline on ground-clamped
+            // geometry and ignores a `heightReference` with no height, so asking for both
+            // bought two warnings and neither effect. A footprint is a plan view of where
+            // the feature will be; sea level is the honest place to draw it, and the
+            // screen-space mark above carries legibility at any zoom.
+            height: 0,
+            outline: true,
+            outlineColor: edge,
+          },
+        }));
+      }
+    },
+    clear() {
+      for (const entity of entities) viewer.entities.remove(entity);
+      entities.length = 0;
+    },
+    count: () => entities.length,
+  };
+}
+
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -119,8 +215,11 @@ function el(tag, cls, text) {
 /// Args:
 ///   parent: where to attach.
 ///   viewer, Cesium: for picking a point on the globe.
-///   onPaint: `(features, brushName) => void` when a stroke is committed.
-export function buildTools(parent, viewer, Cesium, onPaint) {
+///   onPaint: `(features, brushName) => void` when a stroke is laid down. The stroke is
+///     HELD, not applied - it is ghosted on the globe and nothing rebuilds.
+///   hooks: `{ onApply, onDiscard }`. `onApply` is what actually makes the held strokes
+///     ground, and is the only expensive call in this file.
+export function buildTools(parent, viewer, Cesium, onPaint, hooks = {}) {
   const wrap = el("div", "wb-section");
   wrap.append(el("div", "wb-section-title", "paint"));
 
@@ -141,6 +240,14 @@ export function buildTools(parent, viewer, Cesium, onPaint) {
   const commit = el("button", "wb-mini", "finish stroke");
   commit.type = "button";
   commit.disabled = true;
+  const apply = el("button", "wb-mini wb-mini-go", "apply 0 strokes");
+  apply.type = "button";
+  apply.disabled = true;
+  const discard = el("button", "wb-mini", "discard");
+  discard.type = "button";
+  discard.disabled = true;
+  const ghosts = ghostLayer(viewer, Cesium);
+  let heldCount = 0;
 
   let current = "mountain";
   let armed = false;
@@ -161,6 +268,9 @@ export function buildTools(parent, viewer, Cesium, onPaint) {
     chain.textContent = chaining ? `chain: ${path.length} node(s)` : "chain: off";
     chain.classList.toggle("wb-brush-on", chaining);
     commit.disabled = !(chaining && path.length > 1);
+    apply.textContent = `apply ${heldCount} stroke${heldCount === 1 ? "" : "s"}`;
+    apply.disabled = heldCount === 0;
+    discard.disabled = heldCount === 0;
   };
 
   for (const [name, b] of Object.entries(BRUSHES)) {
@@ -178,10 +288,48 @@ export function buildTools(parent, viewer, Cesium, onPaint) {
   size.addEventListener("input", paintUI);
   height.addEventListener("input", paintUI);
 
-  arm.addEventListener("click", () => { armed = !armed; paintUI(); });
+  arm.addEventListener("click", () => {
+    armed = !armed;
+    takeTheDrag(armed);
+    if (!armed) { dragging = false; path = []; }
+    paintUI();
+  });
   chain.addEventListener("click", () => {
+    // Kept as an explicit multi-click mode for placing a long line node by node, which a
+    // drag cannot do across a camera move. A drag is the ordinary way; this is the careful
+    // one.
     chaining = !chaining;
     path = [];
+    paintUI();
+  });
+
+
+  // **One road for every finished stroke.** Chain-commit, drag-release and single dab all
+  // end here, so there is exactly one place that decides a stroke is ghosted and held
+  // rather than applied - and no way for a gesture to quietly take the expensive path.
+  const lay = (features) => {
+    if (!features.length) return;
+    ghosts.show(features);
+    heldCount += features.length;
+    paintUI();
+    if (onPaint) onPaint(features, current);
+  };
+
+  apply.addEventListener("click", async () => {
+    apply.disabled = true;
+    apply.textContent = "applying...";
+    try {
+      if (hooks.onApply) await hooks.onApply();
+      ghosts.clear();
+      heldCount = 0;
+    } finally {
+      paintUI();
+    }
+  });
+  discard.addEventListener("click", () => {
+    ghosts.clear();
+    heldCount = 0;
+    if (hooks.onDiscard) hooks.onDiscard();
     paintUI();
   });
 
@@ -195,30 +343,88 @@ export function buildTools(parent, viewer, Cesium, onPaint) {
     const features = stroke(current, path, radiusM(),
                             { size: Number(size.value), target: Number(height.value) });
     path = [];
-    paintUI();
-    if (onPaint) onPaint(features, current);
+    lay(features);
   });
 
-  // Picking is on LEFT_CLICK and only while armed, so painting never competes with
-  // dragging the globe or with the coordinate picker - the same rule the area pins follow.
-  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-  handler.setInputAction((movement) => {
-    if (!armed) return;
-    const ray = viewer.camera.getPickRay(movement.position);
+  // **A brush must take the drag away from the camera.** Cesium owns click-and-drag for
+  // rotating the globe, so an armed brush that only listened for clicks did nothing while
+  // the world spun under the cursor - which is exactly what a paint tool must not do. So
+  // arming the brush disables camera rotation and disarming gives it back, and the drag
+  // becomes a stroke.
+  //
+  // Down, move, up: press to begin, drag to lay a line, release to commit. A press and
+  // release without moving is a single dab, which is the same gesture an image editor
+  // gives you and needs no separate mode.
+  const controller = viewer.scene.screenSpaceCameraController;
+  const cameraDefaults = {
+    rotate: controller.enableRotate,
+    translate: controller.enableTranslate,
+    tilt: controller.enableTilt,
+    look: controller.enableLook,
+  };
+  const takeTheDrag = (mine) => {
+    controller.enableRotate = mine ? false : cameraDefaults.rotate;
+    controller.enableTranslate = mine ? false : cameraDefaults.translate;
+    controller.enableTilt = mine ? false : cameraDefaults.tilt;
+    controller.enableLook = mine ? false : cameraDefaults.look;
+    viewer.scene.canvas.style.cursor = mine ? "crosshair" : "";
+  };
+
+  const groundAt = (windowPosition) => {
+    const ray = viewer.camera.getPickRay(windowPosition);
     const hit = ray && viewer.scene.globe.pick(ray, viewer.scene);
-    if (!hit) return;
+    if (!hit) return null;
     const c = Cesium.Cartographic.fromCartesian(hit);
-    const lat = Cesium.Math.toDegrees(c.latitude);
-    const lon = Cesium.Math.toDegrees(c.longitude);
-    if (chaining) {
-      path.push([lat, lon]);
-      paintUI();
+    return [Cesium.Math.toDegrees(c.latitude), Cesium.Math.toDegrees(c.longitude)];
+  };
+
+  //: How far the cursor must travel before a drag lays another node, in screen pixels.
+  //: Small enough to follow a curve, large enough that a stroke is not a thousand
+  //: features - the same decimation the rivers needed, applied at the input end.
+  const NODE_EVERY_PX = 26;
+
+  let dragging = false;
+  let lastPixel = null;
+  let moved = false;
+
+  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+
+  handler.setInputAction((event) => {
+    if (!armed) return;
+    dragging = true;
+    moved = false;
+    lastPixel = event.position;
+    const point = groundAt(event.position);
+    if (point) path.push(point);
+    paintUI();
+  }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+
+  handler.setInputAction((event) => {
+    if (!armed || !dragging) return;
+    const px = event.endPosition;
+    if (lastPixel && Math.hypot(px.x - lastPixel.x, px.y - lastPixel.y) < NODE_EVERY_PX) {
       return;
     }
-    const one = dab(current, lat, lon,
-                    { size: Number(size.value), target: Number(height.value) });
-    if (onPaint) onPaint([one], current);
-  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    lastPixel = px;
+    moved = true;
+    const point = groundAt(px);
+    if (point) path.push(point);
+    paintUI();
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+  handler.setInputAction(() => {
+    if (!armed || !dragging) return;
+    dragging = false;
+    const features = (moved && path.length > 1)
+      ? stroke(current, path, radiusM(),
+               { size: Number(size.value), target: Number(height.value) })
+      : (path.length
+         ? [dab(current, path[0][0], path[0][1],
+                { size: Number(size.value), target: Number(height.value) })]
+         : []);
+    path = [];
+    lay(features);
+  }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
   sizeRow.append(sizeLabel);
   heightRow.append(heightLabel);
@@ -226,11 +432,17 @@ export function buildTools(parent, viewer, Cesium, onPaint) {
               el("div", "wb-row").appendChild(arm).parentNode);
   const row2 = el("div", "wb-row");
   row2.append(chain, commit);
-  wrap.append(row2);
+  const row3 = el("div", "wb-row");
+  row3.append(apply, discard);
+  wrap.append(row2, row3);
   parent.append(wrap);
 
   size.value = String(BRUSHES[current].size);
   height.value = String(BRUSHES[current].target);
   paintUI();
-  return { stop: () => handler.destroy(), brush: () => current };
+  return {
+    stop: () => { takeTheDrag(false); handler.destroy(); ghosts.clear(); },
+    held: () => heldCount,
+    brush: () => current,
+  };
 }
