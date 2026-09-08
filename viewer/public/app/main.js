@@ -26,7 +26,7 @@ import {
   COARSE_RELIEF_TILE_SIZE, COARSE_RELIEF_BELOW_LEVEL,
 } from "./relief-provider.js";
 import {
-  cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider,
+  cloudCoverFromParams, cloudLayerEnabled, createCloudImageryProvider, followCamera,
   DEFAULT_CLOUD_CACHE_TILES,
 } from "./cloud-provider.js";
 import { CLOUD_MAX_LEVEL, CLOUD_TILE_SIZE } from "./clouds.js";
@@ -672,6 +672,8 @@ async function boot() {
         cacheTiles: number("cloudCacheTiles", DEFAULT_CLOUD_CACHE_TILES),
       });
       installed.cloudLayer = viewer.imageryLayers.addImageryProvider(installed.cloudProvider);
+      // Weather from orbit, clear air below the deck. See `followCamera`.
+      installed.cloudFollow = followCamera(viewer, installed.cloudLayer);
     }
 
     installed.state = nextState;

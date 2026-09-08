@@ -364,3 +364,52 @@ export function createCloudImageryProvider({
 
   return provider;
 }
+
+
+/// Where the cloud deck sits, in metres, and how thick the fade through it is.
+///
+/// **The clouds are an imagery layer painted on the globe, not a shell in the sky.** There
+/// is no surface to fly through, so descending through the deck did nothing: the weather
+/// stayed pasted over the ground at every altitude, and terrain features were unreadable
+/// from any height at which you could see them. A real volumetric shell is a much larger
+/// change; fading the layer out as the camera drops past the deck gives what a viewer
+/// actually wants from it, which is to see the ground once below the weather.
+///
+/// Six kilometres is a working cumulus deck. The band either side is what stops the layer
+/// popping: a hard switch at one altitude reads as a bug even when it is a rule.
+export const CLOUD_DECK_M = 6000.0;
+export const CLOUD_FADE_M = 2500.0;
+
+/// How opaque the deck should be from this height.
+///
+/// One below the deck's underside, zero above nothing - the ramp runs the other way: full
+/// weather from orbit, clear air underneath.
+export function cloudOpacityAt(heightM, deckM = CLOUD_DECK_M, fadeM = CLOUD_FADE_M) {
+  if (heightM >= deckM + fadeM) return 1.0;
+  if (heightM <= deckM - fadeM) return 0.0;
+  const t = (heightM - (deckM - fadeM)) / (2 * fadeM);
+  return t * t * (3.0 - 2.0 * t);
+}
+
+/// Fade the cloud layer as the camera crosses the deck, both ways.
+///
+/// Returns a handle with `stop()`. Installed on `preRender` rather than on `camera.changed`
+/// because `changed` fires on a threshold of movement, so a slow descent crosses the whole
+/// deck without ever tripping it - the layer would then snap when some later movement was
+/// finally large enough, which is the popping this exists to avoid.
+export function followCamera(viewer, layer, deckM = CLOUD_DECK_M, fadeM = CLOUD_FADE_M) {
+  if (!layer) return { stop: () => {} };
+  const base = layer.alpha === undefined ? 1.0 : layer.alpha;
+  const update = () => {
+    const height = viewer.camera.positionCartographic.height;
+    layer.alpha = base * cloudOpacityAt(height, deckM, fadeM);
+  };
+  update();
+  viewer.scene.preRender.addEventListener(update);
+  return {
+    stop: () => {
+      viewer.scene.preRender.removeEventListener(update);
+      layer.alpha = base;
+    },
+  };
+}

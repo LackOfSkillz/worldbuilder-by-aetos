@@ -24,6 +24,41 @@ if (!netProbe) {
   Cesium.Ion.defaultAccessToken = undefined;
 }
 
+// The credit strip carries this project's own name, because nothing here is attributed to
+// anybody else.
+//
+// **This is a fact about what the page loads, not a preference.** Cesium ion is a separate
+// paid product whose terms require its logo when its assets are used, and none are: the
+// token above is blanked, `baseLayer` is false, every ion-backed widget is off, and the
+// terrain and imagery are generated here. CesiumJS itself is Apache 2.0, which requires the
+// licence notice to travel with the distribution - it does, at `vendor/cesium/LICENSE.md` -
+// and not a logo on the screen.
+//
+// **Put it back the moment anything attributed is added.** A base map, a real DEM, an ion
+// asset, an OSM layer: each carries an attribution requirement, and Cesium will add the
+// credit to this container automatically, where nobody would see it. Anyone wiring one in
+// should delete this line first.
+const HIDE_CREDITS = true;
+
+/// What stands where the credits would.
+///
+/// Cesium still gets a container to write into - it is hidden, and empty, because nothing
+/// on this globe is somebody else's - and this sits in the same corner in its place.
+function brandTheCorner(document) {
+  const brand = document.createElement("div");
+  brand.id = "wb-brand";
+  brand.textContent = "World Builder by Aetos";
+  brand.style.cssText = [
+    "position:absolute", "left:10px", "bottom:8px", "z-index:5",
+    "pointer-events:none", "user-select:none",
+    "font:600 13px/1 system-ui, sans-serif", "letter-spacing:0.02em",
+    "color:rgba(255,255,255,0.82)",
+    "text-shadow:0 1px 3px rgba(0,0,0,0.85), 0 0 12px rgba(0,0,0,0.6)",
+  ].join(";");
+  document.body.appendChild(brand);
+  return brand;
+}
+
 const viewer = new Cesium.Viewer("cesiumContainer", {
   // The one network-live default. `false` means: no base imagery layer at all.
   baseLayer: netProbe ? Cesium.ImageryLayer.fromWorldImagery() : false,
@@ -41,7 +76,13 @@ const viewer = new Cesium.Viewer("cesiumContainer", {
   sceneModePicker: false,
   infoBox: false,
   selectionIndicator: false,
+  // See HIDE_CREDITS above.
+  creditContainer: HIDE_CREDITS
+    ? Object.assign(document.createElement("div"), { style: "display:none" })
+    : undefined,
 });
+
+brandTheCorner(document);
 viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#10243a");
 
 document.getElementById("status").textContent =
