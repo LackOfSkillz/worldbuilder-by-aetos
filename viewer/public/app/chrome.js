@@ -97,6 +97,38 @@ export function topBar(document) {
   makeToggle("World", "wb-panel-left");
   makeToggle("Parameters", "wb-panel");
 
+  // **Relief exaggeration, because real mountains are invisible from orbit.** This world's
+  // highest ground is 3,316 m on a planet 18,618 km across - 0.018% of the diameter, where
+  // Earth's Himalayas are 0.07%. At globe range that is sub-pixel, so a genuinely
+  // mountainous world renders as smooth green and looks like a bug in the generator. It is
+  // not: Earth looks smooth from orbit too. Exaggerating the mesh is what every atlas globe
+  // and flight simulator does, and it is one number.
+  //
+  // It defaults to 1, which is the truth. Anything above is a reading aid and the label
+  // says so, because a picture that silently lies about its own relief is worse than a flat
+  // one - somebody would site a fortress on a peak that is not there.
+  const relief = document.createElement("button");
+  relief.type = "button";
+  relief.className = "wb-menu-item";
+  const STEPS_X = [1, 4, 8, 16, 32];
+  let step = 0;
+  const paintRelief = () => {
+    const x = STEPS_X[step];
+    relief.textContent = x === 1 ? "Relief x1 (true)" : `Relief x${x}`;
+    relief.classList.toggle("wb-menu-on", x !== 1);
+    const wb = window.__wb || {};
+    if (wb.viewer && "verticalExaggeration" in wb.viewer.scene) {
+      wb.viewer.scene.verticalExaggeration = x;
+      wb.viewer.scene.requestRender && wb.viewer.scene.requestRender();
+    }
+  };
+  relief.addEventListener("click", () => {
+    step = (step + 1) % STEPS_X.length;
+    paintRelief();
+  });
+  menu.append(relief);
+  setTimeout(paintRelief, 400);
+
   document.body.appendChild(bar);
   return { bar, menu, spacer };
 }
@@ -250,7 +282,23 @@ export function splitColumns(document) {
 
     // Brushes, above the stack they write into - the order a person works in: pick a
     // tool, paint, see the layer appear.
-    import("./paint.js").then((paint) => {
+    //
+    // **Waits for the viewer rather than assuming it.** This runs a quarter second after
+    // load and the globe may not have finished building; `buildTools` needs a live scene
+    // to attach its picker to, and without one it throws. Which it did - and the catch
+    // below swallowed it, so the paint section simply never appeared and looked like a
+    // feature nobody had written.
+    const whenReady = (attempt = 0) => {
+      const wb = window.__wb || {};
+      if (!wb.viewer || !window.Cesium) {
+        if (attempt < 40) return void setTimeout(() => whenReady(attempt + 1), 250);
+        console.warn("worldbuilder: no viewer after 10s; paint tools not built");
+        return;
+      }
+      buildPaint(wb);
+    };
+
+    const buildPaint = (wb) => import("./paint.js").then((paint) => {
       const wb = window.__wb;
       const tools = paint.buildTools(left, wb.viewer, window.Cesium,
                                      (features, brush) => {
@@ -268,8 +316,16 @@ export function splitColumns(document) {
       // are added.
       const stack = left.querySelector(".wb-section:last-child");
       if (stack) left.append(stack);
-    }).catch(() => {});
-  }).catch(() => {});
+    }).catch((error) => {
+      // **Say so.** A swallowed error here is indistinguishable from a feature that was
+      // never built, and that cost a round trip to notice the paint tools were missing.
+      console.error("worldbuilder: paint tools failed to build", error);
+    });
+
+    whenReady();
+  }).catch((error) => {
+    console.error("worldbuilder: layers panel failed to build", error);
+  });
 
   return { left, move };
 }
