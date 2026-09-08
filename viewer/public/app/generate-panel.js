@@ -53,7 +53,10 @@ export function buildGeneratePanel(parent, getViewer) {
   count.type = "range";
   count.min = "5";
   count.max = "250";
-  count.step = "5";
+  // **Step of one, because the number is a number.** Fives felt tidy on a slider and meant
+  // somebody who wanted a hundred and twenty-three areas got a hundred and twenty-five - a
+  // control quietly overruling the person using it.
+  count.step = "1";
   count.value = "100";
   count.addEventListener("input", () => {
     countLabel.textContent = `areas ${count.value}`;
@@ -91,11 +94,24 @@ export function buildGeneratePanel(parent, getViewer) {
       // here is why it could not place the rest" is the whole of whether somebody trusts
       // the tool. The generator already records which quotas went unfilled; this is that,
       // said out loud.
-      const short = (finished.summary || {}).unfilled || {};
+      // **Short of the count and short of a quota are different things and used to read
+      // the same.** The second pass fills the number that was asked for with whatever the
+      // ground will take, so a run can deliver every area AND still have found nowhere for
+      // a dwarf hold. Saying "125 of 125 areas - no ground left for 5 dwarf" states both
+      // at once and sounds like a contradiction.
+      const summary = finished.summary || {};
+      const short = summary.unfilled || {};
       const missing = Object.entries(short).map(([race, n]) => `${n} ${race}`).join(", ");
-      note.textContent = missing
-        ? `done: ${drawn}${wanted ? ` of ${wanted}` : ""} areas - no ground left for ${missing}`
-        : `done: ${drawn} areas`;
+      const overQuota = summary.over_quota || 0;
+      if (summary.short_of) {
+        note.textContent = `done: ${drawn} of ${wanted} areas - the region ran out of `
+          + `ground${missing ? ` for ${missing}` : ""}`;
+      } else if (overQuota) {
+        note.textContent = `done: ${drawn} areas - ${overQuota} outside the quota, `
+          + `no ground for ${missing}`;
+      } else {
+        note.textContent = `done: ${drawn} areas, every quota filled`;
+      }
       go.textContent = "populate world";
       try {
         sessionStorage.removeItem(WATCHING_KEY);
