@@ -40,13 +40,20 @@ HARBOUR_REACH_M = 3000.0
 LANDING_DEPTH_M = 0.3
 LANDING_REACH_M = 800.0
 
-#: How far apart two settlements must be. Nearer than this they are one settlement with a
-#: gap in the middle, which is a thing to author deliberately rather than to generate.
-SEPARATION_M = 25000.0
+#: How far apart two settlements must be: ten miles.
+#:
+#: **A floor, not a target.** Nearer than this two places are one settlement with a gap in
+#: the middle, which is a thing to author on purpose rather than to generate by accident.
+SEPARATION_M = 16093.0
 
-#: How near two settlements have to be before a road between them is credible. A site with
-#: no water access must have a neighbour within this, or it is not reachable and not a site.
-LAND_LINK_M = 40000.0
+#: How far a settlement may be from its nearest neighbour: thirty miles.
+#:
+#: **Ten to thirty miles is a day's travel, and that is what makes a region feel inhabited.**
+#: Spread a hundred areas evenly over a continent-sized frame and they stand seven hundred
+#: kilometres apart - correct arithmetic and a lonely world, where every journey is empty.
+#: Real settlement clusters instead: good ground carries several within a day of each other
+#: and poor ground carries none, so the empty stretches are meaningful rather than uniform.
+LAND_LINK_M = 48280.0
 
 #: How far out the slope is measured. Two hundred metres is a few streets: the question is
 #: whether a town can stand here, not whether the region is mountainous.
@@ -166,6 +173,14 @@ def water_within(at, latitude_deg, longitude_deg, radius_m, depth_m, reach_m,
             if -at(lat, lon) >= depth_m:
                 return distance
     return None
+
+
+def in_region(latitude_deg, longitude_deg, region):
+    """Whether a point falls in a `(lat_low, lat_high, lon_low, lon_high)` frame."""
+    if region is None:
+        return True
+    lo_lat, hi_lat, lo_lon, hi_lon = region
+    return lo_lat <= latitude_deg <= hi_lat and lo_lon <= longitude_deg <= hi_lon
 
 
 def sunflower(count):
@@ -435,7 +450,8 @@ def sites_at_range(at, radius_m, origin, distance_m, bearings=72, spread=0.15,
 
 def survey(at, radius_m, count=12, samples=20000, rivers=(),
            separation_m=SEPARATION_M, land_link_m=LAND_LINK_M,
-           coast_reach_m=COAST_GATE_M, quotas=None, classify=None):
+           coast_reach_m=COAST_GATE_M, quotas=None, classify=None,
+           region=None):
     """
     The best places on a planet to put a settlement.
 
@@ -458,6 +474,10 @@ def survey(at, radius_m, count=12, samples=20000, rivers=(),
         rivers = WaterIndex(rivers)
     scored, on_land, near_water = [], 0, 0
     for latitude, longitude in sunflower(samples):
+        # Gate zero: inside the frame somebody asked for. Free, and it is what makes a
+        # hundred areas land where they were wanted instead of across a whole planet.
+        if not in_region(latitude, longitude, region):
+            continue
         # **Gate one: is it dry?** One call, and it drops roughly half the planet.
         height = at(latitude, longitude)
         if height < LOW_M or height > HIGH_M + CASTLE_M:
