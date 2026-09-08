@@ -15,24 +15,24 @@
 /// The brushes. `compose` and the sign of `target` are the whole difference between them.
 export const BRUSHES = {
   mountain: {
-    label: "Mountain", compose: "raise", target: 1800, size: 40000, relief: true,
+    label: "Mountain", compose: "raise", target: 1800, size: 40000, shape: "ridge",
     hint: "a range, not a wall: peaks, saddles and spurs off a drawn crest line.",
   },
   island: {
-    label: "Island", compose: "raise", target: 60, size: 6000,
-    hint: "raises seabed above datum. A round footprint - draw several for a chain.",
+    label: "Island", compose: "raise", target: 60, size: 6000, shape: "lobes",
+    hint: "raises seabed above datum. Headlands and coves, not a disc; drag for a coast.",
   },
   hill: {
-    label: "Hills", compose: "raise", target: 260, size: 18000, relief: true,
+    label: "Hills", compose: "raise", target: 260, size: 18000, shape: "ridge",
     hint: "gentler broken ground. The band the site scorer likes for settlements.",
   },
   lake: {
-    label: "Lake", compose: "carve", target: -12, size: 4000,
-    hint: "cuts a basin. Below the ground it sits in, so an upland lake is not at sea level.",
+    label: "Lake", compose: "carve", target: -12, size: 4000, shape: "lobes",
+    hint: "cuts a basin with a ragged shore. Below the ground it sits in, so an upland lake is not at sea level.",
   },
   channel: {
-    label: "Channel", compose: "carve", target: -14, size: 2000,
-    hint: "cuts navigable water. Chain them along a line to make a river or a fairway.",
+    label: "Channel", compose: "carve", target: -14, size: 2000, shape: "meander",
+    hint: "cuts navigable water that wanders, pools and throws off backwaters. Stays as deep as asked.",
   },
 };
 
@@ -45,32 +45,73 @@ export const BRUSHES = {
 /// this must move with it.
 export const OVERLAP = 4.5;
 
-/// How a raised stroke breaks up into real ground rather than a wall.
+/// How each brush breaks a drawn gesture into ground.
 ///
-/// **A ridge drawn as one feature per drag segment is a wall, and reads as one.** Uniform
-/// height, uniform width, dead straight between the nodes the hand happened to lay - the
-/// silhouette of a dam, not of a mountain. So a raise brush splits each segment into
-/// several, and each of those gets its own peak height, its own width and its own small
-/// step off the drawn line. What comes out is a crest that rises and falls, a range whose
-/// flanks are uneven, and spurs running off it - which is what prominence, the thing the
-/// site scorer actually measures, is made of.
+/// **Nothing this file emits is a circle or a ruled line, because nothing in a landscape
+/// is.** A single feature per gesture is the cheapest thing to write and the one thing a
+/// reader always spots: a perfectly round island, a river that runs like a pen stroke, a
+/// ridge with a flat top. So every brush declares a shape, and every shape is built from
+/// the same three moves - break the gesture into pieces, give each piece its own size and
+/// its own step off the line, and hang smaller things off it.
 ///
-/// **Deliberately NOT applied to carves.** A channel with a jittered floor shoals, and a
-/// shoal is the one thing the whole `OVERLAP` constant exists to prevent. Water stays
-/// smooth on purpose; only ground that is meant to be rough gets roughened.
-const RELIEF = {
-  //: Sub-features per drawn segment. More is a finer crest and more features to composite.
-  pieces: 3,
-  //: Peak height as a fraction of the brush's target. The low end is the saddles.
-  height: [0.52, 1.0],
-  //: Width as a fraction of the brush's size, so the flanks are uneven.
-  width: [0.62, 1.18],
-  //: How far a piece may step off the drawn line, as a fraction of its width.
-  wander: 0.42,
-  //: Chance a piece throws a spur out sideways, and how big that spur is.
-  spurChance: 0.34,
-  spurHeight: [0.40, 0.72],
-  spurLength: [0.45, 0.85],
+/// **What differs between them is what the ground is allowed to do, not how rough it is.**
+/// Ground may be as broken as it likes. Navigable water may not: see `MEANDER`.
+export const SHAPES = {
+  /// A crest with peaks, saddles and spurs. Raise only.
+  ridge: {
+    pieces: 3,
+    height: [0.52, 1.0],
+    width: [0.62, 1.18],
+    wander: 0.42,
+    spurChance: 0.34,
+    spurHeight: [0.40, 0.72],
+    spurLength: [0.45, 0.85],
+  },
+  /// A coastline made of overlapping lobes rather than one disc.
+  ///
+  /// **A union of circles is not a circle.** Where two lobes overlap the outline runs
+  /// straight out to a headland; where three meet at a gap it closes into a cove. So an
+  /// irregular shore comes out of stacking round features off-centre, without needing a
+  /// single non-round primitive - and because `RAISE` only ever lifts and `CARVE` only ever
+  /// cuts, a lobe can never undo its neighbour. Bays are the ground the lobes did not
+  /// reach.
+  lobes: {
+    //: Lobes around the main one, and how far out and how big they sit.
+    count: [3, 6],
+    reach: [0.30, 0.78],
+    size: [0.34, 0.82],
+    height: [0.45, 1.0],
+    //: Outlying rocks and sandbars, well off the main body.
+    skerries: [0, 2],
+    skerryReach: [0.95, 1.65],
+    skerrySize: [0.14, 0.30],
+    skerryHeight: [0.14, 0.46],
+    //: How far along a dragged path a new cluster is dropped, as a fraction of the size.
+    step: 0.62,
+  },
+  /// A watercourse that wanders, pools, narrows and throws off backwaters.
+  ///
+  /// **The one rule that is not aesthetic.** A drawn channel must stay navigable end to
+  /// end, and the whole reason `OVERLAP` exists is that a chain of carves shoals where its
+  /// links meet. So the fairway is never allowed to become shallower than the depth that
+  /// was asked for: `pool` only ever cuts DEEPER, and `width` has a floor. Backwaters may
+  /// be as shallow as they like, and cannot shoal anything, because `Features::apply` skips
+  /// a carve whose target is above the ground already there - a four-metre creek crossing a
+  /// fourteen-metre fairway contributes exactly nothing to the fairway.
+  meander: {
+    //: Levels of midpoint displacement, and how far a midpoint may step off the chord.
+    levels: 2,
+    swing: 0.32,
+    //: Depth as a multiple of the asked-for depth. Never below 1: never shallower.
+    pool: [1.0, 1.34],
+    //: Width as a fraction of the asked-for width, floored so the fairway cannot pinch.
+    width: [0.78, 1.30],
+    //: Backwaters: short, shallow, narrow, thrown off at roughly a right angle.
+    creekChance: 0.30,
+    creekDepth: [0.32, 0.68],
+    creekWidth: [0.30, 0.60],
+    creekLength: [0.55, 1.20],
+  },
 };
 
 /// A small deterministic generator, seeded from a place on the globe.
@@ -79,7 +120,7 @@ const RELIEF = {
 /// same spot must produce the same mountain: a world is a seed plus a list of features, and
 /// a range that reshuffled itself on every reload would break that promise at the first
 /// save-and-open.
-function noiseAt(latDeg, lonDeg, salt) {
+export function noiseAt(latDeg, lonDeg, salt) {
   let h = 2166136261 ^ salt;
   for (const v of [latDeg * 1e4, lonDeg * 1e4]) {
     h = Math.imul(h ^ (v | 0), 16777619);
@@ -118,23 +159,24 @@ function along(latDeg, lonDeg, bearingDeg, distanceM, radiusM) {
 ///
 /// Returns the feature records for that leg.
 function ridgePieces(a, c, leg, brg, base, radiusM) {
+  const s = SHAPES.ridge;
   const rand = noiseAt(a[0], a[1], Math.round(brg));
   const out = [];
-  const n = RELIEF.pieces;
+  const n = s.pieces;
   const step = leg / n;
   for (let i = 0; i < n; i += 1) {
     // The piece's own centre along the leg, then stepped off it. Wandering is what stops
     // the crest reading as a ruled line without moving it far enough to leave the stroke.
-    const width = base.width * between(rand, RELIEF.width);
+    const width = base.width * between(rand, s.width);
     const alongM = step * (i + 0.5);
     const centre = along(a[0], a[1], brg, alongM, radiusM);
-    const off = (rand() - 0.5) * 2 * RELIEF.wander * width;
+    const off = (rand() - 0.5) * 2 * s.wander * width;
     const at = along(centre[0], centre[1], brg + 90, off, radiusM);
     out.push({
       ...base.record,
       latitude_deg: Number(at[0].toFixed(6)),
       longitude_deg: Number(at[1].toFixed(6)),
-      target_m: Math.round(base.target * between(rand, RELIEF.height)),
+      target_m: Math.round(base.target * between(rand, s.height)),
       length_m: (step / 2) * OVERLAP,
       width_m: Math.round(width),
       bearing_deg: Number((brg + (rand() - 0.5) * 14).toFixed(3)),
@@ -142,15 +184,15 @@ function ridgePieces(a, c, leg, brg, base, radiusM) {
     // A spur: shorter, lower, thrown off at roughly a right angle. Spurs are most of what
     // makes a range look like erosion rather than extrusion, and they are what a valley
     // between two of them is made of.
-    if (rand() < RELIEF.spurChance) {
+    if (rand() < s.spurChance) {
       const side = rand() < 0.5 ? 90 : -90;
-      const spurLength = step * between(rand, RELIEF.spurLength);
+      const spurLength = step * between(rand, s.spurLength);
       const foot = along(at[0], at[1], brg + side, spurLength / 2, radiusM);
       out.push({
         ...base.record,
         latitude_deg: Number(foot[0].toFixed(6)),
         longitude_deg: Number(foot[1].toFixed(6)),
-        target_m: Math.round(base.target * between(rand, RELIEF.spurHeight)),
+        target_m: Math.round(base.target * between(rand, s.spurHeight)),
         length_m: (spurLength / 2) * OVERLAP,
         width_m: Math.round(width * 0.7),
         bearing_deg: Number(((brg + side + 360) % 360).toFixed(3)),
@@ -168,6 +210,236 @@ function bearing(a, b) {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
+/// A cluster of lobes standing for one round thing: an island, a lake, a lone hill.
+///
+/// The main lobe carries the asked-for size and target so the thing is the size it was
+/// drawn; everything else is smaller, lower and off-centre, which is what turns a disc into
+/// a coastline. See `SHAPES.lobes`.
+function lobesAt(latDeg, lonDeg, base, radiusM, rand) {
+  const s = SHAPES.lobes;
+  const out = [{
+    ...base.record,
+    latitude_deg: Number(latDeg.toFixed(6)),
+    longitude_deg: Number(lonDeg.toFixed(6)),
+    target_m: Math.round(base.target),
+    length_m: Math.round(base.width),
+    width_m: Math.round(base.width),
+    bearing_deg: 0,
+  }];
+  const lobes = Math.round(between(rand, s.count));
+  for (let i = 0; i < lobes; i += 1) {
+    // Bearings are spread round the compass with a jitter rather than drawn uniformly:
+    // uniform bearings clump, and a clump of lobes is a bulge on one side rather than an
+    // outline.
+    const brg = (360 * i) / lobes + (rand() - 0.5) * (360 / lobes);
+    const reach = base.width * between(rand, s.reach);
+    const at = along(latDeg, lonDeg, brg, reach, radiusM);
+    const size = Math.round(base.width * between(rand, s.size));
+    out.push({
+      ...base.record,
+      latitude_deg: Number(at[0].toFixed(6)),
+      longitude_deg: Number(at[1].toFixed(6)),
+      target_m: Math.round(base.target * between(rand, s.height)),
+      length_m: size,
+      width_m: size,
+      bearing_deg: 0,
+    });
+  }
+  const skerries = Math.round(between(rand, s.skerries));
+  for (let i = 0; i < skerries; i += 1) {
+    const brg = rand() * 360;
+    const at = along(latDeg, lonDeg, brg, base.width * between(rand, s.skerryReach), radiusM);
+    const size = Math.round(base.width * between(rand, s.skerrySize));
+    out.push({
+      ...base.record,
+      latitude_deg: Number(at[0].toFixed(6)),
+      longitude_deg: Number(at[1].toFixed(6)),
+      target_m: Math.round(base.target * between(rand, s.skerryHeight)),
+      length_m: size,
+      width_m: size,
+      bearing_deg: 0,
+    });
+  }
+  return out;
+}
+
+/// Bend a drawn line into one that wanders.
+///
+/// **Midpoint displacement, twice.** A hand draws a river as three or four long strokes; a
+/// river does not run in long strokes. Each segment's midpoint is stepped off the chord by
+/// a fraction of the segment's own length, and then the shorter segments that result are
+/// stepped again by proportionately less. What comes out has bends at every scale, which is
+/// the property a hand-drawn line lacks and the reason a drawn river reads as drawn.
+///
+/// The ends are never moved: the line still starts and finishes where it was put.
+export function meanderPath(points, radiusM, rand, swing, levels) {
+  let path = points.slice();
+  for (let level = 0; level < levels; level += 1) {
+    const next = [path[0]];
+    for (let i = 0; i < path.length - 1; i += 1) {
+      const a = path[i], c = path[i + 1];
+      const leg = metres(a, c, radiusM);
+      if (leg > 0) {
+        const brg = bearing(a, c);
+        const mid = along(a[0], a[1], brg, leg / 2, radiusM);
+        // Each level swings less than the last, in proportion to the shorter legs it is
+        // working on, so the bends nest instead of fighting.
+        const off = (rand() - 0.5) * 2 * swing * leg;
+        const stepped = along(mid[0], mid[1], brg + 90, off, radiusM);
+        next.push(stepped);
+      }
+      next.push(c);
+    }
+    path = next;
+    swing *= 0.55;
+  }
+  return path;
+}
+
+/// Cut a whole watercourse: a piece per leg, a piece over every bend, and backwaters.
+///
+/// **The bends are where a chain of carves shoals, and a keel piece is what closes them.**
+/// `length_m` is a HALF-length to the engine, so a leg's piece reaches `2.25` legs either
+/// way and the join between two of them sits at `0.222` of that - a weight of `0.874` each.
+/// Two of those leave `(1 - 0.874)^2`, about 1.6%, of the distance between the ground and
+/// the depth asked for. That is nothing when a bayou is being cut out of ground already
+/// near sea level, and it is fourteen metres when the same brush is dragged across
+/// nine-hundred-metre upland - which is exactly where the measured groundings were.
+///
+/// So every interior bend gets its own piece centred ON the node, where its weight is one
+/// and the cut is therefore exact. It costs one feature per bend and it is the difference
+/// between a river that holds its depth over any ground and one that holds it over gentle
+/// ground only.
+function channelPath(line, base, radiusM, rand) {
+  const out = [];
+  const legs = [];
+  for (let i = 0; i < line.length - 1; i += 1) {
+    const a = line[i], c = line[i + 1];
+    const leg = metres(a, c, radiusM);
+    if (leg <= 0) continue;
+    const brg = bearing(a, c);
+    legs.push({ a, c, leg, brg });
+    out.push(...channelPieces(a, c, leg, brg, base, radiusM, rand));
+  }
+  // **The two ends shoal for the same reason a bend does, and nothing is beyond them to
+  // help.** A line's last point sits at `0.222` of its piece's half-length with only ONE
+  // piece reaching it, so 12.6% of the cut is left undone there - thirty metres of it when
+  // the brush is crossing upland, which is a bar across the mouth of every river drawn.
+  // A piece centred on each end closes them the same way the bends are closed.
+  for (const end of legs.length ? [
+    { at: legs[0].a, brg: legs[0].brg, span: legs[0].leg },
+    { at: legs[legs.length - 1].c, brg: legs[legs.length - 1].brg,
+      span: legs[legs.length - 1].leg },
+  ] : []) {
+    out.push({
+      ...base.record,
+      latitude_deg: Number(end.at[0].toFixed(6)),
+      longitude_deg: Number(end.at[1].toFixed(6)),
+      target_m: Math.round(base.target),
+      length_m: (end.span / 2) * OVERLAP,
+      width_m: Math.round(base.width),
+      bearing_deg: Number(end.brg.toFixed(3)),
+    });
+  }
+  for (let i = 0; i < legs.length - 1; i += 1) {
+    const before = legs[i], after = legs[i + 1];
+    const span = Math.min(before.leg, after.leg);
+    // **Two pieces at the bend, one per leg, and not one on the average bearing.** The
+    // averaged version was measured and it does not work: a piece bisecting a bend is
+    // off-axis from both legs, so seven kilometres back along the approach the line has
+    // already left its half-width and the piece contributes nothing there. That is where
+    // every remaining shoal was - at 0.95 of one leg and 0.04 of the next, on either side
+    // of a node that was supposed to be covered. A piece aligned with each leg sits ON the
+    // line for its whole approach, which is the thing that had to be true.
+    for (const brg of [before.brg, after.brg]) {
+      out.push({
+        ...base.record,
+        latitude_deg: Number(before.c[0].toFixed(6)),
+        longitude_deg: Number(before.c[1].toFixed(6)),
+        target_m: Math.round(base.target),
+        length_m: (span / 2) * OVERLAP,
+        width_m: Math.round(base.width),
+        bearing_deg: Number(brg.toFixed(3)),
+      });
+    }
+  }
+  return out;
+}
+
+/// One leg of a watercourse: the fairway piece, and sometimes a backwater off it.
+function channelPieces(a, c, leg, brg, base, radiusM, rand) {
+  const s = SHAPES.meander;
+  const width = Math.round(base.width * between(rand, s.width));
+  const mid = along(a[0], a[1], brg, leg / 2, radiusM);
+  const out = [{
+    ...base.record,
+    latitude_deg: Number(mid[0].toFixed(6)),
+    longitude_deg: Number(mid[1].toFixed(6)),
+    // Deeper only. A pool is a hole in the bed, and a bed that got shallower here would be
+    // the shoal `OVERLAP` exists to prevent.
+    target_m: Math.round(base.target * between(rand, s.pool)),
+    length_m: (leg / 2) * OVERLAP,
+    width_m: width,
+    bearing_deg: Number(brg.toFixed(3)),
+  }];
+  if (rand() < s.creekChance) {
+    const side = rand() < 0.5 ? 90 : -90;
+    const creek = leg * between(rand, s.creekLength);
+    const foot = along(mid[0], mid[1], brg + side, creek / 2, radiusM);
+    out.push({
+      ...base.record,
+      latitude_deg: Number(foot[0].toFixed(6)),
+      longitude_deg: Number(foot[1].toFixed(6)),
+      // Shallower, and provably harmless: a carve whose target sits above the ground
+      // already there is skipped outright, so a creek crossing the fairway does nothing
+      // to it.
+      target_m: Math.round(base.target * between(rand, s.creekDepth)),
+      length_m: (creek / 2) * OVERLAP,
+      width_m: Math.round(width * between(rand, s.creekWidth)),
+      bearing_deg: Number(((brg + side + 360) % 360).toFixed(3)),
+    });
+  }
+  return out;
+}
+
+//: The most lobe clusters one drawn line may spend.
+//:
+//: **A brush is small and a drag at planet zoom is not.** Stepping a six-kilometre island
+//: brush along a four-hundred-kilometre drag at the spacing that makes a continuous coast
+//: asks for a hundred clusters - seven hundred features for one gesture, which is slow to
+//: composite and was never what the hand meant. Past this count the step widens instead, so
+//: a short drag draws one coastline and a long one draws a chain of islands along the same
+//: line. Both are honest readings of the gesture; neither costs more than this.
+const MAX_CLUSTERS = 32;
+
+/// Drop lobe clusters along a whole drawn line, so a dragged island brush makes a coast at
+/// close range and an archipelago at long range.
+function lobesAlongPath(line, base, radiusM, rand) {
+  let total = 0;
+  for (let i = 0; i < line.length - 1; i += 1) {
+    total += metres(line[i], line[i + 1], radiusM);
+  }
+  const wanted = Math.max(base.width * SHAPES.lobes.step, 1);
+  const step = Math.max(wanted, total / MAX_CLUSTERS);
+  const out = [];
+  let walked = 0;
+  let next = step / 2;
+  for (let i = 0; i < line.length - 1; i += 1) {
+    const a = line[i], c = line[i + 1];
+    const leg = metres(a, c, radiusM);
+    if (leg <= 0) continue;
+    const brg = bearing(a, c);
+    while (next <= walked + leg) {
+      const at = along(a[0], a[1], brg, next - walked, radiusM);
+      out.push(...lobesAt(at[0], at[1], base, radiusM, rand));
+      next += step;
+    }
+    walked += leg;
+  }
+  if (!out.length) out.push(...lobesAt(line[0][0], line[0][1], base, radiusM, rand));
+  return out;
+}
+
 function metres(a, b, radiusM) {
   const p = Math.PI / 180;
   const h = Math.sin((b[0] - a[0]) * p / 2) ** 2
@@ -175,29 +447,41 @@ function metres(a, b, radiusM) {
   return 2 * Math.asin(Math.sqrt(h)) * radiusM;
 }
 
-/// One dab: a single round feature at a point.
+/// One dab: the records for a single thing placed at a point.
+///
+/// Returns an ARRAY, because nothing a brush places is one feature any more. A lone hill is
+/// a cluster of lobes for the same reason an island is: a disc reads as a drawing.
 export function dab(brush, latitudeDeg, longitudeDeg, { size, target, layer } = {}) {
   const b = BRUSHES[brush];
   const width = size || b.size;
-  return {
-    kind: layer || `painted ${brush}`,
-    latitude_deg: Number(latitudeDeg.toFixed(6)),
-    longitude_deg: Number(longitudeDeg.toFixed(6)),
-    target_m: target === undefined ? b.target : target,
-    length_m: width,
-    width_m: width,
-    bearing_deg: 0,
-    compose: b.compose,
-    substrate: "derive",
-    marked: false,
+  const base = {
+    target: target === undefined ? b.target : target,
+    width,
+    record: {
+      kind: layer || `painted ${brush}`,
+      compose: b.compose,
+      substrate: "derive",
+      marked: false,
+    },
   };
+  const rand = noiseAt(latitudeDeg, longitudeDeg, 17);
+  return lobesAt(latitudeDeg, longitudeDeg, base, EARTHISH_M, rand);
 }
 
-/// A stroke along a path: one feature per segment, overlapped so the joins do not shoal.
+//: The radius a lone dab lays its lobes out on when no world has said otherwise.
+//:
+//: A dab's offsets are metres along the ground and the sphere they are walked on barely
+//: changes them at these distances - a lobe half a brush-width out lands within a metre of
+//: the same place on any planet a person would build. The strokes get the real radius,
+//: which is where it does matter.
+const EARTHISH_M = 6371000;
+
+/// A stroke along a path, broken up the way its brush's shape says.
 ///
-/// This is what makes a river a river rather than a row of ponds, and it is the same
-/// arithmetic `river.features_from_points` does - kept here so a brush can draw any of the
-/// carve kinds along a line, not only water.
+/// Every brush routes through here, and the shape decides what a segment becomes: a piece
+/// of crest with spurs, a run of coastline, or a length of watercourse with its pools and
+/// backwaters. The one thing common to all of them is `OVERLAP` - the joins between pieces
+/// must reach past each other, or the chain shoals where its links meet.
 export function stroke(brush, points, radiusM, { size, target, layer } = {}) {
   const b = BRUSHES[brush];
   const width = size || b.size;
@@ -208,28 +492,41 @@ export function stroke(brush, points, radiusM, { size, target, layer } = {}) {
     substrate: "derive",
     marked: false,
   };
+  const base = { target: peak, width, record };
+  // Seeded from where the stroke starts, so redrawing the same line gives the same river.
+  const rand = noiseAt(points[0][0], points[0][1], points.length);
+  // A watercourse is bent BEFORE it is cut into pieces: the wander belongs to the line, and
+  // bending each piece separately would give a row of kinks rather than a meander.
+  const line = b.shape === "meander"
+    ? meanderPath(points, radiusM, rand, SHAPES.meander.swing, SHAPES.meander.levels)
+    : points;
+
+  // Lobes are laid out against the whole line rather than leg by leg, because their
+  // spacing has a budget and a budget cannot be spent one leg at a time.
+  if (b.shape === "lobes") return lobesAlongPath(line, base, radiusM, rand);
+  // A watercourse is cut against the whole line as well: its bends are joins between legs,
+  // and a join cannot be closed from inside one of the legs that makes it.
+  if (b.shape === "meander") return channelPath(line, base, radiusM, rand);
+
   const out = [];
-  for (let i = 0; i < points.length - 1; i += 1) {
-    const a = points[i], c = points[i + 1];
+  for (let i = 0; i < line.length - 1; i += 1) {
+    const a = line[i], c = line[i + 1];
     const leg = metres(a, c, radiusM);
     if (leg <= 0) continue;
     const brg = bearing(a, c);
-    if (b.relief) {
-      // Ground that is meant to be rough is roughened here, once, so every gesture that
-      // makes a stroke - drag, chain, or a route replayed from a worldfile - gets the same
-      // range rather than each caller inventing its own.
-      out.push(...ridgePieces(a, c, leg, brg, { target: peak, width, record }, radiusM));
-      continue;
+    if (b.shape === "ridge") {
+      out.push(...ridgePieces(a, c, leg, brg, base, radiusM));
+    } else {
+      out.push({
+        ...record,
+        latitude_deg: Number(((a[0] + c[0]) / 2).toFixed(6)),
+        longitude_deg: Number(((a[1] + c[1]) / 2).toFixed(6)),
+        target_m: peak,
+        length_m: (leg / 2) * OVERLAP,
+        width_m: width,
+        bearing_deg: Number(brg.toFixed(3)),
+      });
     }
-    out.push({
-      ...record,
-      latitude_deg: Number(((a[0] + c[0]) / 2).toFixed(6)),
-      longitude_deg: Number(((a[1] + c[1]) / 2).toFixed(6)),
-      target_m: peak,
-      length_m: (leg / 2) * OVERLAP,
-      width_m: width,
-      bearing_deg: Number(brg.toFixed(3)),
-    });
   }
   return out;
 }
@@ -590,8 +887,8 @@ export function buildTools(parent, viewer, Cesium, onPaint, hooks = {}) {
       ? stroke(current, path, radiusM(),
                { size: Number(size.value), target: Number(height.value) })
       : (path.length
-         ? [dab(current, path[0][0], path[0][1],
-                { size: Number(size.value), target: Number(height.value) })]
+         ? dab(current, path[0][0], path[0][1],
+               { size: Number(size.value), target: Number(height.value) })
          : []);
     const drawn = path;
     path = [];
