@@ -118,6 +118,7 @@ VOICE = {
         "sound": ("frogs start and stop", "water slaps the boards",
                   "something heavy slides into the water", "insects drone over the reeds"),
         "smell": ("warm mud and green water", "drying fish", "reed smoke"),
+        "beside": "at the water's edge",
     },
     "halfling": {
         "detail": (
@@ -136,6 +137,7 @@ VOICE = {
         "sound": ("bees work the hedge", "a cow complains in the next field",
                   "somebody is singing badly indoors"),
         "smell": ("cut hay", "baking and woodsmoke", "apples going over"),
+        "beside": "against the hedge",
     },
     "volgrin": {
         "detail": (
@@ -154,6 +156,7 @@ VOICE = {
         "sound": ("wind moves the grass in long waves", "horses shift on the picket",
                   "a hawk calls somewhere very high"),
         "smell": ("dust and dry grass", "horse and leather", "rain that has not arrived"),
+        "beside": "in the open",
     },
     "felari": {
         "detail": (
@@ -172,6 +175,7 @@ VOICE = {
         "sound": ("water works under the stones", "a net is shaken out",
                   "somebody is asleep and snoring softly"),
         "smell": ("salt and drying fish", "warm stone", "tar"),
+        "beside": "above the tide line",
     },
     "lunari": {
         "detail": (
@@ -190,6 +194,7 @@ VOICE = {
         "sound": ("the pines tick in the wind", "something answers a long way off",
                   "the camp is watchful and quiet"),
         "smell": ("pine resin and cold ash", "wet fur", "snow coming"),
+        "beside": "under the trees",
     },
     "aethari": {
         "detail": (
@@ -226,6 +231,7 @@ VOICE = {
         "sound": ("the burn is loud after rain", "sheep complain on the hill",
                   "wind worries at the thatch"),
         "smell": ("peat smoke", "wet wool", "cold rain"),
+        "beside": "against the weather",
     },
     "goblin": {
         "detail": (
@@ -245,6 +251,171 @@ VOICE = {
                   "there is a great deal of shouting"),
         "smell": ("smoke and spoiled meat", "wet fur and worse", "old blood"),
     },
+    "road": {
+        "detail": (
+                   "The verge is cut back a spear's length on either side.",
+                   "Cart ruts have worn down to the stone beneath.",
+                   "A milestone leans here, its face weathered past reading.",
+                   "The way was made by use and only later by anybody's hand.",
+                   "Somebody has piled stones at the turning as a mark.",
+        ),
+        "head": ("Long", "Old", "High", "Stone", "Green", "Winter"),
+        "tail": ("road", "way", "track", "drove", "reach", "mile"),
+        "street": ("road", "way", "track", "verge", "crossing", "milestone"),
+        "surface": ("rutted track", "packed gravel", "worn stone", "grass grown over ruts"),
+        "fixture": ("a milestone", "a horse trough beside the way",
+                    "a cairn at the turning", "a bench cut from a fallen trunk",
+                    "a wayside shrine no bigger than a kennel"),
+        "sound": ("the road is quiet in both directions",
+                  "wind moves in the trees along the verge",
+                  "something is coming, a long way off"),
+        "smell": ("dust and horse", "wet grass", "clean and cold"),
+        "beside": "beside the way",
+    },
+    "game": {
+        "detail": (
+                   "Droppings and slot marks show what uses this ground.",
+                   "A salt lick has been worn hollow by patient tongues.",
+                   "The grass is cropped short in a wide, careful circle.",
+                   "Feathers lie scattered where a covey was flushed.",
+                   "A hide of woven branches faces down the clearing.",
+        ),
+        "head": ("Deer", "Fallow", "Covert", "Fowl", "Hare", "Quail", "Elk"),
+        "tail": ("covert", "moor", "meadow", "marsh", "run", "wood", "lease"),
+        "street": ("game trail", "ride", "covert edge", "meadow", "flight line"),
+        "surface": ("cropped turf", "leaf litter and moss", "trodden bracken"),
+        "fixture": ("a hide of woven branches", "a salt lick worn hollow",
+                    "a feed trough somebody keeps filled", "a stile over the fence"),
+        "sound": ("something moves off through the undergrowth, unhurried",
+                  "a cock pheasant calls twice and stops",
+                  "duck get up off the water somewhere ahead"),
+        "smell": ("crushed grass", "leaf mould", "cold water and reed"),
+        "beside": "at the edge of the ride",
+    },
+    "game_wood": {
+        "detail": (
+                   "Slot marks cut deep where deer cross to the water.",
+                   "A hide of woven branches faces down the ride.",
+                   "Bark is frayed at knee height where a buck has been fraying.",
+                   "Feathers lie scattered where a covey was flushed.",
+                   "Beech mast lies thick, and something has been turning it over.",
+        ),
+        "head": ("Fallow", "Roe", "Covert", "Hazel", "Buck", "Hart"),
+        "tail": ("covert", "wood", "ride", "lease", "chase", "holt"),
+        "street": ("ride", "game trail", "covert edge", "beat", "deer path"),
+        "surface": ("leaf litter and moss", "trodden bracken", "beech mast"),
+        "fixture": ("a hide of woven branches", "a salt lick worn hollow",
+                    "a high seat lashed into a fork", "a stile over the deer fence"),
+        "sound": ("a roe barks once, away in the thicket",
+                  "a cock pheasant clatters up and glides off",
+                  "something heavy moves off through the bracken, unhurried",
+                  "a jay screams a warning further down the ride"),
+        "smell": ("leaf mould and crushed fern", "wet bark", "fox"),
+        "beside": "at the edge of the ride",
+    },
+    "game_marsh": {
+        "detail": (
+                   "Duck have been feeding here; the weed is torn and floating.",
+                   "A punt lies drawn up in the reeds, half full of rain.",
+                   "Otter have slid the bank into a smooth chute.",
+                   "Snipe workings pit the soft ground in hundreds.",
+                   "A line of decoys is stacked under sacking.",
+        ),
+        "head": ("Fowl", "Teal", "Heron", "Wigeon", "Reed", "Otter"),
+        "tail": ("marsh", "flight", "fen", "water", "lead", "shallow"),
+        "street": ("flight line", "reed cut", "bank", "causeway", "lead"),
+        "surface": ("soft black silt", "trodden reed", "wet peat"),
+        "fixture": ("a punt drawn up in the reeds", "a stack of decoys under sacking",
+                    "a hide sunk into the bank", "a withy trap staked in the shallows"),
+        "sound": ("duck get up off the water somewhere ahead",
+                  "a heron lifts, complaining, and beats away",
+                  "snipe zigzag up out of the rushes",
+                  "frogs stop all at once, and then start again"),
+        "smell": ("cold water and reed", "silt", "wet feather"),
+        "beside": "at the water's edge",
+    },
+    "game_moor": {
+        "detail": (
+                   "Grouse butts are dug in a line along the contour.",
+                   "The heather has been burned in strips to bring on new growth.",
+                   "Hare runs cut white lines through the older heather.",
+                   "A ram has rubbed the peat hag smooth against its horn.",
+                   "Droppings show where the herd came down off the tops.",
+        ),
+        "head": ("Grouse", "Hare", "Ram", "Whin", "Heather", "Fell"),
+        "tail": ("moor", "fell", "lease", "tops", "brae", "ground"),
+        "street": ("sheep track", "butt line", "peat road", "ridge", "gully"),
+        "surface": ("heather and peat", "cropped turf and stone", "wet moss"),
+        "fixture": ("a grouse butt of turf and stone", "a cairn on the skyline",
+                    "a salt lick set on a flat rock", "a shooting stick left leaning"),
+        "sound": ("a grouse goes off low and fast, complaining",
+                  "a ram stands off on the skyline and watches",
+                  "hare break in three directions at once",
+                  "wind is the only thing moving up here"),
+        "smell": ("peat and bruised heather", "cold rain", "sheep"),
+        "beside": "on the open ground",
+    },
+    "wild_marsh": {
+        "detail": (
+                   "Something long slid off the bank as you came up.",
+                   "Bones of something large lie half in the water.",
+                   "The reeds are flattened in a wide, deliberate trail.",
+                   "Nothing sings here, and the quiet is not restful.",
+                   "A slide worn into the mud is wider than a man.",
+        ),
+        "head": ("Black", "Drowned", "Fever", "Still", "Rot", "Deep"),
+        "tail": ("mire", "water", "slough", "bank", "shallow", "hole"),
+        "street": ("board walk", "reed way", "mud bank", "causeway"),
+        "surface": ("black sucking mud", "rotten boards", "matted reed"),
+        "fixture": ("a slide worn into the bank", "a ribcage picked clean",
+                    "a nest mound of rotting weed", "a drowned tree stripped white"),
+        "sound": ("something long slides into the water behind you",
+                  "the frogs have stopped, all of them",
+                  "water moves against the current, and keeps moving"),
+        "smell": ("rot and standing water", "old meat", "fever"),
+        "beside": "at the water's edge",
+    },
+    "wild_upland": {
+        "detail": (
+                   "Scat on the rock is fresh and full of hair.",
+                   "Something has been sharpening its claws on the scree.",
+                   "A kill was dragged up here and finished at leisure.",
+                   "The ravens are waiting, which means something else is too.",
+                   "A cave mouth breathes cold air out of the hillside.",
+        ),
+        "head": ("Grey", "Bare", "Wolf", "Bone", "Cold", "Crag"),
+        "tail": ("scree", "crag", "waste", "reach", "howl", "fell"),
+        "street": ("scree run", "goat track", "gully", "ridge line"),
+        "surface": ("loose scree", "frost-split rock", "bare stone"),
+        "fixture": ("a cave mouth breathing cold air", "a kill dragged into cover",
+                    "a slab scored with claw marks", "a cairn nobody built for luck"),
+        "sound": ("something answers from higher up, and it is not an echo",
+                  "stones come down the scree that nothing kicked",
+                  "the ravens have gone quiet"),
+        "smell": ("cold stone and musk", "old blood", "wet fur"),
+        "beside": "against the rock",
+    },
+    "wild_shore": {
+        "detail": (
+                   "The tideline is a mess of picked shells and claws.",
+                   "Something dragged itself up the sand and back again.",
+                   "Wreck timber has been gnawed at the waterline.",
+                   "Gulls will not settle on this stretch of beach.",
+                   "A slick of something dark comes and goes with the water.",
+        ),
+        "head": ("Wreck", "Drowned", "Grey", "Salt", "Shark", "Bone"),
+        "tail": ("strand", "shore", "cove", "reach", "skerry", "bar"),
+        "street": ("tideline", "shingle", "rock shelf", "strand"),
+        "surface": ("wet shingle", "weed-slick rock", "coarse grey sand"),
+        "fixture": ("a wreck timber gnawed at the waterline",
+                    "a drag mark up the sand and back", "a midden of picked shells",
+                    "a rock shelf scoured bare"),
+        "sound": ("something breaks the surface further out and is gone",
+                  "the gulls will not come down to this stretch",
+                  "water sucks back off the shingle and takes something with it"),
+        "smell": ("salt and rotting weed", "old fish", "cold brine"),
+        "beside": "above the tideline",
+    },
     "wild": {
         "detail": (
                    "Nothing here has been built, cut, or tended by anybody.",
@@ -257,11 +428,12 @@ VOICE = {
         "tail": ("hunt", "ground", "waste", "thicket", "hollow", "scrub", "reach"),
         "street": ("game trail", "deer path", "gully", "thicket way", "clearing"),
         "surface": ("trampled bracken", "loose leaf litter", "root and stone"),
-        "fixture": ("a game trail worn deep", "bones picked clean",
+        "fixture": ("a game trail worn deep", "a ribcage picked clean",
                     "a thorn brake nothing has forced", "a wallow churned to mud"),
         "sound": ("nothing moves, and that is worse", "something large shifts its weight",
                   "birds went quiet a moment ago"),
         "smell": ("rot and wet leaf", "musk", "cold earth"),
+        "beside": "at the edge of the trail",
     },
 }
 
@@ -374,8 +546,14 @@ def describe(exits, race, rng, band=(34, 79)):
         the rain, and a room that is always sunny is a room nobody believes.
     """
     voice = voice_for(race)
-    opening = "%s runs underfoot, and %s stands against the wall." % (
-        _sentence_case(rng.choice(voice["surface"])), rng.choice(voice["fixture"]))
+    # **Not every room has a wall.** "A cairn at the turning stands against the wall" is
+    # what a template written for streets says when it is handed a road, and it is the kind
+    # of wrong that a word-count band cannot see. Outdoor voices say where their fixture
+    # stands in their own terms.
+    fixture = rng.choice(voice["fixture"])
+    opening = "%s runs underfoot, and %s stands %s." % (
+        _sentence_case(rng.choice(voice["surface"])), fixture,
+        voice.get("beside", "against the wall"))
     middle = "%s; the air is %s." % (
         _sentence_case(rng.choice(voice["sound"])), rng.choice(voice["smell"]))
     going = ways_sentence(exits)
@@ -386,7 +564,13 @@ def describe(exits, race, rng, band=(34, 79)):
     # Five thousand rooms sharing a sentence is worse than five thousand sharing a shape.
     details = list(voice.get("detail") or ("",))
     rng.shuffle(details)
-    detail = details[0]
+    # **Do not name the same object twice in three sentences.** The fixture and the detail
+    # are drawn from lists that describe the same country, so both can land on the hide, or
+    # both on the salt lick - and "a hide of woven branches stands at the edge of the ride.
+    # A hide of woven branches faces down the ride" reads as a stutter rather than a room.
+    keyword = " ".join(fixture.split()[1:3]).rstrip(",.")
+    detail = next((line for line in details if keyword and keyword not in line.lower()),
+                  details[0])
     text = " ".join(part for part in (opening, middle, detail, going) if part)
     # **Short is a refusal, so it is fixed here rather than reported there.** One area in a
     # hundred came out at thirty-three words against a floor of thirty-four and was thrown
@@ -421,3 +605,37 @@ def name_and_describe(area, race, rng, settled=True):
     if not area.get("display_name"):
         area["display_name"] = place_name(race, rng)
     return area
+
+
+def retell_exits(area):
+    """
+    Rewrite each room's last sentence so it names the exits the room actually has.
+
+    Notes:
+        **Roads are laid after the prose is written, and that silently breaks a law.** A
+        description names every way out; a settlement room that later gains a road exit is
+        then a room whose prose hides a door - and it is hidden in exactly the way the law
+        exists to prevent. Measured on a hundred-area run: seven hundred and thirty-two
+        exits went unnamed once the roads were in.
+
+        Only the closing sentence is replaced, because only the closing sentence is about
+        the ways out. A room whose description this module did not write is left alone: it
+        is not this function's prose to rewrite.
+    """
+    by_room = {}
+    for exit_ in area.get("exits") or ():
+        by_room.setdefault(exit_["source"], []).append(exit_["name"])
+    for room in area.get("rooms") or ():
+        text = room.get("desc")
+        if not text:
+            continue
+        head, _, tail = text.rpartition(". ")
+        if not head or not _is_ways_sentence(tail):
+            continue
+        room["desc"] = "%s. %s" % (head, ways_sentence(by_room.get(room["id"], [])))
+    return area
+
+
+def _is_ways_sentence(text):
+    """Whether a sentence is one this module wrote about the ways out."""
+    return text.startswith(("Ways lead ", "The only way on lies ", "There is no way on"))

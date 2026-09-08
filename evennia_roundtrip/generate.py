@@ -40,7 +40,8 @@ from . import (areagen, cultures, naming, period, place, planet, populate,
 QUOTAS = (
     ("human", 25),
     ("dwarf", 15),
-    ("hunting", 15),
+    ("hunting", 11),
+    ("game", 4),
     ("elf", 10),
     ("gnome", 8),
     ("volgrin", 8),
@@ -67,6 +68,24 @@ TRADE_MARKERS = ("inn", "weaponsmith", "armourer", "general store", "alchemist",
                  "counting house", "healer", "stables", "shrine", "market stalls")
 
 
+#: Which vocabulary a hunting ground speaks in, by the country it stands in.
+#:
+#: **A ram is not going to love the swamp and an alligator is not going to love a
+#: mountain.** One "wild" voice and one "game" voice put grouse butts in a fen and sliding
+#: reptiles on a crag, and no word-count band or graph measurement can see it - the prose is
+#: the right length and completely wrong. So the animals follow the ground the culture asked
+#: for, which the culture table already states.
+HUNTING_VOICE = {
+    "woodland game covert": "game_wood",
+    "river fowl marsh": "game_marsh",
+    "upland game moor": "game_moor",
+    "marsh hunting ground": "wild_marsh",
+    "upland hunting ground": "wild_upland",
+    "wildwood hunting ground": "wild",
+    "shore hunting ground": "wild_shore",
+}
+
+
 def voice_race(culture):
     """
     Which vocabulary an area is written in.
@@ -78,7 +97,10 @@ def voice_race(culture):
     if culture.race:
         return culture.race
     if culture.purpose == "hunting":
-        return "wild"
+        # Game country and hostile country do not read alike, and neither does a fen read
+        # like a crag. See `HUNTING_VOICE`.
+        return HUNTING_VOICE.get(culture.name,
+                                 "wild" if culture.faction == cultures.HOSTILE else "game")
     if "goblin" in culture.name:
         return "goblin"
     return "human"
@@ -117,7 +139,11 @@ def wanted(count, quotas=QUOTAS):
 def _key_for(culture):
     """Which quota a culture counts against."""
     if culture.purpose == "hunting":
-        return "hunting"
+        # **Game country and hostile country hold separate quotas.** Sharing one meant
+        # whichever sat higher in the table took the lot: adding three game cultures turned
+        # all thirteen hunting grounds neutral overnight, which is the same fault as having
+        # them all hostile, wearing the other coat. Eleven dangerous, four for the pot.
+        return "hunting" if culture.faction == cultures.HOSTILE else "game"
     if "goblin" in culture.name:
         return "goblin"
     return culture.race or "human"
@@ -330,6 +356,11 @@ def grow_sites(at, radius_m, seeds, count, region=None, near_m=NEAR_M,
 ROAD_REACH_M = 340_000.0
 
 
+def _is_wild(area):
+    """Whether an area is somewhere people go out to rather than travel between."""
+    return area.get("purpose") == "hunting" or area.get("faction") == cultures.HOSTILE
+
+
 def _where(area):
     """An area's position, however the file happens to record it.
 
@@ -384,7 +415,128 @@ def _free_name(room, area, direction):
     return "the %s road" % direction
 
 
-def connect_areas(areas, radius_m, reach_m=ROAD_REACH_M):
+#: How far apart the rooms of a road stand.
+#:
+#: **Five miles, because a road is a place you travel, not a door you step through.** An
+#: exit joining two towns a hundred miles apart teleports somebody across a hundred miles;
+#: twenty rooms at five-mile intervals is a journey with somewhere to be ambushed, somewhere
+#: to camp, and somewhere to meet a caravan. It is also what makes the distance between two
+#: settlements mean anything at all in play.
+ROAD_ROOM_M = 8046.7
+
+#: The most rooms one road may spend.
+#:
+#: A road is capped rather than a distance refused: the spanning tree occasionally has to
+#: reach a long way to join an outlying place, and three thousand kilometres at five-mile
+#: spacing is four hundred rooms nobody will ever walk. Past the cap the rooms simply stand
+#: further apart, and the manifest says which roads those are.
+ROAD_ROOM_CAP = 40
+
+
+def _point_between(a, b, fraction, radius_m):
+    """A point along the great circle from `a` to `b`."""
+    lat1, lon1 = math.radians(a[0]), math.radians(a[1])
+    lat2, lon2 = math.radians(b[0]), math.radians(b[1])
+    d = _haversine(a[0], a[1], b[0], b[1], radius_m) / radius_m
+    if d == 0.0:
+        return (a[0], a[1])
+    sin_d = math.sin(d)
+    p = math.sin((1 - fraction) * d) / sin_d
+    q = math.sin(fraction * d) / sin_d
+    x = p * math.cos(lat1) * math.cos(lon1) + q * math.cos(lat2) * math.cos(lon2)
+    y = p * math.cos(lat1) * math.sin(lon1) + q * math.cos(lat2) * math.sin(lon2)
+    z = p * math.sin(lat1) + q * math.sin(lat2)
+    return (math.degrees(math.atan2(z, math.hypot(x, y))), math.degrees(math.atan2(y, x)))
+
+
+def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_id, at=None):
+    """
+    The road itself: an area of its own, with a room every five miles.
+
+    Args:
+        from_area, to_area (dict): The two places being joined.
+        room_a, room_b (dict): The rooms at each end that the road meets.
+        gap_m (float): How far apart those rooms are.
+        radius_m (float): The planet's radius.
+        rng (random.Random): The world's own generator.
+        base_id (int): The first free room id.
+        at (callable, optional): The oracle, so a road room knows its own height.
+
+    Returns:
+        road (dict or None): An area with `purpose` "road", or None if the two rooms are
+            close enough to join directly.
+
+    Notes:
+        **A road is an area because it is a place.** Putting its rooms inside one of the
+        settlements it joins would tack twenty rooms onto a village that does not contain
+        them and would break that area's own shape measurements; giving the road its own
+        record keeps every area honest about what it is. It carries `purpose` "road" so a
+        tally can count settlements without counting the ways between them.
+    """
+    rooms_wanted = int(gap_m // ROAD_ROOM_M)
+    if rooms_wanted < 1:
+        return None
+    rooms_wanted = min(rooms_wanted, ROAD_ROOM_CAP)
+
+    ends = ((room_a["latitude_deg"], room_a["longitude_deg"]),
+            (room_b["latitude_deg"], room_b["longitude_deg"]))
+    rooms = []
+    for index in range(rooms_wanted):
+        fraction = (index + 1) / (rooms_wanted + 1)
+        latitude, longitude = _point_between(ends[0], ends[1], fraction, radius_m)
+        rooms.append({
+            "id": base_id + index,
+            "latitude_deg": round(latitude, 6),
+            "longitude_deg": round(longitude, 6),
+            "cell": [index, 0, 0],
+            "key": "the road",
+            "elevation_m": round(at(latitude, longitude), 3) if at else None,
+        })
+
+    name = "the road from %s to %s" % (from_area.get("display_name") or from_area["name"],
+                                       to_area.get("display_name") or to_area["name"])
+    road = {
+        "name": name.lower().replace(" ", "-"),
+        "display_name": name,
+        "rooms": rooms,
+        "exits": [],
+        "purpose": "road",
+        "race": "road",
+        "faction": cultures.NEUTRAL,
+        "size": "road",
+        "latitude_deg": rooms[len(rooms) // 2]["latitude_deg"],
+        "longitude_deg": rooms[len(rooms) // 2]["longitude_deg"],
+        "anchor": {"latitude_deg": rooms[0]["latitude_deg"],
+                   "longitude_deg": rooms[0]["longitude_deg"],
+                   "bearing_deg": 0.0, "spacing_m": ROAD_ROOM_M},
+        "spacing_m": round(gap_m / (rooms_wanted + 1)),
+    }
+    # The road's own rooms run one after another; the ends are joined to the settlements by
+    # the caller, which is what makes the whole thing one walkable chain.
+    for index in range(len(rooms) - 1):
+        here, there = rooms[index], rooms[index + 1]
+        heading = _bearing(here["latitude_deg"], here["longitude_deg"],
+                           there["latitude_deg"], there["longitude_deg"])
+        direction = COMPASS[int((heading + 22.5) % 360 // 45)]
+        road["exits"].append({"source": here["id"], "name": direction,
+                              "destination": there["id"], "road": True})
+        road["exits"].append({"source": there["id"], "name": OPPOSITE[direction],
+                              "destination": here["id"], "road": True})
+    # **Not described here.** The prose names every way out of a room, and the road's two
+    # END rooms are joined to the settlements by the caller - after this returns. Describing
+    # it now produced a first and last room each claiming one fewer way out than it has, on
+    # top of the earlier fault where the whole road claimed to be a dead end. The caller
+    # calls `finish_road` once every exit is in place.
+    return road
+
+
+def finish_road(road, rng):
+    """Name and describe a road, once every one of its exits exists."""
+    naming.name_and_describe(road, "road", rng, settled=False)
+    return road
+
+
+def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
     """
     Lay roads until every area is joined to the network.
 
@@ -411,11 +563,23 @@ def connect_areas(areas, radius_m, reach_m=ROAD_REACH_M):
         the check runs rather than after it complains.
     """
     placed = [area for area in areas if _where(area) is not None and area.get("rooms")]
+    # **The trunk is settlements; the wild hangs off it.** A hunting ground is not a place
+    # people travel between, it is somewhere they go OUT to - so joining it into the
+    # spanning tree makes it a link in the chain between two towns, and a road through a
+    # goblin camp is not a road anybody uses. These are set aside and attached afterwards
+    # by a side path to the nearest road.
+    aside = [area for area in placed if _is_wild(area)]
+    placed = [area for area in placed if not _is_wild(area)]
     if len(placed) < 2:
-        return []
+        placed = placed + aside
+        aside = []
+    if len(placed) < 2:
+        return [], []
     joined = [placed[0]]
     outside = list(placed[1:])
     roads = []
+    built_roads = []
+    next_id = base_id
     while outside:
         best = None
         for area in outside:
@@ -445,16 +609,107 @@ def connect_areas(areas, radius_m, reach_m=ROAD_REACH_M):
         heading = _bearing(room_a["latitude_deg"], room_a["longitude_deg"],
                            room_b["latitude_deg"], room_b["longitude_deg"])
         direction = COMPASS[int((heading + 22.5) % 360 // 45)]
-        out_name = _free_name(room_a, other, direction)
-        back_name = _free_name(room_b, area, OPPOSITE[direction])
-        other["exits"].append({"source": room_a["id"], "name": out_name,
-                               "destination": room_b["id"], "road": True})
-        area["exits"].append({"source": room_b["id"], "name": back_name,
-                              "destination": room_a["id"], "road": True})
+
+        # The road is a place of its own with a room every five miles; only a very short
+        # link joins two settlements door to door.
+        road = road_between(other, area, room_a, room_b, room_gap, radius_m, rng, next_id,
+                            at=at)
+        if road is None:
+            out_name = _free_name(room_a, other, direction)
+            back_name = _free_name(room_b, area, OPPOSITE[direction])
+            other["exits"].append({"source": room_a["id"], "name": out_name,
+                                   "destination": room_b["id"], "road": True})
+            area["exits"].append({"source": room_b["id"], "name": back_name,
+                                  "destination": room_a["id"], "road": True})
+            rooms_on_it = 0
+        else:
+            next_id += len(road["rooms"]) + 10
+            built_roads.append(road)
+            first, last = road["rooms"][0], road["rooms"][-1]
+            other["exits"].append({"source": room_a["id"],
+                                   "name": _free_name(room_a, other, direction),
+                                   "destination": first["id"], "road": True})
+            road["exits"].append({"source": first["id"], "name": OPPOSITE[direction],
+                                  "destination": room_a["id"], "road": True})
+            back = COMPASS[int((_bearing(last["latitude_deg"], last["longitude_deg"],
+                                         room_b["latitude_deg"],
+                                         room_b["longitude_deg"]) + 22.5) % 360 // 45)]
+            road["exits"].append({"source": last["id"], "name": back,
+                                  "destination": room_b["id"], "road": True})
+            area["exits"].append({"source": room_b["id"],
+                                  "name": _free_name(room_b, area, OPPOSITE[back]),
+                                  "destination": last["id"], "road": True})
+            finish_road(road, rng)
+            rooms_on_it = len(road["rooms"])
         roads.append({"from": other["name"], "to": area["name"],
                       "metres": round(room_gap), "laid": True, "direction": direction,
-                      "long": room_gap > reach_m})
-    return roads
+                      "rooms": rooms_on_it, "long": room_gap > reach_m})
+    # Every wild place now gets its own path to the nearest road room, or to the nearest
+    # settlement if the roads are all too far. A path is a road by another name - same
+    # five-mile rooms, different word - so it is built by the same function.
+    for area in aside:
+        here = _where(area)
+        best = None
+        for road in built_roads:
+            for room in road["rooms"]:
+                gap = _haversine(here[0], here[1], room["latitude_deg"],
+                                 room["longitude_deg"], radius_m)
+                if best is None or gap < best[0]:
+                    best = (gap, road, room)
+        for other in joined:
+            found = _nearest_rooms(other, area, radius_m)
+            if found and (best is None or found[0] < best[0]):
+                best = (found[0], other, found[1])
+        if best is None:
+            continue
+        gap, host, host_room = best
+        found = _nearest_rooms(area, {"rooms": [host_room]}, radius_m)
+        near_room = found[1] if found else area["rooms"][0]
+        area.setdefault("exits", [])
+        host.setdefault("exits", [])
+        heading = _bearing(host_room["latitude_deg"], host_room["longitude_deg"],
+                           near_room["latitude_deg"], near_room["longitude_deg"])
+        direction = COMPASS[int((heading + 22.5) % 360 // 45)]
+        trail = road_between(host, area, host_room, near_room, gap, radius_m, rng, next_id,
+                             at=at)
+        if trail is None:
+            host["exits"].append({"source": host_room["id"],
+                                  "name": _free_name(host_room, host, direction),
+                                  "destination": near_room["id"], "road": True})
+            area["exits"].append({"source": near_room["id"],
+                                  "name": _free_name(near_room, area, OPPOSITE[direction]),
+                                  "destination": host_room["id"], "road": True})
+            roads.append({"from": host["name"], "to": area["name"], "metres": round(gap),
+                          "laid": True, "rooms": 0, "path": True, "long": False})
+            continue
+        trail["display_name"] = "the path to %s" % (area.get("display_name")
+                                                    or area["name"])
+        trail["name"] = trail["display_name"].lower().replace(" ", "-")
+        trail["purpose"] = "path"
+        next_id += len(trail["rooms"]) + 10
+        built_roads.append(trail)
+        first, last = trail["rooms"][0], trail["rooms"][-1]
+        host["exits"].append({"source": host_room["id"],
+                              "name": _free_name(host_room, host, direction),
+                              "destination": first["id"], "road": True})
+        trail["exits"].append({"source": first["id"], "name": OPPOSITE[direction],
+                               "destination": host_room["id"], "road": True})
+        back = COMPASS[int((_bearing(last["latitude_deg"], last["longitude_deg"],
+                                     near_room["latitude_deg"],
+                                     near_room["longitude_deg"]) + 22.5) % 360 // 45)]
+        trail["exits"].append({"source": last["id"], "name": back,
+                               "destination": near_room["id"], "road": True})
+        area["exits"].append({"source": near_room["id"],
+                              "name": _free_name(near_room, area, OPPOSITE[back]),
+                              "destination": last["id"], "road": True})
+        display = trail["display_name"]
+        finish_road(trail, rng)
+        trail["display_name"] = display
+        roads.append({"from": host["name"], "to": area["name"], "metres": round(gap),
+                      "laid": True, "rooms": len(trail["rooms"]), "path": True,
+                      "long": gap > reach_m})
+
+    return roads, built_roads
 
 
 def gate(area, culture, at, shape):
@@ -656,6 +911,14 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                 bank = _bank_beside(at, point, radius_m)
                 if bank is None:
                     continue
+                # **Checked against the seeds already collected, not only against each
+                # other.** `_water_seeds` thins the river nodes among themselves and knows
+                # nothing about the shore seeds or the areas the world already has - so a
+                # riverside seed landed three hundred and seventy metres from the Landing
+                # and the run founded two towns on top of each other.
+                if any(_haversine(bank[0], bank[1], seed[0], seed[1], radius_m) < NEAR_M
+                       for seed in seeds):
+                    continue
                 seeds.append(bank)
                 if len(seeds) >= 60:
                     break
@@ -670,7 +933,16 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         quota = wanted(count)
         filled = {key: 0 for key in quota}
 
-        made, refused, base_id = [], [], 1000
+        # **Room ids must start above every id already in the file.** The generator counted
+        # from a thousand and the world it was adding to used 1023 to 1863, so generated
+        # rooms were handed ids that existing rooms already had. Nothing complains: exits
+        # still point at "a room", the reachability check attributes seams to whichever area
+        # it found first, and two of the four original areas were reported unreachable while
+        # sitting on a road. An import would have been worse - one id, two rooms.
+        used = [room["id"] for area in existing for room in (area.get("rooms") or [])
+                if isinstance(room.get("id"), int)]
+        made, refused = [], []
+        base_id = max(used) + 1000 if used else 1000
         for site in sites:
             if len(made) >= count:
                 break
@@ -717,7 +989,15 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
 
         # **Roads before the check, because the check can only report.** Every area is
         # joined to the nearest area already on the network; see `connect_areas`.
-        roads = connect_areas(document["areas"], radius_m)
+        roads, road_areas = connect_areas(document["areas"], radius_m, rng,
+                                          base_id + 10000, at=at)
+        document["areas"] = document["areas"] + road_areas
+        # **Every room's prose is brought back into line with its exits.** The roads were
+        # laid after the descriptions were written, so a settlement room that gained one now
+        # has a door its own text does not mention - the exact fault the law forbids.
+        for area in document["areas"]:
+            if area.get("culture") or area.get("purpose") in ("road", "path"):
+                naming.retell_exits(area)
         run.write_json("roads.json", roads)
         stranded = reachability.check(document)
         run.write_json("worldfile.json", document)
@@ -730,6 +1010,8 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "shops": sum(a["shops"] for a in made),
             "refused": len(refused),
             "roads": sum(1 for road in roads if road["laid"]),
+            "road_rooms": sum(len(road["rooms"]) for road in road_areas),
+            "paths": sum(1 for road in roads if road.get("path")),
             "long_roads": sum(1 for road in roads if road.get("long")),
             "stranded": len(stranded.get("unreachable", ())),
             "unfilled": {key: quota[key] - filled[key]

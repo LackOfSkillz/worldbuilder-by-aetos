@@ -277,6 +277,18 @@ DEMO_TABLE = [
     # --- hostile ground: NPC peoples, and the wild ------------------------------------
     Culture("goblin camp", race=None, size="camp", purpose="home", faction=HOSTILE,
             wants={"elevation_m": (10.0, 400.0)}),
+    # **Not everything in the wild wants to eat you.** Every hunting ground was hostile,
+    # which makes "go hunting" mean "go and be attacked" and leaves a world with nowhere to
+    # shoot a pheasant. These are game country: deer, elk, hare, fox, quail, duck. They are
+    # still `purpose` hunting, so they still hang off a side path rather than joining the
+    # road between two towns - people go OUT to them - but nothing there is hunting back.
+    Culture("woodland game covert", size="camp", purpose="hunting", faction=NEUTRAL,
+            wants={"elevation_m": (10.0, 300.0), "forbids": ("harbour",)}),
+    Culture("river fowl marsh", size="camp", purpose="hunting", faction=NEUTRAL,
+            wants={"elevation_m": (1.0, 60.0), "needs": ("fresh",)}),
+    Culture("upland game moor", size="camp", purpose="hunting", faction=NEUTRAL,
+            wants={"elevation_m": (150.0, 600.0)}),
+
     Culture("marsh hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
             wants=dict(SWAMP)),
     Culture("upland hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
