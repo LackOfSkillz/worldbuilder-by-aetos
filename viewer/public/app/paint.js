@@ -59,13 +59,30 @@ export const OVERLAP = 4.5;
 export const SHAPES = {
   /// A crest with peaks, saddles and spurs. Raise only.
   ridge: {
-    pieces: 3,
+    pieces: 4,
     height: [0.52, 1.0],
-    width: [0.62, 1.18],
-    wander: 0.42,
-    spurChance: 0.34,
-    spurHeight: [0.40, 0.72],
-    spurLength: [0.45, 0.85],
+    width: [0.58, 1.16],
+    wander: 0.46,
+    //: Spurs run obliquely off a crest. **Never at a right angle**: a rib at exactly ninety
+    //: degrees, the same length every time, is what made the first painted range read as a
+    //: lizard rather than a mountain. Real spurs leave the crest at a slant and vary in
+    //: length by several times.
+    spurChance: 0.75,
+    spurAngle: [34, 76],
+    spurHeight: [0.34, 0.70],
+    spurLength: [0.30, 1.15],
+    spurWidth: [0.28, 0.58],
+    //: A spur that throws its own smaller spur. This is the dendritic signature - a branch
+    //: with branches - and it is the single thing that most separates an eroded range from
+    //: an extruded one.
+    branchChance: 0.55,
+    branchScale: [0.38, 0.62],
+    //: A second crest running alongside the first, lower, with a valley between. A range is
+    //: rarely one spine, and two parallel ridges is the strongest cue that it is not.
+    flankChance: 0.45,
+    flankOffset: [1.05, 1.75],
+    flankHeight: [0.42, 0.78],
+    flankWidth: [0.45, 0.80],
   },
   /// A coastline made of overlapping lobes rather than one disc.
   ///
@@ -158,56 +175,91 @@ function along(latDeg, lonDeg, bearingDeg, distanceM, radiusM) {
 ///   radiusM: the planet's radius.
 ///
 /// Returns the feature records for that leg.
-function ridgePieces(a, c, leg, brg, base, radiusM) {
-  const s = SHAPES.ridge;
-  const rand = noiseAt(a[0], a[1], Math.round(brg));
-  const out = [];
-  const n = s.pieces;
-  const step = leg / n;
-  for (let i = 0; i < n; i += 1) {
-    // The piece's own centre along the leg, then stepped off it. Wandering is what stops
-    // the crest reading as a ruled line without moving it far enough to leave the stroke.
-    const width = base.width * between(rand, s.width);
-    const alongM = step * (i + 0.5);
-    const centre = along(a[0], a[1], brg, alongM, radiusM);
-    const off = (rand() - 0.5) * 2 * s.wander * width;
-    const at = along(centre[0], centre[1], brg + 90, off, radiusM);
-    out.push({
-      ...base.record,
-      latitude_deg: Number(at[0].toFixed(6)),
-      longitude_deg: Number(at[1].toFixed(6)),
-      target_m: Math.round(base.target * between(rand, s.height)),
-      length_m: (step / 2) * OVERLAP,
-      width_m: Math.round(width),
-      bearing_deg: Number((brg + (rand() - 0.5) * 14).toFixed(3)),
-    });
-    // A spur: shorter, lower, thrown off at roughly a right angle. Spurs are most of what
-    // makes a range look like erosion rather than extrusion, and they are what a valley
-    // between two of them is made of.
-    if (rand() < s.spurChance) {
-      const side = rand() < 0.5 ? 90 : -90;
-      const spurLength = step * between(rand, s.spurLength);
-      const foot = along(at[0], at[1], brg + side, spurLength / 2, radiusM);
-      out.push({
-        ...base.record,
-        latitude_deg: Number(foot[0].toFixed(6)),
-        longitude_deg: Number(foot[1].toFixed(6)),
-        target_m: Math.round(base.target * between(rand, s.spurHeight)),
-        length_m: (spurLength / 2) * OVERLAP,
-        width_m: Math.round(width * 0.7),
-        bearing_deg: Number(((brg + side + 360) % 360).toFixed(3)),
-      });
-    }
-  }
-  return out;
-}
-
 function bearing(a, b) {
   const y = Math.sin((b[1] - a[1]) * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180);
   const x = Math.cos(a[0] * Math.PI / 180) * Math.sin(b[0] * Math.PI / 180)
           - Math.sin(a[0] * Math.PI / 180) * Math.cos(b[0] * Math.PI / 180)
             * Math.cos((b[1] - a[1]) * Math.PI / 180);
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function ridgePieces(a, c, leg, brg, base, radiusM) {
+  const s = SHAPES.ridge;
+  const rand = noiseAt(a[0], a[1], Math.round(brg));
+  const out = [];
+  const n = s.pieces;
+  const step = leg / n;
+
+  /// One arm off the crest, and sometimes an arm off that.
+  ///
+  /// **`OVERLAP` is not applied here, and that was the bug that made the ribs.** The
+  /// constant exists so that CHAINED pieces reach past each other and the chain does not
+  /// shoal at its joins. A spur is chained to nothing: giving it a half-length of `2.25`
+  /// times its own span made every spur stick two and a quarter times as far out as it was
+  /// meant to, all of them the same length and all at right angles - which is exactly the
+  /// row of legs the first range grew.
+  const arm = (fromLat, fromLon, armBrg, span, width, height, depth) => {
+    const foot = along(fromLat, fromLon, armBrg, span / 2, radiusM);
+    out.push({
+      ...base.record,
+      latitude_deg: Number(foot[0].toFixed(6)),
+      longitude_deg: Number(foot[1].toFixed(6)),
+      target_m: Math.round(height),
+      length_m: Math.round(span / 2),
+      width_m: Math.round(width),
+      bearing_deg: Number(((armBrg + 360) % 360).toFixed(3)),
+    });
+    if (depth > 0 && rand() < s.branchChance) {
+      const scale = between(rand, s.branchScale);
+      const tip = along(fromLat, fromLon, armBrg, span, radiusM);
+      const side = rand() < 0.5 ? 1 : -1;
+      arm(tip[0], tip[1], armBrg + side * between(rand, s.spurAngle),
+          span * scale, width * scale, height * between(rand, s.branchScale), depth - 1);
+    }
+  };
+
+  for (let i = 0; i < n; i += 1) {
+    // The piece's own centre along the leg, then stepped off it. Wandering is what stops
+    // the crest reading as a ruled line without moving it far enough to leave the stroke.
+    const width = base.width * between(rand, s.width);
+    const centre = along(a[0], a[1], brg, step * (i + 0.5), radiusM);
+    const off = (rand() - 0.5) * 2 * s.wander * width;
+    const at = along(centre[0], centre[1], brg + 90, off, radiusM);
+    const peak = base.target * between(rand, s.height);
+    out.push({
+      ...base.record,
+      latitude_deg: Number(at[0].toFixed(6)),
+      longitude_deg: Number(at[1].toFixed(6)),
+      target_m: Math.round(peak),
+      length_m: (step / 2) * OVERLAP,
+      width_m: Math.round(width),
+      bearing_deg: Number((brg + (rand() - 0.5) * 14).toFixed(3)),
+    });
+    if (rand() < s.spurChance) {
+      const side = rand() < 0.5 ? 1 : -1;
+      arm(at[0], at[1], brg + side * between(rand, s.spurAngle),
+          step * between(rand, s.spurLength), width * between(rand, s.spurWidth),
+          peak * between(rand, s.spurHeight), 1);
+    }
+    if (rand() < s.flankChance) {
+      // A parallel crest with a valley between it and the main one. The valley is simply
+      // ground neither ridge reached, which is all a valley is when raises never dig.
+      const side = rand() < 0.5 ? 1 : -1;
+      const flankWidth = width * between(rand, s.flankWidth);
+      const beside = along(at[0], at[1], brg + side * 90,
+                           width * between(rand, s.flankOffset), radiusM);
+      out.push({
+        ...base.record,
+        latitude_deg: Number(beside[0].toFixed(6)),
+        longitude_deg: Number(beside[1].toFixed(6)),
+        target_m: Math.round(peak * between(rand, s.flankHeight)),
+        length_m: (step / 2) * OVERLAP,
+        width_m: Math.round(flankWidth),
+        bearing_deg: Number((brg + (rand() - 0.5) * 22).toFixed(3)),
+      });
+    }
+  }
+  return out;
 }
 
 /// A cluster of lobes standing for one round thing: an island, a lake, a lone hill.
