@@ -106,6 +106,48 @@ def dry_enough(rooms, at):
     return {"wet_unexpected": wet, "fits": not wet}
 
 
+#: How far a refused site may be nudged to find ground that holds it.
+#:
+#: **A site that does not fit is usually beside one that does.** The fish camp sits on a
+#: tiny island inside a much larger one; anchoring there put most of a village in the water
+#: and dropping the seed threw away a perfectly good coast a few kilometres off. So a
+#: refused anchor is walked outward in rings until the whole area stands on dry land, and
+#: only a site with nothing within this reach is actually refused.
+#:
+#: Thirty kilometres, which is inside the ten-to-thirty-mile spacing: a nudge cannot carry
+#: a settlement into its neighbour's lap.
+FIT_REACH_M = 30_000.0
+
+
+def _fit_on_land(lattice, names, anchor, at, radius_m, base_id,
+                 reach_m=FIT_REACH_M, rings=6, rays=12):
+    """Move an anchor the least distance that puts every room on dry ground."""
+    rooms, exits = place_rooms(lattice, names, anchor, radius_m, base_id=base_id)
+    ground = dry_enough(rooms, at)
+    if ground["fits"]:
+        return anchor, rooms, exits, ground
+
+    metres_per_degree = math.pi * radius_m / 180.0
+    best = (anchor, rooms, exits, ground)
+    for ring in range(1, rings + 1):
+        distance = reach_m * ring / rings
+        for index in range(rays):
+            bearing = math.radians(360.0 * index / rays)
+            lat = anchor[0] + (distance * math.cos(bearing)) / metres_per_degree
+            lon = anchor[1] + (distance * math.sin(bearing)) / (
+                metres_per_degree * math.cos(math.radians(anchor[0])))
+            moved = (lat, lon)
+            r, e = place_rooms(lattice, names, moved, radius_m, base_id=base_id)
+            g = dry_enough(r, at)
+            if g["fits"]:
+                # Nearest wins: the first ring that works is the least the settlement has
+                # to move, which keeps it where the site scorer thought it should be.
+                return moved, r, e, g
+            if len(g["wet_unexpected"]) < len(best[3]["wet_unexpected"]):
+                best = (moved, r, e, g)
+    return best
+
+
 def area_from_site(site, culture, names, at, radius_m, rng, base_id, size=None):
     """
     One finished area, or None with the reason it was refused.
@@ -119,18 +161,22 @@ def area_from_site(site, culture, names, at, radius_m, rng, base_id, size=None):
     if problems:
         return {"area": None, "problems": ["shape: " + "; ".join(problems)]}
 
-    anchor = (site["latitude_deg"], site["longitude_deg"])
-    rooms, exits = place_rooms(lattice, names, anchor, radius_m, base_id=base_id)
-    ground = dry_enough(rooms, at)
+    anchor, rooms, exits, ground = _fit_on_land(
+        lattice, names, (site["latitude_deg"], site["longitude_deg"]),
+        at, radius_m, base_id)
     if not ground["fits"]:
-        return {"area": None,
-                "problems": ["in water: " + ", ".join(ground["wet_unexpected"][:4])]}
+        return {"action": "refused", "area": None,
+                "problems": ["no dry ground within reach: "
+                             + ", ".join(ground["wet_unexpected"][:3])]}
 
     area = {
+        "moved_m": round(_haversine(site["latitude_deg"], site["longitude_deg"],
+                                    anchor[0], anchor[1], radius_m)),
         "name": site.get("name") or (culture.name.replace(" ", "_") if culture else "area"),
         "rooms": rooms,
         "exits": exits,
-        "anchor": {"latitude_deg": anchor[0], "longitude_deg": anchor[1],
+        "anchor": {"latitude_deg": round(anchor[0], 6),
+                   "longitude_deg": round(anchor[1], 6),
                    "bearing_deg": 0.0, "spacing_m": ROOM_SPACING_M},
         "layout_quality": lattice["shape"],
     }
