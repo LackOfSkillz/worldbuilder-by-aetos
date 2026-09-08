@@ -11,6 +11,7 @@
 // exactly one source and only ever pushes into it.
 
 import { enableAreaInput } from "./area-markers.js";
+import { buildTally } from "./tally.js";
 
 /// How often to ask. Two seconds is slower than areas land and that is deliberate: the
 /// point is to watch a world fill in, and a pin appearing every couple of seconds reads as
@@ -41,9 +42,12 @@ function label(area) {
 ///   onTick: optional `(drawn, total)` callback, for a counter in the UI.
 ///
 /// Returns a handle with `stop()`, `count()` and the data source.
-export function watchRun(viewer, Cesium, runId, onTick = null) {
+export function watchRun(viewer, Cesium, runId, onTick = null,
+                         { worldName = null, tally = true } = {}) {
   const source = new Cesium.CustomDataSource(`wb-populate-${runId}`);
   viewer.dataSources.add(source);
+  // The counts climb beside the pins. One card per run, removed with it.
+  const counts = tally ? buildTally(window.document, worldName || "—") : null;
   let cursor = 0;
   let stopped = false;
   let timer = null;
@@ -114,6 +118,7 @@ export function watchRun(viewer, Cesium, runId, onTick = null) {
         const payload = await r.json();
         for (const area of payload.areas || []) {
           draw(area);
+          if (counts) counts.add(area);
           cursor += 1;
         }
         if (onTick) onTick(cursor, payload.total || cursor);
@@ -133,10 +138,12 @@ export function watchRun(viewer, Cesium, runId, onTick = null) {
       stopped = true;
       if (timer) clearTimeout(timer);
     },
+    tally: counts,
     remove: () => {
       stopped = true;
       if (timer) clearTimeout(timer);
       input.stop();
+      if (counts) counts.remove();
       viewer.dataSources.remove(source, true);
     },
   };
