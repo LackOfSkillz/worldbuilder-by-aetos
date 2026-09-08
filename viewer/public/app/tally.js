@@ -11,6 +11,8 @@
 // tally reads ninety-three - and the difference between that and the plan is exactly the
 // thing worth noticing.
 
+import { legendRows } from "./palette.js";
+
 /// What is counted, in the order it reads best. `of` pulls the number out of one area.
 const FIELDS = [
   { key: "areas", label: "Areas", of: () => 1 },
@@ -69,6 +71,18 @@ export function buildTally(document, worldName = "—") {
     rows.append(row);
   }
   card.append(rows);
+
+  // A key, because a screen of coloured dots means nothing without one - and this is the
+  // readout somebody will be looking at while the world fills in.
+  const key = el("div", "wb-legend");
+  for (const row of legendRows()) {
+    const item = el("span", "wb-legend-item");
+    const swatch = el("span", "wb-swatch");
+    swatch.style.background = row.colour;
+    item.append(swatch, el("span", "wb-legend-label", row.label));
+    key.append(item);
+  }
+  card.append(key);
 
   const foot = el("div", "wb-tally-foot", "");
   card.append(foot);

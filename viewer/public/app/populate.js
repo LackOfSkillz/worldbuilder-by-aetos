@@ -12,18 +12,35 @@
 
 import { enableAreaInput } from "./area-markers.js";
 import { buildTally } from "./tally.js";
+import { fillFor, outlineFor, outlineWidthFor, legendRows } from "./palette.js";
 
 /// How often to ask. Two seconds is slower than areas land and that is deliberate: the
 /// point is to watch a world fill in, and a pin appearing every couple of seconds reads as
 /// a world being built, where a hundred arriving at once reads as a page load.
 const POLL_MS = 2000;
 
-/// Colour by what kind of place it is, so the map tells a story as it fills.
-function markColour(Cesium, area) {
-  const faction = (area.faction || "friendly").toLowerCase();
-  if (faction === "hostile") return Cesium.Color.fromCssColorString("#e2564a");
-  if (faction === "neutral") return Cesium.Color.fromCssColorString("#e0a94a");
-  return Cesium.Color.fromCssColorString("#5fd08a");
+/// The hover card's text: what this place is and what is in it.
+///
+/// `unique_items` counts DISTINCT things purchasable here, not stock on the shelves -
+/// "forty swords" tells a player nothing, "nine kinds of blade" tells them whether the trip
+/// is worth making. A field the generator did not fill is left out rather than shown as
+/// zero, because a missing count and a genuine none are different facts.
+function describe(area) {
+  const lines = [area.display_name || area.name || "area"];
+  if (area.culture) lines.push(area.culture);
+  const who = [area.race, area.profession].filter(Boolean).join(" · ");
+  if (who) lines.push(who);
+  if (area.faction && area.faction !== "friendly") lines.push(area.faction.toUpperCase());
+  lines.push("");
+  const row = (k, v) => lines.push(k.padEnd(15) + v);
+  if (area.rooms !== undefined) row("rooms", area.rooms);
+  if (area.shops !== undefined) row("shops", area.shops);
+  if (area.unique_items !== undefined) row("goods on sale", area.unique_items);
+  if (area.npcs !== undefined) row("inhabitants", area.npcs);
+  if (Array.isArray(area.level_band) && area.level_band.length === 2) {
+    row("levels", area.level_band.join("-"));
+  }
+  return lines.join("\n");
 }
 
 function label(area) {
@@ -56,19 +73,17 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
     if (area.latitude_deg === undefined || area.longitude_deg === undefined) return;
     source.entities.add({
       name: area.name,
-      description: [
-        area.display_name || area.name,
-        area.culture || "",
-        area.race ? `race: ${area.race}` : "",
-        Array.isArray(area.level_band) ? `levels ${area.level_band.join("-")}` : "",
-        area.rooms ? `${area.rooms} rooms` : "",
-      ].filter(Boolean).join("\n"),
+      // What the hover card says. Labelled rather than a run-on line: this is read
+      // while a hundred land, so the eye wants the same fact in the same place.
+      description: describe(area),
       position: Cesium.Cartesian3.fromDegrees(area.longitude_deg, area.latitude_deg),
       point: {
         pixelSize: 10,
-        color: markColour(Cesium, area),
-        outlineColor: Cesium.Color.BLACK.withAlpha(0.8),
-        outlineWidth: 2,
+        color: fillFor(Cesium, area),
+        // Faction fills, race rings: a hostile lizard-folk town is a red dot ringed in
+        // jade, so "dangerous" reads from orbit without losing who lives there.
+        outlineColor: outlineFor(Cesium, area),
+        outlineWidth: outlineWidthFor(area),
         // The three rules the area pins already follow, for the same reasons: never
         // depth-tested into the terrain, never range-culled, scaled rather than fixed.
         disableDepthTestAgainstTerrain: true,
