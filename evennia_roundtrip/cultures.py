@@ -90,8 +90,8 @@ class Culture:
         purpose (str): `home`, `guild`, `hunting`, `trade`, `mine` or `military`.
         size (str): `camp`, `hamlet`, `village`, `town`, `city` or `seat`.
         wants (dict): Terrain requirements. Any of `elevation_m`, `prominence_m`,
-            `slope_m` as `(low, high)` pairs, and `needs` / `forbids` as sequences of
-            `harbour`, `landing` or `fresh`.
+            `relief_m`, `slope_m` as `(low, high)` pairs, and `needs` / `forbids` as
+            sequences of `harbour`, `landing` or `fresh`.
         level_band (tuple or None): For hunting grounds, filled in by distance.
     """
 
@@ -108,7 +108,7 @@ class Culture:
 
     def fits(self, site):
         """Whether this ground satisfies every requirement. No partial credit."""
-        for field in ("elevation_m", "prominence_m", "slope_m"):
+        for field in ("elevation_m", "prominence_m", "relief_m", "slope_m"):
             band = self.wants.get(field)
             if band is None:
                 continue
@@ -218,10 +218,15 @@ DEMO_TABLE = [
             wants=dict(SWAMP)),
     Culture("saurathi marsh village", race="saurathi", size="village", purpose="home",
             wants=dict(SWAMP)),
+    # **A hold is dug into a mountain, not perched on one.** The band used to ask for
+    # height at the site and topped out at 650 m, which was the height this planet happened
+    # to have - so a real mountain would have been REFUSED for being too tall, and what got
+    # built was a hill fort with a dwarf name on it. Dwarves tunnel in from ground level:
+    # the site wants ordinary walkable ground, and `relief_m` is the mountain beside it.
     Culture("dwarf mountain hold", race="dwarf", size="seat", purpose="home",
-            wants={"elevation_m": (250.0, 650.0), "prominence_m": (25.0, 1e9)}),
+            wants={"elevation_m": (40.0, 900.0), "relief_m": (600.0, 1e9)}),
     Culture("dwarf mining village", race="dwarf", size="village", purpose="mine",
-            wants={"elevation_m": (150.0, 650.0)}),
+            wants={"elevation_m": (20.0, 800.0), "relief_m": (250.0, 1e9)}),
     Culture("gnome workshop village", race="gnome", size="village", purpose="home",
             wants={"elevation_m": (60.0, 300.0), "prominence_m": (5.0, 1e9)}),
     Culture("volgrin steading", race="volgrin", size="town", purpose="home",

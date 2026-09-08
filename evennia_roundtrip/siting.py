@@ -155,6 +155,45 @@ def prominence_at(at, latitude_deg, longitude_deg, radius_m, reach_m=5000.0, ray
     return here - (sum(ring) / len(ring))
 
 
+#: How far out a settlement looks for the mountain it is built against.
+#:
+#: Twenty-five kilometres: a morning's walk to the workings and back, which is the distance
+#: that makes a hold and a mine one settlement rather than two.
+RELIEF_REACH_M = 25000.0
+
+
+def relief_within(at, latitude_deg, longitude_deg, radius_m,
+                  reach_m=RELIEF_REACH_M, rays=12, steps=4):
+    """
+    How much higher the country gets within reach, in metres.
+
+    Returns:
+        relief (float): The greatest height found on the rings, less the height here. Zero
+            when nothing around is higher.
+
+    Notes:
+        **A dwarf hold is not on the summit.** `prominence_at` asks whether a site stands
+        above its surroundings, which is the question a fortress asks and the wrong question
+        for a mountain kingdom: dwarves tunnel in from ground level, so the hold wants
+        walkable ground with a mountain beside it, and by the summit test that ground scores
+        near zero or below. This asks the other question - is there a mountain within reach
+        of here - and the two together separate a peak from the flank it rises from.
+
+        Forty-eight samples, against the two hundred and fifty-six a water search costs, so
+        it is affordable on every site rather than only on the ones already suspected of
+        being high.
+    """
+    here = at(latitude_deg, longitude_deg)
+    highest = here
+    for step in range(1, steps + 1):
+        distance = reach_m * step / steps
+        for lat, lon in _ring(latitude_deg, longitude_deg, distance, radius_m, rays):
+            height = at(lat, lon)
+            if height > highest:
+                highest = height
+    return highest - here
+
+
 def water_within(at, latitude_deg, longitude_deg, radius_m, depth_m, reach_m,
                  rays=16, steps=8):
     """
@@ -257,6 +296,10 @@ def score_point(at, latitude_deg, longitude_deg, radius_m, rivers=(),
     # far this stands above the country around it is the question a fortress actually asks,
     # and it is meaningful on flat ground and on sharp ground alike.
     prominence = prominence_at(at, latitude_deg, longitude_deg, radius_m)
+    # **The mountain next door, which is a different question from the mountain underfoot.**
+    # See `relief_within`: a hold is dug into a flank from ground level, so the summit test
+    # above answers for a fortress and this one answers for a mining kingdom.
+    relief = relief_within(at, latitude_deg, longitude_deg, radius_m)
     # **The two water searches are the whole cost of a score**: sixteen rays by eight steps,
     # twice, is two hundred and fifty-six calls against the eight a slope takes. Somewhere
     # the cheap gate has already said there is no water within eight kilometres, both are
@@ -284,6 +327,7 @@ def score_point(at, latitude_deg, longitude_deg, radius_m, rivers=(),
             "longitude_deg": round(longitude_deg, 6),
             "elevation_m": round(height, 2), "slope_m": round(slope, 2),
             "prominence_m": round(prominence, 2),
+            "relief_m": round(relief, 2),
             "harbour_m": harbour, "landing_m": landing,
             "fresh_m": None if fresh is None else round(fresh)}
 
