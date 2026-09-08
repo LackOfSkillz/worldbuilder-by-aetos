@@ -318,11 +318,20 @@ export function mountWorldPanel(parent, getViewer) {
         continue;
       }
       const there = new URLSearchParams(searchFromPlanet(document_.planet).replace(/^\?/, ""));
-      const same = [...there.keys()].every((key) => here.get(key) === there.get(key));
-      if (!same) continue;
-      if (!best || (document_.areas || []).length > best.areas.length) {
-        best = { name: document_.name || row.file, areas: document_.areas || [] };
-      }
+      // **A near miss is reported, not discarded.** One moved slider makes this planet a
+      // different planet from the one the areas were sited on, which is true - and answering
+      // "no worldfile on this server carries areas for this planet" makes a city of a hundred
+      // and seventy-seven rooms simply vanish with no clue as to why. Moving the mountain
+      // height and losing the Landing looks like a bug in the areas; it is one number in the
+      // query string. So the closest worldfile is kept along with what differs about it.
+      const differs = [...there.keys()]
+        .filter((key) => here.get(key) !== there.get(key))
+        .map((key) => `${key} ${there.get(key)} not ${here.get(key) ?? "unset"}`);
+      const areas = document_.areas || [];
+      const better = !best
+        || differs.length < best.differs.length
+        || (differs.length === best.differs.length && areas.length > best.areas.length);
+      if (better) best = { name: document_.name || row.file, areas, differs };
     }
     return best;
   }
@@ -330,21 +339,31 @@ export function mountWorldPanel(parent, getViewer) {
   const areaRow = el("div", "wb-jump");
   const showAreas = button("show areas");
   showAreas.addEventListener("click", async () => {
+    let warning = "";
     // **"Show areas" with nothing loaded used to say "0 areas on the globe" and stop.**
     // That is true and useless: the areas were on disk, in a worldfile for this very planet,
     // and the button that says "show areas" is exactly where somebody expects that to be
     // noticed. It looks for them now instead of reporting their absence.
     if (!lastAreas.length) {
       const found = await areasForThisPlanet();
-      if (found) {
-        lastAreas = found.areas;
-        note.textContent = `loaded ${lastAreas.length} areas from "${found.name}"`;
-      } else {
-        note.textContent = "no worldfile on this server carries areas for this planet";
+      if (!found) {
+        note.textContent = "no worldfile on this server carries any areas";
         return;
       }
+      lastAreas = found.areas;
+      // Shown either way. Areas sited on a planet whose parameters have since moved are
+      // still worth looking at - they are just no longer standing on the ground they were
+      // placed on, and that is the thing to say rather than the thing to hide.
+      //
+      // Said AFTER the redraw, because `redrawAreas` writes its own count into the same
+      // line and would otherwise wipe the warning in the same tick it was written.
+      warning = found.differs.length
+        ? `on a different planet: ${found.differs.slice(0, 3).join("; ")} - the ground under `
+          + "them has moved"
+        : "";
     }
     redrawAreas();
+    if (warning) note.textContent += ` (${warning})`;
   });
   const flyAreas = button("fly to areas");
   flyAreas.addEventListener("click", async () => {
