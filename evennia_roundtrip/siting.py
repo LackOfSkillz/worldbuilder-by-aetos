@@ -398,6 +398,70 @@ def _water_seeds(index, radius_m, separation_m):
             yield point
 
 
+def shore_seeds(at, radius_m, centre, count=7, max_reach_m=6_000_000.0,
+                step_m=25_000.0, mainland_m=120_000.0):
+    """
+    Landfall points spread evenly around the shore of a water body.
+
+    Args:
+        at (callable): The elevation oracle.
+        radius_m (float): The planet's radius.
+        centre (tuple): `(lat, lon)` in the middle of the water.
+        count (int, optional): How many seeds.
+        max_reach_m (float, optional): How far out to look before giving up on a bearing.
+        step_m (float, optional): How finely to walk each ray.
+
+    Returns:
+        seeds (list): `(lat, lon)` on land, one per bearing that found a shore.
+
+    Notes:
+        **Seeds first, spread by construction, and then everything grows from them.** A
+        best-first pass over the whole frame picks the highest-scoring sites, and the
+        highest-scoring sites are all in the same good bay - so a hundred areas pile into
+        one corner and the rest of the region stays empty. Casting rays at even bearings
+        from the middle of the sea puts a landfall on every shore before any of them is
+        allowed to grow, which is also the order the places themselves would have appeared:
+        ports first, hinterland after.
+
+        A ray that runs the whole reach without finding land is dropped rather than
+        forced. On a real coastline some bearings are open water for a very long way, and
+        an invented seed out there would be a settlement in the middle of the sea.
+    """
+    lat0, lon0 = math.radians(centre[0]), math.radians(centre[1])
+    seeds = []
+    for index in range(count):
+        bearing = 2.0 * math.pi * index / count
+        found = None
+        walked = step_m
+        while walked <= max_reach_m:
+            angular = walked / radius_m
+            lat = math.asin(math.sin(lat0) * math.cos(angular)
+                            + math.cos(lat0) * math.sin(angular) * math.cos(bearing))
+            lon = lon0 + math.atan2(
+                math.sin(bearing) * math.sin(angular) * math.cos(lat0),
+                math.cos(angular) - math.sin(lat0) * math.sin(lat))
+            latitude, longitude = math.degrees(lat), math.degrees(lon)
+            if at(latitude, longitude) >= LOW_M:
+                # **An islet is not a shore.** The first landfall on a bearing across this
+                # sea was the camp's own island - real land, forty kilometres of it, and
+                # not the coast anybody meant. So a seed has to sit on ground that keeps
+                # going: sample further along the same bearing and require land there too.
+                deeper = walked + mainland_m
+                a2 = deeper / radius_m
+                lat2 = math.asin(math.sin(lat0) * math.cos(a2)
+                                 + math.cos(lat0) * math.sin(a2) * math.cos(bearing))
+                lon2 = lon0 + math.atan2(
+                    math.sin(bearing) * math.sin(a2) * math.cos(lat0),
+                    math.cos(a2) - math.sin(lat0) * math.sin(lat2))
+                if at(math.degrees(lat2), math.degrees(lon2)) >= 0.0:
+                    found = (latitude, longitude)
+                    break
+            walked += step_m
+        if found:
+            seeds.append(found)
+    return seeds
+
+
 def sites_at_range(at, radius_m, origin, distance_m, bearings=72, spread=0.15,
                    rivers=(), classify=None):
     """
@@ -451,7 +515,7 @@ def sites_at_range(at, radius_m, origin, distance_m, bearings=72, spread=0.15,
 def survey(at, radius_m, count=12, samples=20000, rivers=(),
            separation_m=SEPARATION_M, land_link_m=LAND_LINK_M,
            coast_reach_m=COAST_GATE_M, quotas=None, classify=None,
-           region=None):
+           region=None, seeds=()):
     """
     The best places on a planet to put a settlement.
 
@@ -541,6 +605,23 @@ def survey(at, radius_m, count=12, samples=20000, rivers=(),
         return any(_haversine(site["latitude_deg"], site["longitude_deg"],
                               other["latitude_deg"], other["longitude_deg"],
                               radius_m) <= land_link_m for other in chosen)
+
+    # **Given seeds are placed FIRST, before anything competes for the quota.** Without
+    # this the best-first sweep takes the highest-scoring sites, those are all in the same
+    # good bay, and a hundred areas pile into one corner of a frame while the rest stays
+    # empty. Seeds spread around a shore by construction; everything else grows from them.
+    for point in seeds:
+        site = score_point(at, point[0], point[1], radius_m, rivers=rivers,
+                           classify=classify,
+                           look_for_water=_sea_nearby(at, point[0], point[1], radius_m,
+                                                      coast_reach_m))
+        if site is None or site["kind"] is None or not far_enough(site):
+            continue
+        name = vacancy(site) or site["kind"]
+        site["kind"] = name
+        site["seed"] = True
+        chosen.append(site)
+        taken[name] = taken.get(name, 0) + 1
 
     # **Grown outward from the water, not walked once best-first.** The single pass placed
     # every coastal site first, scattered across a whole planet, and then refused
