@@ -209,3 +209,90 @@ def elevation_at(planet, resolution_m=None, features=None, features_radius_m=Non
 
     sample.handle = handle
     return sample
+
+
+#: The compose words a worldfile may use. Anything else is a typo, not a new mode.
+COMPOSE = ("raise", "carve", "shape")
+
+
+def features_to_engine(records):
+    """
+    A worldfile's `features` in the shape `elevation_at` wants.
+
+    Args:
+        records (iterable): Worldfile feature records - `latitude_deg`, `longitude_deg`,
+            `target_m`, `length_m`, `width_m`, `bearing_deg`, `compose`, `substrate`.
+
+    Returns:
+        tuples (list): One positional tuple per feature, `at` flattened to its three vector
+            components, in the binding's declared field order.
+
+    Raises:
+        ValueError: On an unknown `compose`. A feature nobody can composite is a feature
+            that would silently do nothing, which is the failure this whole module exists to
+            stop.
+
+    Notes:
+        **Without this the ground the scorer measures is not the ground the viewer draws.**
+        The oracle has always taken features and every caller had to flatten them itself, so
+        in practice nothing did: a world with a painted mountain range in it was surveyed as
+        if the range were not there, and a dwarf hold would have been sited on the plain
+        beside a mountain the scorer could not see. Painting only pays for itself if the
+        placement can read it.
+    """
+    import math
+
+    out = []
+    for record in records:
+        compose = record.get("compose", "raise")
+        if compose not in COMPOSE:
+            raise ValueError("feature %r has compose %r, expected one of %s"
+                             % (record.get("kind", "?"), compose, ", ".join(COMPOSE)))
+        latitude = math.radians(float(record["latitude_deg"]))
+        longitude = math.radians(float(record["longitude_deg"]))
+        substrate = record.get("substrate")
+        out.append((
+            str(record.get("kind", "feature")),
+            math.cos(latitude) * math.cos(longitude),
+            math.cos(latitude) * math.sin(longitude),
+            math.sin(latitude),
+            float(record["target_m"]),
+            float(record["length_m"]),
+            float(record["width_m"]),
+            float(record.get("bearing_deg", 0.0)),
+            compose,
+            bool(record.get("marked", False)),
+            # `"derive"` is the worldfile's way of saying "no substrate stated", and the
+            # engine's way of saying it is None. They are the same sentinel in two
+            # vocabularies and the conversion belongs here, once.
+            None if substrate in (None, "derive") else str(substrate),
+        ))
+    return out
+
+
+def elevation_from_worldfile(document, resolution_m=None):
+    """
+    The oracle for a whole worldfile, painted features included.
+
+    Args:
+        document (dict): A parsed worldfile - needs `planet`, may have `features`.
+        resolution_m (float, optional): Detail cutoff.
+
+    Returns:
+        sample (callable): `(lat, lon) -> metres`.
+
+    Notes:
+        The one call every placement tool should be making. Taking the planet block alone
+        and forgetting the features is the mistake this exists to make impossible.
+    """
+    records = document.get("features") or ()
+    # The radius comes through `scalars`, not out of the dict directly: it is the same
+    # number the surface is built at and it must be read the same way, so a planet block
+    # missing it fails with `scalars`' own message rather than a bare KeyError from here.
+    radius_m = scalars(document["planet"])["radius_m"]
+    return elevation_at(
+        document["planet"],
+        resolution_m=resolution_m,
+        features=features_to_engine(records) if records else None,
+        features_radius_m=radius_m if records else None,
+    )

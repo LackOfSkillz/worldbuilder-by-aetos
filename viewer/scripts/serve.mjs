@@ -197,6 +197,48 @@ createServer(async (req, res) => {
     return;
   }
 
+  // POST /worlds/ writes one worldfile into the same directory the library lists and the
+  // generator reads. **A download is not a save.** The button said "save world" and handed
+  // the browser a file in the downloads folder, where the world library cannot list it and
+  // the Python side cannot open it - so a painted world looked saved and was not anywhere
+  // the rest of the tool could reach.
+  //
+  // The same rule the routes writer follows: one directory, one extension, a sanitised
+  // name, and a size cap. A worldfile carries features and areas, so the cap is larger than
+  // a route's - the ranger camp file is a thousand features and four areas.
+  if ((raw === "/worlds/" || raw === "/worlds") && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 64_000_000) req.destroy();
+    });
+    req.on("end", async () => {
+      try {
+        const document_ = JSON.parse(body);
+        const safe = String(document_.name || "world")
+          .replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 60) || "world";
+        await mkdir(worldsDir, { recursive: true });
+        const file = join(worldsDir, `${safe}.json`);
+        if (!file.startsWith(worldsDir)) throw new Error("path escape");
+        await writeFile(file, `${JSON.stringify(document_, null, 2)}
+`, "utf-8");
+        const counts = {
+          saved: `${safe}.json`,
+          areas: (document_.areas || []).length,
+          features: (document_.features || []).length,
+        };
+        console.log(`200 POST /worlds/ -> ${safe}.json `
+          + `(${counts.areas} areas, ${counts.features} features)`);
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(counts));
+      } catch (error) {
+        console.log(`400 POST /worlds/ ${error.message}`);
+        res.writeHead(400, { "content-type": "application/json" })
+          .end(JSON.stringify({ error: String(error.message) }));
+      }
+    });
+    return;
+  }
+
   // GET /progress/?run=<id>&from=<n> - the populate feed.
   //
   // **Polling a growing file, not a socket.** A run writes one JSON line per area as it

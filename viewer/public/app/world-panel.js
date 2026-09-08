@@ -121,16 +121,40 @@ export function mountWorldPanel(parent, getViewer) {
 
   const saveRow = el("div", "wb-jump");
   const save = button("save world");
-  save.addEventListener("click", () => {
+  save.addEventListener("click", async () => {
     const name = nameField.value.trim() || `world-${Date.now()}`;
-    const document_ = buildWorldfile(name, location.search, lastAreas);
+    // Whatever has been painted and applied, in the worldfile's own vocabulary. `main.js`
+    // keeps it here as strokes are committed; without it a save writes a planet with no
+    // mountains on it and says nothing.
+    const wb = window.__wb || {};
+    const painted = (wb.lastWorldfile && wb.lastWorldfile.features) || [];
+    const document_ = buildWorldfile(name, location.search, lastAreas, painted,
+                                     wb.spec || null);
     // **Say so before writing it, not after.** A parameter the engine could not parse fell back
     // to canonical, so the world drawn is not the world the file names - and a save that records
     // a rejected input is a save of a planet nobody has seen.
     const suspect = suspectValues(document_.planet);
     remember(document_);
-    const filename = download(document_);
-    note.textContent = `saved ${filename} · ${Object.keys(document_.planet).length} parameters, `
+    // **Written to the server first, downloaded only if that fails.** A download lands in a
+    // folder the world library cannot list and the generator cannot read, so a world saved
+    // that way is saved to nowhere the rest of the tool can see it. The file still comes
+    // down when there is no server to take it, which is the offline case and not the normal
+    // one.
+    let where;
+    try {
+      const response = await fetch("/worlds/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(document_),
+      });
+      if (!response.ok) throw new Error(`server said ${response.status}`);
+      where = `${(await response.json()).saved} on the server`;
+      paintLibrary();
+    } catch (error) {
+      where = `${download(document_)} to your downloads (the server refused: ${error.message})`;
+    }
+    note.textContent = `saved ${where} · ${Object.keys(document_.planet).length} parameters, `
+      + `${(document_.features || []).length} painted features, `
       + `${(document_.areas || []).length} areas`
       + (suspect.length
         ? ` · WARNING: ${suspect.map(([k, v]) => `${k}=${v}`).join(", ")} `
@@ -180,10 +204,26 @@ export function mountWorldPanel(parent, getViewer) {
       // The areas are pinned to ground that only exists on the file's own planet, so the world
       // has to arrive before they are drawn.
       sessionStorage.setItem("wb.pendingAreas", JSON.stringify(lastAreas));
+      // The features cross the reload beside the areas, for the same reason: the file is
+      // about to be forgotten and the new page has no way back to it.
+      sessionStorage.setItem("wb.pendingFeatures",
+                             JSON.stringify(document_.features || []));
       location.href = search;
       return;
     }
-    note.textContent = `opened "${document_.name}" · ${lastAreas.length} areas`;
+    // **A saved world comes back with its mountains.** The features are what the planet
+    // block cannot hold, so opening a file that has them and installing only its sliders
+    // reopens a world missing everything anybody painted into it - the same loss as the
+    // save that dropped them, one step later.
+    const painted = document_.features || [];
+    let restored = "";
+    if (painted.length && window.__wb && window.__wb.holdFeatures) {
+      window.__wb.discardFeatures();
+      window.__wb.holdFeatures(painted);
+      const applied = await window.__wb.commitFeatures();
+      restored = `, ${applied.applied} painted features`;
+    }
+    note.textContent = `opened "${document_.name}" · ${lastAreas.length} areas${restored}`;
     redrawAreas();
   }
 
@@ -673,6 +713,26 @@ export function mountWorldPanel(parent, getViewer) {
         lastAreas = JSON.parse(pending);
         redrawAreas();
       } catch { /* a bad handover is not worth a broken panel */ }
+    }
+    const painted = sessionStorage.getItem("wb.pendingFeatures");
+    if (painted) {
+      sessionStorage.removeItem("wb.pendingFeatures");
+      // Waits for the commit path to exist: this arms half a second after the viewer, and
+      // `main.js` publishes `holdFeatures` at the end of its boot.
+      const apply = (tries = 0) => {
+        const wb = window.__wb;
+        if (!wb || !wb.holdFeatures) {
+          if (tries < 40) setTimeout(() => apply(tries + 1), 250);
+          return;
+        }
+        try {
+          const records = JSON.parse(painted);
+          if (!records.length) return;
+          wb.holdFeatures(records);
+          wb.commitFeatures();
+        } catch { /* a bad handover is not worth a broken world */ }
+      };
+      apply();
     }
   }, 500);
 

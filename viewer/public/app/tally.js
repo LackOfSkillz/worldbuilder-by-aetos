@@ -48,6 +48,12 @@ function climb(node, from, to) {
     if (t < 1) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
+  // **The number must be right even when nothing animates it.** `requestAnimationFrame`
+  // does not fire in a backgrounded tab, so a run watched from another window - or from a
+  // hidden pane - filled its totals correctly and displayed nought across the board. The
+  // animation is the nice part; the value is the point, so a timer lands it regardless and
+  // the last frame agrees with it.
+  setTimeout(() => { node.textContent = to.toLocaleString(); }, span + 60);
 }
 
 /// Build the tally card. Returns `{ add, reset, node, totals }`.

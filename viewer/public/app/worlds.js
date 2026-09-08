@@ -92,13 +92,37 @@ export function searchFromPlanet(planet) {
 /// `areas` is whatever the importer last produced for this world, or an empty list. A world with
 /// no areas placed yet is a legitimate save - it is the planet somebody liked, which is exactly
 /// what the owner asked to be able to keep.
-export function buildWorldfile(name, search, areas = []) {
+/// Assemble a worldfile.
+///
+/// **`features` is not optional decoration and leaving it out lost work.** A painted
+/// mountain is a feature record and nothing else; the planet block is twenty-four sliders
+/// and cannot hold one. A save that wrote the planet and the areas and dropped the features
+/// silently threw away every stroke somebody had painted - the file looked complete, opened
+/// without complaint, and drew a world with no mountains in it.
+export function buildWorldfile(name, search, areas = [], features = [], live = null) {
+  const planet = planetFromSearch(search);
+  // **The four the reader cannot do without are always written, even when the URL is
+  // silent about them.** `planetFromSearch` records what the query string says, and a
+  // query string that omits `radius` describes a planet drawn at the viewer's default -
+  // so the file named a world it could not rebuild, and the Python reader refused it with
+  // "planet block is missing radius". These are read off the world that is actually on
+  // screen, which is the one being saved.
+  if (live) {
+    const required = { seed: live.seed, radius: live.radiusM,
+                       plates: live.plateCount, land: live.landFraction };
+    for (const [key, value] of Object.entries(required)) {
+      if (planet[key] === undefined && value !== undefined && value !== null) {
+        planet[key] = String(value);
+      }
+    }
+  }
   return {
     worldfile_version: WORLDFILE_VERSION,
     generator: { name: "worldbuilder", version: GENERATOR_VERSION },
     name,
     saved_at: new Date().toISOString(),
-    planet: planetFromSearch(search),
+    planet,
+    features,
     areas,
   };
 }
