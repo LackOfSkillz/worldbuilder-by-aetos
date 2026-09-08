@@ -28,12 +28,12 @@ html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%;
 .wb-check { grid-template-columns: auto 1fr; }
 .wb-note { opacity: .5; font-size: 10px; line-height: 1.35; }
 .wb-actions { display: flex; gap: 6px; }
-#wb-panel button { font: inherit; cursor: pointer; color: #eee;
+#wb-panel button, #wb-panel-left button { font: inherit; cursor: pointer; color: #eee;
   background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22);
   border-radius: 2px; padding: 3px 7px; }
 .wb-go { flex: 1; background: rgba(120,180,255,.28) !important;
          border-color: rgba(120,180,255,.5) !important; }
-#wb-panel button:hover { background: rgba(255,255,255,.24); }
+#wb-panel button:hover, #wb-panel-left button:hover { background: rgba(255,255,255,.24); }
 .wb-toggle { padding: 0 7px !important; }
 .wb-readout { border-top: 1px solid rgba(255,255,255,.15); padding-top: 6px;
               opacity: .9; min-height: 1.5em; font-size: 10px; }
@@ -277,3 +277,39 @@ html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%;
 .wb-layer-eye:hover, .wb-layer-move:hover:not(:disabled) { background: rgba(255,255,255,.2); }
 .wb-layer-move:disabled { opacity: .25; cursor: default; }
 .wb-note-line { color: #7f96ad; font-size: 9px; padding-top: 2px; }
+
+/* ---------------------------------------------------------------------------
+   The left column, matched to the right.
+
+   The rules above were scoped to #wb-panel, so everything moved into the left
+   column fell back to browser defaults - chunky pale buttons, ragged widths, a
+   horizontal scrollbar. Controls in two panels of one tool should not be able to
+   look like they came from different programs.
+   --------------------------------------------------------------------------- */
+#wb-panel-left { overflow-x: hidden; }
+#wb-panel-left button {
+  width: 100%; text-align: left; padding: 5px 8px; border-radius: 5px;
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12);
+  color: #dfe6ef; font: inherit; line-height: 1.35;
+}
+#wb-panel-left button:hover { background: rgba(255,255,255,.16); color: #eaf3ff; }
+#wb-panel-left input[type="text"], #wb-panel-left input:not([type]) {
+  width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 5px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+  color: #eaf3ff; font: inherit;
+}
+#wb-panel-left input::placeholder { color: #6f8398; }
+/* Pairs of buttons sit side by side instead of stacking ragged. */
+#wb-panel-left .wb-row { display: flex; gap: 5px; }
+#wb-panel-left .wb-row button { width: auto; flex: 1 1 0; text-align: center; }
+/* The panel already says WORLD in its heading; the first section need not repeat it. */
+#wb-panel-left .wb-panel-heading + .wb-section-title { display: none; }
+#wb-panel-left .wb-layer button { width: auto; }
+
+/* The brushes. Five of them, so a grid of two columns fits without scrolling. */
+.wb-brushes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+#wb-panel-left .wb-brushes button { width: 100%; text-align: center; padding: 5px 4px; }
+.wb-brush-on { background: rgba(120,180,240,.22) !important;
+               border-color: rgba(140,190,245,.42) !important; color: #eaf3ff !important; }
+.wb-brush-field { color: #8fa8c2; font-size: 9px; }
+#wb-panel-left input[type="range"] { width: 100%; height: 14px; margin: 0; }

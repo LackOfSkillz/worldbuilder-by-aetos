@@ -247,6 +247,28 @@ export function splitColumns(document) {
     });
     window.__wb = window.__wb || {};
     window.__wb.refreshLayers = panel.refresh;
+
+    // Brushes, above the stack they write into - the order a person works in: pick a
+    // tool, paint, see the layer appear.
+    import("./paint.js").then((paint) => {
+      const wb = window.__wb;
+      const tools = paint.buildTools(left, wb.viewer, window.Cesium,
+                                     (features, brush) => {
+        // A stroke goes into the worldfile's own feature list, which is what the engine
+        // composites and what the layers panel reads - so a painted mountain is the same
+        // kind of thing as a generated one, not a parallel system that has to be merged.
+        const doc = wb.lastWorldfile || (wb.lastWorldfile = { features: [] });
+        doc.features = (doc.features || []).concat(features);
+        panel.refresh();
+        window.dispatchEvent(new CustomEvent("wb-painted",
+          { detail: { brush, features, total: doc.features.length } }));
+      });
+      wb.paintTools = tools;
+      // The stack belongs under the tools; moving it after keeps that order as sections
+      // are added.
+      const stack = left.querySelector(".wb-section:last-child");
+      if (stack) left.append(stack);
+    }).catch(() => {});
   }).catch(() => {});
 
   return { left, move };
