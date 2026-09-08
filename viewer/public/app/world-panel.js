@@ -129,6 +129,17 @@ export function mountWorldPanel(parent, getViewer) {
     // mountains on it and says nothing.
     const wb = window.__wb || {};
     const painted = (wb.lastWorldfile && wb.lastWorldfile.features) || [];
+    // **Strokes that were painted and never applied are not in the world yet.** They are
+    // ghosts held for a commit, by design - painting is cheap and rebuilding the globe is
+    // not. But that means a save can honestly write a world with no mountains in it while
+    // the mountains are on screen, which looks exactly like the save losing them. Say so
+    // rather than write it silently.
+    const held = wb.heldFeatures ? wb.heldFeatures().length : 0;
+    if (held) {
+      note.textContent = `${held} painted strokes are not applied yet - press `
+        + `"apply ${held} strokes" first, or they will not be in the file`;
+      return;
+    }
     const document_ = buildWorldfile(name, location.search, lastAreas, painted,
                                      wb.spec || null);
     // **Say so before writing it, not after.** A parameter the engine could not parse fell back

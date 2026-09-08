@@ -225,6 +225,24 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
                       ? { status: runStatus, summary: runSummary } : null);
   let announced = false;
 
+  // **A hidden tab does not get timers, and that looks exactly like a hang.** Browsers
+  // throttle `setTimeout` in a backgrounded page - to roughly once a second at first and
+  // once a MINUTE after a few minutes hidden - so a run watched while somebody alt-tabs,
+  // or while a recorder takes focus, crawls to a stop and then trickles. Measured here: a
+  // reveal stalled at twenty-eight of ninety-four and resumed the instant the pane was
+  // fronted.
+  //
+  // Nothing can make a hidden tab tick faster. What can be done is catch up the moment it
+  // is looked at again, rather than waiting out whatever interval was scheduled while it
+  // was away.
+  const onVisible = () => {
+    if (stopped || document.hidden) return;
+    if (drainTimer) clearTimeout(drainTimer);
+    drainTimer = setTimeout(drain, PIN_MIN_MS);
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("focus", onVisible);
+
   poll();
   drain();
 
@@ -232,6 +250,8 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
     stopped = true;
     if (timer) clearTimeout(timer);
     if (drainTimer) clearTimeout(drainTimer);
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("focus", onVisible);
   };
 
   return {
