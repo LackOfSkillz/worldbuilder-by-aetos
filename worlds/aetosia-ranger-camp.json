@@ -475,12 +475,12 @@
       5,
       0
      ],
-     "elevation_m": -401.9484549351068,
+     "elevation_m": 0.453383,
      "id": 1821,
      "key": "The Flooded Fork",
      "latitude_deg": -4.464997,
      "longitude_deg": -2.499659,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -488,12 +488,12 @@
       6,
       0
      ],
-     "elevation_m": -401.7270004584241,
+     "elevation_m": 0.410315,
      "id": 1822,
      "key": "Brushwood Causeway",
      "latitude_deg": -4.464416,
      "longitude_deg": -2.499712,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -501,12 +501,12 @@
       13,
       0
      ],
-     "elevation_m": -400.82476397866486,
+     "elevation_m": 1.010007,
      "id": 1823,
      "key": "The Second Track",
      "latitude_deg": -4.46005,
      "longitude_deg": -2.508218,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -514,12 +514,12 @@
       13,
       0
      ],
-     "elevation_m": -400.92754233316714,
+     "elevation_m": 1.069921,
      "id": 1824,
      "key": "Behind the Oaks",
      "latitude_deg": -4.460029,
      "longitude_deg": -2.508799,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -527,12 +527,12 @@
       0,
       0
      ],
-     "elevation_m": -404.4302255230064,
+     "elevation_m": 0.001833,
      "id": 1825,
      "key": "The Pirogue Landing",
      "latitude_deg": -4.467836,
      "longitude_deg": -2.50073,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -540,12 +540,12 @@
       1,
       0
      ],
-     "elevation_m": -404.06135556233363,
+     "elevation_m": 0.020792,
      "id": 1826,
      "key": "Mudbank Steps",
      "latitude_deg": -4.467391,
      "longitude_deg": -2.500373,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -553,12 +553,12 @@
       2,
       0
      ],
-     "elevation_m": -403.623098366098,
+     "elevation_m": 0.077002,
      "id": 1827,
      "key": "Black Water Crossing",
      "latitude_deg": -4.466946,
      "longitude_deg": -2.500016,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -566,12 +566,12 @@
       3,
       0
      ],
-     "elevation_m": -403.282041767006,
+     "elevation_m": 0.129067,
      "id": 1828,
      "key": "The Tupelo Brake",
      "latitude_deg": -4.466205,
      "longitude_deg": -2.500201,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -579,12 +579,12 @@
       4,
       0
      ],
-     "elevation_m": -402.8891861624979,
+     "elevation_m": 0.201469,
      "id": 1829,
      "key": "Standing Cypress",
      "latitude_deg": -4.465463,
      "longitude_deg": -2.500385,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -592,12 +592,12 @@
       5,
       0
      ],
-     "elevation_m": -402.63051365144224,
+     "elevation_m": 0.196644,
      "id": 1830,
      "key": "Knee-Deep Reach",
      "latitude_deg": -4.464845,
      "longitude_deg": -2.500509,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -605,12 +605,12 @@
       6,
       0
      ],
-     "elevation_m": -402.3969676532041,
+     "elevation_m": 0.162884,
      "id": 1831,
      "key": "Palmetto Thicket",
      "latitude_deg": -4.464227,
      "longitude_deg": -2.500632,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -618,12 +618,12 @@
       7,
       0
      ],
-     "elevation_m": -402.0944034604056,
+     "elevation_m": 0.161025,
      "id": 1832,
      "key": "The Reed Cut",
      "latitude_deg": -4.463609,
      "longitude_deg": -2.500755,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -631,12 +631,12 @@
       8,
       0
      ],
-     "elevation_m": -401.9347534476435,
+     "elevation_m": 0.161341,
      "id": 1833,
      "key": "The Drowned Grove",
      "latitude_deg": -4.463081,
      "longitude_deg": -2.501174,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -644,12 +644,12 @@
       9,
       0
      ],
-     "elevation_m": -401.74012625153193,
+     "elevation_m": 0.173366,
      "id": 1834,
      "key": "Duckweed Flat",
      "latitude_deg": -4.462554,
      "longitude_deg": -2.501592,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -657,12 +657,12 @@
       10,
       0
      ],
-     "elevation_m": -401.55553673512793,
+     "elevation_m": 0.184129,
      "id": 1835,
      "key": "Saw Grass Bend",
      "latitude_deg": -4.462027,
      "longitude_deg": -2.502011,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -670,12 +670,12 @@
       11,
       0
      ],
-     "elevation_m": -401.62141589526425,
+     "elevation_m": 0.142977,
      "id": 1836,
      "key": "Willow Break",
      "latitude_deg": -4.461693,
      "longitude_deg": -2.502701,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -683,12 +683,12 @@
       12,
       0
      ],
-     "elevation_m": -401.4814729683874,
+     "elevation_m": 0.218157,
      "id": 1837,
      "key": "The Low Boardwalk",
      "latitude_deg": -4.461359,
      "longitude_deg": -2.503391,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -696,12 +696,12 @@
       12,
       0
      ],
-     "elevation_m": -401.5263429311034,
+     "elevation_m": 0.214667,
      "id": 1838,
      "key": "Wax Myrtle Run",
      "latitude_deg": -4.461194,
      "longitude_deg": -2.504015,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -709,12 +709,12 @@
       12,
       0
      ],
-     "elevation_m": -401.6128396679517,
+     "elevation_m": 0.186822,
      "id": 1839,
      "key": "Cattail Reach",
      "latitude_deg": -4.461029,
      "longitude_deg": -2.504639,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -722,12 +722,12 @@
       12,
       0
      ],
-     "elevation_m": -401.6135565757954,
+     "elevation_m": 0.229855,
      "id": 1840,
      "key": "Chenier Rise",
      "latitude_deg": -4.460865,
      "longitude_deg": -2.505263,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -735,12 +735,12 @@
       12,
       0
      ],
-     "elevation_m": -401.556158642556,
+     "elevation_m": 0.323851,
      "id": 1841,
      "key": "The Live Oak Stand",
      "latitude_deg": -4.46076,
      "longitude_deg": -2.505817,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -748,12 +748,12 @@
       12,
       0
      ],
-     "elevation_m": -401.47371147855057,
+     "elevation_m": 0.434598,
      "id": 1842,
      "key": "Moss Hollow",
      "latitude_deg": -4.460654,
      "longitude_deg": -2.506371,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -761,12 +761,12 @@
       12,
       0
      ],
-     "elevation_m": -401.42128183251384,
+     "elevation_m": 0.527649,
      "id": 1843,
      "key": "The Shell Ridge",
      "latitude_deg": -4.460549,
      "longitude_deg": -2.506925,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -774,12 +774,12 @@
       12,
       0
      ],
-     "elevation_m": -401.2672668423085,
+     "elevation_m": 0.692686,
      "id": 1844,
      "key": "Oak Alley",
      "latitude_deg": -4.460444,
      "longitude_deg": -2.50748,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -787,12 +787,12 @@
       12,
       0
      ],
-     "elevation_m": -401.1057652697485,
+     "elevation_m": 0.90452,
      "id": 1845,
      "key": "The Dry Camp",
      "latitude_deg": -4.46042,
      "longitude_deg": -2.508077,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -800,12 +800,12 @@
       12,
       0
      ],
-     "elevation_m": -401.0859414032815,
+     "elevation_m": 1.036471,
      "id": 1846,
      "key": "Hackberry Knoll",
      "latitude_deg": -4.460395,
      "longitude_deg": -2.508674,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -813,12 +813,12 @@
       12,
       0
      ],
-     "elevation_m": -401.34180780356684,
+     "elevation_m": 1.004376,
      "id": 1847,
      "key": "The Old Burn",
      "latitude_deg": -4.46037,
      "longitude_deg": -2.509271,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -826,12 +826,12 @@
       12,
       0
      ],
-     "elevation_m": -401.7160283173304,
+     "elevation_m": 0.910467,
      "id": 1848,
      "key": "Ridge Crown",
      "latitude_deg": -4.460346,
      "longitude_deg": -2.509869,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -839,12 +839,12 @@
       12,
       0
      ],
-     "elevation_m": -402.14240255985567,
+     "elevation_m": 0.794515,
      "id": 1849,
      "key": "Sandy Reach",
      "latitude_deg": -4.460296,
      "longitude_deg": -2.510485,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -852,12 +852,12 @@
       12,
       0
      ],
-     "elevation_m": -402.61496067262084,
+     "elevation_m": 0.65824,
      "id": 1850,
      "key": "Chenier Fall",
      "latitude_deg": -4.460246,
      "longitude_deg": -2.511101,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -865,12 +865,12 @@
       12,
       0
      ],
-     "elevation_m": -403.2380460714201,
+     "elevation_m": 0.427888,
      "id": 1851,
      "key": "Bitternut Bend",
      "latitude_deg": -4.460197,
      "longitude_deg": -2.511717,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -878,12 +878,12 @@
       12,
       0
      ],
-     "elevation_m": -403.7785970836672,
+     "elevation_m": 0.232297,
      "id": 1852,
      "key": "The Muck Walk",
      "latitude_deg": -4.460205,
      "longitude_deg": -2.512251,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -891,12 +891,12 @@
       12,
       0
      ],
-     "elevation_m": -404.16948665485063,
+     "elevation_m": 0.129497,
      "id": 1853,
      "key": "Marsh Elder Turn",
      "latitude_deg": -4.460213,
      "longitude_deg": -2.512785,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -904,12 +904,12 @@
       12,
       0
      ],
-     "elevation_m": -404.3856537070678,
+     "elevation_m": 0.134849,
      "id": 1854,
      "key": "Rushing Reach",
      "latitude_deg": -4.460221,
      "longitude_deg": -2.513319,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -917,12 +917,12 @@
       12,
       0
      ],
-     "elevation_m": -404.57166484833283,
+     "elevation_m": 0.200757,
      "id": 1855,
      "key": "The Soft Ground",
      "latitude_deg": -4.460444,
      "longitude_deg": -2.514033,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -930,12 +930,12 @@
       12,
       0
      ],
-     "elevation_m": -404.7237374603209,
+     "elevation_m": 0.263239,
      "id": 1856,
      "key": "Palmetto Thicket (13)",
      "latitude_deg": -4.460667,
      "longitude_deg": -2.514747,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -943,12 +943,12 @@
       12,
       0
      ],
-     "elevation_m": -404.96928284167535,
+     "elevation_m": 0.213274,
      "id": 1857,
      "key": "The Reed Cut (14)",
      "latitude_deg": -4.460708,
      "longitude_deg": -2.515265,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -956,7 +956,7 @@
       12,
       0
      ],
-     "elevation_m": -405.27369901925505,
+     "elevation_m": -9.225225,
      "id": 1858,
      "key": "Saw Grass Bend (15)",
      "latitude_deg": -4.460749,
@@ -969,7 +969,7 @@
       12,
       0
      ],
-     "elevation_m": -405.5466248289508,
+     "elevation_m": -5.761119,
      "id": 1859,
      "key": "The Cut Bank",
      "latitude_deg": -4.46079,
@@ -982,12 +982,12 @@
       2,
       0
      ],
-     "elevation_m": -403.8731774858216,
+     "elevation_m": 0.012322,
      "id": 1860,
      "key": "The Fishing Stand",
      "latitude_deg": -4.466698,
      "longitude_deg": -2.500664,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -995,12 +995,12 @@
       11,
       0
      ],
-     "elevation_m": -401.7079885777648,
+     "elevation_m": 0.862944,
      "id": 1861,
      "key": "The Trapper's Shack",
      "latitude_deg": -4.461191,
      "longitude_deg": -2.508694,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1008,12 +1008,12 @@
       8,
       0
      ],
-     "elevation_m": -402.22903477454497,
+     "elevation_m": 0.101177,
      "id": 1862,
      "key": "The Cypress Overlook",
      "latitude_deg": -4.46319,
      "longitude_deg": -2.501561,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1021,12 +1021,12 @@
       11,
       0
      ],
-     "elevation_m": -402.5076615658721,
+     "elevation_m": 0.703873,
      "id": 1863,
      "key": "The Shell Midden",
      "latitude_deg": -4.461128,
      "longitude_deg": -2.510437,
-     "submerged": true
+     "submerged": false
     }
    ]
   },
@@ -1163,10 +1163,12 @@
       0,
       0
      ],
+     "elevation_m": -10.837032,
      "id": 1071,
      "key": "The Ferry Slip",
      "latitude_deg": -4.460443,
-     "longitude_deg": -2.515971
+     "longitude_deg": -2.515971,
+     "submerged": true
     },
     {
      "cell": [
@@ -1174,10 +1176,12 @@
       0,
       0
      ],
+     "elevation_m": -8.123777,
      "id": 1070,
      "key": "The Ferry Green",
      "latitude_deg": -4.460443,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1185,10 +1189,12 @@
       -1,
       0
      ],
+     "elevation_m": -7.759258,
      "id": 1069,
      "key": "The Drove Road",
      "latitude_deg": -4.460689,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1196,10 +1202,12 @@
       1,
       0
      ],
+     "elevation_m": -8.473346,
      "id": 1072,
      "key": "The Waiting Shelter",
      "latitude_deg": -4.460197,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1207,10 +1215,12 @@
       -2,
       0
      ],
+     "elevation_m": -7.379358,
      "id": 1068,
      "key": "The Carr Edge",
      "latitude_deg": -4.460935,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1218,10 +1228,12 @@
       -1,
       0
      ],
+     "elevation_m": -10.718745,
      "id": 1074,
      "key": "The Old Wharf",
      "latitude_deg": -4.460689,
-     "longitude_deg": -2.515971
+     "longitude_deg": -2.515971,
+     "submerged": true
     },
     {
      "cell": [
@@ -1229,10 +1241,12 @@
       -2,
       0
      ],
+     "elevation_m": -10.578095,
      "id": 1073,
      "key": "The Wharf Track",
      "latitude_deg": -4.460935,
-     "longitude_deg": -2.515971
+     "longitude_deg": -2.515971,
+     "submerged": true
     },
     {
      "cell": [
@@ -1240,10 +1254,12 @@
       -3,
       0
      ],
+     "elevation_m": -6.980993,
      "id": 1067,
      "key": "The Alder Carr",
      "latitude_deg": -4.461182,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1251,10 +1267,12 @@
       -4,
       0
      ],
+     "elevation_m": -6.565102,
      "id": 1066,
      "key": "The Reed Walk",
      "latitude_deg": -4.461428,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1262,10 +1280,12 @@
       -5,
       0
      ],
+     "elevation_m": -6.133328,
      "id": 1065,
      "key": "The Turf Lip",
      "latitude_deg": -4.461674,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     },
     {
      "cell": [
@@ -1273,10 +1293,12 @@
       -6,
       0
      ],
+     "elevation_m": -5.690017,
      "id": 1064,
      "key": "The Shingle Beach",
      "latitude_deg": -4.46192,
-     "longitude_deg": -2.516218
+     "longitude_deg": -2.516218,
+     "submerged": true
     }
    ]
   },
@@ -1460,7 +1482,7 @@
       -3,
       0
      ],
-     "elevation_m": -405.23082194616296,
+     "elevation_m": -0.03044,
      "id": 1023,
      "key": "The Landing Stage",
      "latitude_deg": -4.471048939192139,
@@ -1473,7 +1495,7 @@
       -3,
       0
      ],
-     "elevation_m": -405.28839467043827,
+     "elevation_m": -0.027293,
      "id": 1024,
      "key": "The Boat Ramp",
      "latitude_deg": -4.471048939215402,
@@ -1486,12 +1508,12 @@
       0,
       0
      ],
-     "elevation_m": -405.02827064219724,
+     "elevation_m": 0.027907,
      "id": 1025,
      "key": "The Camp Yard",
      "latitude_deg": -4.470495,
      "longitude_deg": -2.49949,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1499,12 +1521,12 @@
       -1,
       0
      ],
-     "elevation_m": -405.0788556472547,
+     "elevation_m": 0.033955,
      "id": 1026,
      "key": "The Shore Path",
      "latitude_deg": -4.4706796464051335,
      "longitude_deg": -2.49949,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1512,12 +1534,12 @@
       -1,
       0
      ],
-     "elevation_m": -405.0129526424954,
+     "elevation_m": 0.034508,
      "id": 1027,
      "key": "The North Point",
      "latitude_deg": -4.470679646381872,
      "longitude_deg": -2.4993047900665286,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1525,12 +1547,12 @@
       1,
       0
      ],
-     "elevation_m": -404.997408753974,
+     "elevation_m": 0.006362,
      "id": 1028,
      "key": "The Bunkhouse",
      "latitude_deg": -4.470310353594866,
      "longitude_deg": -2.4994900000000007,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1538,12 +1560,12 @@
       0,
       0
      ],
-     "elevation_m": -404.95959431394436,
+     "elevation_m": 0.029199,
      "id": 1029,
      "key": "The Mess Hall",
      "latitude_deg": -4.470494999976738,
      "longitude_deg": -2.4993047901131953,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1551,12 +1573,12 @@
       0,
       0
      ],
-     "elevation_m": -405.1024736683445,
+     "elevation_m": 0.021835,
      "id": 1030,
      "key": "The Tackle Room",
      "latitude_deg": -4.470494999976738,
      "longitude_deg": -2.499675209886806,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1564,12 +1586,12 @@
       1,
       0
      ],
-     "elevation_m": -405.0716208551456,
+     "elevation_m": 0.001307,
      "id": 1031,
      "key": "The Smokehouse",
      "latitude_deg": -4.470310353571605,
      "longitude_deg": -2.4996752098401402,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1577,12 +1599,12 @@
       1,
       0
      ],
-     "elevation_m": -404.9271911722781,
+     "elevation_m": 0.00758,
      "id": 1032,
      "key": "The Warden's Office",
      "latitude_deg": -4.4703103535716044,
      "longitude_deg": -2.49930479015986,
-     "submerged": true
+     "submerged": false
     },
     {
      "cell": [
@@ -1590,12 +1612,12 @@
       -2,
       0
      ],
-     "elevation_m": -405.1645267032253,
+     "elevation_m": 0.015836,
      "id": 1033,
      "key": "The Boat Shed",
      "latitude_deg": -4.470864292810268,
      "longitude_deg": -2.4994899999999998,
-     "submerged": true
+     "submerged": false
     }
    ]
   },
@@ -3689,12 +3711,12 @@
       7,
       0
      ],
-     "elevation_m": 27.870143511499315,
+     "elevation_m": -9.226084,
      "id": 1101,
      "key": "Slakeside, North Wall",
      "latitude_deg": 8.41292752479194,
      "longitude_deg": -3.1279666549340233,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3702,12 +3724,12 @@
       6,
       0
      ],
-     "elevation_m": 10.05763926270545,
+     "elevation_m": -11.159597,
      "id": 1102,
      "key": "Slakeside, Kettleman's End",
      "latitude_deg": 8.412742878386805,
      "longitude_deg": -3.1279666548450638,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3715,7 +3737,7 @@
       5,
       0
      ],
-     "elevation_m": -4.4967051711350035,
+     "elevation_m": -12.658526,
      "id": 1103,
      "key": "Slakeside, Cordage Reach",
      "latitude_deg": 8.41255823198167,
@@ -3728,12 +3750,12 @@
       4,
       0
      ],
-     "elevation_m": 1.3638749017312963,
+     "elevation_m": -12.12724,
      "id": 1104,
      "key": "Slakeside, Netloft Stair",
      "latitude_deg": 8.412373585576535,
      "longitude_deg": -3.1279666546671483,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3741,12 +3763,12 @@
       3,
       0
      ],
-     "elevation_m": 20.39332235745718,
+     "elevation_m": -10.058922,
      "id": 1105,
      "key": "Slakeside, Crane Stand",
      "latitude_deg": 8.412188939171404,
      "longitude_deg": -3.127966654578193,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3754,12 +3776,12 @@
       2,
       0
      ],
-     "elevation_m": 32.46940170883994,
+     "elevation_m": -8.679092,
      "id": 1106,
      "key": "Slakeside, Salt Stair",
      "latitude_deg": 8.412004292766271,
      "longitude_deg": -3.127966654489239,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3767,12 +3789,12 @@
       1,
       0
      ],
-     "elevation_m": 32.48992653127067,
+     "elevation_m": -8.640887,
      "id": 1107,
      "key": "Slakeside, Locksmith's Corner",
      "latitude_deg": 8.411819646361138,
      "longitude_deg": -3.1279666544002853,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3780,12 +3802,12 @@
       0,
       0
      ],
-     "elevation_m": 32.152855092896814,
+     "elevation_m": -8.638933,
      "id": 1108,
      "key": "Slakeside, Span Head",
      "latitude_deg": 8.411634999956002,
      "longitude_deg": -3.1279666543113342,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3793,12 +3815,12 @@
       -1,
       0
      ],
-     "elevation_m": 31.572257584354993,
+     "elevation_m": -8.662723,
      "id": 1109,
      "key": "Slakeside, South Reach",
      "latitude_deg": 8.411450353550869,
      "longitude_deg": -3.1279666542223836,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3806,12 +3828,12 @@
       -2,
       0
      ],
-     "elevation_m": 31.532627354063067,
+     "elevation_m": -8.616653,
      "id": 1110,
      "key": "Slakeside, Timber Wharf",
      "latitude_deg": 8.411265707145738,
      "longitude_deg": -3.127966654133435,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3819,12 +3841,12 @@
       -3,
       0
      ],
-     "elevation_m": 31.916648263366135,
+     "elevation_m": -8.511259,
      "id": 1111,
      "key": "Slakeside, Tanner's Reach",
      "latitude_deg": 8.411081060740601,
      "longitude_deg": -3.1279666540444877,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3832,12 +3854,12 @@
       -4,
       0
      ],
-     "elevation_m": 30.093737341480654,
+     "elevation_m": -8.691219,
      "id": 1112,
      "key": "Slakeside, Ballast Ground",
      "latitude_deg": 8.410896414335468,
      "longitude_deg": -3.127966653955542,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3845,12 +3867,12 @@
       -5,
       0
      ],
-     "elevation_m": 25.195044164946115,
+     "elevation_m": -9.296737,
      "id": 1113,
      "key": "Slakeside, Longreach Landing",
      "latitude_deg": 8.410711767930335,
      "longitude_deg": -3.127966653866597,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3858,12 +3880,12 @@
       -6,
       0
      ],
-     "elevation_m": 25.032475502847316,
+     "elevation_m": -9.221635,
      "id": 1114,
      "key": "Slakeside, Reed End",
      "latitude_deg": 8.4105271215252,
      "longitude_deg": -3.1279666537776536,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -3871,7 +3893,7 @@
       5,
       0
      ],
-     "elevation_m": 32.67100881250884,
+     "elevation_m": 4.70411,
      "id": 1115,
      "key": "Wold Street, North End",
      "latitude_deg": 8.412558231321691,
@@ -3884,7 +3906,7 @@
       4,
       0
      ],
-     "elevation_m": 32.59710442129355,
+     "elevation_m": 4.592338,
      "id": 1116,
      "key": "Wold Street, Upper Wold",
      "latitude_deg": 8.412373584916564,
@@ -3897,7 +3919,7 @@
       2,
       0
      ],
-     "elevation_m": 32.433022150063486,
+     "elevation_m": 4.333862,
      "id": 1117,
      "key": "Wold Street, Mallow End",
      "latitude_deg": 8.412004292106305,
@@ -3910,7 +3932,7 @@
       1,
       0
      ],
-     "elevation_m": 32.34404538347063,
+     "elevation_m": 4.190052,
      "id": 1118,
      "key": "Wold Street, Lower Wold",
      "latitude_deg": 8.411819645701177,
@@ -3923,7 +3945,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.0505508624301,
+     "elevation_m": 3.702502,
      "id": 1119,
      "key": "Wold Street, Kiln End",
      "latitude_deg": 8.411265706485793,
@@ -3936,7 +3958,7 @@
       -3,
       0
      ],
-     "elevation_m": 31.945264252881262,
+     "elevation_m": 3.524745,
      "id": 1120,
      "key": "Wold Street, Tanyard End",
      "latitude_deg": 8.411081060080663,
@@ -3949,7 +3971,7 @@
       -4,
       0
      ],
-     "elevation_m": 31.837426372663987,
+     "elevation_m": 3.342341,
      "id": 1121,
      "key": "Wold Street, South Gate",
      "latitude_deg": 8.410896413675536,
@@ -3962,7 +3984,7 @@
       6,
       0
      ],
-     "elevation_m": 32.539746058198546,
+     "elevation_m": 4.512519,
      "id": 1122,
      "key": "Hafter's Row, Wall Gate",
      "latitude_deg": 8.412742876274853,
@@ -3975,7 +3997,7 @@
       5,
       0
      ],
-     "elevation_m": 32.46660280966344,
+     "elevation_m": 4.403192,
      "id": 1123,
      "key": "Hafter's Row, Powder Yard",
      "latitude_deg": 8.412558229869735,
@@ -3988,7 +4010,7 @@
       4,
       0
      ],
-     "elevation_m": 32.38848095076182,
+     "elevation_m": 4.282312,
      "id": 1124,
      "key": "Hafter's Row, North End",
      "latitude_deg": 8.412373583464618,
@@ -4001,7 +4023,7 @@
       3,
       0
      ],
-     "elevation_m": 32.30392588547661,
+     "elevation_m": 4.145813,
      "id": 1125,
      "key": "Hafter's Row, Upper Row",
      "latitude_deg": 8.412188937059502,
@@ -4014,7 +4036,7 @@
       2,
       0
      ],
-     "elevation_m": 32.21302642132494,
+     "elevation_m": 3.993751,
      "id": 1126,
      "key": "Hafter's Row, Well Court",
      "latitude_deg": 8.412004290654382,
@@ -4027,7 +4049,7 @@
       1,
       0
      ],
-     "elevation_m": 32.11647685388679,
+     "elevation_m": 3.828132,
      "id": 1127,
      "key": "Hafter's Row, Middle Row",
      "latitude_deg": 8.411819644249267,
@@ -4040,7 +4062,7 @@
       0,
       0
      ],
-     "elevation_m": 32.01510295787738,
+     "elevation_m": 3.651293,
      "id": 1128,
      "key": "Hafter's Row, Ledger End",
      "latitude_deg": 8.411634997844148,
@@ -4053,7 +4075,7 @@
       -1,
       0
      ],
-     "elevation_m": 31.909867774365512,
+     "elevation_m": 3.465914,
      "id": 1129,
      "key": "Hafter's Row, Kiln End",
      "latitude_deg": 8.411450351439033,
@@ -4066,7 +4088,7 @@
       -2,
       0
      ],
-     "elevation_m": 31.80187638637184,
+     "elevation_m": 3.275017,
      "id": 1130,
      "key": "Hafter's Row, Lower Row",
      "latitude_deg": 8.411265705033914,
@@ -4079,7 +4101,7 @@
       -3,
       0
      ],
-     "elevation_m": 31.692379653371795,
+     "elevation_m": 3.081977,
      "id": 1131,
      "key": "Hafter's Row, South End",
      "latitude_deg": 8.411081058628797,
@@ -4092,7 +4114,7 @@
       -4,
       0
      ],
-     "elevation_m": 31.58277691248041,
+     "elevation_m": 2.890517,
      "id": 1132,
      "key": "Hafter's Row, Bakers' Corner",
      "latitude_deg": 8.410896412223678,
@@ -4105,12 +4127,12 @@
       6,
       0
      ],
-     "elevation_m": 32.84087787321434,
+     "elevation_m": -4.061992,
      "id": 1133,
      "key": "Gate Road, Water End",
      "latitude_deg": 8.412742878254807,
      "longitude_deg": -3.128153309690127,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4118,7 +4140,7 @@
       6,
       0
      ],
-     "elevation_m": 32.793716801558155,
+     "elevation_m": 1.920839,
      "id": 1134,
      "key": "Gate Road, Upper End",
      "latitude_deg": 8.412742878034813,
@@ -4131,7 +4153,7 @@
       6,
       0
      ],
-     "elevation_m": 32.73929239819322,
+     "elevation_m": 4.803792,
      "id": 1135,
      "key": "Gate Road at Wold Street",
      "latitude_deg": 8.412742877726819,
@@ -4144,7 +4166,7 @@
       6,
       0
      ],
-     "elevation_m": 32.678366775898766,
+     "elevation_m": 4.717481,
      "id": 1136,
      "key": "Gate Road, Wold Corner",
      "latitude_deg": 8.412742877330828,
@@ -4157,7 +4179,7 @@
       6,
       0
      ],
-     "elevation_m": 32.61163900441727,
+     "elevation_m": 4.619983,
      "id": 1137,
      "key": "Gate Road, Gatehouse",
      "latitude_deg": 8.41274287684684,
@@ -4170,12 +4192,12 @@
       3,
       0
      ],
-     "elevation_m": 32.62277195598609,
+     "elevation_m": -3.706398,
      "id": 1138,
      "key": "Dimmet Road, Warehouse End",
      "latitude_deg": 8.41218893903941,
      "longitude_deg": -3.1281533091563847,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4183,7 +4205,7 @@
       3,
       0
      ],
-     "elevation_m": 32.57438274552053,
+     "elevation_m": 2.254658,
      "id": 1139,
      "key": "Dimmet Road, Cooper's End",
      "latitude_deg": 8.41218893881942,
@@ -4196,7 +4218,7 @@
       3,
       0
      ],
-     "elevation_m": 32.517334438494,
+     "elevation_m": 4.467817,
      "id": 1140,
      "key": "Dimmet Road at Wold Street",
      "latitude_deg": 8.412188938511433,
@@ -4209,7 +4231,7 @@
       3,
       0
      ],
-     "elevation_m": 32.45263697148447,
+     "elevation_m": 4.372637,
      "id": 1141,
      "key": "Dimmet Road, Chandler's End",
      "latitude_deg": 8.41218893811545,
@@ -4222,7 +4244,7 @@
       3,
       0
      ],
-     "elevation_m": 32.38121843709383,
+     "elevation_m": 4.264723,
      "id": 1142,
      "key": "Dimmet Road, Dead End",
      "latitude_deg": 8.412188937631473,
@@ -4235,12 +4257,12 @@
       0,
       0
      ],
-     "elevation_m": 32.363053658444144,
+     "elevation_m": -3.350229,
      "id": 1143,
      "key": "Ledgergate, Green End",
      "latitude_deg": 8.411634999824013,
      "longitude_deg": -3.1281533086226676,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4248,7 +4270,7 @@
       0,
       0
      ],
-     "elevation_m": 32.31232275632738,
+     "elevation_m": 2.470215,
      "id": 1144,
      "key": "Ledgergate, Bank Steps",
      "latitude_deg": 8.411634999604026,
@@ -4261,7 +4283,7 @@
       0,
       0
      ],
-     "elevation_m": 32.250455319592575,
+     "elevation_m": 4.036444,
      "id": 1145,
      "key": "Ledgergate at Wold Street",
      "latitude_deg": 8.411634999296048,
@@ -4274,7 +4296,7 @@
       0,
       0
      ],
-     "elevation_m": 32.179193917025366,
+     "elevation_m": 3.921988,
      "id": 1146,
      "key": "Ledgergate, Counting End",
      "latitude_deg": 8.411634998900075,
@@ -4287,7 +4309,7 @@
       0,
       0
      ],
-     "elevation_m": 32.100209741756075,
+     "elevation_m": 3.792327,
      "id": 1147,
      "key": "Ledgergate, West End",
      "latitude_deg": 8.41163499841611,
@@ -4300,12 +4322,12 @@
       -1,
       0
      ],
-     "elevation_m": 32.267617340183605,
+     "elevation_m": -3.234427,
      "id": 1148,
      "key": "Kiln Street, Green End",
      "latitude_deg": 8.411450353418882,
      "longitude_deg": -3.1281533084447677,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4313,7 +4335,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.21604772691035,
+     "elevation_m": 2.511321,
      "id": 1149,
      "key": "Kiln Street, Bottle Kiln",
      "latitude_deg": 8.411450353198898,
@@ -4326,7 +4348,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.15248424148181,
+     "elevation_m": 3.87358,
      "id": 1150,
      "key": "Kiln Street at Wold Street",
      "latitude_deg": 8.411450352890919,
@@ -4339,7 +4361,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.07896359822955,
+     "elevation_m": 3.752081,
      "id": 1151,
      "key": "Kiln Street, Potter's End",
      "latitude_deg": 8.41145035249495,
@@ -4352,7 +4374,7 @@
       -1,
       0
      ],
-     "elevation_m": 31.997456483875283,
+     "elevation_m": 3.614631,
      "id": 1152,
      "key": "Kiln Street, Clay Yard",
      "latitude_deg": 8.411450352010986,
@@ -4365,12 +4387,12 @@
       -5,
       0
      ],
-     "elevation_m": 31.847197956736082,
+     "elevation_m": -2.798135,
      "id": 1153,
      "key": "Peel Row, Market End",
      "latitude_deg": 8.410711767798349,
      "longitude_deg": -3.1281533077331938,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4378,7 +4400,7 @@
       -5,
       0
      ],
-     "elevation_m": 31.79451314723788,
+     "elevation_m": 2.509686,
      "id": 1154,
      "key": "Peel Row, Middle Row",
      "latitude_deg": 8.410711767578373,
@@ -4391,7 +4413,7 @@
       -5,
       0
      ],
-     "elevation_m": 31.72803321502179,
+     "elevation_m": 3.157813,
      "id": 1155,
      "key": "Peel Row at Wold Street",
      "latitude_deg": 8.410711767270406,
@@ -4404,7 +4426,7 @@
       -5,
       0
      ],
-     "elevation_m": 31.650661620732592,
+     "elevation_m": 3.02095,
      "id": 1156,
      "key": "Peel Row, Bakers' End",
      "latitude_deg": 8.41071176687445,
@@ -4417,7 +4439,7 @@
       -5,
       0
      ],
-     "elevation_m": 31.565253921119815,
+     "elevation_m": 2.867504,
      "id": 1157,
      "key": "Peel Row, Wall End",
      "latitude_deg": 8.4107117663905,
@@ -4430,7 +4452,7 @@
       2,
       0
      ],
-     "elevation_m": 32.491453513129855,
+     "elevation_m": 2.340549,
      "id": 1158,
      "key": "Mallow Green, North Side",
      "latitude_deg": 8.41200429241429,
@@ -4443,7 +4465,7 @@
       1,
       0
      ],
-     "elevation_m": 32.40414418673523,
+     "elevation_m": 2.412923,
      "id": 1159,
      "key": "Mallow Green, the Common",
      "latitude_deg": 8.411819646009159,
@@ -4456,12 +4478,12 @@
       1,
       0
      ],
-     "elevation_m": 32.453997340010396,
+     "elevation_m": -3.468128,
      "id": 1160,
      "key": "Mallow Green, East Walk",
      "latitude_deg": 8.411819646229148,
      "longitude_deg": -3.128153308800571,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4469,12 +4491,12 @@
       2,
       0
      ],
-     "elevation_m": 32.54049084419467,
+     "elevation_m": -3.587238,
      "id": 1161,
      "key": "Mallow Green, Northeast Corner",
      "latitude_deg": 8.412004292634277,
      "longitude_deg": -3.1281533089784763,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4482,7 +4504,7 @@
       4,
       0
      ],
-     "elevation_m": 32.65324618436737,
+     "elevation_m": 2.157227,
      "id": 1162,
      "key": "Bruntwold Square",
      "latitude_deg": 8.41237358522455,
@@ -4495,7 +4517,7 @@
       4,
       0
      ],
-     "elevation_m": 32.533734682287985,
+     "elevation_m": 4.500653,
      "id": 1163,
      "key": "Vesper Square",
      "latitude_deg": 8.412373584520578,
@@ -4508,7 +4530,7 @@
       5,
       0
      ],
-     "elevation_m": 32.60876941327665,
+     "elevation_m": 4.615024,
      "id": 1164,
      "key": "Temple Rise",
      "latitude_deg": 8.412558230925704,
@@ -4521,12 +4543,12 @@
       -3,
       0
      ],
-     "elevation_m": 32.06410505353803,
+     "elevation_m": -3.011057,
      "id": 1165,
      "key": "Cinder Court",
      "latitude_deg": 8.411081060608614,
      "longitude_deg": -3.1281533080889745,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4534,12 +4556,12 @@
       -2,
       0
      ],
-     "elevation_m": 32.167846752536846,
+     "elevation_m": -3.121297,
      "id": 1166,
      "key": "Whitstone Row, East End",
      "latitude_deg": 8.411265707013747,
      "longitude_deg": -3.12815330826687,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4547,7 +4569,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.11557356426891,
+     "elevation_m": 2.535631,
      "id": 1167,
      "key": "Whitstone Row, West End",
      "latitude_deg": 8.411265706793767,
@@ -4560,7 +4582,7 @@
       6,
       0
      ],
-     "elevation_m": -16.295082026873665,
+     "elevation_m": -16.337975,
      "id": 1168,
      "key": "Kettleman's Bridge",
      "latitude_deg": 8.412742878430803,
@@ -4573,7 +4595,7 @@
       0,
       0
      ],
-     "elevation_m": -16.271837053455425,
+     "elevation_m": -16.298619,
      "id": 1169,
      "key": "Slakespan",
      "latitude_deg": 8.411635,
@@ -4586,7 +4608,7 @@
       -5,
       0
      ],
-     "elevation_m": -13.372947155112628,
+     "elevation_m": -15.37756,
      "id": 1170,
      "key": "Longreach Bridge",
      "latitude_deg": 8.41071176797433,
@@ -4599,12 +4621,12 @@
       7,
       0
      ],
-     "elevation_m": 14.046064517930628,
+     "elevation_m": -9.690022,
      "id": 1171,
      "key": "Blackstone Quay, North Wall",
      "latitude_deg": 8.41292752479194,
      "longitude_deg": -3.1275933450659767,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4612,12 +4634,12 @@
       6,
       0
      ],
-     "elevation_m": 14.66232699463591,
+     "elevation_m": -9.714064,
      "id": 1172,
      "key": "Blackstone Quay, Kettleman's End",
      "latitude_deg": 8.412742878386805,
      "longitude_deg": -3.1275933451549367,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4625,12 +4647,12 @@
       5,
       0
      ],
-     "elevation_m": 22.64079736752211,
+     "elevation_m": -8.424323,
      "id": 1173,
      "key": "Blackstone Quay, Ropery",
      "latitude_deg": 8.41255823198167,
      "longitude_deg": -3.1275933452438953,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4638,12 +4660,12 @@
       4,
       0
      ],
-     "elevation_m": 28.407366796455502,
+     "elevation_m": -7.912358,
      "id": 1174,
      "key": "Blackstone Quay, Cooper's Slip",
      "latitude_deg": 8.412373585576535,
      "longitude_deg": -3.127593345332852,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4651,12 +4673,12 @@
       3,
       0
      ],
-     "elevation_m": 31.549712352758068,
+     "elevation_m": -7.756761,
      "id": 1175,
      "key": "Blackstone Quay, Corn Wharf",
      "latitude_deg": 8.412188939171404,
      "longitude_deg": -3.1275933454218077,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4664,12 +4686,12 @@
       2,
       0
      ],
-     "elevation_m": 32.37321100226163,
+     "elevation_m": -7.978276,
      "id": 1176,
      "key": "Blackstone Quay, Fish Steps",
      "latitude_deg": 8.412004292766271,
      "longitude_deg": -3.1275933455107627,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4677,12 +4699,12 @@
       1,
       0
      ],
-     "elevation_m": 31.63766758704054,
+     "elevation_m": -8.406178,
      "id": 1177,
      "key": "Blackstone Quay, Custom Stair",
      "latitude_deg": 8.411819646361138,
      "longitude_deg": -3.127593345599715,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4690,12 +4712,12 @@
       0,
       0
      ],
-     "elevation_m": 32.32306319472315,
+     "elevation_m": -8.637631,
      "id": 1178,
      "key": "Blackstone Quay, Span Head",
      "latitude_deg": 8.411634999956002,
      "longitude_deg": -3.1275933456886666,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4703,12 +4725,12 @@
       -1,
       0
      ],
-     "elevation_m": 30.945819039563997,
+     "elevation_m": -9.094693,
      "id": 1179,
      "key": "Blackstone Quay, Lower Quay",
      "latitude_deg": 8.411450353550869,
      "longitude_deg": -3.127593345777617,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4716,12 +4738,12 @@
       -2,
       0
      ],
-     "elevation_m": 15.861285230369134,
+     "elevation_m": -10.857737,
      "id": 1180,
      "key": "Blackstone Quay, Culvert Mouth",
      "latitude_deg": 8.41126570714574,
      "longitude_deg": -3.1275933458665657,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4729,7 +4751,7 @@
       -3,
       0
      ],
-     "elevation_m": -0.6936777664672893,
+     "elevation_m": -12.522485,
      "id": 1181,
      "key": "Blackstone Quay, Bone Wharf",
      "latitude_deg": 8.411081060740601,
@@ -4742,7 +4764,7 @@
       -4,
       0
      ],
-     "elevation_m": -0.24641404306080705,
+     "elevation_m": -12.430261,
      "id": 1182,
      "key": "Blackstone Quay, Longreach End",
      "latitude_deg": 8.41089641433547,
@@ -4755,12 +4777,12 @@
       -5,
       0
      ],
-     "elevation_m": 16.42376543168861,
+     "elevation_m": -11.200331,
      "id": 1183,
      "key": "Blackstone Quay, Withy Ground",
      "latitude_deg": 8.410711767930335,
      "longitude_deg": -3.1275933461334033,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4768,12 +4790,12 @@
       -6,
       0
      ],
-     "elevation_m": 30.617405779538387,
+     "elevation_m": -10.377805,
      "id": 1184,
      "key": "Blackstone Quay, South Mud",
      "latitude_deg": 8.4105271215252,
      "longitude_deg": -3.127593346222347,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -4781,7 +4803,7 @@
       5,
       0
      ],
-     "elevation_m": 32.8123115829557,
+     "elevation_m": 4.719092,
      "id": 1185,
      "key": "Brickfield Road, North End",
      "latitude_deg": 8.412558231321691,
@@ -4794,7 +4816,7 @@
       4,
       0
      ],
-     "elevation_m": 32.73402393726289,
+     "elevation_m": 4.600053,
      "id": 1186,
      "key": "Brickfield Road, Upper Brickfield",
      "latitude_deg": 8.412373584916564,
@@ -4807,7 +4829,7 @@
       2,
       0
      ],
-     "elevation_m": 31.72073526975867,
+     "elevation_m": 3.987285,
      "id": 1187,
      "key": "Brickfield Road, Kiln Bank",
      "latitude_deg": 8.412004292106305,
@@ -4820,7 +4842,7 @@
       1,
       0
      ],
-     "elevation_m": 32.416206302649925,
+     "elevation_m": 4.211834,
      "id": 1188,
      "key": "Brickfield Road, Market End",
      "latitude_deg": 8.411819645701177,
@@ -4833,7 +4855,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.26138647886732,
+     "elevation_m": 3.92991,
      "id": 1189,
      "key": "Brickfield Road, Lower Brickfield",
      "latitude_deg": 8.411265706485793,
@@ -4846,7 +4868,7 @@
       -3,
       0
      ],
-     "elevation_m": 32.18028615689059,
+     "elevation_m": 3.818856,
      "id": 1190,
      "key": "Brickfield Road, Tinker End",
      "latitude_deg": 8.411081060080662,
@@ -4859,7 +4881,7 @@
       -4,
       0
      ],
-     "elevation_m": 32.095389270111916,
+     "elevation_m": 3.699191,
      "id": 1191,
      "key": "Brickfield Road, Boneyard End",
      "latitude_deg": 8.410896413675536,
@@ -4872,7 +4894,7 @@
       -5,
       0
      ],
-     "elevation_m": 32.005391223075364,
+     "elevation_m": 3.567341,
      "id": 1192,
      "key": "Brickfield Road, South End",
      "latitude_deg": 8.410711767270406,
@@ -4885,7 +4907,7 @@
       6,
       0
      ],
-     "elevation_m": 32.76693598789118,
+     "elevation_m": 4.503998,
      "id": 1193,
      "key": "Kilnward Lane, Wall End",
      "latitude_deg": 8.412742876274853,
@@ -4898,7 +4920,7 @@
       5,
       0
      ],
-     "elevation_m": 32.69481354627971,
+     "elevation_m": 4.402328,
      "id": 1194,
      "key": "Kilnward Lane, Upper Lane",
      "latitude_deg": 8.412558229869735,
@@ -4911,7 +4933,7 @@
       4,
       0
      ],
-     "elevation_m": 32.61192889544941,
+     "elevation_m": 4.273593,
      "id": 1195,
      "key": "Kilnward Lane, Sawpit",
      "latitude_deg": 8.412373583464618,
@@ -4924,7 +4946,7 @@
       3,
       0
      ],
-     "elevation_m": 32.52762034147027,
+     "elevation_m": 4.143128,
      "id": 1196,
      "key": "Kilnward Lane, Almsgate End",
      "latitude_deg": 8.412188937059502,
@@ -4937,7 +4959,7 @@
       2,
       0
      ],
-     "elevation_m": 32.452335264683256,
+     "elevation_m": 4.038804,
      "id": 1197,
      "key": "Kilnward Lane, Middle Lane",
      "latitude_deg": 8.412004290654382,
@@ -4950,7 +4972,7 @@
       1,
       0
      ],
-     "elevation_m": 32.38460763009637,
+     "elevation_m": 3.956403,
      "id": 1198,
      "key": "Kilnward Lane, Market Back",
      "latitude_deg": 8.411819644249267,
@@ -4963,7 +4985,7 @@
       0,
       0
      ],
-     "elevation_m": 32.32268668318394,
+     "elevation_m": 3.890966,
      "id": 1199,
      "key": "Kilnward Lane, Faring End",
      "latitude_deg": 8.411634997844148,
@@ -4976,7 +4998,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.264540319613104,
+     "elevation_m": 3.836813,
      "id": 1200,
      "key": "Kilnward Lane, Culvert End",
      "latitude_deg": 8.411450351439033,
@@ -4989,7 +5011,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.2078548852477,
+     "elevation_m": 3.787556,
      "id": 1201,
      "key": "Kilnward Lane, Lower Lane",
      "latitude_deg": 8.411265705033912,
@@ -5002,7 +5024,7 @@
       -3,
       0
      ],
-     "elevation_m": 32.15003733224823,
+     "elevation_m": 3.736116,
      "id": 1202,
      "key": "Kilnward Lane, Tanpit End",
      "latitude_deg": 8.411081058628797,
@@ -5015,7 +5037,7 @@
       -4,
       0
      ],
-     "elevation_m": 32.08821970660245,
+     "elevation_m": 3.67475,
      "id": 1203,
      "key": "Kilnward Lane, Boneyard Back",
      "latitude_deg": 8.410896412223678,
@@ -5028,7 +5050,7 @@
       -5,
       0
      ],
-     "elevation_m": 32.01926594215355,
+     "elevation_m": 3.595078,
      "id": 1204,
      "key": "Kilnward Lane, Scrap End",
      "latitude_deg": 8.410711765818563,
@@ -5041,7 +5063,7 @@
       -6,
       0
      ],
-     "elevation_m": 31.939780936146697,
+     "elevation_m": 3.488121,
      "id": 1205,
      "key": "Kilnward Lane, South Corner",
      "latitude_deg": 8.410527119413445,
@@ -5054,12 +5076,12 @@
       6,
       0
      ],
-     "elevation_m": 29.025263345807268,
+     "elevation_m": -2.037564,
      "id": 1206,
      "key": "Gable Row, Quay End",
      "latitude_deg": 8.412742878254807,
      "longitude_deg": -3.127406690309874,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5067,7 +5089,7 @@
       6,
       0
      ],
-     "elevation_m": 32.485321287193116,
+     "elevation_m": 4.098118,
      "id": 1207,
      "key": "Gable Row, Middle Row",
      "latitude_deg": 8.412742878034813,
@@ -5080,7 +5102,7 @@
       6,
       0
      ],
-     "elevation_m": 32.88110366524948,
+     "elevation_m": 4.815142,
      "id": 1208,
      "key": "Gable Row at Brickfield Road",
      "latitude_deg": 8.412742877726819,
@@ -5093,7 +5115,7 @@
       6,
       0
      ],
-     "elevation_m": 32.84963775280666,
+     "elevation_m": 4.721971,
      "id": 1209,
      "key": "Gable Row, the Descent",
      "latitude_deg": 8.412742877330828,
@@ -5106,7 +5128,7 @@
       6,
       0
      ],
-     "elevation_m": 32.81100463452791,
+     "elevation_m": 4.616849,
      "id": 1210,
      "key": "Gable Row, Wall End",
      "latitude_deg": 8.412742876846842,
@@ -5119,12 +5141,12 @@
       3,
       0
      ],
-     "elevation_m": 27.19643284571007,
+     "elevation_m": -3.7781,
      "id": 1211,
      "key": "Almsgate Road, Quay End",
      "latitude_deg": 8.41218893903941,
      "longitude_deg": -3.1274066908436158,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5132,7 +5154,7 @@
       3,
       0
      ],
-     "elevation_m": 32.54219996875361,
+     "elevation_m": 3.42097,
      "id": 1212,
      "key": "Almsgate Road, Guild End",
      "latitude_deg": 8.41218893881942,
@@ -5145,7 +5167,7 @@
       3,
       0
      ],
-     "elevation_m": 31.79711359606273,
+     "elevation_m": 4.101736,
      "id": 1213,
      "key": "Almsgate Road at Brickfield Road",
      "latitude_deg": 8.412188938511433,
@@ -5158,7 +5180,7 @@
       3,
       0
      ],
-     "elevation_m": 32.61684044377077,
+     "elevation_m": 4.373284,
      "id": 1214,
      "key": "Almsgate Road, Almshouse Row",
      "latitude_deg": 8.41218893811545,
@@ -5171,7 +5193,7 @@
       3,
       0
      ],
-     "elevation_m": 32.57487033311057,
+     "elevation_m": 4.261858,
      "id": 1215,
      "key": "Almsgate Road, Lane End",
      "latitude_deg": 8.412188937631473,
@@ -5184,12 +5206,12 @@
       0,
       0
      ],
-     "elevation_m": 32.44175912425418,
+     "elevation_m": -3.365927,
      "id": 1216,
      "key": "Faring Street, Bridge Head",
      "latitude_deg": 8.411634999824013,
      "longitude_deg": -3.1274066913773324,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5197,7 +5219,7 @@
       0,
       0
      ],
-     "elevation_m": 32.43317070462256,
+     "elevation_m": 2.506789,
      "id": 1217,
      "key": "Faring Street, Lower End",
      "latitude_deg": 8.411634999604026,
@@ -5210,7 +5232,7 @@
       0,
       0
      ],
-     "elevation_m": 32.41714339516537,
+     "elevation_m": 4.139925,
      "id": 1218,
      "key": "Faring Street at Brickfield Road",
      "latitude_deg": 8.41163499929605,
@@ -5223,7 +5245,7 @@
       0,
       0
      ],
-     "elevation_m": 32.39216471461748,
+     "elevation_m": 4.06743,
      "id": 1219,
      "key": "Faring Street, Upper End",
      "latitude_deg": 8.411634998900077,
@@ -5236,7 +5258,7 @@
       0,
       0
      ],
-     "elevation_m": 32.36025721274635,
+     "elevation_m": 3.983469,
      "id": 1220,
      "key": "Faring Street, Toll End",
      "latitude_deg": 8.41163499841611,
@@ -5249,12 +5271,12 @@
       -1,
       0
      ],
-     "elevation_m": 32.353433809053,
+     "elevation_m": -3.827363,
      "id": 1221,
      "key": "Culvert Road, the Grate",
      "latitude_deg": 8.41145035341888,
      "longitude_deg": -3.127406691555233,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5262,7 +5284,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.35085504118571,
+     "elevation_m": 2.152064,
      "id": 1222,
      "key": "Culvert Road, Middle End",
      "latitude_deg": 8.411450353198898,
@@ -5275,7 +5297,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.3399412997098,
+     "elevation_m": 4.03582,
      "id": 1223,
      "key": "Culvert Road at Brickfield Road",
      "latitude_deg": 8.411450352890919,
@@ -5288,7 +5310,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.3213914504402,
+     "elevation_m": 3.980294,
      "id": 1224,
      "key": "Culvert Road, Yard End",
      "latitude_deg": 8.41145035249495,
@@ -5301,7 +5323,7 @@
       -1,
       0
      ],
-     "elevation_m": 32.295976606084004,
+     "elevation_m": 3.913361,
      "id": 1225,
      "key": "Culvert Road, Lane End",
      "latitude_deg": 8.411450352010986,
@@ -5314,12 +5336,12 @@
       -6,
       0
      ],
-     "elevation_m": 18.074488734193828,
+     "elevation_m": -9.033259,
      "id": 1226,
      "key": "Tinker Street, Quay End",
      "latitude_deg": 8.41052712139322,
      "longitude_deg": -3.1274066924446933,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5327,7 +5349,7 @@
       -6,
       0
      ],
-     "elevation_m": 31.886771075169563,
+     "elevation_m": 0.120711,
      "id": 1227,
      "key": "Tinker Street, Middle End",
      "latitude_deg": 8.41052712117324,
@@ -5340,7 +5362,7 @@
       -6,
       0
      ],
-     "elevation_m": 31.908939241336327,
+     "elevation_m": 3.419638,
      "id": 1228,
      "key": "Tinker Street at Brickfield Road",
      "latitude_deg": 8.410527120865277,
@@ -5353,7 +5375,7 @@
       -6,
       0
      ],
-     "elevation_m": 31.926026692118235,
+     "elevation_m": 3.454585,
      "id": 1229,
      "key": "Tinker Street, Forge End",
      "latitude_deg": 8.410527120469323,
@@ -5366,7 +5388,7 @@
       -6,
       0
      ],
-     "elevation_m": 31.936748302270296,
+     "elevation_m": 3.478696,
      "id": 1230,
      "key": "Tinker Street, Lane End",
      "latitude_deg": 8.41052711998538,
@@ -5379,12 +5401,12 @@
       -2,
       0
      ],
-     "elevation_m": 32.26202486538384,
+     "elevation_m": -4.287113,
      "id": 1231,
      "key": "Needlewalk, Lower Path",
      "latitude_deg": 8.411265707013747,
      "longitude_deg": -3.127406691733131,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5392,7 +5414,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.26541107685537,
+     "elevation_m": 1.780832,
      "id": 1232,
      "key": "Needlewalk, Guild End",
      "latitude_deg": 8.411265706793767,
@@ -5405,12 +5427,12 @@
       1,
       0
      ],
-     "elevation_m": 32.50227539605905,
+     "elevation_m": -2.911167,
      "id": 1233,
      "key": "New Market Street, West End",
      "latitude_deg": 8.411819646229146,
      "longitude_deg": -3.12740669119943,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5418,7 +5440,7 @@
       1,
       0
      ],
-     "elevation_m": 32.230970455140465,
+     "elevation_m": 2.709408,
      "id": 1234,
      "key": "New Market Street, Market Hall",
      "latitude_deg": 8.411819646009159,
@@ -5431,12 +5453,12 @@
       -3,
       0
      ],
-     "elevation_m": 32.16722308786525,
+     "elevation_m": -4.744231,
      "id": 1235,
      "key": "Pinch Lane, North End",
      "latitude_deg": 8.411081060608614,
      "longitude_deg": -3.1274066919110255,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5444,7 +5466,7 @@
       -3,
       0
      ],
-     "elevation_m": 32.176972571265736,
+     "elevation_m": 1.392601,
      "id": 1236,
      "key": "Pinch Lane, South End",
      "latitude_deg": 8.411081060388636,
@@ -5457,7 +5479,7 @@
       -3,
       0
      ],
-     "elevation_m": 31.78328943769297,
+     "elevation_m": 3.24227,
      "id": 1237,
      "key": "Cordwainer's Court",
      "latitude_deg": 8.411081059200741,
@@ -5470,7 +5492,7 @@
       5,
       0
      ],
-     "elevation_m": 32.54040981399481,
+     "elevation_m": 4.514288,
      "id": 1238,
      "key": "Saltpetre Yard",
      "latitude_deg": 8.412558230441718,
@@ -5483,7 +5505,7 @@
       2,
       0
      ],
-     "elevation_m": 32.292721823776525,
+     "elevation_m": 4.119104,
      "id": 1239,
      "key": "Well Court",
      "latitude_deg": 8.412004291226353,
@@ -5496,7 +5518,7 @@
       7,
       0
      ],
-     "elevation_m": 32.67933164994997,
+     "elevation_m": 4.718317,
      "id": 1240,
      "key": "Drover's Yard",
      "latitude_deg": 8.412927523251962,
@@ -5509,7 +5531,7 @@
       -3,
       0
      ],
-     "elevation_m": 32.0113546550228,
+     "elevation_m": 2.543061,
      "id": 1241,
      "key": "Chapter Court",
      "latitude_deg": 8.411081060388636,
@@ -5522,7 +5544,7 @@
       -6,
       0
      ],
-     "elevation_m": 31.618274569053106,
+     "elevation_m": 2.974159,
      "id": 1242,
      "key": "Fleece Yard",
      "latitude_deg": 8.410527120865279,
@@ -5535,7 +5557,7 @@
       5,
       0
      ],
-     "elevation_m": 32.72637987804084,
+     "elevation_m": 2.045627,
      "id": 1243,
      "key": "Lamplighter's Court",
      "latitude_deg": 8.412558231629681,
@@ -5548,7 +5570,7 @@
       4,
       0
      ],
-     "elevation_m": 32.46394965360683,
+     "elevation_m": 4.396834,
      "id": 1244,
      "key": "Almoner's Court",
      "latitude_deg": 8.412373584036596,
@@ -5561,12 +5583,12 @@
       -5,
       0
      ],
-     "elevation_m": 31.341418955283444,
+     "elevation_m": -5.788656,
      "id": 1245,
      "key": "Withy Yard",
      "latitude_deg": 8.410711767798349,
      "longitude_deg": -3.1274066922668067,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5574,7 +5596,7 @@
       -5,
       0
      ],
-     "elevation_m": 32.01691251864659,
+     "elevation_m": 3.588794,
      "id": 1246,
      "key": "Founder's Court",
      "latitude_deg": 8.41071176687445,
@@ -5587,7 +5609,7 @@
       4,
       0
      ],
-     "elevation_m": 32.70001022200363,
+     "elevation_m": 4.502001,
      "id": 1247,
      "key": "Pattern Yard",
      "latitude_deg": 8.412373584520578,
@@ -5600,7 +5622,7 @@
       7,
       0
      ],
-     "elevation_m": 32.96519795216388,
+     "elevation_m": 4.525504,
      "id": 1248,
      "key": "Bell Court",
      "latitude_deg": 8.412927524439946,
@@ -5613,7 +5635,7 @@
       1,
       0
      ],
-     "elevation_m": 32.45042730117655,
+     "elevation_m": 4.153525,
      "id": 1249,
      "key": "Kiln Court",
      "latitude_deg": 8.411819645305203,
@@ -5626,7 +5648,7 @@
       -4,
       0
      ],
-     "elevation_m": 32.08483513061449,
+     "elevation_m": 0.986721,
      "id": 1250,
      "key": "Tallow Court",
      "latitude_deg": 8.410896413983505,
@@ -5639,7 +5661,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.250230563522976,
+     "elevation_m": 3.893675,
      "id": 1251,
      "key": "Ferryman's Court",
      "latitude_deg": 8.411265706089823,
@@ -5652,7 +5674,7 @@
       -2,
       0
      ],
-     "elevation_m": 32.232265224353014,
+     "elevation_m": 3.846051,
      "id": 1252,
      "key": "Barge Yard",
      "latitude_deg": 8.411265705605867,
@@ -5665,12 +5687,12 @@
       7,
       0
      ],
-     "elevation_m": 22.48462869185728,
+     "elevation_m": -4.121582,
      "id": 1253,
      "key": "Ropemaker's Court",
      "latitude_deg": 8.41292752465994,
      "longitude_deg": -3.1274066901319544,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5678,7 +5700,7 @@
       7,
       0
      ],
-     "elevation_m": 32.873050263399676,
+     "elevation_m": 4.694312,
      "id": 1254,
      "key": "Vintner's Court",
      "latitude_deg": 8.412927523251962,
@@ -5691,7 +5713,7 @@
       -7,
       0
      ],
-     "elevation_m": 31.846675585035733,
+     "elevation_m": 3.345828,
      "id": 1255,
      "key": "Sexton's Court",
      "latitude_deg": 8.410342473008328,
@@ -5704,12 +5726,12 @@
       8,
       0
      ],
-     "elevation_m": 25.00970490482996,
+     "elevation_m": -7.225995,
      "id": 1256,
      "key": "Gauger's Court",
      "latitude_deg": 8.413112171197072,
      "longitude_deg": -3.1275933449770164,
-     "submerged": false
+     "submerged": true
     },
     {
      "cell": [
@@ -5717,7 +5739,7 @@
       -6,
       1
      ],
-     "elevation_m": 30.949266966688423,
+     "elevation_m": 1.85175,
      "id": 1257,
      "key": "Fentrey's, the Shoemaker",
      "latitude_deg": 8.410527115233927,
@@ -5730,7 +5752,7 @@
       10,
       1
      ],
-     "elevation_m": 32.46651092629365,
+     "elevation_m": 4.382976,
      "id": 1258,
      "key": "The Powder Store",
      "latitude_deg": 8.413481457715285,
@@ -5743,7 +5765,7 @@
       4,
       1
      ],
-     "elevation_m": 31.945810410662418,
+     "elevation_m": 3.583095,
      "id": 1259,
      "key": "The Well House",
      "latitude_deg": 8.412373579284777,
@@ -5756,7 +5778,7 @@
       14,
       1
      ],
-     "elevation_m": 32.84553521734883,
+     "elevation_m": 5.00706,
      "id": 1260,
      "key": "The Drovers' Room",
      "latitude_deg": 8.414220043335625,
@@ -5769,7 +5791,7 @@
       -6,
       1
      ],
-     "elevation_m": 31.45828712741947,
+     "elevation_m": 2.688291,
      "id": 1261,
      "key": "The Chapter House",
      "latitude_deg": 8.41052711998538,
@@ -5782,7 +5804,7 @@
       -12,
       1
      ],
-     "elevation_m": 30.674657339111818,
+     "elevation_m": 1.397223,
      "id": 1262,
      "key": "The Wool Room",
      "latitude_deg": 8.40941924032285,
@@ -5795,7 +5817,7 @@
       10,
       1
      ],
-     "elevation_m": 32.87345492957749,
+     "elevation_m": 5.000923,
      "id": 1263,
      "key": "The Oil Store",
      "latitude_deg": 8.413481462467328,
@@ -5808,7 +5830,7 @@
       8,
       1
      ],
-     "elevation_m": 32.29219804602953,
+     "elevation_m": 4.116233,
      "id": 1264,
      "key": "The Almonry",
      "latitude_deg": 8.413112164905117,
@@ -5821,7 +5843,7 @@
       -10,
       1
      ],
-     "elevation_m": 31.443826729150764,
+     "elevation_m": 2.539521,
      "id": 1265,
      "key": "The Basket Loft",
      "latitude_deg": 8.409788535244763,
@@ -5834,7 +5856,7 @@
       -10,
       1
      ],
-     "elevation_m": 31.50431970745517,
+     "elevation_m": 2.773686,
      "id": 1266,
      "key": "The Foundry",
      "latitude_deg": 8.409788531549305,
@@ -5847,7 +5869,7 @@
       8,
       1
      ],
-     "elevation_m": 32.74559653587218,
+     "elevation_m": 4.312285,
      "id": 1267,
      "key": "The Pattern Loft",
      "latitude_deg": 8.413112166841103,
@@ -5860,7 +5882,7 @@
       14,
       1
      ],
-     "elevation_m": 33.21860782886871,
+     "elevation_m": 5.035228,
      "id": 1268,
      "key": "The Ringing Room",
      "latitude_deg": 8.414220048087813,
@@ -5873,7 +5895,7 @@
       2,
       1
      ],
-     "elevation_m": 32.301180572664414,
+     "elevation_m": 3.694744,
      "id": 1269,
      "key": "The Brickworks Office",
      "latitude_deg": 8.412004288410502,
@@ -5886,7 +5908,7 @@
       -8,
       1
      ],
-     "elevation_m": 31.732089909786616,
+     "elevation_m": 3.149724,
      "id": 1270,
      "key": "The Chandlery",
      "latitude_deg": 8.410157827175135,
@@ -5899,7 +5921,7 @@
       -4,
       1
      ],
-     "elevation_m": 32.009519144457926,
+     "elevation_m": 3.510257,
      "id": 1271,
      "key": "The Ferryman's House",
      "latitude_deg": 8.410896409979902,
@@ -5912,7 +5934,7 @@
       -4,
       1
      ],
-     "elevation_m": 31.913278137089243,
+     "elevation_m": 3.306433,
      "id": 1272,
      "key": "The Fitter's Shop",
      "latitude_deg": 8.410896408044096,
@@ -5925,7 +5947,7 @@
       14,
       1
      ],
-     "elevation_m": 33.30466277502438,
+     "elevation_m": 5.308417,
      "id": 1273,
      "key": "The Rope Loft",
      "latitude_deg": 8.414220048967849,
@@ -5938,7 +5960,7 @@
       14,
       1
      ],
-     "elevation_m": 33.02533610096995,
+     "elevation_m": 4.56301,
      "id": 1274,
      "key": "The Wine Vault",
      "latitude_deg": 8.414220043335625,
@@ -5951,7 +5973,7 @@
       -14,
       1
      ],
-     "elevation_m": 30.877744418899333,
+     "elevation_m": 1.61838,
      "id": 1275,
      "key": "The Sexton's Lodge",
      "latitude_deg": 8.409049941705652,
@@ -5964,7 +5986,7 @@
       16,
       1
      ],
-     "elevation_m": 33.477304246624804,
+     "elevation_m": 3.223614,
      "id": 1276,
      "key": "The Watch-House",
      "latitude_deg": 8.414589342306135,
@@ -5977,12 +5999,12 @@
       -7,
       0
      ],
-     "elevation_m": 31.45655080875673,
+     "elevation_m": -10.532836,
      "id": 1277,
      "key": "Landfall Dock",
      "latitude_deg": 8.41034247512007,
      "longitude_deg": -3.1275933463112886,
-     "submerged": false
+     "submerged": true
     }
    ]
   }
@@ -6075,16 +6097,15 @@
   ]
  },
  "elevation_source": {
-  "engine": "wasm, all 24 planet parameters, plus the authored features in this file",
+  "engine": "worldbuilder_engine, all 24 planet parameters via evennia_roundtrip.planet, plus this file's authored features",
   "measured_areas": [
-   "the-landing-city"
-  ],
-  "unmeasured_areas": [
    "bayou_trace",
    "ferry_shore",
-   "ranger_camp"
+   "ranger_camp",
+   "the-landing-city"
   ],
-  "warning": "Rooms in unmeasured_areas were placed by the Python surface, which takes four of this world's twenty-four parameters and cannot build it. Their elevation_m describes a different planet. Anything reading elevations must consult measured_areas and refuse the rest."
+  "note": "Re-measured once the pyo3 surface accepted the relief, tectonics and coast blocks. The previous values came from the four-parameter Python surface for EVERY area, including the city, which an earlier note wrongly recorded as measured; the new oracle reads 3.93 m at the Landing's anchor against 4.24 m read independently in the browser, and 32.21 m on four parameters.",
+  "unmeasured_areas": []
  },
  "features": [
   {
