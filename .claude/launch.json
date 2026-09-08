@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "worldbuilder-viewer",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["viewer/scripts/serve.mjs"],
+      "port": 8137
+    }
+  ]
+}

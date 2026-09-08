@@ -85,15 +85,47 @@ function radiusOf(Cesium, area) {
   return Math.max(furthest, anchor.room_spacing_m || 60.0);
 }
 
+/// The suggested character level for an area, as text, or "" if it has none.
+///
+/// An area carries `level_band` when it was sited into one of the world's level rings. A
+/// hand-placed area has none and gets no level line rather than a guessed one: a suggested
+/// level nobody chose is worse than no suggestion, because a player will believe it.
+function levelOf(area) {
+  const band = area.level_band;
+  if (!Array.isArray(band) || band.length !== 2) return "";
+  return `lvl ${band[0]}-${band[1]}`;
+}
+
+/// What a pin says from orbit: the name, and who it is for.
+///
+/// **Two lines and no more.** This is read at planet scale with hundreds of pins on screen,
+/// so every word competes with every other pin's words for the same pixels. Room counts and
+/// port status moved to the hover card, where there is one at a time and room to be useful.
 function label(area) {
+  const level = levelOf(area);
+  return level ? `${area.name}\n${level}` : area.name;
+}
+
+/// What the hover card says: everything the pin had to leave out.
+function detail(area) {
   const rooms = (area.rooms || []).length;
   const port = area.port || {};
-  const where = port.has_port
-    ? "harbour"
-    : port.port_area
-      ? `port: ${port.port_area}`
-      : "no port";
-  return `${area.name}\n${rooms} rooms · ${where}`;
+  const lines = [area.name];
+  const level = levelOf(area);
+  if (level) lines.push(`Suggested level ${level.slice(4)}`);
+  if (area.culture) lines.push(area.culture);
+  const who = [area.race, area.profession].filter(Boolean).join(" - ");
+  if (who) lines.push(who);
+  if (area.faction && area.faction !== "friendly") lines.push(area.faction.toUpperCase());
+  lines.push(`${rooms} room${rooms === 1 ? "" : "s"}`);
+  if (port.has_port) lines.push("harbour");
+  else if (port.port_area) lines.push(`port: ${port.port_area}`);
+  const anchor = area.anchor || {};
+  if (anchor.latitude_deg !== undefined) {
+    lines.push(`${anchor.latitude_deg.toFixed(4)}, ${anchor.longitude_deg.toFixed(4)}`);
+  }
+  lines.push("click to fly down");
+  return lines.join("\n");
 }
 
 /// Draw every area in a worldfile.
@@ -205,6 +237,10 @@ export function drawAreas(viewer, Cesium, document) {
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
         scaleByDistance: new Cesium.NearFarScalar(NEAR_M, NEAR_SCALE, FAR_M, FAR_SCALE),
       },
+      // Everything the hover card needs, carried on the entity. Cesium hands back the
+      // picked entity and nothing else, so anything the card wants has to travel with it.
+      description: detail(area),
+      properties: { wbArea: area.name, wbAnchor: area.anchor },
       label: {
         text: label(area),
         font: "13px system-ui, sans-serif",
@@ -225,11 +261,112 @@ export function drawAreas(viewer, Cesium, document) {
   }
 
   viewer.dataSources.add(source);
+  const input = enableAreaInput(viewer, Cesium, document, source);
   return {
     source,
     count: areas.length,
     /// Fly to everything at once - the "where is my world" button.
     flyToAll: () => viewer.flyTo(source, { duration: 1.5 }),
-    remove: () => viewer.dataSources.remove(source, true),
+    remove: () => {
+      input.stop();
+      viewer.dataSources.remove(source, true);
+    },
   };
+}
+
+
+/// How close the camera comes when you click a pin: near enough to see the rooms, far
+/// enough that the whole area is on screen.
+const AREA_VIEW_M = 2500.0;
+
+
+/// Hover to read, click to fly down.
+///
+/// **Both handlers pick an ENTITY first and do nothing when the pick misses.** The globe
+/// already has a left-click handler for dropping coordinate pins, and a second one that
+/// acted on every click would drop a pin every time somebody tried to visit an area. So
+/// this one is silent unless the cursor is actually on a pin, and the two coexist without
+/// either knowing about the other.
+///
+/// Installed on LEFT_CLICK rather than mouse-down, for the reason `pick-point` records: a
+/// drag to rotate the globe must not count as a click.
+function enableAreaInput(viewer, Cesium, document, source) {
+  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  const card = makeCard();
+
+  const areaAt = (windowPosition) => {
+    const picked = viewer.scene.pick(windowPosition);
+    if (!picked || !picked.id || !picked.id.properties) return null;
+    const owner = picked.id;
+    if (!source.entities.contains(owner)) return null;
+    return owner;
+  };
+
+  handler.setInputAction((movement) => {
+    const entity = areaAt(movement.endPosition);
+    if (!entity) {
+      card.style.display = "none";
+      viewer.scene.canvas.style.cursor = "";
+      return;
+    }
+    card.textContent = entity.description ? entity.description.getValue() : entity.name;
+    card.style.display = "block";
+    card.style.left = `${movement.endPosition.x + 16}px`;
+    card.style.top = `${movement.endPosition.y + 16}px`;
+    viewer.scene.canvas.style.cursor = "pointer";
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+  handler.setInputAction((movement) => {
+    const entity = areaAt(movement.position);
+    if (!entity) return;
+    card.style.display = "none";
+    // **A computed camera move, not `viewer.flyTo(entity)`.** The entity form is the
+    // obvious one and it hangs: it waits for the entity's data source and for terrain
+    // under a CLAMP_TO_GROUND pin to be ready, and against an offline terrain provider
+    // that promise never settles. The camera never moved and nothing was thrown - the
+    // click simply did nothing, which reads as a dead handler rather than as a pending
+    // promise. Flying to a coordinate asks nothing of the terrain and cannot wait.
+    const anchor = entity.properties && entity.properties.wbAnchor
+      ? entity.properties.wbAnchor.getValue()
+      : null;
+    if (!anchor) return;
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(
+        anchor.longitude_deg, anchor.latitude_deg, AREA_VIEW_M,
+      ),
+      orientation: {
+        heading: 0.0,
+        pitch: Cesium.Math.toRadians(-55.0),
+        roll: 0.0,
+      },
+      duration: 1.8,
+    });
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  return {
+    stop: () => {
+      handler.destroy();
+      card.remove();
+      viewer.scene.canvas.style.cursor = "";
+    },
+  };
+}
+
+
+/// The hover card. One per draw, reused, hidden when nothing is under the cursor.
+function makeCard() {
+  const existing = window.document.getElementById("wb-area-card");
+  if (existing) existing.remove();
+  const card = window.document.createElement("div");
+  card.id = "wb-area-card";
+  card.style.cssText = [
+    "position:absolute", "z-index:20", "display:none", "pointer-events:none",
+    "white-space:pre", "padding:8px 10px", "border-radius:6px",
+    "background:rgba(12,16,22,0.92)", "color:#e8eef6",
+    "border:1px solid rgba(255,255,255,0.18)",
+    "font:12px/1.45 system-ui, sans-serif",
+    "box-shadow:0 6px 20px rgba(0,0,0,0.45)",
+  ].join(";");
+  window.document.body.appendChild(card);
+  return card;
 }
