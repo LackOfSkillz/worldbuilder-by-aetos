@@ -143,6 +143,84 @@ def suspects(names, vocabulary, allowed=ALLOWED_UNCOMMON):
     return dict(seen.most_common())
 
 
+#: The shared vocabulary of fantasy: creatures everybody already knows, plus the ordinary
+#: English that describes them.
+#:
+#: **This is what makes a first run possible without a vocabulary review.** A reference
+#: roster carries levels worth having and names of two kinds mixed together - ordinary ones
+#: like "cave bear" and "goblin shaman", and somebody's inventions. Telling them apart
+#: mechanically is not possible, and guessing risks either shipping an invention or renaming
+#: a perfectly good badger. So a run can be told to keep only what is unambiguously common,
+#: which loses some of the roster and needs nobody's ruling.
+COMMON_FANTASY = set("""
+dragon drake wyvern wyrm hatchling serpent basilisk cockatrice hydra chimera manticore
+griffin gryphon harpy phoenix roc pegasus unicorn kraken leviathan behemoth
+vampire werewolf lycanthrope zombie skeleton skeletal ghoul wight wraith spectre specter
+ghost phantom shade banshee lich mummy revenant undead draugr barrow
+goblin hobgoblin orc troll ogre giant kobold gnoll bugbear imp gremlin
+demon devil fiend fury incubus succubus balor archfiend hellhound
+sprite pixie fairy faerie nymph dryad naiad sylph brownie boggart gnome leprechaun
+elemental golem construct homunculus gargoyle automaton animated
+slime ooze jelly cube mimic
+troglodyte lizardfolk lizardman ratman beastman minotaur centaur satyr
+giant ettin cyclops
+bear wolf boar hog pig deer elk stag doe fawn antelope bison buffalo cougar puma
+bobcat lynx panther leopard jaguar tiger lion cat kitten hound dog wolfhound mastiff cur
+rat mouse vole shrew mole badger weasel stoat ferret otter beaver skunk raccoon
+squirrel chipmunk rabbit hare fox coyote jackal hyena
+horse pony mule donkey ox cow bull calf goat sheep ram lamb
+snake viper adder cobra python boa constrictor crocodile alligator caiman
+lizard gecko iguana monitor toad frog newt salamander turtle tortoise
+spider tarantula scorpion centipede millipede beetle ant wasp hornet bee moth
+butterfly locust cricket mantis grub worm slug leech maggot larva louse tick flea
+crow raven rook magpie jay hawk falcon eagle owl vulture buzzard kite gull tern
+heron crane stork swan goose duck grouse pheasant chicken cock rooster hen bird
+fish eel shark ray squid octopus crab lobster crayfish shrimp jellyfish urchin
+starfish clam oyster whale dolphin seal walrus
+ape monkey gorilla baboon lemur bat
+bandit brigand raider marauder reaver thug ruffian footpad cutthroat pirate corsair
+rogue thief burglar assassin cultist zealot fanatic heretic
+guard sentry soldier warrior berserker knight squire champion mercenary
+archer bowman slinger spearman swordsman
+priest cleric acolyte monk hermit oracle seer
+mage magus sorcerer wizard warlock witch shaman druid necromancer conjurer
+apprentice adept
+peasant farmer shepherd miner smith blacksmith merchant trader beggar drunk madman
+outlaw exile deserter
+forest wood woodland grove thicket swamp marsh bog fen moor heath
+mountain hill cave cavern crag cliff tunnel mine
+desert dune sand plain steppe tundra glacier
+sea ocean river lake pond stream shore beach coast reef
+fire flame ember ash cinder frost ice snow storm thunder lightning
+earth stone rock granite marble iron bronze copper silver gold crystal
+shadow dark night moon sun star blood bone dust rot plague blight venom poison
+adult baby young elder ancient old great greater lesser giant huge massive small tiny
+lone wild feral savage rabid crazed mad dire fell foul cursed blessed holy unholy
+red black white blue green grey gray brown golden silver pale dark bright
+armoured armored horned fanged winged clawed spined scaled furred hairy bald
+king queen lord lady chief chieftain captain warlord matriarch patriarch alpha
+pack swarm flock herd nest hive brood
+a an the of and or with in on at from to
+""".split())
+
+
+def common_only(creatures, vocabulary=COMMON_FANTASY):
+    """
+    Keep the creatures whose names are unambiguously common fantasy.
+
+    Notes:
+        A whole-name test, not a per-word one: "blood wolf" survives because both words are
+        shared vocabulary, and one invented token drops the record rather than being
+        quietly dropped from the name. Half a name is not a creature.
+    """
+    kept = []
+    for c in creatures:
+        words = _tokens(c["name"])
+        if words and all(w in vocabulary for w in words):
+            kept.append(c)
+    return kept
+
+
 def load_ordinary_words(path=None):
     """The words this checker considers ordinary. A small, explicit list beats a guess."""
     words = set("""
