@@ -11,6 +11,7 @@
 
 import { Engine } from "./engine.js";
 import { holdUntilRendered, buildOverlay } from "./loading.js";
+import { keepPainted } from "./worlds.js";
 import { riverFromRoute, soundChannel } from "./river.js";
 import {
   DEFAULT_EXAGGERATION, DEFAULT_WORLD, HARBOUR, RAMP_STOPS, RAMP_WINDOW, rampStopFraction,
@@ -1301,6 +1302,9 @@ async function boot() {
       // generator reads rather than the engine's internal field names.
       const doc = window.__wb.lastWorldfile || (window.__wb.lastWorldfile = {});
       doc.features = (doc.features || []).concat(worldfileRecords);
+      // Kept the moment it becomes ground, not when somebody remembers to save. This is the
+      // only work in the tool that a seed cannot reproduce.
+      keepPainted(location.search, doc.features);
       await reinstallWorld(bootState, null);
       if (window.__wb.refreshLayers) window.__wb.refreshLayers();
       window.dispatchEvent(new CustomEvent("wb-world-rebuilt",

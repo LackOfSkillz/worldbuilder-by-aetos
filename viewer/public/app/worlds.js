@@ -222,6 +222,50 @@ export function autosave(search, camera) {
   return entry;
 }
 
+//: Where painted work waits out a refresh.
+const PAINTED_KEY = "wb.paintedWork";
+
+/// Keep the painted features for this planet, so closing the tab does not lose them.
+///
+/// **Painting was the only work in this tool that nothing caught.** The camera trail is
+/// autosaved every fifteen seconds and on `pagehide`; areas cross a reload in
+/// `sessionStorage`; features were held in one page's memory and in nothing else, so a
+/// refresh - or a save, which until now dropped them - threw away every stroke. That is the
+/// one kind of work here that cannot be regenerated from a seed.
+///
+/// Keyed by the query string, because features are metres on a particular planet and
+/// restoring them onto a different one would put a mountain range in the sea.
+export function keepPainted(search, features) {
+  try {
+    localStorage.setItem(PAINTED_KEY, JSON.stringify({
+      search, saved_at: new Date().toISOString(), features,
+    }));
+  } catch {
+    // A full or disabled store is not a reason to fail a commit.
+  }
+}
+
+/// What was painted on this planet and never saved, or null.
+export function paintedWork(search) {
+  try {
+    const kept = JSON.parse(localStorage.getItem(PAINTED_KEY) || "null");
+    if (!kept || !Array.isArray(kept.features) || !kept.features.length) return null;
+    const here = new URLSearchParams(search);
+    const there = new URLSearchParams(kept.search || "");
+    const same = [...there.keys()].every((key) => here.get(key) === there.get(key));
+    return same ? kept : null;
+  } catch {
+    return null;
+  }
+}
+
+/// Forget it, once it is somewhere safer.
+export function clearPainted() {
+  try {
+    localStorage.removeItem(PAINTED_KEY);
+  } catch { /* nothing to do */ }
+}
+
 /// Everything autosave has recorded, newest first.
 export function trail() {
   try {

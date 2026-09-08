@@ -11,6 +11,7 @@
 
 import {
   autosave, buildWorldfile, checkVersion, download, forget, remember,
+  clearPainted, paintedWork,
   savedWorlds, searchFromPlanet, startAutosave, suspectValues, trail, urlFor,
 } from "./worlds.js";
 import { drawAreas } from "./area-markers.js";
@@ -149,6 +150,7 @@ export function mountWorldPanel(parent, getViewer) {
       });
       if (!response.ok) throw new Error(`server said ${response.status}`);
       where = `${(await response.json()).saved} on the server`;
+      clearPainted();
       paintLibrary();
     } catch (error) {
       where = `${download(document_)} to your downloads (the server refused: ${error.message})`;
@@ -714,6 +716,27 @@ export function mountWorldPanel(parent, getViewer) {
         redrawAreas();
       } catch { /* a bad handover is not worth a broken panel */ }
     }
+    // **Painted work that was never saved comes back by itself.** An editor that loses a
+    // refresh's worth of painting is an editor people stop trusting with an afternoon of it.
+    // Only when the world has none of its own, so opening a saved file cannot double them.
+    const unsaved = paintedWork(location.search);
+    if (unsaved) {
+      const restore = (tries = 0) => {
+        const wb = window.__wb;
+        if (!wb || !wb.holdFeatures) {
+          if (tries < 40) setTimeout(() => restore(tries + 1), 250);
+          return;
+        }
+        if ((wb.spec.features || []).length) return;
+        wb.holdFeatures(unsaved.features);
+        wb.commitFeatures().then(() => {
+          note.textContent = `recovered ${unsaved.features.length} painted features from `
+            + `${unsaved.saved_at.slice(0, 16).replace("T", " ")} - not yet saved to a world`;
+        });
+      };
+      restore();
+    }
+
     const painted = sessionStorage.getItem("wb.pendingFeatures");
     if (painted) {
       sessionStorage.removeItem("wb.pendingFeatures");
