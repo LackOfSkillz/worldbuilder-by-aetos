@@ -114,12 +114,12 @@
    "saurathi raider town",
    "shore hunting ground"
   ],
-  "kind": "saurathi raider town",
-  "culture": "saurathi raider town",
-  "race": "saurathi",
+  "kind": "human harbour town",
+  "culture": "human harbour town",
+  "race": "human",
   "profession": null,
-  "faction": "hostile",
-  "purpose": "home",
+  "faction": "friendly",
+  "purpose": "trade",
   "size": "town"
  },
  {
@@ -266,18 +266,13 @@
    "saurathi raider town",
    "shore hunting ground"
   ],
-  "kind": "shore hunting ground",
-  "culture": "shore hunting ground",
-  "race": null,
+  "kind": "felari fishing hamlet",
+  "culture": "felari fishing hamlet",
+  "race": "felari",
   "profession": null,
-  "faction": "hostile",
-  "purpose": "hunting",
-  "size": "camp",
-  "level_band": [
-   80,
-   100
-  ],
-  "km_from_origin": 19646
+  "faction": "friendly",
+  "purpose": "home",
+  "size": "hamlet"
  },
  {
   "latitude_deg": 45.211867,
@@ -308,6 +303,80 @@
    "saurathi raider town",
    "shore hunting ground"
   ],
+  "kind": "saurathi raider town",
+  "culture": "saurathi raider town",
+  "race": "saurathi",
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "home",
+  "size": "town"
+ },
+ {
+  "latitude_deg": -43.410186,
+  "longitude_deg": 212.985157,
+  "elevation_m": 1.16,
+  "slope_m": 1.03,
+  "prominence_m": -1.63,
+  "harbour_m": null,
+  "landing_m": 500.0,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    3.8
+   ],
+   [
+    "ground a street can run on",
+    24.6
+   ],
+   [
+    "stands clear of the water",
+    8.8
+   ]
+  ],
+  "score": 37.1,
+  "kinds": [
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "shore hunting ground"
+  ],
+  "kind": "saurathi raider town",
+  "culture": "saurathi raider town",
+  "race": "saurathi",
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "home",
+  "size": "town"
+ },
+ {
+  "latitude_deg": 46.656345,
+  "longitude_deg": 88.525457,
+  "elevation_m": 1.04,
+  "slope_m": 0.42,
+  "prominence_m": -1.42,
+  "harbour_m": null,
+  "landing_m": 600.0,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    2.5
+   ],
+   [
+    "ground a street can run on",
+    24.8
+   ],
+   [
+    "stands clear of the water",
+    8.8
+   ]
+  ],
+  "score": 36.1,
+  "kinds": [
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "shore hunting ground"
+  ],
   "kind": "shore hunting ground",
   "culture": "shore hunting ground",
   "race": null,
@@ -316,10 +385,498 @@
   "purpose": "hunting",
   "size": "camp",
   "level_band": [
-   80,
+   41,
+   60
+  ],
+  "km_from_origin": 13814
+ },
+ {
+  "latitude_deg": -19.794646,
+  "longitude_deg": 134.296485,
+  "elevation_m": 1.94,
+  "slope_m": 0.51,
+  "prominence_m": 3.86,
+  "harbour_m": null,
+  "landing_m": 700.0,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    1.2
+   ],
+   [
+    "ground a street can run on",
+    24.8
+   ],
+   [
+    "stands clear of the water",
+    8.8
+   ]
+  ],
+  "score": 34.9,
+  "kinds": [
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "shore hunting ground"
+  ],
+  "kind": "shore hunting ground",
+  "culture": "shore hunting ground",
+  "race": null,
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   61,
    100
   ],
-  "km_from_origin": 16049
+  "km_from_origin": 22308
+ },
+ {
+  "latitude_deg": -22.752425,
+  "longitude_deg": 198.00001,
+  "elevation_m": 1.47,
+  "slope_m": 0.64,
+  "prominence_m": -3.84,
+  "harbour_m": null,
+  "landing_m": 700.0,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    1.2
+   ],
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    8.8
+   ]
+  ],
+  "score": 34.8,
+  "kinds": [
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "shore hunting ground"
+  ],
+  "kind": "shore hunting ground",
+  "culture": "shore hunting ground",
+  "race": null,
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   61,
+   100
+  ],
+  "km_from_origin": 25210
+ },
+ {
+  "latitude_deg": -19.445198,
+  "longitude_deg": 3.542289,
+  "elevation_m": 9.47,
+  "slope_m": 59.69,
+  "prominence_m": -34.59,
+  "harbour_m": 3000.0,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "a hull can come alongside",
+    0.0
+   ],
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "ground a street can run on",
+    0.1
+   ],
+   [
+    "stands clear of the water",
+    9.2
+   ]
+  ],
+  "score": 34.4,
+  "kinds": [
+   "human port city",
+   "human harbour town"
+  ],
+  "kind": "human port city",
+  "culture": "human port city",
+  "race": "human",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "trade",
+  "size": "city"
+ },
+ {
+  "latitude_deg": 11.527229,
+  "longitude_deg": 309.516221,
+  "elevation_m": 8.15,
+  "slope_m": 178.5,
+  "prominence_m": -140.32,
+  "harbour_m": 3000.0,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "a hull can come alongside",
+    0.0
+   ],
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "ground a street can run on",
+    0.0
+   ],
+   [
+    "stands clear of the water",
+    9.2
+   ]
+  ],
+  "score": 34.2,
+  "kinds": [
+   "human port city",
+   "human harbour town"
+  ],
+  "kind": "human port city",
+  "culture": "human port city",
+  "race": "human",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "trade",
+  "size": "city"
+ },
+ {
+  "latitude_deg": 16.955267,
+  "longitude_deg": 112.493297,
+  "elevation_m": 44.35,
+  "slope_m": 409.93,
+  "prominence_m": -321.27,
+  "harbour_m": 3000.0,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "a hull can come alongside",
+    0.0
+   ],
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "ground a street can run on",
+    0.0
+   ],
+   [
+    "stands clear of the water",
+    9.0
+   ]
+  ],
+  "score": 34.0,
+  "kinds": [
+   "human port city",
+   "human harbour town"
+  ],
+  "kind": "human port city",
+  "culture": "human port city",
+  "race": "human",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "trade",
+  "size": "city"
+ },
+ {
+  "latitude_deg": 16.800694,
+  "longitude_deg": 112.43786,
+  "elevation_m": 400.48,
+  "slope_m": 2.59,
+  "prominence_m": 0.64,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "high ground with a long view",
+    0.6
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 25.6,
+  "kinds": [
+   "upland hunting ground"
+  ],
+  "kind": "upland hunting ground",
+  "culture": "upland hunting ground",
+  "race": null,
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   61,
+   100
+  ],
+  "km_from_origin": 18115
+ },
+ {
+  "latitude_deg": 16.626132,
+  "longitude_deg": 112.30911,
+  "elevation_m": 347.39,
+  "slope_m": 4.88,
+  "prominence_m": 6.02,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "high ground with a long view",
+    1.2
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 26.2,
+  "kinds": [
+   "upland hunting ground"
+  ],
+  "kind": "upland hunting ground",
+  "culture": "upland hunting ground",
+  "race": null,
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   61,
+   100
+  ],
+  "km_from_origin": 18104
+ },
+ {
+  "latitude_deg": 16.498846,
+  "longitude_deg": 112.10582,
+  "elevation_m": 319.53,
+  "slope_m": 1.21,
+  "prominence_m": -2.22,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "high ground with a long view",
+    0.3
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 25.3,
+  "kinds": [
+   "upland hunting ground"
+  ],
+  "kind": "upland hunting ground",
+  "culture": "upland hunting ground",
+  "race": null,
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   61,
+   100
+  ],
+  "km_from_origin": 18079
+ },
+ {
+  "latitude_deg": 22.988777,
+  "longitude_deg": 188.856689,
+  "elevation_m": 234.42,
+  "slope_m": 3.19,
+  "prominence_m": -9.45,
+  "harbour_m": null,
+  "landing_m": 500.0,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    3.8
+   ],
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "ground a street can run on",
+    23.7
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 52.4,
+  "kinds": [
+   "elf woodland village",
+   "gnome workshop village",
+   "upland hunting ground"
+  ],
+  "kind": "elf woodland village",
+  "culture": "elf woodland village",
+  "race": "elf",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "home",
+  "size": "village"
+ },
+ {
+  "latitude_deg": 23.176506,
+  "longitude_deg": 188.896889,
+  "elevation_m": 291.91,
+  "slope_m": 3.02,
+  "prominence_m": 7.86,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "high ground with a long view",
+    0.8
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 25.8,
+  "kinds": [
+   "gnome workshop village",
+   "upland hunting ground"
+  ],
+  "kind": "gnome workshop village",
+  "culture": "gnome workshop village",
+  "race": "gnome",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "home",
+  "size": "village"
+ },
+ {
+  "latitude_deg": 25.722632,
+  "longitude_deg": 105.994932,
+  "elevation_m": 62.91,
+  "slope_m": 1.65,
+  "prominence_m": 1.69,
+  "harbour_m": null,
+  "landing_m": 800.0,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    0.0
+   ],
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "ground a street can run on",
+    24.3
+   ],
+   [
+    "stands clear of the water",
+    8.1
+   ]
+  ],
+  "score": 57.4,
+  "kinds": [
+   "valran river city",
+   "elf woodland village",
+   "halfling farm hamlet",
+   "gnome workshop village",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "valran river city",
+  "culture": "valran river city",
+  "race": "valran",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "trade",
+  "size": "city"
+ },
+ {
+  "latitude_deg": 25.72029,
+  "longitude_deg": 107.35084,
+  "elevation_m": 8.01,
+  "slope_m": 304.93,
+  "prominence_m": -247.59,
+  "harbour_m": null,
+  "landing_m": 100.0,
+  "fresh_m": 0,
+  "reasons": [
+   [
+    "a boat can be pulled ashore",
+    8.8
+   ],
+   [
+    "fresh water at hand",
+    25.0
+   ],
+   [
+    "ground a street can run on",
+    0.0
+   ],
+   [
+    "stands clear of the water",
+    9.2
+   ]
+  ],
+  "score": 42.9,
+  "kinds": [
+   "valran river city",
+   "felari fishing hamlet",
+   "saurathi raider town",
+   "wildwood hunting ground",
+   "shore hunting ground"
+  ],
+  "kind": "valran river city",
+  "culture": "valran river city",
+  "race": "valran",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "trade",
+  "size": "city"
  },
  {
   "latitude_deg": 6.718668,
@@ -391,40 +948,38 @@
   "size": "village"
  },
  {
-  "latitude_deg": 6.903314,
-  "longitude_deg": 308.014766,
-  "elevation_m": 398.66,
-  "slope_m": 5.87,
-  "prominence_m": 4.06,
+  "latitude_deg": 7.013944,
+  "longitude_deg": 307.959801,
+  "elevation_m": 509.41,
+  "slope_m": 5.29,
+  "prominence_m": 39.04,
   "harbour_m": null,
   "landing_m": null,
   "fresh_m": null,
   "reasons": [
    [
     "high ground with a long view",
-    1.5
+    1.3
    ],
    [
     "stands clear of the water",
     0.0
    ]
   ],
-  "score": 1.5,
+  "score": 1.3,
   "kinds": [
+   "dwarf mining village",
+   "barbarian war camp",
+   "moon mage observatory",
    "upland hunting ground"
   ],
-  "kind": "upland hunting ground",
-  "culture": "upland hunting ground",
-  "race": null,
+  "kind": "dwarf mining village",
+  "culture": "dwarf mining village",
+  "race": "dwarf",
   "profession": null,
-  "faction": "hostile",
-  "purpose": "hunting",
-  "size": "camp",
-  "level_band": [
-   1,
-   10
-  ],
-  "km_from_origin": 33
+  "faction": "friendly",
+  "purpose": "mine",
+  "size": "village"
  },
  {
   "latitude_deg": 8.531319,
@@ -555,13 +1110,13 @@
    "ranger lodge",
    "wildwood hunting ground"
   ],
-  "kind": "ranger lodge",
-  "culture": "ranger lodge",
-  "race": null,
-  "profession": "ranger",
+  "kind": "halfling farm hamlet",
+  "culture": "halfling farm hamlet",
+  "race": "halfling",
+  "profession": null,
   "faction": "friendly",
-  "purpose": "guild",
-  "size": "camp"
+  "purpose": "home",
+  "size": "hamlet"
  },
  {
   "latitude_deg": -82.396901,
@@ -622,18 +1177,13 @@
    "ranger lodge",
    "wildwood hunting ground"
   ],
-  "kind": "wildwood hunting ground",
-  "culture": "wildwood hunting ground",
+  "kind": "ranger lodge",
+  "culture": "ranger lodge",
   "race": null,
-  "profession": null,
-  "faction": "hostile",
-  "purpose": "hunting",
-  "size": "camp",
-  "level_band": [
-   25,
-   50
-  ],
-  "km_from_origin": 11332
+  "profession": "ranger",
+  "faction": "friendly",
+  "purpose": "guild",
+  "size": "camp"
  },
  {
   "latitude_deg": -61.265539,
@@ -660,18 +1210,13 @@
    "ranger lodge",
    "wildwood hunting ground"
   ],
-  "kind": "wildwood hunting ground",
-  "culture": "wildwood hunting ground",
+  "kind": "ranger lodge",
+  "culture": "ranger lodge",
   "race": null,
-  "profession": null,
-  "faction": "hostile",
-  "purpose": "hunting",
-  "size": "camp",
-  "level_band": [
-   25,
-   50
-  ],
-  "km_from_origin": 11385
+  "profession": "ranger",
+  "faction": "friendly",
+  "purpose": "guild",
+  "size": "camp"
  },
  {
   "latitude_deg": -61.101409,
@@ -709,96 +1254,141 @@
   "size": "village"
  },
  {
-  "latitude_deg": 6.718668,
-  "longitude_deg": 308.144244,
-  "elevation_m": 241.02,
-  "slope_m": 2.67,
-  "prominence_m": 3.95,
+  "latitude_deg": -1.066646,
+  "longitude_deg": 249.277825,
+  "elevation_m": 23.96,
+  "slope_m": 1.17,
+  "prominence_m": -4.03,
   "harbour_m": null,
   "landing_m": null,
   "fresh_m": null,
   "reasons": [
    [
     "ground a street can run on",
-    23.9
+    24.5
    ],
    [
     "stands clear of the water",
-    0.0
+    9.9
    ]
   ],
-  "score": 23.9,
+  "score": 34.5,
   "kinds": [
    "elf woodland village",
-   "gnome workshop village",
-   "upland hunting ground"
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
   ],
-  "kind": "upland hunting ground",
-  "culture": "upland hunting ground",
+  "kind": "wildwood hunting ground",
+  "culture": "wildwood hunting ground",
   "race": null,
   "profession": null,
   "faction": "hostile",
   "purpose": "hunting",
   "size": "camp",
   "level_band": [
-   1,
-   10
+   61,
+   100
   ],
-  "km_from_origin": 52
+  "km_from_origin": 17475
  },
  {
-  "latitude_deg": 7.065972,
-  "longitude_deg": 307.96797,
-  "elevation_m": 569.56,
-  "slope_m": 8.29,
-  "prominence_m": 26.18,
+  "latitude_deg": -0.84244,
+  "longitude_deg": 249.33791,
+  "elevation_m": 15.92,
+  "slope_m": 0.47,
+  "prominence_m": -4.81,
   "harbour_m": null,
   "landing_m": null,
   "fresh_m": null,
   "reasons": [
    [
-    "high ground with a long view",
-    2.1
+    "ground a street can run on",
+    24.8
    ],
    [
     "stands clear of the water",
-    0.0
+    9.5
    ]
   ],
-  "score": 2.1,
+  "score": 34.3,
   "kinds": [
-   "dwarf mining village",
-   "barbarian war camp",
-   "upland hunting ground"
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
   ],
-  "kind": "dwarf mining village",
-  "culture": "dwarf mining village",
-  "race": "dwarf",
+  "kind": "wildwood hunting ground",
+  "culture": "wildwood hunting ground",
+  "race": null,
   "profession": null,
-  "faction": "friendly",
-  "purpose": "mine",
-  "size": "village"
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   61,
+   100
+  ],
+  "km_from_origin": 17460
  },
  {
-  "latitude_deg": 8.613384,
-  "longitude_deg": 306.173412,
-  "elevation_m": 363.06,
-  "slope_m": 4.79,
-  "prominence_m": 10.57,
+  "latitude_deg": 10.483041,
+  "longitude_deg": 339.887279,
+  "elevation_m": 22.77,
+  "slope_m": 0.75,
+  "prominence_m": 6.59,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "ground a street can run on",
+    24.7
+   ],
+   [
+    "stands clear of the water",
+    9.9
+   ]
+  ],
+  "score": 34.6,
+  "kinds": [
+   "elf woodland village",
+   "halfling farm hamlet",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "wildwood hunting ground",
+  "culture": "wildwood hunting ground",
+  "race": null,
+  "profession": null,
+  "faction": "hostile",
+  "purpose": "hunting",
+  "size": "camp",
+  "level_band": [
+   11,
+   20
+  ],
+  "km_from_origin": 2742
+ },
+ {
+  "latitude_deg": 17.037332,
+  "longitude_deg": 112.641897,
+  "elevation_m": 452.05,
+  "slope_m": 5.88,
+  "prominence_m": 12.44,
   "harbour_m": null,
   "landing_m": null,
   "fresh_m": null,
   "reasons": [
    [
     "high ground with a long view",
-    1.2
+    1.5
    ],
    [
     "stands clear of the water",
     0.0
    ]
   ],
-  "score": 1.2,
+  "score": 1.5,
   "kinds": [
    "barbarian war camp",
    "upland hunting ground"
@@ -812,57 +1402,25 @@
   "size": "camp"
  },
  {
-  "latitude_deg": 8.815601,
-  "longitude_deg": 306.029711,
-  "elevation_m": 461.2,
-  "slope_m": 4.76,
-  "prominence_m": 15.74,
+  "latitude_deg": 16.832169,
+  "longitude_deg": 112.716197,
+  "elevation_m": 501.87,
+  "slope_m": 5.47,
+  "prominence_m": 35.98,
   "harbour_m": null,
   "landing_m": null,
   "fresh_m": null,
   "reasons": [
    [
     "high ground with a long view",
-    1.2
+    1.4
    ],
    [
     "stands clear of the water",
     0.0
    ]
   ],
-  "score": 1.2,
-  "kinds": [
-   "barbarian war camp",
-   "upland hunting ground"
-  ],
-  "kind": "barbarian war camp",
-  "culture": "barbarian war camp",
-  "race": null,
-  "profession": "barbarian",
-  "faction": "neutral",
-  "purpose": "guild",
-  "size": "camp"
- },
- {
-  "latitude_deg": 6.896344,
-  "longitude_deg": 308.247535,
-  "elevation_m": 642.33,
-  "slope_m": 7.33,
-  "prominence_m": 37.28,
-  "harbour_m": null,
-  "landing_m": null,
-  "fresh_m": null,
-  "reasons": [
-   [
-    "high ground with a long view",
-    1.8
-   ],
-   [
-    "stands clear of the water",
-    0.0
-   ]
-  ],
-  "score": 1.8,
+  "score": 1.4,
   "kinds": [
    "dwarf mining village",
    "barbarian war camp",
@@ -876,5 +1434,210 @@
   "faction": "friendly",
   "purpose": "mine",
   "size": "village"
+ },
+ {
+  "latitude_deg": 16.955267,
+  "longitude_deg": 112.278811,
+  "elevation_m": 441.78,
+  "slope_m": 5.32,
+  "prominence_m": 22.78,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "high ground with a long view",
+    1.3
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 1.3,
+  "kinds": [
+   "dwarf mining village",
+   "barbarian war camp",
+   "upland hunting ground"
+  ],
+  "kind": "dwarf mining village",
+  "culture": "dwarf mining village",
+  "race": "dwarf",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "mine",
+  "size": "village"
+ },
+ {
+  "latitude_deg": 16.800694,
+  "longitude_deg": 112.180688,
+  "elevation_m": 380.29,
+  "slope_m": 4.64,
+  "prominence_m": 19.11,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "high ground with a long view",
+    1.2
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 1.2,
+  "kinds": [
+   "barbarian war camp",
+   "upland hunting ground"
+  ],
+  "kind": "barbarian war camp",
+  "culture": "barbarian war camp",
+  "race": null,
+  "profession": "barbarian",
+  "faction": "neutral",
+  "purpose": "guild",
+  "size": "camp"
+ },
+ {
+  "latitude_deg": 16.623018,
+  "longitude_deg": 112.545015,
+  "elevation_m": 406.84,
+  "slope_m": 3.58,
+  "prominence_m": 10.58,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "high ground with a long view",
+    0.9
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 0.9,
+  "kinds": [
+   "barbarian war camp",
+   "upland hunting ground"
+  ],
+  "kind": "barbarian war camp",
+  "culture": "barbarian war camp",
+  "race": null,
+  "profession": "barbarian",
+  "faction": "neutral",
+  "purpose": "guild",
+  "size": "camp"
+ },
+ {
+  "latitude_deg": 25.825213,
+  "longitude_deg": 106.192151,
+  "elevation_m": 92.55,
+  "slope_m": 1.39,
+  "prominence_m": -6.66,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": 2966,
+  "reasons": [
+   [
+    "fresh water at hand",
+    0.3
+   ],
+   [
+    "ground a street can run on",
+    24.4
+   ],
+   [
+    "stands clear of the water",
+    6.6
+   ]
+  ],
+  "score": 31.3,
+  "kinds": [
+   "valran river city",
+   "elf woodland village",
+   "halfling farm hamlet",
+   "gnome workshop village",
+   "ranger lodge",
+   "wildwood hunting ground"
+  ],
+  "kind": "valran river city",
+  "culture": "valran river city",
+  "race": "valran",
+  "profession": null,
+  "faction": "friendly",
+  "purpose": "trade",
+  "size": "city"
+ },
+ {
+  "latitude_deg": 6.911363,
+  "longitude_deg": 308.138817,
+  "elevation_m": 596.74,
+  "slope_m": 3.82,
+  "prominence_m": 35.42,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "high ground with a long view",
+    1.0
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 1.0,
+  "kinds": [
+   "dwarf mining village",
+   "barbarian war camp",
+   "moon mage observatory",
+   "upland hunting ground"
+  ],
+  "kind": "moon mage observatory",
+  "culture": "moon mage observatory",
+  "race": "lunari",
+  "profession": "moon_mage",
+  "faction": "friendly",
+  "purpose": "guild",
+  "size": "camp"
+ },
+ {
+  "latitude_deg": 6.829298,
+  "longitude_deg": 308.281998,
+  "elevation_m": 569.86,
+  "slope_m": 5.38,
+  "prominence_m": 33.47,
+  "harbour_m": null,
+  "landing_m": null,
+  "fresh_m": null,
+  "reasons": [
+   [
+    "high ground with a long view",
+    1.3
+   ],
+   [
+    "stands clear of the water",
+    0.0
+   ]
+  ],
+  "score": 1.3,
+  "kinds": [
+   "dwarf mining village",
+   "barbarian war camp",
+   "moon mage observatory",
+   "upland hunting ground"
+  ],
+  "kind": "moon mage observatory",
+  "culture": "moon mage observatory",
+  "race": "lunari",
+  "profession": "moon_mage",
+  "faction": "friendly",
+  "purpose": "guild",
+  "size": "camp"
  }
 ]

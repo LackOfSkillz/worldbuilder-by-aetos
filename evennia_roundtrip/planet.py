@@ -186,16 +186,26 @@ def elevation_at(planet, resolution_m=None, features=None, features_radius_m=Non
     four = scalars(planet)
     three = blocks(planet)
 
+    # **The world crosses the boundary once, not once per sample.** The tuple-taking call
+    # re-marshals every feature on every call - a thousand Python tuples converted, two
+    # Strings allocated each, and the whole cache key rebuilt from them - before doing ten
+    # microseconds of real work. Measured at 0.39 microseconds per feature per sample and
+    # perfectly linear, so a world with a river network cost four hundred microseconds a
+    # sample against ten for a bare one. It looked exactly like "the feature scan does not
+    # scale", and the scan was never the cost.
+    handle = engine.surface_open(
+        four["world_seed"], four["radius_m"], four["plate_count"], four["land_fraction"],
+        features=features, features_radius_m=features_radius_m,
+        relief=three["relief"], tectonics=three["tectonics"], coast=three["coast"],
+    )
+
     def sample(latitude_deg, longitude_deg):
         lat, lon = math.radians(latitude_deg), math.radians(longitude_deg)
         cos_lat = math.cos(lat)
-        return engine.surface_elevation_m(
-            four["world_seed"], four["radius_m"], four["plate_count"],
-            four["land_fraction"],
-            cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat),
-            resolution_m=resolution_m,
-            features=features, features_radius_m=features_radius_m,
-            relief=three["relief"], tectonics=three["tectonics"], coast=three["coast"],
+        return engine.surface_elevation_by_handle(
+            handle, cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat),
+            resolution_m,
         )
 
+    sample.handle = handle
     return sample

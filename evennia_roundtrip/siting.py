@@ -96,6 +96,43 @@ def slope_at(at, latitude_deg, longitude_deg, radius_m, reach_m=SLOPE_REACH_M, r
                for lat, lon in _ring(latitude_deg, longitude_deg, reach_m, radius_m, rays))
 
 
+class WaterIndex:
+    """Fresh-water points, bucketed by degree, so a site asks about its own neighbourhood.
+
+    Notes:
+        **A linear scan over every river node is the same mistake as a linear scan over
+        every feature, one layer up.** The planet went from one authored river to seven
+        thousand course nodes; checking each against each of twenty-six thousand candidate
+        sites is a hundred and eighty million distance calculations to answer a question
+        whose reach is three kilometres. Buckets of one degree, and only the nine around a
+        site are opened.
+
+        One degree is far larger than the reach on purpose. It is a screen, not the answer:
+        the distances inside a bucket are still measured properly, and a bucket too small
+        would drop a river running just over its edge.
+    """
+
+    def __init__(self, points):
+        self.buckets = {}
+        for latitude, longitude in points:
+            key = (int(math.floor(latitude)), int(math.floor(longitude)))
+            self.buckets.setdefault(key, []).append((latitude, longitude))
+        self.count = sum(len(v) for v in self.buckets.values())
+
+    def nearest(self, latitude_deg, longitude_deg, radius_m, within_m):
+        """Distance to the nearest fresh water, or None past `within_m`."""
+        best = None
+        base = (int(math.floor(latitude_deg)), int(math.floor(longitude_deg)))
+        for dlat in (-1, 0, 1):
+            for dlon in (-1, 0, 1):
+                for point in self.buckets.get((base[0] + dlat, base[1] + dlon), ()):
+                    gap = _haversine(latitude_deg, longitude_deg, point[0], point[1],
+                                     radius_m)
+                    if gap <= within_m and (best is None or gap < best):
+                        best = gap
+        return best
+
+
 def prominence_at(at, latitude_deg, longitude_deg, radius_m, reach_m=5000.0, rays=8):
     """
     How far this stands above the country around it, in metres.
@@ -217,13 +254,16 @@ def score_point(at, latitude_deg, longitude_deg, radius_m, rivers=(),
                                HARBOUR_DEPTH_M, HARBOUR_REACH_M)
         landing = water_within(at, latitude_deg, longitude_deg, radius_m,
                                LANDING_DEPTH_M, LANDING_REACH_M)
-    fresh = None
-    for river_lat, river_lon in rivers:
-        gap = _haversine(latitude_deg, longitude_deg, river_lat, river_lon, radius_m)
-        if fresh is None or gap < fresh:
-            fresh = gap
-    if fresh is not None and fresh > HARBOUR_REACH_M:
+    if isinstance(rivers, WaterIndex):
+        fresh = rivers.nearest(latitude_deg, longitude_deg, radius_m, HARBOUR_REACH_M)
+    else:
         fresh = None
+        for river_lat, river_lon in rivers:
+            gap = _haversine(latitude_deg, longitude_deg, river_lat, river_lon, radius_m)
+            if fresh is None or gap < fresh:
+                fresh = gap
+        if fresh is not None and fresh > HARBOUR_REACH_M:
+            fresh = None
 
     site = {"latitude_deg": round(latitude_deg, 6),
             "longitude_deg": round(longitude_deg, 6),
@@ -325,6 +365,24 @@ def local_sites(at, radius_m, near, within_m, rivers=(), rings=6, rays=12,
     return found
 
 
+def _water_seeds(index, radius_m, separation_m):
+    """Points along the fresh water, thinned so two seeds are never the same settlement.
+
+    Notes:
+        Walked in bucket order rather than course order, so seeds are spread over the
+        planet instead of marching down one river bank and filling every quota from a
+        single valley.
+    """
+    taken = []
+    for key in sorted(index.buckets):
+        for point in index.buckets[key]:
+            if any(_haversine(point[0], point[1], other[0], other[1], radius_m)
+                   < separation_m for other in taken):
+                continue
+            taken.append(point)
+            yield point
+
+
 def sites_at_range(at, radius_m, origin, distance_m, bearings=72, spread=0.15,
                    rivers=(), classify=None):
     """
@@ -396,6 +454,8 @@ def survey(at, radius_m, count=12, samples=20000, rivers=(),
         - the sites that scored well and were dropped for being unreachable, which is the
         list worth reading when a survey returns fewer than asked for.
     """
+    if not isinstance(rivers, WaterIndex):
+        rivers = WaterIndex(rivers)
     scored, on_land, near_water = [], 0, 0
     for latitude, longitude in sunflower(samples):
         # **Gate one: is it dry?** One call, and it drops roughly half the planet.
@@ -490,6 +550,31 @@ def survey(at, radius_m, count=12, samples=20000, rivers=(),
             break
         if wanted and all(taken.get(k, 0) >= n for k, n in wanted.items()):
             break
+
+    # **A settlement on a river has to be looked for on the river.** Rivers occupy a few
+    # hundred of a planet's sixty-four thousand degree cells, so a globally-spread sample
+    # lands on one essentially never: the first survey after the water network went in
+    # reported not one site with fresh water, on a planet with seven thousand river nodes.
+    # Same shape as the level rings and the inland growth - a grid cannot find a thin thing,
+    # so the thin thing is walked instead.
+    if wanted and rivers.count:
+        for point in _water_seeds(rivers, radius_m, separation_m):
+            if all(taken.get(k, 0) >= n for k, n in wanted.items()):
+                break
+            site = score_point(at, point[0], point[1], radius_m, rivers=rivers,
+                               classify=classify,
+                               look_for_water=_sea_nearby(at, point[0], point[1],
+                                                          radius_m, coast_reach_m))
+            if site is None or site["kind"] is None:
+                continue
+            if not far_enough(site) or not linked(site):
+                continue
+            name = vacancy(site)
+            if name is None:
+                continue
+            site["kind"] = name
+            chosen.append(site)
+            taken[name] = taken.get(name, 0) + 1
 
     # **Inland kinds are grown by looking around what is already placed.** The sweep above
     # can only ever choose from the global sample set, and that set is too coarse to
