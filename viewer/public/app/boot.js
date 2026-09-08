@@ -114,6 +114,15 @@ const viewer = new Cesium.Viewer("cesiumContainer", {
 });
 
 brandTheCorner(document);
+
+// Fold the diagnostics wall into one line and split the controls into two columns. Runs
+// after the panel exists; it observes for sections added later, so nothing has to be
+// re-run when a world opens and the area list appears.
+import("./chrome.js").then((chrome) => {
+  const start = () => chrome.tidy(document);
+  if (document.readyState === "complete") setTimeout(start, 250);
+  else window.addEventListener("load", () => setTimeout(start, 250));
+}).catch(() => {});
 viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString("#10243a");
 
 document.getElementById("status").textContent =
