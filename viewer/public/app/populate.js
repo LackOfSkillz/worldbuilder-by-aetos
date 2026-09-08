@@ -19,6 +19,26 @@ import { fillFor, outlineFor, outlineWidthFor, legendRows } from "./palette.js";
 /// a world being built, where a hundred arriving at once reads as a page load.
 const POLL_MS = 2000;
 
+/// How long a run should take to appear, however long it took to compute.
+///
+/// **The generator is faster than the eye, and that is a problem worth solving in the
+/// viewer.** A hundred areas are written in about five seconds, so a watcher that draws
+/// whatever has arrived puts them up in two batches and the thing somebody wanted to watch
+/// is over before they have looked at it. The world is not being faked - every pin is an
+/// area that really landed, with the counts it really has. Only the reveal is paced.
+///
+/// Kept here rather than in the panel because it is a fact about watching, not about any
+/// particular run.
+const PACE_MS = 60000;
+
+/// The fastest and slowest a pin may appear once the queue is draining.
+///
+/// The floor stops a very large run from turning into a flood at the end; the ceiling
+/// stops a slow generator from leaving the globe apparently frozen between areas.
+const PIN_MIN_MS = 120;
+const PIN_MAX_MS = 1500;
+
+
 /// The hover card's text: what this place is and what is in it.
 ///
 /// `unique_items` counts DISTINCT things purchasable here, not stock on the shelves -
@@ -60,7 +80,7 @@ function label(area) {
 ///
 /// Returns a handle with `stop()`, `count()` and the data source.
 export function watchRun(viewer, Cesium, runId, onTick = null,
-                         { worldName = null, tally = true } = {}) {
+                         { worldName = null, tally = true, paceMs = PACE_MS } = {}) {
   const source = new Cesium.CustomDataSource(`wb-populate-${runId}`);
   viewer.dataSources.add(source);
   // The counts climb beside the pins. One card per run, removed with it.
@@ -68,6 +88,10 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   let cursor = 0;
   let stopped = false;
   let timer = null;
+  let drainTimer = null;
+  //: Areas that have arrived from the feed and are waiting their turn to appear.
+  const pending = [];
+  const startedAt = performance.now();
 
   const draw = (area) => {
     if (area.latitude_deg === undefined || area.longitude_deg === undefined) return;
@@ -131,12 +155,12 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
                             { cache: "no-store" });
       if (r.ok) {
         const payload = await r.json();
+        // Queued, not drawn. The cursor still advances on arrival so nothing is fetched
+        // twice; what is paced is only when each one appears.
         for (const area of payload.areas || []) {
-          draw(area);
-          if (counts) counts.add(area);
+          pending.push(area);
           cursor += 1;
         }
-        if (onTick) onTick(cursor, payload.total || cursor);
       }
     } catch {
       // A run that has not written yet, or a server blip. Keep polling; the cursor means
@@ -144,19 +168,65 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
     }
     if (!stopped) timer = setTimeout(poll, POLL_MS);
   };
+
+  /// Let one area through, then work out when the next should follow.
+  ///
+  /// The interval is recomputed every time rather than fixed, because the total is not
+  /// known until the run ends: whatever is waiting is spread across whatever is left of
+  /// the minute, so a run that finishes instantly still takes a minute to appear and a run
+  /// that takes two minutes is never held back.
+  const drain = () => {
+    if (stopped) return;
+    // **The reschedule is in a `finally`, and that is not defensive dressing.** Before the
+    // pacing, `draw` ran inside the poll's own try/catch and a bad area cost that one pin;
+    // now it drives a self-rescheduling chain, so the same throw ends the run's reveal
+    // dead - measured here as a globe that stopped at twenty-eight of ninety-four with the
+    // feed complete on disk and nothing in the console. One failed pin must not stop the
+    // other sixty-six.
+    try {
+      if (pending.length) {
+        const area = pending.shift();
+        draw(area);
+        if (counts) counts.add(area);
+        if (onTick) onTick(drawn(), cursor);
+      }
+    } catch (error) {
+      console.error("worldbuilder: could not draw an area", error);
+    } finally {
+      const left = Math.max(0, paceMs - (performance.now() - startedAt));
+      const each = pending.length ? left / pending.length : PIN_MAX_MS;
+      const wait = Math.min(PIN_MAX_MS, Math.max(PIN_MIN_MS, each));
+      drainTimer = setTimeout(drain, wait);
+    }
+  };
+
+  const drawn = () => source.entities.values.length;
+
   poll();
+  drain();
+
+  const halt = () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    if (drainTimer) clearTimeout(drainTimer);
+  };
 
   return {
     source,
-    count: () => cursor,
-    stop: () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
+    count: () => drawn(),
+    /// Draw everything still queued at once, for somebody who does not want to wait.
+    finish: () => {
+      while (pending.length) {
+        const area = pending.shift();
+        draw(area);
+        if (counts) counts.add(area);
+      }
+      if (onTick) onTick(drawn(), cursor);
     },
+    stop: halt,
     tally: counts,
     remove: () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
+      halt();
       input.stop();
       if (counts) counts.remove();
       viewer.dataSources.remove(source, true);
