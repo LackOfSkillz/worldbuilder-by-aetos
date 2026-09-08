@@ -191,63 +191,86 @@ def describe(sites, table, radius_m, origin=None, bands=LEVEL_RINGS):
 
 
 # --------------------------------------------------------------------------------------
-# An EXAMPLE table, and only an example.
+# The demo world's peoples, from the owner's own affinities.
 #
-# The races and professions are one game's, borrowed to demonstrate the schema on a real
-# roster rather than on three invented names. Worldbuilder ships no races: a game supplies
-# its own table and this one is deleted.
+# **These are answers, not guesses.** An earlier version of this table was invented from the
+# race names and got at least one badly wrong - the Lunari read as moon-mages when they are
+# the wolf people, which would have put forty observatories where packs should have been.
+# Every line below was given rather than inferred.
 #
-# The order is the priority. Cities before villages, so the best harbours become cities.
+# **What is measurable, and what is not yet.** Height, slope, prominence, coast, landing and
+# fresh water are all real questions the oracle answers. Forest is not: there is no biome
+# layer yet, so "prefers woods" is approximated by temperate inland ground of the height
+# trees grow on, and will get sharper when climate lands. That approximation is stated here
+# rather than hidden, because an elf village in a grassland is a thing somebody should be
+# able to explain.
+#
+# The order is the priority: a site offers every culture it fits and the first with room
+# takes it, so the rarer and more particular peoples are listed above the common ones.
 # --------------------------------------------------------------------------------------
 
-DEMO_TABLE = [
-    # --- seats of power: the best ground of each kind ---------------------------------
-    Culture("dwarf mountain kingdom", race="dwarf", size="seat", purpose="home",
-            wants={"elevation_m": (250.0, 650.0), "prominence_m": (60.0, 1e9)}),
-    Culture("human port city", race="human", size="city", purpose="trade",
-            wants={"needs": ("harbour", "fresh"), "elevation_m": (2.0, 60.0)}),
-    Culture("valran river city", race="valran", size="city", purpose="trade",
-            wants={"needs": ("fresh",), "forbids": ("harbour",),
-                   "elevation_m": (2.0, 120.0)}),
+#: Swamp: low, flat and wet. The bayou the fish camp sits in is the type example.
+SWAMP = {"elevation_m": (0.5, 25.0), "slope_m": (0.0, 4.0), "needs": ("landing",)}
 
-    # --- working settlements ----------------------------------------------------------
+DEMO_TABLE = [
+    # --- particular ground, listed first so it is not taken by a generalist -----------
+    Culture("saurathi marsh town", race="saurathi", size="town", purpose="home",
+            wants=dict(SWAMP)),
+    Culture("saurathi marsh village", race="saurathi", size="village", purpose="home",
+            wants=dict(SWAMP)),
+    Culture("dwarf mountain hold", race="dwarf", size="seat", purpose="home",
+            wants={"elevation_m": (250.0, 650.0), "prominence_m": (25.0, 1e9)}),
     Culture("dwarf mining village", race="dwarf", size="village", purpose="mine",
-            wants={"elevation_m": (150.0, 650.0), "prominence_m": (20.0, 1e9)}),
-    Culture("elf woodland village", race="elf", size="village", purpose="home",
-            wants={"elevation_m": (20.0, 250.0), "prominence_m": (-1e9, 20.0),
-                   "forbids": ("harbour",)}),
-    Culture("human harbour town", race="human", size="town", purpose="trade",
-            wants={"needs": ("harbour",), "elevation_m": (1.0, 60.0)}),
+            wants={"elevation_m": (150.0, 650.0)}),
+    Culture("gnome workshop village", race="gnome", size="village", purpose="home",
+            wants={"elevation_m": (60.0, 300.0), "prominence_m": (5.0, 1e9)}),
+    Culture("volgrin steading", race="volgrin", size="town", purpose="home",
+            wants={"elevation_m": (20.0, 200.0), "slope_m": (0.0, 6.0)}),
+    Culture("aethari coastal city", race="aethari", size="city", purpose="trade",
+            wants={"needs": ("harbour",), "elevation_m": (2.0, 80.0)}),
+    Culture("aethari retreat", race="aethari", size="camp", purpose="guild",
+            wants={"prominence_m": (20.0, 1e9)}),
+    Culture("valran highland steading", race="valran", size="village", purpose="home",
+            wants={"elevation_m": (120.0, 500.0)}),
+
+    # --- the peoples who live where humans live, in their own places ------------------
+    Culture("felari fishing village", race="felari", size="village", purpose="home",
+            wants={"needs": ("landing",), "elevation_m": (1.0, 40.0)}),
+    Culture("lunari pack holt", race="lunari", size="village", purpose="home",
+            wants={"elevation_m": (30.0, 250.0), "forbids": ("harbour",)}),
     Culture("halfling farm hamlet", race="halfling", size="hamlet", purpose="home",
             wants={"elevation_m": (5.0, 120.0), "slope_m": (0.0, 8.0),
+                   "needs": ("fresh",)}),
+    Culture("elf woodland village", race="elf", size="village", purpose="home",
+            wants={"elevation_m": (25.0, 250.0), "slope_m": (0.0, 12.0),
                    "forbids": ("harbour",)}),
-    Culture("felari fishing hamlet", race="felari", size="hamlet", purpose="home",
-            wants={"needs": ("landing",), "forbids": ("harbour",),
-                   "elevation_m": (1.0, 30.0)}),
-    Culture("gnome workshop village", race="gnome", size="village", purpose="home",
-            wants={"elevation_m": (60.0, 300.0)}),
 
-    # --- guild halls: a profession's own ground ---------------------------------------
+    # --- humans everywhere, which is why they are last ---------------------------------
+    Culture("human port city", race="human", size="city", purpose="trade",
+            wants={"needs": ("harbour", "fresh"), "elevation_m": (2.0, 60.0)}),
+    Culture("human harbour town", race="human", size="town", purpose="trade",
+            wants={"needs": ("harbour",), "elevation_m": (1.0, 60.0)}),
+    Culture("human river town", race="human", size="town", purpose="trade",
+            wants={"needs": ("fresh",), "elevation_m": (2.0, 150.0)}),
+    Culture("human village", race="human", size="village", purpose="home",
+            wants={"elevation_m": (2.0, 200.0)}),
+
+    # --- guild ground -----------------------------------------------------------------
     Culture("ranger lodge", race=None, profession="ranger", size="camp", purpose="guild",
             wants={"elevation_m": (10.0, 200.0), "forbids": ("harbour",)}),
     Culture("barbarian war camp", race=None, profession="barbarian", size="camp",
             purpose="guild", faction=NEUTRAL,
-            wants={"elevation_m": (100.0, 650.0), "prominence_m": (10.0, 1e9)}),
-    Culture("moon mage observatory", race="lunari", profession="moon_mage", size="camp",
-            purpose="guild", wants={"prominence_m": (30.0, 1e9)}),
+            wants={"elevation_m": (100.0, 650.0)}),
 
-    # --- hostile ground ---------------------------------------------------------------
-    Culture("saurathi raider town", race="saurathi", size="town", purpose="home",
-            faction=HOSTILE, wants={"needs": ("landing",), "elevation_m": (1.0, 40.0)}),
-    Culture("volgrin hold", race="volgrin", size="town", purpose="military",
-            faction=HOSTILE,
-            wants={"elevation_m": (200.0, 650.0), "prominence_m": (40.0, 1e9)}),
-
-    # --- hunting grounds: banded by distance, not by declaration -----------------------
-    Culture("wildwood hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
-            wants={"elevation_m": (5.0, 200.0), "forbids": ("harbour",)}),
+    # --- hostile ground: NPC peoples, and the wild ------------------------------------
+    Culture("goblin camp", race=None, size="camp", purpose="home", faction=HOSTILE,
+            wants={"elevation_m": (10.0, 400.0)}),
+    Culture("marsh hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
+            wants=dict(SWAMP)),
     Culture("upland hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
             wants={"elevation_m": (200.0, 650.0)}),
+    Culture("wildwood hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
+            wants={"elevation_m": (5.0, 200.0), "forbids": ("harbour",)}),
     Culture("shore hunting ground", size="camp", purpose="hunting", faction=HOSTILE,
             wants={"needs": ("landing",), "elevation_m": (1.0, 20.0)}),
 ]
