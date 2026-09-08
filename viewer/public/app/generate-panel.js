@@ -25,6 +25,14 @@ function el(tag, cls, text) {
 /// where somebody wants to build - and not a fact about any planet.
 export const DEMO_REGION = "-26.5,26.5,-36.5,36.0";
 
+//: Where the run being watched is remembered across a reload.
+//
+// **A refresh must not lose the run.** The generator is a process on the server and the
+// feed is a file, so a reload can pick up exactly where it left off - but only if the page
+// remembers which run it was watching. Without this a stray refresh mid-run leaves a
+// finished world on disk and an empty globe, with no way back to it.
+const WATCHING_KEY = "wb.watchingRun";
+
 /// Build the populate section into a parent element.
 ///
 /// Args:
@@ -67,6 +75,54 @@ export function buildGeneratePanel(parent, getViewer) {
   const note = el("div", "wb-note-line", "pick a world and a count");
 
   let watching = null;
+
+  /// Follow a run, live or finished, and report as it lands.
+  const follow = (runId, wanted, worldName) => {
+    const viewer = getViewer();
+    if (!viewer || !window.Cesium) return null;
+    go.textContent = "stop watching";
+    return watchRun(viewer, window.Cesium, runId, (drawn, total, finished) => {
+      if (!finished) {
+        note.textContent = wanted ? `${drawn} of ${wanted} areas...` : `${drawn} areas...`;
+        return;
+      }
+      // **A run that stops short must say so.** Eighty-three of a hundred looks identical
+      // to a run still working, and the difference between "thinking" and "finished, and
+      // here is why it could not place the rest" is the whole of whether somebody trusts
+      // the tool. The generator already records which quotas went unfilled; this is that,
+      // said out loud.
+      const short = (finished.summary || {}).unfilled || {};
+      const missing = Object.entries(short).map(([race, n]) => `${n} ${race}`).join(", ");
+      note.textContent = missing
+        ? `done: ${drawn}${wanted ? ` of ${wanted}` : ""} areas - no ground left for ${missing}`
+        : `done: ${drawn} areas`;
+      go.textContent = "populate world";
+      try {
+        sessionStorage.removeItem(WATCHING_KEY);
+      } catch { /* nothing to clean up */ }
+    }, { worldName });
+  };
+
+  // Pick a run back up after a reload. It replays from the first line, so the globe comes
+  // back exactly as it was - and if the generator is still going, the rest arrives live.
+  const resume = () => {
+    let kept = null;
+    try {
+      kept = JSON.parse(sessionStorage.getItem(WATCHING_KEY) || "null");
+    } catch {
+      kept = null;
+    }
+    if (!kept || !kept.run_id) return;
+    const attach = (tries = 0) => {
+      if (!getViewer() || !window.Cesium) {
+        if (tries < 40) setTimeout(() => attach(tries + 1), 250);
+        return;
+      }
+      watching = follow(kept.run_id, kept.count, kept.world);
+      note.textContent = `picking up run ${kept.run_id}...`;
+    };
+    attach();
+  };
 
   const refreshWorlds = async () => {
     try {
@@ -116,12 +172,13 @@ export function buildGeneratePanel(parent, getViewer) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `server said ${response.status}`);
       note.textContent = `run ${result.run_id} - ${result.count} areas wanted`;
-      go.textContent = "stop watching";
-      watching = watchRun(viewer, window.Cesium, result.run_id,
-                          (drawn, total) => {
-                            note.textContent = `${drawn} areas on the globe (run ${result.run_id})`;
-                          },
-                          { worldName: worlds.value.replace(/\.json$/, "") });
+      try {
+        sessionStorage.setItem(WATCHING_KEY, JSON.stringify({
+          run_id: result.run_id, count: result.count,
+          world: worlds.value.replace(/\.json$/, ""),
+        }));
+      } catch { /* a refresh will simply not resume */ }
+      watching = follow(result.run_id, result.count, worlds.value.replace(/\.json$/, ""));
     } catch (error) {
       note.textContent = `refused: ${error.message}`;
     } finally {
@@ -133,5 +190,6 @@ export function buildGeneratePanel(parent, getViewer) {
               el("div", "wb-row").appendChild(go).parentNode, note);
   parent.append(wrap);
   refreshWorlds();
+  resume();
   return { wrap, refreshWorlds, stop: () => { if (watching) watching.stop(); } };
 }

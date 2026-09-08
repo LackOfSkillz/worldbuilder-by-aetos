@@ -187,8 +187,55 @@ def lake_points(document):
     return points
 
 
-def grow_sites(at, radius_m, seeds, count, region=None, near_m=siting.SEPARATION_M,
-               far_m=siting.LAND_LINK_M, classify=None, rivers=()):
+#: How far apart two settlements stand, and how far a new one may be founded from an old.
+#:
+#: **A hundred and twelve miles apart, reaching two hundred and fifty for the next.**
+#: The floor is what the spacing actually settles at - measured, the median nearest
+#: neighbour lands within a few miles of it, because once the map is full every site has
+#: somebody at arm's length. So the floor is set for the median that was wanted, not at the
+#: bottom of the range: a floor of a hundred gave a median of a hundred and three, and a
+#: floor of a hundred and seventeen gave a hundred and twenty-five.
+#:
+#: A hundred to two hundred miles is several days' travel, not a morning's walk.
+#: The first version used `siting`'s own ten and thirty, and a hundred areas at that spacing
+#: filled one corner of the region and read as a jumble - impressive for the first dozen
+#: pins and then a smear. These are the numbers for a world somebody travels across.
+#:
+#: `siting.SEPARATION_M` and `LAND_LINK_M` keep their own values: they answer a different
+#: question - whether a site is REACHABLE from its neighbours - and shortening a journey is
+#: not the same as deciding two places are one.
+NEAR_M = 180_246.0
+FAR_M = 402_336.0
+
+
+def _inland(site):
+    """Whether a site has no sea within reach - which is what makes it inland."""
+    return site.get("harbour_m") is None and site.get("landing_m") is None
+
+
+def _nearest_gap(site, chosen, radius_m):
+    """How far a candidate stands from the nearest settlement already placed."""
+    best = None
+    for other in chosen:
+        gap = _haversine(site["latitude_deg"], site["longitude_deg"],
+                         other["latitude_deg"], other["longitude_deg"], radius_m)
+        if best is None or gap < best:
+            best = gap
+    return best if best is not None else 0.0
+
+
+#: How many coastal settlements are founded before the frontier is pushed inland.
+#:
+#: **A ring round the water first, then away from it.** People settle the shore and then
+#: move up the rivers, so the first dozen places belong on the coast - and after that a
+#: generator that keeps taking the highest-scoring site keeps taking the coast, because the
+#: scorer pays forty points for a harbour. Past this count an inland candidate is preferred
+#: outright, and only if there is no inland candidate does the shore get another one.
+COASTAL_FIRST = 10
+
+
+def grow_sites(at, radius_m, seeds, count, region=None, near_m=NEAR_M,
+               far_m=FAR_M, classify=None, rivers=(), coastal_first=COASTAL_FIRST):
     """
     Grow a settlement network outward from the seeds, ten to thirty miles at a step.
 
@@ -242,8 +289,25 @@ def grow_sites(at, radius_m, seeds, count, region=None, near_m=siting.SEPARATION
     frontier = list(chosen)
     while frontier and len(chosen) < count:
         near = frontier.pop(0)
-        for candidate in siting.local_sites(at, radius_m, near, far_m, rivers=rivers,
-                                            classify=classify):
+        found = siting.local_sites(at, radius_m, near, far_m, rivers=rivers,
+                                   classify=classify)
+        # **Furthest from anything already built, not highest scoring.** `local_sites`
+        # answers best-first, and the scorer pays forty points for a harbour and ten for a
+        # landing - so taking its favourite every time walks the coastline and never turns
+        # inland, which is exactly what a hundred pins strung along one shore looked like.
+        # Ordering by how far a candidate stands from the nearest existing settlement pushes
+        # the frontier outward instead, and score decides between equals.
+        # Seeds are facts about the world, not settlements this run founded, so the coastal
+        # allowance counts what was actually placed.
+        founded = sum(1 for site in chosen if not site.get("seeded"))
+        inland_now = founded >= coastal_first
+        found.sort(key=lambda site: (
+            # Inland first once the shore has had its share. `harbour_m` and `landing_m`
+            # are None exactly when no water is in reach, which is what inland means here.
+            (0 if _inland(site) else 1) if inland_now else 0,
+            -_nearest_gap(site, chosen, radius_m),
+            -site["score"]))
+        for candidate in found:
             if len(chosen) >= count:
                 break
             latitude = candidate["latitude_deg"]
@@ -260,10 +324,10 @@ def grow_sites(at, radius_m, seeds, count, region=None, near_m=siting.SEPARATION
 
 #: How far a road may run between two areas before it stops being a walk.
 #:
-#: Two hundred kilometres. Beyond that the link is a voyage or a road nobody would take on
-#: foot, and pretending otherwise would satisfy the reachability check while stranding
-#: somebody in practice.
-ROAD_REACH_M = 200_000.0
+#: Three hundred and forty kilometres - a little past the far end of the settlement spacing,
+#: so an ordinary link to a neighbour is never flagged and only a genuine outlier is. Beyond
+#: it the link is a voyage rather than a road, which the manifest says rather than hides.
+ROAD_REACH_M = 340_000.0
 
 
 def _where(area):
@@ -580,7 +644,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         fresh = river_points(document) + lake_points(document)
         if fresh:
             index = siting.WaterIndex(fresh)
-            for point in siting._water_seeds(index, radius_m, siting.SEPARATION_M * 6):
+            for point in siting._water_seeds(index, radius_m, NEAR_M):
                 if not siting.in_region(point[0], point[1], region):
                     continue
                 # **A river node is IN the river.** Seeding on it and then requiring dry

@@ -369,7 +369,21 @@ createServer(async (req, res) => {
       const areas = lines.slice(from).map((l) => { try { return JSON.parse(l); }
                                                   catch { return null; } })
                          .filter(Boolean);
-      const body = JSON.stringify({ total: lines.length, from, areas });
+      // **The feed says when it is over, because a watcher cannot tell.** A run that
+      // stops at eighty-three of a hundred looks exactly like a run still working: the
+      // pins stop appearing and nothing says whether the generator is thinking or done.
+      // The manifest already knows, so it travels with the areas.
+      let status = null;
+      let summary = null;
+      try {
+        const manifest = JSON.parse(
+          await readFile(join(runsDir, runId, "manifest.json"), "utf8"));
+        status = manifest.status || null;
+        summary = manifest.summary || null;
+      } catch {
+        // No manifest yet means the run has only just begun. Not an error.
+      }
+      const body = JSON.stringify({ total: lines.length, from, areas, status, summary });
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
          .end(body);
     } catch {

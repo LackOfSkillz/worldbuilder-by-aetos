@@ -89,6 +89,9 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   let stopped = false;
   let timer = null;
   let drainTimer = null;
+  //: What the run itself says about itself, once its manifest exists.
+  let runStatus = null;
+  let runSummary = null;
   //: Areas that have arrived from the feed and are waiting their turn to appear.
   const pending = [];
   const startedAt = performance.now();
@@ -161,6 +164,16 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
           pending.push(area);
           cursor += 1;
         }
+        if (payload.status) runStatus = payload.status;
+        if (payload.summary) runSummary = payload.summary;
+      }
+      // Once the generator has finished and everything it wrote has been queued, there is
+      // nothing further to ask for. Polling on would be asking a finished run whether it
+      // has changed its mind.
+      if (runStatus === "complete" || runStatus === "failed") {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        return;
       }
     } catch {
       // A run that has not written yet, or a server blip. Keep polling; the cursor means
@@ -188,7 +201,11 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
         const area = pending.shift();
         draw(area);
         if (counts) counts.add(area);
-        if (onTick) onTick(drawn(), cursor);
+        if (onTick) onTick(drawn(), cursor, done());
+      } else if (done() && !announced) {
+        // The last pin has appeared and the run is over. Said once.
+        announced = true;
+        if (onTick) onTick(drawn(), cursor, done());
       }
     } catch (error) {
       console.error("worldbuilder: could not draw an area", error);
@@ -201,6 +218,12 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   };
 
   const drawn = () => source.entities.values.length;
+
+  /// Whether there is nothing more coming: the run is over and the queue is empty.
+  const done = () => ((runStatus === "complete" || runStatus === "failed")
+                      && pending.length === 0
+                      ? { status: runStatus, summary: runSummary } : null);
+  let announced = false;
 
   poll();
   drain();
@@ -225,6 +248,7 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
     },
     stop: halt,
     tally: counts,
+    status: () => ({ status: runStatus, summary: runSummary }),
     remove: () => {
       halt();
       input.stop();
