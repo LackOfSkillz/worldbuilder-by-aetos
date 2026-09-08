@@ -28,7 +28,7 @@ import os
 import random
 
 from . import (areagen, cultures, naming, period, place, planet, populate,
-               reachability, runs, siting)
+               reachability, runs, siting, stock)
 
 #: How many of each culture a hundred-area world should hold.
 #:
@@ -1329,9 +1329,10 @@ def counts(area, culture):
     rooms = area["rooms"]
     shops = sum(1 for room in rooms
                 if any(marker in room["key"].lower() for marker in TRADE_MARKERS))
+    items = sum(len(room.get("stock") or ()) for room in rooms)
     docks = sum(1 for room in rooms if place.water_room(room["key"]))
     density = NPC_DENSITY.get(culture.size, 0.4)
-    return {"room_count": len(rooms), "shops": shops, "docks": docks,
+    return {"room_count": len(rooms), "shops": shops, "docks": docks, "items": items,
             "npcs": int(round(len(rooms) * density))}
 
 
@@ -1340,7 +1341,7 @@ def counts(area, culture):
 #: viewer polls this file every second.
 FEED_FIELDS = ("name", "display_name", "latitude_deg", "longitude_deg", "race", "purpose",
                "faction", "culture", "size", "level_band", "from_origin_km", "npcs",
-               "shops", "docks")
+               "shops", "docks", "items")
 
 
 def feed_line(area):
@@ -1380,6 +1381,13 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin):
     voice = voice_race(culture)
     naming.name_and_describe(area, voice, rng,
                              settled=culture.purpose not in ("hunting",))
+    # **Stocked here, so the count is of what is actually on the shelves.** A shop with no
+    # wares is a room with a sign on it, and "eight shops" in a tally means nothing until
+    # there is something in them to buy.
+    for room in area["rooms"]:
+        wares = stock.stock_for(room["key"], culture.size, rng)
+        if wares:
+            room["stock"] = wares
     area["name"] = area["display_name"].lower()
 
     problems = gate(area, culture, at, lattice["shape"])
@@ -1638,6 +1646,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "rooms": sum(a["room_count"] for a in made),
             "npcs": sum(a["npcs"] for a in made),
             "shops": sum(a["shops"] for a in made),
+            "items": sum(a.get("items", 0) for a in made),
             "refused": len(refused),
             "over_quota": over_quota,
             "short_of": max(0, count - len(made)),

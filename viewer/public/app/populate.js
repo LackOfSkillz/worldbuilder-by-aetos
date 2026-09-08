@@ -296,6 +296,8 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
         // drawn now, because the network is the point and nobody should have to click a
         // pin to discover it exists.
         announced = true;
+        // The tally grows its sections now that there is a finished world to describe.
+        if (counts) counts.finish(runSummary || {});
         fetch(`/runs/${encodeURIComponent(runId)}/worldfile.json`, { cache: "no-store" })
           .then((r) => r.json())
           .then((doc) => { rooms = doc; drawRoads(doc); })

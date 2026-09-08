@@ -75,6 +75,20 @@ export function buildGeneratePanel(parent, getViewer) {
 
   const go = el("button", "wb-mini wb-mini-go", "populate world");
   go.type = "button";
+  // **Hidden is not gone.** The tally can be put away with its own close button, and a
+  // readout you cannot get back is one nobody dares close - so the way back sits beside the
+  // button that made it.
+  const showSummary = el("button", "wb-mini", "run summary");
+  showSummary.type = "button";
+  showSummary.addEventListener("click", () => {
+    const tally = watching && watching.tally;
+    if (!tally) {
+      note.textContent = "no run to summarise yet";
+      return;
+    }
+    if (tally.hidden()) tally.show();
+    else tally.hide();
+  });
   const note = el("div", "wb-note-line", "pick a world and a count");
 
   let watching = null;
@@ -208,8 +222,9 @@ export function buildGeneratePanel(parent, getViewer) {
     }
   });
 
-  wrap.append(worldRow, countRow, count, regionRow,
-              el("div", "wb-row").appendChild(go).parentNode, note);
+  const buttons = el("div", "wb-row");
+  buttons.append(go, showSummary);
+  wrap.append(worldRow, countRow, count, regionRow, buttons, note);
   parent.append(wrap);
   refreshWorlds();
   resume();
