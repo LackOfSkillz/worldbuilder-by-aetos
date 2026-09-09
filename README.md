@@ -17,6 +17,28 @@ This repository is groundwork. The eventual product is a standalone Evennia cont
 is here now is the design, and the world needed to demonstrate the maritime contrib on
 something better than a ramp.
 
+## Quickstart
+
+```bash
+cd viewer && npm run serve        # the studio, at http://localhost:8137
+```
+
+Pick a world, open **POPULATE**, choose a count, press **generate**, and watch the dial.
+When it reads COMPLETE:
+
+```bash
+python -m evennia_roundtrip.export --worldfile runs/<run-id>/worldfile.json        --into /path/to/your-game/world --name aetosia
+```
+
+Then in your game:
+
+```
+@py from world.build_aetosia import build; build(self)
+```
+
+Paint a planet, populate it, export it, walk it. Every feature and every switch is in
+[docs/using-worldbuilder.md](docs/using-worldbuilder.md).
+
 ## The constraint everything else answers to
 
 Maritime does not read a map. It asks the world how high the ground is at a point, and it
@@ -92,7 +114,10 @@ coordinates at all sit on a planet and still have a dock at an exact latitude.
     worldbuilder/integration/   the maritime seam, and the only file that knows both
     worldbuilder/debug/         diagnostics, all of which write PPM and need no libraries
 
-Standard library only. 208 tests.
+    evennia_roundtrip/          the area generator, and the Evennia exporter
+    viewer/                     the studio: a browser over the generator
+
+Standard library only for the planet itself. **465 Python tests and 237 in the studio.**
 
 That describes Mark 1, which is what exists today. Mark 2 moves the generator core to
 Rust - one implementation, compiled native for Evennia and to WASM for the browser studio,
@@ -100,6 +125,28 @@ so the world a builder sees and the world a game sails on cannot drift apart. It
 the zero-dependency stance deliberately: Worldbuilder does not target Evennia's vendored
 contrib tree, so contrib conventions do not bind it. See
 `docs/design/2026-09-02-mark-2-world-studio.md`, section 4.
+
+## What the generator makes
+
+A run turns a painted planet into places, and every number below is measured rather than
+intended. A four-hundred-area world:
+
+    400 areas          23,593 rooms       12,526 people
+    399 roads          5,365 shops        28,006 wares
+    8 cities           7 ferry lines      0 stranded, 0 rooms under water
+
+- **Cities are founded first**, one per fifty areas, on a grid so they do not all string
+  along the coast. 160 street rooms each. A cell that already holds one of your own places
+  keeps it.
+- **A shop is a room you walk into** - `go smithy`, out by the same noun - with a keeper
+  behind the counter and goods that carry the mark of the town that made them.
+- **Roads pathfind round water and over passes**, carry a room every five miles, and name
+  the places they join at each end. Where a road cannot go, a ferry does.
+- **The run checks its own work**: reachability, soundings against the water, an
+  anachronism lint, and the prose bands.
+
+The area-building laws it is measured against, and where it still falls short of them, are
+in [docs/design/2026-09-09-generator-against-the-laws.md](docs/design/2026-09-09-generator-against-the-laws.md).
 
 ## Looking at it
 
