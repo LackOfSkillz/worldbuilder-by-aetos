@@ -191,8 +191,13 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
       });
     }
     for (const road of roads) {
+      // **A road's rooms are not all on the road.** Its wayside shrines and hunters'
+      // camps are interiors hanging off it, with no place in the line - and drawing the
+      // list in order sent the road out to each one and back, which reads as a second road
+      // beside the first and as a line across open water where the detour happened to
+      // cross a strait.
       const points = (road.rooms || [])
-        .filter((r) => r.longitude_deg !== undefined)
+        .filter((r) => r.longitude_deg !== undefined && !r.interior)
         .flatMap((r) => [r.longitude_deg, r.latitude_deg]);
       if (points.length < 4) continue;
       const path = road.purpose === "path";

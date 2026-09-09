@@ -724,6 +724,12 @@ ROAD_ROOM_M = 8046.7
 #: further apart, and the manifest says which roads those are.
 ROAD_ROOM_CAP = 40
 
+#: How many points are looked at between one road room and the next.
+#:
+#: The rooms are five miles apart, so this is a reading about every four hundred metres -
+#: fine enough to find a channel a boat would use and coarse enough to cost nothing.
+SPAN_SAMPLES = 20
+
 
 def _point_between(a, b, fraction, radius_m):
     """A point along the great circle from `a` to `b`."""
@@ -826,6 +832,23 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
     if at is not None:
         for room in rooms:
             if at(room["latitude_deg"], room["longitude_deg"]) <= 0.0:
+                return None
+        # **And between the rooms, because a road is a line and not a row of dots.** Every
+        # room can stand on dry land while the way between two of them crosses a strait -
+        # the rooms are five miles apart and a channel two miles wide fits between them
+        # unnoticed. Four roads in a four-hundred-area world did exactly that, one of them
+        # over water eighteen hundred metres deep, and every room on all four passed this
+        # check.
+        walk = [ends[0]] + [(r["latitude_deg"], r["longitude_deg"]) for r in rooms] + [ends[1]]
+        for one, two in zip(walk, walk[1:]):
+            wet = 0
+            for step in range(1, SPAN_SAMPLES + 1):
+                part = step / (SPAN_SAMPLES + 1.0)
+                lat = one[0] + (two[0] - one[0]) * part
+                lon = one[1] + (two[1] - one[1]) * part
+                if at(lat, lon) <= 0.0:
+                    wet += 1
+            if wet:
                 return None
 
     name = "the road from %s to %s" % (from_area.get("display_name") or from_area["name"],
@@ -1665,6 +1688,10 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                 base_id += len(area["rooms"]) + 10
                 made.append(area)
                 progress.write(json.dumps(feed_line(area)) + "\n")
+                # A word every twenty-five, so the stage line moves during the longest
+                # stretch of a run rather than sitting on one sentence for four minutes.
+                if len(made) % 25 == 0:
+                    stage("building areas", "%d of %d placed" % (len(made), count))
                 if on_area:
                     on_area(area)
                 break
@@ -1708,6 +1735,25 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # The feed stays open through the rest of the run: everything after this point is
         # work a watcher used to sit through with no news at all.
         document["areas"] = existing + made
+        # **The level bands are measured from a place, and the sea centre is not one.**
+        # With no world to add to, the origin fell back to the middle of the water, so the
+        # innermost ring - levels 1-5, within about six hundred kilometres - was open ocean
+        # and a four-hundred-area world came out with no starting ground at all: ten areas
+        # at 6-10 and nothing below it. The cities are founded first now, so there is a
+        # real place to count out from.
+        heart = next((a for a in made if a.get("hub")), None) or (made[0] if made else None)
+        if heart is not None and not anchored:
+            origin = (heart["anchor"]["latitude_deg"], heart["anchor"]["longitude_deg"])
+            stage("measuring the world", "levels counted out from %s"
+                  % (heart.get("display_name") or heart.get("name")))
+            for area in made:
+                gap = _haversine(origin[0], origin[1],
+                                 area["anchor"]["latitude_deg"],
+                                 area["anchor"]["longitude_deg"], radius_m)
+                band = cultures.ring_at(gap, radius_m)
+                area["level_band"] = [band[0], band[1]]
+                area["from_origin_km"] = round(gap / 1000.0, 1)
+
         stage("laying roads", "%d areas to join" % len(document["areas"]))
 
         # **Roads before the check, because the check can only report.** Every area is
