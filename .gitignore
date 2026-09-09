@@ -52,3 +52,17 @@ crates/*/target/
 # journal, a WAL file or an extracted table is covered too.
 /fixtures/dragonsire/
 routes/
+
+# **What a run makes is not what a run is.** Every generated world is reproducible from its
+# seed and its worldfile parameters, and keeping the output as well put 1.49 million lines
+# of JSON in the history - a repository carrying every world it has ever built.
+#
+# A run is kept on the machine that made it; `runs/` is where the studio looks for it.
+runs/
+worlds/
+
+# **One world is worth keeping: the one that shows what this makes.** A sample lets somebody
+# open the studio and see a finished planet without waiting five minutes for a run, and it is
+# a fixture the docs can point at. Named rather than pattern-matched, so it is a decision
+# somebody made and not whatever happened to be in the directory.
+!worlds/sample.json
