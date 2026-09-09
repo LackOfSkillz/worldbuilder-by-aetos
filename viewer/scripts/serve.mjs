@@ -367,9 +367,24 @@ createServer(async (req, res) => {
     try {
       const text = await readFile(file, "utf8");
       const lines = text.split("\n").filter((l) => l.trim().length);
-      const areas = lines.slice(from).map((l) => { try { return JSON.parse(l); }
-                                                  catch { return null; } })
+      const fresh = lines.slice(from).map((l) => { try { return JSON.parse(l); }
+                                                   catch { return null; } })
                          .filter(Boolean);
+      // **The feed carries two kinds of line now.** An area is a place to draw; a stage is
+      // the generator saying what it is doing. They share the file because a watcher
+      // already reads it, and the longest silences in a run - scoring the ground before
+      // the first pin, laying the roads after the last - are not areas at all.
+      const areas = fresh.filter((one) => !one.stage);
+      const staged = fresh.filter((one) => one.stage);
+      let stage = staged.length ? staged[staged.length - 1] : null;
+      if (!stage) {
+        for (let at = lines.length - 1; at >= 0 && !stage; at -= 1) {
+          try {
+            const one = JSON.parse(lines[at]);
+            if (one.stage) stage = one;
+          } catch { /* a half-written line is not a stage */ }
+        }
+      }
       // **The feed says when it is over, because a watcher cannot tell.** A run that
       // stops at eighty-three of a hundred looks exactly like a run still working: the
       // pins stop appearing and nothing says whether the generator is thinking or done.
@@ -384,7 +399,8 @@ createServer(async (req, res) => {
       } catch {
         // No manifest yet means the run has only just begun. Not an error.
       }
-      const body = JSON.stringify({ total: lines.length, from, areas, status, summary });
+      const body = JSON.stringify({ total: lines.length, from, areas, status, summary,
+                                    stage });
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
          .end(body);
     } catch {

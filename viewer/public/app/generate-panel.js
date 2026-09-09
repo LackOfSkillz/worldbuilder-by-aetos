@@ -53,7 +53,7 @@ export function buildGeneratePanel(parent, getViewer) {
   const count = document.createElement("input");
   count.type = "range";
   count.min = "5";
-  count.max = "250";
+  count.max = "400";
   // **Step of one, because the number is a number.** Fives felt tidy on a slider and meant
   // somebody who wanted a hundred and twenty-three areas got a hundred and twenty-five - a
   // control quietly overruling the person using it.
@@ -146,6 +146,12 @@ export function buildGeneratePanel(parent, getViewer) {
   let watching = null;
 
   /// Follow a run, live or finished, and report as it lands.
+  /// Follow a run, live or finished, and report as it lands.
+  ///
+  /// **The card goes up before the generator answers.** Spawning Python, loading the engine
+  /// and scoring the ground take the better part of a minute between the click and the
+  /// first pin, and until the card exists there is nothing on screen saying anything has
+  /// happened at all.
   const follow = (runId, wanted, worldName) => {
     const viewer = getViewer();
     if (!viewer || !window.Cesium) return null;
@@ -188,7 +194,7 @@ export function buildGeneratePanel(parent, getViewer) {
       try {
         sessionStorage.removeItem(WATCHING_KEY);
       } catch { /* nothing to clean up */ }
-    }, { worldName });
+    }, { worldName, wanted });
   };
 
   // Pick a run back up after a reload. It replays from the first line, so the globe comes

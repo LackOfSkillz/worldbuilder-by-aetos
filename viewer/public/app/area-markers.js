@@ -219,11 +219,21 @@ export function drawAreas(viewer, Cesium, document) {
       });
     }
 
+    // **What is through the door is what the street is for.** A shop is an interior now, off
+    // the lattice and not a place on the map - so the frontage it opens off carries it,
+    // exactly as the game's own land map does it. Without this the marker went where the
+    // shop is and the shop is nowhere, and a town drew as streets with nothing on them.
+    const insideOf = new Map((area.rooms || []).filter((one) => one.interior)
+      .map((one) => [one.from, one]));
+
     for (const room of area.rooms || []) {
-      // What the room is FOR, which is the only thing worth a different colour. A keeper
-      // or goods on the shelves makes a point of interest; everything else is a street.
-      const keeper = (room.people || []).find((who) => who.role === "keeper");
-      const trade = !!(keeper || (room.stock && room.stock.length));
+      // An interior is drawn by its street, never as a dot of its own: it sits at the same
+      // coordinates and would be a second marker on top of the first.
+      if (room.interior) continue;
+      const shop = insideOf.get(room.id);
+      const keeper = ((shop || room).people || []).find((who) => who.role === "keeper");
+      const goods = (shop || room).stock || [];
+      const trade = !!(keeper || goods.length);
       source.entities.add({
         name: room.key,
         // **The hover text, and the room's whole story, carried on the entity.** Cesium
@@ -235,9 +245,13 @@ export function drawAreas(viewer, Cesium, document) {
             key: room.key,
             desc: room.desc || "",
             area: area.display_name || area.name,
+            // What is behind the door, named so a click on the street says what is there
+            // and what it sells - which is the question the marker raises.
+            shop: shop ? shop.key : null,
+            door: shop ? shop.noun : null,
             keeper: keeper ? keeper.name : null,
             people: (room.people || []).map((who) => who.name),
-            stock: room.stock || [],
+            stock: goods,
             latitude_deg: room.latitude_deg,
             longitude_deg: room.longitude_deg,
           },
@@ -599,8 +613,12 @@ function showRoom(panel, room, x, y) {
   if (room.desc) {
     panel.append(make("div", "margin-bottom:6px", room.desc));
   }
+  if (room.shop) {
+    panel.append(make("div", "color:#ffcc66;font-size:12px;margin-top:4px",
+                      `${room.shop} - go ${room.door}`));
+  }
   if (room.keeper) {
-    panel.append(make("div", "color:#ffcc66;font-size:12px", room.keeper));
+    panel.append(make("div", "color:#cfe0f2;font-size:12px", room.keeper));
   }
   if (room.stock && room.stock.length) {
     const list = make("ul", "margin:4px 0 0;padding-left:18px;color:#cfe0f2;font-size:12px");

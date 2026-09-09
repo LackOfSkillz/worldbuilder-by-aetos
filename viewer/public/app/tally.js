@@ -103,7 +103,7 @@ function tallyBy(areas, key) {
 }
 
 /// Build the tally card. Returns the card plus `add`, `finish`, `show`, `hide` and `reset`.
-export function buildTally(document_, worldName = "—") {
+export function buildTally(document_, worldName = "—", wanted = 0) {
   const card = el("div", "wb-tally");
   const head = el("div", "wb-tally-head");
   head.append(el("span", "wb-tally-world-label", "World"),
@@ -116,6 +116,22 @@ export function buildTally(document_, worldName = "—") {
   close.title = "hide this - the run is kept";
   head.append(close);
   card.append(head);
+
+  // **What the generator is doing, from the click to the last line written.**
+  //
+  // A run is silent for thirty to forty-five seconds before its first pin, while the
+  // ground is scored for every culture, and silent again afterwards while the roads are
+  // laid and a six-megabyte worldfile is written. Both look exactly like a generator that
+  // has hung, and the only cure is for it to say so.
+  const dial = buildDial(document_, wanted);
+  card.append(dial.node);
+  const stageRow = dial.node;
+
+  // **The clock is the part that never stops.** Every other signal on this card can sit
+  // still for a minute at a time - the counts do not move while the ground is being scored
+  // or the roads laid - and a readout that is not moving is one somebody starts refreshing
+  // the page over.
+
 
   const rows = el("div", "wb-tally-rows");
   const values = {};
@@ -158,6 +174,12 @@ export function buildTally(document_, worldName = "—") {
     totals,
     areas: landed,
     setWorld: (name) => { head.querySelector(".wb-tally-world").textContent = name; },
+    /// Say what the generator is doing now.
+    ///
+    /// `complete` is its own state rather than another line of text: the one thing a
+    /// watcher most wants to know is whether it can stop watching.
+    stage(named, note = "") { dial.stage(named, note); },
+
     show: () => { card.style.display = ""; },
     hide: () => { card.style.display = "none"; },
     hidden: () => card.style.display === "none",
@@ -170,6 +192,7 @@ export function buildTally(document_, worldName = "—") {
         totals[f.key] = before + (f.of(area) || 0);
         if (totals[f.key] !== before) climb(values[f.key], before, totals[f.key]);
       }
+      dial.reading(totals.areas);
       const name = area.display_name || area.name;
       // The last thing built, named. During a long run this is the line that tells you the
       // generator is still finding new kinds of place rather than repeating one.
@@ -264,6 +287,151 @@ export function buildTally(document_, worldName = "—") {
       }
       foot.textContent = "";
     },
-    remove() { card.remove(); },
+    remove() {
+      dial.stop();
+      card.remove();
+    },
+  };
+}
+
+
+/// The dial: how far along the run is, what it is doing, and how long it has been doing it.
+///
+/// **A number that does not move is indistinguishable from a program that has stopped.** A
+/// run is silent for the better part of a minute before its first area lands, while the
+/// ground is scored for every culture, and silent again at the end while the roads are laid
+/// and a six-megabyte worldfile is written. Neither stretch moves a counter, so neither
+/// stretch could be told from a hang.
+///
+/// Three things answer that, and they answer it in three different ways on purpose: the
+/// needle says how far through, the words say what is happening, and the clock says that
+/// something is still happening at all. The clock is the one that never stops, which is why
+/// it is there even though it says nothing about progress.
+function buildDial(document_, wanted = 0) {
+  const NS = "http://www.w3.org/2000/svg";
+  const SWEEP = 240;              // degrees of arc the needle travels
+  const START = 150;              // where zero sits, measured clockwise from east
+  const R = 46;
+
+  const node = document_.createElement("div");
+  node.className = "wb-dial";
+
+  const svg = document_.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 120 92");
+  svg.setAttribute("class", "wb-dial-face");
+
+  const point = (degrees, radius) => {
+    const radians = (degrees * Math.PI) / 180;
+    return [60 + radius * Math.cos(radians), 60 + radius * Math.sin(radians)];
+  };
+  const arc = (from, to, radius) => {
+    const [x1, y1] = point(from, radius);
+    const [x2, y2] = point(to, radius);
+    return `M ${x1} ${y1} A ${radius} ${radius} 0 ${to - from > 180 ? 1 : 0} 1 ${x2} ${y2}`;
+  };
+
+  const track = document_.createElementNS(NS, "path");
+  track.setAttribute("d", arc(START, START + SWEEP, R));
+  track.setAttribute("class", "wb-dial-track");
+  svg.append(track);
+
+  // Ticks every tenth, longer at the quarters, so the sweep reads as a scale and not a bar.
+  for (let step = 0; step <= 10; step += 1) {
+    const at = START + (SWEEP * step) / 10;
+    const long = step % 5 === 0;
+    const [x1, y1] = point(at, R - (long ? 9 : 5));
+    const [x2, y2] = point(at, R - 1);
+    const tick = document_.createElementNS(NS, "line");
+    tick.setAttribute("x1", x1); tick.setAttribute("y1", y1);
+    tick.setAttribute("x2", x2); tick.setAttribute("y2", y2);
+    tick.setAttribute("class", long ? "wb-dial-tick wb-dial-tick-long" : "wb-dial-tick");
+    svg.append(tick);
+  }
+
+  const filled = document_.createElementNS(NS, "path");
+  filled.setAttribute("class", "wb-dial-filled");
+  filled.setAttribute("d", arc(START, START + 0.01, R));
+  svg.append(filled);
+
+  const needle = document_.createElementNS(NS, "line");
+  needle.setAttribute("class", "wb-dial-needle");
+  svg.append(needle);
+  const hub = document_.createElementNS(NS, "circle");
+  hub.setAttribute("cx", 60); hub.setAttribute("cy", 60); hub.setAttribute("r", 3.4);
+  hub.setAttribute("class", "wb-dial-hub");
+  svg.append(hub);
+
+  const reading = document_.createElementNS(NS, "text");
+  reading.setAttribute("x", 60); reading.setAttribute("y", 54);
+  reading.setAttribute("class", "wb-dial-reading");
+  reading.textContent = "0";
+  svg.append(reading);
+  const scale = document_.createElementNS(NS, "text");
+  scale.setAttribute("x", 60); scale.setAttribute("y", 68);
+  scale.setAttribute("class", "wb-dial-scale");
+  scale.textContent = wanted ? `of ${wanted} areas` : "areas";
+  svg.append(scale);
+
+  node.append(svg);
+
+  const words = document_.createElement("div");
+  words.className = "wb-dial-words";
+  const name = document_.createElement("span");
+  name.className = "wb-dial-stage";
+  name.textContent = "starting the generator";
+  const clock = document_.createElement("span");
+  clock.className = "wb-dial-clock";
+  clock.textContent = "0:00";
+  words.append(name, clock);
+  const note = document_.createElement("div");
+  note.className = "wb-dial-note";
+  note.textContent = "spawning the runner and loading the engine";
+  node.append(words, note);
+
+  const swing = (share) => {
+    const at = START + SWEEP * Math.max(0, Math.min(1, share));
+    const [x, y] = point(at, R - 12);
+    needle.setAttribute("x1", 60); needle.setAttribute("y1", 60);
+    needle.setAttribute("x2", x); needle.setAttribute("y2", y);
+    filled.setAttribute("d", arc(START, Math.max(START + 0.01, at), R));
+  };
+  swing(0);
+
+  const began = Date.now();
+  const tick = () => {
+    const seconds = Math.round((Date.now() - began) / 1000);
+    clock.textContent =
+      `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  tick();
+  let ticking = window.setInterval(tick, 1000);
+
+  return {
+    node,
+    /// Move the needle to a count of areas.
+    reading(count) {
+      reading.textContent = Number(count || 0).toLocaleString();
+      if (wanted) swing(count / wanted);
+    },
+    /// Say what is happening, in words, and stop the clock when it is over.
+    stage(named, said = "") {
+      if (!named) return;
+      const done = named === "complete";
+      name.textContent = named;
+      note.textContent = said || "";
+      node.dataset.done = done ? "yes" : "";
+      if (done) {
+        swing(1);
+        if (ticking) {
+          tick();
+          window.clearInterval(ticking);
+          ticking = null;
+        }
+      }
+    },
+    stop() {
+      if (ticking) window.clearInterval(ticking);
+      ticking = null;
+    },
   };
 }

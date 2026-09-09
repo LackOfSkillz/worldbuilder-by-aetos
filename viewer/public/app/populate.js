@@ -81,11 +81,12 @@ function label(area) {
 ///
 /// Returns a handle with `stop()`, `count()` and the data source.
 export function watchRun(viewer, Cesium, runId, onTick = null,
-                         { worldName = null, tally = true, paceMs = PACE_MS } = {}) {
+                         { worldName = null, tally = true, paceMs = PACE_MS,
+                           wanted = 0 } = {}) {
   const source = new Cesium.CustomDataSource(`wb-populate-${runId}`);
   const pins = showLayer(viewer, source);
   // The counts climb beside the pins. One card per run, removed with it.
-  const counts = tally ? buildTally(window.document, worldName || "—") : null;
+  const counts = tally ? buildTally(window.document, worldName || "—", wanted) : null;
   let cursor = 0;
   let stopped = false;
   let timer = null;
@@ -257,6 +258,11 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
         }
         if (payload.status) runStatus = payload.status;
         if (payload.summary) runSummary = payload.summary;
+        // The stage is told at once, not queued behind the pins: the whole point of it is
+        // to speak during the stretches when no pin is landing.
+        if (payload.stage && counts) {
+          counts.stage(payload.stage.stage, payload.stage.note || "");
+        }
       }
       // Once the generator has finished and everything it wrote has been queued, there is
       // nothing further to ask for. Polling on would be asking a finished run whether it

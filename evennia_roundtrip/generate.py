@@ -1452,9 +1452,24 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         announce(run.run_id)
     progress = open(run.path("progress.ndjson"), "w", encoding="utf-8", buffering=1)
 
+    def stage(named, note=""):
+        """
+        Say which part of the run is happening now.
+
+        **A feed that only carries areas goes silent for the longest part of the work.** The
+        pins stop at the requested count and then nothing happens for minutes while the
+        roads are laid, the crossings joined and a six-megabyte worldfile written - which
+        looks exactly like a generator that has hung. Stages travel down the same feed the
+        areas do, so a watcher needs nothing new to read them.
+        """
+        progress.write(json.dumps({"stage": named, "note": note}) + chr(10))
+
+    stage("choosing sites", "scoring the ground for every culture")
+
     try:
         # The origin every level band is measured from: the largest place already here, or
         # the middle of the water if the world is empty.
+        stage("building areas", "%d wanted" % count)
         anchored = [a for a in existing if a.get("anchor")]
         if anchored:
             biggest = max(anchored, key=lambda a: len(a.get("rooms") or []))
@@ -1599,8 +1614,10 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                         on_area(area)
                     break
 
-        progress.close()
+        # The feed stays open through the rest of the run: everything after this point is
+        # work a watcher used to sit through with no news at all.
         document["areas"] = existing + made
+        stage("laying roads", "%d areas to join" % len(document["areas"]))
 
         # **Roads before the check, because the check can only report.** Every area is
         # joined to the nearest area already on the network; see `connect_areas`.
@@ -1622,11 +1639,16 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # between them - a road connects areas, it is not one. Everything that walks rooms
         # reads `reachability.places`, which sees both.
         document["roads"] = list(document.get("roads") or ()) + road_areas
+        stage("joining crossings", "%d roads laid" % len(road_areas))
         # Where two ways cross, they now meet. See `join_crossings`.
         crossings = join_crossings(document["roads"], radius_m, rng, base_id + 90000, at=at)
         run.write_json("crossings.json", crossings)
         run.write_json("roads.json", roads)
+        stage("checking every place can be reached")
         stranded = reachability.check(document)
+        stage("writing the world", "%d rooms" % sum(
+            len(place.get("rooms") or ()) for place in
+            list(document["areas"]) + list(document.get("roads") or ())))
         run.write_json("worldfile.json", document)
         run.write_json("refused.json", refused)
 
@@ -1651,6 +1673,8 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                          for key in quota if filled[key] < quota[key]},
         }
         run.finish(summary=summary)
+        stage("complete", "%d areas, %d rooms" % (summary["areas"], summary["rooms"]))
+        progress.close()
         summary["run_id"] = run.run_id
         return summary
     except Exception as error:                    # noqa: BLE001 - recorded, then re-raised
