@@ -50,7 +50,8 @@ Nothing here imports the generator. A game with these two files needs nothing el
 import json
 import os
 
-from evennia import create_object, search_object_attribute
+from evennia import create_object
+from evennia.objects.models import ObjectDB
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "{data}")
@@ -60,9 +61,14 @@ WB_ID = "{wb_id}"
 
 
 def _existing():
-    """Every room this tool has built before, by its worldfile id."""
+    """Every room this tool has built before, by its worldfile id.
+
+    `get_by_attribute` is the manager Evennia actually ships; there is no
+    module-level attribute search, and a builder that assumed one imported
+    cleanly under a stub and failed against a real game.
+    """
     return {{room.attributes.get(WB_ID): room
-            for room in search_object_attribute(key=WB_ID)}}
+            for room in ObjectDB.objects.get_by_attribute(key=WB_ID)}}
 
 
 def build(caller=None, data=DATA):
