@@ -12,6 +12,7 @@
 
 import { drawAreas, enableAreaInput } from "./area-markers.js";
 import { buildTally } from "./tally.js";
+import { showLayer } from "./globe-layers.js";
 import { fillFor, outlineFor, outlineWidthFor, legendRows } from "./palette.js";
 
 /// How often to ask. Two seconds is slower than areas land and that is deliberate: the
@@ -82,7 +83,7 @@ function label(area) {
 export function watchRun(viewer, Cesium, runId, onTick = null,
                          { worldName = null, tally = true, paceMs = PACE_MS } = {}) {
   const source = new Cesium.CustomDataSource(`wb-populate-${runId}`);
-  viewer.dataSources.add(source);
+  const pins = showLayer(viewer, source);
   // The counts climb beside the pins. One card per run, removed with it.
   const counts = tally ? buildTally(window.document, worldName || "—") : null;
   let cursor = 0;
@@ -153,6 +154,7 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   let rooms = null;
   let roomsDrawn = null;
   let roadsSource = null;
+  let roadLayer = null;
 
   /// Draw the roads and paths this run laid, as lines through their own rooms.
   ///
@@ -164,9 +166,9 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   const drawRoads = (doc) => {
     const roads = doc.roads || [];
     if (!roads.length && !(doc.ferries || []).length) return;
-    if (roadsSource) viewer.dataSources.remove(roadsSource, true);
+    if (roadLayer) roadLayer.remove(true);
     roadsSource = new Cesium.CustomDataSource(`wb-roads-${runId}`);
-    viewer.dataSources.add(roadsSource);
+    roadLayer = showLayer(viewer, roadsSource);
     // **Ferries are dotted, and only over water.** A boat crossing is not a road drawn in
     // another colour: the line follows the sea route the generator found, which is why it
     // goes round headlands instead of through them, and it is dashed because nobody walks
@@ -380,10 +382,10 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
     remove: () => {
       halt();
       if (roomsDrawn) roomsDrawn.remove();
-      if (roadsSource) viewer.dataSources.remove(roadsSource, true);
+      if (roadLayer) roadLayer.remove(true);
       input.stop();
       if (counts) counts.remove();
-      viewer.dataSources.remove(source, true);
+      pins.remove(true);
     },
   };
 }

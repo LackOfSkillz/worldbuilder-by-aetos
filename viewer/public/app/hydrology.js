@@ -17,6 +17,8 @@
 // river that sinks into the ground it cut is worse than no river.
 
 /// Width in pixels at the near and far ends of the scale, per kind.
+import { showLayer } from "./globe-layers.js";
+
 const STYLE = {
   river: { width: 2.6, alpha: 0.95 },
   stream: { width: 1.5, alpha: 0.8 },
@@ -89,12 +91,12 @@ export function drawWater(viewer, Cesium, document) {
     });
   }
 
-  viewer.dataSources.add(source);
+  const layer = showLayer(viewer, source);
   return {
     source,
     courses: courses.length,
     bodies: bodies.length,
     nodes: courses.reduce((sum, c) => sum + (c.points || []).length, 0),
-    remove: () => viewer.dataSources.remove(source, true),
+    remove: () => layer.remove(true),
   };
 }

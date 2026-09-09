@@ -28,6 +28,8 @@
 /// The near end is a street; the far end is most of a planet. Both are named here rather than
 /// buried in four literals, because they have to agree with each other or a marker fades out and
 /// grows at the same time.
+import { showLayer } from "./globe-layers.js";
+
 const NEAR_M = 1.0e3;
 const FAR_M = 2.0e7;
 
@@ -272,7 +274,7 @@ export function drawAreas(viewer, Cesium, document) {
     });
   }
 
-  viewer.dataSources.add(source);
+  const layer = showLayer(viewer, source);
   const input = enableAreaInput(viewer, Cesium, document, source);
   return {
     source,
@@ -281,7 +283,7 @@ export function drawAreas(viewer, Cesium, document) {
     flyToAll: () => viewer.flyTo(source, { duration: 1.5 }),
     remove: () => {
       input.stop();
-      viewer.dataSources.remove(source, true);
+      return layer.remove(true);
     },
   };
 }

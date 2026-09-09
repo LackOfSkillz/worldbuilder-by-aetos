@@ -18,6 +18,8 @@
 // standing there rather than after an area has been generated from it.
 
 /// Colours: the path, and the node under edit.
+import { showLayer } from "./globe-layers.js";
+
 const PATH_COLOUR = "#ff9f1c";
 const NODE_COLOUR = "#ffd166";
 const SELECTED_COLOUR = "#ff4d6d";
@@ -100,7 +102,7 @@ function haversine(a, b, radiusM) {
 export function drawRoute(viewer, Cesium, route, source = null) {
   if (!source) {
     source = new Cesium.CustomDataSource("wb-route");
-    viewer.dataSources.add(source);
+    showLayer(viewer, source);
   }
   source.entities.removeAll();
 
