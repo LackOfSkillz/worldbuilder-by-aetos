@@ -736,6 +736,9 @@ SPAN_SAMPLES = 20
 #: a couple of hunting grounds, a village, a hamlet or two.
 STARTER_AREAS = 6
 
+#: How many candidate sites are grown per area asked for.
+SITE_MARGIN = 8
+
 
 def _point_between(a, b, fraction, radius_m):
     """A point along the great circle from `a` to `b`."""
@@ -1635,7 +1638,14 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # More candidates than areas, because a site can fail its gate or find every
         # culture it fits already at quota - and a run that stops at ninety because it ran
         # out of ground is worse than one that looked at half as much again.
-        sites = grow_sites(at, radius_m, seeds, count * 3, region=region,
+        # **More candidates than areas, and by a wide margin.** A site can fail its gate or
+        # find every culture it fits already at quota, but the reason the margin has to be
+        # THIS wide is the specialised peoples: a saurathi town wants ground between half a
+        # metre and twenty-five above the sea, nearly flat, with a landing on it, and a
+        # felari village wants a shore. At three candidates per area every such culture came
+        # out with one or two areas whatever its quota said - not refused, simply never
+        # offered ground that fitted.
+        sites = grow_sites(at, radius_m, seeds, count * SITE_MARGIN, region=region,
                            classify=classify, rivers=fresh)
         by_name = {c.name: c for c in cultures.DEMO_TABLE}
         quota = wanted(count)
