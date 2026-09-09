@@ -103,7 +103,7 @@ VOICE = {
     },
     "saurathi": {
         "detail": (
-                   "The boards give underfoot and settle again once you pass.",
+                   "The boards give underfoot and settle again behind a footfall.",
                    "Green water shows between the planks, slow and untroubled.",
                    "Everything here is built to be rebuilt after the next flood.",
                    "The stand is raised on piles well above the usual water.",
@@ -143,7 +143,7 @@ VOICE = {
         "detail": (
                    "The ground is open in every direction and hides nothing.",
                    "Wheel ruts run away straight until the distance takes them.",
-                   "Everything here can be struck and moved before evening.",
+                   "Everything here is made to be struck and carried.",
                    "The horizon is a long way off and there is a lot of sky.",
                    "Old fire-scars mark where the camp stood in other years.",
         ),
@@ -161,7 +161,7 @@ VOICE = {
     "felari": {
         "detail": (
                    "Every flat surface is being used to dry something.",
-                   "The stone holds the heat of the day well into the evening.",
+                   "The stone holds heat long after it has been given any.",
                    "Boats are drawn up above the tide line and turned over.",
                    "Steps have been cut where the rock was too steep to walk.",
                    "Nothing here is far from the sound of water.",
@@ -357,7 +357,7 @@ VOICE = {
     },
     "wild_marsh": {
         "detail": (
-                   "Something long slid off the bank as you came up.",
+                   "Something long has slid off the bank, and the mud still shows where.",
                    "Bones of something large lie half in the water.",
                    "The reeds are flattened in a wide, deliberate trail.",
                    "Nothing sings here, and the quiet is not restful.",
@@ -462,6 +462,42 @@ WILD_TRADES = (
 )
 
 
+#: The noun you type to go into each trade, and the doorway the street sees.
+#:
+#: **A shop is a room you walk into, not a stretch of street with a sign on it.** Law T1 is a
+#: MUST and the generator broke it in every settlement it ever made: the weaponsmith WAS the
+#: street room, reached by walking north. A player who wants the smith should type `go
+#: smithy`, and north should stay what it is - a direction across open ground.
+#:
+#: The noun is the same in the description and in the exit, which is law T5: a door a room
+#: does not mention is a door found by typing every word in the language.
+#:
+#: A trade with no entry here is open air and stays on the street. A market stall has no
+#: door, and giving it one would be a building nobody could see the point of.
+TRADE_DOORS = {
+    "inn": ("tavern", "A painted board hangs over the tavern door."),
+    "weaponsmith": ("smithy", "The smithy stands open to the street, and the heat comes out."),
+    "armourer": ("armoury", "A low door leads into the armoury."),
+    "general store": ("store", "The store's shutters are propped open onto the street."),
+    "alchemist": ("alchemist", "A green door with a mortar on it opens into the alchemist."),
+    "bank": ("counting house", "The counting house has one door and a grille beside it."),
+    "healer": ("surgery", "A curtain hangs across the surgery door."),
+    "stable": ("stables", "The stables open onto the street through a wide arch."),
+    "temple": ("shrine", "Steps go up into the shrine."),
+    # **A stall is entered too.** It has no door and it is still a place you step into,
+    # off the street and under the awning - and a trade you cannot `go` to is a trade that
+    # behaves differently from every other one for no reason a player can see.
+    "market": ("stall", "Trestles and awnings crowd the way: the stall is under them."),
+}
+
+#: The same, for the trades a place with nobody settled in it keeps.
+WILD_DOORS = {
+    "camp": ("camp", "A camp is pitched a little off the way."),
+    "cache": ("cache", "Stones are piled over a cache beside the path."),
+    "shrine": ("shrine", "A wayside shrine stands back from the way."),
+}
+
+
 def voice_for(race):
     """The vocabulary a culture speaks in."""
     return VOICE.get(race or "", DEFAULT_VOICE)
@@ -512,7 +548,7 @@ def _sentence_case(text):
     return text[0].upper() + text[1:] if text else text
 
 
-def describe(exits, race, rng, band=(34, 79)):
+def describe(exits, race, rng, band=(34, 79), sentences=4):
     """
     A room description that satisfies the prose laws by construction.
 
@@ -522,17 +558,18 @@ def describe(exits, race, rng, band=(34, 79)):
         race (str): Whose place this is, choosing the vocabulary.
         rng (random.Random): The world's own generator.
         band (tuple): The word count the laws allow.
+        sentences (int): The most sentences to write. A room that is about to be given a
+            shopfront asks for one fewer, because that sentence is coming.
 
     Returns:
-        text (str): Three or four sentences, inside the word band.
+        text (str): Inside the word band and inside the sentence band.
 
     Notes:
         **The ways out are not listed here, because the game already lists them.** Every
         description used to end "Ways lead east, south and north", and the line under it
         read "Exits: east, south, and north" - the same three facts, twice, in every room
         of the world. Law G6 forbids a description that *promises* a way the room has not
-        got; it does not ask for the promise. A description that says nothing about the
-        exits cannot lie about them, and the sentence it saves is spent on the room.
+        got; it does not ask for the promise.
 
         **Only permanently true things.** No weather, no light, no birds - those belong in
         an ambient message, because a description is read at noon and at midnight and in
@@ -541,63 +578,64 @@ def describe(exits, race, rng, band=(34, 79)):
         **The order varies because the opening word was a signature.** Every description
         began with its surface, so five words opened forty-eight per cent of nine thousand
         rooms - the loudest tell of a generated world, and one no law catches, because no
-        hand-author has ever written ten thousand rooms in one sitting. Rotating which
-        sentence leads costs nothing and spreads the openings across three vocabularies.
+        hand-author has ever written ten thousand rooms in one sitting.
+
+        **And the count is capped, because law W2 is a band and not a floor.** Rotating the
+        openings was written without one and put five and six sentences into a third of the
+        world against a limit of four - a fix for one law that broke another, which is what
+        a band nobody counts against is for.
     """
     voice = voice_for(race)
     # **Not every room has a wall.** "A cairn at the turning stands against the wall" is
-    # what a template written for streets says when it is handed a road, and it is the kind
-    # of wrong that a word-count band cannot see. Outdoor voices say where their fixture
-    # stands in their own terms.
+    # what a template written for streets says when it is handed a road.
     fixture = rng.choice(voice["fixture"])
+    beside = voice.get("beside", "against the wall")
     ground = "%s runs underfoot" % _sentence_case(rng.choice(voice["surface"]))
-    stands = "%s stands %s" % (_sentence_case(fixture),
-                               voice.get("beside", "against the wall"))
+    # Canon opens 44% of its rooms on "The" and 18% on "A"; a vocabulary of indefinite
+    # fixtures opens almost all of them on "A", so the definite form is used half the time.
+    named = fixture[2:] if fixture.startswith("a ") else (
+        fixture[3:] if fixture.startswith("an ") else fixture)
+    stands = "%s %s stands %s" % ("The" if rng.random() < 0.5 else _article(fixture),
+                                  named, beside)
     middle = "%s; the air is %s." % (
         _sentence_case(rng.choice(voice["sound"])), rng.choice(voice["smell"]))
 
-    # **The details are the culture's own, not filler.** The first version padded every
-    # short description with one fixed line, and since the other sentences come to about
-    # thirty words, that line appeared in essentially every room in the world. Five
-    # thousand rooms sharing a sentence is worse than five thousand sharing a shape.
     details = list(voice.get("detail") or ("",))
     rng.shuffle(details)
     # **Do not name the same object twice in three sentences.** The fixture and the detail
-    # are drawn from lists that describe the same country, so both can land on the hide, or
-    # both on the salt lick - and "a hide of woven branches stands at the edge of the ride.
-    # A hide of woven branches faces down the ride" reads as a stutter rather than a room.
-    keyword = " ".join(fixture.split()[1:3]).rstrip(",.")
+    # are drawn from lists describing one country, so both can land on the hide.
+    keyword = " ".join(named.split()[:2]).rstrip(",.")
     chosen = [line for line in details if keyword and keyword not in line.lower()] or details
 
-    # Three ways to open the same room. The pair that is not leading becomes the second
-    # sentence, so nothing is lost by the rotation - only its place in the paragraph.
-    # Four ways to open the same room. Whichever leads, the rest still get said, so the
-    # rotation costs the description nothing but its habit.
     lead = rng.randrange(4)
     if lead == 0:
-        opening = "%s, and %s." % (ground, stands[0].lower() + stands[1:])
-        parts = [opening, middle]
+        parts = ["%s, and %s." % (ground, stands[0].lower() + stands[1:]), middle]
     elif lead == 1:
-        opening = "%s, and %s underfoot." % (stands, rng.choice(voice["surface"]))
-        parts = [opening, middle]
+        parts = ["%s, and %s underfoot." % (stands, rng.choice(voice["surface"])), middle]
     elif lead == 2:
-        opening = "%s, and %s." % (_sentence_case(chosen[0]).rstrip("."),
-                                   stands[0].lower() + stands[1:])
+        parts = ["%s, and %s." % (_sentence_case(chosen[0]).rstrip("."),
+                                  stands[0].lower() + stands[1:]), middle]
         chosen = chosen[1:] or details
-        parts = [opening, "%s." % ground, middle]
     else:
-        # The senses first, which is the one opening that starts with neither a surface
-        # nor an article - and so does most of the work of breaking the pattern.
+        # The senses first: the one opening that starts with neither a surface nor an
+        # article, and so does most of the work of breaking the pattern.
         parts = [middle, "%s, and %s." % (ground, stands[0].lower() + stands[1:])]
 
-    parts = parts + [_sentence_case(line) for line in chosen[:2]]
+    for line in chosen:
+        if len(parts) >= sentences:
+            break
+        parts.append(_sentence_case(line))
     text = " ".join(part for part in parts if part).replace("  ", " ")
-    # Trimmed against the same band the gate measures, so an area is never refused for a
-    # sentence this file could have made the right length.
     while len(text.split()) > band[1] and len(parts) > 2:
         parts.pop()
         text = " ".join(part for part in parts if part).replace("  ", " ")
     return text
+
+
+def _article(word):
+    """`A` or `An`, by what the word starts with."""
+    return "An" if word[:1].lower() in "aeiou" else "A"
+
 
 
 def name_and_describe(area, race, rng, settled=True):
@@ -619,19 +657,88 @@ def name_and_describe(area, race, rng, settled=True):
     trades = list(TRADES if settled else WILD_TRADES)
     rng.shuffle(trades)
     trade_at = 0
+    # **A shop is built as an interior and its door is put on the street** - law T1 and T2.
+    # Collected as they are decided and added afterwards, because a room being added to the
+    # list being walked is how a loop stops meaning what it says.
+    interiors = []
+    next_id = max((room["id"] for room in rooms), default=0) + 1
     for index, room in enumerate(rooms):
+        opening = None
         if index and index % 3 == 0 and trade_at < len(trades):
-            _, template = trades[trade_at]
+            marker, template = trades[trade_at]
             trade_at += 1
-            room["key"] = (template % place_name(race, rng) if "%s" in template
-                           else template)
+            named = (template % place_name(race, rng) if "%s" in template else template)
+            doors = TRADE_DOORS if settled else WILD_DOORS
+            opening = (marker, named, doors.get(marker))
+        if opening and opening[2]:
+            # The street room stays a street room and carries the door.
+            room["key"] = plan.get(room["id"]) or room_names(race, 1, rng,
+                                                             settled=settled)[0]
+        elif opening:
+            # Open air - a market stall, a wayside shrine. It IS the street room.
+            room["key"] = opening[1]
         else:
             room["key"] = plan.get(room["id"]) or room_names(race, 1, rng,
                                                              settled=settled)[0]
-        room["desc"] = describe(exits_by_room.get(room["id"], []), race, rng)
+        # A room about to be given a shopfront writes one sentence fewer, so the door does
+        # not push it past the four the law allows.
+        room["desc"] = describe(exits_by_room.get(room["id"], []), race, rng,
+                                sentences=3 if (opening and opening[2]) else 4)
+
+        if opening and opening[2]:
+            noun, doorway = opening[2]
+            # T5: the noun a player types is the noun in the description.
+            room["desc"] = "%s %s" % (room["desc"], doorway)
+            interiors.append({
+                "id": next_id,
+                "key": opening[1],
+                "interior": True,
+                "from": room["id"],
+                "noun": noun,
+                # An interior does not stand on the lattice (T2). It is drawn where its
+                # street is and is not a place on the map of its own.
+                "latitude_deg": room.get("latitude_deg"),
+                "longitude_deg": room.get("longitude_deg"),
+                "elevation_m": room.get("elevation_m"),
+                # T5 again, from the inside: the way out is an exit called by the noun, so
+                # the room has to say the noun. Without this every interior in the world was
+                # a room with a door its own description never mentioned - the same fault as
+                # the street, seen from the other side of it.
+                "desc": "%s The way out of the %s is back onto the street." % (
+                    describe([], race, rng, sentences=3), noun),
+            })
+            next_id += 1
+
+    for inside in interiors:
+        rooms.append(inside)
+        # T1: in by the noun. T1a: out by the same noun - `out` is added as an alias when
+        # the world is built, because an alias is a thing a game has and a worldfile does
+        # not.
+        area.setdefault("exits", []).append(
+            {"source": inside["from"], "name": inside["noun"], "destination": inside["id"],
+             "door": True})
+        area.setdefault("exits", []).append(
+            {"source": inside["id"], "name": inside["noun"], "destination": inside["from"],
+             "door": True, "leaves": True})
     if not area.get("display_name"):
         area["display_name"] = place_name(race, rng)
     return area
+
+
+#: What a settlement's through-ways are called, by culture. A street keeps its name for
+#: its whole length; only the part of it changes.
+#:
+#: **Lost once and restored from the log.** Removing `retell_exits` and its detector took
+#: these with them - they sat between the two - and nothing failed, because no test called
+#: `street_plan` afterwards. Every settled area would have raised NameError on the next
+#: run.
+STREET_HEAD = ("Market", "Mill", "Bridge", "Kings", "Old", "Nether", "Upper", "Salt",
+               "Peel", "Kiln", "Cooper", "Draper", "Water", "Long", "Broad", "Chapel")
+
+#: Which end of a street a room stands at. Only the two actual ends take one: everything
+#: between them is named for the way it crosses, because "Middle" three times in a row is
+#: not three sections of a street, it is one label printed three times.
+ENDS = ("West End", "East End")
 
 
 def _street_names(count, kinds, rng):

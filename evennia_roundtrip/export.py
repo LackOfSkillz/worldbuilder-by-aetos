@@ -170,8 +170,10 @@ def build(caller=None, data=DATA):
         if any(existing.key == record["name"] and existing.destination == destination
                for existing in source.exits):
             continue
-        create_object(EXIT_TYPECLASS, key=record["name"], location=source,
-                      destination=destination)
+        made_exit = create_object(EXIT_TYPECLASS, key=record["name"], location=source,
+                                  destination=destination)
+        if record.get("aliases"):
+            made_exit.aliases.add(record["aliases"])
         exits_made += 1
 
     say("worldbuilder: %s rooms built, %s updated, %s exits made, %s keepers stocked, "
@@ -220,7 +222,11 @@ def flatten(document):
             })
         for exit_ in area.get("exits") or ():
             exits.append({"source": exit_["source"], "name": exit_["name"],
-                          "destination": exit_["destination"]})
+                          "destination": exit_["destination"],
+                          # A door is entered and left by its own noun (law T1a); `out` is
+                          # an alias on the way out only, because `out` from a street means
+                          # nothing.
+                          "aliases": ["out"] if exit_.get("leaves") else None})
     return {"rooms": rooms, "exits": exits,
             "areas": [{"name": a.get("name"), "display_name": a.get("display_name"),
                        "purpose": a.get("purpose"), "race": a.get("race"),
