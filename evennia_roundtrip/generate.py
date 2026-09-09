@@ -1344,7 +1344,7 @@ def feed_line(area):
     return line
 
 
-def build_area(site, culture, at, radius_m, rng, base_id, origin):
+def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None):
     """
     One finished, named, gated area - or None with the reasons it was refused.
 
@@ -1372,8 +1372,10 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin):
         "layout_quality": lattice["shape"],
     }
     voice = voice_race(culture)
+    # `taken` is the world's register of place names, so no two towns share one. See
+    # `naming.place_name`.
     naming.name_and_describe(area, voice, rng,
-                             settled=culture.purpose not in ("hunting",))
+                             settled=culture.purpose not in ("hunting",), taken=taken)
     # **Stocked here, so the count is of what is actually on the shelves.** A shop with no
     # wares is a room with a sign on it, and "eight shops" in a tally means nothing until
     # there is something in them to buy.
@@ -1469,6 +1471,10 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
     try:
         # The origin every level band is measured from: the largest place already here, or
         # the middle of the water if the world is empty.
+        # **Every place name used in this world, so no two share one.** Seeded with what is
+        # already here, because a generated town called The Landing is worse than two
+        # generated towns called Farcamp.
+        named = {str(a.get("display_name") or a.get("name") or "") for a in existing}
         stage("building areas", "%d wanted" % count)
         anchored = [a for a in existing if a.get("anchor")]
         if anchored:
@@ -1564,7 +1570,8 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                 key = _key_for(culture)
                 if filled.get(key, 0) >= quota.get(key, 0):
                     continue
-                built = build_area(site, culture, at, radius_m, rng, base_id, origin)
+                built = build_area(site, culture, at, radius_m, rng, base_id, origin,
+                                   taken=named)
                 if built["area"] is None:
                     refused.append({"culture": name, "site": [site["latitude_deg"],
                                                              site["longitude_deg"]],
@@ -1601,7 +1608,8 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     continue
                 for name in classify(site):
                     culture = by_name[name]
-                    built = build_area(site, culture, at, radius_m, rng, base_id, origin)
+                    built = build_area(site, culture, at, radius_m, rng, base_id, origin,
+                                   taken=named)
                     if built["area"] is None:
                         continue
                     area = built["area"]

@@ -503,10 +503,59 @@ def voice_for(race):
     return VOICE.get(race or "", DEFAULT_VOICE)
 
 
-def place_name(race, rng):
-    """A settlement name: two ordinary words, the way real places are named."""
+#: How a name is told from another of the same name.
+#:
+#: **Qualified, never numbered.** Law R7 says so of streets and it is just as true of towns:
+#: "Upper Farcamp" is a place and "Farcamp 2" is a database row. Real countries are full of
+#: the first and contain none of the second.
+QUALIFIERS = ("Upper", "Nether", "Little", "Great", "Old", "New", "East", "West", "Far")
+
+
+def place_name(race, rng, taken=None):
+    """
+    A settlement name: two ordinary words, the way real places are named.
+
+    Args:
+        race (str): Whose place it is, choosing the vocabulary.
+        rng (random.Random): The world's own generator.
+        taken (set, optional): Names already used in this world. Given one, the name that
+            comes back is not in it, and is added to it.
+
+    Notes:
+        **Two words drawn independently is the birthday problem wearing a cloak.** A culture
+        has six to eight heads and as many tails - thirty-six to sixty-four names - and a
+        run that wants twenty-five human towns will repeat one about as surely as
+        twenty-five people share a birthday. A hundred and thirty areas came out with a
+        hundred and six distinct names: three Farcamps, three Broadsteadings, and two
+        Winterfolds a player could stand between.
+
+        The same fault was found and fixed in the street names and not looked for here.
+    """
     voice = voice_for(race)
-    return "%s%s" % (rng.choice(voice["head"]), rng.choice(voice["tail"]))
+    heads, tails = list(voice["head"]), list(voice["tail"])
+    if taken is None:
+        return "%s%s" % (rng.choice(heads), rng.choice(tails))
+
+    # Every name this culture can make, in a shuffled order, so the search is exhaustive
+    # rather than hopeful: a culture whose names are all taken must not spin.
+    pairs = [(head, tail) for head in heads for tail in tails]
+    rng.shuffle(pairs)
+    for head, tail in pairs:
+        name = "%s%s" % (head, tail)
+        if name not in taken:
+            taken.add(name)
+            return name
+    # The vocabulary is exhausted, so a place is told from its namesake the way a real one
+    # is - by where it stands relative to it.
+    for qualifier in rng.sample(QUALIFIERS, len(QUALIFIERS)):
+        for head, tail in pairs:
+            name = "%s %s%s" % (qualifier, head, tail)
+            if name not in taken:
+                taken.add(name)
+                return name
+    name = "%s%s" % (rng.choice(heads), rng.choice(tails))
+    taken.add(name)
+    return name
 
 
 def room_names(race, count, rng, settled=True):
@@ -640,7 +689,7 @@ def _article(word):
 
 
 
-def name_and_describe(area, race, rng, settled=True):
+def name_and_describe(area, race, rng, settled=True, taken=None):
     """
     Fill an area's rooms with names and prose, in place, and name the area itself.
 
@@ -723,7 +772,7 @@ def name_and_describe(area, race, rng, settled=True):
             {"source": inside["id"], "name": inside["noun"], "destination": inside["from"],
              "door": True, "leaves": True})
     if not area.get("display_name"):
-        area["display_name"] = place_name(race, rng)
+        area["display_name"] = place_name(race, rng, taken)
     return area
 
 
