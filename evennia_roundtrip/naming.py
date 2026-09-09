@@ -595,7 +595,9 @@ def describe(exits, race, rng, band=(34, 79), sentences=4):
     # fixtures opens almost all of them on "A", so the definite form is used half the time.
     named = fixture[2:] if fixture.startswith("a ") else (
         fixture[3:] if fixture.startswith("an ") else fixture)
-    stands = "%s %s stands %s" % ("The" if rng.random() < 0.5 else _article(fixture),
+    # The article is chosen for the NOUN, not for the fixture's own article - reading the
+    # "a" off "a flat sunning stone" made it a vowel and wrote "an flat sunning stone".
+    stands = "%s %s stands %s" % ("The" if rng.random() < 0.5 else _article(named),
                                   named, beside)
     middle = "%s; the air is %s." % (
         _sentence_case(rng.choice(voice["sound"])), rng.choice(voice["smell"]))
