@@ -67,6 +67,142 @@ DEPTH = {"city": (6, 10), "seat": (5, 9), "town": (5, 8), "village": (4, 7),
          "hamlet": (3, 5), "camp": (2, 4), "road": (2, 3)}
 
 
+#: The trades whose goods somebody would keep.
+#:
+#: **A souvenir is a thing that lasts.** You carry a dagger home from the badlands; you do
+#: not carry home a bowl of barley broth, and dressing one up with a place name makes a
+#: joke of both. So the local character goes on what a traveller would still own a year
+#: later, and the inn goes on selling ordinary beer.
+KEEPSAKES = ("weaponsmith", "armourer", "general store", "stables", "shrine")
+
+#: What a place's own work looks like, by the culture that does it.
+#:
+#: **One look per place, not one per item.** Goods from a town read as being from that town
+#: because they share a hand - a colour its dyers use, a material its country provides, a
+#: mark its makers cut. Drawing those per item would make a shelf of unrelated oddments,
+#: which is the opposite of a souvenir.
+LOOKS = {
+    "human": {"colour": ("green", "russet", "dun", "blue-black", "oxblood"),
+              "material": ("oak", "horn", "brass", "boiled leather", "ash")},
+    "dwarf": {"colour": ("iron-grey", "black", "deep red", "smoke-blue"),
+              "material": ("iron", "bronze", "boar leather", "pewter", "black oak")},
+    "elf": {"colour": ("moss-green", "silver", "pale gold", "birch-white"),
+            "material": ("yew", "birch", "silk-wound", "green leather", "antler")},
+    "gnome": {"colour": ("brass", "lacquer-red", "oiled black", "verdigris"),
+              "material": ("brass", "tin", "spring steel", "waxed cord", "hardwood")},
+    "saurathi": {"colour": ("reed-green", "mud-brown", "pale grey", "river-black"),
+                 "material": ("fish leather", "river cane", "shell", "cypress")},
+    "halfling": {"colour": ("wheat-gold", "apple-red", "hedge-green", "cream"),
+                 "material": ("willow", "beech", "soft leather", "hazel")},
+    "volgrin": {"colour": ("dust-red", "roan", "sun-bleached", "smoke-grey"),
+                "material": ("horsehide", "horn", "rawhide", "bone")},
+    "felari": {"colour": ("sea-green", "salt-white", "coral", "deep blue"),
+               "material": ("driftwood", "sharkskin", "shell", "tarred cord", "copper")},
+    "lunari": {"colour": ("slate", "moon-pale", "storm-grey", "heather"),
+               "material": ("horn", "hill oak", "goat leather", "blackthorn")},
+    "aethari": {"colour": ("white", "sky-blue", "gilt", "pale rose"),
+                "material": ("cedar", "silver-inlaid", "fine leather", "olivewood")},
+    "valran": {"colour": ("peat-brown", "fern-green", "grey", "bracken-red"),
+               "material": ("bog oak", "sheepskin", "horn", "hill birch")},
+    "goblin": {"colour": ("scavenged red", "tarnished", "mismatched", "soot-black"),
+               "material": ("scrap iron", "cord", "hide", "found tin", "bone")},
+}
+
+#: Materials a ware may already name for itself. See `souvenir`.
+MATERIALS = ("clay", "iron", "brass", "tin", "wooden", "oak", "leather", "bone", "horn",
+             "wool", "woollen", "silver", "copper", "steel", "stone", "glass", "tallow",
+             "wax", "hemp", "linen", "gut", "yew", "willow", "lead", "mail")
+
+#: The look a place falls back on when its culture has none written down.
+PLAIN_LOOK = {"colour": ("plain", "undyed", "weathered"),
+              "material": ("oak", "horn", "leather", "iron")}
+
+
+def look_of(race):
+    """The colours and materials a people's work is known by."""
+    return LOOKS.get(race or "", PLAIN_LOOK)
+
+
+def signature(race, rng):
+    """
+    One place's own look: a colour and a material its makers use.
+
+    Returns:
+        look (dict): `colour` and `material`, chosen once for the whole settlement.
+    """
+    made = look_of(race)
+    return {"colour": rng.choice(made["colour"]), "material": rng.choice(made["material"])}
+
+
+#: What part of a trade's goods a local material actually makes.
+#:
+#: **A material has to be the part it could be.** Pushed in front of the whole item it
+#: writes "a spider silk short sword" and "a marble dust cook pot", which are not things.
+#: A hilt, a binding, a handle - those a place's own leather and horn and oak really do make,
+#: and it is what somebody means when they say a dagger is from the badlands.
+PARTS = {
+    "weaponsmith": "hilted",
+    "armourer": "bound",
+    "general store": "handled",
+    "stables": "stitched",
+    "shrine": "carved",
+}
+
+
+def souvenir(ware, look, place, part=None):
+    """
+    One ware as the work of a particular place.
+
+    Args:
+        ware (str): The plain ware, as `WARES` lists it.
+        look (dict): That settlement's `colour` and `material`.
+        place (str): What the place is called.
+        part (str, optional): What the local material makes of this trade's goods -
+            `hilted`, `bound`, `handled`. Without one the ware takes only its place.
+
+    Returns:
+        named (str): "a green leather-hilted dagger from Longmire".
+
+    Notes:
+        **The article stays where it was.** "a dagger in a plain sheath" becomes "a green
+        oak dagger in a plain sheath from Longmire" and not "green oak a dagger..." - the
+        leading article is lifted off, the look goes in behind it, and the place goes on the
+        end where a maker's mark would be.
+    """
+    said = ware
+    lead = ""
+    for article in ("a ", "an ", "the "):
+        if said.startswith(article):
+            lead, said = article, said[len(article):]
+            break
+    # **Only a plain noun takes the adjectives.** "a silver antler bundle of arrows" is what
+    # happens when a colour and a material are pushed in front of a collective noun, and
+    # "a dust-red horn boar spear with a crossbar" is what happens with a compound one. A
+    # ware that already carries a phrase keeps its own shape and takes only the place, which
+    # is all that uniqueness actually needs.
+    # **A ware that already names its material keeps it.** "a sky-blue fine leather clay
+    # lamp" is two materials arguing; the colour is welcome and the second material is not.
+    told = any(word in said for word in MATERIALS)
+    plain = not any(part in said for part in (" of ", " with ", " and "))
+    if not plain or not part:
+        # A phrase keeps its own shape, and a trade with no part for a material to be -
+        # an inn, a healer - takes the place and nothing else.
+        body = said
+    elif told:
+        # The ware names its own material, so only the colour is added: "a green clay lamp",
+        # never "a green leather clay lamp".
+        body = "%s %s" % (look["colour"], said)
+    else:
+        body = "%s %s-%s %s" % (look["colour"], look["material"], part, said)
+    # **The article is chosen for the word that now comes first.** Keeping the ware's own
+    # gave "an sky-blue iron cook pot": the "an" belonged to "iron", which is no longer the
+    # word after it.
+    if lead in ("a ", "an "):
+        lead = "an " if body[:1].lower() in "aeiou" else "a "
+    dressed = "%s%s" % (lead, body)
+    return "%s from %s" % (dressed, place)
+
+
 def trade_of(room_key, markers=None):
     """
     Which trade a room is, by its name, or None if it is not a shop.
@@ -81,7 +217,7 @@ def trade_of(room_key, markers=None):
     return None
 
 
-def stock_for(room_key, size, rng, wares=None, depth=None):
+def stock_for(room_key, size, rng, wares=None, depth=None, look=None, place=None):
     """
     What is on the shelves of one shop.
 
@@ -101,4 +237,11 @@ def stock_for(room_key, size, rng, wares=None, depth=None):
     low, high = (depth or DEPTH).get(size, (3, 6))
     wanted = min(len(available), rng.randint(low, high))
     rng.shuffle(available)
-    return sorted(available[:wanted])
+    chosen = sorted(available[:wanted])
+    # **A keepsake says where it came from; a meal does not.** See `KEEPSAKES`. With the
+    # place on it no two settlements sell the same thing, which is the point: a hundred and
+    # two wares cannot fill nineteen thousand shelves without repeating, and a maker's mark
+    # is how a real economy told one town's work from another's.
+    if look and place and trade in KEEPSAKES:
+        return [souvenir(one, look, place, PARTS.get(trade)) for one in chosen]
+    return chosen

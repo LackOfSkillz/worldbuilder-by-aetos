@@ -1417,8 +1417,14 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, si
     # **Stocked here, so the count is of what is actually on the shelves.** A shop with no
     # wares is a room with a sign on it, and "eight shops" in a tally means nothing until
     # there is something in them to buy.
+    # **One look for the whole settlement, so its goods read as a set.** A keepsake says
+    # where it came from - see `stock.souvenir` - and a shelf of unrelated oddments does
+    # not. Chosen once here and handed to every shop in the place.
+    look = stock.signature(culture.race, rng)
+    area["look"] = look
+    where = area.get("display_name") or area.get("name")
     for room in area["rooms"]:
-        wares = stock.stock_for(room["key"], culture.size, rng)
+        wares = stock.stock_for(room["key"], culture.size, rng, look=look, place=where)
         if wares:
             room["stock"] = wares
     # **And peopled here, for the same reason.** The tally reported `rooms x density` and
