@@ -28,7 +28,7 @@ import os
 import random
 
 from . import (areagen, cultures, ferries, hubs, naming, people, period, place,
-               planet, populate, reachability, runs, siting, stock)
+               planet, populate, reachability, runs, siting, soundings, stock)
 
 #: How many of each culture a hundred-area world should hold.
 #:
@@ -730,6 +730,12 @@ ROAD_ROOM_CAP = 40
 #: fine enough to find a channel a boat would use and coarse enough to cost nothing.
 SPAN_SAMPLES = 20
 
+#: How many areas are settled inside the innermost level ring.
+#:
+#: Enough that a new character has somewhere to go that is not the city they started in:
+#: a couple of hunting grounds, a village, a hamlet or two.
+STARTER_AREAS = 6
+
 
 def _point_between(a, b, fraction, radius_m):
     """A point along the great circle from `a` to `b`."""
@@ -886,6 +892,26 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
     # top of the earlier fault where the whole road claimed to be a dead end. The caller
     # calls `finish_road` once every exit is in place.
     return road
+
+
+def _sea_gap(at, one, other, radius_m):
+    """
+    How far a boat actually sails between two terminals, or 0 if it cannot.
+
+    Notes:
+        The route round the headlands rather than the line through them - a crossing timed
+        on the straight line is a crossing whose boat is late every trip. Falls back to
+        nothing when no water route exists, and `ferries.plan` drops the line rather than
+        building a berth to a place no boat can reach.
+    """
+    start = _water_off(at, (one["latitude_deg"], one["longitude_deg"]),
+                       (other["latitude_deg"], other["longitude_deg"]), radius_m)
+    end = _water_off(at, (other["latitude_deg"], other["longitude_deg"]),
+                     (one["latitude_deg"], one["longitude_deg"]), radius_m)
+    if start is None or end is None:
+        return 0.0
+    track = sea_route(at, start, end, radius_m)
+    return _line_length(track, radius_m) if track else 0.0
 
 
 def finish_road(road, rng, from_name=None, to_name=None):
@@ -1054,11 +1080,16 @@ def join_crossings(roads, radius_m, rng, base_id, at=None):
     made = []
     next_id = base_id
     for index, road in enumerate(roads):
-        here_rooms = road.get("rooms") or []
+        # **Only the rooms that are on the road.** Its wayside shrines and camps are
+        # interiors sharing their parent's coordinates, so a "segment" to one of them has
+        # no length and no direction - and asking where a zero-length segment crosses
+        # another line puts a crossroads somewhere neither road goes.
+        here_rooms = [one for one in (road.get("rooms") or ()) if not one.get("interior")]
         if len(here_rooms) < 2:
             continue
         for other in roads[index + 1:]:
-            there_rooms = other.get("rooms") or []
+            there_rooms = [one for one in (other.get("rooms") or ())
+                           if not one.get("interior")]
             if len(there_rooms) < 2:
                 continue
             hit = None
@@ -1089,7 +1120,16 @@ def join_crossings(roads, radius_m, rng, base_id, at=None):
             }
             next_id += 1
             junction["desc"] = naming.describe([], "road", rng)
-            road.setdefault("rooms", []).append(junction)
+            # **Put in the road, not on the end of it.** A crossroads stands between two
+            # of a road's rooms; appended to the list it is drawn as a line running to the
+            # far end and back, which is the scribble a road makes on the map when
+            # something walks its rooms in stored order.
+            here_at = next((n for n, one in enumerate(road.get("rooms") or ())
+                            if one["id"] == here["id"]), None)
+            if here_at is None:
+                road.setdefault("rooms", []).append(junction)
+            else:
+                road["rooms"].insert(here_at + 1, junction)
             for host, room in ((road, here), (other, there)):
                 heading = _bearing(junction["latitude_deg"], junction["longitude_deg"],
                                    room["latitude_deg"], room["longitude_deg"])
@@ -1150,7 +1190,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
     outside = list(placed[1:])
     roads = []
     built_roads = []
-    ferries = []
+    crossings_made = []
     next_id = base_id
     #: Pairs already tried and found impossible, so the search does not retry them forever.
     refused_pairs = set()
@@ -1205,7 +1245,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
             crossing = ferry_between(other, area, room_a, room_b, at, radius_m, rng, next_id)
             if crossing:
                 next_id += 10
-                ferries.append(crossing)
+                crossings_made.append(crossing)
                 roads.append({"from": other["name"], "to": area["name"],
                               "metres": crossing["metres"], "laid": True, "sea": True,
                               "rooms": 0, "long": False})
@@ -1226,7 +1266,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
             crossing = ferry_between(other, area, room_a, room_b, at, radius_m, rng, next_id)
             if crossing:
                 next_id += 10
-                ferries.append(crossing)
+                crossings_made.append(crossing)
                 roads.append({"from": other["name"], "to": area["name"],
                               "metres": crossing["metres"], "laid": True, "sea": True,
                               "rooms": 0, "long": False})
@@ -1336,7 +1376,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                       "laid": True, "rooms": len(trail["rooms"]), "path": True,
                       "long": gap > reach_m})
 
-    return roads, built_roads, ferries
+    return roads, built_roads, crossings_made
 
 
 def gate(area, culture, at, shape):
@@ -1648,6 +1688,45 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             progress.write(json.dumps(feed_line(area)) + chr(10))
             if on_area:
                 on_area(area)
+        # **Somewhere to start.** The innermost level ring is a couple of per cent of half
+        # the planet - about six hundred kilometres - and areas are sited a hundred to two
+        # hundred miles apart, so left to chance a four-hundred-area world put ONE area in
+        # it and a player began at level one with nowhere to go. The ring is filled on
+        # purpose, from the sites nearest the first city, exactly as the cities themselves
+        # are placed on purpose.
+        first = made[0] if made else None
+        if first is not None and not anchored:
+            heart = (first["anchor"]["latitude_deg"], first["anchor"]["longitude_deg"])
+            ring_m = cultures.LEVEL_RINGS[0][2] * math.pi * radius_m
+            near_home = sorted(
+                (one for one in sites
+                 if _haversine(heart[0], heart[1], one["latitude_deg"], one["longitude_deg"],
+                               radius_m) <= ring_m),
+                key=lambda one: _haversine(heart[0], heart[1], one["latitude_deg"],
+                                           one["longitude_deg"], radius_m))
+            stage("settling the starting ground",
+                  "%d sites within %d km of %s" % (len(near_home), int(ring_m / 1000),
+                                                   first.get("display_name")))
+            for site in near_home[:STARTER_AREAS]:
+                if len(made) >= count:
+                    break
+                candidates = classify(site)
+                if not candidates:
+                    continue
+                culture = by_name[candidates[0]]
+                built = build_area(site, culture, at, radius_m, rng, base_id, origin,
+                                   taken=named)
+                if built["area"] is None:
+                    continue
+                area = built["area"]
+                filled[_key_for(culture)] = filled.get(_key_for(culture), 0) + 1
+                base_id += len(area["rooms"]) + 10
+                made.append(area)
+                sites = [one for one in sites if one is not site]
+                progress.write(json.dumps(feed_line(area)) + chr(10))
+                if on_area:
+                    on_area(area)
+
         stage("building areas", "%d wanted, %d cities founded" % (count, len(made)))
 
         for site in sites:
@@ -1758,15 +1837,31 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
 
         # **Roads before the check, because the check can only report.** Every area is
         # joined to the nearest area already on the network; see `connect_areas`.
-        roads, road_areas, ferries = connect_areas(document["areas"], radius_m, rng,
+        roads, road_areas, crossings_made = connect_areas(document["areas"], radius_m, rng,
                                                    base_id + 10000, at=at)
         # Ferries are neither areas nor roads: they are the water between two ramps.
-        document["ferries"] = ferries
+        # **The ferry network, on top of whatever crossings the roads had to fall back on.**
+        # `connect_areas` makes a boat where a road cannot go; that is a set of accidents,
+        # not a service. This lays a line from each shore's terminal to its sea's hub, plus
+        # the shore-to-shore hops that pay for themselves, and times each crossing across
+        # the band so they do not all take the same thirty minutes.
+        stage("laying the ferry lines", "one terminal per shore")
+        sea = ferries.plan(document["areas"], radius_m, at=at,
+                           sailed_m=lambda one, other: _sea_gap(at, one, other, radius_m))
+        for line in sea["lines"]:
+            line["hulls"] = 2
+            line["layover_minutes"] = 5.0
+        document["ferry_lines"] = sea["lines"]
+        document["ferry_terminals"] = [one["name"] for one in sea["terminals"]]
+        run.write_json("ferries.json", {"lines": sea["lines"], "seas": sea.get("seas", 0),
+                                        "hub": (sea.get("hub") or {}).get("name")})
+
+        document["ferries"] = crossings_made
         # Every ramp is a dock as far as reachability is concerned, which is what
         # stops an island reading as stranded when a boat serves it.
         maritime = document.setdefault("maritime", {})
         docks = maritime.setdefault("docks", [])
-        for crossing in ferries:
+        for crossing in crossings_made:
             docks.append({"area": crossing["from"], "room": crossing["from_room"],
                           "ferry": crossing["to"]})
             docks.append({"area": crossing["to"], "room": crossing["to_room"],
@@ -1781,6 +1876,13 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         crossings = join_crossings(document["roads"], radius_m, rng, base_id + 90000, at=at)
         run.write_json("crossings.json", crossings)
         run.write_json("roads.json", roads)
+        stage("sounding the ground", "checking nothing stands in water")
+        # **The generator checks its own work.** Rooms on the sea floor and roads across
+        # straits were both found by eye, in screenshots, after the run was over - and both
+        # had been in every world before that one.
+        water = soundings.check(document, at)
+        run.write_json("water.json", water)
+
         stage("checking every place can be reached")
         stranded = reachability.check(document)
         stage("writing the world", "%d rooms" % sum(
@@ -1801,11 +1903,15 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "roads": sum(1 for road in roads if road["laid"]),
             "road_rooms": sum(len(road["rooms"]) for road in road_areas),
             "paths": sum(1 for road in roads if road.get("path")),
-            "ferries": len(ferries),
+            "ferries": len(crossings_made),
+            "ferry_lines": len(sea["lines"]),
+            "ferry_terminals": len(sea["terminals"]),
             "crossings": len(crossings),
             "unjoined": sum(1 for road in roads if not road["laid"]),
             "long_roads": sum(1 for road in roads if road.get("long")),
             "stranded": len(stranded.get("unreachable", ())),
+            "rooms_under_water": water["rooms_under_water"],
+            "spans_over_water": water["spans_over_water"],
             "unfilled": {key: quota[key] - filled[key]
                          for key in quota if filled[key] < quota[key]},
         }
