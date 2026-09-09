@@ -676,9 +676,31 @@ def _is_ways_sentence(text):
 STREET_HEAD = ("Market", "Mill", "Bridge", "Kings", "Old", "Nether", "Upper", "Salt",
                "Peel", "Kiln", "Cooper", "Draper", "Water", "Long", "Broad", "Chapel")
 
-#: Which end of a street a room stands at. A street of one or two rooms takes no suffix -
-#: nobody says "West End" of a street you can see the whole of.
-ENDS = ("West End", "Middle", "East End")
+#: Which end of a street a room stands at. Only the two actual ends take one: everything
+#: between them is named for the way it crosses, because "Middle" three times in a row is
+#: not three sections of a street, it is one label printed three times.
+ENDS = ("West End", "East End")
+
+
+def _street_names(count, kinds, rng):
+    """
+    `count` distinct street names, drawn without replacement.
+
+    Two streets in one town with the same name are the same failure as one street with two
+    names, and drawing each independently produced both - sixteen heads and six kinds look
+    like plenty until the birthday problem is applied to thirty streets.
+    """
+    pool = ["%s %s" % (head, kind.title()) for head in STREET_HEAD for kind in kinds]
+    rng.shuffle(pool)
+    if count <= len(pool):
+        return pool[:count]
+    # More streets than the vocabulary holds: qualify the repeats rather than repeat them.
+    names, spare, index = list(pool), list(STREET_HEAD), 0
+    rng.shuffle(spare)
+    while len(names) < count:
+        names.append("%s %s" % (spare[index % len(spare)], pool[index % len(pool)]))
+        index += 1
+    return names[:count]
 
 
 def street_plan(rooms, race, rng, streets=None):
@@ -700,33 +722,50 @@ def street_plan(rooms, race, rng, streets=None):
         "a row" and "the market" - four streets that are really one, and a player who
         cannot say where they are because nowhere has a name that lasts more than one step.
 
-        A street here is a ROW of the lattice: walk east and you stay on it. Its parts are
-        named for the end you are at, which is what the existing hand-built city does -
-        "Peel Row, Market End" and "New Market Street, West End" are the same street twice.
+        A street here is a ROW of the lattice: walk east and you stay on it.
+
+        **A section is named for the way it crosses, not for a third of the street.**
+        Sorting a street into three buckets gave a nine-room street three rooms called
+        "Middle" - the original complaint wearing a suffix. Drawn by the game's own map, a
+        generated town had twenty-four of its forty-seven labels repeated. The columns of
+        the lattice are streets too, so the room where they meet has an address: Market Row
+        at Kiln Lane. No two rooms share a crossing, so it is unique by construction, and it
+        is how a real street's blocks have always been told apart.
+
+        **Rows lead and columns cross.** On a lattice only one axis can own the name, so
+        walking east holds "Market Row" while walking north changes it. Rows were already
+        the streets; making that choice explicit beats making it twice.
     """
     voice = voice_for(race)
     kinds = voice.get("street", ("street",))
     chosen = streets if streets is not None else {}
-    rows = {}
+
+    rows, columns = {}, {}
     for room in rooms:
-        cell = room.get("cell") or [0, 0, 0]
-        rows.setdefault(cell[1], []).append(room)
+        cell = (room.get("cell") or [0, 0, 0])
+        x, y, z = cell[0], cell[1], (cell[2] if len(cell) > 2 else 0)
+        rows.setdefault(("row", z, y), []).append(room)
+        columns.setdefault(("col", z, x), []).append(room)
+
+    # Rows and columns share one vocabulary, so a cross street is never the street itself.
+    wanted = [key for key in list(rows) + list(columns) if key not in chosen]
+    for key, name in zip(wanted, _street_names(len(wanted), kinds, rng)):
+        chosen[key] = name
 
     plan = {}
-    for row, along in rows.items():
+    for key, along in rows.items():
         along.sort(key=lambda room: (room.get("cell") or [0, 0, 0])[0])
-        if row not in chosen:
-            head = rng.choice(STREET_HEAD)
-            kind = rng.choice(kinds)
-            chosen[row] = "%s %s" % (head, kind.title())
-        name = chosen[row]
-        if len(along) <= 2:
-            for room in along:
-                plan[room["id"]] = name
+        name = chosen[key]
+        if len(along) == 1:
+            plan[along[0]["id"]] = name
             continue
-        third = max(1, len(along) // 3)
         for index, room in enumerate(along):
-            end = ENDS[0] if index < third else (ENDS[2] if index >= len(along) - third
-                                                 else ENDS[1])
-            plan[room["id"]] = "%s, %s" % (name, end)
+            if index == 0:
+                plan[room["id"]] = "%s, %s" % (name, ENDS[0])
+            elif index == len(along) - 1:
+                plan[room["id"]] = "%s, %s" % (name, ENDS[1])
+            else:
+                cell = (room.get("cell") or [0, 0, 0])
+                x, z = cell[0], (cell[2] if len(cell) > 2 else 0)
+                plan[room["id"]] = "%s at %s" % (name, chosen[("col", z, x)])
     return plan
