@@ -11,6 +11,7 @@
 // duplicating any of it in a panel would give the tool two answers to one question.
 
 import { watchRun } from "./populate.js";
+import { buildTally } from "./tally.js";
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -80,15 +81,66 @@ export function buildGeneratePanel(parent, getViewer) {
   // button that made it.
   const showSummary = el("button", "wb-mini", "run summary");
   showSummary.type = "button";
-  showSummary.addEventListener("click", () => {
+  showSummary.addEventListener("click", async () => {
     const tally = watching && watching.tally;
-    if (!tally) {
-      note.textContent = "no run to summarise yet";
+    if (tally) {
+      if (tally.hidden()) tally.show();
+      else tally.hide();
       return;
     }
-    if (tally.hidden()) tally.show();
-    else tally.hide();
+    // **A run outlives the tab it was watched in.** The watcher is remembered in
+    // `sessionStorage`, which a closed browser throws away - so somebody who looked at a
+    // world, went to bed and came back had no way to see its summary again, and the run was
+    // sitting on disk the whole time. Rebuilt from the run's own files instead.
+    note.textContent = "looking for the last run...";
+    const rebuilt = await summariseLastRun();
+    note.textContent = rebuilt || "no run to summarise yet";
   });
+
+  //: The tally rebuilt from disk, kept so a second press puts it away again.
+  let recalled = null;
+
+  /// Draw the last finished run's summary, from the files it left behind.
+  ///
+  /// Returns:
+  ///   said (string): What to tell the panel, or "" if there was nothing to show.
+  const summariseLastRun = async () => {
+    if (recalled) {
+      if (recalled.hidden()) recalled.show();
+      else recalled.hide();
+      return "";
+    }
+    try {
+      const runs = (await (await fetch("/runs/", { cache: "no-store" })).json()).runs || [];
+      if (!runs.length) return "";
+      // Newest first, and the newest COMPLETE one: a run that failed half way has a
+      // manifest and a worldfile and is not a world anybody wants summarised.
+      for (const id of runs) {
+        const manifest = await (await fetch(`/runs/${id}/manifest.json`,
+                                            { cache: "no-store" })).json();
+        if (manifest.status !== "complete") continue;
+        const world = await (await fetch(`/runs/${id}/worldfile.json`,
+                                         { cache: "no-store" })).json();
+        // The world's own name, taken off the path the run was given. Both separators
+        // are looked for by hand: a backslash inside a character class is one escape
+        // too many to survive being written, and a Windows path then never split.
+        const given = String((manifest.inputs || {}).worldfile || "");
+        const cut = Math.max(given.lastIndexOf("/"), given.lastIndexOf(String.fromCharCode(92)));
+        const named = (cut >= 0 ? given.slice(cut + 1) : given).replace(".json", "");
+        recalled = buildTally(window.document, named || manifest.label || id);
+        for (const area of world.areas || []) {
+          // The tally counts a feed's shape, where `rooms` is a number. A worldfile holds
+          // the rooms themselves, so the count is handed over rather than the list.
+          recalled.add({ ...area, rooms: (area.rooms || []).length });
+        }
+        recalled.finish(manifest.summary || {});
+        return `summary of ${manifest.label || id}`;
+      }
+      return "";
+    } catch {
+      return "";
+    }
+  };
   const note = el("div", "wb-note-line", "pick a world and a count");
 
   let watching = null;

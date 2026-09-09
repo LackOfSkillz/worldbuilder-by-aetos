@@ -115,25 +115,46 @@ function label(area) {
 }
 
 /// What the hover card says: everything the pin had to leave out.
+/// What a hover says about an area.
+///
+/// **The same facts a live run's pins carry.** These two layers draw the same places from
+/// different sources - the progress feed while a run is going, the worldfile once it is
+/// saved - and they said different things about them: a pin hovered during a run listed its
+/// shops and its people, and the same pin after a reload listed neither. A player cannot be
+/// expected to know which of the two they happen to be looking at.
+///
+/// A field the generator did not fill is left out rather than shown as zero, because a
+/// missing count and a genuine none are different facts.
 function detail(area) {
-  const rooms = (area.rooms || []).length;
   const port = area.port || {};
-  const lines = [area.name];
-  const level = levelOf(area);
-  if (level) lines.push(`Suggested level ${level.slice(4)}`);
+  const lines = [area.display_name || area.name];
   if (area.culture) lines.push(area.culture);
   const who = [area.race, area.profession].filter(Boolean).join(" - ");
   if (who) lines.push(who);
+  // What the place is FOR, said plainly. "hunting" is not a faction and a hunting ground
+  // full of deer is not hostile, so the two are separate lines and both are wanted.
+  if (area.purpose && area.purpose !== "home") lines.push(area.purpose);
   if (area.faction && area.faction !== "friendly") lines.push(area.faction.toUpperCase());
-  lines.push(`${rooms} room${rooms === 1 ? "" : "s"}`);
-  if (port.has_port) lines.push("harbour");
-  else if (port.port_area) lines.push(`port: ${port.port_area}`);
-  const anchor = area.anchor || {};
-  if (anchor.latitude_deg !== undefined) {
-    lines.push(`${anchor.latitude_deg.toFixed(4)}, ${anchor.longitude_deg.toFixed(4)}`);
-  }
+
+  lines.push("");
+  const row = (key, value) => lines.push(key.padEnd(15) + value);
+  // `rooms` is a list in a worldfile and a count in a feed, and `room_count` is written by
+  // the generator either way - so the count is right whichever layer drew this pin.
+  const rooms = Array.isArray(area.rooms) ? area.rooms.length : area.rooms;
+  const roomCount = area.room_count !== undefined ? area.room_count : rooms;
+  if (roomCount !== undefined) row("rooms", roomCount);
+  if (area.shops !== undefined) row("shops", area.shops);
+  if (area.items !== undefined) row("goods on sale", area.items);
+  if (area.npcs !== undefined) row("inhabitants", area.npcs);
+  if (area.docks) row("docks", area.docks);
+  const level = levelOf(area);
+  if (level) row("levels", level.slice(4));
+  if (port.has_port) row("harbour", "yes");
+  else if (port.port_area) row("port", port.port_area);
+
+  lines.push("");
   lines.push("click to fly down");
-  return lines.join("\n");
+  return lines.join(String.fromCharCode(10));
 }
 
 /// Draw every area in a worldfile.
@@ -307,6 +328,10 @@ const CLEARANCE_M = 700.0;
 ///
 /// Installed on LEFT_CLICK rather than mouse-down, for the reason `pick-point` records: a
 /// drag to rotate the globe must not count as a click.
+//: How many input handlers have ever been made, so each can be told from the others.
+let claims = 0;
+
+
 export function enableAreaInput(viewer, Cesium, document, source, place = null) {
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   const card = makeCard();
@@ -332,7 +357,12 @@ export function enableAreaInput(viewer, Cesium, document, source, place = null) 
   // that finds nothing hides the card the other has just filled - and which of them goes
   // last is a matter of registration order. A handler now only clears the card if the card
   // is showing ITS pin.
-  const mine = source.name || String(Math.random());
+  // **Unique per handler, not per source name.** Every area layer is called "wb-areas", so
+  // naming the owner after the source made two handlers claim one identity - and the one
+  // that missed then hid the card the other had just filled, which is the very fault the
+  // owner check exists to prevent.
+  claims += 1;
+  const mine = `${source.name || "layer"}#${claims}`;
 
   handler.setInputAction((movement) => {
     const entity = areaAt(movement.endPosition);
@@ -380,7 +410,16 @@ export function enableAreaInput(viewer, Cesium, document, source, place = null) 
   return {
     stop: () => {
       handler.destroy();
-      card.remove();
+      // **The card is shared and must survive this.** `makeCard` hands every input handler
+      // the same element on purpose, and removing it here took it out of the document for
+      // all of them - so the next layer torn down anywhere killed hover everywhere, while
+      // click went on working because click never touches the card. That is what a night
+      // away from a working map and a dead hover in the morning looks like: something was
+      // redrawn in between, and clicking an area to see its rooms is enough to do it.
+      if (card.dataset.owner === mine) {
+        card.style.display = "none";
+        card.dataset.owner = "";
+      }
       viewer.scene.canvas.style.cursor = "";
     },
   };
