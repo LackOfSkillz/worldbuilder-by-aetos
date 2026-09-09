@@ -54,6 +54,51 @@ LEVEL_RINGS = (
 )
 
 
+#: The bands a world is divided into, and what share of its areas each one holds.
+#:
+#: **A share of the world, not a distance.** The rings were fractions of half the planet's
+#: circumference, which is the right way to say "further is harder" and the wrong way to
+#: fill a world: geography decides how much ground falls inside each ring, so a run put
+#: sixty per cent of its areas in one band and none at all in the first. A share says how
+#: much of the WORLD is beginners' country, and the distance ordering still decides which
+#: areas those are.
+LEVEL_SHARES = (
+    ((1, 5), 0.10),
+    ((6, 10), 0.10),
+    ((11, 20), 0.20),
+    ((21, 40), 0.20),
+    ((41, 80), 0.20),
+    ((81, 100), 0.20),
+)
+
+
+def bands_by_share(count, shares=LEVEL_SHARES):
+    """
+    Which band each place gets, ordered from nearest home to furthest.
+
+    Args:
+        count (int): How many places there are.
+        shares (tuple): `((low, high), share)` in order outward.
+
+    Returns:
+        bands (list): One `(low, high)` per place, in the same order.
+
+    Notes:
+        The remainder goes to the outermost band rather than the innermost: a world one
+        area short should be short of somewhere to grind at level ninety, not short of
+        somewhere to start.
+    """
+    if count <= 0:
+        return []
+    out = []
+    for band, share in shares:
+        out.extend([band] * int(round(count * share)))
+    out = out[:count]
+    while len(out) < count:
+        out.append(shares[-1][0])
+    return out
+
+
 def ring_at(distance_m, radius_m, rings=LEVEL_RINGS):
     """
     Which level band a place this far from the origin belongs to.

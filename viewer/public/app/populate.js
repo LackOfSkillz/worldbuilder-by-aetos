@@ -166,7 +166,8 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   /// their own rooms, so what appears is the road that exists, five miles a room.
   const drawRoads = (doc) => {
     const roads = doc.roads || [];
-    if (!roads.length && !(doc.ferries || []).length) return;
+    const lines = doc.ferry_lines || [];
+    if (!roads.length && !(doc.ferries || []).length && !lines.length) return;
     if (roadLayer) roadLayer.remove(true);
     roadsSource = new Cesium.CustomDataSource(`wb-roads-${runId}`);
     roadLayer = showLayer(viewer, roadsSource);
@@ -185,6 +186,29 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
           material: new Cesium.PolylineDashMaterialProperty({
             color: Cesium.Color.fromCssColorString("rgba(168,150,133,0.85)"),
             dashLength: 14,
+          }),
+          clampToGround: true,
+        },
+      });
+    }
+    // **The scheduled service, drawn heavier than an accidental crossing.** A ferry line
+    // is a route with hulls on it and a timetable; an opportunistic crossing is a place a
+    // road gave up. They are both dashed and both taupe because they are both water, and
+    // the line is wider because it is the one a player plans a journey around. A line with
+    // no track is not drawn: the generator drops those rather than guess a straight one
+    // through a headland.
+    for (const line of lines) {
+      const track = (line.track || []).flatMap((p) => [p[1], p[0]]);
+      if (track.length < 4) continue;
+      const ends = line.ends || [];
+      roadsSource.entities.add({
+        name: `the ${Math.round(line.minutes || 0)}-minute ferry, ${ends[0]} to ${ends[1]}`,
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArray(track),
+          width: 3.0,
+          material: new Cesium.PolylineDashMaterialProperty({
+            color: Cesium.Color.fromCssColorString("rgba(190,172,152,0.95)"),
+            dashLength: 22,
           }),
           clampToGround: true,
         },

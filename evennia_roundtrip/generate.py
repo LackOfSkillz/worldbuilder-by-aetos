@@ -730,11 +730,42 @@ ROAD_ROOM_CAP = 40
 #: fine enough to find a channel a boat would use and coarse enough to cost nothing.
 SPAN_SAMPLES = 20
 
-#: How many areas are settled inside the innermost level ring.
+#: The fewest areas settled inside the innermost level ring, whatever the run's size.
 #:
 #: Enough that a new character has somewhere to go that is not the city they started in:
 #: a couple of hunting grounds, a village, a hamlet or two.
 STARTER_AREAS = 6
+
+#: How far the starting ring is allowed to grow when the ground near home is thin.
+#:
+#: The ring is widened rather than the quota cut, because a level band that is short of
+#: areas is a band a player runs out of. It is widened in small steps and stops at this
+#: multiple of its nominal size: past it the ground genuinely has nothing to give, and a
+#: "starting ground" a third of the way round the planet is not a starting ground.
+STARTER_REACH = 3.0
+
+
+def starter_areas(count, shares=None):
+    """
+    How many areas belong to the innermost band.
+
+    Args:
+        count (int): How many areas the run is making.
+        shares (tuple, optional): The band table, for a test that wants its own.
+
+    Returns:
+        wanted (int): The innermost band's share of the run, never fewer than
+            `STARTER_AREAS`.
+
+    Notes:
+        **The share, not a constant.** Six was written for a sixty-area world and stayed
+        six for a four-hundred-area one - so the band that is supposed to hold a tenth of
+        the world held a sixtieth of it, and the other thirty-four places nominally at
+        levels 1-5 were simply the nearest of whatever had been scattered elsewhere,
+        thousands of kilometres out. A starting band has to be settled *as* a band.
+    """
+    share = (shares or cultures.LEVEL_SHARES)[0][1]
+    return max(STARTER_AREAS, int(round(share * count)))
 
 #: How many candidate sites are grown per area asked for.
 SITE_MARGIN = 8
@@ -1704,20 +1735,38 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # it and a player began at level one with nowhere to go. The ring is filled on
         # purpose, from the sites nearest the first city, exactly as the cities themselves
         # are placed on purpose.
+        # **Measured from wherever characters actually start**, which is the world's own
+        # biggest place when it has one and the first city when it does not. Guarding this
+        # on `not anchored` meant a world with anything in it got no starting ground at all:
+        # the ring was measured from the hand-built city, nothing was placed inside it, and
+        # a four-hundred-area world came out with none at levels 1-5 and twelve at 6-10.
         first = made[0] if made else None
-        if first is not None and not anchored:
-            heart = (first["anchor"]["latitude_deg"], first["anchor"]["longitude_deg"])
-            ring_m = cultures.LEVEL_RINGS[0][2] * math.pi * radius_m
-            near_home = sorted(
-                (one for one in sites
-                 if _haversine(heart[0], heart[1], one["latitude_deg"], one["longitude_deg"],
-                               radius_m) <= ring_m),
-                key=lambda one: _haversine(heart[0], heart[1], one["latitude_deg"],
-                                           one["longitude_deg"], radius_m))
+        if first is not None:
+            heart = origin if anchored else (first["anchor"]["latitude_deg"],
+                                             first["anchor"]["longitude_deg"])
+            origin = heart
+            nominal_m = cultures.LEVEL_RINGS[0][2] * math.pi * radius_m
+            wanted_near = min(count, starter_areas(count))
+            by_gap = sorted(
+                ((_haversine(heart[0], heart[1], one["latitude_deg"],
+                             one["longitude_deg"], radius_m), one) for one in sites),
+                key=lambda pair: pair[0])
+            # **Widen the ring, do not cut the quota.** The nominal ring is a couple of per
+            # cent of the planet, which holds six areas comfortably and forty only where
+            # the ground near home is generous. Taking whatever fits leaves the band short;
+            # reaching a little further keeps it whole and keeps it together, which is the
+            # point of a starting band - a player explores outward as they gain, so the
+            # early places have to be neighbours rather than a tenth of the world.
+            ring_m = nominal_m
+            while (ring_m < nominal_m * STARTER_REACH
+                   and sum(1 for gap, _one in by_gap if gap <= ring_m) < wanted_near):
+                ring_m *= 1.25
+            near_home = [one for gap, one in by_gap if gap <= ring_m]
             stage("settling the starting ground",
-                  "%d sites within %d km of %s" % (len(near_home), int(ring_m / 1000),
-                                                   first.get("display_name")))
-            for site in near_home[:STARTER_AREAS]:
+                  "%d of %d sites within %d km of %s"
+                  % (min(len(near_home), wanted_near), wanted_near, int(ring_m / 1000),
+                     first.get("display_name")))
+            for site in near_home[:wanted_near]:
                 if len(made) >= count:
                     break
                 candidates = classify(site)
@@ -1831,17 +1880,37 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # at 6-10 and nothing below it. The cities are founded first now, so there is a
         # real place to count out from.
         heart = next((a for a in made if a.get("hub")), None) or (made[0] if made else None)
-        if heart is not None and not anchored:
-            origin = (heart["anchor"]["latitude_deg"], heart["anchor"]["longitude_deg"])
+        if heart is not None:
+            if not anchored:
+                origin = (heart["anchor"]["latitude_deg"], heart["anchor"]["longitude_deg"])
             stage("measuring the world", "levels counted out from %s"
                   % (heart.get("display_name") or heart.get("name")))
-            for area in made:
+            # **Each band gets its share of the world.** Ordered by how far a place is from
+            # home, so further is still harder; sliced by share, so the world has somewhere
+            # to start and somewhere to end rather than sixty per cent of itself in one
+            # band. See `cultures.bands_by_share`.
+            outward = sorted(
+                made,
+                key=lambda one: _haversine(origin[0], origin[1],
+                                           one["anchor"]["latitude_deg"],
+                                           one["anchor"]["longitude_deg"], radius_m))
+            reach = {}
+            for area, band in zip(outward, cultures.bands_by_share(len(outward))):
                 gap = _haversine(origin[0], origin[1],
                                  area["anchor"]["latitude_deg"],
                                  area["anchor"]["longitude_deg"], radius_m)
-                band = cultures.ring_at(gap, radius_m)
                 area["level_band"] = [band[0], band[1]]
                 area["from_origin_km"] = round(gap / 1000.0, 1)
+                near, far = reach.get(band, (gap, gap))
+                reach[band] = (min(near, gap), max(far, gap))
+            # **The bands are still rings; their radii are what the shares decide.** Written
+            # down so a reader can see where one ends and the next begins rather than having
+            # to work it out from four hundred areas.
+            document["level_bands"] = [
+                {"band": [band[0], band[1]],
+                 "from_km": round(near / 1000.0, 1), "to_km": round(far / 1000.0, 1),
+                 "areas": sum(1 for one in made if one.get("level_band") == [band[0], band[1]])}
+                for band, (near, far) in sorted(reach.items())]
 
         stage("laying roads", "%d areas to join" % len(document["areas"]))
 
@@ -1858,9 +1927,28 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         stage("laying the ferry lines", "one terminal per shore")
         sea = ferries.plan(document["areas"], radius_m, at=at,
                            sailed_m=lambda one, other: _sea_gap(at, one, other, radius_m))
+        by_name = {one["name"]: one for one in document["areas"]}
+        drawn_lines = []
         for line in sea["lines"]:
             line["hulls"] = 2
             line["layover_minutes"] = 5.0
+            # **A line nobody can draw is a line nobody believes.** The crossing is timed on
+            # the water route round the headlands, so the same route is kept: it is what a
+            # map should show and what a hull should follow, and computing it twice from the
+            # same two points and drawing the other one is how the two disagree.
+            one, other = (by_name.get(line["ends"][0]), by_name.get(line["ends"][1]))
+            if not (one and other):
+                continue
+            start = _water_off(at, (one["latitude_deg"], one["longitude_deg"]),
+                               (other["latitude_deg"], other["longitude_deg"]), radius_m)
+            end = _water_off(at, (other["latitude_deg"], other["longitude_deg"]),
+                             (one["latitude_deg"], one["longitude_deg"]), radius_m)
+            track = sea_route(at, start, end, radius_m) if start and end else None
+            if not track:
+                continue
+            line["track"] = [[round(p[0], 6), round(p[1], 6)] for p in track]
+            drawn_lines.append(line)
+        sea["lines"] = drawn_lines
         document["ferry_lines"] = sea["lines"]
         document["ferry_terminals"] = [one["name"] for one in sea["terminals"]]
         run.write_json("ferries.json", {"lines": sea["lines"], "seas": sea.get("seas", 0),
