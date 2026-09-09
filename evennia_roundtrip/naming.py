@@ -715,10 +715,23 @@ def name_and_describe(area, race, rng, settled=True, taken=None):
     next_id = max((room["id"] for room in rooms), default=0) + 1
     for index, room in enumerate(rooms):
         opening = None
-        if index and index % 3 == 0 and trade_at < len(trades):
-            marker, template = trades[trade_at]
+        if index and index % 3 == 0:
+            # **A city has more than one baker.** The trade list used to be consumed once
+            # and then no more shops were built, so a hundred-and-sixty-room capital carried
+            # the same ten shops as a forty-seven-room village - a village with a long walk.
+            # The list cycles instead.
+            marker, template = trades[trade_at % len(trades)]
+            round_of = trade_at // len(trades)
             trade_at += 1
             named = (template % place_name(race, rng) if "%s" in template else template)
+            # A second general store must not share the first's name: an interior is off
+            # the lattice, so two of one name are two disconnected pieces sharing it, which
+            # is law G1. Named for the street it stands on, the way a real one is.
+            if round_of and "%s" not in template:
+                street = plan.get(room["id"]) or ""
+                where = street.split(",")[0].split(" at ")[0].strip()
+                named = "%s on %s" % (named, where) if where else "%s (%d)" % (named,
+                                                                              round_of + 1)
             doors = TRADE_DOORS if settled else WILD_DOORS
             opening = (marker, named, doors.get(marker))
         if opening and opening[2]:

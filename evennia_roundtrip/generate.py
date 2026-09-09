@@ -27,8 +27,8 @@ import math
 import os
 import random
 
-from . import (areagen, cultures, naming, people, period, place, planet,
-               populate, reachability, runs, siting, stock)
+from . import (areagen, cultures, ferries, hubs, naming, people, period, place,
+               planet, populate, reachability, runs, siting, stock)
 
 #: How many of each culture a hundred-area world should hold.
 #:
@@ -865,11 +865,43 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
     return road
 
 
-def finish_road(road, rng):
-    """Name and describe a road, once every one of its exits exists."""
+def finish_road(road, rng, from_name=None, to_name=None):
+    """
+    Name and describe a road, once every one of its exits exists.
+
+    Args:
+        road (dict): The road area.
+        rng (random.Random): The world's own generator.
+        from_name (str, optional): The place at the near end, as a player would call it.
+        to_name (str, optional): The place at the far end.
+
+    Notes:
+        **The end rooms name the places they join, which is law B2.** "A boundary room names
+        its neighbour area in the exit or the description. A player should know they are
+        leaving." Roads were the seam between every pair of areas in the world and said
+        nothing at either end, so walking out of a town and into the next was a change of
+        area a player could only detect by the scenery changing.
+
+        Said in the description rather than the exit, because the exit is a compass point
+        and law L4 says a compass exit is generated from the coordinates, never typed.
+    """
     naming.name_and_describe(road, "road", rng, settled=False)
     road.setdefault("size", "road")
     people.populate(road, "road", rng)
+
+    rooms = road.get("rooms") or []
+    if rooms and (from_name or to_name):
+        ends = ((rooms[0], from_name, to_name), (rooms[-1], to_name, from_name))
+        for room, here, there in ends:
+            if not (here or there):
+                continue
+            said = []
+            if here:
+                said.append("%s lies back the way you came" % here)
+            if there and there != here:
+                said.append("the road runs on to %s" % there)
+            room["desc"] = "%s %s." % (room.get("desc", "").rstrip(),
+                                       "; ".join(said).capitalize())
     return road
 
 
@@ -1205,7 +1237,9 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
             area["exits"].append({"source": room_b["id"],
                                   "name": _free_name(room_b, area, OPPOSITE[back]),
                                   "destination": last["id"], "road": True})
-            finish_road(road, rng)
+            finish_road(road, rng,
+                        from_name=other.get("display_name") or other.get("name"),
+                        to_name=area.get("display_name") or area.get("name"))
             rooms_on_it = len(road["rooms"])
         roads.append({"from": other["name"], "to": area["name"],
                       "metres": round(room_gap), "laid": True, "direction": direction,
@@ -1271,7 +1305,9 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                               "name": _free_name(near_room, area, OPPOSITE[back]),
                               "destination": last["id"], "road": True})
         display = trail["display_name"]
-        finish_road(trail, rng)
+        finish_road(trail, rng,
+                    from_name=host.get("display_name") or host.get("name"),
+                    to_name=area.get("display_name") or area.get("name"))
         trail["display_name"] = display
         roads.append({"from": host["name"], "to": area["name"], "metres": round(gap),
                       "laid": True, "rooms": len(trail["rooms"]), "path": True,
@@ -1344,7 +1380,7 @@ def feed_line(area):
     return line
 
 
-def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None):
+def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, size=None):
     """
     One finished, named, gated area - or None with the reasons it was refused.
 
@@ -1352,7 +1388,9 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None):
         result (dict): `area` and `problems`.
     """
     kind = culture.size
-    size = areagen.TYPE_SIZE.get(kind, 47)
+    # A hub is given its size rather than taking the one its culture usually builds: the
+    # site was chosen to be a city before anybody asked what kind of city it would be.
+    size = size or areagen.TYPE_SIZE.get(kind, 47)
     style = areagen.TYPE_STYLE.get(kind, "organic")
     lattice, shape_problems = areagen.build_lattice(size, rng, style=style)
     if lattice is None:
@@ -1544,6 +1582,45 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                 if isinstance(room.get("id"), int)]
         made, refused = [], []
         base_id = max(used) + 1000 if used else 1000
+
+        # **The great cities are placed first, on a grid, and the rest of the world is
+        # sited around them.** Every site score here rewards water, so left to itself the
+        # generator strings every large settlement along a coast; a cell decides that there
+        # IS a city and the ground inside it decides where. A cell that already holds one of
+        # the world's own places is skipped - that place is its region's city.
+        capitals = hubs.plan(sites, region, count, existing=existing)
+        stage("founding cities", "%d on a grid of %d"
+              % (len(capitals), hubs.how_many(count)))
+        for site in capitals:
+            if len(made) >= count:
+                break
+            candidates = classify(site)
+            if not candidates:
+                continue
+            # The biggest thing the ground will carry, since this is going to be a city
+            # whatever the table would have made of the site on its own.
+            culture = by_name[max(candidates,
+                                  key=lambda name: areagen.TYPE_SIZE.get(
+                                      by_name[name].size, 0))]
+            built = build_area(site, culture, at, radius_m, rng, base_id, origin,
+                               taken=named, size=hubs.HUB_ROOMS)
+            if built["area"] is None:
+                refused.append({"culture": culture.name,
+                                "site": [site["latitude_deg"], site["longitude_deg"]],
+                                "problems": built["problems"]})
+                continue
+            area = built["area"]
+            area["hub"] = True
+            key = _key_for(culture)
+            filled[key] = filled.get(key, 0) + 1
+            base_id += len(area["rooms"]) + 10
+            made.append(area)
+            sites = [one for one in sites if one is not site]
+            progress.write(json.dumps(feed_line(area)) + chr(10))
+            if on_area:
+                on_area(area)
+        stage("building areas", "%d wanted, %d cities founded" % (count, len(made)))
+
         for site in sites:
             if len(made) >= count:
                 break
