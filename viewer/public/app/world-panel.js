@@ -49,6 +49,7 @@ export function mountWorldPanel(parent, getViewer) {
   // Declared here rather than beside the area buttons: the save, the picker and the library all
   // touch them, and `let` in a later block is a temporal-dead-zone error rather than undefined.
   let lastAreas = [];
+  let lastRoads = [];
   let drawn = null;
 
   const wrap = el("div", "wb-section");
@@ -141,7 +142,7 @@ export function mountWorldPanel(parent, getViewer) {
       return;
     }
     const document_ = buildWorldfile(name, location.search, lastAreas, painted,
-                                     wb.spec || null);
+                                     wb.spec || null, lastRoads);
     // **Say so before writing it, not after.** A parameter the engine could not parse fell back
     // to canonical, so the world drawn is not the world the file names - and a save that records
     // a rejected input is a save of a planet nobody has seen.
@@ -202,9 +203,37 @@ export function mountWorldPanel(parent, getViewer) {
   /// Shared by the file picker and the library list, because "open a file" and "open a file the
   /// server already has" differ only in where the JSON comes from. Two copies of this would be
   /// two chances for the library to load a world the picker would have refused.
+  /// Take a finished run's areas and roads as this world's own.
+  ///
+  /// **A generated world that cannot be saved is a demonstration, not a tool.** The areas
+  /// a run makes live in the populate layer; the world file was written from `lastAreas`,
+  /// which only ever held what an OPENED file contained. So saving after a run wrote the
+  /// planet and the four areas that were there before it, and a hundred and thirty
+  /// generated ones went in the bin the moment the tab was closed - with no warning,
+  /// because the save itself succeeded.
+  ///
+  /// Called by the populate layer when a run finishes. Replaces rather than merges: the
+  /// run generated this world's areas, and appending would double them on a second run.
+  function adoptRun(areas, roads) {
+    lastAreas = Array.isArray(areas) ? areas : [];
+    lastRoads = Array.isArray(roads) ? roads : [];
+    paintAreas();
+    return lastAreas.length;
+  }
+  // **Heard as an event, not published as a global.** `main.js` assigns `window.__wb` a
+  // fresh object literal once the engine has loaded, which is after the panels mount and
+  // after any timeout short enough to be worth writing - so a property set on that object
+  // is a property thrown away, and the symptom is a hook that exists in the source and not
+  // in the browser. An event has no ordering to get wrong.
+  window.addEventListener("wb-run-finished", (event) => {
+    const held = (event && event.detail) || {};
+    adoptRun(held.areas || [], held.roads || []);
+  });
+
   async function loadWorldfile(document_) {
     checkVersion(document_);
     lastAreas = document_.areas || [];
+    lastRoads = document_.roads || [];
     const search = searchFromPlanet(document_.planet);
     const here = new URLSearchParams(location.search);
     const there = new URLSearchParams(search.replace(/^\?/, ""));

@@ -99,7 +99,8 @@ export function searchFromPlanet(planet) {
 /// and cannot hold one. A save that wrote the planet and the areas and dropped the features
 /// silently threw away every stroke somebody had painted - the file looked complete, opened
 /// without complaint, and drew a world with no mountains in it.
-export function buildWorldfile(name, search, areas = [], features = [], live = null) {
+export function buildWorldfile(name, search, areas = [], features = [], live = null,
+                               roads = []) {
   const planet = planetFromSearch(search);
   // **The four the reader cannot do without are always written, even when the URL is
   // silent about them.** `planetFromSearch` records what the query string says, and a
@@ -124,6 +125,11 @@ export function buildWorldfile(name, search, areas = [], features = [], live = n
     planet,
     features,
     areas,
+    // **The network is part of the world, not a picture of it.** A save that kept the
+    // areas and dropped the roads reopened as a set of towns with no way between them,
+    // and the generator's hardest guarantee - that everywhere can be walked to - was
+    // thrown away by the act of saving.
+    roads,
   };
 }
 

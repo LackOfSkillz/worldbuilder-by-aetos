@@ -56,7 +56,13 @@ const FAR_SCALE = 0.45;
 // as looking along.
 const FOOTPRINT_MAX_M = 4.0e5;
 const DETAIL_MAX_M = 6.0e4;
-const ROOM_LABEL_MAX_M = 8.0e3;
+/// The colour of a room worth stopping at: a shop, or anywhere with a keeper.
+///
+/// **Names are not drawn on the map any more.** Twenty-two of them over a village is a wall
+/// of text laid across the thing they label, and at a hundred rooms a town is unreadable.
+/// The name is what a hover is for and the description is what a click is for, so the map
+/// stays a map.
+const POI_COLOUR = (Cesium) => Cesium.Color.fromCssColorString("#ffcc66");
 
 /// An area with a harbour and one without, so the map answers the port question without a click.
 const PORT_COLOUR = "#4db2ff";
@@ -191,34 +197,40 @@ export function drawAreas(viewer, Cesium, document) {
     }
 
     for (const room of area.rooms || []) {
+      // What the room is FOR, which is the only thing worth a different colour. A keeper
+      // or goods on the shelves makes a point of interest; everything else is a street.
+      const keeper = (room.people || []).find((who) => who.role === "keeper");
+      const trade = !!(keeper || (room.stock && room.stock.length));
       source.entities.add({
         name: room.key,
+        // **The hover text, and the room's whole story, carried on the entity.** Cesium
+        // hands the picked entity back and nothing else, so anything a card wants to say
+        // has to be here at draw time.
+        description: room.key,
+        properties: {
+          wbRoom: {
+            key: room.key,
+            desc: room.desc || "",
+            area: area.display_name || area.name,
+            keeper: keeper ? keeper.name : null,
+            people: (room.people || []).map((who) => who.name),
+            stock: room.stock || [],
+            latitude_deg: room.latitude_deg,
+            longitude_deg: room.longitude_deg,
+          },
+        },
         position: Cesium.Cartesian3.fromDegrees(room.longitude_deg, room.latitude_deg),
         point: {
-          pixelSize: 6,
-          color: colour.brighten(0.4, new Cesium.Color()),
+          // A point of interest is bigger and warmer than the street it stands on. Sized
+          // rather than shaped, because a shape at six pixels is a smudge.
+          pixelSize: trade ? 9 : 6,
+          color: trade ? POI_COLOUR(Cesium) : colour.brighten(0.4, new Cesium.Color()),
           outlineColor: Cesium.Color.BLACK.withAlpha(0.7),
-          outlineWidth: 1,
+          outlineWidth: trade ? 2 : 1,
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
           distanceDisplayCondition:
             new Cesium.DistanceDisplayCondition(0.0, DETAIL_MAX_M),
-        },
-        label: {
-          text: room.key,
-          font: "11px system-ui, sans-serif",
-          fillColor: Cesium.Color.WHITE,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 3,
-          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          pixelOffset: new Cesium.Cartesian2(0, -12),
-          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          // Names come in last of all. Twenty-two of them at 60 km is a wall of text
-          // over a map you cannot then read.
-          distanceDisplayCondition:
-            new Cesium.DistanceDisplayCondition(0.0, ROOM_LABEL_MAX_M),
         },
       });
     }
@@ -296,6 +308,7 @@ const CLEARANCE_M = 700.0;
 export function enableAreaInput(viewer, Cesium, document, source, place = null) {
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   const card = makeCard();
+  const roomPanel = makeRoomPanel();
 
   const areaAt = (windowPosition) => {
     const picked = viewer.scene.pick(windowPosition);
@@ -341,6 +354,14 @@ export function enableAreaInput(viewer, Cesium, document, source, place = null) 
     const entity = areaAt(movement.position);
     if (!entity) return;
     card.style.display = "none";
+    // **A room is read, not flown to.** Clicking a street to be taken two thousand metres
+    // above it is the opposite of what a click on a room means: the camera is already
+    // where it needs to be, and what is wanted is what the room says.
+    const held = entity.properties && entity.properties.wbRoom;
+    if (held) {
+      showRoom(roomPanel, held.getValue(), movement.position.x, movement.position.y);
+      return;
+    }
     // **A computed camera move, not `viewer.flyTo(entity)`.** The entity form is the
     // obvious one and it hangs: it waits for the entity's data source and for terrain
     // under a CLAMP_TO_GROUND pin to be ready, and against an offline terrain provider
@@ -486,6 +507,74 @@ export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
 }
 
 /// The hover card. One per draw, reused, hidden when nothing is under the cursor.
+/// The room card: what a click on a room opens, and what its close button shuts.
+///
+/// **Separate from the hover card, because they answer different questions.** The hover
+/// says which room the cursor is over and must vanish the instant it leaves; this one is
+/// read, so it has to stay until it is dismissed. One element, shared by every source, for
+/// the reason `makeCard` records.
+function makeRoomPanel() {
+  const existing = window.document.getElementById("wb-room-card");
+  if (existing) return existing;
+  const panel = window.document.createElement("div");
+  panel.id = "wb-room-card";
+  panel.style.cssText = [
+    "position:absolute", "z-index:24", "display:none", "max-width:340px",
+    "padding:12px 14px 14px", "border-radius:8px",
+    "background:rgba(12,16,22,0.96)", "color:#e8eef6",
+    "border:1px solid rgba(255,255,255,0.22)",
+    "font:13px/1.55 system-ui, sans-serif",
+    "box-shadow:0 10px 30px rgba(0,0,0,0.55)",
+  ].join(";");
+  window.document.body.appendChild(panel);
+  return panel;
+}
+
+
+/// Fill the room card and show it beside the click.
+function showRoom(panel, room, x, y) {
+  const make = (tag, css, text) => {
+    const node = window.document.createElement(tag);
+    if (css) node.style.cssText = css;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  panel.textContent = "";
+
+  const close = make("button", [
+    "position:absolute", "top:6px", "right:8px", "border:0", "background:none",
+    "color:#9fb0c4", "font:16px/1 system-ui, sans-serif", "cursor:pointer",
+    "padding:2px 4px",
+  ].join(";"), "×");
+  close.type = "button";
+  close.title = "close";
+  close.addEventListener("click", () => { panel.style.display = "none"; });
+  panel.append(close);
+
+  panel.append(make("div", "font-weight:600;padding-right:16px", room.key));
+  if (room.area) {
+    panel.append(make("div", "color:#8fa3ba;font-size:11px;margin-bottom:6px", room.area));
+  }
+  if (room.desc) {
+    panel.append(make("div", "margin-bottom:6px", room.desc));
+  }
+  if (room.keeper) {
+    panel.append(make("div", "color:#ffcc66;font-size:12px", room.keeper));
+  }
+  if (room.stock && room.stock.length) {
+    const list = make("ul", "margin:4px 0 0;padding-left:18px;color:#cfe0f2;font-size:12px");
+    for (const ware of room.stock) list.append(make("li", null, ware));
+    panel.append(list);
+  } else if (room.people && room.people.length && !room.keeper) {
+    panel.append(make("div", "color:#8fa3ba;font-size:12px", room.people.join(", ")));
+  }
+
+  panel.style.display = "block";
+  panel.style.left = `${Math.min(x + 16, window.innerWidth - 360)}px`;
+  panel.style.top = `${Math.min(y + 16, window.innerHeight - 220)}px`;
+}
+
+
 function makeCard() {
   // **Reused, not replaced.** There is more than one set of pins on the globe - the
   // worldfile's areas and a live populate run each get their own input handler - and each

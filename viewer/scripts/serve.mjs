@@ -250,10 +250,11 @@ createServer(async (req, res) => {
         const counts = {
           saved: `${safe}.json`,
           areas: (document_.areas || []).length,
+          roads: (document_.roads || []).length,
           features: (document_.features || []).length,
         };
         console.log(`200 POST /worlds/ -> ${safe}.json `
-          + `(${counts.areas} areas, ${counts.features} features)`);
+          + `(${counts.areas} areas, ${counts.roads} roads, ${counts.features} features)`);
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(counts));
       } catch (error) {
         console.log(`400 POST /worlds/ ${error.message}`);

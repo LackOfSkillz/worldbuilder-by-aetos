@@ -300,7 +300,18 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
         if (counts) counts.finish(runSummary || {});
         fetch(`/runs/${encodeURIComponent(runId)}/worldfile.json`, { cache: "no-store" })
           .then((r) => r.json())
-          .then((doc) => { rooms = doc; drawRoads(doc); })
+          .then((doc) => {
+            rooms = doc;
+            drawRoads(doc);
+            // **Hand the world over so it can be saved.** The pins are drawn from the
+            // progress feed and the rooms from this file, and neither of them is the world
+            // panel's `lastAreas` - which is what "save world" writes. Until this line, a
+            // run's areas were on screen, on disk under `runs/`, and absent from every
+            // world file saved afterwards.
+            window.dispatchEvent(new CustomEvent("wb-run-finished", {
+              detail: { areas: doc.areas || [], roads: doc.roads || [] },
+            }));
+          })
           .catch(() => { /* the roads are a picture, not a promise */ });
         if (onTick) onTick(drawn(), cursor, done());
       }
