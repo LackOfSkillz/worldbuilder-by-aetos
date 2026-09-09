@@ -1,0 +1,1136 @@
+[
+ {
+  "direction": "west",
+  "from": "bayou_trace",
+  "laid": true,
+  "long": false,
+  "metres": 17,
+  "rooms": 0,
+  "to": "ferry_shore"
+ },
+ {
+  "direction": "southeast",
+  "from": "bayou_trace",
+  "laid": true,
+  "long": false,
+  "metres": 437,
+  "rooms": 0,
+  "to": "ranger_camp"
+ },
+ {
+  "direction": "southwest",
+  "from": "ranger_camp",
+  "laid": true,
+  "long": false,
+  "metres": 200356,
+  "rooms": 24,
+  "to": "elderbough"
+ },
+ {
+  "direction": "east",
+  "from": "ranger_camp",
+  "laid": true,
+  "long": false,
+  "metres": 266656,
+  "rooms": 33,
+  "to": "oldrow"
+ },
+ {
+  "direction": "south",
+  "from": "oldrow",
+  "laid": true,
+  "long": false,
+  "metres": 216156,
+  "rooms": 26,
+  "to": "marketmarket"
+ },
+ {
+  "direction": "north",
+  "from": "oldrow",
+  "laid": true,
+  "long": true,
+  "metres": 2079475,
+  "rooms": 40,
+  "to": "baskingtrace"
+ },
+ {
+  "direction": "northeast",
+  "from": "baskingtrace",
+  "laid": true,
+  "long": false,
+  "metres": 200887,
+  "rooms": 24,
+  "to": "silverwalk"
+ },
+ {
+  "direction": "northeast",
+  "from": "silverwalk",
+  "laid": true,
+  "long": false,
+  "metres": 200356,
+  "rooms": 24,
+  "to": "kettleworks"
+ },
+ {
+  "direction": "west",
+  "from": "silverwalk",
+  "laid": true,
+  "long": false,
+  "metres": 202854,
+  "rooms": 25,
+  "to": "elderwater"
+ },
+ {
+  "direction": "west",
+  "from": "kettleworks",
+  "laid": true,
+  "long": false,
+  "metres": 206615,
+  "rooms": 25,
+  "to": "kettleshop"
+ },
+ {
+  "direction": "northeast",
+  "from": "kettleshop",
+  "laid": true,
+  "long": false,
+  "metres": 191659,
+  "rooms": 23,
+  "to": "aditanvil"
+ },
+ {
+  "direction": "west",
+  "from": "aditanvil",
+  "laid": true,
+  "long": false,
+  "metres": 206713,
+  "rooms": 25,
+  "to": "cairnbrae"
+ },
+ {
+  "direction": "east",
+  "from": "kettleworks",
+  "laid": true,
+  "long": false,
+  "metres": 206591,
+  "rooms": 25,
+  "to": "sparkhill"
+ },
+ {
+  "direction": "east",
+  "from": "sparkhill",
+  "laid": true,
+  "long": false,
+  "metres": 206766,
+  "rooms": 25,
+  "to": "quiethollow"
+ },
+ {
+  "direction": "south",
+  "from": "quiethollow",
+  "laid": true,
+  "long": false,
+  "metres": 207292,
+  "rooms": 25,
+  "to": "elderreach"
+ },
+ {
+  "direction": "southeast",
+  "from": "kettleworks",
+  "laid": true,
+  "long": false,
+  "metres": 207572,
+  "rooms": 25,
+  "to": "highfold"
+ },
+ {
+  "direction": "northeast",
+  "from": "sparkhill",
+  "laid": true,
+  "long": false,
+  "metres": 207745,
+  "rooms": 25,
+  "to": "windmoot"
+ },
+ {
+  "direction": "west",
+  "from": "windmoot",
+  "laid": true,
+  "long": false,
+  "metres": 206729,
+  "rooms": 25,
+  "to": "moonhowl"
+ },
+ {
+  "direction": "northwest",
+  "from": "moonhowl",
+  "laid": true,
+  "long": false,
+  "metres": 206520,
+  "rooms": 25,
+  "to": "saltcross"
+ },
+ {
+  "direction": "south",
+  "from": "highfold",
+  "laid": true,
+  "long": false,
+  "metres": 207567,
+  "rooms": 25,
+  "to": "marketford"
+ },
+ {
+  "direction": "west",
+  "from": "cairnbrae",
+  "laid": true,
+  "long": false,
+  "metres": 270456,
+  "rooms": 33,
+  "to": "forgegranite"
+ },
+ {
+  "direction": "south",
+  "from": "forgegranite",
+  "laid": true,
+  "long": false,
+  "metres": 194282,
+  "rooms": 24,
+  "to": "stairgranite"
+ },
+ {
+  "direction": "south",
+  "from": "stairgranite",
+  "laid": true,
+  "long": false,
+  "metres": 266029,
+  "rooms": 33,
+  "to": "meadowbank"
+ },
+ {
+  "direction": "southwest",
+  "from": "meadowbank",
+  "laid": true,
+  "long": false,
+  "metres": 199527,
+  "rooms": 24,
+  "to": "the-landing-city"
+ },
+ {
+  "direction": "north",
+  "from": "the-landing-city",
+  "laid": true,
+  "long": false,
+  "metres": 0,
+  "rooms": 0,
+  "to": "millfield"
+ },
+ {
+  "direction": "northwest",
+  "from": "the-landing-city",
+  "laid": true,
+  "long": false,
+  "metres": 200031,
+  "rooms": 24,
+  "to": "bridgebridge"
+ },
+ {
+  "direction": "northwest",
+  "from": "bridgebridge",
+  "laid": true,
+  "long": false,
+  "metres": 200609,
+  "rooms": 24,
+  "to": "openmoot"
+ },
+ {
+  "direction": "southwest",
+  "from": "openmoot",
+  "laid": true,
+  "long": false,
+  "metres": 201119,
+  "rooms": 24,
+  "to": "delveember"
+ },
+ {
+  "direction": "northwest",
+  "from": "delveember",
+  "laid": true,
+  "long": false,
+  "metres": 189615,
+  "rooms": 23,
+  "to": "forgeember"
+ },
+ {
+  "direction": "northeast",
+  "from": "forgeember",
+  "laid": true,
+  "long": false,
+  "metres": 200748,
+  "rooms": 24,
+  "to": "forgequarry"
+ },
+ {
+  "direction": "northeast",
+  "from": "forgequarry",
+  "laid": true,
+  "long": false,
+  "metres": 181308,
+  "rooms": 22,
+  "to": "aditanvil"
+ },
+ {
+  "direction": "north",
+  "from": "bridgebridge",
+  "laid": true,
+  "long": false,
+  "metres": 221582,
+  "rooms": 27,
+  "to": "netwalk"
+ },
+ {
+  "direction": "west",
+  "from": "forgeember",
+  "laid": true,
+  "long": true,
+  "metres": 341276,
+  "rooms": 40,
+  "to": "packhowl"
+ },
+ {
+  "direction": "west",
+  "from": "packhowl",
+  "laid": true,
+  "long": false,
+  "metres": 200968,
+  "rooms": 24,
+  "to": "grassrun"
+ },
+ {
+  "direction": "west",
+  "from": "grassrun",
+  "laid": true,
+  "long": false,
+  "metres": 200848,
+  "rooms": 24,
+  "to": "packhowl"
+ },
+ {
+  "direction": "west",
+  "from": "packhowl",
+  "laid": true,
+  "long": false,
+  "metres": 200529,
+  "rooms": 24,
+  "to": "elderhollow"
+ },
+ {
+  "direction": "west",
+  "from": "elderhollow",
+  "laid": true,
+  "long": false,
+  "metres": 200889,
+  "rooms": 24,
+  "to": "broadground"
+ },
+ {
+  "direction": "north",
+  "from": "packhowl",
+  "laid": true,
+  "long": false,
+  "metres": 200808,
+  "rooms": 24,
+  "to": "upperrow"
+ },
+ {
+  "direction": "north",
+  "from": "broadground",
+  "laid": true,
+  "long": false,
+  "metres": 208073,
+  "rooms": 25,
+  "to": "millwharf"
+ },
+ {
+  "direction": "northeast",
+  "from": "millwharf",
+  "laid": true,
+  "long": false,
+  "metres": 207511,
+  "rooms": 25,
+  "to": "marketrow"
+ },
+ {
+  "direction": "northeast",
+  "from": "upperrow",
+  "laid": true,
+  "long": false,
+  "metres": 248411,
+  "rooms": 30,
+  "to": "millfield"
+ },
+ {
+  "direction": "northwest",
+  "from": "forgegranite",
+  "laid": true,
+  "long": true,
+  "metres": 408293,
+  "rooms": 40,
+  "to": "delveslate"
+ },
+ {
+  "direction": "west",
+  "from": "delveslate",
+  "laid": true,
+  "long": false,
+  "metres": 206049,
+  "rooms": 25,
+  "to": "saltcross"
+ },
+ {
+  "direction": "northeast",
+  "from": "delveslate",
+  "laid": true,
+  "long": true,
+  "metres": 776128,
+  "rooms": 40,
+  "to": "holdanvil"
+ },
+ {
+  "direction": "northwest",
+  "from": "holdanvil",
+  "laid": true,
+  "long": false,
+  "metres": 206692,
+  "rooms": 25,
+  "to": "stairstone"
+ },
+ {
+  "direction": "southeast",
+  "from": "marketmarket",
+  "laid": true,
+  "long": true,
+  "metres": 2285573,
+  "rooms": 40,
+  "to": "grassground"
+ },
+ {
+  "direction": "south",
+  "from": "grassground",
+  "laid": true,
+  "long": false,
+  "metres": 207542,
+  "rooms": 25,
+  "to": "alderwater"
+ },
+ {
+  "direction": "west",
+  "from": "alderwater",
+  "laid": true,
+  "long": false,
+  "metres": 200848,
+  "rooms": 24,
+  "to": "bridgerow"
+ },
+ {
+  "direction": "south",
+  "from": "bridgerow",
+  "laid": true,
+  "long": true,
+  "metres": 348033,
+  "rooms": 40,
+  "to": "stoneshieling"
+ },
+ {
+  "direction": "west",
+  "from": "stoneshieling",
+  "laid": true,
+  "long": false,
+  "metres": 205523,
+  "rooms": 25,
+  "to": "marketgate"
+ },
+ {
+  "direction": "west",
+  "from": "marketgate",
+  "laid": true,
+  "long": false,
+  "metres": 205738,
+  "rooms": 25,
+  "to": "oldgate"
+ },
+ {
+  "direction": "east",
+  "from": "stoneshieling",
+  "laid": true,
+  "long": true,
+  "metres": 397083,
+  "rooms": 40,
+  "to": "greyquay"
+ },
+ {
+  "direction": "northeast",
+  "from": "alderwater",
+  "laid": true,
+  "long": true,
+  "metres": 400920,
+  "rooms": 40,
+  "to": "sparksteading"
+ },
+ {
+  "direction": "southeast",
+  "from": "greyquay",
+  "laid": true,
+  "long": true,
+  "metres": 401484,
+  "rooms": 40,
+  "to": "palegate"
+ },
+ {
+  "direction": "west",
+  "from": "palegate",
+  "laid": true,
+  "long": true,
+  "metres": 396634,
+  "rooms": 40,
+  "to": "farprospect"
+ },
+ {
+  "direction": "south",
+  "from": "farprospect",
+  "laid": true,
+  "long": false,
+  "metres": 207414,
+  "rooms": 25,
+  "to": "stairslate"
+ },
+ {
+  "direction": "northeast",
+  "from": "sparksteading",
+  "laid": true,
+  "long": true,
+  "metres": 1760902,
+  "rooms": 40,
+  "to": "openground"
+ },
+ {
+  "direction": "east",
+  "from": "openground",
+  "laid": true,
+  "long": false,
+  "metres": 206537,
+  "rooms": 25,
+  "to": "farreach"
+ },
+ {
+  "direction": "northeast",
+  "from": "farreach",
+  "laid": true,
+  "long": false,
+  "metres": 207502,
+  "rooms": 25,
+  "to": "opencamp"
+ },
+ {
+  "direction": "northwest",
+  "from": "opencamp",
+  "laid": true,
+  "long": false,
+  "metres": 294926,
+  "rooms": 36,
+  "to": "marketbridge"
+ },
+ {
+  "direction": "northeast",
+  "from": "marketbridge",
+  "laid": true,
+  "long": false,
+  "metres": 207637,
+  "rooms": 25,
+  "to": "coldhollow"
+ },
+ {
+  "direction": "east",
+  "from": "coldhollow",
+  "laid": true,
+  "long": false,
+  "metres": 207408,
+  "rooms": 25,
+  "to": "windcamp"
+ },
+ {
+  "direction": "northwest",
+  "from": "windcamp",
+  "laid": true,
+  "long": false,
+  "metres": 207894,
+  "rooms": 25,
+  "to": "alderwalk"
+ },
+ {
+  "direction": "northeast",
+  "from": "windcamp",
+  "laid": true,
+  "long": false,
+  "metres": 207562,
+  "rooms": 25,
+  "to": "broadreach"
+ },
+ {
+  "direction": "north",
+  "from": "broadreach",
+  "laid": true,
+  "long": false,
+  "metres": 207726,
+  "rooms": 25,
+  "to": "grasscamp"
+ },
+ {
+  "direction": "north",
+  "from": "grasscamp",
+  "laid": true,
+  "long": false,
+  "metres": 208021,
+  "rooms": 25,
+  "to": "grasssteading"
+ },
+ {
+  "direction": "southwest",
+  "from": "grasssteading",
+  "laid": true,
+  "long": false,
+  "metres": 200973,
+  "rooms": 24,
+  "to": "broadrun"
+ },
+ {
+  "direction": "north",
+  "from": "broadrun",
+  "laid": true,
+  "long": false,
+  "metres": 189533,
+  "rooms": 23,
+  "to": "grassreach"
+ },
+ {
+  "direction": "southwest",
+  "from": "broadrun",
+  "laid": true,
+  "long": false,
+  "metres": 200773,
+  "rooms": 24,
+  "to": "grasssteading"
+ },
+ {
+  "direction": "northwest",
+  "from": "grasssteading",
+  "laid": true,
+  "long": false,
+  "metres": 207867,
+  "rooms": 25,
+  "to": "upperrow"
+ },
+ {
+  "direction": "northwest",
+  "from": "marketbridge",
+  "laid": true,
+  "long": false,
+  "metres": 248209,
+  "rooms": 30,
+  "to": "kingsmarket"
+ },
+ {
+  "direction": "north",
+  "from": "kingsmarket",
+  "laid": true,
+  "long": false,
+  "metres": 200928,
+  "rooms": 24,
+  "to": "broadcamp"
+ },
+ {
+  "direction": "north",
+  "from": "grassreach",
+  "laid": true,
+  "long": true,
+  "metres": 2813963,
+  "rooms": 40,
+  "to": "copperyard"
+ },
+ {
+  "direction": "northwest",
+  "from": "copperyard",
+  "laid": true,
+  "long": true,
+  "metres": 402553,
+  "rooms": 40,
+  "to": "kettleworks"
+ },
+ {
+  "direction": "southwest",
+  "from": "kettleworks",
+  "laid": true,
+  "long": false,
+  "metres": 202577,
+  "rooms": 25,
+  "to": "windground"
+ },
+ {
+  "direction": "north",
+  "from": "kettleworks",
+  "laid": true,
+  "long": false,
+  "metres": 208175,
+  "rooms": 25,
+  "to": "saltwharf"
+ },
+ {
+  "direction": "north",
+  "from": "saltwharf",
+  "laid": true,
+  "long": false,
+  "metres": 207828,
+  "rooms": 25,
+  "to": "upperrow"
+ },
+ {
+  "direction": "northwest",
+  "from": "upperrow",
+  "laid": true,
+  "long": false,
+  "metres": 206668,
+  "rooms": 25,
+  "to": "greenreach"
+ },
+ {
+  "direction": "west",
+  "from": "greenreach",
+  "laid": true,
+  "long": false,
+  "metres": 205441,
+  "rooms": 25,
+  "to": "standingrun"
+ },
+ {
+  "direction": "southwest",
+  "from": "standingrun",
+  "laid": true,
+  "long": false,
+  "metres": 199808,
+  "rooms": 24,
+  "to": "longwood"
+ },
+ {
+  "direction": "northwest",
+  "from": "longwood",
+  "laid": true,
+  "long": false,
+  "metres": 200146,
+  "rooms": 24,
+  "to": "bridgebridge"
+ },
+ {
+  "direction": "southwest",
+  "from": "bridgebridge",
+  "laid": true,
+  "long": false,
+  "metres": 200042,
+  "rooms": 24,
+  "to": "netherrow"
+ },
+ {
+  "direction": "southwest",
+  "from": "greenreach",
+  "laid": true,
+  "long": false,
+  "metres": 206596,
+  "rooms": 25,
+  "to": "packrun"
+ },
+ {
+  "direction": "northwest",
+  "from": "standingrun",
+  "laid": true,
+  "long": false,
+  "metres": 206792,
+  "rooms": 25,
+  "to": "netherfield"
+ },
+ {
+  "direction": "south",
+  "from": "packrun",
+  "laid": true,
+  "long": false,
+  "metres": 207922,
+  "rooms": 25,
+  "to": "bridgecross"
+ },
+ {
+  "direction": "east",
+  "from": "greenreach",
+  "laid": true,
+  "long": false,
+  "metres": 207812,
+  "rooms": 25,
+  "to": "farrun"
+ },
+ {
+  "direction": "northwest",
+  "from": "farrun",
+  "laid": true,
+  "long": false,
+  "metres": 206905,
+  "rooms": 25,
+  "to": "windsteading"
+ },
+ {
+  "direction": "west",
+  "from": "windsteading",
+  "laid": true,
+  "long": false,
+  "metres": 198952,
+  "rooms": 24,
+  "to": "windmoot"
+ },
+ {
+  "direction": "northeast",
+  "from": "windmoot",
+  "laid": true,
+  "long": false,
+  "metres": 205067,
+  "rooms": 25,
+  "to": "whistleworks"
+ },
+ {
+  "direction": "west",
+  "from": "whistleworks",
+  "laid": true,
+  "long": false,
+  "metres": 202594,
+  "rooms": 25,
+  "to": "cairnbrae"
+ },
+ {
+  "direction": "northwest",
+  "from": "cairnbrae",
+  "laid": true,
+  "long": false,
+  "metres": 206781,
+  "rooms": 25,
+  "to": "kingswharf"
+ },
+ {
+  "direction": "west",
+  "from": "kingswharf",
+  "laid": true,
+  "long": false,
+  "metres": 204324,
+  "rooms": 25,
+  "to": "kingsgate"
+ },
+ {
+  "direction": "south",
+  "from": "kingsgate",
+  "laid": true,
+  "long": false,
+  "metres": 200688,
+  "rooms": 24,
+  "to": "cogsteading"
+ },
+ {
+  "direction": "west",
+  "from": "kingsgate",
+  "laid": true,
+  "long": false,
+  "metres": 204970,
+  "rooms": 25,
+  "to": "copperbench"
+ },
+ {
+  "direction": "southwest",
+  "from": "copperbench",
+  "laid": true,
+  "long": false,
+  "metres": 206556,
+  "rooms": 25,
+  "to": "broadrun"
+ },
+ {
+  "direction": "west",
+  "from": "broadrun",
+  "laid": true,
+  "long": false,
+  "metres": 202642,
+  "rooms": 25,
+  "to": "windsteading"
+ },
+ {
+  "direction": "southeast",
+  "from": "windsteading",
+  "laid": true,
+  "long": false,
+  "metres": 204702,
+  "rooms": 25,
+  "to": "standingground"
+ },
+ {
+  "direction": "west",
+  "from": "standingground",
+  "laid": true,
+  "long": false,
+  "metres": 204046,
+  "rooms": 25,
+  "to": "standingreach"
+ },
+ {
+  "direction": "southwest",
+  "from": "standingreach",
+  "laid": true,
+  "long": false,
+  "metres": 205275,
+  "rooms": 25,
+  "to": "windground"
+ },
+ {
+  "direction": "east",
+  "from": "windground",
+  "laid": true,
+  "long": false,
+  "metres": 204944,
+  "rooms": 25,
+  "to": "farground"
+ },
+ {
+  "direction": "east",
+  "from": "standingground",
+  "laid": true,
+  "long": false,
+  "metres": 210991,
+  "rooms": 26,
+  "to": "cairnbrae"
+ },
+ {
+  "direction": "southwest",
+  "from": "broadground",
+  "laid": true,
+  "long": true,
+  "metres": 3195679,
+  "rooms": 40,
+  "to": "willowwood"
+ },
+ {
+  "direction": "southwest",
+  "from": "willowwood",
+  "laid": true,
+  "long": false,
+  "metres": 200956,
+  "rooms": 24,
+  "to": "bridgecross"
+ },
+ {
+  "direction": "west",
+  "from": "bridgecross",
+  "laid": true,
+  "long": false,
+  "metres": 200648,
+  "rooms": 24,
+  "to": "nethercross"
+ },
+ {
+  "direction": "east",
+  "from": "bridgecross",
+  "laid": true,
+  "long": false,
+  "metres": 200688,
+  "rooms": 24,
+  "to": "seastair"
+ },
+ {
+  "from": "the-road-from-bridgebridge-to-netherrow",
+  "laid": true,
+  "long": false,
+  "metres": 174246,
+  "path": true,
+  "rooms": 21,
+  "to": "sharphole"
+ },
+ {
+  "from": "bridgerow",
+  "laid": true,
+  "long": false,
+  "metres": 200686,
+  "path": true,
+  "rooms": 24,
+  "to": "roewood"
+ },
+ {
+  "from": "the-road-from-forgegranite-to-delveslate",
+  "laid": true,
+  "long": false,
+  "metres": 202603,
+  "path": true,
+  "rooms": 25,
+  "to": "roughground"
+ },
+ {
+  "from": "the-road-from-oldrow-to-marketmarket",
+  "laid": true,
+  "long": false,
+  "metres": 210446,
+  "path": true,
+  "rooms": 26,
+  "to": "barehunt"
+ },
+ {
+  "from": "the-road-from-baskingtrace-to-silverwalk",
+  "laid": true,
+  "long": false,
+  "metres": 174315,
+  "path": true,
+  "rooms": 21,
+  "to": "farhollow"
+ },
+ {
+  "from": "bridgebridge",
+  "laid": true,
+  "long": false,
+  "metres": 200848,
+  "path": true,
+  "rooms": 24,
+  "to": "crookrun"
+ },
+ {
+  "from": "the-road-from-standingground-to-cairnbrae",
+  "laid": true,
+  "long": false,
+  "metres": 179790,
+  "path": true,
+  "rooms": 22,
+  "to": "fallowchase"
+ },
+ {
+  "from": "the-road-from-packrun-to-bridgecross",
+  "laid": true,
+  "long": false,
+  "metres": 195172,
+  "path": true,
+  "rooms": 24,
+  "to": "greyground"
+ },
+ {
+  "from": "the-road-from-marketbridge-to-kingsmarket",
+  "laid": true,
+  "long": false,
+  "metres": 161839,
+  "path": true,
+  "rooms": 20,
+  "to": "thornreach"
+ },
+ {
+  "from": "the-road-from-grasssteading-to-upperrow",
+  "laid": true,
+  "long": false,
+  "metres": 194601,
+  "path": true,
+  "rooms": 24,
+  "to": "lowcamp"
+ },
+ {
+  "from": "the-road-from-kingsmarket-to-broadcamp",
+  "laid": true,
+  "long": false,
+  "metres": 174105,
+  "path": true,
+  "rooms": 21,
+  "to": "coldhollow"
+ },
+ {
+  "from": "the-road-from-bridgerow-to-stoneshieling",
+  "laid": true,
+  "long": false,
+  "metres": 146356,
+  "path": true,
+  "rooms": 18,
+  "to": "whinground"
+ },
+ {
+  "from": "the-road-from-marketgate-to-oldgate",
+  "laid": true,
+  "long": false,
+  "metres": 194358,
+  "path": true,
+  "rooms": 24,
+  "to": "barethicket"
+ },
+ {
+  "from": "the-road-from-willowwood-to-bridgecross",
+  "laid": true,
+  "long": false,
+  "metres": 161364,
+  "path": true,
+  "rooms": 20,
+  "to": "craghowl"
+ },
+ {
+  "from": "the-road-from-upperrow-to-millfield",
+  "laid": true,
+  "long": false,
+  "metres": 161778,
+  "path": true,
+  "rooms": 20,
+  "to": "crookmidden"
+ },
+ {
+  "from": "the-road-from-packhowl-to-grassrun",
+  "laid": true,
+  "long": false,
+  "metres": 201060,
+  "path": true,
+  "rooms": 24,
+  "to": "coldfell"
+ },
+ {
+  "from": "elderwater",
+  "laid": true,
+  "long": false,
+  "metres": 200977,
+  "path": true,
+  "rooms": 24,
+  "to": "buckwood"
+ },
+ {
+  "from": "aditanvil",
+  "laid": true,
+  "long": false,
+  "metres": 200548,
+  "path": true,
+  "rooms": 24,
+  "to": "coldfell"
+ },
+ {
+  "from": "elderreach",
+  "laid": true,
+  "long": false,
+  "metres": 189025,
+  "path": true,
+  "rooms": 23,
+  "to": "crookwarren"
+ },
+ {
+  "from": "the-road-from-aditanvil-to-cairnbrae",
+  "laid": true,
+  "long": false,
+  "metres": 204900,
+  "path": true,
+  "rooms": 25,
+  "to": "barecrag"
+ },
+ {
+  "from": "the-road-from-kettleworks-to-windground",
+  "laid": true,
+  "long": false,
+  "metres": 167354,
+  "path": true,
+  "rooms": 20,
+  "to": "deepscrub"
+ }
+]

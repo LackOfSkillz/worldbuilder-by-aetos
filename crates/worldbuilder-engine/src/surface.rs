@@ -28,15 +28,17 @@
 //! every number it uses is imported from the layer that owns it. `structural_m`,
 //! `elevation_m` and `bottom_at` arrive in later tasks, as do the bindings.
 
-use crate::continentality::Continentality;
-use crate::detail::Detail;
+use crate::climate::{self, ClimateParams, MoistureParams};
+use crate::continentality::{Continentality, CoastParams};
+use crate::detail::{Detail, GullyParams, ReliefParams};
 use crate::features::{Feature, Features};
 use crate::generation::plates_for;
 use crate::plates::PlateSet;
 use crate::shelf::Shelf;
 use crate::sphere::SpherePoint;
 use crate::substrate::{self, Composition, UnknownSubstrate};
-use crate::tectonics::Tectonics;
+use crate::tangent::TangentFrame;
+use crate::tectonics::{TectonicParams, Tectonics};
 
 /// What the caller brought, where Python writes `features=`.
 ///
@@ -104,6 +106,15 @@ pub struct Surface {
     pub shelf: Shelf,
     pub detail: Detail,
     pub features: Features,
+    /// The gully kernel's steering gradient, or `None` on the canonical path.
+    ///
+    /// **`None` is the off switch, and it is structural rather than arithmetic.** A block
+    /// whose `amplitude_m` is zero -- which is exactly `GullyParams::canonical()` -- builds
+    /// no lattice at all, so `elevation_m` below takes the same branch it took before this
+    /// field existed and returns the same bits. Adding an exactly-zero offset instead would
+    /// be bit-identical for every value of `shaped` except `-0.0`, and "every value except
+    /// one" is not what Ruling 1 asks for.
+    steer: Option<crate::steer::SteerLattice>,
 }
 
 impl Surface {
@@ -114,6 +125,17 @@ impl Surface {
     /// plate_count: Python's `DEFAULT_PLATE_COUNT`.
     /// land_fraction: Python's `LAND_FRACTION`.
     /// features: `None`, loose features, or a `Features` adopted verbatim.
+    /// relief: `None` for canonical roughness -- `Detail`'s nine constants (plus the
+    /// coarsest wavelength) exactly as `worldbuilder/terrain/detail.py` has them -- or
+    /// `Some(params)` for a caller-chosen `ReliefParams`. Follows the same `Option`
+    /// pattern as `features` immediately above: an explicit `None` meaning *canonical* is
+    /// a different thing from an implicit `Default::default()`, and this codebase
+    /// deliberately rejects defaults nobody chose.
+    /// tectonics: `None` for canonical uplift -- `Tectonics`' nine profile constants
+    /// exactly as `worldbuilder/terrain/tectonics.py` has them -- or `Some(params)` for a
+    /// caller-chosen `TectonicParams`. The third parameter of the same kind, following
+    /// `features` and `relief` above rather than inventing a second convention. It reaches
+    /// `Shelf` too, because `Shelf` is built from this same `Tectonics`.
     ///
     /// **The seed reaches three constructors and they do not agree on what it is.** This
     /// is the one thing in this file that a reviewer should not skim. `plates_for` keys a
@@ -130,6 +152,87 @@ impl Surface {
         plate_count: usize,
         land_fraction: f64,
         features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+    ) -> Self {
+        Self::with_coast(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features,
+            relief,
+            tectonics,
+            None,
+        )
+    }
+
+    /// The same world, with an opt-in coastal roughening block reaching `Continentality`.
+    ///
+    /// `coast`: `None` for today's coastline, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen `CoastParams`. The fourth opt-in parameter of the same kind, after
+    /// `features`, `relief` and `tectonics`.
+    ///
+    /// **Why this is a second constructor rather than an eighth parameter on `new`.** See
+    /// `Continentality::new`'s note: `Surface::new` has seventy call sites in this crate,
+    /// this crate's own C ABI already ships `wb_world_new` / `wb_world_new_relief` /
+    /// `wb_world_new_tectonic` as separate entry points for exactly this reason, and what
+    /// Ruling 1 requires -- opt-in, `None` canonical, `canonical()` inert and bit-identical
+    /// to `None` -- is a property of the parameter rather than of where it is spelled. That
+    /// bit-identity is pinned at this level by
+    /// `coast_none_matches_coast_some_canonical_bit_for_bit` below, over the full
+    /// `elevation_m` pipeline rather than only at `above_shore`.
+    ///
+    /// **It reaches `Tectonics` and `Shelf` too**, because both are built from this same
+    /// `Continentality` -- which is the point. A coastline only the land/sea test knew
+    /// about, with the shelf still hugging the old smooth one, would be a seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_coast(
+        world_seed: i64,
+        radius_m: f64,
+        plate_count: usize,
+        land_fraction: f64,
+        features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+        coast: Option<CoastParams>,
+    ) -> Self {
+        Self::with_gully(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features,
+            relief,
+            tectonics,
+            coast,
+            None,
+        )
+    }
+
+    /// The same world, with an opt-in drainage texture reaching `Detail`.
+    ///
+    /// `gully`: `None` for today's ground, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen `GullyParams`. **The fifth opt-in parameter of the same kind**, after
+    /// `features`, `relief`, `tectonics` and `coast`, and a third constructor for the reason
+    /// `with_coast` gives for being a second one: `Surface::new` has seventy call sites in
+    /// this crate, the C ABI already ships four separate doors for exactly this, and what
+    /// Ruling 1 requires is a property of the parameter rather than of where it is spelled.
+    ///
+    /// **This is the only parameter of the five that adds a term to `elevation_m` rather
+    /// than changing one**, which is why the `None` path is held by not building the
+    /// steering lattice at all. See the `steer` field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_gully(
+        world_seed: i64,
+        radius_m: f64,
+        plate_count: usize,
+        land_fraction: f64,
+        features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+        coast: Option<CoastParams>,
+        gully: Option<GullyParams>,
     ) -> Self {
         let plates = plates_for(world_seed, plate_count);
         // `Noise::new` mixes first and masks second (`noise.py:38`, `h = (h ^ (seed * K)) &
@@ -139,10 +242,20 @@ impl Surface {
         // a tautology - all 2,049 give a negative unbounded `Noise.seed` before the mask.
         // See task-1-report.md sections 1a-1c.
         let noise_seed = world_seed as u64; // cast-ok: two's-complement reinterpretation, not a float truncation -- the mask comes AFTER the mixing, so nothing is rounded and nothing is lost
-        let land = Continentality::new(noise_seed, radius_m, land_fraction);
-        let tectonics = Tectonics::new(plates.clone(), land, radius_m);
+        let land = Continentality::with_coast(noise_seed, radius_m, land_fraction, coast);
+        // The `tectonics` on the right is still the `Option<TectonicParams>` parameter --
+        // the binding this line introduces is not in scope until after it -- and from here
+        // on the name means the built layer, as it did before this parameter existed.
+        let tectonics = Tectonics::new(plates.clone(), land, radius_m, tectonics);
         let shelf = Shelf::new(tectonics.clone(), land, radius_m);
-        let detail = Detail::new(noise_seed, radius_m);
+        let detail = Detail::with_gully(noise_seed, radius_m, relief, gully);
+        // Built only for a block that will actually draw something. See the `steer` field.
+        let steer = match gully {
+            Some(gully) if gully.amplitude_m != 0.0 => {
+                Some(crate::steer::SteerLattice::new(radius_m, gully.steer_lattice_m))
+            }
+            _ => None,
+        };
         // Transcribed from `surface.py`'s three-way branch, and the last arm is the one
         // worth reading twice: a pre-built `Features` is adopted **exactly as it stands,
         // including its own `radius_m`**. Python does not re-place it and does not
@@ -156,6 +269,7 @@ impl Surface {
             Some(FeatureInput::Built(built)) => built,
         };
         Self {
+            steer,
             world_seed,
             radius_m,
             plates,
@@ -286,7 +400,263 @@ impl Surface {
                 .amplitude_m(point, shaped, reading.weight, reading.tectonic_m);
         // Where somebody stated a shape, roughness defers to it.
         amplitude *= 1.0 - authority;
-        shaped + self.detail.offset_m(point, amplitude, resolution_m)
+        let roughened = shaped + self.detail.offset_m(point, amplitude, resolution_m);
+        // **Four lines, and the canonical path does not execute any of them.** `steer` is
+        // `None` unless somebody asked for a drainage block with a non-zero amplitude, so
+        // this `match` is the whole of what Ruling 1 costs the default world.
+        //
+        // The gully term is damped by `1 - authority` for the same reason the roughness
+        // above it is, and it is measured to matter for the same reason: a harbour dredged
+        // flat that still carries a gully is not dredged. It is sized off `shaped` --
+        // structure with features composed, before any texture -- and steered off
+        // `structural_m`, which is defined before detail exists. Neither reads the value
+        // this line is computing, so nothing here steers on itself.
+        //
+        // The reading carries a LOCAL ELEVATION REFERENCE as well as the fall line -- the
+        // steer cell's own mean `structural_m`, which is the mean of the four samples the
+        // gradient already differences and so costs no extra `structural_m` call. It is the
+        // datum the gully kernel's pitchfork is measured against; see
+        // `detail::GullyParams::harmonic_band_m`. It is a mean of `structural_m` for the same
+        // reason the gradient is: it is defined before detail exists, so nothing here reads
+        // the value this line is computing.
+        match &self.steer {
+            None => roughened,
+            Some(steer) => {
+                let frame = TangentFrame::at(point, self.radius_m);
+                let reading = steer.at(point, &frame, &|probe| self.structural_m(probe));
+                roughened
+                    + (1.0 - authority)
+                        * self
+                            .detail
+                            .gully_offset_m(point, &frame, reading, shaped, resolution_m)
+            }
+        }
+    }
+
+    /// Mean annual surface temperature at a point, in degrees C.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: Passed straight to `elevation_m`. `None` is the physics ground truth
+    /// and is what a snow line or a biome should be asked at; a viewer sampling a tile at
+    /// its own resolution gets a temperature consistent with the ground it is drawing,
+    /// which is the point of threading it rather than hard-coding `None` here.
+    /// climate: `None` for the fitted profile -- `climate.rs`'s three constants exactly --
+    /// or `Some(params)` for a caller-chosen `ClimateParams`. The fourth opt-in parameter
+    /// block of the same kind, after `relief`, `tectonics` and `coast`.
+    ///
+    /// Returns:
+    /// Degrees Celsius. An absolute unit; see `climate::temperature_c`.
+    ///
+    /// # Why this is a method taking params, where the other three blocks are constructor
+    /// arguments
+    ///
+    /// The other three configure a *layer that holds state*: `Detail` owns a noise lattice
+    /// and a band table, `Tectonics` owns a plate set, `Continentality` owns a calibration.
+    /// Their parameters have to arrive before that state is built, so they arrive at a
+    /// constructor and the built layer becomes a field of `Surface`.
+    ///
+    /// **Climate holds nothing.** It is a closed form in two floats and three constants:
+    /// there is no lattice to seed, no calibration to run, nothing to build and therefore
+    /// nothing to store. A `climate` field on `Surface` would be a struct wrapping three
+    /// `f64`s that no constructor could compute anything from, and it would cost the one
+    /// thing that is genuinely pinned here:
+    /// `lib.rs::the_surface_is_not_modified_by_this_slice` asserts this struct has
+    /// **exactly eight fields**, by name, from the source text. That assertion is CORE-001's
+    /// promise that a second representation was added beside the field rather than inside
+    /// it, and a stateless closed form is not a reason to spend it.
+    ///
+    /// So the `Option` lives where the question is asked. `None` still means canonical,
+    /// `Some(ClimateParams::canonical())` is still bit-identical to it
+    /// (`climate_none_matches_climate_some_canonical_bit_for_bit` below), and the
+    /// convention a caller sees -- an `Option<...Params>`, `None` for canonical -- is the
+    /// same one. `substrate::at` is the precedent for the shape: a stateless stage in this
+    /// crate is a free function reached through `&self`, not a field (see `bottom_at`).
+    ///
+    /// # The NaN entrant here is a POINT, and the latitude half of it IS swallowed
+    ///
+    /// `SpherePoint::to_latlon` clamps its `z` the way Python's `max(-1.0, min(1.0, z))`
+    /// does, and that form returns its first argument when the comparison is false -- so a
+    /// NaN `z` clamps to `1.0` and **reports latitude 90**. Measured, on the `-5` world:
+    /// `Vec3(0, 0, NaN)` and `Vec3(NaN, 0, 1)` both report latitude **90.0**, and
+    /// `Vec3(0, NaN, 0)` and `Vec3(inf, 0, 0)` both report **0.0**. Handed to the profile
+    /// alone, the first two are a believable, unremarkable -25 C for a point that does not
+    /// exist -- the same family as the NaN sea level that produced a world bit-identical to
+    /// a legitimate all-land one.
+    ///
+    /// **A latitude guard was written here, and then measured and REMOVED, because it was
+    /// dead.** `elevation_m` already answers NaN for every one of those four vectors --
+    /// `noise.rs`'s lattice guard, added at `b6862d2` for exactly this family, surfaces
+    /// them -- so `climate::temperature_c` receives a NaN elevation and propagates it
+    /// whatever the latitude says. The guard was proven dead the only way that counts: with
+    /// it deleted, the whole 666-test suite stayed green, including
+    /// `a_nan_point_is_not_answered_with_a_polar_temperature`, which is the test written to
+    /// catch precisely this. **Dead code looks like a feature**, and a guard no mutation
+    /// can turn red is not defence in depth, it is a comment with semicolons.
+    ///
+    /// So the property is real and the mechanism is one level down, which has a consequence
+    /// Task 2 needs: **this function's NaN safety rests entirely on elevation reaching the
+    /// answer.** The mutation that proves it is `elevation` -> `0.0` (M5 in the task
+    /// report): the point then reads latitude 90 through the clamp, sea level through the
+    /// floor, and comes back -25 C, and the test goes red. A moisture march that samples
+    /// elevations inherits the same protection and loses it the same way.
+    ///
+    /// **`to_latlon` is not changed and must not be**: its clamp is bit-for-bit Python and
+    /// is pinned by `sphere.rs::a_nan_z_clamps_the_way_python_does`.
+    pub fn temperature_c(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        climate: Option<ClimateParams>,
+    ) -> f64 {
+        let params = match climate {
+            Some(params) => params,
+            None => ClimateParams::canonical(),
+        };
+        let (latitude_deg, _longitude_deg) = point.to_latlon();
+        climate::temperature_c(latitude_deg, self.elevation_m(point, resolution_m), &params)
+    }
+
+    /// How much moisture the air still has when it reaches a point, as a dimensionless
+    /// index in `[0, 1]`.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: Passed straight to every `elevation_m` the march takes. `None` is the
+    /// physics ground truth. **This argument is the spike's measured 27% saving**: at
+    /// `Some(20_000.0)` every configured detail octave has faded, so the march reads
+    /// structure alone and costs about a quarter less -- and 20 km is `MARCH_STEP_M`
+    /// itself, so a march coarsened to its own step is reading exactly the scale it steps
+    /// at.
+    /// moisture: `None` for the measured march -- `climate.rs`'s five constants exactly --
+    /// or `Some(params)`. The **fifth** opt-in parameter block of this kind, after
+    /// `relief`, `tectonics`, `coast` and `climate`, and the second that arrives at a
+    /// method rather than a constructor for the reason `temperature_c` gives above:
+    /// climate holds no state, so there is nothing for a constructor to build and nothing
+    /// for `Surface` to store. `lib.rs::the_surface_is_not_modified_by_this_slice` still
+    /// pins this struct at eight fields, by name.
+    ///
+    /// Returns:
+    /// `1.0` for saturated marine air, `0.0` for air that has rained out completely.
+    /// **No unit and no anchor** -- there is no moisture equivalent of water freezing at
+    /// zero, which is exactly why Task 3 quantiles this and does not quantile temperature.
+    ///
+    /// # This is `N + 1` elevation queries, and that is the whole cost model
+    ///
+    /// The march takes `budget` steps and samples the ground at each, plus once at the far
+    /// upwind end, so a canonical call is **161 `elevation_m` evaluations** against
+    /// `temperature_c`'s one. The spike measured the consequence as an affine curve with no
+    /// knee -- `0.48 + 0.48*N` microseconds native, `2.0 + 1.5*N` in WASM -- so nothing
+    /// here is cheap by accident and nothing is expensive by surprise. See `MARCH_SAMPLES`
+    /// for why the budget is what it is, and for what it means for the raster Task 4 ships.
+    ///
+    /// # The NaN entrant, and the same inheritance `temperature_c` records
+    ///
+    /// Every NaN this function can produce arrives through `elevation_m`, exactly as
+    /// temperature's does. `SpherePoint::to_latlon` clamps a NaN `z` to `1.0` and reports
+    /// latitude 90, which would put the query in the polar easterlies and march it
+    /// somewhere plausible -- but `noise.rs`'s lattice guard makes `elevation_m` answer NaN
+    /// for every non-finite vector, and `climate::moisture_index` propagates a NaN sample
+    /// through all three of its arms rather than reading it as sea, as land, or as
+    /// saturated air.
+    ///
+    /// **No guard is written here, and that is a decision rather than an omission.** Task 1
+    /// wrote a latitude guard at this level, mutation-tested it, found the whole suite green
+    /// without it, and deleted it -- `noise.rs` had already closed the hole. The same is
+    /// true here and is checked the same way: `a_nan_point_is_not_answered_with_marine_air`
+    /// goes red under the mutation that replaces the march's elevation sampler with `0.0`,
+    /// and green under no guard, so the property is asserted where it actually lives.
+    pub fn moisture_index(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        moisture: Option<MoistureParams>,
+    ) -> f64 {
+        let params = match moisture {
+            Some(params) => params,
+            None => MoistureParams::canonical(),
+        };
+        let (latitude_deg, _longitude_deg) = point.to_latlon();
+        let frame = TangentFrame::at(point, self.radius_m);
+        climate::moisture_index(latitude_deg, &frame, &params, &|probe: &SpherePoint| {
+            self.elevation_m(probe, resolution_m)
+        })
+    }
+
+    /// This world's own band edges for the two quantiled climate axes.
+    ///
+    /// Args:
+    /// resolution_m: Passed to every elevation and every moisture query the calibration
+    /// makes, so a caller calibrating for a coarse consumer gets edges taken over the field
+    /// that consumer will actually see.
+    /// moisture: `None` for the canonical march.
+    ///
+    /// Returns:
+    /// `climate::BandEdges` -- four moisture edges and two landform edges, or NaN edges for
+    /// a world with no land or one whose samples could not be answered.
+    ///
+    /// **This is a per-world constant and it is not cheap: it is one elevation at each of
+    /// `climate::BAND_CALIBRATION_SAMPLES` points plus one march at each land point, and a
+    /// march is `MARCH_SAMPLES + 1` elevations.** On a 29%-land world that is roughly
+    /// 190,000 elevation queries. Call it once when the world is built and keep the answer;
+    /// calling it per texel would be several hundred times the cost of the texel.
+    ///
+    /// **There is no `bands` field on `Surface` and there is not going to be one.** The
+    /// edges depend on `resolution_m` and on the `MoistureParams` a caller asks for, so
+    /// there is no single answer to cache, and `lib.rs::the_surface_is_not_modified_by_this_slice`
+    /// pins this struct at eight fields by name. The caller owns the calibration, exactly as
+    /// `biome.js` owns the one it computes today.
+    pub fn band_edges(
+        &self,
+        resolution_m: Option<f64>,
+        moisture: Option<MoistureParams>,
+    ) -> climate::BandEdges {
+        climate::BandEdges::calibrate(
+            &|probe: &SpherePoint| self.elevation_m(probe, resolution_m),
+            &|probe: &SpherePoint| self.moisture_index(probe, resolution_m, moisture),
+        )
+    }
+
+    /// **All three climate axes at a point**, as band indices, against edges this world was
+    /// calibrated for.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    /// resolution_m: As `elevation_m`.
+    /// climate_params: `None` for the canonical temperature profile.
+    /// moisture: `None` for the canonical march.
+    /// edges: From `band_edges` on **this same surface**. Nothing checks that, because
+    /// nothing can: the edges are three arrays of `f64` and carry no world identity. Handing
+    /// in another world's edges gives another world's banding, which is a real thing a
+    /// caller might want (comparing two worlds on one scale) and a real way to be wrong.
+    ///
+    /// Returns:
+    /// `None` if any of the three axes could not be answered -- a NaN elevation, a NaN
+    /// moisture, or NaN edges from a world that could not be calibrated. See
+    /// `climate::band_index` for why this is an `Option` and not a triple of zeros.
+    ///
+    /// **This does not test for land.** Below the datum the landform axis reads whatever the
+    /// bathymetry says and the moisture march reads saturated marine air, which are answers
+    /// to a question nobody should be asking: `biome.js` short-circuits ocean before it
+    /// classifies anything and so must any other caller. Adding an ocean arm here would put a
+    /// second land test in a crate that already has one everywhere, and would have to invent
+    /// a meaning for `None` that is not "unanswerable".
+    pub fn bands_at(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        climate_params: Option<ClimateParams>,
+        moisture: Option<MoistureParams>,
+        edges: &climate::BandEdges,
+    ) -> Option<climate::Bands> {
+        let elevation_m = self.elevation_m(point, resolution_m);
+        let temperature_c = self.temperature_c(point, resolution_m, climate_params);
+        let wetness = self.moisture_index(point, resolution_m, moisture);
+        Some(climate::Bands {
+            landform: climate::landform_band(elevation_m, edges)?,
+            temperature: climate::temperature_band(temperature_c)?,
+            moisture: climate::moisture_band(wetness, edges)?,
+        })
     }
 
     /// What the bottom is made of, as fractions of sand, mud and rock.
@@ -465,7 +835,7 @@ mod tests {
     }
 
     fn plain(features: Option<FeatureInput>) -> Surface {
-        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features)
+        Surface::new(SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None, None)
     }
 
     /// A world radius that is not Earth's, and the reason it had to be added.
@@ -491,7 +861,533 @@ mod tests {
     const SMALL_RADIUS_M: f64 = 3_000_000.0;
 
     fn small_world(features: Option<FeatureInput>) -> Surface {
-        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features)
+        Surface::new(SEED, SMALL_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, features, None, None)
+    }
+
+    /// Task 1's whole claim: a `Surface` built with `relief: None` and one built with
+    /// `relief: Some(ReliefParams::canonical())` must be indistinguishable, not merely
+    /// close. Compared as bit patterns, never values, never a tolerance -- this module's
+    /// claim is exactness, and a tolerance here would be meaningless.
+    ///
+    /// **Population**: a 37 x 73 lat/lon grid (every 5 degrees, poles to poles and around),
+    /// 2,701 points, each read at two resolutions (`None` -- the canonical arm of
+    /// `Detail::offset_m` -- and `Some(5_000.0)` -- the fade arm, so the branch that
+    /// actually walks `resolution_m` is exercised too, not only the one that short-
+    /// circuits it), for 5,402 comparisons. **Method**: `Surface::elevation_m` (the full
+    /// structure-plus-detail pipeline), `f64::to_bits` equality, both `Surface`s built from
+    /// the same `SEED` at `EARTH_RADIUS_M` with no features. **Host**: this port, seed -5.
+    #[test]
+    fn relief_none_matches_relief_some_canonical_bit_for_bit() {
+        let with_none = plain(None);
+        let with_canonical = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            Some(ReliefParams::canonical()),
+            None,
+        );
+
+        let mut compared = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(5_000.0_f64)] {
+                    let a = with_none.elevation_m(&p, resolution);
+                    let b = with_canonical.elevation_m(&p, resolution);
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "None and Some(canonical()) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {b}"
+                    );
+                    compared += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 37 * 73 * 2, "grid population changed -- update the doc comment");
+    }
+
+    /// Task 5's version of the claim above, at the same level and over the same population:
+    /// a `Surface` built through `new` and one built through `with_coast(..., None)` or
+    /// `with_coast(..., Some(CoastParams::canonical()))` must be indistinguishable by bits
+    /// over the full `elevation_m` pipeline -- structure, shelf and detail included, not
+    /// merely at `above_shore` where the term lives.
+    ///
+    /// **Population**: the same 37 x 73 lat/lon grid at two resolutions, 5,402 comparisons
+    /// per pairing, two pairings. **Method**: `f64::to_bits` equality; both worlds from the
+    /// same `SEED` at `EARTH_RADIUS_M`, no features, canonical relief and tectonics.
+    /// **Host**: this port, seed -5.
+    ///
+    /// **Discriminated by its last block**: the identical grid under `CoastParams::fractal()`
+    /// is required to diverge at a substantial number of points. Without that, a
+    /// `with_coast` that ignored its argument entirely would pass this test perfectly.
+    #[test]
+    fn coast_none_matches_coast_some_canonical_bit_for_bit() {
+        let built_by_new = plain(None);
+        let explicit_none = Surface::with_coast(
+            SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None, None, None,
+        );
+        let explicit_canonical = Surface::with_coast(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            Some(CoastParams::canonical()),
+        );
+        let fractal = Surface::with_coast(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            Some(CoastParams::fractal()),
+        );
+
+        let mut compared = 0u32;
+        let mut moved = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(5_000.0_f64)] {
+                    let a = built_by_new.elevation_m(&p, resolution);
+                    let b = explicit_none.elevation_m(&p, resolution);
+                    let c = explicit_canonical.elevation_m(&p, resolution);
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "new() and with_coast(None) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {b}"
+                    );
+                    assert_eq!(
+                        a.to_bits(),
+                        c.to_bits(),
+                        "None and Some(canonical()) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {c}"
+                    );
+                    if a.to_bits() != fractal.elevation_m(&p, resolution).to_bits() {
+                        moved += 1;
+                    }
+                    compared += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 37 * 73 * 2, "grid population changed -- update the doc comment");
+        assert!(
+            moved > 100,
+            "fractal() moved only {moved} of {compared} readings -- a with_coast that ignored \
+             its argument would pass the two assertions above and this test would mean nothing"
+        );
+    }
+
+    /// The coastal block must reach the SHELF, not merely the land/sea test. `Shelf` is
+    /// built from this same `Continentality` and reads `above_shore` directly
+    /// (`shelf.rs::coastal_weight`), so a roughened coast that the shelf still hugged the
+    /// old smooth line of would be a seam in the bathymetry.
+    ///
+    /// Asserted on `structural_m` -- the shelf's own output, with detail excluded -- rather
+    /// than on `elevation_m`, so nothing here can pass on the back of the detail layer.
+    /// Discriminated by requiring a divergence at a substantial number of grid points AND by
+    /// requiring that the deep interior of the same grid does not move: a term that simply
+    /// perturbed everything would satisfy the first half and fail the second.
+    #[test]
+    fn the_coastal_block_reaches_the_structural_ground_and_only_near_the_coast() {
+        let canonical = plain(None);
+        let fractal = Surface::with_coast(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            Some(CoastParams::fractal()),
+        );
+        let reach = canonical.land.spread() * CoastParams::fractal().window_spreads;
+
+        let mut moved = 0u32;
+        let mut far = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a = canonical.structural_m(&p);
+                let b = fractal.structural_m(&p);
+                if canonical.land.above_shore(&p).abs() >= reach {
+                    far += 1;
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "structural ground moved at lat {lat} lon {lon}, well away from any \
+                         coast: {a} vs {b}"
+                    );
+                } else if a.to_bits() != b.to_bits() {
+                    moved += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        // Measured: 946 of the 2,701 points on this grid lie outside the band. The grid is
+        // lat/lon rather than area-uniform, so it over-samples the poles, and the bound is
+        // set from that measurement rather than from a guess at what a uniform sphere would
+        // give. It exists to stop the loop above passing vacuously, not to pin 946.
+        assert!(far > 900, "only {far} of 2,701 grid points lay outside the coastal band");
+        assert!(moved > 50, "the structural ground moved at only {moved} coastal points");
+    }
+
+    /// **The discrimination half of the test above.** A one-ULP nudge to
+    /// `ReliefParams::canonical()`'s `mountain_m` (the field most probes above will reach
+    /// -- Everest-adjacent elevations are the norm on a real planet) must move
+    /// `elevation_m` measurably, proving `relief_none_matches_relief_some_canonical_bit_
+    /// for_bit` is capable of failing rather than vacuously true. This assertion is its own
+    /// -- it does not share a `Surface` or a probe with any other test in this file, so
+    /// nothing else can fire first and hide a broken assertion behind an unrelated one.
+    ///
+    /// Manually verified the stronger claim too, and did not leave the mutation in the
+    /// tree: temporarily perturbing `ReliefParams::canonical()`'s `mountain_m` field itself
+    /// by one ULP (`f64::from_bits(150.0f64.to_bits() + 1)`) and rerunning
+    /// `relief_none_matches_relief_some_canonical_bit_for_bit` turned it red at the first
+    /// mountainous grid point, with the exact diverging lat/lon/resolution in the failure
+    /// message; reverting the perturbation turned it green again. See task-1-report.md.
+    #[test]
+    fn a_one_ulp_relief_perturbation_moves_the_answer() {
+        let canonical = ReliefParams::canonical();
+        let mut nudged = canonical;
+        nudged.mountain_m = f64::from_bits(canonical.mountain_m.to_bits() + 1);
+        assert_ne!(nudged.mountain_m, canonical.mountain_m, "the nudge must be a real ULP");
+
+        let world_canonical = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            Some(canonical),
+            None,
+        );
+        let world_nudged = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            Some(nudged),
+            None,
+        );
+
+        // Scan the same grid the bit-identity test walks, rather than guessing a single
+        // point is mountainous enough for `mountain_m` to matter there -- this asserts
+        // only that at least one of 2,701 points diverges, which any real planet's high
+        // ground guarantees without needing to know in advance where the mountains are.
+        let mut found_divergence = false;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 && !found_divergence {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a = world_canonical.elevation_m(&p, None);
+                let b = world_nudged.elevation_m(&p, None);
+                if a.to_bits() != b.to_bits() {
+                    found_divergence = true;
+                    break;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert!(
+            found_divergence,
+            "a one-ULP relief perturbation must be visible in elevation_m somewhere on the \
+             planet, or the bit-identity test above cannot be trusted to fail"
+        );
+    }
+
+    /// Ruling 1 for the gully channel, and the strongest form of it in the crate: `None` does
+    /// not merely add zero here, it builds no steering lattice at all and takes a different
+    /// branch of `elevation_m`.
+    ///
+    /// **Population**: the same 37 x 73 lat/lon grid the relief and coast pairs use, every 5
+    /// degrees of latitude and every 5 of longitude, at two resolutions -- 2,701 sites, 5,402
+    /// comparisons per pair.
+    ///
+    /// **Discriminated by its last block**: the identical grid under `GullyParams::drainage()`
+    /// is required to diverge at a substantial number of points. Without that, a `with_gully`
+    /// that ignored its argument entirely would pass this test perfectly -- which is exactly
+    /// the shape of failure this project keeps finding.
+    #[test]
+    fn gully_none_matches_gully_some_canonical_bit_for_bit() {
+        let built_by_new = plain(None);
+        let explicit_none = Surface::with_gully(
+            SEED, EARTH_RADIUS_M, DEFAULT_PLATE_COUNT, LAND_FRACTION, None, None, None, None, None,
+        );
+        let explicit_canonical = Surface::with_gully(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::canonical()),
+        );
+        let drainage = Surface::with_gully(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::drainage()),
+        );
+
+        let mut compared = 0u32;
+        let mut moved = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(76.35_f64)] {
+                    let a = built_by_new.elevation_m(&p, resolution);
+                    let b = explicit_none.elevation_m(&p, resolution);
+                    let c = explicit_canonical.elevation_m(&p, resolution);
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "new() and with_gully(None) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {b}"
+                    );
+                    assert_eq!(
+                        a.to_bits(),
+                        c.to_bits(),
+                        "None and Some(canonical()) diverged at lat {lat} lon {lon} \
+                         resolution {resolution:?}: {a} vs {c}"
+                    );
+                    if a.to_bits() != drainage.elevation_m(&p, resolution).to_bits() {
+                        moved += 1;
+                    }
+                    compared += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 5_402, "the grid is 37 x 73 sites at two resolutions");
+        assert!(
+            moved > 200,
+            "drainage() must move a substantial share of this grid or the canonical \
+             comparison above is comparing a parameter nothing reads; moved {moved} of \
+             {compared}"
+        );
+    }
+
+    /// **The probe's central ruling, as an executable assertion: the kernel steers on
+    /// `grad(structural_m)` and not on `grad(elevation_m)`.**
+    ///
+    /// `.superpowers/sdd/notes/gradient-probe.md` section 2.5 measured that on
+    /// `ReliefParams::hills()` -- a preset this crate already ships -- the full gradient is
+    /// **13.7x** the structural one and points a median **83.66 degrees** away from it. A
+    /// kernel steered on the full gradient therefore works on the default world and produces
+    /// noise-following stripes the moment somebody presses a preset button.
+    ///
+    /// `structural_m` is identical between the two relief worlds (relief reaches detail only,
+    /// pinned by `relief_only_moves_detail` above), so the gully displacement must be
+    /// identical between them too. It is compared as a difference of elevations rather than
+    /// bit-for-bit because `(a + g) - a` is not `g` in floating point; the tolerance is
+    /// 1e-6 m against a term whose amplitude is 60 m and against a mutant that would move it
+    /// by tens of metres.
+    ///
+    /// **Proved red by mutation, and the first attempt at that mutation is itself the
+    /// finding**: substituting `|probe| self.elevation_m(probe, None)` for
+    /// `|probe| self.structural_m(probe)` **does not terminate**. That is
+    /// `gradient-probe.md` section 2.4's fourth ground -- "a term inside `elevation_m`
+    /// steering on `grad(elevation_m)` steers on itself... an infinite regress" -- demonstrated
+    /// rather than argued, and it is why this steer is architecturally settled and not a
+    /// tuning choice. The mutation that halts unrolls the recursion exactly once, so it is
+    /// `grad(elevation)` as that probe measured it; it turns this red and nothing else in the
+    /// suite.
+    #[test]
+    fn the_gully_steer_is_structural_and_survives_a_relief_preset() {
+        let with_gully = |relief: Option<crate::detail::ReliefParams>, gully| {
+            Surface::with_gully(
+                SEED,
+                EARTH_RADIUS_M,
+                DEFAULT_PLATE_COUNT,
+                LAND_FRACTION,
+                None,
+                relief,
+                None,
+                None,
+                gully,
+            )
+        };
+        let canonical_plain = with_gully(None, None);
+        let canonical_gully = with_gully(None, Some(GullyParams::drainage()));
+        let hills_plain = with_gully(Some(crate::detail::ReliefParams::hills()), None);
+        let hills_gully =
+            with_gully(Some(crate::detail::ReliefParams::hills()), Some(GullyParams::drainage()));
+
+        let mut compared = 0u32;
+        let mut nonzero = 0u32;
+        let mut worst: f64 = 0.0;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a = canonical_gully.elevation_m(&p, None) - canonical_plain.elevation_m(&p, None);
+                let b = hills_gully.elevation_m(&p, None) - hills_plain.elevation_m(&p, None);
+                let gap = (a - b).abs();
+                if gap > worst {
+                    worst = gap;
+                }
+                if a != 0.0 {
+                    nonzero += 1;
+                }
+                compared += 1;
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert!(
+            nonzero > 100,
+            "the term must be non-zero somewhere or this test compares two zeros; {nonzero} \
+             of {compared}"
+        );
+        assert!(
+            worst < 1.0e-6,
+            "the gully displacement must not depend on the relief block, because the signal \
+             it steers on is defined before detail exists; worst gap {worst} m over \
+             {compared} sites"
+        );
+    }
+
+    /// The gate is a real gate: below `gate_elevation_m` the ground is bit-identical to the
+    /// canonical world, and above it, it is not.
+    ///
+    /// This is what stops a drainage texture appearing on the sea floor and on flat coastal
+    /// plain, and it is asserted from both ends because a gate that is always open and a gate
+    /// that is always shut both pass a one-sided version of it.
+    #[test]
+    fn the_drainage_gate_opens_on_high_ground_and_nowhere_else() {
+        let plain_world = plain(None);
+        let drainage = Surface::with_gully(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            None,
+            None,
+            Some(GullyParams::drainage()),
+        );
+        let gate = GullyParams::drainage().gate_elevation_m;
+        let mut below_and_equal = 0u32;
+        let mut above_and_moved = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let structural = plain_world.structural_m(&p);
+                let a = plain_world.elevation_m(&p, None);
+                let b = drainage.elevation_m(&p, None);
+                if structural <= gate {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "the gate is shut at {structural} m (lat {lat} lon {lon}) and the \
+                         ground must be untouched: {a} vs {b}"
+                    );
+                    below_and_equal += 1;
+                } else if a.to_bits() != b.to_bits() {
+                    above_and_moved += 1;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert!(below_and_equal > 2_000, "most of a planet is below 200 m; {below_and_equal}");
+        assert!(
+            above_and_moved > 100,
+            "the gate must actually open somewhere; {above_and_moved} sites moved"
+        );
+    }
+
+    /// Task 1's mountains-slice claim, the same shape as the relief pair above: a
+    /// `Surface` built with `tectonics: None` and one built with
+    /// `tectonics: Some(TectonicParams::canonical())` must be indistinguishable, not
+    /// merely close. Compared as bit patterns over both `elevation_m` (the full
+    /// structure-plus-detail pipeline) and `structural_m` (structure alone, ahead of
+    /// detail), because the uplift path this task threads a field through is read by
+    /// both.
+    ///
+    /// **Population**: the same 37 x 73 lat/lon grid the relief pair above uses (every 5
+    /// degrees, poles to poles and around), 2,701 points. **Method**: `f64::to_bits`
+    /// equality, never `==` -- the claim is exactness, and `==` would pass on two
+    /// different NaNs while failing on `-0.0` versus `0.0`. **Host**: this port, seed
+    /// `SEED`.
+    #[test]
+    fn tectonics_none_matches_tectonics_some_canonical_bit_for_bit() {
+        let with_none = plain(None);
+        let with_canonical = Surface::new(
+            SEED,
+            EARTH_RADIUS_M,
+            DEFAULT_PLATE_COUNT,
+            LAND_FRACTION,
+            None,
+            None,
+            Some(TectonicParams::canonical()),
+        );
+
+        let mut compared = 0u32;
+        let mut lat = -90.0_f64;
+        while lat <= 90.0 {
+            let mut lon = -180.0_f64;
+            while lon <= 180.0 {
+                let p = SpherePoint::from_latlon(lat, lon);
+                let a_elevation = with_none.elevation_m(&p, None);
+                let b_elevation = with_canonical.elevation_m(&p, None);
+                assert_eq!(
+                    a_elevation.to_bits(),
+                    b_elevation.to_bits(),
+                    "elevation_m: None and Some(canonical()) diverged at lat {lat} lon \
+                     {lon}: {a_elevation} vs {b_elevation}"
+                );
+                let a_structural = with_none.structural_m(&p);
+                let b_structural = with_canonical.structural_m(&p);
+                assert_eq!(
+                    a_structural.to_bits(),
+                    b_structural.to_bits(),
+                    "structural_m: None and Some(canonical()) diverged at lat {lat} lon \
+                     {lon}: {a_structural} vs {b_structural}"
+                );
+                compared += 1;
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        assert_eq!(compared, 37 * 73, "grid population changed -- update the doc comment");
     }
 
     /// Where the small world's substrate separates the two radii, found by scanning a
@@ -659,6 +1555,7 @@ mod tests {
             surface.plates.clone(),
             Continentality::new(noise_seed ^ 1, EARTH_RADIUS_M, LAND_FRACTION),
             EARTH_RADIUS_M,
+            None,
         );
         // Both figures from the live Python, which was handed `Continentality(-5, ...)` and
         // `Continentality(-6, ...)`; `-5 ^ 1 == -6`, and masking commutes with the xor, so
@@ -684,7 +1581,7 @@ mod tests {
         assert_eq!(surface.world_seed, SEED);
         assert_eq!(surface.radius_m.to_bits(), EARTH_RADIUS_M.to_bits());
         assert_eq!(surface.plates.len(), DEFAULT_PLATE_COUNT);
-        let odd = Surface::new(7, 1234567.0, 5, 0.5, None);
+        let odd = Surface::new(7, 1234567.0, 5, 0.5, None, None, None);
         assert_eq!(odd.world_seed, 7);
         assert_eq!(odd.radius_m.to_bits(), 1234567.0f64.to_bits());
         assert_eq!(odd.plates.len(), 5);
@@ -700,7 +1597,7 @@ mod tests {
         // The band WAVELENGTHS are a fixed table and carry nothing about the radius; the
         // FREQUENCY each is turned into is `2 pi radius / wavelength / (2 pi)`, so that is
         // where a defaulted radius shows, and it shows in every band rather than one.
-        let earth_detail = Detail::new(7u64, EARTH_RADIUS_M);
+        let earth_detail = Detail::new(7u64, EARTH_RADIUS_M, None);
         assert_eq!(odd.detail.bands().len(), earth_detail.bands().len());
         assert!(
             odd.detail
@@ -1585,5 +2482,551 @@ mod tests {
             surface.structural_m(&point).to_bits(),
             surface.shelf.elevation_m(&point).to_bits()
         );
+    }
+
+    // ---- Climate, and it is a QUESTION asked of this type rather than a stage in it ----
+
+    /// The same claim `relief`, `tectonics` and `coast` each make at this level: `None`
+    /// and `Some(ClimateParams::canonical())` are indistinguishable, not close.
+    ///
+    /// **Population**: a 37 x 73 lat/lon grid (every 5 degrees, poles to poles and around),
+    /// 2,701 points, each read at two resolutions -- `None`, the canonical arm of
+    /// `Detail::offset_m`, and `Some(5_000.0)`, the fade arm -- so 5,402 comparisons, on
+    /// the `shaped()` world (features placed, so the full pipeline is exercised rather
+    /// than an empty feature list). **Method**: bit patterns of `temperature_c`, never
+    /// values and never a tolerance. **Host**: this crate's test runner.
+    ///
+    /// The count is asserted at the end because a loop that compared nothing would pass.
+    #[test]
+    fn climate_none_matches_climate_some_canonical_bit_for_bit() {
+        let surface = shaped();
+        let mut compared = 0usize;
+        let mut varied = 0usize;
+        let mut first: Option<u64> = None;
+        for i in 0..37 {
+            for j in 0..73 {
+                let lat = -90.0 + f64::from(i) * 5.0;
+                let lon = -180.0 + f64::from(j) * 5.0;
+                let point = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(5_000.0)] {
+                    let none = surface.temperature_c(&point, resolution, None);
+                    let canonical =
+                        surface.temperature_c(&point, resolution, Some(ClimateParams::canonical()));
+                    assert_eq!(
+                        none.to_bits(),
+                        canonical.to_bits(),
+                        "canonical is not None at {lat}, {lon}"
+                    );
+                    match first {
+                        None => first = Some(none.to_bits()),
+                        Some(bits) => {
+                            if bits != none.to_bits() {
+                                varied += 1;
+                            }
+                        }
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 5_402, "the grid compared {compared} pairs");
+        // A field that returned one constant everywhere would satisfy every assertion
+        // above. It does not: the grid spans the whole planet and the answer moves.
+        assert!(varied > 5_000, "only {varied} of {compared} readings differed from the first");
+    }
+
+    /// An opted-in `ClimateParams` reaches the answer, which the bit-identity test above
+    /// cannot show -- it passes just as well if the parameter is ignored entirely. This is
+    /// `CoastParams`' lesson applied before it has to be learned again.
+    #[test]
+    fn an_opted_in_climate_moves_the_temperature() {
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(37.0, -41.0);
+        let canonical = surface.temperature_c(&point, None, None);
+        let colder = surface.temperature_c(
+            &point,
+            None,
+            Some(ClimateParams { equator_c: 5.0, ..ClimateParams::canonical() }),
+        );
+        assert!(
+            canonical - colder > 10.0,
+            "the opted-in block did not reach the answer: {canonical} then {colder}"
+        );
+    }
+
+    /// `resolution_m` is threaded to `elevation_m` rather than hard-coded to `None`, and
+    /// the proof is a point where the two resolutions genuinely disagree about the ground.
+    ///
+    /// The point is **found by scanning**, not written down: a fixed probe that happened to
+    /// sit where detail fades to nothing would let a hard-coded `None` pass, which is the
+    /// shape of three mutations this project has already survived by accident.
+    #[test]
+    fn the_resolution_argument_reaches_the_temperature() {
+        let surface = shaped();
+        let mut found = 0usize;
+        for i in 0..37 {
+            for j in 0..73 {
+                let lat = -90.0 + f64::from(i) * 5.0;
+                let lon = -180.0 + f64::from(j) * 5.0;
+                let point = SpherePoint::from_latlon(lat, lon);
+                let fine = surface.elevation_m(&point, None);
+                let coarse = surface.elevation_m(&point, Some(50_000.0));
+                // Only above the datum: below it the lapse floor makes every elevation the
+                // same temperature, correctly, so such a point proves nothing here.
+                if fine > 0.0 && coarse > 0.0 && fine.to_bits() != coarse.to_bits() {
+                    let hot = surface.temperature_c(&point, None, None);
+                    let cold = surface.temperature_c(&point, Some(50_000.0), None);
+                    assert_ne!(
+                        hot.to_bits(),
+                        cold.to_bits(),
+                        "resolution did not reach the temperature at {lat}, {lon}"
+                    );
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 100, "only {found} land points resolved differently; too few to judge");
+    }
+
+    /// The physics, on a real world rather than in the closed form's own unit test: the
+    /// planet is warmest at the equator, coldest at the poles.
+    #[test]
+    fn the_world_is_warm_at_the_equator_and_cold_at_the_poles() {
+        let surface = shaped();
+        let mut warmest_lat = 0.0f64;
+        let mut warmest = f64::NEG_INFINITY;
+        let mut coldest_lat = 0.0f64;
+        let mut coldest = f64::INFINITY;
+        for i in 0..37 {
+            let lat = -90.0 + f64::from(i) * 5.0;
+            let point = SpherePoint::from_latlon(lat, 12.0);
+            let t = surface.temperature_c(&point, None, None);
+            if t > warmest {
+                warmest = t;
+                warmest_lat = lat;
+            }
+            if t < coldest {
+                coldest = t;
+                coldest_lat = lat;
+            }
+        }
+        assert!(warmest_lat.abs() <= 5.0, "the warmest place was {warmest_lat} deg");
+        assert!(coldest_lat.abs() >= 85.0, "the coldest place was {coldest_lat} deg");
+        assert!(warmest - coldest > 40.0, "the planet spans only {} C", warmest - coldest);
+    }
+
+    /// Elevation reaches temperature, which is the reason this function takes a point at
+    /// all rather than a latitude -- and the reason the snow line is free.
+    #[test]
+    fn higher_ground_is_colder_at_the_same_latitude() {
+        let surface = shaped();
+        let mut best: Option<(f64, f64, f64)> = None;
+        for j in 0..360 {
+            let lon = -180.0 + f64::from(j);
+            let point = SpherePoint::from_latlon(20.0, lon);
+            let height = surface.elevation_m(&point, None);
+            let t = surface.temperature_c(&point, None, None);
+            match best {
+                None => best = Some((height, t, lon)),
+                Some((h, _, _)) if height > h => best = Some((height, t, lon)),
+                _ => {}
+            }
+        }
+        let (height, high_t, lon) = best.expect("the transect has points");
+        assert!(height > 100.0, "the highest point on the 20 N transect is only {height} m");
+        let sea_level_t = crate::climate::temperature_c(20.0, 0.0, &ClimateParams::canonical());
+        assert!(
+            sea_level_t - high_t > 0.5,
+            "at {lon} deg, {height} m of ground cost only {} C",
+            sea_level_t - high_t
+        );
+    }
+
+    /// THE ONE THAT MATTERS AT THIS LEVEL. A point whose vector is NaN must not come back
+    /// as an ordinary polar temperature.
+    ///
+    /// `SpherePoint::to_latlon` clamps a NaN `z` to 1.0 and reports **latitude 90**, which
+    /// is bit-for-bit what the Python does and is pinned by
+    /// `sphere.rs::a_nan_z_clamps_the_way_python_does`. Fed to the profile with nothing
+    /// else, that is a believable -25 C for a place that does not exist -- the same family
+    /// as the NaN sea level that produced a world bit-identical to a legitimate all-land
+    /// one.
+    ///
+    /// **What actually saves it is `elevation_m`, not a guard in `temperature_c`**, and
+    /// that was measured rather than assumed: a latitude guard was written here and the
+    /// whole suite stayed green with it deleted, so it was removed as dead code. See
+    /// `temperature_c`. This test is therefore a pin on the COMPOSITION -- the mutation
+    /// that turns it red is elevation not reaching the answer -- and the composition is
+    /// what a caller depends on.
+    ///
+    /// **The blindness is asserted, not described**: the test computes the value the
+    /// latitude clamp alone would have produced and requires it to be an ordinary
+    /// temperature, so a future reader can see what would have been swallowed.
+    #[test]
+    fn a_nan_point_is_not_answered_with_a_polar_temperature() {
+        let surface = shaped();
+        for vector in [
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 1.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+        ] {
+            let point = SpherePoint { vector };
+            let answer = surface.temperature_c(&point, None, None);
+            assert!(answer.is_nan(), "a NaN point was answered with {answer} C");
+        }
+        // What the latitude clamp alone gives for the first two of those: latitude 90,
+        // sea level through the elevation floor, and therefore POLE_C exactly.
+        let swallowed = crate::climate::temperature_c(90.0, 0.0, &ClimateParams::canonical());
+        assert!(
+            swallowed > -30.0 && swallowed < -20.0,
+            "the swallowed value was {swallowed} C, which would not have looked ordinary"
+        );
+    }
+
+    /// Climate is a question asked OF a `Surface`, not a stage IN one -- which is what
+    /// makes every existing world byte-identical without a single digest being compared.
+    ///
+    /// Read from the source text, because that is the only way to assert an absence. If
+    /// `structural_m` or `elevation_m` ever grew a climate term, every conformance digest
+    /// in `tests/test_conformance.py` would move and this test would say why first.
+    #[test]
+    fn climate_is_not_reachable_from_any_existing_surface_path() {
+        let source = include_str!("surface.rs");
+        let start = source.find("pub fn structural_m").expect("structural_m is declared");
+        let end = source.find("    /// Mean annual surface temperature").expect("the doc block");
+        assert!(start < end, "the methods moved relative to each other");
+        let body = &source[start..end];
+        assert!(
+            !body.contains("climate") && !body.contains("Climate"),
+            "structural_m or elevation_m grew a climate term"
+        );
+        // Task 2 adds a second climate question and the same absence has to hold for it.
+        // `moisture` is checked by name as well as through `climate`, because a direct
+        // `use crate::climate::moisture_index` would let a call site say neither.
+        assert!(
+            !body.contains("moisture") && !body.contains("Moisture"),
+            "structural_m or elevation_m grew a moisture term"
+        );
+        // And the call site is exactly one: `temperature_c`'s own body. The two other
+        // matches in this file are in the two tests above, which name it explicitly.
+        assert_eq!(
+            body.matches("temperature_c").count(),
+            0,
+            "the existing elevation path now mentions temperature"
+        );
+        assert_eq!(
+            body.matches("moisture_index").count(),
+            0,
+            "the existing elevation path now mentions moisture"
+        );
+    }
+
+    // ---- Moisture: the march, over a REAL world rather than a synthetic ridge ----
+
+    /// The same `None`-is-canonical claim, at the level a caller sees it.
+    ///
+    /// **Population**: a 13 x 25 lat/lon grid (every 15 degrees of latitude, every 15 of
+    /// longitude), 325 points, each read at two resolutions -- `None`, the canonical arm,
+    /// and `Some(20_000.0)`, which is `MARCH_STEP_M` itself and the arm that fades every
+    /// detail octave -- so **650 comparisons**, on the `shaped()` world. **Method**: bit
+    /// patterns of `moisture_index`, never values and never a tolerance. **Host**: this
+    /// crate's test runner. The grid is coarser than `temperature_c`'s 5,402 for one
+    /// reason and it is stated rather than hidden: **each of these readings is 161
+    /// elevation queries**, so this test is already two orders of magnitude more work.
+    ///
+    /// The count is asserted because a loop that compared nothing would pass, and the
+    /// variation is asserted because a march that returned `1.0` everywhere -- which is
+    /// exactly what the spike's swallowing bug returned -- would satisfy every bit
+    /// comparison here.
+    #[test]
+    fn moisture_none_matches_moisture_some_canonical_bit_for_bit() {
+        let surface = shaped();
+        let mut compared = 0usize;
+        let mut varied = 0usize;
+        let mut first: Option<u64> = None;
+        for i in 0..13 {
+            for j in 0..25 {
+                let lat = -90.0 + f64::from(i) * 15.0;
+                let lon = -180.0 + f64::from(j) * 15.0;
+                let point = SpherePoint::from_latlon(lat, lon);
+                for resolution in [None, Some(20_000.0)] {
+                    let none = surface.moisture_index(&point, resolution, None);
+                    let canonical = surface.moisture_index(
+                        &point,
+                        resolution,
+                        Some(MoistureParams::canonical()),
+                    );
+                    assert_eq!(
+                        none.to_bits(),
+                        canonical.to_bits(),
+                        "canonical is not None at {lat}, {lon}"
+                    );
+                    // The index is an index. If this ever leaves [0, 1] on a real world,
+                    // every band Task 3 cuts out of it is meaningless.
+                    assert!(none >= 0.0 && none <= 1.0, "the index read {none} at {lat}, {lon}");
+                    match first {
+                        None => first = Some(none.to_bits()),
+                        Some(bits) => {
+                            if bits != none.to_bits() {
+                                varied += 1;
+                            }
+                        }
+                    }
+                    compared += 1;
+                }
+            }
+        }
+        assert_eq!(compared, 650, "the grid compared {compared} pairs");
+        assert!(varied > 300, "only {varied} of {compared} readings differed from the first");
+    }
+
+    /// An opted-in `MoistureParams` reaches the answer, which the bit-identity test above
+    /// cannot show -- it passes just as well if the block is ignored entirely. The
+    /// `CoastParams` lesson, applied to the fifth block of this kind rather than relearned.
+    ///
+    /// The probe is a *dry* opt-in: a fetch scale ten times shorter dries the same point,
+    /// which is a direction as well as a difference. A test that only asserted inequality
+    /// would pass for a parameter wired to the wrong term.
+    #[test]
+    fn an_opted_in_moisture_moves_the_answer() {
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(37.0, -41.0);
+        let canonical = surface.moisture_index(&point, None, None);
+        let parched = surface.moisture_index(
+            &point,
+            None,
+            Some(MoistureParams { fetch_scale_m: 200_000.0, ..MoistureParams::canonical() }),
+        );
+        assert!(
+            parched < canonical,
+            "a tenfold shorter fetch scale did not dry the point: {canonical} then {parched}"
+        );
+        assert!(
+            canonical - parched > 0.05,
+            "the opted-in block barely reached the answer: {canonical} then {parched}"
+        );
+    }
+
+    /// `resolution_m` is threaded into every march sample rather than hard-coded to `None`.
+    ///
+    /// This is the argument that buys the spike's measured 27%, so a version that quietly
+    /// ignored it would look like a free saving and be none. Scanned over a grid rather
+    /// than asserted at one point, because the two resolutions agree wherever the detail
+    /// stack happens to be flat and a single unlucky probe would make this vacuous -- the
+    /// count of points where they differ is pinned, not merely required to be non-zero.
+    #[test]
+    fn the_resolution_argument_reaches_the_moisture() {
+        let surface = shaped();
+        let mut moved = 0usize;
+        let mut looked = 0usize;
+        for i in 0..7 {
+            for j in 0..7 {
+                let point = SpherePoint::from_latlon(
+                    -60.0 + f64::from(i) * 20.0,
+                    -150.0 + f64::from(j) * 50.0,
+                );
+                let canonical = surface.moisture_index(&point, None, None);
+                let coarse = surface.moisture_index(&point, Some(20_000.0), None);
+                looked += 1;
+                if canonical.to_bits() != coarse.to_bits() {
+                    moved += 1;
+                }
+            }
+        }
+        assert_eq!(looked, 49);
+        assert!(moved > 20, "only {moved} of {looked} points saw the resolution argument");
+    }
+
+    /// The spike's defect, at the level a host reaches it: a point that cannot be answered
+    /// must not come back as saturated marine air.
+    ///
+    /// **No guard is written in `Surface::moisture_index` for this**, and the reason is
+    /// Task 1's measured one: `noise.rs`'s lattice guard already makes `elevation_m`
+    /// answer NaN for every non-finite vector, and `climate::moisture_index` propagates a
+    /// NaN sample through all three of its arms. The mutation that proves the coupling is
+    /// real rather than assumed is the march's sampler replaced by `0.0`, which turns this
+    /// red.
+    #[test]
+    fn a_nan_point_is_not_answered_with_marine_air() {
+        let surface = shaped();
+        for vector in [
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 1.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+        ] {
+            let point = SpherePoint { vector };
+            let answer = surface.moisture_index(&point, None, None);
+            assert!(answer.is_nan(), "a NaN point was answered with a moisture of {answer}");
+        }
+        // The blindness, asserted rather than described. `to_latlon` clamps the first two
+        // of those to latitude 90, which is a real band with a real wind, and a march that
+        // read their elevations as sea would come back at exactly 1.0 -- the most ordinary
+        // answer this function has.
+        let ocean = surface.moisture_index(&SpherePoint::from_latlon(41.2, -8.7), None, None);
+        assert!(ocean > 0.9, "the swallowed value would have looked like this: {ocean}");
+    }
+
+    /// A non-finite `step_m` is not refused at the door and does not need to be: every
+    /// probe offset becomes non-finite, `local_to_sphere` carries that into the point, and
+    /// the lattice guard answers NaN.
+    ///
+    /// **The spike reported the opposite behaviour and reported it as a defect**: *"a host
+    /// that passes garbage gets a plausible answer instead of an obviously wrong one"*.
+    /// This is that entrant, closed, and asserted where it actually arrives rather than at
+    /// a guard that would be dead.
+    #[test]
+    fn a_nan_step_length_does_not_return_full_moisture() {
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(37.0, -41.0);
+        for step_m in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let answer = surface.moisture_index(
+                &point,
+                None,
+                Some(MoistureParams { step_m, ..MoistureParams::canonical() }),
+            );
+            assert!(answer.is_nan(), "step {step_m} was answered with {answer}");
+        }
+    }
+
+    /// The march is bounded from this level too, which is the point of the bound living in
+    /// the type: a `Surface` caller cannot widen it either, because there is no way to
+    /// build a `MoistureParams` that carries an unbounded loop.
+    #[test]
+    fn a_surface_caller_cannot_widen_the_march() {
+        assert!(crate::climate::MarchBudget::new(u16::MAX).is_none());
+        let surface = shaped();
+        let point = SpherePoint::from_latlon(12.0, 34.0);
+        // The widest march any caller can ask for still answers, and answers in range.
+        let widest = MoistureParams {
+            budget: crate::climate::MarchBudget::new(crate::climate::MAX_MARCH_SAMPLES)
+                .expect("the ceiling is admissible"),
+            ..MoistureParams::canonical()
+        };
+        let answer = surface.moisture_index(&point, Some(20_000.0), Some(widest));
+        assert!(answer >= 0.0 && answer <= 1.0, "the widest march read {answer}");
+    }
+
+    /// **Both arguments of `band_edges` reach the field it calibrates over.**
+    ///
+    /// A calibration that ignored `resolution_m` or the `MoistureParams` would still return
+    /// plausible edges -- the failure mode is a silently canonical answer, not a wrong-looking
+    /// one -- so each is moved on its own and required to move the edges. `None` is pinned
+    /// bit-identical to `Some(canonical())` in the same test, because that is the promise the
+    /// opt-in pattern makes and it is the one an `Option` can quietly break.
+    #[test]
+    fn both_arguments_of_band_edges_reach_the_calibration() {
+        let surface = shaped();
+        let canonical = surface.band_edges(None, None);
+        assert!(canonical.land_samples() > 0, "the fixture world has land");
+
+        let explicit = surface.band_edges(None, Some(MoistureParams::canonical()));
+        for (a, b) in canonical.moisture().iter().zip(explicit.moisture().iter()) {
+            assert_eq!(a.to_bits(), b.to_bits(), "None must be canonical, bit for bit");
+        }
+
+        let mut drier = MoistureParams::canonical();
+        drier.fetch_scale_m = climate::FETCH_SCALE_M / 8.0;
+        let moved = surface.band_edges(None, Some(drier));
+        assert!(
+            canonical
+                .moisture()
+                .iter()
+                .zip(moved.moisture().iter())
+                .any(|(a, b)| a.to_bits() != b.to_bits()),
+            "the moisture params did not reach the calibration: {:?} against {:?}",
+            canonical.moisture(),
+            moved.moisture()
+        );
+
+        let coarse = surface.band_edges(Some(80_000.0), None);
+        assert!(
+            canonical
+                .landform()
+                .iter()
+                .zip(coarse.landform().iter())
+                .any(|(a, b)| a.to_bits() != b.to_bits()),
+            "resolution_m did not reach the calibration: {:?} against {:?}",
+            canonical.landform(),
+            coarse.landform()
+        );
+    }
+
+    /// **All three axes of `bands_at` are read from this world, and none of them is a
+    /// constant.**
+    ///
+    /// Two claims, because either alone is weak. First, each band agrees with the axis
+    /// function applied to this surface's own answer, so an axis wired to the wrong quantity
+    /// is red. Second, each axis takes at least two distinct values over the population, so an
+    /// axis replaced by a constant is red as well -- an agreement test alone would happily
+    /// agree with a hard-coded zero if the field it was compared against were hard-coded too.
+    #[test]
+    fn bands_at_reads_all_three_axes_from_this_world() {
+        let surface = shaped();
+        let edges = surface.band_edges(None, None);
+        let mut seen: [std::collections::BTreeSet<usize>; 3] = Default::default();
+        let mut land = 0usize;
+        for index in 0..600usize {
+            let latitude = -80.0 + 160.0 * (index as f64) / 599.0; // cast-ok: loop counter to float
+            let longitude = -180.0 + 360.0 * ((index * 37) % 600) as f64 / 600.0; // cast-ok: loop counter to float
+            let point = SpherePoint::from_latlon(latitude, longitude);
+            let height = surface.elevation_m(&point, None);
+            if !(height > 0.0) {
+                continue;
+            }
+            land += 1;
+            let bands = surface
+                .bands_at(&point, None, None, None, &edges)
+                .expect("answerable land");
+            assert_eq!(
+                Some(bands.landform),
+                climate::landform_band(height, &edges),
+                "the landform axis is not this point's elevation"
+            );
+            assert_eq!(
+                Some(bands.temperature),
+                climate::temperature_band(surface.temperature_c(&point, None, None)),
+                "the temperature axis is not this point's temperature"
+            );
+            assert_eq!(
+                Some(bands.moisture),
+                climate::moisture_band(surface.moisture_index(&point, None, None), &edges),
+                "the moisture axis is not this point's moisture"
+            );
+            seen[0].insert(bands.landform);
+            seen[1].insert(bands.temperature);
+            seen[2].insert(bands.moisture);
+        }
+        assert!(land > 50, "only {land} land points on the fixture world");
+        for (axis, values) in ["landform", "temperature", "moisture"].iter().zip(seen.iter()) {
+            assert!(
+                values.len() > 1,
+                "the {axis} axis took one value ({values:?}) over {land} land points -- a \
+                 constant axis is a dead axis"
+            );
+        }
+    }
+
+    /// A point that cannot be answered is not banded, at the `Surface` level too.
+    ///
+    /// The same three non-finite vectors `a_nan_point_is_not_answered_with_marine_air` uses,
+    /// and for the same reason: `to_latlon` clamps two of them to latitude 90, which is a real
+    /// band with a real wind, so a banding that read only the latitude would hand back a
+    /// perfectly ordinary polar cell for a point that does not exist.
+    #[test]
+    fn a_nan_point_is_not_banded() {
+        let surface = shaped();
+        let edges = surface.band_edges(None, None);
+        for vector in [
+            crate::vectors::Vec3::new(0.0, 0.0, f64::NAN),
+            crate::vectors::Vec3::new(f64::NAN, 0.0, 1.0),
+            crate::vectors::Vec3::new(0.0, f64::NAN, 0.0),
+        ] {
+            let point = SpherePoint { vector };
+            assert_eq!(
+                surface.bands_at(&point, None, None, None, &edges),
+                None,
+                "a NaN point was banded"
+            );
+        }
     }
 }

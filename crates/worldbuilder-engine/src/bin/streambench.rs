@@ -89,7 +89,7 @@ fn main() {
     }
 
     let t = Instant::now();
-    let surface = Surface::new(SEED, EARTH_RADIUS_M, 22, 0.29, None);
+    let surface = Surface::new(SEED, EARTH_RADIUS_M, 22, 0.29, None, None, None);
     println!("  Surface::new                {:>9.3} s", t.elapsed().as_secs_f64());
     let t = Instant::now();
     let mut heights: Vec<f64> = Vec::with_capacity(positions.len());
@@ -109,7 +109,7 @@ fn main() {
         radius_m: EARTH_RADIUS_M,
         sea_level_m: DATUM_M,
         sampling_kind: SamplingKind::Spiral,
-        pond_max_drainage_area_m2: POND_MAX_M2,
+        pond_max_surface_area_m2: POND_MAX_M2,
     };
     let t = Instant::now();
     let graph = StreamGraph::build(&params, &positions, &heights, &areas, &neighbours)

@@ -165,25 +165,907 @@ jobs:
           # which is what caught the wasm_exports.rs miscount above before it reached this
           # file: an early draft of this comment claimed net zero on that file from arithmetic
           # alone, and the actual `--list` run (36, not 35) disagreed.
+          #
+          # 2026-09-05, slice 5b Task 1 (lake basin filling): 454/454/456/490/492 ->
+          # 465/465/467/501/503. `src/water.rs` is new -- `basins_of` (the downhill-forest
+          # partition Task 3 and Task 4 also need), `symmetric_adjacency`, and
+          # `fill_lakes`/`fill_basins` (the spill formula, `min` over boundary edges of `max`
+          # of the two endpoints) -- with eleven tests: two fixture sanity checks, basin
+          # partitioning, the reverse-only-edge case `symmetric_adjacency` exists for (plus
+          # a demonstration that omitting it silently mis-fills a lake), the spill-formula
+          # test built specifically to fail if the inner `max` becomes a `min` (verified by
+          # actually making that mutation and watching it fail, then reverting it), the
+          # basin-with-no-rim panic, bit-identical determinism across two runs, every lake's
+          # level within its legal range over a real graph (not a sample), full node coverage
+          # of the basin partition, and the guard against regenerating neighbours for a
+          # non-Spiral graph. `water` carries no feature gate (same precedent as `stream.rs`),
+          # so all five rows move by +11 uniformly. `expect_ignored` stays 5; no `#[ignore]`d
+          # test was added. This also folds in a correction to `wasm_exports.rs`'s count: the
+          # README's table had carried a stale 35 there since the prior round even though that
+          # round's own prose already said 36; re-deriving both files together here confirms
+          # 36 is what the wasm rows actually run, independent of this task. Re-derived by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
+          # configuration, through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, slice 5b Task 1 review fix round: 465/465/467/501/503 ->
+          # 469/469/471/505/507. Two tests added to `stream.rs`
+          # (`set_lake_level_m_moves_only_the_named_lakes_level`,
+          # `set_lake_level_m_reports_false_for_a_node_with_no_lake`, pinning the new
+          # `StreamGraph::set_lake_level_m` the review's MEDIUM finding asked for -- the
+          # computed levels reaching `Lake::level_m` itself, not just a parallel `WaterFill`)
+          # and two to `water.rs` (`apply_levels_writes_the_filled_value_onto_the_graphs_own_
+          # lake_table`, `fill_basins_and_apply_moves_the_graphs_own_lake_levels`, exercising
+          # the new `apply_levels`/`fill_basins_and_apply`). Both files compile
+          # unconditionally, so all five rows move by +4 uniformly. `expect_ignored` stays 5;
+          # no `#[ignore]`d test was added. Re-derived by `cargo test -p worldbuilder-engine
+          # <cfg> -- --list` (and `--ignored`) per configuration, cross-checked through
+          # `assert_counts.py cargo-list` itself, which reported `count OK` at all five.
+          #
+          # 2026-09-05, slice 5b Task 2 (the lake super-graph and its overflow edges):
+          # 469/469/471/505/507 -> 485/485/487/521/523. Fourteen tests added to `water.rs`
+          # (the ordering-disagreement fixture and its property/mutation-regression tests,
+          # the write-back and terminal-lake tests, the cycle-detection-and-tie-break tests,
+          # the real-graph property suite, and a documentation-anchor test) and two to
+          # `stream.rs` (`set_lake_outflow_lake_moves_only_the_named_lakes_outflow`,
+          # `set_lake_outflow_lake_reports_false_for_a_node_with_no_lake`, pinning the new
+          # `StreamGraph::set_lake_outflow_lake` write-back, the mirror of Task 1's
+          # `set_lake_level_m`). Both files compile unconditionally, so all five rows move by
+          # +16 uniformly. `expect_ignored` stays 5; no `#[ignore]`d test was added.
+          # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and
+          # `--ignored`) per configuration, cross-checked through `assert_counts.py
+          # cargo-list` itself, which reported `count OK` at all five.
+          #
+          # 2026-09-05, Task 2 review fix round: 485/485/487/521/523 -> 492/492/494/528/530.
+          # Merge replaces the reviewed-and-rejected `break_cycles` (a tied plateau is one
+          # body of water, not a tie to break); five tests added to `water.rs`
+          # (`merge_fixture_has_the_two_tied_roots_this_test_relies_on`,
+          # `a_tied_plateau_is_merged_into_one_body_at_its_true_level`,
+          # `merge_leaves_an_untied_lakes_level_untouched`,
+          # `touching_lakes_fixture_is_a_closed_system_and_merge_refuses_it`,
+          # `two_candidate_ordering_fixture_has_the_roots_this_test_relies_on`, net of
+          # deleting the review's Finding 8 "cannot fail" test) and two to `streamfmt.rs`
+          # (`refuses_an_outflow_lake_naming_a_node_that_is_not_a_lake_root`,
+          # `a_resolved_graph_round_trips_its_outflow_lake_values`, pinning Finding 1's
+          # `outflow_lake`-is-a-node-id fix). Both files compile unconditionally, so all five
+          # rows move by +7 uniformly. `expect_ignored` stays 5. Re-derived the same way,
+          # cross-checked through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, second Task 2 fix round: 492/492/494/528/530 -> 494/494/496/530/532.
+          # `merge_tied_plateaus` generalised from cycles to arbitrary ties (Finding 4: a tie
+          # that drains onward in a chain is one body too, not only a mutual cycle) and gained
+          # a pass-count termination guard (Finding 2: the union-find bound was proven but
+          # unenforced). Two tests added to `water.rs`
+          # (`chained_merge_fixture_has_the_three_roots_this_test_relies_on`,
+          # `a_chained_merge_carries_the_first_passs_full_membership_into_the_second`) pin the
+          # regression both findings share: a merge needing a second pass, verified by
+          # mutation to fail when the first pass's accumulated membership is dropped. All five
+          # rows move by +2 uniformly. `expect_ignored` stays 5.
+          #
+          # 2026-09-05, slice 5b Task 3 (pond/lake classification by drainage area):
+          # 494/494/496/530/532 -> 499/499/501/535/537. `water.rs` gained `classify_lake_kinds`
+          # (reclassifies every `Lake` row by its physical BODY's combined drainage area,
+          # since a merged plateau's own pre-merge `drainage_area_m2` under-counts a body
+          # Task 2 folded from several roots) and `lake_body_drainage_totals_m2` (the
+          # measurement accessor `pond_threshold_survey.rs` -- a `[[bin]]`, so it contributes
+          # 0 tests here -- uses to report the calibration distribution). `stream.rs` gained
+          # `StreamGraph::set_lake_kind`, the write-back mirroring `set_lake_level_m`/
+          # `set_lake_outflow_lake`. Five tests added to `water.rs`
+          # (`a_lake_whose_drainage_area_equals_the_threshold_is_a_pond`,
+          # `a_lake_whose_drainage_area_is_strictly_over_the_threshold_is_not_a_pond`,
+          # `classify_lake_kinds_overwrites_the_builders_own_initial_guess`,
+          # `classify_lake_kinds_is_deterministic_across_two_runs`,
+          # `a_merged_bodys_kind_is_decided_by_its_combined_drainage_area_not_either_roots_own`).
+          # The boundary test was verified by mutation (`<=` to `<` in
+          # `classify_lake_kinds`) and is a single-assertion test so it cannot be shadowed by
+          # a sibling, per this slice's own recurring finding; see task-3-report.md. Both
+          # files compile unconditionally, so all five rows move by +5 uniformly.
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
+          # configuration.
+          #
+          # 2026-09-05, Task 3 owner-decision fix round: 499/499/501/535/537 ->
+          # 500/500/502/536/538. Owner decision moved the pond/lake split from drainage area
+          # to surface area (task-3-report.md's addendum has the measurement that drove it:
+          # only 17-24% bottom-decile overlap between the two quantities, over the same
+          # bodies). `BuildParams::pond_max_drainage_area_m2` renamed to
+          # `pond_max_surface_area_m2` (still required, no `Default`); `classify_lake_kinds`
+          # now takes `&Basins` and sums each body's members at or below its own filled
+          # `level_m`, not `drainage_area_m2`; `lake_body_surface_areas_m2` added alongside
+          # the unchanged `lake_body_drainage_totals_m2` (kept -- catchment is still the
+          # right quantity for flow, flooding and foraging). Three `water.rs` tests renamed
+          # to match (`a_lake_whose_surface_area_equals_the_threshold_is_a_pond`,
+          # `a_lake_whose_surface_area_is_strictly_over_the_threshold_is_not_a_pond`,
+          # `a_merged_bodys_kind_is_decided_by_its_combined_surface_area_not_either_roots_own`,
+          # each re-derived against the new quantity, not merely relabelled) and one test
+          # added (`drainage_and_surface_body_totals_agree_on_how_many_bodies_there_are`,
+          # pinning that both accessors still fold the same merge groups into the same body
+          # count). The boundary test was re-verified by the same mutation
+          # (`classify_lake_kinds`'s `<=` to `<`) on the new quantity and is still a
+          # single-assertion test. Both files compile unconditionally, so all five rows move
+          # by +1 uniformly. `expect_ignored` stays 5. Re-derived the same way, cross-checked
+          # through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, Task 4 (the water manifest): 500/500/502/536/538 -> 506/506/508/542/544.
+          # `water.rs` gained the manifest itself (`WaterManifest`, `Body`, `BodyKind`,
+          # `Extent`, `River`, `water_manifest`, `water_manifest_from_graph`) and six
+          # unconditionally-compiled tests (`water_manifest_is_bit_identical_across_two_runs`,
+          # `every_physical_body_appears_exactly_once`,
+          # `every_boundary_root_is_an_ocean_body_at_sea_level`, `no_body_is_two_kinds_at_once`,
+          # `the_river_arm_is_expressible_and_stays_empty`,
+          # `a_pond_appears_when_a_hand_built_fixture_makes_one`) -- no new `#[cfg]`, so all
+          # five rows move by +6 uniformly and `expect_ignored` stays 5 (no `#[ignore]`d test
+          # was added). The pond test is the sharpest of the six -- its own root cause is a
+          # hand-built fixture, since no `Spiral`-sampled graph this generator produces is
+          # small enough to make a real one (task-3-report.md's own finding: smallest real
+          # body 7.9e8 m^2 against a 1.0e5 m^2 threshold) -- and it was verified by mutation
+          # (dropping the `height_m(member) <= lake.level_m` filter in `lake_body_extents`)
+          # rather than merely reasoned about; the mutation moved the pond's own extent to
+          # include its land neighbour and only the extent assertion failed, not the `kind`
+          # assertion beside it, so it is not shadowed by a sibling. Re-derived by `cargo test
+          # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration,
+          # cross-checked through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, Task 1 (relief-amplitude parameter block): 506/506/508/542/544 ->
+          # 508/508/510/544/546. `detail.rs` gained `ReliefParams` and `surface.rs` gained two
+          # unconditionally-compiled tests
+          # (`relief_none_matches_relief_some_canonical_bit_for_bit`,
+          # `a_one_ulp_relief_perturbation_moves_the_answer`) -- no new `#[cfg]` and no
+          # `#[ignore]`, so all five rows move by +2 uniformly and `expect_ignored` stays 5.
+          # `relief_none_matches_relief_some_canonical_bit_for_bit` is the task's whole claim
+          # (a `Surface` built with `relief: None` and one built with
+          # `relief: Some(ReliefParams::canonical())` must be bit-identical over a 2,701-point
+          # lat/lon grid at two resolutions); `a_one_ulp_relief_perturbation_moves_the_answer`
+          # is its own, separate assertion proving that claim is falsifiable, so neither test
+          # shadows the other. The bit-identity test was also verified red: task-1-report.md
+          # records perturbing `Detail::new`'s `None` resolution by one ULP of `mountain_m`
+          # (leaving `ReliefParams::canonical()` itself untouched) and rerunning it, which
+          # failed at the first diverging grid point; reverting turned it green again. Re-
+          # derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
+          # per configuration, cross-checked through `assert_counts.py cargo-list` itself.
+          #
+          # 2026-09-05, Task 4 review-fix round: 508/508/510/544/546 -> 513/513/515/549/551.
+          # Two blocking findings against the water manifest (task-4-review.md). (1) The sea
+          # was enumerated as one `Body` per boundary root -- 86%/81% of all bodies at
+          # n=30,000/100,000, 96% of those boxes mutually overlapping, over a third of real
+          # lakes shadowed by at least one -- which inverted §13.2's own "mapping of named
+          # waters, plus a fallback for the unnamed" architecture. `BodyKind::Ocean` and the
+          # mouth loop in `water_manifest` are gone; the sea is exactly
+          # `WaterManifest::sea_level_m` and nothing else. `every_boundary_root_is_an_ocean_
+          # body_at_sea_level` and `no_body_is_two_kinds_at_once` are renamed
+          # (`no_boundary_root_appears_as_a_body`, `every_body_is_a_lake_root_never_a_mouth`)
+          # and inverted to assert the new invariant -- net zero test count from the rename.
+          # (2) `Extent`'s lat/lon box mishandled the antimeridian at scales already reached
+          # (6/171 lake bodies at n=30,000, 8/799 at n=100,000, one single-node body at
+          # 358.7 degrees of longitude), not only "as a body's scale approaches the planet's
+          # circumference" as the pre-review doc comment reasoned rather than measured.
+          # `lake_body_extents` now collects every member's `(lat, lon)` for a body and
+          # `Extent::from_points` resolves longitude via `smallest_enclosing_longitude_arc`
+          # (widest-gap-on-the-circle construction); `min_longitude_deg > max_longitude_deg`
+          # now denotes a seam-crossing arc, documented on the struct itself. Four new unit
+          # tests on the arc helper plus one hand-built fixture
+          # (`a_lake_straddling_the_antimeridian_gets_the_narrow_arc_not_the_globe_spanning_
+          # one`, two members 0.2 degrees apart on the planet but 359.7 degrees apart in raw
+          # coordinates) are the five new unconditionally-compiled tests. LOW fixes alongside:
+          # `extents[&i]` in `water_manifest` is now a guarded `.get(&i).unwrap_or(EMPTY_
+          # EXTENT)` rather than an unguarded index, and `Extent::from_points`'s doc comment
+          # now states its NaN-drops-silently latitude semantics. No new `#[cfg]`, no new
+          # `#[ignore]`, so all five rows move by +5 uniformly and `expect_ignored` stays 5.
+          # Body counts re-derived directly (temporary `#[ignore]`d measurement test, reverted
+          # before commit, same method task-4-review.md used): at n=30,000, real `Spiral`-
+          # sampled, `SEED=20_260_905`, `sea_level_m=0.0`, `pond_max_surface_area_m2=1.0e5` --
+          # before, 1,232 bodies (1,061 ocean / 171 lake / 0 pond); after, 171 bodies (171 lake
+          # / 0 pond), matching the review's own measurement exactly. Re-derived by `cargo test
+          # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration,
+          # cross-checked through `assert_counts.py cargo-list` itself.
+          # Slice 2026-09-05-slice-relief-amplitude Task 3 added four tests for the
+          # `ReliefParams::hills()` preset (`detail.rs`), +4 uniformly over Task 2's
+          # 513/513/515/549/551 -- re-derived through `assert_counts.py cargo-list` itself,
+          # not by hand arithmetic. See task-3-report.md.
+          # Slice 2026-09-05-slice-relief-amplitude Task 4 opened the relief channel across
+          # the WASM boundary (`wb_world_new_relief`, `wb_relief_preset`, `wb_relief_check`)
+          # and added eight tests for it in `tests/wasm_exports.rs`. That file is
+          # `#![cfg(feature = "wasm")]` in its entirety, so **only the two wasm rows move**,
+          # by +8 each -- 553 -> 561 and 555 -> 563 -- and the three non-wasm rows stay at
+          # 517/517/519. `expect_ignored` stays 5; no `#[ignore]`d test was added. Five of the
+          # eight are sweeps rather than spot-checks (510 field-by-field records, 101 slider
+          # positions, a 150-point cross product), which is why the file grew far more than
+          # the count did. Re-derived per configuration through `assert_counts.py cargo-list`
+          # itself against fresh `-- --list` / `-- --list --ignored` output, not by hand
+          # arithmetic and never by grepping `test result:`. See task-4-report.md.
+          # 2026-09-05, slice 5b Task 5 (parity, and a negative control): 561/563 -> 566/568
+          # on the two wasm rows only, and 517/517/519 unchanged on the other three. Task 5
+          # added `wb_water_run` -- the first export that reaches `water.rs` at all, which is
+          # what makes slice 5b's water path comparable native-against-WASM rather than merely
+          # unchecked -- and five tests for it in `tests/wasm_exports.rs`, a file that is
+          # `#![cfg(feature = "wasm")]` in its entirety. Four of the five are sweeps rather
+          # than spot-checks (171 sea-level records driven through the export and read back, a
+          # pond-threshold hostile set, a node-count ladder, the buffer channel), and the sweep
+          # found a REAL abort: at a datum below the world's own lowest sampled point there is
+          # no boundary node anywhere, so the union of every lake basin is the whole graph and
+          # `water::merge_tied_plateaus` panics through a nounwind `extern "C"` boundary --
+          # measured as exit 0xc0000409 before `every_component_has_an_outlet` closed it.
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived per
+          # configuration through `assert_counts.py cargo-list` itself against fresh
+          # `-- --list` / `-- --list --ignored` output, which reported `count OK` at all five.
+          # See task-5-report.md.
+          # 2026-09-05, slice-mountains Task 1 (`TectonicParams`, opt-in, and `None`
+          # bit-identity): 517/517/519/566/568 -> 521/521/523/570/572, +4 uniformly across
+          # all five rows. Three of the four are non-wasm-gated tests added to
+          # `tectonics.rs` alongside the new `TectonicParams` struct and its
+          # `canonical()` (a bit-for-bit-against-the-module-constants check and two
+          # margin-blend checks), and the fourth is `surface.rs`'s
+          # `tectonics_none_matches_tectonics_some_canonical_bit_for_bit`, the task's own
+          # required proof that `tectonics: None` and `tectonics:
+          # Some(TectonicParams::canonical())` agree bit-for-bit. None of the four are
+          # behind `#[cfg(feature = "wasm")]`, which is why the count moves by the same
+          # +4 on every row rather than only the two wasm ones. `expect_ignored` stays 5;
+          # no `#[ignore]`d test was added. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` /
+          # `-- --list --ignored` output, which reported `count OK` at all five. See
+          # task-1-report.md.
+          # 2026-09-05, slice-mountains Task 4 (the mountain sliders): 521/521/523/570/572 ->
+          # 523/523/525/584/586. TWO SEPARATE MOVEMENTS, and only one of them is this task's.
+          #
+          # +2 UNIFORMLY IS A CORRECTION, NOT AN ADDITION. Re-deriving these numbers against a
+          # CLEAN `git worktree` of 814c689 -- the commit the row above pinned -- lists 528 /
+          # 530 / 577 / 579 with 5 ignored, which is 523/523/525/572/574 run. **The pinned
+          # 521/521/523/570/572 was already two low at that commit, so this count gate was
+          # already red before this task touched anything.** The two tests are in the crate
+          # library and are therefore in every configuration, which is why the shortfall was
+          # uniform; the likeliest source is 814c689's own one-ULP perturbation fixtures,
+          # whose count was derived before that commit was finished. Recorded rather than
+          # quietly folded in, because a pin that is corrected without saying so is a pin that
+          # can be wrong again next slice.
+          #
+          # +12 ON THE TWO WASM ROWS ONLY is this task. `tests/wasm_exports.rs` is
+          # `#![cfg(feature = "wasm")]` in its entirety and gains twelve tests for the tectonic
+          # channel -- `wb_world_new_tectonic`, `wb_tectonic_preset` and `wb_tectonic_check`,
+          # the exports that carry `TectonicParams` to the browser and give the owner the two
+          # sliders they asked for. Seven of the twelve are sweeps rather than spot-checks (a
+          # field-by-field sweep of all nine fields over the hostile set, both bounds and a
+          # ladder; the checker held to the constructor over the same population; every one of
+          # the 96 slider positions the widget can produce; a 6 x 6 x 5 cross product; the four
+          # zero-width profiles; the range-gate ceilings; the blend floor), and the sweep found
+          # a REAL blindness: the six `RELIEF_PROBES` the relief channel samples at are not
+          # within `MAX_TECTONIC_RANGE_M` of a convergent continental margin on this fixture,
+          # so driving the collision profile from 1,500 m / 400 km to 6,000 m / 100 km changes
+          # NOT ONE BIT at any of them. `a_chosen_tectonic_block_actually_moves_the_ground_it_
+          # claims_to` failed on exactly that and three witness points were measured for the
+          # channel. `expect_ignored` stays 5; no `#[ignore]`d test was added. Re-derived per
+          # configuration through `assert_counts.py cargo-list` itself against fresh
+          # `-- --list` / `-- --list --ignored` output. See task-4-report.md.
+          #
+          # 2026-09-05, slice-mountains Task 2 (the structure field): 523/523/525/584/586 ->
+          # 538/538/540/599/601, +15 UNIFORMLY on every row. Every one of the fifteen is in
+          # the crate library and none is feature-gated, which is why the move is the same on
+          # all five. `noise.rs` gains five for the new `ridged` multifractal (the unit-interval
+          # sweep over 4,000 samples at three coordinate scales, purity, zero octaves, a NaN
+          # frequency flooring rather than propagating, and the one that makes the primitive
+          # worth having -- ridged creases measured two orders of magnitude sharper than fbm's
+          # by largest second difference, both normalised to the same scale first).
+          # `continentality.rs` gains one, pinning that the world seed it now records for
+          # `Tectonics` is not read by that module. `tectonics.rs` gains nine for the opt-in
+          # structure fields: the bit-for-bit inertness proof that `canonical()` reduces to the
+          # pre-Task-2 collision expression over a -420..+420 km sweep (Ruling 1's whole safety
+          # argument), symmetric-`asymmetric_bump`-is-`bump` with its discrimination, the
+          # published 1.67 flank-width ratio measured by bisecting the shipped function, each
+          # structure field moving the answer at a STATED setting (the complement of the ULP
+          # sweep, which is structurally blind to fields whose canonical value is 0.0), the
+          # wavelength asserted blind until the depth is raised, the multiplier's range swept
+          # over a global grid, the ordered-pair suture hash, `collision_reach_m` checked
+          # against where the profile actually stops, and the reach that exceeds the range
+          # gate. **`assert_counts.py` now reports TWELVE test binaries rather than eleven:**
+          # `src/bin/mountain_survey.rs` is a new `[[bin]]` and contributes 0 tests, exactly as
+          # `erosion_convergence_sweep.rs`, `relief_survey.rs`, `pond_threshold_survey.rs`,
+          # `mountain_probe.rs` and `streambench.rs` do. `expect_ignored` stays 5; no
+          # `#[ignore]`d test was added. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` /
+          # `-- --list --ignored` output, which reported `count OK` at all five. See
+          # task-2-report.md.
+          #
+          # 2026-09-05, slice mountains Task 3 (the preset, and the structure fields crossing
+          # the WASM boundary): 538/538/540/599/601 -> 542/542/544/609/611. Two different
+          # movements, and only one of them lands on every row.
+          #   * +4 on ALL five, from `src/tectonics.rs`, which compiles unconditionally: the
+          #     four tests for `TectonicParams::ranges()` (only the six named fields move; the
+          #     `None` path is still bit-identical after a second constructor exists beside
+          #     canonical; the preset sits inside the range gate with a stated margin; and it
+          #     differs from BOTH canonical and its own bare envelope, so the structure fields
+          #     are proved to be doing something rather than the envelope alone).
+          #   * +6 on the two WASM rows only, from `tests/wasm_exports.rs`, which is
+          #     `#![cfg(feature = "wasm")]` in its entirety: the preset crossing as fields, the
+          #     `suture_count` loop-bound refusal and its sampled interior, the stacked-profile
+          #     range-gate refusal, the `collision_asymmetry` floor and derived ceiling, the
+          #     five structure fields swept together, and a pin on the sweep's own size
+          #     (1,644 records, 947 accepted) so a later change that halves it goes red with
+          #     both numbers rather than passing at one over a threshold.
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added, and no test binary was.
+          # Re-derived per configuration through `assert_counts.py cargo-list` itself against
+          # fresh `-- --list` / `-- --list --ignored` output, AFTER the last source edit, and
+          # the 032b41f baseline (538/538/540/599/601) was re-derived the same way BEFORE the
+          # first edit rather than trusted -- this pin block was found already wrong once in
+          # this slice. See task-3-report.md.
+          #
+          # TASK 5 (the along-margin warp) takes 542/542/544/609/611 -> 547/547/549/616/618:
+          #   * +5 on EVERY row from `src/tectonics.rs`, which compiles unconditionally --
+          #     the warp is inert at canonical and that is asserted about the profile's
+          #     ARGUMENT rather than its answer (the earlier inertness test exercises
+          #     `sutures` and is structurally blind to the distance handed to it); the
+          #     wavelength is asserted BLIND until the amplitude is turned up; the warp offset
+          #     is identical from both sides of one margin, by bits, which is what stops it
+          #     seaming every belt it bends; the bisector's poles answer zero rather than a
+          #     NaN; and `collision_reach_m` carries the amplitude, checked against the
+          #     profile rather than against the formula that produced it.
+          #   * +2 more on the two WASM rows only, from `tests/wasm_exports.rs`: the warp
+          #     swept against the reach at the range gate (96 corners, each one's admissibility
+          #     predicted from the record before the checker is asked), and the wavelength
+          #     floor refused as a SILENCE rather than admitted as a field that does nothing.
+          # The sweep's own size pin moves with the stride: 1,644 records / 947 accepted
+          # becomes 1,872 / 1,044, both re-derived and both asserted exactly.
+          # The 'd1f022f' baseline (542/542/544/609/611) was re-derived BEFORE the first edit
+          # and `gates.yml` was CORRECT at it.
+          #
+          # THE FRACTAL-COASTLINE TASK (photoreal slice, Task 5) takes 547/547/549/616/618 ->
+          # 556/556/558/625/627: **+9 on EVERY row, and nothing on the WASM rows alone** --
+          # the C ABI was NOT widened, so `tests/wasm_exports.rs` is untouched. All nine come
+          # from code that compiles unconditionally:
+          #   * `src/continentality.rs`, +7. `None` is bit-identical to
+          #     `Some(CoastParams::canonical())` over a 2,000-point area-uniform spiral AND
+          #     the same spiral is required to MOVE under `fractal()`, so the inertness claim
+          #     cannot pass vacuously; the window is the house smoothstep, asserted against
+          #     `detail::smooth` by bits and including the NaN arm; the term is bit-inert
+          #     outside its own band and bounded by its stated amplitude inside it; land
+          #     fraction is held to under 1 pp over 20,000 spiral points WHILE the coast is
+          #     required to have crossed in both directions; the second noise lattice is
+          #     unread on the canonical path (nudged in place, the sibling of the
+          #     `world_seed` test); every degenerate `window_spreads` closes the window
+          #     instead of poisoning the field, with an infinite width admitted rather than
+          #     swept in with them; and `fractal()` moves exactly one field.
+          #   * `src/surface.rs`, +2. The same bit-identity over the full `elevation_m`
+          #     pipeline on the 37x73 grid at two resolutions (5,402 comparisons per pairing,
+          #     two pairings, plus a moved-count discriminator), and the block reaching
+          #     `structural_m` at the coast while leaving the far field bit-identical.
+          # **`assert_counts.py` now reports THIRTEEN test binaries rather than twelve:**
+          # `src/bin/coastline_survey.rs` is a new `[[bin]]` and contributes 0 tests, exactly
+          # as `mountain_survey.rs` did. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` /
+          # `-- --list --ignored` output, AFTER the last source edit; the `5de0fd9` baseline
+          # (547/547/549/616/618) was re-derived the same way BEFORE the first edit and
+          # `gates.yml` was CORRECT at it. `expect_ignored` stays 5.
+          #
+          # THE COAST CHANNEL CROSSING THE WASM BOUNDARY (photoreal slice, Task 6) takes
+          # 556/556/558/625/627 -> 556/556/558/643/645: **+18 on the TWO WASM ROWS ONLY, and
+          # nothing on the other three.** `tests/wasm_exports.rs` is `#![cfg(feature = "wasm")]`
+          # in its entirety and every one of the eighteen is in it; no code that compiles
+          # unconditionally gained a test, which is why the first three rows do not move at all.
+          # (Task 5's own +9 was the exact opposite shape -- uniform on every row, nothing on the
+          # WASM rows alone -- because it did not widen the C ABI. This task does, and owes the
+          # sweep that comes with it.)
+          #
+          # The eighteen are `wb_world_new_coast`, `wb_coast_preset` and `wb_coast_check`, the
+          # exports that carry `CoastParams` to the browser and put a coastline slider in the
+          # owner's hands. **Six of the eighteen are sweeps rather than spot-checks** -- a
+          # field-by-field sweep of all six fields over the hostile set, both bounds and a ladder
+          # (748 records, 392 accepted); the checker held to the constructor over the same
+          # population; the sweep's own size and accepted/refused split pinned exactly; a
+          # 5 x 6 x 5 CROSS PRODUCT of frequency, octaves and lacunarity; a 6 x 6 cross product of
+          # amplitude and window width; and every one of the sixteen slider positions the widget
+          # can produce.
+          #
+          # **The cross product is not decoration and the sweep proves it.** With the finest-
+          # octave product check removed from `coast_is_admissible` and nothing else changed, the
+          # cross-product test ABORTS -- `attempt to add with overflow` at `noise.rs:95`, inside
+          # `Noise::at`'s `ix + 1`, a non-unwinding panic across `extern "C"` -- while the
+          # one-field-at-a-time sweep stays GREEN under the identical mutation. A band, not a
+          # cliff, exactly as every hazard this project has found has been.
+          #
+          # `expect_ignored` stays 5; no `#[ignore]`d test was added, and no test binary was --
+          # `assert_counts.py` still reports thirteen. Re-derived per configuration through
+          # `assert_counts.py cargo-list` itself against fresh `-- --list` / `-- --list --ignored`
+          # output, AFTER the last source edit; the `35531a9` baseline (556/556/558/625/627) was
+          # re-derived the same way BEFORE the first edit and `gates.yml` was CORRECT at it.
+          #
+          # THE SILENT-ABYSS GUARD (photoreal slice, follow-up) takes 556/556/558/643/645 ->
+          # 557/557/559/644/646: **+1 on EVERY row and nothing on the WASM rows alone**, the
+          # Task 5 shape rather than the Task 6 shape, because the one new test is in
+          # `src/continentality.rs` and compiles unconditionally. `tests/wasm_exports.rs` gained
+          # NO test -- `a_nan_in_the_coastal_term_drowns_the_world_rather_than_showing_as_one`
+          # was RENAMED and inverted, not added, so the two WASM rows move by the same +1 as the
+          # other three and by nothing else.
+          #
+          # The one test is `a_nan_above_the_shore_surfaces_as_a_nan_rather_than_as_the_abyss`.
+          # `Continentality::elevation_from_above` read `if above >= 0.0` and then
+          # `if depth < 1.0`, and a NaN is false for BOTH, so a NaN fell through to
+          # `ABYSS_M * 1.0`: every affected point silently became the deepest abyss and every
+          # `is_finite` assertion in the crate stayed green. Three entrants reach that function
+          # -- a non-finite lat/lon through the C ABI, a non-finite x/y/z through the Python
+          # bindings, and the opt-in coastal term -- and all three are exercised, alongside the
+          # invisibility half: sixteen finite inputs across both arms and both saturations,
+          # compared BY BITS against the pre-guard arithmetic transcribed in the test.
+          #
+          # **Four mutations, each reverted after, each run against the named test ALONE with
+          # `-- --exact`**: the guard disabled (RED), the guard narrowed to positive-sign NaN
+          # (RED), the guard widened to swallow `above > 1.0` (RED, and it is the invisibility
+          # half that catches it), and the guard returning `ABYSS_M` instead of NaN (RED). With
+          # the guard disabled and the WHOLE suite run, exactly TWO tests go red -- this one and
+          # the renamed WASM one -- and 625 others stay green. No sibling was standing there.
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` = 157,
+          # and parity 108,106 compared / 0 divergent with all five controls unchanged
+          # (103,931 / 216 / 60 / 6,186 / 13,128). `expect_ignored` stays 5 and
+          # `assert_counts.py` still reports thirteen binaries. Re-derived per configuration
+          # through `assert_counts.py cargo-list` AFTER the last source edit; the `64d73f3`
+          # baseline (556/556/558/643/645) was re-derived the same way BEFORE the first edit and
+          # `gates.yml` was CORRECT at it.
+          #
+          # CLOSING THE REST OF THAT FAMILY takes 557/557/559/644/646 -> 559/559/561/646/648:
+          # **+2 on EVERY row and nothing on the WASM rows alone**, because both new tests are
+          # in `src/` (`continentality.rs` and `noise.rs`) and compile unconditionally. No test
+          # binary was added; `assert_counts.py` still reports thirteen.
+          #
+          # The two are a matched pair -- the same "a plausible world, not an error" shape as
+          # the silent abyss, one function up and one module over:
+          #
+          #   a_nan_land_fraction_surfaces_as_a_nan_shore_rather_than_as_a_world_of_pure_land
+          #     `Continentality::calibrate` picked sea level with
+          #     `values[((1.0 - land_fraction) * last) as usize]`. `as usize` SATURATES and a
+          #     NaN saturates to 0, so sea level became the sorted sample's global MINIMUM and
+          #     every point on the planet read as land. Measured at seed 12345: shore -0.6889
+          #     against a canonical 0.0956, 2000 of 2000 spiral points land against 578. It was
+          #     refused by `wb_world_new` and open through `bindings::continentality_*`.
+          #
+          #   a_lattice_coordinate_the_index_cannot_name_surfaces_as_a_nan_rather_than_aborting
+          #     `Noise::at` floored each coordinate, cast to `i64` -- which saturates -- and
+          #     then asked for `ix + 1`, which overflows. Debug: `attempt to add with overflow`.
+          #     Behind `extern "C"`, which is nounwind: an ABORT. TWO entrants reach that ONE
+          #     line: an infinite vector component through `bindings::continentality_at`, and
+          #     the coastal octave schedule's PRODUCT `frequency * lacunarity^(octaves - 1)`,
+          #     which `WB_MAX_COAST_FINEST_FREQUENCY` refuses and which a one-field-at-a-time
+          #     sweep is blind to. Both are the same site and one guard closes both; the test
+          #     asserts the blindness too, by showing each field alone at its own ceiling still
+          #     produces a finite answer.
+          #
+          # Both contracts are PROPAGATE, the same decision the silent-abyss guard made and for
+          # the same reasons: Python's `int()` RAISES on the inputs concerned so there is no
+          # oracle value to match, a panic is an abort across a nounwind boundary, and refusing
+          # at the boundary cannot cover exports that take bare scalars.
+          #
+          # **NINE mutations, each reverted after.** The two "fix disabled" ones were run
+          # against the WHOLE `--features python,wasm` suite: EXACTLY ONE test goes red for
+          # each, its own, with 647 others green -- no sibling was standing there. Seven
+          # narrower ones were run against the named test alone with `-- --exact`, all RED:
+          # the NaN guard narrowed to positive-sign NaN; returning 0.0 instead of NaN; widened
+          # to swallow `land_fraction >= 1.0` (caught by the invisibility half); the lattice
+          # guard narrowed to `is_finite` only (misses the finite 9.3e18 saturation); narrowed
+          # to the x axis alone; returning 0.0 instead of NaN; and `LATTICE_LIMIT` widened to
+          # 9e300 (the cross product aborts again).
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` = 157,
+          # parity 108,106 compared / 0 divergent and all five controls unchanged. Re-derived
+          # per configuration through `assert_counts.py cargo-list` AFTER the last source edit;
+          # the `75fb726` baseline (557/557/559/644/646, 5 ignored, 13 binaries) was re-derived
+          # the same way BEFORE the first edit and `gates.yml` was CORRECT at it.
+          #
+          # 2026-09-06, the climate slice, Task 1 (temperature, closed form):
+          # 559/559/561/646/648 -> 577/577/579/664/666. **+18 on EVERY row and nothing on the
+          # WASM rows alone**, because all eighteen tests are in `src/` (`climate.rs` and
+          # `surface.rs`) and compile unconditionally. **`assert_counts.py` now reports
+          # FOURTEEN test binaries rather than thirteen**: `src/bin/climate_survey.rs` is a
+          # new `[[bin]]`, carrying zero tests, added for the reason `relief_survey.rs` and
+          # `pond_threshold_survey.rs` already are -- four full-planet builds at 200,000
+          # samples each is a one-machine measurement, not a per-push property. A zero-test
+          # binary does not move `expect`; it moves the binary count, which is why the count
+          # is stated here rather than left for a reader to notice.
+          #
+          # `climate.rs` is a NEW STAGE THAT NOTHING EXISTING READS. It adds no field to
+          # `Surface` (`lib.rs::the_surface_is_not_modified_by_this_slice` still asserts
+          # exactly eight, by name), no term to `structural_m` or `elevation_m`, and no
+          # export -- Task 4 of the slice adds those. So `worldbuilder/` is untouched, every
+          # conformance digest is unmoved by construction rather than by comparison, and
+          # `surface.rs::climate_is_not_reachable_from_any_existing_surface_path` asserts
+          # that absence from the source text, which is the only way an absence can be
+          # asserted.
+          #
+          # `Surface::temperature_c` takes `Option<ClimateParams>` -- `None` canonical, the
+          # fourth block of that kind after `ReliefParams`, `TectonicParams` and
+          # `CoastParams`. It is a METHOD argument rather than a constructor argument
+          # because climate holds no state to build: `substrate::at` is the precedent, and
+          # the eight-field assertion above is the thing a needless field would have cost.
+          #
+          # FOURTEEN MUTATIONS, each reverted after. Every one of the eighteen new
+          # assertions has at least one mutation that turns it red, and one mutation
+          # DELETED CODE THIS TASK HAD WRITTEN: a NaN-latitude guard in `temperature_c` was
+          # removed with the whole 666-test suite still green, because `noise.rs`'s lattice
+          # guard (added at `b6862d2`) already makes `elevation_m` answer NaN for every
+          # NaN or infinite vector. It was dead, and dead code looks like a feature.
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` =
+          # 157, parity 108,106 compared / 0 divergent. Re-derived per configuration through
+          # `assert_counts.py cargo-list` AFTER the last source edit; the `231c47b` baseline
+          # (559/559/561/646/648, 5 ignored, 13 binaries) was re-derived the same way BEFORE
+          # the first edit and `gates.yml` was CORRECT at it.
+          #
+          # ---------------------------------------------------------------------------
+          # 598/598/600/685/687 -- CLIMATE SLICE TASK 2, the upwind moisture march.
+          # ---------------------------------------------------------------------------
+          #
+          # +21 on EVERY row and nothing on the WASM rows alone, the same shape the
+          # temperature task had and for the same reason: every new test lives in `src/`
+          # (`climate.rs`, `surface.rs`) and compiles unconditionally, and NO EXPORT WAS
+          # ADDED -- Task 4 of the slice owns `wasm.rs`. The strongest single check that
+          # this reaches no shipped path is that the re-blessed
+          # `viewer/public/wasm/worldbuilder_engine.wasm` is BYTE-IDENTICAL: 226,673 bytes,
+          # artifact-sha256 88a565adfa4b3433cb2dc4e30f2f775adf1739abc57cbb41b2092c7735499a4f,
+          # the same 22 exports; only MANIFEST.txt's source-fingerprint moved.
+          #
+          # `assert_counts.py` still reports FOURTEEN test binaries. The march EXTENDED
+          # `src/bin/climate_survey.rs` rather than adding a fifteenth, because the
+          # measurement that sets the march's sample budget belongs beside the measurement
+          # that sets the temperature bands.
+          #
+          # THE SAMPLE BUDGET IS 160, NOT THE 40 THE SPIKE BENCHMARKED, and that is a
+          # physics decision rather than a performance one -- the spike proved cost is
+          # affine in the budget with no knee anywhere from 1 to 320 samples, so there is no
+          # bend to cite. Measured on these worlds: the upwind fetch to open water has a
+          # median of 1,000-2,200 km, so a 40-sample (800 km) march reaches water for only
+          # 20-42% of land points and never measures a fetch at all on the majority of this
+          # engine's land. Against an 8,000 km reference march the mean absolute error in
+          # the moisture index is 0.178-0.270 at 40 samples and 0.002-0.007 at 160 -- one to
+          # one-and-a-half whole bands against three percent of one.
+          #
+          # THE LOOP BOUND LIVES IN THE TYPE. `MarchBudget` has one constructor, which
+          # returns `None` above `MAX_MARCH_SAMPLES` (1,024), so a `MoistureParams` cannot
+          # be built carrying an unbounded march and no caller -- Rust or, when Task 4 adds
+          # one, C -- can reach the ~2,600-second hang the spike extrapolated from
+          # `count = u32::MAX` behind a nounwind boundary.
+          #
+          # A CROSS-PRODUCT SWEEP OF 37,818 CALLS found 536 answers outside [0, 1] -- a
+          # BAND of admissible-looking arguments (a negative `step_m`, a zero or negative
+          # scale), not a cliff. The march now refuses that domain with NaN, written as
+          # negated comparisons so a NaN takes the same door, and the re-run sweep is 0 out
+          # of range. TWENTY-THREE MUTATIONS, each reverted; every one of the twenty-one new
+          # assertions has at least one that turns it red, and TWO PIECES OF CODE THIS TASK
+          # WROTE WERE DELETED BECAUSE NO MUTATION COULD: a NaN guard on the lift term (the
+          # water arm and the seed guard already cover it) and a whole test that the guard
+          # subsumed. That is the second and third time in this slice.
+          #
+          # RULING 1 held: `worldbuilder/` untouched, 398/398 with `test_conformance.py` =
+          # 157, parity 108,106 compared / 0 divergent. Re-derived per configuration through
+          # `assert_counts.py cargo-list` AFTER the last source edit; the `4991055` baseline
+          # (577/577/579/664/666, 5 ignored, 14 binaries) was re-derived the same way BEFORE
+          # the first edit and `gates.yml` was CORRECT at it.
+          # THE GULLY SLICE (2026-09-06) takes these to 608/608/610/703/705, 5 ignored.
+          # `assert_counts.py` still reports FOURTEEN test binaries -- no new one was added.
+          #
+          # HOTSPOT FIX 1 (2026-09-06) takes these to 609/609/611/704/706, 5 ignored -- ONE new
+          # test, in `water.rs` in the lib, so every configuration moves by exactly one and
+          # `assert_counts.py` still reports FOURTEEN binaries. The performance profile
+          # (`.superpowers/sdd/notes/performance-profile.md`) found `wb_water_run` building the
+          # k-nearest-neighbour relation in `stream::sample_nodes` and then paying for a second,
+          # identical k-NN search inside `water::fill_and_resolve_water` -- 57.7% of the dominant
+          # cost of the largest single number in the project, spent recomputing a value the
+          # caller was already holding. The relation is passed in now
+          # (`fill_and_resolve_water_with_neighbours`), and the new test IS the claim: the two
+          # entry points over the same graph must come out BIT-IDENTICAL on
+          # `StreamGraph::bit_identical_to`, not merely close. Byte-identity was demonstrated end
+          # to end rather than asserted -- `examples/parity_dump.rs`' whole 126,359-value native
+          # corpus is byte-for-byte the same file before and after (sha256 b6a7cb38e18763f9...),
+          # water manifest included -- and parity stayed 126,359 / 0 divergent with all six
+          # controls unmoved. Native, n = 86,000, the owner's world, four interleaved A/B pairs
+          # in one process: fill-and-resolve went 2.777-3.101 s to 0.132-0.194 s and the whole
+          # solve 5.839-6.095 s to 2.844-3.754 s, at an unchanged 845 bodies.
+          #
+          # THE MERGING SLICE (2026-09-07) takes these to 613/613/615/709/711, 5 ignored, and
+          # `assert_counts.py` now reports FIFTEEN test binaries rather than fourteen -- a new
+          # `[[bin]]`, `src/bin/gully_merging_survey.rs`, which `cargo test` builds as a target
+          # with zero tests in it, exactly as the other eight surveys are. Three of the four new
+          # tests are in the lib (`detail.rs`), so every configuration moves by three; the fourth
+          # is in `tests/wasm_exports.rs` and moves only the two wasm ones, which is why the
+          # spread is +3/+3/+3/+4/+4. Re-derived per configuration through `assert_counts.py
+          # cargo-list` AFTER the last source edit.
+          #
+          # THE LOCAL-REFERENCE SLICE (2026-09-07) takes these to 615/615/617/711/713, 5 ignored,
+          # over the same FIFTEEN binaries. **+2 in every configuration and nothing wasm-only**,
+          # because both new tests are in `src/steer.rs`: the lattice grew a local elevation
+          # reference beside its gradient, and the two tests are that the reference is the CELL's
+          # mean rather than the point's (a quadratic field, whose closed-form offset is
+          # `c*h^2/2`; measured mean 101.8 m against 100.0 m) and that it is continuous across a
+          # cell face, which it must be because it reaches a height. Two of `detail.rs`'s existing
+          # tests were REWRITTEN rather than added to -- the mechanism test now straddles the
+          # locus in local relief with `shaped` held identical in both walks, and the preset test
+          # now asks real ground whether the locus is crossed -- so the count does not move for
+          # them. Re-derived per configuration through `assert_counts.py cargo-list` AFTER the
+          # last source edit.
+          #
+          # THE CLIMATE SLICE, TASK 3 -- BANDS (2026-09-07) takes these to 628/628/630/724/726,
+          # 5 ignored, over the same FIFTEEN binaries. **+13 in every configuration and nothing
+          # wasm-only**, because every new test is in `src/` and compiles unconditionally -- ten
+          # in `climate.rs` and three in `surface.rs`. That uniform shape is the check a task
+          # which adds no export must pass; a wasm-only movement here would mean an export had
+          # been added by accident. No `[[bin]]` was added: `src/bin/climate_survey.rs` was
+          # EXTENDED with the band-occupancy section, for the same reason Task 2 extended it
+          # rather than adding a fifteenth survey -- the measurement that sets the band edges
+          # belongs beside the measurement that sets the field they are cut out of.
+          #
+          # THE CLIMATE SLICE, TASK 4 -- THE EXPORT AND THE VIEWER (2026-09-07) takes the two
+          # WASM rows to 724 -> 731 and 726 -> 733 and leaves the other three at 628/628/630,
+          # 5 ignored, over the same FIFTEEN binaries. **+7 on the wasm rows ALONE**, which is
+          # the shape a task that adds an export must have and the exact complement of Task 3's
+          # uniform +13: every new test is in `tests/wasm_exports.rs`, which is
+          # `#![cfg(feature = "wasm")]` in its entirety. A movement on the three non-wasm rows
+          # here would mean a test had been added to `src/` by accident.
+          #
+          # WHAT IT IS. Two exports, `wb_climate_tile_f32` and `wb_climate_calibration`, taking
+          # the surface to TWENTY-SIX and the artifact to 27 exports and 248,057 bytes; and the
+          # viewer's `biome.js` drawing its temperature and moisture from them instead of from
+          # noise. `march_samples` is a LOOP BOUND and is bounded twice -- in the type
+          # (`MarchBudget::new`) and at the door (`WB_MAX_CLIMATE_MARCH_SAMPLES`, which names the
+          # offending argument in a status) -- because the spike measured `count = 2^20` at
+          # 0.64 s, so an unbounded u32 extrapolates to ~2,600 s inside one uninterruptible call.
+          # The sweep is a CROSS PRODUCT of handle x grid x bounds x resolution x budget x
+          # buffer, 40,320 calls, and the mutation that dropped `WB_CLIMATE_STRIDE` from the
+          # buffer sizing produced a real STATUS_STACK_BUFFER_OVERRUN -- this project's
+          # characteristic abort, found by the sweep rather than by reading the code.
+          #
+          # THE SEVENTH PARITY CONTROL. `--mutate climate-samples` adds one upwind step to every
+          # climate record. It is a control with a SHAPE rather than a size: 648 of 127,659
+          # values move and every one of them is moisture -- the two `climate-moist/*` groups go
+          # 324/324, and the `climate-temp/*` groups (a closed form in latitude), the
+          # `climate-land/*` groups (quantiles of elevation, a land count and a constant) and
+          # every other channel in the corpus sit at exactly ZERO. The first draft of the corpus
+          # drew its window over the harbour and measured 640 f32 all equal to `3f800000`: the
+          # whole upwind path there is open water, so the march saturates and the tile records
+          # compared a constant to itself. `parity_dump.rs` now asserts distinctness and a driest
+          # cell below 0.5 in the generator, so the corpus cannot go quiet again.
+          #
+          # `?climate=0` IS BYTE-IDENTICAL to the picture before this task, proven by SHA-256 at
+          # a pinned viewport, camera and explicit frame time:
+          # `6622d04e0f8c83cee7558f9b5ccd351f716a4e1a286d3715d067c348cf93fc70`, 1,405,289 bytes,
+          # 1600x900, twice, each a fresh browser process -- the same digest the tree produced
+          # before the first edit. The default path is a DIFFERENT digest
+          # (`03ced9bb...`), which is what says the flag is not inert.
+          #
+          # THE RASTER IS 16x16 AND THAT IS A MEASUREMENT. n = 3 interleaved cold loads per arm
+          # on the owner's world, 18 relief tiles: climate costs 92.8-96.1 ms/tile at 16^2 and
+          # 331-391 ms/tile at 32^2, i.e. **+34.7 to +39.4%** on the relief layer's worker CPU
+          # against **+140 to +148%**. 32^2 would make climate the largest single item in the
+          # tile budget for a field whose spatial frequency is set by a 3,200 km march.
+          #
+          # THE CLIMATE SLICE, TASK 5 -- THE SNOW LINE (2026-09-07) takes all five rows
+          # 628/628/630/731/733 -> 632/632/634/735/737, 5 ignored, over the same FIFTEEN
+          # binaries. **+4 in every configuration and nothing wasm-only**, which is the shape a
+          # task that adds NO export must have: all four new tests are in `src/climate.rs`,
+          # which compiles unconditionally. A movement on the wasm rows alone here would mean an
+          # export had been added by accident.
+          #
+          # WHAT IT IS. `climate::freezing_elevation_m` -- the elevation at which the mean
+          # annual temperature reaches freezing -- and the viewer's snow band reading it instead
+          # of a straight line. It **inverts `temperature_c` rather than restating the profile**,
+          # and the test is the ROUND TRIP (the temperature at the returned elevation is zero),
+          # not the algebra, so a change to the profile this function failed to follow is red.
+          # `relief.js` keeps `snowLineM` as the `?climate=0` fallback and gains `freezingLineM`,
+          # which divides the climate raster's own datum temperature by the calibration's own
+          # lapse rate: **there is no second copy of 27, -25 or 6.5 in the viewer.**
+          #
+          # NO EXPORT, NO PARITY MOVE, AND THE ARTIFACT MOVED BY ONE BYTE. The corpus stays at
+          # 127,659 / 0 divergent with all seven controls at their recorded figures, by
+          # construction rather than by luck -- no new crossing value was added. The shipped
+          # `.wasm` is 248,057 bytes before and after and **exactly one byte differs**: a panic
+          # `Location` line number in the data section, 0x354 -> 0x383, because a 47-line
+          # docstring pushed `climate.rs::order_statistic`'s slice index from line 852 to 899.
+          # No instruction changed. The manifest was re-blessed after the last source edit.
+          #
+          # THE CLAMP EGHOLM ET AL. (2009) IMPLIES WAS MEASURED AND NOT SHIPPED. "Most summit
+          # elevations are confined to altitudes <1,500 m above the local snowline" is a
+          # statement about ranges, and on the four survey worlds plus the owner's,
+          # **ZERO land points of 271,384 exceed snowline + 1,500 m at any latitude where the
+          # snowline is above the datum**; the closest approach is 51 m. Every one of the
+          # 8,465-11,584 apparent violations sits where the freezing contour is 2-4 km BELOW the
+          # datum -- polar lowland, where the ceiling is itself below sea level and clamping to
+          # it would delete the continent rather than limit a range. That is precisely the
+          # conflation Egholm's own paper warns against, so the clamp is dead code on every
+          # world this engine makes and none was written.
+          #
+          # THE COST OF THE NEW LINE, PAID AND COUNTED. It is the mean annual 0 C isotherm, and
+          # a real permanent snowline sits above that wherever there is a summer to melt in. On
+          # the four survey worlds the fraction of land under snow goes 0.00/10.79/15.66/9.53%
+          # -> 2.68/24.18/41.68/22.66% against Earth's ~10% permanent ice, and **75-83% of the
+          # increase is ground whose DATUM is frozen** -- polar lowland, not new mountain caps.
+          # Closing that needs a seasonal amplitude this engine does not have; it is reported in
+          # the task report, not invented here.
+          #
+          # WHAT IT IS. Band edges for the two climate axes that have no unit, as per-world
+          # quantiles read by `continentality::calibrate`'s own Fibonacci order statistic -- no
+          # second mechanism, and no global array, which the spec rules out. The moisture
+          # quantiles are BELL-SPACED (the normal CDF of z = -1.5, -0.5, +0.5, +1.5, giving band
+          # widths 6.7 / 24.2 / 38.3 / 24.2 / 6.7 percent of land) and not evenly spaced, and
+          # that is measured rather than quoted: on the four survey worlds, edges evenly spaced
+          # in VALUE over [0, 1] put **43.6-68.4% of all land in the single driest band** and
+          # 3.8-5.9% in the wettest. Five moisture bands, not the roadmap's four, because
+          # `biome.js`'s interior table is a 5 x 5 rectangle and a fourth band would leave a
+          # column of it unreachable. Temperature stays ABSOLUTE (`TEMP_BAND_EDGES_C`), for the
+          # reason the photoreal slice measured and Task 1 inherited.
+          #
+          # THE ACCEPTANCE BAR IS A TEST AND NOT A SENTENCE.
+          # `every_band_on_all_three_axes_is_reached_on_two_worlds` bands 1,200 spiral points on
+          # each of two worlds against the shipped calibration and requires all 3 + 5 + 5 bands
+          # occupied. It is red under seven of this task's mutations, including the two that
+          # plant exactly the defect this project has shipped nine times -- MOISTURE_BELL_Z tails
+          # pushed to +-4 sigma, and TEMP_BAND_EDGES_C's top edge moved to 60 C. It costs about
+          # 9 s, which is the price of the two calibrations rather than of the occupancy loop.
+          #
+          # AND ONE FIX THAT CHANGES NO COMMITTED BYTE. `crates/worldbuilder-engine/src/
+          # detmath.rs` was sitting in the working tree with CRLF endings while the index held
+          # LF, so `source-fingerprint` -- which hashes WORKING-TREE bytes -- was blessed over
+          # bytes no clean checkout produces. `git diff` showed nothing (eol=lf normalises on
+          # comparison) and `check:wasm` passed locally, and it would have failed on any LF
+          # checkout including CI. The file is now LF, `git diff` still reports it unchanged,
+          # and the manifest is re-blessed over content that comes out of git.
+          #
+          # WHAT THIS ONE IS. The pitchfork was keyed to `shaped - gate_elevation_m`, which made
+          # `a = 1/4` ONE contour at ONE world elevation -- 825 m at the old preset -- so only the
+          # flanks crossing that elevation branched at all, and a measured flank at 1,353-1,417 m
+          # got nothing at any setting in a 5x6 cross product. It is now keyed to
+          # `shaped - steer.reference_m`: the containing steer cell's own mean `structural_m`,
+          # which is the mean of the four samples the gradient already differences and therefore
+          # costs NO extra `structural_m` call. Its zero is flat ground rather than sea level, so
+          # every flank crosses it. `WB_GULLY_STRIDE` does NOT move -- the expression is the one
+          # that shipped with a different datum in it -- but `harmonic_band_m` changes meaning
+          # from thousands of metres of world elevation to a fraction of a metre of local relief,
+          # and `WB_MIN_GULLY_HARMONIC_BAND_M` moves 1 m -> 1e-3 m to admit the shipped 0.12.
+          #
+          # WHAT IT IS. `GullyParams` gains `harmonic_weight` and `harmonic_band_m`: a second
+          # harmonic on the drainage kernel's shaping whose weight climbs with structural
+          # elevation. `cos t + a cos 2t` has one minimum per period below `a = 1/4` and two
+          # above, so the contour `a = 1/4` is a line of downhill Y-junctions and channels merge
+          # going downhill. The shipped kernel could not: the spike measured 0 confluences and 0
+          # divergences in 319 contour-row pairs and proved no setting of the ten existing fields
+          # could change it. Opt-in, and `harmonic_weight: 0.0` is the old kernel bit for bit --
+          # held by a pinned table of eighteen pre-harmonic f64 bit patterns taken off `910b69e`,
+          # not by an argument. The C ABI's `WB_GULLY_STRIDE` goes 10 -> 12; the per-field sweep
+          # goes 1,140 records to 1,368 and its accepted half 738 to 884, RE-DERIVED and not
+          # scaled; and a second 5 x 5 x 4 cross product covers the two new fields against the
+          # gate, because one abort in this file's sibling channel was reachable only through a
+          # product of individually-admissible fields.
+          #
+          # It costs no transcendental. `cos 2t` is `2c^2 - 1` on a cosine already computed --
+          # exact IEEE arithmetic, correctly rounded everywhere, so unlike a second `cos` it
+          # cannot introduce a native-against-WASM divergence. The spike had priced this change
+          # at eight more `cos` per texel per level.
+          #
+          # HOTSPOT FIX 2 (2026-09-06) took these to 610/610/612/705/707, 5 ignored -- ONE more
+          # test, again in the lib (`detmath.rs`), so again every configuration moves by exactly
+          # one and `assert_counts.py` still reports FOURTEEN binaries. `detmath::sqrt` now calls
+          # `x.sqrt()` instead of `libm::sqrt(x)`. The profile measured `libm::sqrt` as the single
+          # hottest function in the engine -- 76.2% of the water solve, 35.4% of a relief tile
+          # fill -- because libm 0.2.11's software routine compiles to a called function in the
+          # WASM build rather than lowering to the `f64.sqrt` instruction.
+          #
+          # THE DETERMINISM RULE IS NOT WEAKENED AND THE GUARD IS NOT TOUCHED.
+          # `tests/no_std_math.rs` is byte-for-byte unchanged: it still bans `.sqrt(` and
+          # `f64::sqrt(` in every other file in the crate, and it still skips `detmath.rs` as it
+          # always has. Only what `detmath::sqrt` calls changed, in one line, inside the one file
+          # the guard already treats as the choke point -- so unlike `.abs()`, this is not a new
+          # exempt NAME that a later slice could widen. PROVED BY MUTATION, NOT BY READING: five
+          # mutations planted in real source (`vectors.rs`) -- `.sqrt()`, `f64::sqrt(x)`,
+          # `f64::sin(x)`, `.powf(2.0)` and `x as i64` -- each turned the guard red naming the
+          # file and line, and each was reverted.
+          #
+          # WHY sqrt AND ONLY sqrt. IEEE-754 requires square root to be CORRECTLY ROUNDED, so
+          # every conforming implementation -- SQRTSD, the WASM `f64.sqrt` opcode, a correct
+          # software routine -- returns identical bits. `sin`/`cos`/`atan2`/`pow`/`exp`/`ln`/
+          # `hypot` carry no such guarantee (slice 0 measured native `f64::sin` against
+          # `libm::sin` in WASM diverging on 2,441 of 100,000), and every one of them still calls
+          # libm. The diff touches no second function.
+          #
+          # THE EVIDENCE, NATIVE AND THROUGH WASM, because native alone would only prove half.
+          # Native: the new test compares `libm::sqrt` against the routed `sqrt` on BIT PATTERNS
+          # over 1,000,000 values across five magnitude scales plus the edges, 0 differing; and
+          # `examples/parity_dump.rs`' whole 126,359-value corpus is byte-for-byte the same file
+          # as before EITHER fix (sha256 b6a7cb38e18763f9...). Through WASM: the rebuilt artifact
+          # replayed at 126,359 compared / 0 divergent with all six controls unmoved. Chained,
+          # those give WASM-after == native-after == native-before == WASM-before. IEEE-754 does
+          # NOT specify the NaN payload for a negative argument, so the test compares `is_nan()`
+          # there and bits everywhere else; nothing in this crate roots a negative.
+          #
+          # WHAT IT BOUGHT. Node, the shipped .wasm, `wb_water_run` at n = 86,000 on the owner's
+          # world, three runs each on one host: 45,801 / 47,384 / 54,954 ms before both fixes.
+          # See the report for the after figures -- and note the two fixes compound, since Fix 1
+          # removes one of the two k-NN searches and this makes the remaining one cheaper.
+          #
+          # WHAT IT IS. The owner compared this generator's mountains to satellite photographs:
+          # they want dendritic V-notched valleys branching down the flanks with snow following
+          # the ridge lines. That is drainage, and two spikes cleared the ground for it. The
+          # erosion-architecture spike measured the stream graph at **661x too coarse** to carry
+          # a 0.5-2 km valley (2-8 billion nodes and 148 GB to reach one) and recommended a
+          # point-evaluable displacement term instead. The gradient probe then said GO with a
+          # redirect: steer on `grad(structural_m)`, never `grad(elevation_m)`.
+          #
+          # THE ONE NUMBER WITHOUT WHICH THIS WOULD HAVE BEEN A VERY CAREFUL NO-OP. The
+          # published kernel leaves its direction vector unnormalised so stripe frequency IS the
+          # slope, which assumes a slope of order 0.5 m/m. **This generator's steepest-decile
+          # flanks are 0.005 m/m -- 0.29 degrees, about a hundredth of that** -- so the raw form
+          # produces `cos(~0)`, a constant multiple of the gate, planet-wide. `slope_reference`
+          # is measured rather than chosen: 500,000 spiral points on each of three worlds
+          # (DEFAULT_WORLD, the owner's 4,500 km planet, and the erosion sweep's), at a 2 km
+          # step, put 0.005 at the p90/p95 of high ground on all three and between the p99 of
+          # all land and its maximum. This project has shipped a careful no-op before -- three
+          # colour blends in `relief.js` were dead against this terrain until a slice measured
+          # them -- so the scale is asserted, not just documented: one test walks a flank at the
+          # measured reference and again at 1.0, which IS the unnormalised form spelled as a
+          # parameter, and requires the second to be flat.
+          #
+          # THE STEERING LATTICE IS SPHERICAL AND ITS ERROR IS MEASURED. The gradient probe
+          # priced a TANGENT-PLANE lattice and said the spherical case was unmeasured. What
+          # ships is a cubic lattice in unit-sphere space -- `noise.rs`'s geometry, for
+          # `noise.rs`'s stated reason -- rather than the lat/lon lattice that probe floated,
+          # because a constant longitude step makes a fixed-size tile cross 570x more cells at
+          # 89.9 degrees than at the equator. Against the EXACT per-texel `grad(structural_m)`
+          # over three 66,564-texel level-12 tiles it reproduces the direction to a p95 of
+          # **0.0011 degrees** and a worst case of 0.0022, about forty times better than the
+          # tangent-plane figure.
+          #
+          # COST, STATED AS A WITHIN-RUN RATIO because absolutes on this host do not reconcile
+          # (the same tile's fill reads 124-603 ms across nine measurements). The naive
+          # four-calls-per-texel gradient was REFUSED, per the probe's 2.0-4.6x. The steering as
+          # built is 0.085-0.37x the fill and the whole term takes a level-12 tile to 1.11-2.95x
+          # -- and the honest reading of the probe's "0.4-1.3%" is that it priced the NODE BUILD
+          # (165 containing cells serve 66,564 texels) and not the per-texel interpolation. The
+          # dominant term is eight `detmath::cos` calls per texel, which is the price of the
+          # determinism contract rather than of this kernel. A coarse tile pays nothing: the term
+          # fades out on the same two-to-four-samples rule the octaves use.
+          #
+          # THE FADE RULE WAS WRONG THE FIRST TIME AND THE CORPUS CAUGHT IT. Fading the whole
+          # term once one stripe wavelength fell below twice the sample spacing deleted it
+          # entirely at `resolution_m = 250` on exactly the steep ground it exists for -- the
+          # dump's witness assertion refused to write a corpus in which the drainage block moved
+          # the ground by 0 m. The rule that is actually this module's own is `offset_m`'s: the
+          # finer structure is DROPPED and the coarser is still drawn, so a coarse caller gets a
+          # coarser gully rather than none.
+          #
+          # RULING 1 HELD, AND ON THIS CHANNEL IT IS STRUCTURAL RATHER THAN ARITHMETIC.
+          # `GullyParams` is the FIFTH opt-in block after `ReliefParams`, `TectonicParams`,
+          # `CoastParams` and `ClimateParams` -- a fifth instance of one convention, not a fifth
+          # convention. `None` builds no steering lattice at all and takes a different branch of
+          # `elevation_m`, because adding an exactly-zero offset is bit-identical for every value
+          # of `shaped` EXCEPT `-0.0`, and "every value except one" is not what Ruling 1 asks
+          # for. `worldbuilder/` untouched, 398/398 with `test_conformance.py` = 157.
+          #
+          # THE BOUND THAT CLOSES A HAZARD. `WB_MIN_GULLY_SHARPNESS` refuses a crest exponent at
+          # or below zero: the edge shaping is `1 - 2 * folded^s` and `folded` is EXACTLY zero at
+          # a crest, so one negative f64 in word 5 turns every gully crest in the world into an
+          # infinite height across a nounwind boundary. The two lattice lengths and the slope
+          # reference are swept as a CROSS PRODUCT (7 x 7 x 6, every combination sampled at three
+          # resolutions on gated ground), because this file already carries one abort that a
+          # one-field-at-a-time sweep was blind to by construction.
+          #
+          # TWELVE MUTATIONS, each reverted; every new assertion has one that turns it red. TWO
+          # ARE FINDINGS IN THEMSELVES. Substituting `grad(elevation_m)` for `grad(structural_m)`
+          # **does not terminate** -- the gradient probe's architectural argument that the term
+          # would steer on itself, demonstrated rather than argued -- so the mutation that ships
+          # unrolls the recursion once. And dropping a coordinate from the steering cache's hash
+          # stays GREEN, which is a property of a direct-mapped cache that verifies its key
+          # rather than a hole in the test; the load-bearing line is the comparison, and the
+          # mutation that finds it removes that instead.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 454
+            expect: 632
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 454
+            expect: 632
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 456
+            expect: 634
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 490
+            expect: 735
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 492
+            expect: 737
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -519,20 +1401,147 @@ jobs:
       # plus 3,003 from Task 5's erosion group (a 3,000-node capped `erode_to_convergence`
       # bake through `wb_erosion_run`, plus its status/iterations/converged trio; see
       # `examples/parity_dump.rs` for why 3,000 nodes exercises every arithmetic path a
-      # planetary bake would, and task-5-report.md for why size does not matter to a
-      # bit-equality claim). The script also checks the ten per-group tallies sum to it, so
-      # a format change fails loudly instead of matching nothing.
-      - name: Assert the corpus -- 56,254 values, 0 divergent
+      # planetary bake would, and slice 5a's task-5-report.md for why size does not matter to
+      # a bit-equality claim).
+      #
+      # 2026-09-05, slice 5b Task 5: 56,254 -> 71,596. RE-DERIVED FROM THE CORPUS DEFINITION,
+      # not read off the run, and the run was then checked against it:
+      #
+      #   56,254  everything above, unchanged
+      #   +   22  `wb_relief_preset` itself: 2 selectors x (1 status + 10 f64)
+      #   +5,000  `wb_elevation_m` on a world built from a NON-canonical relief block
+      #   +5,000  `wb_structural_m` on the same world
+      #   +4,225  one 65x65 `wb_fill_tile_f32` on it -- the path the viewer's tile workers
+      #           actually take with a relief block attached to the spec
+      #   +1,095  `wb_water_run`: 1 status + 1 body count + 1 datum + 156 bodies x 7 fields
+      #   =71,596
+      #
+      # The relief entries close the gap relief Task 4 flagged itself: that slice changed the
+      # export surface for the first time and parity had not been re-run against it. The water
+      # entry closes a larger one -- `water.rs` was UNREACHABLE from the export surface, so its
+      # native/WASM agreement was unfalsifiable rather than unverified, exactly as `erosion.rs`
+      # was before `wb_erosion_run`.
+      #
+      # 156 bodies is a measured property of this world (seed 20260904, 30,000 nodes, datum
+      # 0.0, `pond_max_surface_area_m2 = 1.0e5`), so this pin moves if the mesh or the seed
+      # does -- which is the point: a corpus whose size nothing constrains can shrink silently.
+      # ALL 156 ARE LAKES AND NONE IS A POND, and `examples/parity_dump.rs` asserts that
+      # directly: slice 5b Task 3 calibrated the threshold on external ground and then measured
+      # that this generator's smallest body is nearly four orders of magnitude larger. That is
+      # a recorded finding about the mesh; a corpus that quietly "fixed" it by moving the
+      # threshold would be hiding the finding rather than testing it.
+      #
+      #
+      # 2026-09-05, slice mountains Task 6: 71,596 -> 89,861. RE-DERIVED FROM THE CORPUS
+      # DEFINITION the same way, and the run was then checked against it:
+      #
+      #   71,596  everything above, unchanged
+      #   +   34  `wb_tectonic_preset` itself: 2 selectors x (1 status + 16 f64)
+      #   +    6  `wb_tectonic_check`: 6 records, 3 accepted and 3 refused, statuses only
+      #   +5,000  `wb_elevation_m` scattered on a world built from a NON-canonical tectonic
+      #           block (`TectonicParams::ranges()`, the preset the panel's button sends)
+      #   +5,000  `wb_structural_m` on the same points
+      #   +2,000  `wb_elevation_m` in a 2-degree box on the belt that block builds
+      #   +2,000  `wb_structural_m` on the same points
+      #   +4,225  one 65x65 `wb_fill_tile_f32` across the belt -- the tile worker is where a
+      #           tectonic block lands in the browser, exactly as a relief block does
+      #   =89,861
+      #
+      # THE GULLY SLICE ADDS 18,253, taking the corpus to 126,359:
+      #      +22  `wb_gully_preset` at both selectors -- status + ten f64 each
+      #       +6  `wb_gully_check` on six records, three accepted and three refused
+      #   +5,000  `wb_elevation_m` on a uniform global scatter through `wb_world_new_gully`
+      #           carrying `GullyParams::drainage()`
+      #   +5,000  `wb_structural_m` on the same points
+      #   +2,000  `wb_elevation_m` in a 20-degree box on the flank belt the gate opens over
+      #   +2,000  `wb_structural_m` on the same points
+      #   +4,225  one 65x65 `wb_fill_tile_f32` across the same box
+      #   =126,359
+      #
+      # THE MERGING SLICE ADDS 4, taking the corpus to 127,659: `wb_gully_preset` writes TWELVE
+      # f64 rather than ten (`harmonic_weight` and `harmonic_band_m` are appended to
+      # `WB_GULLY_STRIDE`'s order), and the preset group is compared at both selectors, so 2 x 2.
+      # No group gained or lost a point. **The gully control moved from 3,190 divergent to
+      # 3,203**, and that is not the four new words -- a world seed cannot move a preset, and
+      # `--mutate gully-steer` does not touch words 10 and 11. It is the drainage world's own
+      # ground: the second harmonic reshapes the term, so the set of scattered points at which a
+      # moved `steer_lattice_m` changes the elevation is a different set. The other five controls
+      # are byte-for-byte unmoved at 121,682 / 216 / 60 / 6,186 / 13,128, which is what says the
+      # change is confined to the channel it was made in.
+      #
+      # THE LOCAL-REFERENCE SLICE ADDS NOTHING to the corpus -- `WB_GULLY_STRIDE` is still twelve
+      # and no group gained or lost a point -- and **moves the gully control from 3,203 to
+      # 3,752**, all of it in one group. `--mutate gully-steer` bumps `steer_lattice_m` by a ULP,
+      # and that word now feeds TWO terms rather than one: the fall line, as before, and the
+      # local elevation reference the pitchfork is measured against, which is the mean of the same
+      # four samples. So a moved lattice moves more cells. The breakdown says exactly where:
+      # elevation/drainage 1,235 of 5,000 and elevation/flank 993 of 2,000 are **unmoved** -- both
+      # are sampled at 250 m, where the term is faded and the reference barely reaches the height
+      # -- while tile/flank goes 975 -> 1,524 of 4,225, and the tile is the only group asked at a
+      # resolution fine enough for the reference to bite. **Both structural zeros are still zero**,
+      # which is the claim below and is what says the term has not escaped its layer. The other
+      # five controls are byte-for-byte unmoved again.
+      #
+      # **The gully channel is the first that ADDS a term to `elevation_m` rather than changing
+      # one**, and it was written in the same commit as these rows for the reason the coast
+      # channel was: a new crossing value with no corpus coverage is a crossing value nothing
+      # compares. Ten f64 cross, are read back through a raw pointer and bounds-checked field by
+      # field, and one of those bounds is not politeness -- `WB_MIN_GULLY_SHARPNESS` refuses an
+      # exponent at or below zero, and `0^s` at a gully crest is an INFINITE HEIGHT crossing a
+      # nounwind boundary into a host's vertex buffer. The `GC` records carry that case.
+      #
+      # The tile row earns its place twice over here: this is also the only block in the corpus
+      # whose term is FADED BY RESOLUTION, so a scalar corpus at one resolution cannot see the
+      # branch the tiles take.
+      #
+      # THREE TASKS FLAGGED THIS GAP AND NONE OWNED IT (mountains Task 4 concern 4, Task 3
+      # concern 1, Task 5 concern 6). The corpus watched 71,596 values and not one of them
+      # went through a tectonic export, while `ranges()` is a preset the owner presses on the
+      # panel and it drives seven of sixteen words across the boundary. Native and WASM are
+      # the same Rust over the same pure-Rust `libm`, so this comparison is strict bit-for-bit
+      # even with transcendentals in the path -- a stronger contract than Python-versus-Rust
+      # conformance's bounded one -- but the DECODE is boundary-only code, and nothing
+      # exercised it.
+      #
+      # The belt box is not a round number: `src/bin/mountain_probe.rs`'s `witness_between`
+      # scans this fixture world for where turning `margin_warp_m` off moves the ground most,
+      # and answers -5.00, 66.00 (821.955 m off, 2,432.773 m on). A uniform scatter over a
+      # planet does not land on a 100 km belt, which is the same reason this corpus already
+      # carries a second world for the placed harbour.
+      #
+      # The script also checks the twenty-four per-group tallies sum to the total, so a format
+      # change fails loudly instead of matching nothing.
+      - name: Assert the corpus -- 127,659 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 56254 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 127659 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
-      # `--mutate seed` moves the world seed by one and 53,778 of 56,254 values diverge. A
+      # `--mutate seed` moves the world seed by one and 68,457 of 71,596 values diverge. A
       # parity run whose harness cannot fail is not evidence, and this is the cheapest place
       # in the project to keep proving that it can.
+      #
+      # 2026-09-05, slice 5b Task 5: 53,778 -> 68,457, and the arithmetic is stated rather
+      # than adjusted. The three new groups add 14,679 divergent values (5,000 elevation and
+      # 4,225 tile cells on the relief world move outright; 4,516 of its 5,000 structural
+      # readings move, the residue being the same open-ocean floor that leaves 942 of the
+      # `plain` world's structural readings equal; 938 of the water group's 1,095 move). The
+      # 22 preset values do NOT move, and that is a property worth having in the tally rather
+      # than a gap: `wb_relief_preset` hands back `detail.rs`'s own constants, which no world
+      # seed can reach -- the same reason `version` has always sat at 0 divergent here.
+      #
+      # 2026-09-05, slice mountains Task 6: 68,457 -> 86,190, and the arithmetic is stated
+      # rather than adjusted. The five new sampled groups add 17,733 divergent values
+      # (elevation moves outright on all 5,000 scattered and all 2,000 belt points and on all
+      # 4,225 belt tile cells; 4,508 of the 5,000 scattered structural readings move, the
+      # residue being the same open-ocean floor that leaves 942 of the `plain` world's equal,
+      # and all 2,000 belt structural readings move because the belt is land). The 34
+      # `wb_tectonic_preset` values and the 6 `wb_tectonic_check` statuses do NOT move, and
+      # that is a property worth having in the tally rather than a gap: both hand back
+      # `tectonics.rs`' own constants and a decision about a caller-supplied record, neither
+      # of which a world seed can reach.
       - name: Parity -- the control (a harness that cannot fail is not evidence)
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -544,12 +1553,12 @@ jobs:
       # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 53,778 of 56,254 divergent
+      - name: Assert the control -- 121,682 of 127,659 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 56254 --expect-divergent 53778
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 127659 --expect-divergent 122208
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -571,12 +1580,237 @@ jobs:
 
       # The erosion control's own count: 216 of the erosion group's 3,000 heights move from
       # a single ULP on `k` (7.2%) -- status, iterations and converged are unaffected (fixed
-      # step count, see above), and every non-erosion group is untouched (216 of 56,254
+      # step count, see above), and every non-erosion group is untouched (216 of 71,596
       # overall). Neither zero nor "every non-root node" -- a plausible fraction, which is
-      # the property this control exists to demonstrate.
-      - name: Assert the erosion control -- 216 of 56,254 divergent
+      # the property this control exists to demonstrate. The divergent count is UNCHANGED at
+      # 216 across slice 5b Task 5's corpus growth AND across slice mountains Task 6's, and
+      # that is the expected outcome both times: the groups those tasks added are downstream
+      # of neither `k` nor erosion, so a control whose count had moved with them would have
+      # been reaching something it does not name. The water control's 60 is unchanged for the
+      # same reason.
+      - name: Assert the erosion control -- 216 of 127,659 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 56254 --expect-divergent 216
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 127659 --expect-divergent 216
+
+      # THE THIRD CONTROL, slice 5b Task 5's own, and the one with the sharpest claim.
+      #
+      # `--mutate seed` proves the harness notices an entirely different planet (95.6% of
+      # values move -- gross, every group). `--mutate erosion-k` proves it notices one ULP in
+      # one physical parameter of one export, at a fraction nobody can state in advance.
+      # Neither touches the water path at all, so neither says anything about `water.rs` --
+      # which is the module slice 5b built, and which no export reached until Task 5.
+      #
+      # `--mutate water-pond` replays the `W` record with `pond_max_surface_area_m2` moved from
+      # Task 3's calibrated 1.0e5 m^2 to 2.0e10 m^2, and touches nothing else -- so only the
+      # `water/plain` group can move. THE PREDICTION IS STATED BEFORE THE RUN AND CHECKED
+      # AGAINST IT, which is what separates this from a gate adjusted to whatever appeared:
+      #
+      #   - `pond_max_surface_area_m2` reaches exactly ONE field, `Body::kind`
+      #     (`water::classify_lake_kinds` compares it against a summed surface area and writes
+      #     `LakeKind`). So `root_node`, `level_m`, all four extent bounds, the body count and
+      #     the datum must ALL compare equal, on both sides, exactly as slice 5a's erosion
+      #     control required its iteration count and convergence flag to.
+      #   - How many `kind` fields move is predicted NATIVELY, from
+      #     `water::lake_body_surface_areas_m2` -- the summed surface area per physical body,
+      #     which is a different quantity from the classifier being perturbed. A body flips
+      #     exactly when its area is at or below the threshold: 60 of 156.
+      #     `examples/parity_dump.rs` asserts that the classifier agrees with the area
+      #     distribution before writing the prediction into the corpus, so a disagreement fails
+      #     there rather than being absorbed into a divergent count here.
+      #   - `parity.mjs` then checks its own per-group tallies against that prediction and
+      #     exits 1 if any group -- water or not -- moved by a different amount. The number
+      #     below is therefore asserted twice, by two scripts, from two directions.
+      #
+      # 60 of 156 is deliberately neither none nor all: a control that moves everything is as
+      # uninformative as one that moves nothing, and 2.0e10 m^2 sits near the median of this
+      # mesh's measured body-surface distribution for that reason.
+      - name: Parity -- the water control (one field of one export, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate water-pond 2>&1 | tee water-control.out
+
+      - name: Assert the water control -- 60 of 127,659 divergent, all of them `kind`
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 127659 --expect-divergent 60
+
+      # THE FOURTH CONTROL, slice mountains Task 6's own, and the first that says anything
+      # about the tectonic channel at all.
+      #
+      # `--mutate tectonic-warp` replays the two `worldt` records with word 14,
+      # `margin_warp_m`, set to 0.0 and touches nothing else. The prediction is stated before
+      # the run, per group, and both halves of it matter:
+      #
+      #   MOVES -- 132 of 5,000 scattered elevations and the same 132 structurals (a uniform
+      #     scatter over a planet is mostly nowhere near a convergent continental margin, so
+      #     2.6% is what "the warp reaches only the belt" looks like from orbit); 1,269 of
+      #     2,000 on the belt itself, elevation and structural alike; 3,384 of 4,225 tile
+      #     cells across it. 6,186 in total.
+      #   STAYS EQUAL -- both `wb_tectonic_preset` groups, the `wb_tectonic_check` group, and
+      #     every group of every world built without a tectonic block: the plain and harbour
+      #     worlds, the relief world, erosion, water and version. That is 83,675 values that
+      #     must not move, and it is the half that says the field reaches what it names and
+      #     nothing else.
+      #
+      # The counts are computed NATIVELY in `examples/parity_dump.rs` and checked here, not
+      # read off this run. They are derived twice on that side: once through the exports and
+      # once through the library's own `Surface`, with the two blocks read from `tectonics.rs`
+      # rather than from the sixteen words that crossed the boundary -- so an `encode`/`decode`
+      # disagreement parts the two counts and fails there. A structural containment is
+      # asserted beside them: `margin_warp_m` reaches `elevation_m` only through the tectonic
+      # offset, so every point whose elevation moved must be a point whose structural moved.
+      # (Measured, they are the same points; the assertion deliberately does not require it,
+      # because the reverse containment is not true in general.) And both ends are refused:
+      # every group's count must be strictly between zero and the group's size, because a
+      # control that moves everything is as uninformative as one that moves nothing.
+      - name: Parity -- the tectonic control (one word of the block, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate tectonic-warp 2>&1 | tee tectonic-control.out
+
+      - name: Assert the tectonic control -- 6,186 of 127,659 divergent, all on the belt
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 127659 --expect-divergent 6186
+
+      # THE FIFTH CONTROL, the photoreal slice's Task 6, and the first that exercises the coast
+      # channel at all.
+      #
+      # `--mutate coast-amplitude` replays the two `worldc` records with word 0, `amplitude`, set
+      # back to canonical's own inert value -- read from `wb_coast_preset` on the native side, not
+      # written down -- and touches nothing else. The prediction is stated before the run, per
+      # group, and both halves of it matter:
+      #
+      #   MOVES -- 3,185 of 5,000 scattered elevations and the same 3,185 structurals; 1,643 of
+      #     2,000 in a 20-degree box on the largest mover, elevation and structural alike; 3,472
+      #     of 4,225 cells of a tile across the same box. 13,128 in total.
+      #
+      #     **63.7% of a uniform global scatter is the right shape here and 2.6% would be wrong**,
+      #     which is the difference between this control and the tectonic one above. The coastal
+      #     window is `|above_shore| <= window_spreads * spread` and that band is wide: an
+      #     independent 0.5-degree global scan of this fixture finds 162,159 of 258,480 sites
+      #     moving under `CoastParams::fractal()`. A tectonic belt is a line on the planet; a
+      #     coastline's shelf is most of the interesting part of one.
+      #
+      #     The first cut of this corpus used a 2-degree box and a 1-degree tile, exactly as the
+      #     tectonic control does, and BOTH moved 100% -- 2,000 of 2,000 and 4,225 of 4,225. The
+      #     dump's own both-ends-refused guard caught that and refused to write the corpus, which
+      #     is the guard doing what it exists for: a group that moves everything is as
+      #     uninformative as one that moves nothing. The box is twenty degrees so it straddles the
+      #     band.
+      #
+      #   STAYS EQUAL -- both `wb_coast_preset` groups, the `wb_coast_check` group, and every
+      #     group of every world built without a coast block: the plain and harbour worlds, the
+      #     relief world, BOTH tectonic worlds, erosion, water and version. That is 94,978 values
+      #     that must not move, and it is the half that says the field reaches what it names and
+      #     nothing else.
+      #
+      # The counts are computed NATIVELY in `examples/parity_dump.rs` and checked here, not read
+      # off this run. They are derived twice on that side: once through the exports and once
+      # through the library's own `Surface`, with the block read from `continentality.rs` rather
+      # than from the six words that crossed the boundary -- so an `encode`/`decode` disagreement
+      # parts the two counts and fails there.
+      #
+      # **No structural-containment claim is made, unlike the tectonic control's, and that is
+      # deliberate**: `CoastParams` reaches `elevation_m` through `Continentality::base_elevation`
+      # as well as through the shelf, so an elevation that moves without a structural moving is
+      # expected here. Asserting the subset the warp satisfies would be asserting something false.
+      - name: Parity -- the coast control (one word of the block, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate coast-amplitude 2>&1 | tee coast-control.out
+
+      - name: Assert the coast control -- 13,128 of 127,659 divergent, all on the coast world
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 127659 --expect-divergent 13128
+
+      # THE SIXTH CONTROL (the gully slice). `--mutate gully-steer` replays the two `worldg`
+      # records with word 9, `steer_lattice_m`, moved from the shipped 2,000 m to 500 m -- a
+      # value INSIDE the domain rather than outside it, because the point of this control is
+      # that a plausible number a host could send moves the ground, not that a refused one
+      # does. It touches nothing else. The prediction is stated before the run, per group:
+      #
+      #   MOVES -- 1,235 of 5,000 scattered elevations; 993 of 2,000 in a 20-degree box on the
+      #     flank belt; 962 of 4,225 cells of a tile across the same box. 3,190 in total.
+      #
+      #     **24.7% of a uniform global scatter is the right shape here.** The gate is
+      #     `smooth((structural - 200) / 900)`, and 29.15% of this world is land whose median
+      #     is 441 m -- so about a quarter of a global scatter is gated ground, and the rest is
+      #     sea and shore where the kernel does not run at all.
+      #
+      #     The first cut of the box was four degrees, exactly as the tectonic control's is
+      #     two, and it moved 2,000 of 2,000: a four-degree box on this witness sits entirely
+      #     inside the landmass. The dump's own both-ends-refused guard caught it and refused
+      #     to write the corpus, which is the second time that guard has done this job.
+      #
+      #   STAYS EQUAL -- both `wb_gully_preset` groups, the `wb_gully_check` group, every group
+      #     of every world built without a gully block, and **every `wb_structural_m` value in
+      #     the gully world itself**, which is 0 of 5,000 and 0 of 2,000.
+      #
+      # **THOSE TWO ZEROS ARE THE CLAIM, NOT AN ABSENCE OF EVIDENCE**, and this is the one
+      # control in the file whose predicted zeros are load-bearing. The gully term is DETAIL,
+      # and `structural_m` is the very signal its steering lattice reads
+      # (`.superpowers/sdd/notes/gradient-probe.md` section 2.4: a term inside `elevation_m`
+      # steering on `grad(elevation_m)` steers on itself). A structural value that moved here
+      # would mean the term had escaped its layer and was feeding its own input -- and that
+      # substitution, tried as a mutation on the Rust side, DOES NOT TERMINATE.
+      #
+      # The counts are computed NATIVELY in `examples/parity_dump.rs` and checked here, not
+      # read off this run, and they are derived twice on that side: once through the exports
+      # and once through the library's own `Surface`, with the block read from `detail.rs`
+      # rather than from the ten words that crossed the boundary.
+      - name: Parity -- the gully control (one word of the block, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate gully-steer 2>&1 | tee gully-control.out
+
+      - name: Assert the gully control -- 3,752 of 127,659 divergent, none of them structural
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
+            --output gully-control.out --expect-label "CONTROL (--mutate gully-steer)" \
+            --expect-compared 127659 --expect-divergent 3752
+
+      # THE SEVENTH CONTROL (the climate slice). `--mutate climate-samples` adds ONE upwind step
+      # to every `CL` and `CK` record and touches nothing else. It is a control with a shape
+      # rather than a size, and the shape is the informative half: one more step changes the
+      # rain-out integral, and it cannot change `climate::temperature_c` (a closed form in
+      # latitude with no march in it), a quantile of elevation, a land count or a lapse rate. So
+      # every `climate-moist/*` group must move and every `climate-temp/*`, every
+      # `climate-land/*` and every group of every other channel must sit at exactly zero --
+      # which `parity.mjs` asserts itself, not merely reports.
+      - name: Parity -- the climate control (one more upwind step, and the shape is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate climate-samples 2>&1 | tee climate-control.out
+
+      - name: Assert the climate control -- 648 of 127,659 divergent, every one of them moisture
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
+            --output climate-control.out --expect-label "CONTROL (--mutate climate-samples)" \
+            --expect-compared 127659 --expect-divergent 648

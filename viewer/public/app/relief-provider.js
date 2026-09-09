@@ -1,0 +1,505 @@
+//! The relief imagery provider: Task 1's raster, wrapped so Cesium will drape it.
+//
+// # Why an *imagery* layer and not terrain lighting
+//
+// `CustomHeightmapTerrainProvider` produces `HeightmapTerrainData`, whose
+// `hasVertexNormals` is `false` -- always, on that class, with no option to change it.
+// `GlobeFS` then falls back to `czm_geodeticSurfaceNormal`, the *ellipsoid* normal, so the
+// mesh is lit as a perfect smooth sphere no matter what `enableLighting` says. That was
+// verified live, after lighting was (wrongly) recommended as the fix and did nothing. A
+// raster is the only surface in this stack that can carry a normal, so the shading is baked
+// into one, and this file is what hands Cesium the raster.
+//
+// # Why the tile is 256 and the mesh is 65
+//
+// Cesium picks the imagery level from the *terrain* tile's geometric error and does not
+// clamp it to the terrain level -- measured, not assumed. So a 256-texel imagery tile over
+// the same rectangle as a 65-post terrain tile is a free 4x increase in colour resolution,
+// paid for in rasterisation and not in triangles. That gap -- shading at a finer frequency
+// than the tessellation -- is the actual answer to "when I zoom in it just looks blurry",
+// because screen-space *post* density is invariant to heightmap width and cannot be the
+// answer.
+//
+// # The two version traps, both checked against the vendored 1.145.0 source
+//
+// - **`ready` and `readyPromise` were REMOVED from `ImageryProvider` in Cesium 1.107.**
+//   `ImageryLayer.ready` is now simply `defined(this._imageryProvider)`, so a provider is
+//   usable the instant it is constructed. Nothing here is async and nothing here defines
+//   those two properties; `relief-provider.test.mjs` asserts their *absence*, because
+//   defining them is the failure mode that looks like diligence.
+// - **`requestImage` must return a PROMISE.** `ImageryLayer._requestImagery` guards the
+//   return value with `defined()` and then calls `.then()` on it. Returning the canvas
+//   directly throws from inside Cesium once per tile; returning the raw `ImageData` gets
+//   past that line and dies later at texture upload. Both are pinned by a test.
+//
+// The member list this object implements was produced by SWEEPING the vendored tree for
+// `imageryProvider.<member>` reads rather than by copying a tutorial -- the same "sweep, do
+// not spot-check" rule that has found three real aborts on the engine side and zero by
+// spot-checking. The full set Cesium 1.145.0 reads is: `credit`, `errorEvent`,
+// `getTileCredits`, `hasAlphaChannel`, `maximumLevel`, `minimumLevel`, `pickFeatures`,
+// `proxy`, `rectangle`, `requestImage`, `tileDiscardPolicy`, `tileHeight`, `tileWidth`,
+// `tilingScheme`. Cesium also *writes* `_reload`, which a plain object accepts.
+//
+// # This rasterises in the WORKER POOL (Task 4), and the main thread only blits
+//
+// One 256-texel tile is a (256+2)^2 = 66,564-sample engine fill plus 65,536 texels of
+// shading. Task 3 measured that at **191.6 ms mean per tile** on the main thread, and an
+// orbital view asks for 26 to 79 of them: five to seven seconds during which the camera
+// does not move. That is not a slow viewer, it is a viewer that stops responding, which is
+// why moving it was a prerequisite rather than an optimisation.
+//
+// The move is a substitution, not a redesign: `pool.js` already carried a dispatcher, and
+// `requestImage` already returned a promise because Cesium requires one. What crosses back
+// is the raw `Uint8ClampedArray` (transferred, not copied); the main thread wraps it in an
+// `ImageData` and blits it to a canvas, and **that** -- not the rasterisation -- is what
+// `stats.totalMs` now counts. The two are reported separately for exactly this reason: a
+// figure that added the worker's time back in would describe work the camera never waits
+// for, and a figure that quoted zero would hide the blit.
+//
+// **`?workers=0` keeps the synchronous main-thread path**, unchanged, which is both the
+// fallback for a host without module workers and the A/B baseline every figure in the Task
+// 4 report is quoted against -- same page, same world, same tiles, one flag apart.
+
+import { calibrate, engineCalibration, CLIMATE_RASTER } from "./biome.js";
+import { reliefTile, DEFAULT_SUN, makeImageData } from "./relief.js";
+import { MAX_LEVEL, tileRectangleDegrees } from "./terrain.js";
+
+/// 256 texels per tile edge. Four times the terrain's 65 posts over the same rectangle --
+/// see the module doc for why that multiplier is free rather than paid for in geometry.
+export const RELIEF_TILE_SIZE = 256;
+
+/// **The tile edge used at levels the camera never displays**, and the whole of the coarse-level
+/// saving.
+///
+/// # What is actually discarded, measured rather than assumed
+///
+/// Cesium's quadtree refines level by level: it will not ask for level n+1 until level n has
+/// arrived. That is written for network providers, where the parent tile is a cheap cached fetch;
+/// here a relief tile is 256 x 256 = 65,536 texels of engine sampling and shading **whatever
+/// ground it covers**, so a level-0 tile costs the same as a level-12 one and covers a quarter of
+/// the planet. At the orbital camera the render set is levels 1 and 2 (`renderedLevels()` on
+/// `window.__wb` reports it, and `stats.levels` reports what was rasterised), so the two level-0
+/// tiles are refinement scaffolding: rasterised, uploaded, and then refined away before the
+/// picture settles.
+///
+/// # Why cheaper and not refused
+///
+/// **A provider that declines coarse levels is the recorded trap in this project** -- Cesium asks
+/// for them for a reason, and a layer whose `minimumLevel`/`minimumTerrainLevel` is raised simply
+/// has no imagery at all if the camera ever does render level 0 (zoom far enough out and it
+/// does). Quartering the texels and keeping every level painted makes the failure mode a blurrier
+/// placeholder for the fraction of a second it exists, rather than an unpainted globe.
+///
+/// **The provider's `tileWidth`/`tileHeight` stay 256.** Checked against the vendored 1.145.0
+/// source rather than assumed: `ImageryLayer._createTextureWebGL` builds the texture from
+/// `imagery.image` itself (`source: image`), so the canvas's own dimensions are what is uploaded,
+/// and `GeographicTilingScheme` means no reprojection reads them either. The declared size is
+/// read in exactly one place that matters here -- `getLevelWithMaximumTexelSpacing`, which
+/// chooses *which* imagery level a terrain tile asks for. Declaring the coarse size there would
+/// change that choice for every tile, which is a different and much larger change than this one.
+export const COARSE_RELIEF_TILE_SIZE = 64;
+
+/// Levels **below** this one get `COARSE_RELIEF_TILE_SIZE`. `1` means level 0 only.
+///
+/// Deliberately not 2. Level 1 *is* in the orbital render set (5 of its 13 tiles), so a coarse
+/// level 1 would change pixels the camera is looking at; level 0 is not in it. The digest is the
+/// proof of that, not this comment.
+export const COARSE_RELIEF_BELOW_LEVEL = 1;
+
+/// The tile edge for one level. Exported so the policy can be asserted directly rather than
+/// inferred from a raster's width -- it is also asserted end to end through `requestImage`, but a
+/// policy only ever read by the code that applies it is the shape that drifts (see
+/// `reliefLayerEnabled` for the same argument).
+export function reliefTileSizeForLevel(level, {
+  tileSize = RELIEF_TILE_SIZE,
+  coarseTileSize = COARSE_RELIEF_TILE_SIZE,
+  coarseBelowLevel = COARSE_RELIEF_BELOW_LEVEL,
+} = {}) {
+  if (!(level < coarseBelowLevel)) return tileSize;
+  // `min` rather than the coarse size outright: `?reliefSize=32` must not be *enlarged* by a
+  // policy whose entire purpose is to make tiles smaller.
+  return Math.min(coarseTileSize, tileSize);
+}
+
+/// **`?relief=0` turns the layer off, and nothing else does.**
+///
+/// Deliberately the same shape as `main.js`'s existing `params.get("flat") !== "1"` and
+/// `params.get("paint") !== "0"` switches: one convention in the file rather than a second
+/// one introduced alongside it. Exported (rather than inlined at the call site) only so the
+/// default can be asserted instead of eyeballed -- the panel's ramp defaults silently
+/// drifted from `main.js`'s once already in this slice, and a default that is only ever
+/// read by the code that sets it is exactly the shape that drifts.
+export function reliefLayerEnabled(params) {
+  return params.get("relief") !== "0";
+}
+
+/// **`?climate=0` puts land colour back on the noise approximation**, and nothing else does.
+///
+/// The default is the engine's measured temperature and moisture. `climate=0` is the picture
+/// this viewer drew before the climate slice, byte for byte -- which is what makes the digest
+/// in the task report a proof rather than a claim, and what makes every before/after figure
+/// one page, one world, one camera, one flag apart.
+export function engineClimateEnabled(params) {
+  return params.get("climate") !== "0";
+}
+
+/// **`?biome=0` puts land back on the height ramp**, and nothing else does.
+///
+/// Same shape and same convention as `reliefLayerEnabled` above, for the same reason: one
+/// switch spelling in this file rather than a second one introduced beside it. It exists so
+/// the before/after of the land-colour work is **one build, one world, one camera, one
+/// flag** -- comparing two checkouts would also change the wasm, the tile cost and the
+/// camera's settle time, and none of those are the thing being shown.
+export function biomeColourEnabled(params) {
+  return params.get("biome") !== "0";
+}
+
+/// `ImageData` -> `HTMLCanvasElement`, which is one of the four types Cesium's
+/// `ImageryTypes` accepts. `putImageData` is a straight blit: no scaling, no colour-space
+/// conversion, no compositing (it ignores globalAlpha and globalCompositeOperation by
+/// specification), so the texels Cesium uploads are the bytes `relief.js` wrote.
+///
+/// `OffscreenCanvas`/`createImageBitmap` in the worker would remove even this blit, at the
+/// price of a path `node --test` cannot see at all (neither global exists there, and
+/// `relief.js` already returns a plain object in that host). The blit was measured instead
+/// of assumed -- see the report -- and it is three orders of magnitude below the
+/// rasterisation it replaced, so the untestable version buys nothing worth its blindness.
+function imageDataToCanvas(imageData) {
+  const canvas = document.createElement("canvas");
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  canvas.getContext("2d").putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+/// Build the provider.
+///
+/// `engine`/`worldHandle`/`radiusM` are the same three things `terrain.js` takes, and are
+/// deliberately the *same* handles: a relief layer drawn from a different world than the
+/// mesh is the `wrong-world` fault by accident, and it would look completely plausible.
+///
+/// `toImage` exists so `node --test` can see the raster itself. There is no `ImageData` and
+/// no `document` outside a browser; `relief.js` already returns an ImageData-shaped plain
+/// object in that case, and an identity `toImage` carries it through. The browser never
+/// passes this argument.
+export function createReliefImageryProvider({
+  engine,
+  worldHandle,
+  radiusM,
+  tileSize = RELIEF_TILE_SIZE,
+  /// The coarse-level policy, both halves overridable so the A/B is **one page, one world, one
+  /// camera, one flag apart** -- the same convention `cacheTiles` uses on the cloud provider.
+  /// `coarseTileSize: tileSize` (or `?reliefCoarseSize=256`) is the picture before this change.
+  coarseTileSize = COARSE_RELIEF_TILE_SIZE,
+  coarseBelowLevel = COARSE_RELIEF_BELOW_LEVEL,
+  minimumLevel = 0,
+  // The terrain's own ground cap. Imagery must not stop refining before the mesh does, or
+  // the colour goes soft exactly where the geometry gets sharp -- which is the reported
+  // complaint. Past this level Cesium magnifies the parent texture, which is the correct
+  // thing to do: at level 12 a 256-texel tile samples every 19.1 m, well below the field's
+  // measured 78.125 m resolution floor, so there is no further generated detail to reveal.
+  maximumLevel = MAX_LEVEL,
+  tilingScheme = new Cesium.GeographicTilingScheme(),
+  credit = "worldbuilder engine relief",
+  sun = DEFAULT_SUN,
+  /// The land-colour band edges. `undefined` (the default) means **calibrate once, here**;
+  /// `null` means the height-only ramp, which is what a before/after measurement asks for.
+  ///
+  /// It is computed on the main thread and shipped in every tile request rather than
+  /// recomputed per worker: it is 4,000 `wb_elevation_m` calls for four numbers, the four
+  /// numbers are identical in every worker, and a worker that calibrated its own would be a
+  /// second place they could disagree.
+  biome,
+  /// The engine's own climate calibration, from `engine.climateCalibration` -- resolved by the
+  /// CALLER, exactly as `lakes` is and for the identical reason: it is 4,000 elevations plus a
+  /// 160-step march at every land point, seconds rather than milliseconds, and a provider
+  /// constructor that silently blocked a boot for that long would be a cost with no name in
+  /// the status line. `main.js` dispatches it to a pool worker, times it, and says so.
+  ///
+  /// `null` -- the default -- is `?climate=0`: no calibration is resolved, no climate raster
+  /// is filled per tile, and the cost is not paid either.
+  climate = null,
+  /// How the per-tile climate raster is filled. See `biome.js::CLIMATE_RASTER` for the
+  /// measurement that chose 16, and `?climateRaster=` for the A/B that repeats it.
+  climateRaster = CLIMATE_RASTER,
+  climateMarchSamples = undefined,
+  /// The water manifest's bodies, from `engine.waterRun`. `[]` -- the default -- is the
+  /// picture before this task, and it is what `?lakes=0` produces: no manifest is resolved at
+  /// all, so the resolution cost is not paid either.
+  ///
+  /// Resolved by the CALLER rather than here, unlike `biome`'s calibration, and for a reason:
+  /// `wb_water_run` takes 4.2 s at the default node count, and a provider constructor that
+  /// silently blocked a boot for four seconds would be a cost with no name in the status line.
+  /// `main.js` resolves it, times it, and says so.
+  lakes = [],
+  toImage = imageDataToCanvas,
+  onTile = null,
+  /// The worker pool from `pool.js`, or `null` for the synchronous main-thread path.
+  /// `engine`/`worldHandle` are still required either way: they are what `?workers=0`
+  /// rasterises with, and what a check compares a worker's raster against.
+  pool = null,
+}) {
+  if (!engine || typeof engine.fillTileF32 !== "function") {
+    throw new Error("createReliefImageryProvider: engine.fillTileF32 is required");
+  }
+  if (!Number.isFinite(radiusM) || radiusM <= 0) {
+    throw new Error(`createReliefImageryProvider: radiusM must be positive, got ${radiusM}`);
+  }
+
+  /// Counters a check or a report reads, taken here rather than in a separate harness so
+  /// the population is the tiles the camera actually asked for.
+  ///
+  /// **`totalMs` is MAIN-THREAD time only, in both modes**, which is what makes the
+  /// before/after a comparison of one quantity rather than two. On the synchronous path
+  /// that is the whole rasterisation; on the pool path it is the `ImageData` wrap plus the
+  /// `putImageData` blit, and the rasterisation shows up in `workerMs` instead.
+  ///
+  /// `mainThreadRasters` is the counter that matters for the claim: a pool that silently
+  /// fell back to rasterising here would render identically and quote a fine `totalMs`
+  /// only because it was measuring the wrong path. It must be 0 whenever a pool is present.
+  const stats = {
+    tiles: 0,
+    totalMs: 0,
+    maxMs: 0,
+    maxLevelRequested: -1,
+    mainThreadRasters: 0,
+    poolRasters: 0,
+    workerMs: 0,
+    wallMs: 0,
+    /// **The counters that prove the path, which the pixels cannot.** `lakeTiles` is how many
+    /// rasterised tiles had at least one body overlapping their rectangle; `lakeTexels` is how
+    /// many texels were actually drawn as a lake surface. A manifest that never reached the
+    /// workers renders identically over the (many) tiles with no water in them, and this
+    /// project has already shipped a byte-identity test that passed for exactly that reason.
+    /// Both are accumulated in both modes, from the same `counters` object `relief.js`
+    /// increments, so the synchronous path and the pool path cannot report different things.
+    lakeTiles: 0,
+    lakeTexels: 0,
+    /// **The climate half of the tile cost, counted apart from the tile.** `climateMs` is
+    /// worker-side milliseconds spent inside `wb_climate_tile_f32`; `climateTiles` is how many
+    /// rasters were actually filled and `climateSamples` how many marches they were. All three
+    /// are the counters that prove the path: a climate configuration that never reached the
+    /// workers draws a *different* picture, so unlike the lake counters these are not the only
+    /// witness -- but "how much of a relief tile is climate" is the question the raster size
+    /// was chosen by, and no other number can answer it.
+    climateMs: 0,
+    climateTiles: 0,
+    climateSamples: 0,
+    /// **Per level: how many tiles, how many texels, and how much worker time.** The aggregate
+    /// `tiles`/`workerMs` above cannot answer the question the coarse-level change is about --
+    /// *which* levels the CPU went to, and whether those levels reach the render set -- and a
+    /// report that quoted only the aggregate would be quoting a figure that moves for two
+    /// different reasons. Read against `window.__wb.renderedLevels()`, which is Cesium's own
+    /// render set: a level that appears here and not there was rasterised and thrown away.
+    ///
+    /// Keyed by level, filled in on first request at that level. `texels` is `size * size` per
+    /// tile, so it is the thing that actually scales the cost, and it is what shows a coarse
+    /// level got smaller rasters rather than fewer of them.
+    levels: {},
+  };
+
+  /// One place that accumulates the per-level breakdown, so the two request paths cannot
+  /// disagree about what a level's numbers mean.
+  function recordLevel(level, size, workerMs) {
+    const bucket = stats.levels[level] || (stats.levels[level] = { tiles: 0, texels: 0, workerMs: 0 });
+    bucket.tiles += 1;
+    bucket.texels += size * size;
+    bucket.workerMs += workerMs;
+  }
+
+  /// The per-world band edges, calibrated once at construction unless the caller supplied
+  /// its own (or `null` to turn the layer's biome colouring off).
+  ///
+  /// **Two calibrations, and only one of them is cheap.** With `climate` supplied, the band
+  /// edges come from the engine's own quantiles over its own march and nothing is computed
+  /// here at all; without it, `calibrate` runs its 4,000 `wb_elevation_m` calls over the noise
+  /// field, which is what this layer did before the climate slice and is kept unchanged so
+  /// `?climate=0` is byte-identical rather than merely similar.
+  const calibration = biome === undefined
+    ? (climate ? engineCalibration({ radiusM, climate }) : calibrate({ engine, worldHandle, radiusM }))
+    : biome;
+
+  /// The per-tile climate configuration, or `null`. **A configuration and not a raster**: the
+  /// grid is filled inside `reliefTile`, on whichever side is rasterising, because a world
+  /// handle means nothing outside the wasm instance that issued it.
+  const climateConfig = climate
+    ? { rasterSize: climateRaster, marchSamples: climateMarchSamples }
+    : null;
+
+  /// One place that accumulates the main-thread cost, so both paths cannot disagree about
+  /// what `totalMs` and `maxMs` mean.
+  function record(elapsed) {
+    stats.tiles += 1;
+    stats.totalMs += elapsed;
+    if (elapsed > stats.maxMs) stats.maxMs = elapsed;
+  }
+
+  const provider = {
+    // --- the members Cesium 1.145.0 reads, in the order the sweep found them ---
+    credit: new Cesium.Credit(credit),
+    /// A real `Event`: `ImageryLayer` reads `numberOfListeners` and calls `raiseEvent`.
+    errorEvent: new Cesium.Event(),
+    getTileCredits() {
+      // Per-tile credits on top of the provider-wide `credit` above would draw the same
+      // string once per visible tile.
+      return [];
+    },
+    /// `relief.js` writes alpha 255 at every texel, so declaring an alpha channel would
+    /// upload a byte per texel that is always 255. `ImageryLayer._createTextureWebGL` reads
+    /// this to choose RGB over RGBA.
+    hasAlphaChannel: false,
+    maximumLevel,
+    minimumLevel,
+    /// Nothing to pick on a relief raster. `undefined` is Cesium's "feature picking is not
+    /// supported by this provider", and it is what `ImageryLayerCollection.pickImageryLayerFeatures`
+    /// checks for.
+    pickFeatures() {
+      return undefined;
+    },
+    /// Named explicitly rather than left off the object: `proxy` is read, and an absent
+    /// property and an `undefined` one behave the same to Cesium but not to a reader
+    /// checking this list against the sweep.
+    proxy: undefined,
+    rectangle: tilingScheme.rectangle,
+    /// No discard policy: every tile this provider produces is real. A `null` here would be
+    /// wrong -- `defined(null)` is false in Cesium, so it would work, but `undefined` is
+    /// what every built-in provider uses for "none".
+    tileDiscardPolicy: undefined,
+    tileHeight: tileSize,
+    tileWidth: tileSize,
+    tilingScheme,
+
+    /// **Returns a promise**, per the trap in the module doc -- and now it is a promise
+    /// that is genuinely pending, which is the whole of Task 4: Cesium already accepted an
+    /// unresolved image, so nothing about this signature had to change to stop blocking.
+    requestImage(x, y, level) {
+      if (level > stats.maxLevelRequested) stats.maxLevelRequested = level;
+      const rectangle = tileRectangleDegrees(tilingScheme, x, y, level);
+      // **The one line the coarse-level saving is made of.** Everything downstream of here
+      // already carries the size: `tile-worker.js` rasterises whatever `request.size` says and
+      // replies with its own `width`, and `makeImageData(result.data, result.width)` reads that
+      // width rather than assuming the provider's.
+      const size = reliefTileSizeForLevel(level, { tileSize, coarseTileSize, coarseBelowLevel });
+
+      if (!pool) {
+        // `?workers=0`. Synchronous, on the main thread, and the baseline every worker
+        // figure in the report is measured against.
+        const started = performance.now();
+        let imageData;
+        try {
+          imageData = reliefTile({
+            rectangle, level, size, engine, worldHandle, radiusM, sun,
+            biome: calibration, lakes, counters: stats, climate: climateConfig,
+          });
+        } catch (error) {
+          // Cesium's own failure path: reject, and it retries or falls back to the parent
+          // texture. Throwing synchronously out of `requestImage` instead would escape the
+          // `.then/.catch` pair in `_requestImagery` and take the render loop with it.
+          return Promise.reject(error);
+        }
+        const elapsed = performance.now() - started;
+        record(elapsed);
+        stats.mainThreadRasters += 1;
+        // `?workers=0` has no worker, so the rasterisation *is* the main-thread time. Recording
+        // it here rather than 0 keeps `levels[l].workerMs` meaning "the rasterisation cost of
+        // this level" in both modes -- a zero would read as "level 0 was free".
+        recordLevel(level, size, elapsed);
+        const image = toImage(imageData);
+        if (onTile) {
+          onTile({ x, y, level, rectangle, imageData, image, ms: elapsed, source: "main" });
+        }
+        return Promise.resolve(image);
+      }
+
+      // The pool path. **The request carries no engine and no world handle**: a handle is
+      // an index into a table inside one wasm instance's linear memory and is meaningless
+      // in another, and an `Engine` object is not structured-cloneable at all -- posting
+      // one throws `DataCloneError` per tile. The worker supplies both from its own world.
+      const request = {
+        rectangle, level, size, radiusM, sun, biome: calibration, lakes,
+        climate: climateConfig,
+      };
+      const wallStarted = performance.now();
+      return pool.relief(request).then((result) => {
+        // The only main-thread work left. `makeImageData` is a view over the transferred
+        // buffer (no copy); `putImageData` is the blit. Measured, not assumed -- see the
+        // report for the figure and its host.
+        const started = performance.now();
+        const imageData = makeImageData(result.data, result.width);
+        const image = toImage(imageData);
+        const elapsed = performance.now() - started;
+        record(elapsed);
+        stats.poolRasters += 1;
+        stats.workerMs += result.fillMs;
+        // `result.width`, not `size`: a worker that ignored the requested size would be invisible
+        // to a counter that trusted the request, and "the coarse level really did rasterise fewer
+        // texels" is exactly the claim this counter exists to carry.
+        recordLevel(level, result.width, result.fillMs);
+        // The worker counted these while it rasterised; they are added here so both modes fill
+        // the same two fields from the same `relief.js` arithmetic.
+        stats.lakeTiles += result.lakeTiles ?? 0;
+        stats.lakeTexels += result.lakeTexels ?? 0;
+        stats.climateMs += result.climateMs ?? 0;
+        stats.climateSamples += result.climateSamples ?? 0;
+        if ((result.climateSamples ?? 0) > 0) stats.climateTiles += 1;
+        stats.wallMs += performance.now() - wallStarted;
+        if (onTile) {
+          onTile({
+            x, y, level, rectangle, imageData, image, ms: elapsed,
+            source: `worker:${result.worker}`, result,
+          });
+        }
+        return image;
+      });
+    },
+
+    /// Everything a check should read rather than recompute, mirroring the shape
+    /// `terrain.js` already publishes on its provider.
+    worldbuilder: {
+      engine,
+      worldHandle,
+      radiusM,
+      tileSize,
+      /// The coarse-level policy in force, so a check or a report reads it rather than assuming
+      /// the module defaults are what this provider was built with.
+      coarseTileSize,
+      coarseBelowLevel,
+      sizeForLevel: (level) => reliefTileSizeForLevel(level, { tileSize, coarseTileSize, coarseBelowLevel }),
+      sun,
+      /// The band edges this provider is drawing with, so a check reads them rather than
+      /// recalibrating and hoping it got the same answer.
+      biome: calibration,
+      /// The engine calibration this provider is drawing with, and the per-tile configuration
+      /// it is filling rasters from -- read by a check rather than reconstructed, for the same
+      /// reason `biome` is. `null` on both means `?climate=0`.
+      climate,
+      climateConfig,
+      /// Mean worker-side milliseconds spent in `wb_climate_tile_f32` per tile that filled one,
+      /// which is the numerator of "what fraction of a relief tile is climate". `null` before
+      /// any climate raster, so a `?climate=0` run reports an absence rather than a zero.
+      meanClimateMs: () => (stats.climateTiles > 0 ? stats.climateMs / stats.climateTiles : null),
+      /// The water bodies this provider is drawing with, for the same reason: a check picks a
+      /// body out of THIS list by its `rootNode` and asserts the raster, rather than resolving
+      /// its own manifest and comparing against that.
+      lakes,
+      pool,
+      stats,
+      rectangleDegrees: (x, y, level) => tileRectangleDegrees(tilingScheme, x, y, level),
+      /// Mean **main-thread** milliseconds per tile so far, or null before any tile. Named
+      /// `meanMs` rather than `avgMs` because the report has to say which statistic it is
+      /// quoting -- and it is the same statistic in both modes, which is what makes the
+      /// before/after a comparison rather than two numbers side by side.
+      meanMs: () => (stats.tiles > 0 ? stats.totalMs / stats.tiles : null),
+      /// Mean worker-side rasterisation per tile, or null on the synchronous path. This is
+      /// work the camera does NOT wait for; it is quoted so the report can say the cost was
+      /// moved rather than pretend it vanished.
+      meanWorkerMs: () => (stats.poolRasters > 0 ? stats.workerMs / stats.poolRasters : null),
+      /// Mean request-to-settle wall clock per tile, which includes queueing behind other
+      /// tiles. It is what "tiles-to-settle" is made of, and it is not what the main thread
+      /// blocks for.
+      meanWallMs: () => (stats.poolRasters > 0 ? stats.wallMs / stats.poolRasters : null),
+    },
+  };
+
+  return provider;
+}

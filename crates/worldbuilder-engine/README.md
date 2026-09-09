@@ -9,13 +9,20 @@ foundation this crate is built on; see `spikes/0-bit-equality/README.md`.
 
 ## What is here so far
 
-Counted from `src/`, not from memory (re-counted for slice 5a Task 6, which found this
-stale by two modules and one binary -- `erosion.rs` and `wasm.rs` had landed without this
-count moving): **twenty modules plus the crate root, and two binaries**. Sixteen of the
-modules are ported from a named Python module and held to it by `tests/test_conformance.py`;
-the last four -- `stream.rs`, `streamfmt.rs`, `erosion.rs` and `wasm.rs` -- are **new in this
-crate and have no Python to be conformant with**, so every claim they make is a property
-test, a measurement, or (for `wasm.rs`) the parity harness instead.
+Counted from `src/`, not from memory (re-counted for slice 5a Task 6, which found it stale by
+two modules and one binary; re-counted again for slice 5b Task 6 / relief Task 5, which found
+it stale by one module and two binaries -- `water.rs`, `pond_threshold_survey.rs` and
+`relief_survey.rs` had landed without this count moving, exactly as `erosion.rs` and `wasm.rs`
+had before them; **re-counted a third time for the photoreal slice's record, which found it
+stale by three binaries** -- `mountain_probe.rs`, `mountain_survey.rs` and
+`coastline_survey.rs` had landed without it moving, so **this count has now been wrong three
+times running and always in the same direction**): **twenty-one modules plus the crate root,
+and SEVEN binaries** (`crates/worldbuilder-engine/src/*.rs` is 22 files, one of which is the
+crate root; `src/bin/*.rs` is 7). Sixteen of the modules are ported from a named Python module and held
+to it by `tests/test_conformance.py`; the last five -- `stream.rs`, `streamfmt.rs`,
+`erosion.rs`, `water.rs` and `wasm.rs` -- are **new in this crate and have no Python to be
+conformant with**, so every claim they make is a property test, a measurement, or (for
+`wasm.rs`) the parity harness instead.
 
     src/lib.rs       the crate root: the module tree and the PyO3 module registration
     src/detmath.rs   the only place a transcendental is called
@@ -36,25 +43,33 @@ test, a measurement, or (for `wasm.rs`) the parity harness instead.
     src/stream.rs      the node sampler and StreamGraph: the second representation
     src/streamfmt.rs   the stream graph's on-disk format: fail closed, sliceable by region
     src/erosion.rs     the Cordonnier stream-power bake over a StreamGraph: slice 5a
+    src/water.rs       lakes, overflow, the tied-plateau merge and the water manifest: slice 5b
     src/bindings.rs  the PyO3 surface, conversion only
     src/wasm.rs        the hand-written C ABI the browser studio calls, --features wasm
     src/bin/streambench.rs  what a graph costs, at sizes up to a whole planet
     src/bin/erosion_convergence_sweep.rs  whether §14.3's iteration count holds, and against which parameter
+    src/bin/pond_threshold_survey.rs  the body-surface-area distribution the pond threshold is calibrated against
+    src/bin/relief_survey.rs  relief across ReliefParams' parameter space, over two site populations
+    src/bin/mountain_survey.rs  the STRUCTURE field across TectonicParams' space; chooses nothing
+    src/bin/mountain_probe.rs   a throwaway probe: does moving TectonicParams make a mountain?
+    src/bin/coastline_survey.rs  land fraction, coastline length against ruler, islands and inlets
 
 The first seventeen entries are the engine core, and it is closed -- see **This closes the
-engine core** below. `stream.rs`, `streamfmt.rs` and `erosion.rs` are not part of it: they
-are the *second* representation CORE-001 adds beside it and the bake that runs over it, and
-none of the three add anything to `Surface`. `wasm.rs` is not part of it either -- it is the
-export surface both representations are reached through, not a third representation.
+engine core** below. `stream.rs`, `streamfmt.rs`, `erosion.rs` and `water.rs` are not part of
+it: they are the *second* representation CORE-001 adds beside it, the bake that runs over it,
+and the water that falls out of the bake, and none of the four add anything to `Surface`.
+`wasm.rs` is not part of it either -- it is the export surface both representations are
+reached through, not a third representation.
 Keep it in step with `src/` when a module lands: it went seven modules stale once already,
-and two more (`erosion.rs`, `wasm.rs`) had landed by slice 5a Task 6 before this count
-caught up with them again, on the same page that claims the core is complete.
+two more (`erosion.rs`, `wasm.rs`) had landed by slice 5a Task 6 before this count caught up
+with them again, and a third (`water.rs`) plus two binaries by slice 5b Task 6 -- each time on
+the same page that claims the core is complete.
 
 The Python in `worldbuilder/` is still the reference implementation and is unchanged.
 Nothing has been deleted, and the engine is additive until conformance is established for
 every module.
 
-## Two rules that are not style
+## Three rules that are not style
 
 **No std maths.** Everything transcendental routes through `detmath`, backed by the
 pure-Rust `libm`. `tests/no_std_math.rs` fails the build if a std float method appears
@@ -68,7 +83,37 @@ with a `// cast-ok: <reason>` escape hatch for casts that are genuinely integer-
 and not a float truncation -- so this is mechanised the same way the no-std-maths rule is,
 not merely documented.
 
-## Building it
+**Sweep an export's parameter space; do not spot-check it.** This is the newest of the three
+and the only one no build guard can enforce, so it is written here rather than left in a task
+report. `extern "C"` is **nounwind**: a panic behind an export is not an exception a caller
+can catch, it is `abort()` -- exit `0xc0000409` natively, and a dead module plus a blank
+viewer in a browser. This project has now found **three reachable aborts by sweeping an
+export's inputs and zero by spot-checking them**:
+
+- slice 5a, two: a negative `erodibility_per_yr` turning `implicit_receiver_update`'s
+  `1 / (1 + c)` from a contraction into an amplifying map (see **An abort was reachable
+  through `wb_erosion_run`** below), and a `radius_m` large enough to overflow
+  `stream::node_areas_m2`'s area calculation to `+inf`, found in the whole-branch review's
+  fix round.
+- relief Task 4, one: `Detail::plan` walks `while wavelength >= relief.canonical_wavelength_m
+  { wavelength *= 0.5 }`. At a canonical wavelength of exactly `0.0` **halving never reaches
+  zero and the loop never terminates** -- the observed symptom was
+  `memory allocation of 103079215104 bytes failed`. Closed by
+  `WB_MIN_RELIEF_WAVELENGTH_M = 1.0e-3` at the door (and `WB_MAX_RELIEF_WAVELENGTH_M = 1.0e9`,
+  because `inf * 0.5` is `inf` and hangs it from the other end).
+- slice 5b Task 5, one: at a `sea_level_m` below the world's own lowest sampled point there is
+  no boundary node anywhere, so no mouth, so every basin is a lake and their union has no rim
+  -- `merge_tied_plateaus` panics through the boundary. Closed by an exact-precondition check
+  (`every_component_has_an_outlet`), and re-confirmed by neutralising the new guard rather
+  than by trusting that it exists.
+
+**Every one of the three was a BAND, not a cliff** -- fine on both sides of a bad interior
+value. `canonical_wavelength_m` is fine at 250.0 and fine at 1e-3 and fatal at 0.0. The water
+datum is fine at 0.0 and fine at -5,698.0 and fatal at -5,699.0, the transition bisected to
+-5,698.763334509833 m on that world. A spot check at sensible values passes all three. That is
+why `tests/wasm_exports.rs` brackets each of these from **both** sides on a ladder rather than
+asserting one value, and why an export's bound is not considered proven until a sweep has been
+run across it. "The bounds look complete" is what was believed before each of the three.
 
     cd crates/worldbuilder-engine
     python -m maturin develop --release
@@ -89,16 +134,23 @@ belongs *here* is the shape of the door and the evidence that both sides of it a
     npm run check:wasm      # is the SHIPPED artifact built from the source that is here now?
 
 **The artifact, read from `public/wasm/MANIFEST.txt` and from the file (re-derived for
-slice 5a Task 6, which found the byte count and export count here stale by one export --
-`wb_erosion_run` had landed without this figure moving):** 117,146 bytes, **12 exports**
-(`memory` plus the eleven functions below), **0 imports**. Zero imports is the design, not
-an accident: `WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS
-runtime to keep in step, and a worker gets its own instance and therefore its own linear
-memory for free.
+slice mountains Task 6. This figure has now been found stale THREE times by the task that
+re-derived it -- slice 5a Task 6 found it a whole export behind after `wb_erosion_run` landed,
+it was four behind again by 5b Task 5 with the relief slice's three exports, and it was three
+behind and 4,825 bytes light again by mountains Task 6, this slice's own tectonic exports
+having landed the same way. A number nobody's gate reads is a number that goes stale; treat
+this paragraph as one to re-derive rather than to trust. **It went stale a FOURTH time**, by the
+photoreal slice's three coast exports, and was re-derived here from the file and the manifest
+together):** 226,673 bytes, **22 exports**
+(`memory` plus the twenty-one functions below), **0 imports**. Zero imports is the design, not an accident:
+`WebAssembly.instantiate(bytes, {})` is the entire loader, there is no JS runtime to keep in
+step, and a worker gets its own instance and therefore its own linear memory for free.
 
-    wb_generator_version   wb_alloc      wb_dealloc     wb_world_new   wb_world_free
-    wb_world_count         wb_elevation_m  wb_structural_m  wb_bottom_at  wb_fill_tile_f32
-    wb_erosion_run
+    wb_generator_version   wb_alloc         wb_dealloc       wb_world_new   wb_world_free
+    wb_world_count         wb_elevation_m   wb_structural_m  wb_bottom_at   wb_fill_tile_f32
+    wb_erosion_run         wb_world_new_relief   wb_relief_preset   wb_relief_check
+    wb_water_run           wb_world_new_tectonic wb_tectonic_preset wb_tectonic_check
+    wb_world_new_coast     wb_coast_preset       wb_coast_check
 
 `WB_EXPORTS` in `wasm.rs` is that list, declared. A test holds this crate's source to it and
 the build script holds the built module's export section (id 7) to it, because a forgotten
@@ -152,11 +204,31 @@ Re-run in this task, on the committed artifact:
     cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
     node crates/worldbuilder-engine/parity/parity.mjs native.txt
     node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate erosion-k
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate water-pond
+    node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate tectonic-warp
 
-**53,251 values compared, 0 divergent.** The control -- `--mutate seed`, one seed away and
-nothing else -- moves **50,778 of them**, and every group carrying a continuous height moves
-entirely. The control is the half that matters: a harness that has never reported a
-disagreement is not known to be able to.
+**89,861 values compared, 0 divergent** (slice mountains Task 6's re-run: the corpus now
+carries the tectonic channel as well -- both presets field by field, six checker answers, a
+world built from `TectonicParams::ranges()`, 2,000 points on the belt it builds, and a tile
+across it. Three tasks flagged that gap in a row and none owned it). **The controls are the
+half that matters** -- a harness that has never reported a disagreement is not known to be
+able to -- and there are four, deliberately at four different scales:
+
+| control | what it perturbs | divergent |
+|---|---|---:|
+| `--mutate seed` | the world seed, by one | 86,190 of 89,861 |
+| `--mutate erosion-k` | `erodibility_per_yr`, by one ULP | **216**, all in `erosion/erosion` |
+| `--mutate water-pond` | `pond_max_surface_area_m2`, one threshold | **60**, all of them `Body::kind` |
+| `--mutate tectonic-warp` | `margin_warp_m`, one word of the block | **6,186**, all on the tectonic world |
+
+A control that moves everything is nearly as uninformative as one that moves nothing, which is
+why the last three exist. The last two have their counts **predicted natively before the run**
+-- the water control from an independently summed surface-area distribution, the tectonic one
+per group and from the library beneath the exports -- and `parity.mjs` fails if any group moves
+by a different amount. The tectonic control's most useful number is the one that does *not*
+move: 83,675 values, including both tectonic presets and the tectonic checker, must compare
+equal. See `parity/README.md`.
 
 **Parity alone cannot tell you the artifact is current, and for several commits of this
 project it did not.** The committed `.wasm` predated a change to `wasm.rs`; the two differed
@@ -168,7 +240,11 @@ refuses to report at all when it returns problems. It imports rather than reimpl
 because two copies of a provenance rule drift, and the copy that drifts is the one that
 stops refusing.
 
-The fingerprint covers **29 inputs**: every file under `src/`, `examples/` and `tests/`
+The fingerprint covers **36 inputs** (re-derived at slice mountains Task 6 by running
+`node viewer/scripts/build-wasm.mjs digest`, which prints `fingerprint-inputs: 36`; this
+paragraph said 29 and had been left behind by two slices' worth of new files under the walked
+directories -- the same shape of staleness the artifact-size paragraph above records): every
+file under `src/`, `examples/` and `tests/`
 recursively, this crate's `Cargo.toml`, the workspace `Cargo.toml`, `Cargo.lock`, the
 `rustc -vV` release, commit hash and host, and the literal cargo argument list. It is
 deliberately over-inclusive -- `bindings.rs` cannot affect a `--features wasm` build and will
@@ -187,10 +263,12 @@ and the integration tests are part of what makes the blessing mean anything.
 **28 became 29 in the identity slice**, when `tests/build_fingerprint.rs` landed as a new
 file under one of the three walked directories -- adding a fingerprinted input is exactly as
 much a digest-moving event as editing one of the existing 28, which is why this number is
-re-derived here rather than left at 28. Re-run: `node viewer/scripts/build-wasm.mjs digest`
-(from `viewer/`) prints `fingerprint-inputs: 29` alongside the digest, and
-`worldbuilder_engine.source_fingerprint_inputs()` -- the PyO3 export the identity slice's
-Task 2 added -- returns the same `"29"` from the just-built extension. The two are meant to
+re-derived here rather than left at 28. **29 became 36 over the slices since**, every one of
+them a new file under `src/bin/`, `examples/` or `tests/` rather than any change to how the
+walk works, and this paragraph did not notice until Task 6 ran the command. Re-run: `node
+viewer/scripts/build-wasm.mjs digest` (from `viewer/`) prints `fingerprint-inputs: 36`
+alongside the digest, and `worldbuilder_engine.source_fingerprint_inputs()` -- the PyO3 export
+the identity slice's Task 2 added -- returns the same `"36"` from the just-built extension. The two are meant to
 agree: see the top-level README's CI section for the gate that checks it and the ruling that
 allows this crate to compute the same digest twice, once in the Node build script and once
 in `build.rs`.
@@ -2956,14 +3034,16 @@ applies in CI -- never from a `test result:` line, and never from an earlier rep
 
 | configuration | lib | `blake2_bytes.rs` | `build_fingerprint.rs` | `no_std_math.rs` | `wasm_exports.rs` | listed | ignored | run |
 |---|---|---|---|---|---|---|---|---|
-| `--no-default-features` | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
-| default (the same set -- the crate declares no default features) | 440 | 4 | 9 | 6 | -- | 459 | 5 | **454** |
-| `--features python` | 442 | 4 | 9 | 6 | -- | 461 | 5 | **456** |
-| `--features wasm` | 440 | 4 | 9 | 6 | 35 | 495 | 5 | **490** |
-| `--features python,wasm` | 442 | 4 | 9 | 6 | 35 | 497 | 5 | **492** |
+| `--no-default-features` | 503 | 4 | 9 | 6 | -- | 522 | 5 | **517** |
+| default (the same set -- the crate declares no default features) | 503 | 4 | 9 | 6 | -- | 522 | 5 | **517** |
+| `--features python` | 505 | 4 | 9 | 6 | -- | 524 | 5 | **519** |
+| `--features wasm` | 503 | 4 | 9 | 6 | 49 | 571 | 5 | **566** |
+| `--features python,wasm` | 505 | 4 | 9 | 6 | 49 | 573 | 5 | **568** |
 
-0 from either `[[bin]]` target (`streambench`, and slice 5a's `erosion_convergence_sweep`)
-and 0 doc-tests in every configuration.
+0 from any of the four `[[bin]]` targets (`streambench`, `erosion_convergence_sweep`,
+`pond_threshold_survey`, `relief_survey`) and 0 doc-tests in every configuration. All five
+`ignored` are the same five, and all five are in `lib`: `stream::measurements::*` (the four
+sampling measurements plus `neighbours_match_brute_force`).
 
 **Re-derived twice now: for slice 5a Task 6, and again for the whole-branch review's fix
 round that followed it.** Task 6 found this table stale by 35 `lib` tests and 5
@@ -2981,8 +3061,114 @@ version of the fix round's own erosion-side test was itself superseded once
 is the one test that survived (`gates.yml`'s own inline commentary tells that story in
 full, including the miscount an early draft of it made by arithmetic instead of by running
 `--list`). Both deltas match `.github/workflows/gates.yml`'s own inline commentary
-for the engine job matrix, which is pinned to the same run figures (454/454/456/490/492)
-and was independently re-run for this record rather than trusted because it agreed.
+for the engine job matrix, which **was, at that point in the branch's history,** pinned to
+the same run figures (454/454/456/490/492) and was independently re-run for this record
+rather than trusted because it agreed. **That pin has since moved again** -- see the next
+correction below and slice 5b Task 1's entry further down this section for the current
+figures.
+
+**The `wasm_exports.rs` column above read 35 in the row this table has carried since the
+review fix round, and that was already stale then: the fix round's own prose two paragraphs
+up says it moved to 36, but the table cell was never edited to match.** Re-deriving it now
+(slice 5b Task 1, `stream --list` per configuration rather than the arithmetic that produced
+the mismatch) confirms 36 is what actually runs today, independent of anything this task
+added -- `wasm_exports.rs` has no lake-fill tests, this task added none there. **This task
+(slice 5b Task 1, lake basin filling) adds `src/water.rs` unconditionally** -- eleven tests
+over `basins_of`, `symmetric_adjacency` and `fill_lakes`/`fill_basins` -- compiled into `lib`
+in every configuration since `water` carries no feature gate, same as `stream.rs`'s own
+precedent. 440/440/442/440/442 -> 451/451/453/451/453 in `lib`, moving every row's `listed`
+and `run` by +11 uniformly; `expect_ignored` stays 5 (this task added no `#[ignore]`d test).
+Combined with the `wasm_exports.rs` correction above, the table's run figures move
+454/454/456/490/492 -> 465/465/467/501/503. Re-derived the same way as every prior entry in
+this section: `cargo test -p worldbuilder-engine <cfg> -- --list` and the same with
+`--ignored`, per configuration, counted rather than assumed.
+
+**Task 1's review fix round adds four more tests, uniformly again**: two in `stream.rs`
+(`set_lake_level_m_moves_only_the_named_lakes_level`,
+`set_lake_level_m_reports_false_for_a_node_with_no_lake`, pinning the new
+`StreamGraph::set_lake_level_m` write-back the review's MEDIUM finding asked for) and two in
+`water.rs` (`apply_levels_writes_the_filled_value_onto_the_graphs_own_lake_table`,
+`fill_basins_and_apply_moves_the_graphs_own_lake_levels`, exercising the new `apply_levels`/
+`fill_basins_and_apply` entry points). Both files compile unconditionally, so `lib` moves
+451/451/453/451/453 -> 455/455/457/455/457 and every row's `listed`/`run` by +4 again:
+465/465/467/501/503 -> **469/469/471/505/507**. `expect_ignored` stays 5. Re-derived the same
+way as every entry above, and cross-checked through `.github/scripts/assert_counts.py
+cargo-list` itself (the same script `gates.yml` runs), which reported `count OK` at all five
+configurations against these figures.
+
+**Slice 5b Task 2 (the lake super-graph and its overflow edges) adds fourteen tests to
+`water.rs` and two to `stream.rs`, sixteen uniformly across every configuration** (both files
+compile unconditionally): `water.rs` gains the ordering-disagreement fixture and its four
+tests (`ordering_disagreement_fixture_has_the_roots_and_mouth_this_test_relies_on`,
+`outflow_follows_level_not_root_height`,
+`outflow_direction_follows_level_not_root_height_regression_guard`,
+`resolve_outflow_edges_is_bit_identical_across_two_runs`), the write-back and terminal-lake
+tests (`apply_outflows_writes_outflow_lake_onto_the_graphs_own_lake_table`,
+`a_terminal_lake_keeps_the_sentinel`), the cycle-handling tests
+(`mutual_overflow_between_two_lakes_is_a_tie_broken_deterministically`,
+`a_three_lake_cycle_is_also_caught`, `a_lake_chain_terminating_at_the_sentinel_peels_cleanly`,
+`an_outflow_lake_naming_no_real_lake_root_is_refused`), the real-graph property suite
+(`resolve_outflows_over_a_real_graph_satisfies_every_property`,
+`resolve_outflows_is_bit_identical_across_two_runs_on_a_real_graph`,
+`lake_count_is_measured_at_a_stated_node_count`) and a documentation-anchor test
+(`worldbuilder_directory_is_not_touched_by_this_module`); `stream.rs` gains
+`set_lake_outflow_lake_moves_only_the_named_lakes_outflow` and
+`set_lake_outflow_lake_reports_false_for_a_node_with_no_lake`, pinning the new
+`StreamGraph::set_lake_outflow_lake` write-back that mirrors Task 1's
+`set_lake_level_m`. `lib` moves 455/455/457/455/457 -> 471/471/473/471/473 and every row's
+`listed`/`run` by +16: **469/469/471/505/507 -> 485/485/487/521/523**. `expect_ignored` stays
+5 (this task added no `#[ignore]`d test). Re-derived the same way as every entry above and
+cross-checked through `.github/scripts/assert_counts.py cargo-list` itself, which reported
+`count OK` at all five configurations against these figures.
+
+**Task 2's review fix round adds seven more tests, uniformly again**: five in `water.rs`
+(`merge_fixture_has_the_two_tied_roots_this_test_relies_on`,
+`a_tied_plateau_is_merged_into_one_body_at_its_true_level`,
+`merge_leaves_an_untied_lakes_level_untouched`,
+`touching_lakes_fixture_is_a_closed_system_and_merge_refuses_it`,
+`two_candidate_ordering_fixture_has_the_roots_this_test_relies_on` -- net of removing the
+review's Finding 8 "cannot fail" documentation-anchor test,
+`worldbuilder_directory_is_not_touched_by_this_module`, and the two-candidate ordering
+fixture's own two property/mutation tests already counted as replacements for the prior
+round's non-discriminating pair) and two in `streamfmt.rs`
+(`refuses_an_outflow_lake_naming_a_node_that_is_not_a_lake_root`,
+`a_resolved_graph_round_trips_its_outflow_lake_values`, pinning Finding 1's fix). Both files
+compile unconditionally, so `lib` moves 471/471/473/471/473 -> 478/478/480/478/480 and every
+row's `listed`/`run` by +7: **485/485/487/521/523 -> 492/492/494/528/530**. `expect_ignored`
+stays 5. Re-derived the same way as every entry above, and cross-checked through
+`.github/scripts/assert_counts.py cargo-list` itself, which reported `count OK` at all five
+configurations against these figures.
+
+**A second Task 2 fix round adds two more tests, uniformly again**: `water.rs` gains
+`chained_merge_fixture_has_the_three_roots_this_test_relies_on` and
+`a_chained_merge_carries_the_first_passs_full_membership_into_the_second` (review Finding 3:
+a merge that needs a second pass, whose correctness depends on the first pass's full
+accumulated membership surviving into the second -- verified by mutation to fail, `left: j is
+live`, when that accumulation is dropped). `lib` moves 478/478/480/478/480 ->
+480/480/482/480/482 and every row's `listed`/`run` by +2: **492/492/494/528/530 ->
+494/494/496/530/532**. `expect_ignored` stays 5. This same round also generalised
+`merge_tied_plateaus` from cycles to arbitrary ties (Finding 4) and added a pass-count
+termination guard (Finding 2), neither of which added a test by itself -- the chained-merge
+fixture above is what exercises both. Re-derived the same way as every entry above, and
+cross-checked through `.github/scripts/assert_counts.py cargo-list` itself, which reported
+`count OK` at all five configurations against these figures.
+
+**The narrative chain above stops at 494/494/496/530/532, and the table no longer does.**
+Slice 5b Tasks 3-5 and the whole relief-amplitude slice landed after that paragraph was
+written, and this section did not move with them -- which is the failure mode this section
+has now suffered three times and warns about in its own next paragraph. The table above was
+therefore **re-derived wholesale for slice 5b Task 6 / relief Task 5**, not extended by
+arithmetic: `cargo test -p worldbuilder-engine <cfg> -- --list` and the same with
+`--list --ignored`, per configuration, plus `--lib` and `--test <name>` runs to attribute the
+columns, all on this host at `1004f4d`. The net movement since that last narrative entry is
+**+23 in `lib` across all five rows** (`water.rs`'s threshold, manifest and merge work, plus
+`detail.rs`'s `ReliefParams` and `hills()`) and **+13 in `wasm_exports.rs`**, which only the
+two `wasm` rows see (`wb_relief_preset`, `wb_relief_check`, `wb_world_new_relief` and
+`wb_water_run`, with their refusal ladders): 494/494/496/530/532 ->
+**517/517/519/566/568**. `expect_ignored` stays 5. The per-task attribution of those deltas
+is in `.github/workflows/gates.yml`'s own inline commentary, task by task, which is where it
+belongs -- and the five figures re-derived here match that file's pinned `expect:` values
+exactly, having been counted before it was read rather than after.
 
 **`build_fingerprint.rs` is new in the identity slice** (Task 2): 9 tests over the shared
 walking/hashing logic `build.rs` calls, none of them present when this table last read
@@ -3137,17 +3323,19 @@ Two consequences follow, stated rather than left to be inferred from an unchange
 `wb_erosion_run` (slice 5a Task 5) is a real, shipped export -- re-checked here rather than
 reported from Task 5's own record. Re-run for this task (`cargo run --release -p
 worldbuilder-engine --example parity_dump --features wasm`, replayed by `parity/parity.mjs`
-against the committed `viewer/public/wasm/worldbuilder_engine.wasm`, 117,146 bytes, on the
-same host as the sweep above; full corpus and method in `parity/README.md`, which this task
-also found stale by one whole group and re-derived -- see "Figures found stale"):
+against the committed `viewer/public/wasm/worldbuilder_engine.wasm`; full corpus and method in
+`parity/README.md`, which this task also found stale by one whole group and re-derived -- see
+"Figures found stale"). **Figures below re-run for slice 5b Task 5**, against the current
+220,452-byte artifact and the corpus that task grew to 71,596 values:
 
 | run | values compared | divergent |
 |---|---:|---:|
-| parity | 56,254 | **0** |
-| `--mutate seed` (a different planet) | 56,254 | 53,778 |
-| `--mutate erosion-k` (`erodibility_per_yr` bumped one ULP) | 56,254 | **216** |
+| parity | 71,596 | **0** |
+| `--mutate seed` (a different planet) | 71,596 | 68,457 |
+| `--mutate erosion-k` (`erodibility_per_yr` bumped one ULP) | 71,596 | **216** |
+| `--mutate water-pond` (`pond_max_surface_area_m2`, one threshold) | 71,596 | **60** |
 
-The plain run is bit-for-bit across all 56,254 values, 3,003 of which are the erosion
+The plain run is bit-for-bit across all 71,596 values, 3,003 of which are the erosion
 group's own corpus (3,000 heights from one `wb_erosion_run` call, 3,000 nodes, this crate's
 default test constants, capped at 20 iterations so it exercises the not-yet-converged path
 deliberately, plus status/iterations/converged). The seed control shows the harness can
@@ -3161,6 +3349,15 @@ moves 216 of the 3,000 heights and *nothing else in the record* -- both `iterati
 harness can catch a one-ULP divergence in the implicit update's own arithmetic, with the
 possibility that "the two sides just ran a different number of steps" excluded by the same
 comparison. Confirmed by re-running it for this task, not assumed from Task 5's report.
+**And its count did not move when slice 5b Task 5 grew the corpus by 15,342 values** -- which
+is the right outcome, since none of the three added groups is downstream of `k`.
+
+**Slice 5b added a third control on the same principle, one level narrower.**
+`--mutate water-pond` moves `pond_max_surface_area_m2` alone; that parameter reaches exactly
+one field of the water manifest, so 60 of 156 `Body::kind` codes move while every
+`root_node`, `level_m`, extent bound, the body count and the datum compare equal -- the same
+shape as `iterations` and `converged` comparing equal here. Its 60 is predicted from
+`water::lake_body_surface_areas_m2` before the replay runs, and checked against it.
 
 **What this parity claim does not cover.** `cap_slopes`'s own clamp branch is called by
 `wb_erosion_run` (it always runs the capped path) but, per section 2 above, is inert at this
@@ -3279,7 +3476,12 @@ output. That is the check this slice's own history says is worth repeating: a co
 control wrapped around an incorrectly defined (or simply un-rerun) measurement is exactly
 what let a prior task's report call five correct pins "stale by +5."
 
-### What slice 5b still owes
+### What slice 5b still owed, and what it delivered
+
+**This subsection was written before slice 5b ran. It is kept as written, and answered
+below**, because what a slice expected to owe and what it turned out to owe are two different
+records and the second is only legible beside the first. The delivered work is the
+**`water.rs`** section further down.
 
 Lakes and the overflow super-graph, the water manifest as a byproduct of building them, and
 the feature-kernel blend that lets `terrain_z_at` stay a function after erosion has run
@@ -3289,3 +3491,1225 @@ hardcoded inside `wb_erosion_run`** (`WB_EROSION_SEA_LEVEL_M = 0.0`) and is **no
 it is what decides which nodes the graph classifies as roots, and therefore which nodes this
 slice's solver holds fixed as local base levels. Lakes and water will need to revisit that
 constant, not merely add parameters alongside it.
+
+**Slice 5b Task 5 answered the datum half of that note, at a second door rather than at this
+one.** `wb_water_run` takes `sea_level_m` as a caller parameter, bounded by the world's own
+radius, and moving it moves every body in the manifest. `wb_erosion_run`'s own constant is
+untouched -- changing it would change what that export computes, which is not a parity task's
+business -- so the two exports still build their graphs at different datums unless a caller
+passes 0.0. That is stated on `WB_EROSION_SEA_LEVEL_M` and remains open.
+
+**What was delivered, and what is left.** Lakes, the overflow super-graph, the tied-plateau
+merge, the pond classification and the manifest all landed -- see the **`water.rs`** section
+below for each with its measurement. Two of the three items above are closed and one is not:
+
+- *Lakes and the overflow super-graph, and the manifest as a byproduct of building them*:
+  **done**, and the byproduct claim held -- no separate flood-fill discovery pass exists.
+- *`sea_level_m` hardcoded in `wb_erosion_run`*: **still open**, exactly as the paragraph
+  above says. `wb_water_run` takes the datum as a parameter; `wb_erosion_run` does not.
+- *The feature-kernel blend that lets `terrain_z_at` stay a function after erosion has run*
+  (§14.3's own argument for an analytic query over a baked structure): **not started.** It
+  was never a Task in slice 5b's plan and no work in this branch approaches it.
+
+## `water.rs`: lakes as a byproduct, a threshold with nothing under it, and a manifest whose sea is a miss
+
+Slice 5b. Every figure in this section was re-derived for this write-up, on this host, at
+`1004f4d`, from the current source or from a run performed while writing it -- never from a
+task report. Where a ledger paragraph disagreed with a run, the run is what is recorded here
+and the disagreement is named.
+
+**Host and toolchain for every measurement below**: this developer machine, Windows 11,
+`rustc 1.98.0 (88d9e12ae 2026-08-18) x86_64-pc-windows-msvc`, Node v22.17.0, `cargo run
+--release`.
+
+### Fill-versus-breach was DISSOLVED, not decided -- and the difference matters
+
+Section 13.4 of `docs/design/2026-09-02-mark-2-world-studio.md` poses the question in its own
+words: a depression "may be **filled**, which makes a lake, or **breached**, which cuts an
+outlet and makes a stream. That single choice decides how many lakes a planet has." Read as a
+fork, that is a design decision this slice would have had to take.
+
+It never came up, and the reason is section 14.2's rather than this slice's: **Cordonnier does
+neither.** A root node that is not on the boundary *is* a lake -- lakes are a property of the
+downhill forest the bake already builds, not the output of a discovery pass run over it. There
+is no depression-removal step in which one could choose to fill or to breach, because there is
+no step that removes depressions at all. Both branches of the fork describe things this
+implementation does not do.
+
+The distinction between *dissolved* and *decided* is not pedantry, which is why it is written
+down rather than left implicit:
+
+- A decided question has a losing branch that stays reachable. Someone eventually asks "should
+  we breach instead?", and the answer is a tuning argument that can be re-litigated forever.
+- A dissolved question has no branches. Asking it here gets the same answer that asking a
+  raster method "which way does water flow across this flat?" gets: the question presumes a
+  representation that is not the one in use. Section 14.2 makes exactly that point and credits
+  it to the raster library's own authors -- RichDEM's documentation is candid that once a
+  depression is filled no local gradient information survives, and every reconstructed
+  drainage direction is equally arbitrary.
+
+What this slice actually had to decide were the questions the graph *does* pose, and they are
+different questions: where a basin's water surface sits (Task 1's spill formula, `min` over
+boundary edges of `max(h_inside, h_outside)`), which basin it overflows into (Task 2), what
+counts as one body when two basins tie (Ruling 7: a tied plateau is **one** body, because
+section 13.2's unit is a body with *a* surface level and a tied pair has exactly one between
+them), and which bodies are named at all (Task 4). None of those is fill-versus-breach wearing
+a different hat.
+
+Do not re-open it. If a future slice wants breaching, that is a change of *method* -- a
+different paper -- and not a parameter.
+
+### What lake resolution costs, measured against section 14.2's `O(N + M log M)`
+
+Section 14.2 claims "a super-graph of lakes handles overflow between them in O(N + M log M),
+where the number of lakes M is far below the number of nodes N". That is two claims: a
+complexity bound, and a size claim about M. Both are checkable, and both were checked here
+rather than cited.
+
+**Population and method.** `cargo run --release --no-default-features --bin
+pond_threshold_survey`, the binary that already builds exactly this pipeline. Seed
+`20260905`, radius 6,371,000 m, `SamplingKind::Spiral`, heights from `Surface::new(SEED,
+EARTH_RADIUS_M, 22, 0.29, None, None)::elevation_m`, datum `sea_level_m = 0.0`. The timed
+region is `water::fill_basins_and_apply` followed by `water::resolve_outflows_and_apply` --
+the whole of lake resolution and nothing else; the graph build (`StreamGraph::build`,
+including node sampling and the downhill forest) is timed separately beside it. One run, this
+host, wall clock.
+
+| N | graph build | lake resolution | pre-merge `Lake` rows | physical bodies (M) | merge satellites | M/N |
+|---|---|---|---|---|---|---|
+| 30,000 | 0.19 s | **0.35 s** | 203 | 171 | 32 | 0.570% |
+| 100,000 | 0.69 s | **1.24 s** | 1,024 | 799 | 225 | 0.799% |
+| 500,000 | 3.94 s | **7.81 s** | 8,467 | 6,368 | 2,099 | 1.274% |
+
+Three things that table says, and one it does not:
+
+- **M is far below N, and the claim survives -- but the ratio CLIMBS with N rather than
+  falling.** 0.570% -> 0.799% -> 1.274% of nodes are bodies as the mesh refines by 16.7x.
+  That is the opposite of the direction a reader might assume from "far below", and it is
+  worth watching rather than filing away: the argument is still safe here, because even a
+  5%-of-N lake count at 20,000,000 nodes puts `M log2 M` at about `1e6 * 20 = 2e7`, the same
+  order as N itself.
+- **The `M log M` term is not what costs anything today.** At N = 500,000, `M log2 M` is
+  `6,368 * 12.64 ~= 80,500` -- about **16% of N** -- and that is the bound, not the work:
+  there is no sort in the resolve path at all. The ranking is a running minimum in the house
+  explicit-branch form (`water.rs::lowest_crossing`). What is measured is an N cost.
+- **The measured scaling is superlinear in N, at about `N^1.10`.** 0.35 s -> 7.81 s over a
+  16.67x growth in N is a 22.3x growth in time; `ln(22.31) / ln(16.67) = 1.104`. That is not
+  section 14.2's term misbehaving -- it is the neighbour relation. A rim scan needs
+  `stream::nearest_neighbours`, `StreamGraph` does not store it, so lake resolution
+  regenerates it, and its cost is the superlinear part.
+- **What the table does NOT license is an extrapolation to 20,000,000 nodes.** The largest run
+  here is 500,000. Slice 5a refused to extrapolate its erosion cost past what actually ran and
+  the same refusal applies: an `N^1.10` fit measured over one and a quarter decades is not
+  evidence about a point two decades further out, and the memory profile changes character
+  long before the time does, since the neighbour relation is held live and in full while the
+  rim scan runs.
+
+The honest summary is the ratio rather than the seconds: **lake resolution costs about twice
+the graph build** at every size measured (1.84x / 1.80x / 1.98x), and the graph build is
+itself far cheaper than the erosion bake it feeds. Section 14.2's "lakes are part of the
+algorithm, not a separate pass" is a claim about cost as much as about structure, and at these
+sizes it holds.
+
+### The pond threshold, the distribution it was chosen from, and the finding underneath it
+
+`BuildParams::pond_max_surface_area_m2 = 1.0e5` m^2 (10 hectares).
+
+**How the quantity was chosen: it was drainage area first, and a measurement changed it.**
+Over the same bodies, the set in the bottom decile *by drainage area* and the set in the
+bottom decile *by surface area* overlap by only **0.24 / 0.18 / 0.17** at 30,000 / 100,000 /
+500,000 nodes (my run, same binary and population as the cost table above). So roughly four in
+five of the smallest bodies were being named by a quantity a player cannot see: a small pond
+fed by a wide valley classified as a lake, a broad shallow lake in a flat basin classified as
+a pond. Section 13.2 gives a body "a surface level" and never makes `pond` a hydrological
+category, so visible extent is the right discriminator. Drainage area was **not** deleted --
+it is still the right quantity for flow, flooding and foraging, and it is still carried, as
+`water::lake_body_drainage_totals_m2`. It is simply no longer the classifier.
+
+**The distribution the threshold was chosen against** -- surface area per *physical body*,
+after Ruling 7's merge, so a tied plateau contributes its union's footprint once rather than
+its members' footprints severally:
+
+| N | bodies | min m^2 | median m^2 | mean m^2 | max m^2 |
+|---|---|---|---|---|---|
+| 30,000 | 171 | 1.345e10 | 1.921e10 | 5.064e10 | 9.597e11 |
+| 100,000 | 799 | 4.046e9 | 5.583e9 | 1.556e10 | 1.054e12 |
+| 500,000 | 6,368 | 7.904e8 | 1.191e9 | 3.163e9 | 1.101e12 |
+
+**There is no natural break.** Across a log-spaced ladder from 1.0e4 to 1.0e12 m^2 the pond
+fraction climbs smoothly from 0 to 1 over about three orders of magnitude, at every node
+count. That was a permitted outcome and it is reported as one, rather than papered over by
+picking the flattest-looking spot on a smooth curve.
+
+**So the threshold stands on external ground rather than on a feature of the curve.** 1.0e5
+m^2 is a body whose shoreline a person could walk in about a quarter of an hour: a 1 km
+perimeter encloses `1e6 / (4 * pi) ~= 7.96e4` m^2, rounded to 1.0e5. That is a statement about
+people, not about the mesh -- which matters, because the candidate ground it replaced ("the
+smallest body the finest tested resolution resolves") was a property of the mesh and would
+have moved every time the mesh did.
+
+**And here is the finding, which is neither a defect nor a success.** At 1.0e5 m^2 this
+generator produces **zero ponds at every resolution measured**. The smallest body it makes
+anywhere in the table above is `7.904e8` m^2 -- **7,904 times the threshold**, nearly four
+orders of magnitude. `LakeKind::Pond` is a reachable variant of an unreachable case.
+
+Read that as a measurement of the mesh, because that is what it is. At 500,000 nodes over an
+Earth-sized sphere the mean cell is on the order of `4 * pi * R^2 / N ~= 1.0e9` m^2; a body
+cannot be much smaller than one cell, so a 1.0e5 m^2 pond sits about four orders of magnitude
+below what this sampling can represent at all. The threshold is not wrong and the classifier
+is not broken. **This project has simply never run the generator fine enough to need the
+category.** The alternative -- moving the number until something fell on each side -- would
+have produced a tidier table and hidden the only thing the exercise actually discovered.
+
+One consequence survives the resolution question and in fact answers it. At a fixed *high*
+threshold of 3.0e10 m^2 the large-body count is **82 / 67 / 54** across that 16.7x growth in
+N, while the small-body count balloons **89 / 732 / 6,314**. So refining the mesh does not
+destabilise an absolute threshold in m^2 -- it **adds small bodies to the population**. The
+threshold is stable; the population is what changed. That is a much weaker claim than "the
+threshold swings with resolution", and it is the one the numbers support.
+
+### What the manifest carries, and what it deliberately leaves empty
+
+`WaterManifest` is three fields, and two of them are deliberately thin.
+
+    WaterManifest { sea_level_m: f64, bodies: Vec<Body>, rivers: Vec<River> }
+    Body          { root_node: u32, kind: BodyKind, level_m: f64, extent: Extent }
+    BodyKind      { Lake, Pond }
+    Extent        { min/max_latitude_deg, min/max_longitude_deg }
+
+**The sea is the FALLBACK, not a row in the mapping.** This is the shape decision a reader is
+most likely to get backwards, so it is stated flatly: **ocean bodies are not enumerated at
+all.** `BodyKind` has no `Ocean` variant. The datum appears exactly once, as the scalar
+`sea_level_m`, and it does two jobs at once -- it is what the mapping's miss answers with, and
+it is the datum at which mouth-versus-lake was decided for every body that *is* in `bodies`.
+A manifest that did not name its own datum could not be checked against the world it
+describes, since the same graph yields a different manifest at a different one.
+
+Section 13.2 defines two complementary mechanisms: "a mapping of named waters", and a fallback
+for the unnamed. The sea is the mapping's **miss**. An earlier draft emitted one `Ocean` body
+per boundary root, and measurement is what settled it: at n = 30,000 that produced 1,232 rows
+of which 1,061 were ocean, **96.3% of the ocean boxes overlapped another ocean box** -- so a
+sea position selected an ambiguous set of entries with identical levels and no rule to
+disambiguate them -- and **61 of 171 lakes had their boxes hit by an ocean box**, manufacturing
+exactly the false hits an extent exists to prevent. Removing them cost 86% of the rows and no
+information whatever. The counter-argument that a single merged sea body would have a bounding
+box spanning the globe turned out to be the proof rather than the objection: a `Body` here is
+a thing with a *meaningful extent*, and the sea has none.
+
+**`rivers` is always empty at Mark 2, and the type exists anyway.** Section 13.2 asks a river
+to be "an ordered set of reaches"; `stream::Reach` already carries `gradient`, which is what
+would let a later slice hang a section 13.3 waterfall off a reach's upstream end. Carrying the
+empty `Vec<River>` now costs nothing, and retrofitting the *sequence* later would be a schema
+break. That is the spec's own argument, and it is why an always-empty field is not dead weight.
+
+**`kind` has exactly one reachable value on this mesh**, for the reason the section above
+measured. A manifest whose enum has two variants and whose generator can only produce one is
+worth saying out loud here, rather than leaving a future reader to infer it from a filter that
+always comes back empty.
+
+**`root_node` is beyond section 13.2's literal three fields**, and it earns its place as the
+mapping's *key*: the spec asks for a mapping of named waters, a mapping needs a key, `Body`
+carries no name field, and `graph.lakes()`'s own root-node identity is the only stable
+candidate. It does leak this crate's node indexing. Correlating a body across two manifests of
+the same world, or back to the graph it came from, is a real need that key exists to serve.
+
+**`extent` is a lat/lon bounding box over the body's UNDERWATER FOOTPRINT** -- basin members
+at or below its own filled `level_m`, not its catchment -- chosen for maritime's
+point-in-region lookup, which is what the manifest is for. It is index-independent and cheaper
+than a node set, and unlike a centroid-plus-radius it does not repeat the summary-number
+failure the pond survey had already found once, where a single scalar stood badly for a shape.
+The antimeridian *is* reachable and is handled rather than documented away: the wrap convention
+(`min_longitude_deg` greater than `max_longitude_deg` denotes an arc through +/-180) exists
+because a claim that a globe-spanning box was unreachable was falsified by measurement -- 6 of
+171 bodies at n = 30,000 and 8 of 799 at n = 100,000 were already producing 356-360 degree
+boxes, one of them a single-node body at 358.7 degrees. That is the second "unreachable" claim
+in this project measurement has overturned, which is why they get tested now rather than
+reasoned about.
+
+### Parity over the manifest, and a control that moves exactly one field
+
+Everything here is from a parity run performed while writing this section, not from a CI log
+and not from a task report. Five commands, all green, exit 0:
+
+    cd crates/worldbuilder-engine/parity
+    cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > native.txt
+    node parity.mjs native.txt                        # 71,596 compared, 0 divergent
+    node parity.mjs native.txt --mutate seed          # 68,457 of 71,596 divergent
+    node parity.mjs native.txt --mutate erosion-k     # 216 of 71,596 divergent
+    node parity.mjs native.txt --mutate water-pond    # 60 of 71,596 divergent
+
+The clean run also reports the artifact it replayed through: `220452 bytes`, and
+`provenance: the shipped .wasm matches its manifest and current source` before it compares
+anything.
+
+**What was compared.** `water.rs` was **unreachable from the export surface** before slice 5b
+Task 5. No export touched a `StreamGraph`'s lakes, so the module's native-versus-WASM claim
+was not merely unverified, it was *unfalsifiable* -- the same position `erosion.rs` was in
+before `wb_erosion_run` existed. `wb_water_run` is the export that makes it checkable, and
+what it dumps is the **shipped** manifest (`water_manifest_from_graph`, after filling, overflow
+resolution, Ruling 7's merge and classification), not an intermediate a caller never sees. The
+`water/plain` group is 1,095 values: one status, one body count, one datum, and 156 bodies x 7
+fields, at seed `20260904`, 30,000 nodes, datum 0.0, `pond_max_surface_area_m2 = 1.0e5`. All
+156 are lakes and none is a pond, and `examples/parity_dump.rs` asserts that directly rather
+than leaving it to be noticed.
+
+**What the negative controls moved, and why one of them is the interesting one.**
+
+| control | what it perturbs | divergent | where |
+|---|---|---|---|
+| `--mutate seed` | the world seed, by one | 68,457 of 71,596 (95.6%) | every group, gross |
+| `--mutate erosion-k` | `erodibility_per_yr`, by one ULP | 216 of 71,596 | `erosion/erosion` only, 216 of its 3,000 heights |
+| `--mutate water-pond` | `pond_max_surface_area_m2`, 1.0e5 -> 2.0e10 | 60 of 71,596 | `water/plain` only |
+
+**A control that moves everything is as uninformative as one that moves nothing.** That is the
+whole reason the second and third exist. `--mutate seed` proves only that the harness notices
+a different planet; it says nothing about whether the harness is sensitive to the arithmetic
+of any particular module, because a corpus that compared nothing but a seed-derived value
+would light up just as brightly. The two narrow controls are the ones carrying a claim:
+
+- `erosion-k` moves 216 of the erosion group's 3,000 heights (7.2%) and **nothing else** --
+  not status, not the iteration count, not the convergence flag, and not one value in any
+  other group. The corpus is built so both runs hit `max_iterations` without converging, so
+  the step counts are identical by construction and a divergent height is evidence about
+  `k`'s arithmetic rather than about a different number of steps. Its count is **unchanged at
+  216** across slice 5b's corpus growth, which is the right outcome: the groups Task 5 added
+  are downstream of neither `k` nor erosion, and a control whose count had moved with them
+  would have been reaching something it does not name.
+- `water-pond` is the sharpest of the three, because **its count is predicted before the run
+  and checked from two directions**. `pond_max_surface_area_m2` reaches exactly one field --
+  `Body::kind` -- so `root_node`, `level_m`, all four extent bounds, the body count and the
+  datum must all compare equal, and they do. How many `kind` fields flip is predicted
+  *natively*, from `water::lake_body_surface_areas_m2`, which is a different quantity from the
+  classifier being perturbed: a body flips exactly when its summed surface area is at or below
+  the new threshold, which is **60 of 156**. `examples/parity_dump.rs` asserts that the
+  classifier and the area distribution agree before writing that prediction into the corpus,
+  and `parity.mjs` checks its own per-group tallies against it and exits 1 if any group -- water
+  or not -- moved by a different amount. 60 of 156 is deliberately neither none nor all;
+  2.0e10 m^2 sits near the median of this mesh's measured body-surface distribution for
+  exactly that reason.
+
+**One gate here depends on a MEASURED property of the world, and must be RE-DERIVED rather
+than merely re-run.** The corpus total of 71,596 contains `156 bodies x 7 fields + 3`, and
+**156 is a measurement** of seed 20260904 at 30,000 nodes with datum 0.0 -- not a constant. If
+the mesh, the sampler, the seed, the node count or the datum moves, that pin moves with it,
+and the correct response is to re-derive the corpus arithmetic from its definition (the way
+`gates.yml`'s own inline commentary does it, line by line) and then check the run against the
+derivation -- **not** to paste in whatever number the new run printed. The same applies to the
+water control's 60. A pin edited to match the run it was supposed to constrain is not a gate.
+This paragraph exists because the next person to change the mesh will hit it.
+
+### The artifact roughly doubled, and the export is deliberately not feature-gated
+
+Measured, not copied. Both artifacts built here with the same command
+(`cargo build -p worldbuilder-engine --release --target wasm32-unknown-unknown
+--no-default-features --features wasm`, rustc 1.98.0 x86_64-pc-windows-msvc): the "before"
+from a clean worktree checked out at `3afa5f5`, the "after" the committed artifact whose
+provenance gate passed in the same session. Sizes from the files, export and import counts
+from `WebAssembly.Module.exports` / `.imports` in Node.
+
+| | bytes | exports | imports |
+|---|---|---|---|
+| before `wb_water_run` (`3afa5f5`) | 118,964 | 15 | 0 |
+| with it (`1004f4d`) | **220,452** | **16** | 0 |
+
+**+101,488 bytes, a factor of 1.853, from one export.** The export itself is small; what it
+costs is `water.rs` -- 3,352 lines of basin partitioning, rim scanning, union-find merging,
+classification and manifest assembly, every line of which dead-code elimination had been
+discarding, because nothing `#[no_mangle]` reached it.
+
+**Feature-gating it would be worse than the cost.** The entire value of this harness is that
+it compares **the artifact that actually ships**. Gate the export and the parity run proves
+bit-equality for a build nobody loads, which is a longer-winded form of the exact failure the
+harness exists to prevent: a comparison over nothing also reports zero divergent. 220 KB is
+small against a single imagery tile, and `wb_erosion_run` set the same precedent already. Cost
+if this is wrong: about a hundred kilobytes on a browser's first load, recoverable at any time
+by gating the export and accepting a weaker parity claim in exchange. That trade is available
+and has not been taken.
+
+The viewer does not call `wb_water_run` yet. That is the honest state: the browser pays for an
+export it does not use, so that the export it will one day use is the one that was tested.
+
+## `detail.rs`, revisited: relief amplitude, three multiplying causes, and what still does not look like a mountain
+
+The relief-amplitude slice. Same discipline as the section above: every number here was
+re-derived on this host at `1004f4d` by running `cargo run --release --bin relief_survey`
+while writing this, and nothing was copied from a report. Where surviving ledger prose
+disagrees with the tables, the tables are what is recorded.
+
+**Population, method and parameters, once, for the whole section.** Seed `20260904`, radius
+6,371,000 m, `generation::DEFAULT_PLATE_COUNT = 22` plates, `continentality::LAND_FRACTION =
+0.29`. Two site populations, both fixed against a **canonical** (`relief: None`) reference
+surface and reused unchanged at every configuration, so which sites count never moves as the
+swept parameters do:
+
+- **land**, 42 sites: a 9 x 12 lat/lon grid (20 deg x 30 deg), 108 candidates, kept where
+  `structural_m > 0`; 37 of them are "high ground" at `structural_m > 300` m.
+- **peaks**, 20 sites: a 35 x 72 candidate search at 5 deg spacing, ranked by `structural_m`,
+  top 20 kept. Their structural elevations run 1,690.7 m down to 913.5 m.
+
+**Relief** at a site is `max - min` over a 2 km transect: a `TangentFrame::at_latlon` centred
+there, sampled along local east from -1000 m to +1000 m at 50 m spacing, 41 points, each from
+`Surface::elevation_m(point, None)`. **Max gradient** is the largest `|delta elevation| / 50 m`
+between adjacent samples anywhere in the population. **Detail share** is
+`|elevation_m - structural_m| / elevation_m` at a site's own point.
+
+**The governing group is the Hurst exponent**, `H = ln(1 / persistence) / ln(lacunarity)` with
+`lacunarity = 2.0`, the octave schedule's own wavelength ratio. The swept fields do not act
+independently and quoting `octave_persistence` alone would name a parameter rather than the
+thing it governs: 0.50 -> **H = 1.0000**, 0.65 -> **0.6215**, 0.71 -> **0.4941**, 0.75 ->
+**0.4150**.
+
+### The flatness had three causes, and they multiply
+
+Baseline, `canonical()` -- `mountain_m = 150`, `quieting_strength = +0.70`,
+`octave_persistence = 0.50`, H = 1.0:
+
+| population | relief median | p90 | **max** | max gradient | detail share median / max |
+|---|---|---|---|---|---|
+| land (42) | 3.42 m | 7.49 m | **14.11 m** | 1.194% | 3.62% / 10.72% |
+| peaks (20) | 4.02 m | 7.33 m | **10.32 m** | 1.128% | 1.15% / 4.05% |
+
+Four metres of median relief over a two-kilometre run, and *less* of it on the peaks than on
+ordinary land. Three separate things were producing that. Each is measured below by moving one
+field and holding the other two at canonical, reported on the peak population's relief maximum:
+
+1. **The amplitude was too small.** `mountain_m` 150 -> 600 (x4): peak relief max
+   **10.32 -> 39.90 m**, a factor of **3.87**. This is the only one of the three that is
+   simply a magnitude.
+2. **The quieting term was suppressing roughness exactly where the ground was interesting.**
+   `quieting_strength` +0.70 -> -0.70: peak relief max **10.32 -> 19.67 m**, a factor of
+   **1.91**. The term is `1 - quieting_strength * smooth(|tectonic_m| / quieting_scale_m)`, so
+   a positive strength makes ground *smoother* the larger its tectonic offset is. **On
+   ordinary land it is inert**: in the survey's land table at `mountain_m = 150`, every
+   quieting value from +0.70 to -0.70 gives relief median 3.42 m, max 14.11 m and max gradient
+   1.194%, identical to three decimals. A land-only sweep would have concluded the parameter
+   did nothing at all. The peak population is where it shows, because the term can only bite
+   where `tectonic_m` is large.
+3. **The spectrum was starved at the fine end.** `octave_persistence` 0.50 -> 0.65: peak
+   relief max **10.32 -> 16.51 m**, a factor of **1.60**. The schedule is seven octaves,
+   20,000 m down to 312.5 m, normalised so total amplitude is whatever the caller asked for.
+   Computed from `Detail::plan`'s own `share *= octave_persistence` and that normalisation:
+
+   | persistence | 20 km | 10 km | 5 km | 2.5 km | 1250 m | 625 m | **312.5 m** |
+   |---|---|---|---|---|---|---|---|
+   | 0.50 (H = 1.0000) | 50.39% | 25.20% | 12.60% | 6.30% | 3.15% | 1.575% | **0.787%** |
+   | 0.65 (H = 0.6215) | 36.80% | 23.92% | 15.55% | 10.11% | 6.57% | 4.27% | **2.776%** |
+   | 0.75 (H = 0.4150) | 28.85% | 21.64% | 16.23% | 12.17% | 9.13% | 6.85% | **5.135%** |
+
+   The finest octave -- the only one a walking observer resolves -- carried **under one
+   percent** of the amplitude. **This is also where an a priori argument was wrong and the
+   measurement corrected it.** Slope is scale-invariant at H = 1, so persistence "should" have
+   redistributed relief across scales without moving the worst gradient much. It moves it a
+   lot: land max gradient 1.194% -> 5.196% across persistence 0.50 -> 0.75. The argument
+   assumed an *infinite* self-similar series and this schedule is a *finite* seven octaves, so
+   changing persistence directly reweights the finest band -- 0.787% to 5.135% -- and that
+   shows up as gradient. Persistence is not the scale-neutral knob it looks like.
+
+**And they multiply.** 3.87 x 1.91 x 1.60 = **11.79**. All three together, which is what
+`hills()` is, takes the peak relief max **10.32 -> 124.25 m**: a factor of **12.04**. The
+three causes compose to within 2% of the product of their separate effects, which is why the
+flatness could not be fixed by turning up any one of them -- at x4 amplitude alone the ground
+is still under 40 m of relief over 2 km.
+
+### Why the default cannot move
+
+`worldbuilder/terrain/detail.py` carries the same constants this module does --
+`CANONICAL_WAVELENGTH_M = 250.0`, `ABYSSAL_M = 55.0`, `INTERIOR_M = 80.0`, `MOUNTAIN_M =
+150.0` -- and **that module is the conformance oracle**. `tests/test_conformance.py` compares
+this crate against it, so a changed default is not a change to the engine, it is a change to
+the standard the engine is measured against.
+
+Checked here rather than repeated from anywhere: `pytest tests/` with
+`WORLDBUILDER_REQUIRE_ENGINE=1`, cross-checked through `.github/scripts/assert_counts.py
+pytest` against a `--collect-only -q` collection, reports **398 passed, 157 of them in
+`tests/test_conformance.py`** -- `count OK`, exit 0, `398 tests collected` from the collection
+half. Unchanged by everything in this section, which is the entire safety claim and the only
+proof of it that matters.
+
+So the relief work is **opt-in and nothing else**. `ReliefParams` is carried as an `Option` on
+`Surface::new`, following `features: Option<FeatureInput>`, and an explicit `None` means
+canonical -- not `Default::default()`, because this codebase rejects defaults nobody chose.
+`ReliefParams::canonical()` is byte-for-byte what it was, and `None` and
+`Some(ReliefParams::canonical())` produce bit-identical worlds. Moving the default is an
+owner's decision about the oracle, not an implementer's commit.
+
+### `hills()`, and the ground each of its three fields stands on
+
+    ReliefParams::hills() = ReliefParams {
+        mountain_m: MOUNTAIN_M * 4.0,   // 600.0
+        quieting_strength: -0.7,
+        octave_persistence: 0.65,
+        ..ReliefParams::canonical()
+    }
+
+A preset with no argument is taste. Each field has one:
+
+- **`octave_persistence: 0.65`** is chosen for **H = 0.6215**, the only swept value that lands
+  inside real terrain's measured Hurst band of roughly **0.60-0.71** (Gagnon, Lovejoy &
+  Schertzer, over four DEMs). 0.50 gives H = 1.0000 and 0.71 / 0.75 give 0.4941 / 0.4150, all
+  three outside it. Note what this ground is *not*: it is not "the value that produced the most
+  relief". 0.75 produces considerably more -- see the corner below -- and is rejected.
+- **`quieting_strength: -0.7`** is the exact negation of canonical's `+0.7`, not a magnitude
+  fished out of the sweep's extreme corner. Two grounds. First, the measurement in cause 2
+  above: inverting the sign roughly doubles relief where tectonics are already large and does
+  nothing whatever on generic land, so the flip *chooses where* rather than manufacturing
+  relief everywhere. Second, it mirrors a shipped mechanism instead of inventing one --
+  Outerra's developer describes amplitude that *rises* with slope ("the amplitude of noise is
+  modulated by slope -- flat areas have less noise, while the steeper get more") and with
+  positive curvature, to fix flat mountaintops. **It is an APPROXIMATION of that mechanism and
+  is flagged as one in the source.** This engine keys the term on **tectonic magnitude**;
+  Outerra keys it on **slope and curvature**. Those correlate -- a plate boundary is where the
+  steep ground tends to be -- but they are not the same input, and they disagree in real
+  places: an old, eroded, tectonically quiet range is steep with small `tectonic_m`; a young
+  margin with large `tectonic_m` and little uplift yet is the reverse. Matching Outerra
+  properly is a mechanism change and is deliberately not attempted here.
+- **`mountain_m: MOUNTAIN_M * 4.0`** is chosen against **Hammond's landform classification**,
+  in which hills carry 80-160 m of local relief over a 2 km run and low mountains start at
+  300 m. With the other two fields as above, x4 gives the peak population a relief max of
+  **124.25 m** -- inside the hills band, with headroom below its 160 m ceiling and nowhere near
+  the 300 m mountain floor. x3 (450.0) also lands in the band, at **93.37 m**, but fills less
+  of it. x4 was chosen for best filling a published target band, not for being the largest
+  multiplier swept.
+
+The whole `hills()` row, from my run, both populations:
+
+| population | relief median | p90 | max | max gradient | detail share median / max |
+|---|---|---|---|---|---|
+| land (42) | 13.75 m | 25.74 m | 57.98 m | 9.298% | 5.83% / 19.04% |
+| peaks (20) | 43.47 m | 88.50 m | **124.25 m** | 20.241% | 8.13% / 30.39% |
+
+The preset crosses the WASM boundary **as fields, not as a name**: `wb_relief_preset` hands
+back the numbers and `wb_world_new_relief` takes a validated block. The panel must *show* what
+it is building with, and a build-by-name export cannot do that. A test strips comments from
+`controls.js` and `main.js` and asserts that 600, 0.65 and -0.7 appear in neither, so the
+second copy of the preset a panel would otherwise grow is a failing test rather than a
+remembered rule.
+
+### What still does not look like a mountain
+
+This is the most important paragraph in this section, and the slice does **not** end with the
+problem solved.
+
+**The roughness spectrum has a measured ceiling, and it is nowhere near a mountain.** The most
+extreme corner of the 80-configuration sweep -- `mountain_m` x4, `quieting_strength = -0.7`,
+`octave_persistence = 0.75` -- tops out at **161.34 m of relief on the peak population and
+82.10 m on land**. Hammond's low mountains begin at **300 m** over the same 2 km run. The
+corner is not close, and there is no corner further out: the sweep was built to bracket the
+usable range, and the ceiling is inside it. (The relief slice's own ledger prose has those two
+figures the opposite way round, "161 m on land and 120 m on peaks"; the tables say otherwise,
+and the tables are what a re-run reproduces. The *conclusion* is unchanged, and slightly
+stronger for peaks.)
+
+Three things make that ceiling real rather than an artefact of where the sweep stopped:
+
+1. **The corner is already outside the physical band.** It reaches 161 m only at persistence
+   0.75, H = 0.4150, well below real terrain's measured 0.60-0.71 -- and it buys the relief by
+   making the finest octave 5.1% of the amplitude instead of 2.8%, at a max gradient of
+   **36.62%**. That is not a landform, it is a rougher texture. Inside the Hurst band, at
+   `hills()`, the ceiling is 124.25 m.
+2. **Mountain height is structural, and the detail term is a rounding error against it.** At
+   `hills()` the detail term is **8.13% of elevation at the median peak site and 30.39% at its
+   maximum**; the other ninety-odd percent is `structural_m`, which is tectonics and does not
+   depend on any `ReliefParams` field at all. The peak population's own structural elevations
+   run **1,690.7 m down to 913.5 m** -- a kilometre and a half of relief the roughness spectrum
+   neither produced nor can move. **A mountain is not reachable from these parameters at any
+   setting, because these parameters are not what makes mountains.**
+3. **The slopes are not mountain slopes either.** `hills()`'s worst gradient anywhere in the
+   peak population is 20.241%, about **11.5 degrees**. The thermal-erosion correction in
+   `erosion.rs` caps slopes at 30 degrees and never engages here. Nothing in this parameter
+   space produces ground the erosion model would consider steep.
+
+So: **`hills()` is the best hills this roughness spectrum can produce, and it is not a
+mountain-height feature.** It does not close the owner's mountain-height requirement and it
+must not be read as progress towards it -- the two live in different terms of the same sum.
+Mountain height, and mountain *count*, are tectonic-side work: `tectonics.rs`, `generation.rs`
+and the plate model, a separate slice with its own oracle problem. The measurement above is
+what promotes that from an assumption to a finding. What this slice established is the
+negative result that makes that slice necessary, which is worth more than a knob that looked
+like it might have been enough.
+
+Also open, and named here so it is not rediscovered: `quieting_strength` remains keyed on
+tectonic magnitude rather than on slope and curvature, so the Outerra mirroring stays an
+approximation rather than a match; and the amplitude ceiling has only been measured against
+`mountain_m` up to x4 (600 m). Larger values were not swept, and there is no evidence here
+about whether they degrade into noise before they reach a landform band.
+
+## `tectonics.rs`, revisited: a range is an envelope times a structure field, and a margin is a great circle
+
+The mountains slice, six tasks. Same discipline as the two sections above: **every number here
+was re-derived on this host while writing it**, from current source or from a run performed for
+this write-up -- `cargo run --release --bin mountain_probe` and `cargo run --release --bin
+mountain_survey`, whose full output is kept beside the slice's reports as
+`mountain-survey-task6.txt`. Nothing is copied from a task report, and where a report or the
+ledger disagrees with a run, **the run is what is recorded and the disagreement is named**.
+
+**Population, method and host, once, for the whole section.** The owner's own world, from their
+screenshot: seed **123925603**, radius **4,500,000 m**, **28** plates, land fraction **0.16**.
+Peak over a 0.5-degree global grid (720 x 359 = 258,480 sites) refined at 0.05 degrees in a
+2-degree box around the coarse maximum. **Grade** is the steepest single 2 km step on the
+*flank*, twelve bearings walked out from the peak to 250 km -- never across the summit, which
+is the one place a mountain is flat. **Summits** are local maxima above 1,000 m with at least
+300 m of prominence (the external P300 rule) in a +/-3-degree box at 0.02 degrees. **Crest
+sinuosity** is the crest's path length over the chord between its endpoints, at a 5 km
+along-step and a 2 km across-step; a path length on a rough line grows as the step shrinks, so
+these figures are comparable only to each other. Native release build, this developer machine
+(Windows 11 10.0.26200, x86_64-pc-windows-msvc, cargo 1.98.0).
+
+### The measurement that started it, and it is not about roughness
+
+The owner asked twice, and the second time was after the relief slice had finished: *"still no
+mountains."* The reason is one number.
+
+**The peak on their world is 1,454.0 m, of which 1,437.8 m is `structural_m`. 16.2 m is detail:
+the peak is 98.9% tectonic.** No relief parameter could ever have moved it -- which is what the
+relief slice's own closing section concluded from the other direction, and what the two
+`NOT_WIRED` entries on the viewer's panel had been saying in words.
+
+And the ramp was a constant, not an accident. `CONTINENT_COLLISION_M = 1500.0` over
+`CONTINENT_COLLISION_WIDTH_M = 400_000.0` is a **0.375% grade** at the profile's own scale, and
+**1.787%** measured as a steepest 2 km step on that world's flank. "Wheelchair ramps", months
+of work earlier, was an accurate reading of two constants.
+
+### The finding that reframed the slice: WE ALREADY HAD A REAL OROGEN'S GRADE
+
+Davis, Suppe & Dahlen (1983), *JGR* 88(B2), Table 1, read in the source text: **Himalaya
+alpha = 4.0 +- 0.5 degrees** -- a **7.0% surface slope**. And the probe, driven to 6,000 m over
+100 km, measures **7.030%**:
+
+| collision x width | peak | structural | grade |
+| --- | --- | --- | --- |
+| **1,500 m / 400 km -- canonical** | 1,454.0 m | 1,437.8 m | **1.787%** |
+| 1,500 m / 200 km | 1,423.3 m | 1,408.2 m | 1.809% |
+| 1,500 m / 100 km | 1,377.6 m | 1,366.8 m | 2.575% |
+| 3,000 m / 400 km | 2,500.0 m | 2,485.1 m | 2.677% |
+| 3,000 m / 150 km | 2,441.1 m | 2,430.6 m | 2.852% |
+| 6,000 m / 150 km | 4,551.5 m | 4,547.7 m | 4.936% |
+| **6,000 m / 100 km** | 4,540.5 m | 4,542.9 m | **7.030%** |
+
+**Amplitude alone buys height and almost no steepness** -- 3,000 m at the canonical 400 km is
+2.677%, barely above canonical -- **and amplitude with width buys both.** That much was the
+plan's hypothesis and it survived.
+
+**What did not survive is the assumption underneath it.** 7.030% is the Himalayan surface slope
+on the nose, and the thing it produced still did not read as a range: it is one smooth swell,
+4.5 km high, with **two** summits on it. **Steepness was never the missing quantity.** A range
+is a broad envelope saying *where*, times a structure field supplying the *shape*, and this
+generator had only the first. The summit count is the shortest statement of it:
+
+**canonical 0 summits -> the 6,000 m / 100 km blade 2 -> the shipped preset 10.**
+
+### The three techniques that shipped, and the one that was rejected
+
+Every row below sits on the 6,000 m / 100 km envelope, so each table answers "what does this add
+to what we already ship". `canonical()` is untouched throughout and the `None` path is
+bit-identical to it; Python conformance is 398/398 with `tests/test_conformance.py` = 157 on
+both sides of the whole slice.
+
+**1. The doubly-vergent asymmetric wedge -- `collision_asymmetry`, canonical 1.0. SHIPPED.**
+
+Naylor & Sinclair (2008), read in the source text: a **115 km pro-wedge against a 69 km
+retro-wedge** at `H_max = 3 km`, ratio **1.67**, with surface angles `alpha_pro = 1.5` and
+`alpha_retro = 2.5` degrees. A real orogen is two wedges of different taper meeting at a crest,
+not one symmetric bump, and because the widths are the exact inverse of the angles the profile
+needs **one** parameter rather than two.
+
+| asymmetry | peak | grade | summits | measured flank ratio |
+| --- | --- | --- | --- | --- |
+| 1.00 (canonical) | 4,540.5 m | 7.030% | **2** | 1.08 |
+| 1.25 | 4,536.1 | 7.910% | 5 | 1.30 |
+| **1.67 (published)** | 4,532.2 | 9.898% | 7 | **1.50** |
+| **2.00** | 4,531.1 | 11.363% | 10 | **1.64** |
+| 2.50 | 4,529.5 | 13.925% | 12 | 2.09 |
+| 3.00 | 4,527.5 | 16.538% | 16 | 2.56 |
+
+Monotone in every column over six settings, and it costs 8 m of peak across the whole sweep and
+no reach at all, because only the overriding flank is divided -- so no setting of this field can
+push a profile past `MAX_TECTONIC_RANGE_M`. **On the profile alone the ratio is exactly the
+published 1.67**, proved by bisecting the shipped `asymmetric_bump` for its half-height crossing
+rather than by rearranging algebra. **On a planet the same setting reads 1.50**, and 2.00 is
+what reads 1.64. A profile is not a planet, and the preset takes the measured column.
+
+**2. Stacked sutures -- `suture_count` and `suture_spread_m`. SHIPPED, with a measured hazard.**
+
+Over 70% of the North American Cordillera is accreted terranes; the Himalaya carries at least
+two sutures of different ages. A range is not one crest.
+
+| count x spread | peak | across-range crests | summits | reach | vs the 420 km gate |
+| --- | --- | --- | --- | --- | --- |
+| 1 (canonical) | 4,540.5 m | **1** | 2 | 100 km | inside |
+| 2 x 60 km | 5,238.7 | 1 | 0 | 181 km | inside |
+| **2 x 100 km** | **4,540.5** | **2** | 2 | 235 km | inside |
+| **2 x 150 km** | **4,540.5** | **2** | 2 | 302.5 km | inside |
+| 3 x 100 km | 4,509.0 | **2** | 1 | 370 km | inside |
+| 4 x 60 km | **7,457.6** | 1 | 1 | 343 km | inside |
+| 4 x 150 km | 5,137.1 | 1 | 1 | **707.5 km** | **past** |
+
+**Two sutures 100-150 km apart doubles the across-range crest count with the peak unmoved.**
+Both sides of that band are measured failures. Tight spreads *inflate* the peak, because
+overlapping bumps add and the sum is deliberately un-normalised: `4 x 60 km` reads **7,457.6 m**
+against the envelope's 4,540.5, a 64% overshoot that would make the height slider mean something
+different at every count. Wide ones drive the profile past the range gate, where it is
+**truncated rather than faded**: `4 x 150 km` reaches 707.5 km against a 420 km gate and measures
+**41.345% of grade and 827.2 m of relief over 2 km**. `collision_reach_m()` exists for that call
+site, and is tested against where the profile actually stops rather than against the formula that
+produced it.
+
+**3. Ridged multifractal x segmentation -- `structure_depth` and `structure_wavelength_m`.
+SHIPPED, and the biggest single win.**
+
+| depth x wavelength | peak | grade | summits | crest sinuosity |
+| --- | --- | --- | --- | --- |
+| 0.0 (canonical, inert) | 4,540.5 m | 7.030% | 2 | 1.0261 |
+| 0.3 x 40 km | 4,106.4 | 8.638% | 4 | 1.3940 |
+| 0.5 x 40 km | 3,817.1 | 12.706% | 7 | 1.6169 |
+| 0.5 x 80 km | 3,644.6 | 7.052% | 7 | 1.3805 |
+| **0.7 x 40 km** | 3,527.7 | **17.783%** | **12** | 1.5324 |
+| **0.7 x 80 km** | 3,323.8 | 8.420% | 6 | 1.6481 |
+| 0.9 x 40 km | 3,238.3 | 22.859% | **15** | 2.0023 |
+| 0.7 x 250 km | 2,955.8 | 4.740% | 1 | 1.1011 |
+| 0.9 x 250 km | 2,519.4 | 4.419% | 1 | 1.1644 |
+
+**Wavelength decides whether the knob works at all: 40-80 km bites, 120-250 km does nothing**
+(summit counts fall back to 0-4 at every depth -- a control that is switched on and visibly
+idle). And the cost is real and not independent: `structure_at` returns a multiplier of at most
+1, so **depth can only ever lower the peak** -- 4,540.5 m to 3,323.8 m at depth 0.7, a loss of
+22%. `RIDGE_FEEDBACK = 2.0` was swept on our own field rather than transcribed: 40,000 samples
+of a 200x200 lattice, crest fraction 0.1692 -> 0.4331 from feedback 0.5 to 2.0 and only 0.4929
+by 4.0, with sharpness flat from 2.0 up. **2.0 is the knee.**
+
+**4. The crest warp -- `margin_warp_m` and `margin_warp_wavelength_m`. REJECTED, DELETED, AND
+THEN REVIVED ONE TASK LATER BECAUSE THE REJECTION WAS MEASURED WITH THE WRONG INSTRUMENT.**
+That is the most valuable thing in this section, and it has its own headings below.
+
+### The straight line, and why it was geometry rather than tuning
+
+With the structure field on, the owner looked at a fresh world and said: *"how do we make them
+more random? they look like they were drawn with a straight line tool."*
+
+**They are drawn with a straight line tool, and the line is in `plates.rs`.** `margin_at`
+computes a margin's distance as `asin(|point . bisector_normal|) * radius_m`, and a bisector
+normal is the normal of a plane **through the origin** -- so the set of points at zero distance
+is that plane's intersection with the sphere, which is a **great circle**. Every margin in this
+engine is a perfect great-circle arc, and every belt built on one is dead straight by
+construction. No amount of amplitude, width, asymmetry, suture stacking or ridge noise can bend
+it, because none of them touches the distance field: they all decorate a profile evaluated
+*across* a line that is exactly straight.
+
+The fix moves the belt off the line. `margin_warp_m_at` samples an fbm field at a point on the
+margin's **own** great circle -- `along = normalise(p - (p . n) n)`, constant across the belt and
+varying only along it -- and subtracts the result from the across-margin distance the collision
+profile is asked about. One expression, one belt, translated sideways. Three octaves at gain 0.5
+and lacunarity 2.0, carrying 4/7, 2/7 and 1/7 of the amplitude.
+
+**Crest AND envelope sinuosity, before and after, on the bare 6,000 m / 100 km envelope** -- a
+great circle with nothing else happening on it. Every row is anchored on the *un-warped*
+configuration's peak and axis, so before and after describe the same ground:
+
+| | elevation at the anchor | grade | **crest sin** | **max dev (of belt)** | **envelope sin** |
+| --- | --- | --- | --- | --- | --- |
+| **no warp -- calibration** | 4,540.5 m | 7.030% | **1.0261** | **3.6 km (0.010)** | **1.0172 / 1.0139** |
+| + 20 km | 4,482.0 | 7.031% | 1.0293 | 5.2 (0.015) | 1.0163 / 1.0128 |
+| + 40 km | 4,362.7 | 6.875% | 1.0243 | 6.8 (0.020) | 1.0175 / 1.0130 |
+| **+ 80 km (shipped)** | 3,971.9 | 6.318% | **1.0470** | **15.5 (0.044)** | **1.0250 / 1.0223** |
+| + 120 km | 3,428.1 | 5.852% | **1.0648** | **34.1 (0.097)** | **1.0395 / 1.0420** |
+
+Three things this table says that an argument could not:
+
+- **The belt moved, not only the crest inside it.** Crest 1.0261 -> 1.0648 and envelope
+  1.0172/1.0139 -> 1.0395/1.0420: they rise together and by comparable fractions. The envelope
+  did not stay at 1.000 while the crest wandered.
+- **The elevation at a fixed anchor falls from 4,540.5 m to 3,428.1 m.** That is the belt leaving
+  the ground it used to stand on -- a translation, not a roughening.
+- **The grade goes DOWN, not up.** 7.030% -> 5.852%. The warp moves a belt; it does not steepen
+  one.
+
+**A bend longer than the belt is a tilt.** At an 80 km amplitude the crest sinuosity is 1.0470 at
+a 300 km wavelength, 1.0337 at 600 km and 1.0312 at 900 km on a 350 km belt: the endpoint chord
+absorbs the displacement. That is the same dead band `structure_wavelength_m` has above 120 km,
+and it is why the wavelength ceiling on the WASM channel is documented as a domain statement
+rather than as a useful setting.
+
+### The preset, and what it actually delivers
+
+`TectonicParams::ranges()`, read from source:
+
+| field | value | the ground for it |
+| --- | --- | --- |
+| `continent_collision_m` | 6,000 m | the top of the calibrated height travel |
+| `continent_collision_width_m` | 100 km | with the amplitude, the 7.030% pair -- the Himalayan surface slope, measured |
+| `collision_asymmetry` | 2.0 | Naylor & Sinclair's 1.67 **from the measured column**: 1.67 reads 1.50 on the ground, 2.00 reads 1.64 |
+| `suture_count` | 2 | the sutures table's one useful setting: crests 1 -> 2 with the peak unmoved |
+| `suture_spread_m` | 100 km | the same row; 235 km of reach, the largest margin under the 420 km gate in the useful band |
+| `structure_depth` | 0.7 | the biggest single effect; 0.9 buys three more summits for another 8% of the peak |
+| `structure_wavelength_m` | 80 km | **the one place the preset does not take the biggest number available**: 40 km measures 17.783% of grade, which no published surface slope supports, and 120-250 km does nothing at any depth |
+| `margin_warp_m` | 80 km | 0.124 of belt length against 0.204 at 120 km, for 9.293% of grade against 10.711% and 315 km of reach against 355 |
+| `margin_warp_wavelength_m` | 300 km | roughly the belt's own length: an orocline-scale bend plus two scales of kink |
+
+**Requested 6,000 m. DELIVERED 3,034.6 m**, at a 9.293% grade, with **10 summits and 2
+across-range crests**, a crest sinuosity of **1.3204** (44.6 km of lateral deviation, 0.124 of
+its belt) and a reach of **315 km** of the 420 km gate. That gap matters because the owner reads
+*6,000 m* on a panel slider and gets three kilometres of mountain: `structure_depth` costs 22%
+and the warp costs a further 9%, and both are multiplicative on the amplitude the slider names.
+The **delivered** peak is what has to stay inside the calibrated 1,500-6,000 m band, and it does.
+
+**A ledger figure that disagrees with the run, named rather than carried forward.** The slice
+ledger and three task briefs quote the preset as delivering **3,323.8 m**. That was true before
+the warp shipped and is not true now: 3,323.8 m is `ranges()` **with the warp switched off**,
+which this survey still prints as its own row, and the shipped preset delivers **3,034.6 m**.
+Every "preset with ..." row in the older tables carries the same offset, because they were
+measured on a preset that had no warp in it.
+
+**Three of the preset's columns did not compose, and that is why it is measured as a preset.**
+The techniques were each measured alone on the steep envelope; stacked, the flank ratio reads
+1.38 where the asymmetry sweep read 1.64 at the same setting, and the grade reads 9.293% where
+the 80 km wavelength row read 8.420%. What the sutures still buy is measured rather than assumed:
+dropping to one suture takes the summit count **10 -> 6**. A preset composed from three tables on
+paper would have been three columns wrong.
+
+### THE THINGS THIS SLICE GOT WRONG. THEY ARE WORTH MORE THAN WHAT IT GOT RIGHT
+
+**1. A technique was rejected on four metrics that could not see it.** The crest warp was built,
+swept, measured displacing the crest **49.2 -> 78.8 km** de-trended, and **deleted** -- because
+it moved no summit, no across-range crest and no flank ratio, and another technique produced a
+similar displacement as a side effect. Every one of those four metrics measures structure
+**across** a range. Straightness is a property **along** one, and nothing in the set looked
+along. One task later the owner reported the exact defect the deleted technique existed to fix,
+and it was rebuilt and shipped. **The gap was in the specification, not in the implementation**:
+the implementer noticed its probes were blind twice over and added two measurements before ruling
+on anything, and still ruled correctly against a brief whose metric set had a hole in it.
+
+**2. A sinuosity metric scored a perfect great circle at 2.13 before it was rebuilt.** Its first
+version re-found the crest independently at every station, as the highest sample in a +/-200 km
+scan, so on a preset world the global maximum jumped tens of kilometres between adjacent stations
+and a path length added every jump; and it walked off the end of the belt, where three stations
+turned 1.03 into 1.34. A measure that calls a straight line bendy would have validated anything.
+Rebuilt to **follow** the crest (each station within 40 km of the previous) and to **stop where
+the belt does**, it reads **1.0261** on the bare blade.
+
+**And it is still not trustworthy everywhere, which this write-up measured and the task reports
+did not.** On the **canonical** world -- a smooth symmetric swell on a great circle, the
+straightest thing this engine can draw -- the shipped metric reads **1.5250, with 66.4 km of
+deviation over a 310 km belt.** The canonical crest barely clears the 1,000 m line the walk stops
+at, so the tracker wanders on almost-flat ground. **The metric is calibrated on a belt and is
+only meaningful where there is one**: every sinuosity figure in this section is on the 6,000 m
+envelope or on the preset for that reason, and a canonical-world sinuosity means nothing.
+
+**3. The warp's first signed-side derivation cut a 913 m cliff down every bisector.** The side was
+taken from the ordered plate pair, which is stable across the margin it belongs to and **not**
+across a third plate's: crossing from plate A into plate C replaces the whole `(A, *)` margin
+set, and the index comparison can come out the other way and flip the displacement from `+w` to
+`-w` in one step. Measured at **913.52 m over a single 100 m step**, against 11.58 m for the same
+configuration unwarped. **Every other column looked plausible and all the sinuosity numbers went
+up.** The first hypothesis -- shear -- was wrong, and an octave sweep refuted it in one run. The
+fix takes the sign from the axis `from_margin` already has, so the profile is `P(x - w)` on both
+sides of one margin. `seam_probe` is now a permanent survey row, because **nothing else in this
+survey looks for a discontinuity**; today it reads 9.79 m for the shipped preset against 8.25 m
+with the warp off, and 7.23 m for the bare steep envelope.
+
+**4. `gates.yml` was found already wrong at a commit before this slice touched it**, by 2 on
+every row, because nothing had re-derived the pins since the commit that moved them. The count
+gate was red and green at the same time. Re-derive, never trust -- and every task since has
+re-derived the *baseline* before its first edit as well as the result after its last.
+
+**5. An agent died mid-task without reporting**, leaving an uncommitted, non-compiling tree. It
+was found by reconciling live children against the roster rather than by waiting for a
+notification that was never coming.
+
+**6. `cargo build ... | tail` reported exit 0 on a build with four errors**, because the exit
+status belonged to `tail`. This project's rule is "verify by exit status, never by grepping test
+output", and **a pipe is how that rule gets violated while appearing to be followed.**
+
+**7. A bit-identity test that could not fail was believed for a whole task.** `Tectonics::new`
+resolves `None` through `unwrap_or_else(TectonicParams::canonical)`, so the `None` arm and the
+`Some(canonical())` arm call the same function and agree no matter what the uplift path ignores;
+mutating `canonical()` cannot separate them. What proves the fields are read is a different test
+entirely -- one-ULP perturbation fixtures sweeping `from_margin` out to the range gate -- and the
+same fixtures prove that **two of the nine fields are not read at all.** See the open items.
+
+**8. The tectonic channel shipped to the owner's panel with no native-against-WASM parity
+coverage, and three tasks in a row said so without closing it.** A preset the owner presses
+crossed a boundary a 71,596-value corpus did not watch, for three commits. It is closed now --
+see the parity section above, and `parity/README.md` -- and the shape of the failure is worth
+more than the fix: **each of the three reports named the gap accurately, sized it correctly, and
+declined it for a good local reason** (the corpus size is a pinned count gate, and moving a gate
+is not a task's business unless the task owns the gate). Nobody was wrong; the work simply had no
+owner until a task was written whose subject it was.
+
+### What still does not look right, and what is still open
+
+- **`island_arc_m` and `island_arc_width_m` have no evidence the uplift path reads them.** The
+  one-ULP fixtures prove the other seven fields move the answer and **assert the arc pair's
+  blindness explicitly** rather than dropping the case: the arc term is multiplied by an oceanic
+  weight that no synthetic fixture, and no run of the survey, has produced -- the peak the survey
+  tracks is on a continental collision margin every time. **No slider binds to either**, and the
+  panel declares the omission, which is why this is a recorded gap and not a defect.
+- **The warp cannot be turned by the owner.** It is on the preset and in the query string and has
+  no widget, because it is jointly constrained with the steepness slider through
+  `collision_reach_m()`: at the panel's own widest steepness (canonical's 400 km) the 420 km gate
+  leaves 20 km of room, so a slider anchored there would offer one live position and then refuse
+  everything after it. A travel that depends on another slider's position is a real feature and
+  its own task.
+- **The delivered grade, 9.293%, is above the 3-8% band the panel's own note quotes**, and the
+  note still quotes it. They are different quantities -- a wedge's *mean surface taper* against
+  the steepest single 2 km step on a flank the structure field has deliberately carved into ridge
+  and valley -- and the 2 km step on a carved flank must be the larger. Stated rather than tuned
+  away; the alternative at a 40 km wavelength reads 12.233% on the shipped preset.
+- **The preset's envelope sinuosity is not a usable number** and no claim rests on it. It reads
+  **3.2724 / 1.1213** on the shipped preset and **1.9064 / 1.0773** with the warp off -- and a
+  belt straight by construction cannot have a 1.9 envelope, so on a structure-carved flank the
+  half-height contour is tracking the structure field rather than the belt's edge. The belt-moved
+  claim rests on the bare-envelope rows, where the base reads 1.0172.
+- **A snowline clamp is a real coupling and a later slice.** Egholm et al. (2009), *Nature* 460,
+  read in the source text: *"most summit elevations are confined to altitudes <1,500 m above the
+  local snowline"*, and range height *"mainly reflect[s] variations in local climate rather than
+  tectonic forces"*. Convergence sets width and uplift rate; **climate sets height.** Nothing here
+  implements it, and nothing here should be read as having tried.
+- **`MARGIN_WARP_OCTAVES`' doc comment names the Himalayan arc and the Bolivian orocline as the
+  long octave's motivation.** Neither is in the verified column of this project's literature note
+  -- both came back only as search paraphrases -- and **no number in this section was tuned to
+  either.** The octave schedule was chosen by sweeping 1, 2 and 3 octaves while diagnosing the
+  seam cliff. Read that comment as an intuition pump, not as a citation.
+- **`tectonics::continental` is dead code in a `--features wasm` build**, and the compiler says so
+  on every build of this crate. Pre-existing, untouched here, named so it is not rediscovered as
+  new.
+
+## `continentality.rs`, revisited: a coast term with its own amplitude, a fourth door, and three NaNs that looked like worlds
+
+The photoreal slice's whole purpose was viewer work -- the owner's complaint was that the picture
+*"looks like a kindergarden toy"* beside a reference render, and his framing of the job was *"I
+think our engine is amazing, now we need a good paint job."* Two things nevertheless landed in the
+engine, and the second of them was not on anybody's plan.
+
+**The first is coastline fractality.** The relief slice fixed the *height* field's spectrum and
+nobody had asked the same question of the *land/sea* field: ours are smooth because continentality
+is low-frequency, and a coastline is the highest-contrast edge in the whole image.
+
+**The second is a family of three NaNs that produced plausible worlds rather than errors**, found
+by the export sweep that the first one owed.
+
+### The brief was wrong in both directions, and that is the finding
+
+The plan's original Task 5 warned about one trap and missed another, and the miss was the
+dangerous one.
+
+- **The trap it warned about is solved by construction.** "Roughening the land/sea threshold will
+  change how much land there is." `Continentality::new` calibrates `shore` and `spread` as
+  quantiles of the same fBm **before the struct exists**, so land fraction is held whatever the
+  field's roughness. That warning was written about a problem this codebase fixed years of commits
+  ago.
+- **The risk it missed would have made the task invisible.** Its prescription was "add a fifth
+  octave". Adding an octave to a **gain-0.5 normalised sum gives the new term 3.23% of total
+  amplitude** -- a sub-pixel wobble, not a fjord. **The task could have passed every check the
+  brief named and produced no visible change**, which is the worst possible outcome for a task
+  whose entire purpose is visible. There is a second, quieter cost: `CALIBRATION_SAMPLES = 4000`
+  already gives only about 1.8 samples per finest-octave wavelength, and a fifth octave takes that
+  below one, degrading the land-fraction estimator from quasi-Monte-Carlo to plain Monte-Carlo.
+
+**What shipped instead is a separate term with its own amplitude, windowed by `|above_shore|`:**
+
+```
+above_shore(p) = at(p) - shore
+               + amplitude * spread * W(|at(p) - shore| / (window_spreads * spread))
+                 * fbm(p, ...)                                  [its own lattice salt]
+```
+
+Coast-localised roughening **by amplitude rather than by octave count**. It puts the detail where
+the eye looks, leaves plate interiors and abyssal plains untouched, and preserves land fraction to
+first order for free because the window is symmetric about the shore. **The term is added after
+calibration, never inside it**, so `shore()` and `spread()` -- both part of the conformance
+surface -- cannot move on any path and the Nyquist degradation never arises.
+
+`W` is the house clamped smoothstep written as three explicit branches: **no `min`, no `max`, no
+`.clamp`**, so a NaN falls to the final arm and closes the window, and that arm is asserted rather
+than described. `canonical()` sets `amplitude: 0.0` and `above_shore` branches on exactly that
+**before** touching the noise -- an early return rather than `+ 0.0`, deliberately, because
+`-0.0 + 0.0` is `+0.0` and an exactly-zero offset would flip the sign bit of a point sitting on
+the shore, so `Some(canonical())` would not be *bit*-identical to `None`.
+
+**One deviation from the `ReliefParams` / `TectonicParams` pattern, stated plainly.** Both of those
+widened the constructor they attach to. This one adds a delegating `Continentality::with_coast` /
+`Surface::with_coast` instead, because `Surface::new` has seventy call sites and a mechanical
+`, None` at ninety sites inside a commit about coastlines is diff nobody can review. The precedent
+is this crate's own C ABI, which ships `wb_world_new` / `_relief` / `_tectonic` as separate doors.
+Everything Ruling 1 requires is unchanged and asserted.
+
+### What the coast term delivers, and the control that makes it a measurement
+
+Re-derived for this section by `cargo run --release --bin coastline_survey` (about four minutes,
+single-threaded, this machine). Length is a Cauchy-Crofton boundary-edge sum on an equirectangular
+grid, quoted **only as a ratio** against the same grid at amplitude 0 so the estimator's raster
+bias divides out. Owner's world (seed 562423712, radius 4,500,000 m, 28 plates, land 0.16),
+predicate `above_shore > 0`:
+
+| ruler | 100 km | 50 km | 25 km | 12.5 km |
+|---|---|---|---|---|
+| **fractal / canonical** | 1.358 | 1.472 | **1.591** | **1.639** |
+| **smooth control / canonical** | 1.023 | 1.027 | 1.032 | 1.030 |
+| canonical length, km | 101,323 | 100,780 | 100,749 | 100,981 |
+
+**The ratio grows as the ruler halves on all three worlds surveyed. That is the fractal
+signature** -- and the control row is what makes it a discrimination rather than a sensitivity.
+The control moves the coast by the **same amplitude** at a frequency *coarser* than the base
+field's own finest octave: the same displacement, no added structure, and it sits flat at
+1.02-1.03 across four ruler lengths. The canonical column is flat across an eightfold change of
+ruler, which is the other half of the same statement: today's coastline is not fractal and the
+estimator says so.
+
+The land fraction is the control that would condemn the technique if it moved. Over a fixed
+200,000-point area-uniform Fibonacci spiral, `field_on - field_off` is **-0.017 pp** on the owner's
+world, +0.022 pp and +0.146 pp on two Earth-sized ones. The largest is a real second-order residual
+-- the window is symmetric about the shore but the *density* of points at a given `above_shore` is
+not -- and it is a quarter of the +-0.58 pp the 4,000-sample calibrator itself carries.
+
+The amplitude travel, same world, 25 km grid: visible from about **0.10** (below that the coast
+lengthens by under 3% and inlet heads are single digits -- the sub-pixel-wobble failure reproduced
+deliberately, so the floor is measured rather than assumed), and fragmenting above about **0.75**,
+where the small-island count runs away while the large one does not. `fractal()` takes **0.35**:
+1.591x at 25 km and still rising at 12.5 km, **inlet heads 2 -> 175**, four new landmasses over
+100,000 km2, and no sign of speckle.
+
+**A topology change the owner has to decide about.** Above a threshold amplitude a strait opens
+through this world's supercontinent and the largest landmass's share falls from 87.8% to about
+48%. That is not fragmentation -- the count of islands over 100,000 km2 rises 5 -> 9 at the same
+step, so what happened is that large pieces separated -- but it is a visible difference, and it is
+photographed at five amplitudes rather than explained afterwards. **The shipped preset is above
+it, and the slider reaches every amplitude in the table.**
+
+**And the threshold is a property of the ruler.** The 25 km survey puts the drop between 0.10 and
+0.15; a 0.5-degree (about 39 km) component pass puts it between 0.15 and 0.20, at the same neck. A
+39 km grid bridges an isthmus a 25 km grid has already cut. Neither is wrong. **Any landmass-count
+claim in this project must name its grid spacing**, and these two reports disagree by exactly one
+amplitude step for that reason.
+
+### The fourth door, and the sweep it owed
+
+`wb_world_new_coast`, `wb_coast_preset` and `wb_coast_check` -- the shape `wb_world_new_relief` and
+`wb_world_new_tectonic` already established: a flat f64 record in a documented order, a preset
+export so no host transcribes a number, a checker that answers *why* rather than only *that*, and
+a constructor that refuses a record entire rather than admitting it with one field adjusted.
+**Nothing clamps; every bound is a refusal, and every comparison is written so a NaN fails it.**
+
+The sweep is **two bases x six fields x about 57 values = 748 records**, 392 accepted and 356
+refused, both pinned exactly rather than left as a threshold. **Two bases, and the reason is
+sharper here than on the tectonic channel:** `canonical()` carries `amplitude = 0.0` and
+`above_shore` branches on exactly that before touching the noise, so around canonical four of the
+six fields -- including both halves of the loop bound and the frequency product -- would be swept
+with the code that reads them switched off.
+
+It found four things.
+
+1. **`octaves` is a per-sample loop bound and `value as u32` saturates.** `1e300` arrives as
+   `u32::MAX`; at a measured 1.6e-8 s per octave that is about **68 seconds for one elevation
+   sample** and roughly 80 hours for one 65x65 tile. Bounded at 16 in the contract, stated twice --
+   before the cast, and again for a caller who built the struct in Rust.
+2. **AN ABORT THAT NO PER-FIELD CEILING CAN SEE.** The finest band a record asks for is
+   `frequency * lacunarity^(octaves - 1)`. `frequency = 1e6`, `lacunarity = 16` and `octaves = 16`
+   are **each individually admissible** and together ask for about 1.15e24; `Noise::at` floors that
+   and casts to `i64`, the cast saturates, and the next line computes `ix + 1`, which overflows --
+   an abort across a nounwind `extern "C"`. **With the product check removed, the cross-product
+   test aborts and the one-field-at-a-time sweep stays green.** That is why it is a separate test
+   and not a comment. **Add cross products to every future export sweep.**
+3. **A NaN band whose edge moves with another field.** Above `gain = 1` the fBm amplitude overflows
+   to `+inf`, `loudest` with it, and `2*total/loudest` is `inf/inf`. At four octaves the NaN
+   appears near 1e103; at sixteen, near 1e21. A probe at one gain finds nothing that a probe at
+   another finds. **A band, not a cliff -- as every hazard this project has found has been.**
+4. **And the one that outgrew the channel: a NaN did not surface as a NaN.**
+
+### The silent abyss, and the two siblings behind it
+
+`Continentality::elevation_from_above` read `if above >= 0.0` and then `if depth < 1.0`. **A NaN is
+false for both**, so it fell through to `ABYSS_M`: every affected point silently became the
+deepest ocean on the planet **and every `is_finite` assertion in the crate stayed green**. A
+drowned planet that passes its own health checks is worse than a refusal and worse than a NaN.
+
+**The coastal term was not the only entrant and was not the shipped one.** Three reach that
+function, and two of them need no opt-in block at all: a non-finite `latitude_deg` or
+`longitude_deg` through the C ABI (which takes two bare `f64` and validates neither --
+`from_latlon` turns a NaN *or an infinity* into an all-NaN vector), a non-finite vector component
+through the Python bindings, and the coastal term. All three were measured returning about
+-4,600 m.
+
+The contract chosen is **propagate**, and the reasoning is worth keeping because two more sites
+inherited it:
+
+- **Refusing at the boundary cannot cover the reach.** The coastal entrant was already refused and
+  was the *least* reachable of the three; the other two arrive as bare scalars on exports whose
+  whole design is one `f64` in, one `f64` out.
+- **Loud-as-a-panic is unavailable.** `extern "C"` is nounwind here: a panic reached through
+  `wb_elevation_m` is an abort, and this project has found three aborts and a ~2,600-second hang
+  behind that boundary already. **Trading a wrong number for a dead process is not an improvement.**
+- **Propagation is the loud option this ABI already speaks**, and it is what makes the finiteness
+  assertions the crate already has actually load-bearing rather than only looking it.
+
+The guard is an explicit `if above.is_nan() { return f64::NAN; }` placed **first**. It is
+`plates.rs::margin_at`'s house form used the other way round, and the source says why: there a NaN
+is floored on purpose because the value is a **weight**, and a floored weight is visible in the
+product it enters; here the value is a **metre**, and a floored metre is indistinguishable from a
+real one.
+
+**Two siblings were reported by that work and closed next.**
+
+- **A NaN `land_fraction` made the world entirely land.** `calibrate` picked sea level with
+  `values[((1.0 - land_fraction) * last) as usize]`, and **`as usize` saturates a NaN to 0** --
+  so `shore` became the sorted sample's **global minimum** and every point on the planet stood
+  above it. Measured at seed 12345: shore -0.6889 against a canonical 0.0956, 2000 of 2000 spiral
+  points land against 578. **And the world it produced is BIT-IDENTICAL to the world
+  `land_fraction = 1.0` legitimately produces.** That is the whole difficulty: not a wrong-looking
+  number but a real world, from a real input, arrived at by accident. (`land_fraction = 1.5` gives
+  the same answer and is left alone -- it is the monotone continuation of the curve, and it is
+  documented at the cast.)
+- **A lattice coordinate the index could not name aborted, and in release it was worse.**
+  `Noise::at` floors, casts to `i64` -- which saturates -- and asks for `ix + 1`. Debug:
+  `attempt to add with overflow`. Behind `extern "C"`: an abort. **Release: the overflow wraps to
+  `i64::MIN` and the function returns an ordinary-looking height from a cell chosen by
+  wrap-around** -- the plausible-value failure again, on the same line as the loud one. **The
+  single-infinite-field entrant and the coastal cross product are the SAME site**, reproduced here
+  panicking at the identical line, and one guard closes both. The new test **asserts the
+  one-field blindness** as well: each of the three fields alone at its own ceiling still returns a
+  finite answer, because the finest bands those ask for are twelve or more orders below saturation.
+
+Both take the same **propagate** contract, and unlike the abyss guard **neither is a divergence
+from the Python oracle**: `int()` raises on a NaN `land_fraction` and on an out-of-range
+coordinate, so there is no CPython answer these contradict. They are the closest a nounwind
+boundary can get to the oracle's own refusal.
+
+### The sweep for the same shape elsewhere: one claim confirmed, one REFUTED
+
+The abyss note's claim was: `elevation_from_above` was the only site where a NaN's fall-through
+value is a *metre*; everywhere else it falls to **a weight in [0, 1]**, silent but oracle-required.
+
+- **Confirmed: no other production site turns a NaN into a finite height.** The three that deal in
+  metres all propagate -- two fall through to the NaN itself, and `erosion.rs`'s largest-change
+  test is explicitly NaN-aware.
+- **REFUTED, and the refutation is the transferable part.** "A weight in [0, 1]" is not what the
+  rest fall to. **Two sites fall to ANGLES** -- pi/2 and pi radians, both documented CPython
+  `min` transcriptions -- and one falls to a **categorical flag** (unreachable: a non-finite height
+  is refused seventeen lines earlier). The conclusion survives, because every one of these is
+  oracle-required or already refused. **But a later sweep that reused "a weight in [0,1]" as its
+  search pattern would have missed three sites**, and that is exactly how a characterisation
+  becomes a defect.
+- **And the axis the first sweep did not have at all**: defect A is a *cast*, not a comparison.
+  Every float-to-int cast in the crate was enumerated separately. **In production code there were
+  exactly three, and all three are now closed** -- the shore index, the three lattice indices, and
+  one whose operand is a literal.
+
+### Ruling 1, and the pins -- re-derived on this host, not read from `gates.yml`
+
+**Host:** Windows 11 (10.0.26200), `rustc 1.98.0 x86_64-pc-windows-msvc`, Python 3.11 in the
+repo's own `.venv`, node v22.17.0. **Method:** `cargo test -p worldbuilder-engine <cfg>
+--no-fail-fast` (exit status), then `-- --list` and `-- --list --ignored` through
+`.github/scripts/assert_counts.py cargo-list`; **listed minus ignored**. **Every exit status read
+from `$?` directly, never through a pipe.**
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 637 | 5 | **632** |
+| default | 637 | 5 | **632** |
+| `--features python` | 639 | 5 | **634** |
+| `--features wasm` | 740 | 5 | **735** |
+| `--features python,wasm` | 742 | 5 | **737** |
+
+All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
+binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
+every row** (it widened no C ABI), the coast channel **+18 on the two WASM rows only**
+(`tests/wasm_exports.rs` is `#![cfg(feature = "wasm")]` in its entirety), the three NaN guards
+**+1 then +2 on every row**, the climate slice's temperature task **+18 on every row**, its
+moisture march **+21 on every row**, the merging slice **+3 on every row and +4 on the two WASM
+rows**, the local-reference slice **+2 on every row**, the climate slice's band task **+13 on
+every row**, and its snow-line task **+4 on every row** -- each time because the tests live in
+`src/` and compile unconditionally, and each time because no export was added. The one exception
+is the climate slice's export task, **+7 on the two WASM rows alone**, which is the complementary
+shape and is the check that its tests all landed in `tests/wasm_exports.rs`.
+
+**The binary count moved from 13 to 14 at the temperature task and from 14 to 15 at the merging
+slice's `src/bin/gully_merging_survey.rs`.** A `[[bin]]` carries zero tests, so it is invisible to
+`--expect-passed` and visible only here; both the moisture march and the band task **extended
+`src/bin/climate_survey.rs` rather than adding another survey**, which is why the climate slice
+accounts for one binary across three tasks.
+
+**Conformance, re-derived:** `WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/` -- **398 passed, exit
+0** -- and `pytest tests/test_conformance.py` -- **157 passed, exit 0** -- against the extension
+built by `maturin develop --release --features python`. `worldbuilder/` was not modified.
+
+**One honest note about that 398, because it is not purely a property of the algorithm.** On a run
+taken while this machine was also compiling and driving a browser, the suite came back **397
+passed, 1 failed**: `test_performance.py`'s `test_the_table_that_decides_everything` asserts a
+wall-clock ceiling of 260 microseconds a sample and measured 487.8. Re-run on a quiet host it
+passes with the rest. **A count is a property of the algorithm; a millisecond is a property of the
+moment**, and one of the 398 is a millisecond wearing a count's clothes.
+
+**Parity, re-derived, and this is where Ruling 1 is actually proved:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **127,659** | **0** |
+| `--mutate seed` | 127,659 | 122,208 |
+| `--mutate erosion-k` | 127,659 | 216 |
+| `--mutate water-pond` | 127,659 | 60 |
+| `--mutate tectonic-warp` | 127,659 | 6,186 |
+| `--mutate coast-amplitude` | 127,659 | 13,128 |
+| `--mutate gully-steer` | 127,659 | 3,752 |
+| `--mutate climate-samples` | 127,659 | 648 |
+
+All seven exited 0 and **every control matched its recorded figure exactly**, which is the statement
+that nothing in this slice moved a crossing value. `node scripts/build-wasm.mjs check` reports the
+committed artifact matches its manifest and the source that is here now.
+
+**The coast control was written in the same commit as the export**, deliberately: the tectonic
+channel sat unwatched by parity for three tasks, and each of the three reports named the gap
+accurately, sized it correctly, and declined it for a good local reason. Nobody was wrong; the work
+simply had no owner until a task was written whose subject it was.
+
+**63.7% of a uniform global scatter moving under the coast control is the right shape, and 2.6%
+would be wrong** -- a tectonic belt is a line on the planet, while the coastal window covers the
+whole shelf. The first corpus cut was refused by the dump's own both-ends-refused guard, because a
+2-degree box on the largest mover is entirely *inside* the coastal band and moved 100%.
+
+### What is still open here
+
+- **`CoastParams` is reachable and off.** `canonical()` is amplitude 0 and Ruling 1 keeps it
+  there, so the picture does not change until the owner drags the slider.
+- **`gradient()` still reads the smooth field.** Deliberate and documented -- the gradient is a
+  broad "which way to the sea" direction and `shelf.rs` uses its magnitude as a slope proxy -- but
+  it means the shelf's *slope* term follows the old coastline while its *coastal weight* term
+  follows the new one. Nothing measured shows a problem; it is an asymmetry a later task should
+  either justify or close.
+- **`WB_MAX_COAST_AMPLITUDE` and `WB_MAX_COAST_WINDOW_SPREADS` are domain statements, not measured
+  edges.** The survey stops at 1.5 and the panel at 0.75. What is asserted is that every accepted
+  record in the sweep produces finite elevations at eleven probes.
+- **The guards are at the convergence points, not at the entrants.** A host that passes a NaN
+  latitude now gets a NaN back instead of a plausible depth, which is the win -- but it still gets
+  no *reason*. If the scalar exports ever grow a status channel, validating at the door would be
+  strictly better information and the guards would remain as the backstop for the term nobody has
+  written yet.
+- **`elevation_from_above`'s guard is a deliberate divergence from the Python oracle in a region
+  the oracle is never asked about.** `min(1.0, NaN)` is `1.0` in CPython, so
+  `worldbuilder/terrain/continentality.py` still drowns a NaN. Nothing tests that today. If
+  somebody widens `continentality_corpus()` to hostile vectors the two languages will disagree,
+  and the right resolution is to change the Python.
+- **An infinite vector component through the Python bindings** reaches the lattice guard now, but
+  the bindings still validate nothing themselves.
+
+### Reproducing every figure in this section
+
+```
+cargo test -p worldbuilder-engine <cfg> --no-fail-fast            # five configurations
+cargo test -p worldbuilder-engine <cfg> -- --list                 # and --list --ignored
+python .github/scripts/assert_counts.py cargo-list --all list-all.txt --ignored list-ignored.txt \
+    --expect-passed <598|598|600|685|687> --expect-ignored 5
+
+maturin develop --release --features python -m crates/worldbuilder-engine/Cargo.toml
+WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/                       # 398 passed on a quiet host
+WORLDBUILDER_REQUIRE_ENGINE=1 pytest tests/test_conformance.py    # 157 passed
+
+node viewer/scripts/build-wasm.mjs check
+cargo run --release -p worldbuilder-engine --example parity_dump --features wasm > \
+    crates/worldbuilder-engine/parity/native.txt
+cd crates/worldbuilder-engine/parity && node parity.mjs native.txt
+node parity.mjs native.txt --mutate {seed|erosion-k|water-pond|tectonic-warp|coast-amplitude}
+
+cargo run --release --bin coastline_survey                        # ~4 minutes, chooses nothing
+```
+
+**Every one of these was run for this section at `b6862d2`**, and every exit status was read
+directly. `native.txt` is regenerated by the dump and is deliberately untracked.

@@ -34,7 +34,35 @@
   Parameters, all optional:
     ?seed= ?radius= ?plates= ?land= ?harbour=1   the world
     ?maxLevel= ?size=                            the tiling
+    ?mountainM= ?quieting= ?persistence=         relief amplitude. All three absent (or all
+                                                 at canonical) takes the engine's `None`
+                                                 path, which is byte-for-byte the world this
+                                                 viewer built before relief was reachable.
     ?exaggeration= ?paint=0 ?rampMin= ?rampMax=  what it looks like
+    ?relief=0                                    turn OFF the relief imagery layer, which
+                                                 restores the pre-relief picture exactly --
+                                                 the ElevationRamp material comes back with
+                                                 it, because a globe material composites
+                                                 OVER imagery and the two cannot both show
+    ?reliefSize= ?reliefMaxLevel=                the relief raster's tile edge in texels
+                                                 (default 256) and its refinement cap
+                                                 (default: the terrain's own ground cap)
+    ?atmosphere=0                                turn OFF the ground atmosphere, which is ON
+                                                 by default since the ocean retune made the
+                                                 measured objection to it stale. `=0` restores
+                                                 the previous picture byte-for-byte.
+    ?limb= ?limbMie= ?limbLight= ?limbSmooth=1   the sky atmosphere's Rayleigh and Mie scale
+                                                 heights in metres, its light intensity, and
+                                                 per-fragment scattering. All default to
+                                                 Cesium's own values, read off the Scene.
+    ?atmosLight= ?atmosScale= ?atmosSun=1        the ground atmosphere's intensity, Rayleigh
+    ?atmosSaturation= ?atmosBrightness=          scale height, whether the haze follows the sun,
+                                                 and two colour shifts. Cesium defaults.
+    ?hdr=1 ?tonemap=NAME ?exposure=              the tone grade. NAME is a Cesium Tonemapper --
+                                                 PBR_NEUTRAL, FILMIC, ACES, REINHARD,
+                                                 MODIFIED_REINHARD. Off by default: measured,
+                                                 and PBR_NEUTRAL buys contrast by eating the
+                                                 limb, which is a trade for the owner to make.
     ?fly=lat,lon,height                          where to look
     ?workers= ?cache=0 ?cacheTiles=              the Task 5 pool and cache (workers=0 is
                                                  Task 4's synchronous main-thread fill,
@@ -46,3 +74,10 @@
                                                  CSP's proof of refusal
 -->
 <script type="module" src="/app/main.js"></script>
+
+<!--
+  The control panel. Every knob it exposes is one main.js already read from the query
+  string above; what is new is that a person can turn them without typing a URL.
+  Loaded after main.js so `window.viewer` and `window.__wbReady` exist.
+-->
+<script type="module" src="/app/controls.js"></script>

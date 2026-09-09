@@ -13,6 +13,53 @@ where a bug is described it is because the shape of it is worth keeping.
 
 ## [Unreleased]
 
+### The area generator, and a world Evennia can build
+
+A painted planet now becomes places, and those places import into a stock Evennia. Measured
+on a four-hundred-area world: 23,593 rooms, 12,526 people, 5,365 shops, 28,006 wares, 399
+roads, 8 cities, 7 ferry lines, nothing stranded and nothing standing in water.
+
+- **Cities, founded first, on a grid.** One per fifty areas at 160 street rooms. Every site
+  score rewards water, so left to itself the generator strung the large places along a coast
+  and left the interior to hamlets; a cell decides that a region has a city and the ground
+  inside it decides where. A cell already holding one of the world's own places keeps it.
+- **A shop is a room you walk into** - law P5, and the generator broke it in every
+  settlement it ever built. Interiors keyed to a street room, entered by their own noun,
+  left by the same noun with `out` aliased, off the lattice, and named in the street's
+  description. Every trade has a door, including the stalls.
+- **People.** The population figure used to be `rooms x density` with nobody behind it; it
+  is the length of a list now. Keepers behind counters, folk in the streets, quarry in the
+  hunting grounds.
+- **Goods that say where they came from.** Each settlement works in one colour and one
+  material; durable goods carry the mark of the place that made them and no two settlements
+  sell the same keepsake. Food does not - you carry a dagger home from the badlands, not the
+  broth.
+- **Roads and ferries.** Roads go round water and over passes, carry a room every five
+  miles, meet at crossroads, and name the places they join at either end. Ferries run as a
+  service - one terminal per shore, a hub per sea, two hulls per line passing in mid-water,
+  crossing times spread across a band rather than clamped into it.
+- **The run checks its own work.** Reachability, soundings against the water, an anachronism
+  lint, and the prose bands. The soundings earned their place on the first run.
+- **The studio.** Paint five kinds of feature and see them ghosted before they cost a
+  rebuild; save a world to the server and grow it later; watch a run on a dial that reports
+  progress, stage and elapsed time separately, because those three fail differently.
+- **The exporter.** Two files - a JSON world and a sixty-line builder - that a game runs
+  with `@py from world.build_aetosia import build; build(self)`. Neither imports anything
+  from this project. Running it twice updates rather than doubles.
+
+Faults worth remembering, all of them found by measurement rather than by reading:
+
+- Street names, place names and ware names each collided by the birthday problem, and each
+  was fixed only after the previous one had been. Sixteen heads by six kinds looks like
+  plenty until thirty streets are drawn from it.
+- A road's room list carries its wayside shrines, which have no place in its line - so
+  everything that walked the list in order drew the road out to each one and back. That was
+  the scribble on the map, the "second road", and the "road over water" all at once.
+- The level bands were measured from the middle of the ocean whenever there was no existing
+  world to measure from, so the starting ring was open water and a four-hundred-area world
+  had nowhere to start.
+
+
 ### Added — a pond that holds water
 
 - **A closed bowl in the hills**, five metres deep, its water standing twenty-three metres

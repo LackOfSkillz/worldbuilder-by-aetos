@@ -39,3 +39,16 @@ dist/
 
 /target/
 crates/*/target/
+
+# A real Evennia game database, copied here for slice 2a's integration proof. NEVER COMMITTED.
+#
+# This is a live game's data -- accounts, characters, everything they have written. It is here
+# because slice 2a's claim is that a real, messy, long-lived game gains a planet without losing
+# anything, and that claim cannot be tested against a fixture built for it. It is a COPY of a
+# backup; the original is never opened.
+#
+# The repository's commits feed a public channel, so an accidental `git add -A` would publish
+# somebody's game. Anchored, and the directory is ignored whole rather than by extension, so a
+# journal, a WAL file or an extracted table is covered too.
+/fixtures/dragonsire/
+routes/

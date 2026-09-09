@@ -70,7 +70,7 @@
 //! it was handed. Deferred deliberately, all of it
 //! recomputable or slice 5's: the lake super-graph beyond the root, thermal-correction
 //! state, uplift, erodibility, anything derived from receivers, reach geometry, further
-//! flag bits. `pond_max_drainage_area_m2` is a *build parameter with no default* (Task 4
+//! flag bits. `pond_max_surface_area_m2` is a *build parameter with no default* (Task 4
 //! refused to invent one) and is deliberately absent — it produced `LakeKind`, and
 //! `LakeKind` is what is stored.
 
@@ -266,7 +266,19 @@ pub enum FormatError {
     LakeAtNonRoot { node: u32 },
     LakeRootOutOfRange { node: u32 },
     DuplicateLakeRoot { node: u32 },
+    /// `outflow_lake` is a **node id** (the same namespace `root_node` uses), not an index
+    /// into the lake table -- checked against `header.node_count`, the same bound
+    /// `LakeRootOutOfRange` uses for `root_node`. Slice 5b Task 2 review, Finding 1: this
+    /// used to be bounded by the lake table's own element count instead, a different
+    /// namespace than the one `resolve_outflow_edges` actually writes
+    /// (`crossing.target_root`, a node id), so every resolved graph failed to decode.
     OutflowLakeOutOfRange { index: u64, target: u32 },
+    /// `outflow_lake` names a node within range that is not itself the root of a lake
+    /// recorded in this same table -- caught only after every record is read, since that is
+    /// the earliest point the full set of roots exists. Distinct from `OutflowLakeOutOfRange`
+    /// (which fires on a target outside the node count entirely) so a caller can tell "not a
+    /// node at all" apart from "a node, but not a lake root".
+    OutflowLakeNotALakeRoot { index: u64, target: u32 },
     /// Section 14.2's actual claim, and the only classification invariant this format
     /// enforces. **Not** the datum rule that produced the flags.
     RootIsNotExactlyOneClass { node: u32, mouth: bool, lake: bool },
@@ -830,7 +842,7 @@ impl GraphReader {
             let root_node = read_u32(bytes, base)?;
             ensure(root_node < self.header.node_count, || FormatError::LakeRootOutOfRange { node: root_node })?; // MUT-27
             let outflow_lake = read_u32(bytes, base + 4)?;
-            ensure(outflow_lake == NO_LAKE || u64::from(outflow_lake) < section.elem_count, || FormatError::OutflowLakeOutOfRange { index, target: outflow_lake })?; // MUT-28
+            ensure(outflow_lake == NO_LAKE || outflow_lake < self.header.node_count, || FormatError::OutflowLakeOutOfRange { index, target: outflow_lake })?; // MUT-28
             let level_m = read_f64(bytes, base + 8)?;
             ensure(level_m.is_finite(), || FormatError::NonFiniteValue { kind: SectionKind::Lakes, index, bits: level_m.to_bits() })?; // MUT-29
             let kind_code = read_u8(bytes, base + 16)?;
@@ -843,6 +855,24 @@ impl GraphReader {
                 ensure(byte == 0, || FormatError::ReservedBytesNotZero { what: "lake", index })?; // MUT-31
             }
             out.push(Lake { root_node, level_m, kind, outflow_lake });
+        }
+
+        // `outflow_lake` names a node id, checked above against `header.node_count` alone --
+        // that bound cannot tell "a real node" from "a real node that happens not to be a
+        // lake root" apart, and the full set of roots does not exist until every record has
+        // been read. A second pass over `out` (not the file) is the earliest point that
+        // check can run. `HashSet::contains` only, never iterated, matching this crate's own
+        // determinism convention for `HashMap`/`HashSet` use elsewhere (`water.rs`'s
+        // `peel_lake_relation`).
+        let roots: std::collections::HashSet<u32> = out.iter().map(|lake| lake.root_node).collect();
+        for (index, lake) in out.iter().enumerate() {
+            if lake.outflow_lake == NO_LAKE {
+                continue;
+            }
+            ensure(roots.contains(&lake.outflow_lake), || FormatError::OutflowLakeNotALakeRoot {
+                index: index as u64, // cast-ok: a lake-table index, bounded by section.elem_count
+                target: lake.outflow_lake,
+            })?; // MUT-28b
         }
         Ok(out)
     }
@@ -959,6 +989,7 @@ mod tests {
     use super::*;
     use crate::sphere::SpherePoint;
     use crate::stream::{sample_nodes, BuildParams};
+    use crate::water;
 
     // ---- the fixture -----------------------------------------------------------------
     //
@@ -1027,7 +1058,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: FIXTURE_SEA_LEVEL_M,
             sampling_kind: SamplingKind::Supplied,
-            pond_max_drainage_area_m2: FIXTURE_POND_MAX_M2,
+            pond_max_surface_area_m2: FIXTURE_POND_MAX_M2,
         };
         StreamGraph::build(
             &params,
@@ -1382,7 +1413,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         let graph = StreamGraph::build(
             &params,
@@ -1419,6 +1450,62 @@ mod tests {
         }
     }
 
+    /// Review Finding 1's actual defect: no test round-tripped a *resolved* graph -- one
+    /// where `outflow_lake` actually carries a non-sentinel value -- so the namespace
+    /// mismatch between `resolve_outflow_edges` (writes a node id) and the format's own
+    /// decoder (previously validated against the lake-table element count) went uncaught.
+    /// This builds a real Spiral graph, runs `water::fill_and_resolve_water` (the combined
+    /// entry point that regenerates the neighbour relation once and shares it between Task
+    /// 1's fill and Task 2's resolve -- see its own doc comment), and asserts the file this
+    /// crate would actually produce decodes cleanly with every `outflow_lake` value intact
+    /// -- including at least one non-sentinel one, or the test would not be exercising the
+    /// path Finding 1 broke.
+    #[test]
+    fn a_resolved_graph_round_trips_its_outflow_lake_values() {
+        let sampling = sample_nodes(FIXTURE_SEED, 4_000, FIXTURE_RADIUS_M).expect("sampled");
+        let heights = sampled_heights(&sampling.positions);
+        let params = BuildParams {
+            world_seed: FIXTURE_SEED,
+            radius_m: FIXTURE_RADIUS_M,
+            sea_level_m: SAMPLED_DATUM_M,
+            sampling_kind: SamplingKind::Spiral,
+            pond_max_surface_area_m2: 5.0e9,
+        };
+        let mut graph = StreamGraph::build(
+            &params,
+            &sampling.positions,
+            &heights,
+            &sampling.area_m2,
+            &sampling.neighbours,
+        )
+        .expect("the sampled graph builds");
+
+        // `fill_and_resolve_water`, not the two separate entry points: it regenerates the
+        // neighbour relation once and shares it between Task 1's fill and Task 2's resolve
+        // (review Finding 6), which is also the path a real pipeline should take.
+        let _basins = water::fill_and_resolve_water(&mut graph, params.pond_max_surface_area_m2);
+
+        let non_sentinel = graph.lakes().iter().filter(|l| l.outflow_lake != NO_LAKE).count();
+        assert!(
+            non_sentinel > 0,
+            "the fixture must actually resolve at least one non-sentinel outflow_lake, or \
+             this test does not exercise the path Finding 1 broke"
+        );
+
+        let file = write_graph(&graph);
+        let decoded = read_graph(&file).expect(
+            "a resolved graph must decode -- Finding 1 was exactly this call returning \
+             Err(OutflowLakeOutOfRange) for a graph that encoded cleanly"
+        );
+        assert_eq!(decoded.lakes.len(), graph.lakes().len());
+        for (read, built) in decoded.lakes.iter().zip(graph.lakes()) {
+            assert_eq!(read.root_node, built.root_node);
+            assert_eq!(read.outflow_lake, built.outflow_lake);
+            assert_eq!(read.level_m.to_bits(), built.level_m.to_bits());
+            assert_eq!(read.kind, built.kind);
+        }
+    }
+
     // ---- the position checksum, and what it makes verifiable -------------------------
 
     fn sampled_graph(count: u32) -> StreamGraph {
@@ -1429,7 +1516,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         StreamGraph::build(
             &params,
@@ -1583,7 +1670,7 @@ mod tests {
             radius_m: FIXTURE_RADIUS_M,
             sea_level_m: SAMPLED_DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: 5.0e9,
+            pond_max_surface_area_m2: 5.0e9,
         };
         let graph = StreamGraph::build(
             &params,
@@ -1794,7 +1881,7 @@ mod tests {
         assert!(datum_offences(innocent).is_empty(), "the scanner flagged carrying the datum");
     }
 
-    /// `pond_max_drainage_area_m2` is required-with-no-default and unmeasured. It must not
+    /// `pond_max_surface_area_m2` is required-with-no-default and unmeasured. It must not
     /// acquire one by being written into a file with a default somewhere.
     #[test]
     fn the_pond_threshold_is_not_a_field_of_the_format() {
@@ -2204,10 +2291,22 @@ mod tests {
     }
 
     #[test]
-    fn refuses_an_outflow_lake_past_the_lake_table() {
+    fn refuses_an_outflow_lake_past_the_node_count() {
         let mut file = write_graph(&fixture_graph());
         put_u32(&mut file, 408 + 4, 5);
         assert_eq!(err(&file), FormatError::OutflowLakeOutOfRange { index: 0, target: 5 });
+    }
+
+    /// Review Finding 1: `outflow_lake` is a node id (the same namespace `root_node` uses),
+    /// checked against `header.node_count` above -- but a value inside that range is not
+    /// automatically a *lake* root. Node 2 in the fixture is a real root (the mouth), which
+    /// makes this the sharper case than an arbitrary non-root node id: in range, a genuine
+    /// root, and still the wrong kind.
+    #[test]
+    fn refuses_an_outflow_lake_naming_a_node_that_is_not_a_lake_root() {
+        let mut file = write_graph(&fixture_graph());
+        put_u32(&mut file, 408 + 4, 2); // node 2 is the fixture's mouth, not a lake
+        assert_eq!(err(&file), FormatError::OutflowLakeNotALakeRoot { index: 0, target: 2 });
     }
 
     #[test]

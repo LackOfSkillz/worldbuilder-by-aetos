@@ -844,7 +844,7 @@ mod tests {
             crate::continentality::LAND_FRACTION,
         );
         let plates = crate::generation::plates_for(20260831, 22);
-        let tectonics = crate::tectonics::Tectonics::new(plates, land, EARTH_RADIUS_M);
+        let tectonics = crate::tectonics::Tectonics::new(plates, land, EARTH_RADIUS_M, None);
         let shelf = crate::shelf::Shelf::new(tectonics, land, EARTH_RADIUS_M);
         let centre = at_bits(0xbfe9b4f1ee09b585, 0x3fddf4b589429ce6, 0xbfd7907eeec7ac24);
         let pinnacle = crate::features::Feature {
@@ -923,7 +923,7 @@ mod tests {
             crate::continentality::LAND_FRACTION,
         );
         let plates = crate::generation::plates_for(20260831, 22);
-        let tectonics = crate::tectonics::Tectonics::new(plates, land, EARTH_RADIUS_M);
+        let tectonics = crate::tectonics::Tectonics::new(plates, land, EARTH_RADIUS_M, None);
         let shelf = crate::shelf::Shelf::new(tectonics, land, EARTH_RADIUS_M);
         let bare = crate::features::Features::new([], EARTH_RADIUS_M);
         let structural: &dyn Fn(&SpherePoint) -> f64 =

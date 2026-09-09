@@ -117,11 +117,42 @@ export class TilePool {
     this.outstanding = workers.map(() => 0);
     this.dispatched = workers.map(() => 0);
     this.cursor = 0;
+    /// Per-worker `wb_world_count`, filled by `rebuild`. `null` until a live swap has happened;
+    /// see `rebuild` for why the main thread's own count cannot stand in for it.
+    this.worldCounts = null;
     /// Every worker-side fill duration, in order. The population the report quotes.
     this.fillMs = [];
     /// Main-thread time from `fill()` call to promise settle, per tile. Wall clock, so it
     /// includes queueing behind other tiles -- it is not what the main thread *blocks* for.
     this.wallMs = [];
+    /// The same two, for relief rasters. **Kept separate on purpose.** A relief tile is
+    /// 66,564 engine samples plus 65,536 texels of shading and a heightmap tile is 4,225
+    /// samples; pooling them into one `fillMs` would produce a median that describes
+    /// neither job, and this slice has already been misled once by a statistic quoted
+    /// without its population.
+    this.reliefMs = [];
+    this.reliefWallMs = [];
+    /// And the same two again for cloud rasters -- **the pool's third consumer**, kept separate
+    /// for exactly the reason the relief samples are. A cloud tile is 16,384 texels of pure
+    /// hash-noise and **no engine fill at all**; a relief tile is 66,564 engine samples plus
+    /// 65,536 texels of shading. Pooling those into one median would describe neither, and the
+    /// whole reason a third consumer can be added to a saturated pool is that these two
+    /// populations are an order of magnitude apart -- which is only visible if they are counted
+    /// apart.
+    this.cloudMs = [];
+    this.cloudWallMs = [];
+    /// And again for the water solve -- **the pool's fourth consumer, and the only one that is
+    /// not a tile.** Kept apart for the same reason as the other three and more so: one sample
+    /// here is 33--53 SECONDS where a cloud tile is 71--76 ms, so a pooled median would be a
+    /// number describing nothing at all. `n` is 1 per swap, not 72.
+    this.waterMs = [];
+    this.waterWallMs = [];
+    /// And once more for the climate calibration -- **the pool's FIFTH consumer**, and the
+    /// second that is not a tile. It is seconds where a cloud tile is milliseconds, for the
+    /// same reason the water solve is, so pooling it into any of the four samples above would
+    /// produce a median describing nothing.
+    this.climateMs = [];
+    this.climateWallMs = [];
   }
 
   /// Start `count` workers and wait for every one to have built its world.
@@ -167,7 +198,8 @@ export class TilePool {
   }
 
   receive(message) {
-    if (message.type !== "tile" && message.type !== "error") return;
+    if (message.type !== "tile" && message.type !== "relief" && message.type !== "cloud"
+      && message.type !== "water" && message.type !== "climate" && message.type !== "error") return;
     const entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);
@@ -176,8 +208,73 @@ export class TilePool {
       entry.reject(new Error(`worker ${message.index}: ${message.message}`));
       return;
     }
-    this.fillMs.push(message.fillMs);
-    this.wallMs.push(performance.now() - entry.started);
+    // Which sample the duration belongs in is decided by the entry, not by the reply: the
+    // dispatcher knows what it asked for, and a reply that could choose its own bucket
+    // would let a mislabelled worker reply silently pollute the other job's statistics.
+    entry.workMs.push(message.fillMs);
+    entry.wallMs.push(performance.now() - entry.started);
+    // Relief and cloud replies have the same raster shape, so they are resolved the same way.
+    // They are still two message types rather than one: the DISPATCHER decides which sample a
+    // duration lands in, and it can only do that if the reply it is matching says which job it
+    // was -- a shared `raster` type would make the two indistinguishable at exactly the point
+    // where the report needs them apart.
+    if (message.type === "relief" || message.type === "cloud") {
+      entry.resolve({
+        data: message.data,
+        width: message.width,
+        height: message.height,
+        fillMs: message.fillMs,
+        worker: message.index,
+        // **This object maps a fixed key set and discards the rest, and that cost a bug.** The
+        // lake counters were added to the worker's relief reply and to the provider's stats at
+        // the same time; both ends were right, both were tested, and the numbers arrived at the
+        // browser as zero -- because this dispatcher rebuilt the reply from five named fields and
+        // silently dropped the two new ones. The picture was correct throughout, which is exactly
+        // why a counter was added in the first place, and it took a live `measure` run rather
+        // than any unit test to see it. `?? 0` because a CLOUD reply legitimately carries
+        // neither; `pool.test.mjs` now asserts that a relief reply's counts survive this hop.
+        lakeTexels: message.lakeTexels ?? 0,
+        lakeTiles: message.lakeTiles ?? 0,
+        // **The third and fourth fields this fixed key set could have dropped**, and the
+        // comment above is the reason they are named here rather than spread. `?? 0` because
+        // a CLOUD reply carries neither, and because a relief reply with climate off carries
+        // them as zero rather than as absent -- which is the same number and a different
+        // fact, so `climateTiles` on the provider is what separates the two.
+        climateMs: message.climateMs ?? 0,
+        climateSamples: message.climateSamples ?? 0,
+      });
+      return;
+    }
+    // The climate calibration: a plain object of two small arrays and two scalars, rebuilt
+    // field by field with the same hazard the water reply above records.
+    if (message.type === "climate") {
+      entry.resolve({
+        moistureEdges: message.moistureEdges,
+        landformEdges: message.landformEdges,
+        landSamples: message.landSamples,
+        lapseCPerKm: message.lapseCPerKm,
+        fillMs: message.fillMs,
+        worker: message.index,
+        worldCount: message.worldCount,
+      });
+      return;
+    }
+    // **A water reply, and this is the hop the lake counters were silently dropped on.** Same
+    // hazard, same shape: this dispatcher rebuilds every reply from a fixed key set and
+    // discards the rest, so a field added at both ends and tested at both ends still arrives
+    // as `undefined` here. `pool.test.mjs` asserts each of these four survives the hop, and
+    // `seaLevelM` in particular has no visible consequence -- the datum only shows as lake
+    // colour at a depth -- so nothing about the picture would report its loss.
+    if (message.type === "water") {
+      entry.resolve({
+        bodies: message.bodies,
+        seaLevelM: message.seaLevelM,
+        fillMs: message.fillMs,
+        worker: message.index,
+        worldCount: message.worldCount,
+      });
+      return;
+    }
     entry.resolve({ heights: message.heights, fillMs: message.fillMs, worker: message.index });
   }
 
@@ -200,17 +297,164 @@ export class TilePool {
     return best;
   }
 
-  /// Fill one tile. Resolves `{ heights, fillMs, worker }`; `heights` is the master copy
-  /// and must not be handed to Cesium without a `slice()`.
-  fill(request) {
+  /// Send one job to the least-loaded worker and record its two durations.
+  ///
+  /// `type` is the worker's message type; `workMs`/`wallMs` are the samples this job's
+  /// durations belong in. Both jobs share the dispatcher because both are the same
+  /// contention: one engine instance per worker, and the queue depth is what decides
+  /// whether a burst of tiles finishes in parallel or in series.
+  dispatch(type, request, workMs, wallMs) {
     const worker = this.pick();
     const id = this.nextId;
     this.nextId += 1;
     this.outstanding[worker] += 1;
     this.dispatched[worker] += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, worker, started: performance.now() });
-      this.workers[worker].postMessage({ type: "fill", id, request });
+      this.pending.set(id, {
+        resolve, reject, worker, started: performance.now(), workMs, wallMs,
+      });
+      this.workers[worker].postMessage({ type, id, request });
+    });
+  }
+
+  /// Fill one tile. Resolves `{ heights, fillMs, worker }`; `heights` is the master copy
+  /// and must not be handed to Cesium without a `slice()`.
+  fill(request) {
+    return this.dispatch("fill", request, this.fillMs, this.wallMs);
+  }
+
+  /// Rasterise one relief tile. Resolves `{ data, width, height, fillMs, worker }`, where
+  /// `data` is a `Uint8ClampedArray` of RGBA texels transferred out of the worker.
+  ///
+  /// # No cache here, and the reason is NOT the one this file used to give
+  ///
+  /// **The old reason was "an imagery tile is asked for once per layer lifetime", and that is
+  /// now measurably false.** It was true before the live swap shipped. Assigning
+  /// `viewer.terrainProvider` makes Cesium discard the entire quadtree, and every replacement
+  /// `QuadtreeTile` re-requests imagery from *every* layer: 72 cloud tiles and a full set of
+  /// relief tiles per slider release, on the owner's world at the orbital camera. The sentence
+  /// is corrected rather than deleted, because it misled a reader once already.
+  ///
+  /// The real reason a relief raster is not cached is **world identity**: a relief tile is
+  /// 66,564 engine samples against one world handle, and a live swap is precisely a change of
+  /// that handle, so a raster kept across one would be the previous planet's colour over the
+  /// new planet's mesh -- the `cache-key` fault by another route. `main.js` builds a NEW relief
+  /// provider per swap for exactly this reason, and a cache would have to be keyed by world to
+  /// survive one. **Clouds are the opposite case and ARE cached**, in `cloud-provider.js`: that
+  /// job takes no world handle at all.
+  relief(request) {
+    return this.dispatch("relief", request, this.reliefMs, this.reliefWallMs);
+  }
+
+  /// Rasterise one cloud tile. Resolves `{ data, width, height, fillMs, worker }`, where `data`
+  /// is a `Uint8ClampedArray` of RGBA texels transferred out of the worker.
+  ///
+  /// **The cache for these lives in `cloud-provider.js`, keyed `level/x/y`**, and not here.
+  /// A cloud raster depends on `seed`, `cover`, `radiusM` and `tileSize` and on nothing this
+  /// pool knows; the provider closure is where all four are fixed, so that is where a key of
+  /// three numbers is a complete key. See `CloudRasterCache` for the measurement.
+  cloud(request) {
+    return this.dispatch("cloud", request, this.cloudMs, this.cloudWallMs);
+  }
+
+  /// **Calibrate this world's climate band edges in a worker.** Resolves
+  /// `{ moistureEdges, landformEdges, landSamples, lapseCPerKm, fillMs, worker, worldCount }`.
+  ///
+  /// # The fifth consumer, and the second that is not a tile
+  ///
+  /// `wb_climate_calibration` is 4,000 elevations plus one upwind march at every land point.
+  /// The noise calibration it replaces was 4,000 `wb_elevation_m` calls and ran on the main
+  /// thread at construction in tens of milliseconds; this one is **seconds**, and a
+  /// constructor that silently blocked a boot for that long would be a cost with no name in
+  /// the status line -- which is the exact sentence `relief-provider.js` already writes about
+  /// the water manifest. So it moves here, and `main.js` resolves it, times it and says so.
+  ///
+  /// One call, once per world. It is NOT per tile and not per worker: the edges are four plus
+  /// two numbers that are identical in every worker, and a worker that calibrated its own
+  /// would be a second place they could disagree.
+  climate(request) {
+    return this.dispatch("climate", request, this.climateMs, this.climateWallMs);
+  }
+
+  /// **Solve this world's water manifest in a worker.** Resolves
+  /// `{ bodies, seaLevelM, fillMs, worker, worldCount }`.
+  ///
+  /// # The fourth consumer, and the only one that is not a tile
+  ///
+  /// `wb_water_run` was called on the MAIN THREAD and measured **33.9--44.8 s at 86,000 nodes
+  /// at boot** and **45.4--53.4 s per live swap**, which the browser's own `longtask` observer
+  /// recorded as a *single task* each time: one slider nudge froze the tab for three quarters
+  /// of a minute. It is 55--77% of a cold load.
+  ///
+  /// **This is a message type, not a new algorithm.** `wb_water_run` is already an export,
+  /// every worker already holds a world built from this same spec (`rebuild` below is what
+  /// guarantees it, and `main.js` awaits it before dispatching this), and the solve is
+  /// deterministic -- an identical rebuild was measured bit-identical. So the worker's answer
+  /// is the main thread's answer, and `tile-worker.test.mjs` proves that against the real wasm
+  /// rather than assuming it.
+  ///
+  /// **It occupies one worker for the whole solve**, and that is affordable because the pool
+  /// was measured **starved, not saturated**: 23--40% utilisation, because Cesium will not
+  /// request level n+1 until level n has landed. `pick()` is least-outstanding, so the other
+  /// seven carry the tiles that arrive meanwhile.
+  ///
+  /// **The reply carries the worker's own `wb_world_count`.** A solve must not build a world,
+  /// and this is the only place that can be seen: a handle table lives inside one instance's
+  /// linear memory, so the main thread's count says nothing about a worker's.
+  water(request) {
+    return this.dispatch("water", request, this.waterMs, this.waterWallMs);
+  }
+
+  /// **Rebuild every worker's world from a new spec, reusing the engine instances.**
+  ///
+  /// This is the pool's half of the live swap. It is not `terminate()` plus `start()`: that would
+  /// re-fetch and re-instantiate the wasm once per worker, which is the expensive half of boot
+  /// and is exactly what a live swap exists to stop paying again.
+  ///
+  /// **All of them, and it waits for all of them** -- the same rule `start` follows and for the
+  /// same reason. A pool that resolved after the first reply would have the main thread install a
+  /// provider while seven workers were still filling tiles from the previous planet, which is the
+  /// `stale-worker` fault arrived at by accident. Every reply is matched by its own id, so a tile
+  /// reply landing mid-rebuild cannot be mistaken for one.
+  ///
+  /// The `rebuilt` reply carries each worker's own `wb_world_count`, and it is kept because it is
+  /// the only place that figure exists: a world handle is an index into a table inside one
+  /// instance's linear memory, so the main thread's count says nothing at all about the workers'.
+  rebuild(spec) {
+    this.spec = spec;
+    const replies = this.workers.map((worker, index) => new Promise((resolve, reject) => {
+      const id = this.nextId;
+      this.nextId += 1;
+      const onMessage = (event) => {
+        const message = event.data;
+        if (!message || message.id !== id) return;
+        worker.removeEventListener("message", onMessage);
+        if (message.type === "rebuilt") resolve(message);
+        else reject(new Error(`worker ${index} rebuild: ${message.message}`));
+      };
+      worker.addEventListener("message", onMessage);
+      worker.postMessage({ type: "rebuild", id, spec });
+    }));
+    return Promise.all(replies).then((rebuilt) => {
+      // `ready` is what `stats()` and the status line report the pool from, so it has to describe
+      // the world the workers are on NOW rather than the one they booted with. `stale` comes back
+      // FROM the worker rather than being carried over here: the worker is the only side that
+      // knows whether it applied the fault, and re-deriving it would be a second copy of that
+      // decision.
+      const previous = this.ready ?? [];
+      this.ready = rebuilt.map((r) => ({
+        type: "ready",
+        index: r.index,
+        world: r.world,
+        stale: r.stale,
+        generatorVersion: previous[r.index] ? previous[r.index].generatorVersion : undefined,
+        buildMs: r.buildMs,
+      }));
+      /// Per-worker live-world counts after the swap. **This is the leak evidence for eight
+      /// ninths of the wasm memory this feature touches** -- the main thread's `wb_world_count`
+      /// cannot see any of it.
+      this.worldCounts = rebuilt.map((r) => r.worldCount);
+      return rebuilt;
     });
   }
 
@@ -223,11 +467,30 @@ export class TilePool {
     return {
       workers: this.ready.length,
       staleWorkers: this.ready.filter((r) => r.stale).map((r) => r.index),
+      /// `null` until the first live swap; an array of eight `wb_world_count` readings
+      /// afterwards. Each must stay at 1: a worker holding two worlds is a worker leaking one
+      /// per slider release.
+      worldCounts: this.worldCounts,
       buildMs: this.ready.map((r) => r.buildMs),
       dispatched: this.dispatched.slice(),
       fills: this.fillMs.length,
       fillMs: summarise(this.fillMs),
       wallMs: summarise(this.wallMs),
+      reliefs: this.reliefMs.length,
+      reliefMs: summarise(this.reliefMs),
+      reliefWallMs: summarise(this.reliefWallMs),
+      clouds: this.cloudMs.length,
+      cloudMs: summarise(this.cloudMs),
+      cloudWallMs: summarise(this.cloudWallMs),
+      /// One per solve: one at boot and one per world-class swap. `waterWallMs` minus
+      /// `waterMs` is what the solve spent queued behind tiles, which is the figure that would
+      /// say the pool had become the bottleneck.
+      waters: this.waterMs.length,
+      waterMs: summarise(this.waterMs),
+      waterWallMs: summarise(this.waterWallMs),
+      climates: this.climateMs.length,
+      climateMs: summarise(this.climateMs),
+      climateWallMs: summarise(this.climateWallMs),
     };
   }
 }

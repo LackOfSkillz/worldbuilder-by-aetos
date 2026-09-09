@@ -4,3 +4,434 @@
 html, body, #cesiumContainer { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
 #status { position: absolute; z-index: 10; top: 8px; left: 8px; font: 12px/1.4 monospace;
           background: rgba(0,0,0,.65); color: #eee; padding: 6px 8px; border-radius: 3px; }
+
+/* The control panel (/app/controls.js). Styles live here, not inline, for the same CSP
+   reason the rest of this file exists: `style-src 'self'` with no `'unsafe-inline'`. */
+#wb-panel { position: absolute; z-index: 11; top: 8px; right: 8px; width: 250px;
+            max-height: calc(100vh - 16px); overflow-y: auto;
+            font: 11px/1.45 monospace; background: rgba(0,0,0,.74); color: #eee;
+            border-radius: 3px; user-select: none; }
+.wb-head { display: flex; align-items: center; justify-content: space-between;
+           padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.15);
+           position: sticky; top: 0; background: rgba(0,0,0,.9); }
+.wb-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.wb-section { display: flex; flex-direction: column; gap: 4px; }
+.wb-section-title { text-transform: uppercase; letter-spacing: .08em; font-size: 9px;
+                    opacity: .55; border-bottom: 1px solid rgba(255,255,255,.12);
+                    padding-bottom: 2px; }
+.wb-row { display: grid; grid-template-columns: 58px 1fr 62px; align-items: center; gap: 6px; }
+.wb-row input[type="range"] { width: 100%; height: 14px; }
+.wb-row input[type="text"], .wb-row select {
+  width: 100%; font: inherit; background: rgba(255,255,255,.09); color: #eee;
+  border: 1px solid rgba(255,255,255,.2); border-radius: 2px; padding: 1px 4px; }
+.wb-row output { text-align: right; opacity: .85; white-space: nowrap; font-size: 10px; }
+.wb-check { grid-template-columns: auto 1fr; }
+.wb-note { opacity: .5; font-size: 10px; line-height: 1.35; }
+.wb-actions { display: flex; gap: 6px; }
+#wb-panel button, #wb-panel-left button { font: inherit; cursor: pointer; color: #eee;
+  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22);
+  border-radius: 2px; padding: 3px 7px; }
+.wb-go { flex: 1; background: rgba(120,180,255,.28) !important;
+         border-color: rgba(120,180,255,.5) !important; }
+#wb-panel button:hover, #wb-panel-left button:hover { background: rgba(255,255,255,.24); }
+.wb-toggle { padding: 0 7px !important; }
+.wb-readout { border-top: 1px solid rgba(255,255,255,.15); padding-top: 6px;
+              opacity: .9; min-height: 1.5em; font-size: 10px; }
+.wb-missing { list-style: none; margin: 0; padding: 0; display: flex;
+              flex-direction: column; gap: 3px; }
+.wb-missing li { display: flex; flex-direction: column; opacity: .62; }
+.wb-missing-name { color: #ffb38a; }
+.wb-missing-why { font-size: 9.5px; opacity: .75; line-height: 1.3; }
+
+/* --- loading overlay -------------------------------------------------------------------
+   The globe is held back until it is finished, because Cesium draws coarse tiles first and a
+   half-loaded world looks like a finished one made badly. Opacity rather than `display`: a
+   zero-size canvas does not render, so hiding it that way would stop the load we are waiting
+   for from ever completing. */
+
+.wb-canvas-loading { opacity: 0; }
+
+#wb-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #0b1017;
+  z-index: 40;
+  transition: opacity 380ms ease;
+}
+
+#wb-loading.wb-loading-done { opacity: 0; pointer-events: none; }
+
+.wb-loading-card {
+  width: min(360px, 70vw);
+  font: 13px/1.5 system-ui, sans-serif;
+  color: #cfd8e3;
+}
+
+.wb-loading-title { font-size: 15px; margin-bottom: 10px; letter-spacing: 0.02em; }
+
+.wb-loading-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #1d2733;
+  overflow: hidden;
+}
+
+.wb-loading-fill {
+  height: 100%;
+  width: 0%;
+  background: #4db2ff;
+  transition: width 220ms ease;
+}
+
+.wb-loading-step { margin-top: 8px; color: #8494a6; font-variant-numeric: tabular-nums; }
+
+/* --- worlds section -------------------------------------------------------------------- */
+
+.wb-text, .wb-file { width: 100%; margin: 4px 0; }
+.wb-file { display: none; }
+
+/* --- pick a point ------------------------------------------------------------------------
+   The readout is the first thing in the section, and its rows are blocks. Both were found by
+   the owner reporting "clicking doesn't show coords": the result was correct, appended below
+   six control rows, and its parts ran together on one line because the row class is inline. */
+
+.wb-pick {
+  margin: 6px 0 10px;
+  padding: 8px;
+  border: 1px solid #2a3a4d;
+  border-radius: 4px;
+  background: #121a24;
+}
+
+.wb-pick .wb-text {
+  display: block;
+  width: 100%;
+  margin: 3px 0;
+  font: 12px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  background: #0b1017;
+  color: #d7e2ee;
+  border: 1px solid #24313f;
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+
+.wb-pick-line {
+  display: block;
+  margin: 4px 0 6px;
+  color: #8fa2b6;
+  font-size: 11px;
+}
+
+.wb-pick-toggle.wb-pick-on {
+  background: #1c4f7a;
+  color: #eaf4ff;
+}
+
+/* World and area rows: one line each, elided rather than wrapped.
+   The library rows wrapped to six lines apiece in a narrow panel, which turned a list of
+   three worlds into a column of broken words. */
+.wb-note .wb-row { display: block; margin: 2px 0; }
+.wb-note .wb-row button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wb-note .wb-row button + button { width: auto; display: inline-block; margin-top: 2px; }
+
+/* ---------------------------------------------------------------------------
+   Two columns and a folded status line.
+
+   The globe had a tall panel on its right that still needed scrolling, and an
+   entirely empty left half. Splitting the controls by kind - what world is this
+   on the left, what is it made of on the right - fits everything without a
+   scrollbar and leaves the globe a clear middle to be looked at.
+   --------------------------------------------------------------------------- */
+
+#wb-panel-left {
+  position: absolute; z-index: 11; top: 8px; left: 8px; width: 232px;
+  max-height: calc(100vh - 84px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 10px 12px;
+  background: rgba(10, 14, 20, .82);
+  border: 1px solid rgba(255, 255, 255, .10);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #dfe6ef;
+}
+.wb-panel-heading {
+  text-transform: uppercase; letter-spacing: .14em; font-size: 9px;
+  color: #8fb4d8; padding-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, .10);
+}
+#wb-panel { backdrop-filter: blur(6px); background: rgba(10, 14, 20, .82);
+            border: 1px solid rgba(255, 255, 255, .10); border-radius: 8px;
+            max-height: calc(100vh - 84px); }
+#wb-panel-left::-webkit-scrollbar, #wb-panel::-webkit-scrollbar { width: 7px; }
+#wb-panel-left::-webkit-scrollbar-thumb, #wb-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .16); border-radius: 4px; }
+
+/* A section heading is a control now: click it to fold. */
+.wb-fold-head { cursor: pointer; user-select: none; display: flex; align-items: center;
+                gap: 5px; padding: 3px 0; border-radius: 3px; }
+.wb-fold-head:hover { color: #cfe4ff; }
+.wb-caret { display: inline-block; width: 0; height: 0; flex: none;
+            border-left: 4px solid currentColor;
+            border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+            transform: rotate(0deg); transition: transform 120ms ease; opacity: .75; }
+.wb-fold-head.wb-open .wb-caret { transform: rotate(90deg); }
+
+/* The diagnostics wall, folded behind one line. */
+#wb-statusbar {   /* fallback only: used when there is no menu bar */
+  position: absolute; z-index: 12; top: 8px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 10px; border-radius: 999px;
+  background: rgba(10, 14, 20, .78);
+  border: 1px solid rgba(255, 255, 255, .10);
+  backdrop-filter: blur(6px);
+  font: 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #cfe0f2; white-space: nowrap; pointer-events: auto;
+}
+.wb-status-toggle {
+  font: inherit; cursor: pointer; color: #9fc6ea;
+  background: rgba(255, 255, 255, .09);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 999px; padding: 2px 8px;
+}
+.wb-status-toggle:hover { background: rgba(255, 255, 255, .18); }
+.wb-status-full {
+  position: absolute; z-index: 12; top: 40px; left: 50%; transform: translateX(-50%);
+  width: min(1100px, 92vw); max-height: 40vh; overflow-y: auto;
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(6, 9, 14, .92);
+  border: 1px solid rgba(255, 255, 255, .12);
+  font: 11px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #b9c9da; white-space: pre-wrap;
+}
+
+/* ---------------------------------------------------------------------------
+   The menu bar, in the strip that used to print generator diagnostics.
+   --------------------------------------------------------------------------- */
+#wb-topbar {
+  position: absolute; z-index: 13; top: 0; left: 0; right: 0; height: 38px;
+  display: flex; align-items: center; gap: 14px; padding: 0 12px;
+  background: linear-gradient(rgba(8, 11, 16, .94), rgba(8, 11, 16, .80));
+  border-bottom: 1px solid rgba(255, 255, 255, .10);
+  backdrop-filter: blur(8px);
+  font: 12px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #cfe0f2;
+}
+.wb-brand-inline {
+  display: flex; align-items: center; gap: 7px; white-space: nowrap;
+  font: 600 13px/1 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  letter-spacing: .015em;
+}
+.wb-brand-inline img { width: 22px; height: 22px; display: block; mix-blend-mode: screen; }
+.wb-menu { display: flex; align-items: center; gap: 6px; }
+.wb-menu-item {
+  font: inherit; cursor: pointer; color: #b8cde2;
+  background: transparent; border: 1px solid transparent;
+  border-radius: 5px; padding: 4px 9px;
+}
+.wb-menu-item:hover { background: rgba(255, 255, 255, .10); color: #eaf3ff; }
+.wb-menu-item.wb-menu-on {
+  background: rgba(120, 180, 240, .16); border-color: rgba(140, 190, 245, .32);
+  color: #eaf3ff;
+}
+.wb-spacer { flex: 1 1 auto; }
+.wb-status-summary { color: #8fb4d8; white-space: nowrap; }
+
+/* Everything below the bar starts under it. */
+#wb-panel, #wb-panel-left { top: 46px; max-height: calc(100vh - 56px); }
+.wb-status-full { top: 46px; }
+
+/* ---------------------------------------------------------------------------
+   The layer stack. Drawn top-down: the last feature in the file has the final
+   say in the composite, which is what "on top" means, so it is the top row.
+   --------------------------------------------------------------------------- */
+.wb-layers { display: flex; flex-direction: column; gap: 3px; }
+.wb-layer {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 5px; border-radius: 5px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .07);
+}
+.wb-layer-off { opacity: .42; }
+.wb-layer-name { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto;
+                 min-width: 0; }
+.wb-layer-kind { color: #eaf3ff; text-transform: capitalize;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-layer-meta { color: #8fa8c2; font-size: 9px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+.wb-layer-eye, .wb-layer-move {
+  font: inherit; cursor: pointer; color: #cfe0f2; flex: none;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 4px; padding: 1px 5px; line-height: 1.3;
+}
+.wb-layer-eye:hover, .wb-layer-move:hover:not(:disabled) { background: rgba(255,255,255,.2); }
+.wb-layer-move:disabled { opacity: .25; cursor: default; }
+.wb-note-line { color: #7f96ad; font-size: 9px; padding-top: 2px; }
+
+/* ---------------------------------------------------------------------------
+   The left column, matched to the right.
+
+   The rules above were scoped to #wb-panel, so everything moved into the left
+   column fell back to browser defaults - chunky pale buttons, ragged widths, a
+   horizontal scrollbar. Controls in two panels of one tool should not be able to
+   look like they came from different programs.
+   --------------------------------------------------------------------------- */
+#wb-panel-left { overflow-x: hidden; }
+#wb-panel-left button {
+  width: 100%; text-align: left; padding: 5px 8px; border-radius: 5px;
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12);
+  color: #dfe6ef; font: inherit; line-height: 1.35;
+}
+#wb-panel-left button:hover { background: rgba(255,255,255,.16); color: #eaf3ff; }
+#wb-panel-left input[type="text"], #wb-panel-left input:not([type]) {
+  width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 5px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+  color: #eaf3ff; font: inherit;
+}
+#wb-panel-left input::placeholder { color: #6f8398; }
+/* Pairs of buttons sit side by side instead of stacking ragged. */
+#wb-panel-left .wb-row { display: flex; gap: 5px; }
+#wb-panel-left .wb-row button { width: auto; flex: 1 1 0; text-align: center; }
+/* The panel already says WORLD in its heading; the first section need not repeat it. */
+#wb-panel-left .wb-panel-heading + .wb-section-title { display: none; }
+#wb-panel-left .wb-layer button { width: auto; }
+
+/* The brushes. Five of them, so a grid of two columns fits without scrolling. */
+.wb-brushes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+#wb-panel-left .wb-brushes button { width: 100%; text-align: center; padding: 5px 4px; }
+.wb-brush-on { background: rgba(120,180,240,.22) !important;
+               border-color: rgba(140,190,245,.42) !important; color: #eaf3ff !important; }
+.wb-brush-field { color: #8fa8c2; font-size: 9px; }
+#wb-panel-left input[type="range"] { width: 100%; height: 14px; margin: 0; }
+
+/* ---------------------------------------------------------------------------
+   The build tally. Bottom left, where the brand used to sit before it moved
+   into the bar - clear of the globe's middle and out of the panels' way.
+   --------------------------------------------------------------------------- */
+.wb-tally {
+  position: absolute; z-index: 12; left: 12px; bottom: 12px; min-width: 210px;
+  padding: 11px 13px 9px; border-radius: 9px;
+  background: rgba(8, 11, 16, .88);
+  border: 1px solid rgba(255, 255, 255, .12);
+  backdrop-filter: blur(7px);
+  font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #dfe6ef;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .5);
+}
+.wb-tally-head { display: flex; align-items: baseline; gap: 8px; padding-bottom: 7px;
+                 margin-bottom: 7px; border-bottom: 1px solid rgba(255,255,255,.12); }
+.wb-tally-world-label { text-transform: uppercase; letter-spacing: .14em; font-size: 9px;
+                        color: #7f96ad; }
+.wb-tally-world { font: 600 14px/1 "Iowan Old Style", "Palatino Linotype", Palatino,
+                  Georgia, serif; color: #f0a850; }
+/* The dial: how far through, what is happening, and that anything is happening at all.
+   Three readings because they fail differently - a needle that has not moved for a minute
+   is normal while the ground is being scored, and a clock that has not moved is a hang. */
+.wb-dial { padding: 4px 0 9px; margin-bottom: 7px;
+           border-bottom: 1px solid rgba(255,255,255,.09); }
+.wb-dial-face { display: block; width: 100%; max-width: 190px; margin: 0 auto; }
+.wb-dial-track { fill: none; stroke: rgba(255,255,255,.10); stroke-width: 6;
+                 stroke-linecap: round; }
+.wb-dial-filled { fill: none; stroke: #f0a850; stroke-width: 6; stroke-linecap: round;
+                  transition: d .45s cubic-bezier(.22,1,.36,1);
+                  filter: drop-shadow(0 0 4px rgba(240,168,80,.45)); }
+.wb-dial-tick { stroke: rgba(255,255,255,.22); stroke-width: 1; }
+.wb-dial-tick-long { stroke: rgba(255,255,255,.38); stroke-width: 1.4; }
+.wb-dial-needle { stroke: #ffd9a0; stroke-width: 2; stroke-linecap: round;
+                  transition: x2 .45s cubic-bezier(.22,1,.36,1),
+                              y2 .45s cubic-bezier(.22,1,.36,1); }
+.wb-dial-hub { fill: #ffd9a0; }
+.wb-dial-reading { fill: #eaf3ff; font: 600 19px/1 "Iowan Old Style", Palatino, Georgia,
+                   serif; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.wb-dial-scale { fill: #7f96ad; font-size: 8px; text-anchor: middle;
+                 letter-spacing: .09em; text-transform: uppercase; }
+.wb-dial-words { display: flex; align-items: baseline; justify-content: space-between;
+                 gap: 10px; margin-top: 2px; }
+.wb-dial-stage { text-transform: uppercase; letter-spacing: .12em; font-size: 10px;
+                 color: #eaf3ff; white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; }
+.wb-dial-stage::after { content: "6"; animation: wb-think 1.4s steps(4) infinite;
+                        color: #f0a850; }
+.wb-dial-clock { font-variant-numeric: tabular-nums; font-size: 10px; color: #7f96ad; }
+.wb-dial-note { font-size: 10px; color: #7f96ad; white-space: nowrap; overflow: hidden;
+                text-overflow: ellipsis; min-height: 13px; }
+/* Finished: the needle stops, the arc turns, the ellipsis goes. Three signals for the one
+   fact somebody is waiting on. */
+.wb-dial[data-done="yes"] .wb-dial-filled { stroke: #6fd08c;
+                                            filter: drop-shadow(0 0 5px rgba(111,208,140,.6)); }
+.wb-dial[data-done="yes"] .wb-dial-needle,
+.wb-dial[data-done="yes"] .wb-dial-hub { stroke: #6fd08c; fill: #6fd08c; }
+.wb-dial[data-done="yes"] .wb-dial-stage { color: #6fd08c; }
+.wb-dial[data-done="yes"] .wb-dial-stage::after { content: ""; animation: none; }
+@keyframes wb-think { 0% { content: "9"; } 33% { content: "."; }
+                      66% { content: ".."; } 100% { content: "..."; } }
+
+.wb-tally-rows { display: flex; flex-direction: column; gap: 2px; }
+.wb-tally-row { display: flex; align-items: baseline; justify-content: space-between;
+                gap: 18px; }
+.wb-tally-label { color: #93aac1; }
+.wb-tally-value { font-variant-numeric: tabular-nums; font-size: 15px; color: #eaf3ff; }
+.wb-tally-foot { margin-top: 7px; padding-top: 6px; font-size: 10px; color: #7f96ad;
+                 border-top: 1px solid rgba(255,255,255,.09); min-height: 13px;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                 max-width: 260px; }
+
+/* The key for the pin colours, in the tally card where the counts are read. */
+.wb-legend { display: flex; flex-wrap: wrap; gap: 3px 9px; margin-top: 8px;
+             padding-top: 7px; border-top: 1px solid rgba(255,255,255,.10);
+             max-width: 250px; }
+.wb-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.wb-swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+             border: 1px solid rgba(0,0,0,.55); flex: none; }
+.wb-legend-label { font-size: 9px; color: #93aac1; }
+
+/* The one button in the paint tools that costs something. Apply rebuilds the globe; every
+   other control there is free, and a person about to spend seconds should be able to see
+   which button that is without reading it. */
+#wb-panel-left .wb-mini-go {
+  background: rgba(120,180,240,.28);
+  border-color: rgba(150,200,255,.55);
+  color: #eaf3ff;
+}
+#wb-panel-left .wb-mini-go:hover { background: rgba(140,200,255,.40); }
+#wb-panel-left .wb-mini-go:disabled,
+#wb-panel-left button:disabled { opacity: .38; cursor: default; }
+
+/* The run summary: folded sections, a close button, and a bounded height.
+   The card must never grow past the window - the whole panel discipline here is that
+   nothing scrolls the page, only its own boxes. */
+.wb-tally { max-height: 78vh; overflow-y: auto; }
+.wb-tally-head { display: flex; align-items: baseline; gap: 6px; }
+.wb-tally-close {
+  margin-left: auto; background: none; border: 0; color: #8fa8c2;
+  font: 15px/1 system-ui, sans-serif; cursor: pointer; padding: 0 2px;
+}
+.wb-tally-close:hover { color: #eaf3ff; }
+.wb-tally-detail { margin-top: 8px; }
+.wb-tally-section { border-top: 1px solid rgba(255,255,255,.10); padding: 4px 0; }
+.wb-tally-section > summary {
+  cursor: pointer; color: #9fb6cd; font-size: 10px; letter-spacing: .10em;
+  text-transform: uppercase; list-style: none; padding: 3px 0;
+}
+.wb-tally-section > summary::-webkit-details-marker { display: none; }
+.wb-tally-section > summary::before { content: "▸ "; }
+.wb-tally-section[open] > summary::before { content: "▾ "; }
+.wb-tally-body { padding: 2px 0 6px 8px; }
+.wb-bar-row { display: grid; grid-template-columns: 72px 1fr 34px; gap: 6px;
+              align-items: center; margin: 2px 0; }
+.wb-bar-label { font-size: 11px; color: #cfd8e3; }
+.wb-bar-track { height: 6px; background: rgba(255,255,255,.09); border-radius: 3px; }
+.wb-bar-fill { display: block; height: 6px; border-radius: 3px; background: #6fa8dc; }
+.wb-bar-count { font-size: 11px; text-align: right; color: #cfd8e3;
+                font-variant-numeric: tabular-nums; }
+.wb-tally-note { font-size: 10px; color: #8494a6; margin: 0 0 4px 8px; }

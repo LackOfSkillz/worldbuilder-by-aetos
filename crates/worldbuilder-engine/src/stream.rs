@@ -171,11 +171,22 @@ pub struct BuildParams {
     pub radius_m: f64,
     pub sea_level_m: f64,
     pub sampling_kind: SamplingKind,
-    /// A lake root whose drainage area is at or below this is a pond. **Not measured**:
-    /// no probe computed lake levels (§10.2), so the threshold is the caller's to state
-    /// and slice 5's to calibrate. It is a required parameter rather than a default so
-    /// that nobody inherits a number nobody chose.
-    pub pond_max_drainage_area_m2: f64,
+    /// A lake whose **surface** area is at or below this is a pond -- the water's own
+    /// extent (cells at or below its filled level, summed over the whole merged body),
+    /// not its catchment. Slice 5b Task 3 measured surface area against drainage area
+    /// directly and found only 17-24% overlap in which bodies either quantity calls
+    /// smallest, evidence a catchment-based threshold names bodies by something a player
+    /// cannot see; the owner decision that followed moved this field from a drainage-area
+    /// threshold to a surface-area one (task-3-report.md's addendum has the measurement).
+    /// `StreamGraph::build` cannot itself compute a real surface -- that needs a filled
+    /// `level_m` and basin membership, neither of which exist until `water::fill_basins`
+    /// and `water::classify_lake_kinds` run -- so `build`'s own initial `Lake::kind` is
+    /// only ever a placeholder (the empty basin's own single root cell against this
+    /// threshold, in the build loop below); the real classification this parameter
+    /// controls happens in `classify_lake_kinds`.
+    /// Required with no default, unchanged in reasoning from the drainage-area field this
+    /// replaces: so that nobody inherits a number nobody chose.
+    pub pond_max_surface_area_m2: f64,
 }
 
 /// Why `build` refused its input.
@@ -423,7 +434,12 @@ impl StreamGraph {
                 continue;
             }
             graph.flags[i] |= flag::LAKE_MEMBER;
-            let kind = if graph.drainage_area_m2[i] <= params.pond_max_drainage_area_m2 {
+            // A placeholder, not a real classification (this field's own doc comment):
+            // this basin is still "empty" (`level_m == height_m[root]`), so its only
+            // known surface right now is the root's own single cell. `water::
+            // classify_lake_kinds` overwrites every row here once a real level and basin
+            // membership exist -- see that function's own doc for the real comparison.
+            let kind = if graph.area_m2[i] <= params.pond_max_surface_area_m2 {
                 LakeKind::Pond
             } else {
                 LakeKind::Lake
@@ -729,6 +745,68 @@ impl StreamGraph {
     /// not change when it does, which is why this is a note and not a fix.
     pub fn lake_at(&self, node: u32) -> Option<&Lake> {
         self.lakes.iter().find(|lake| lake.root_node == node)
+    }
+
+    /// Write `level_m` onto the lake recorded at `root_node`. Returns whether one was found
+    /// there.
+    ///
+    /// A small, deliberate hole in "fields are private, `build` is the only constructor"
+    /// (this type's own doc comment): slice 5's basin-filling pass (`water::apply_levels`)
+    /// needs to write back the one field it computes, and this is scoped to exactly that --
+    /// it can only move `level_m` on an existing lake record, never add a lake, move a root,
+    /// or touch `outflow_lake`/`kind`, which stay later slice-5 tasks' business. A general
+    /// `lakes_mut() -> &mut [Lake]` would let a caller do all of those by accident; this
+    /// does not.
+    pub fn set_lake_level_m(&mut self, root_node: u32, level_m: f64) -> bool {
+        for lake in &mut self.lakes {
+            if lake.root_node == root_node {
+                lake.level_m = level_m;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Write `outflow_lake` onto the lake recorded at `root_node`. Returns whether one was
+    /// found there.
+    ///
+    /// Slice 5 Task 2's write-back, scoped exactly like `set_lake_level_m` above and for the
+    /// same reason (this type's own doc comment: fields are private, `build` is the only
+    /// constructor, and a narrow single-field setter is the deliberate exception) -- it can
+    /// move only `outflow_lake` on an existing lake record, never `level_m` or `kind`, and
+    /// never add a lake or move a root. Does not itself validate that `outflow_lake` names a
+    /// real lake root or the sentinel; `water::resolve_outflows` is responsible for handing
+    /// this only values it has already checked, and `water::apply_outflows` re-asserts
+    /// acyclicity over the whole table after every write lands.
+    pub fn set_lake_outflow_lake(&mut self, root_node: u32, outflow_lake: u32) -> bool {
+        for lake in &mut self.lakes {
+            if lake.root_node == root_node {
+                lake.outflow_lake = outflow_lake;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Write `kind` onto the lake recorded at `root_node`. Returns whether one was found
+    /// there.
+    ///
+    /// Slice 5 Task 3's write-back, scoped exactly like `set_lake_level_m` and
+    /// `set_lake_outflow_lake` above and for the same reason -- it can move only `kind` on
+    /// an existing lake record, never `level_m` or `outflow_lake`, and never add a lake or
+    /// move a root. `StreamGraph::build` already writes an initial `kind` from each root's
+    /// own (pre-merge) drainage area; this exists because Task 2's plateau merge can join
+    /// several roots into one physical body afterwards, whose *combined* drainage area is
+    /// what actually decides pond-or-lake, so `water::classify_lake_kinds` calls this once
+    /// per lake, over every lake, after outflow resolution has landed.
+    pub fn set_lake_kind(&mut self, root_node: u32, kind: LakeKind) -> bool {
+        for lake in &mut self.lakes {
+            if lake.root_node == root_node {
+                lake.kind = kind;
+                return true;
+            }
+        }
+        false
     }
 
     pub fn reaches(&self) -> &[Reach] {
@@ -1247,7 +1325,7 @@ mod tests {
             radius_m: crate::sphere::EARTH_RADIUS_M,
             sea_level_m,
             sampling_kind: SamplingKind::Supplied,
-            pond_max_drainage_area_m2: 1.0e10,
+            pond_max_surface_area_m2: 1.0e10,
         }
     }
 
@@ -1438,6 +1516,82 @@ mod tests {
         graph.flags[victim as usize] |= flag::MOUTH; // cast-ok: a node index into usize
         let defects = graph.validate().expect_err("a double-classed root must not validate");
         assert!(defects.contains(&GraphDefect::RootIsBothMouthAndLake { node: victim }));
+    }
+
+    #[test]
+    fn set_lake_level_m_moves_only_the_named_lakes_level() {
+        let mut graph = built(20_260_904, 0.0);
+        let victim = *graph
+            .roots()
+            .iter()
+            .find(|&&r| graph.lake_at(r).is_some())
+            .expect("a lake root");
+        let before = graph.lakes().to_vec();
+        let new_level = graph.lake_at(victim).expect("still there").level_m + 5.0;
+
+        assert!(graph.set_lake_level_m(victim, new_level));
+
+        for lake in graph.lakes() {
+            if lake.root_node == victim {
+                assert_eq!(lake.level_m, new_level);
+            } else {
+                let original = before.iter().find(|l| l.root_node == lake.root_node).expect("unchanged lake still present");
+                assert_eq!(lake.level_m.to_bits(), original.level_m.to_bits(), "an unrelated lake's level moved");
+                assert_eq!(lake.kind, original.kind);
+                assert_eq!(lake.outflow_lake, original.outflow_lake);
+            }
+        }
+    }
+
+    #[test]
+    fn set_lake_level_m_reports_false_for_a_node_with_no_lake() {
+        let mut graph = built(20_260_904, 0.0);
+        let non_lake_root = *graph
+            .roots()
+            .iter()
+            .find(|&&r| graph.lake_at(r).is_none())
+            .expect("at least one mouth root");
+        assert!(!graph.set_lake_level_m(non_lake_root, 123.0));
+        assert!(!graph.set_lake_level_m(NO_LAKE, 123.0), "the sentinel index names no lake either");
+    }
+
+    /// Slice 5 Task 2's write-back, tested to the same standard as `set_lake_level_m` above:
+    /// moves only the named lake's `outflow_lake`, touches nothing else on any record.
+    #[test]
+    fn set_lake_outflow_lake_moves_only_the_named_lakes_outflow() {
+        let mut graph = built(20_260_904, 0.0);
+        let mut lake_roots = graph.roots().into_iter().filter(|&r| graph.lake_at(r).is_some());
+        let victim = lake_roots.next().expect("a lake root");
+        let other = lake_roots.next().expect("a second lake root, distinct from victim");
+        let before = graph.lakes().to_vec();
+
+        assert!(graph.set_lake_outflow_lake(victim, other));
+
+        for lake in graph.lakes() {
+            if lake.root_node == victim {
+                assert_eq!(lake.outflow_lake, other);
+            } else {
+                let original = before.iter().find(|l| l.root_node == lake.root_node).expect("unchanged lake still present");
+                assert_eq!(lake.outflow_lake, original.outflow_lake, "an unrelated lake's outflow moved");
+                assert_eq!(lake.level_m.to_bits(), original.level_m.to_bits());
+                assert_eq!(lake.kind, original.kind);
+            }
+        }
+    }
+
+    #[test]
+    fn set_lake_outflow_lake_reports_false_for_a_node_with_no_lake() {
+        let mut graph = built(20_260_904, 0.0);
+        let non_lake_root = *graph
+            .roots()
+            .iter()
+            .find(|&&r| graph.lake_at(r).is_none())
+            .expect("at least one mouth root");
+        assert!(!graph.set_lake_outflow_lake(non_lake_root, NO_LAKE));
+        assert!(
+            !graph.set_lake_outflow_lake(NO_LAKE, NO_LAKE),
+            "the sentinel index names no lake either"
+        );
     }
 
     #[test]
@@ -2722,8 +2876,8 @@ mod sampling_tests {
             sea_level_m: 0.0,
             sampling_kind: SamplingKind::Spiral,
             // Stated by this test, not defaulted by the type. See
-            // `pond_max_drainage_area_m2` on `BuildParams`.
-            pond_max_drainage_area_m2: 4.0e9,
+            // `pond_max_surface_area_m2` on `BuildParams`.
+            pond_max_surface_area_m2: 4.0e9,
         };
         StreamGraph::build(
             &params,
@@ -2778,7 +2932,7 @@ mod sampling_tests {
 
     // ---- the threshold nobody has measured ---------------------------------------------
 
-    /// `pond_max_drainage_area_m2` is required-with-no-default, and **this slice did not
+    /// `pond_max_surface_area_m2` is required-with-no-default, and **this slice did not
     /// measure it either**.
     ///
     /// It cannot be measured here, and the reason is structural rather than a shortage of
@@ -2909,7 +3063,7 @@ mod sampling_tests {
                 radius_m: RADIUS_M,
                 sea_level_m: -20_000.0,
                 sampling_kind: SamplingKind::Spiral,
-                pond_max_drainage_area_m2: 4.0e9,
+                pond_max_surface_area_m2: 4.0e9,
             };
             let result = StreamGraph::build(
                 &params,

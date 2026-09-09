@@ -118,7 +118,7 @@ fn build_population(seed: i64, count: u32) -> Population {
     let world_seed = seed as u64; // cast-ok: two's-complement reinterpretation, as Surface::new makes
     let sampling = sample_nodes(world_seed, count, EARTH_RADIUS_M).expect("a node set");
 
-    let surface = Surface::new(seed, EARTH_RADIUS_M, 22, 0.29, None);
+    let surface = Surface::new(seed, EARTH_RADIUS_M, 22, 0.29, None, None, None);
     let heights: Vec<f64> = sampling.positions.iter().map(|p| surface.elevation_m(p, None)).collect();
 
     let graph = StreamGraph::build(
@@ -127,7 +127,7 @@ fn build_population(seed: i64, count: u32) -> Population {
             radius_m: EARTH_RADIUS_M,
             sea_level_m: DATUM_M,
             sampling_kind: SamplingKind::Spiral,
-            pond_max_drainage_area_m2: POND_MAX_M2,
+            pond_max_surface_area_m2: POND_MAX_M2,
         },
         &sampling.positions,
         &heights,
@@ -204,7 +204,9 @@ fn print_row(count: u32, label: &str, c_median: f64, c_max: f64, result: &Erosio
 
 fn main() {
     println!("erosion_convergence_sweep: seed {SEED}, u = {UPLIFT_M_PER_YR} m/yr, dt = {TIMESTEP_YR} yr, cap = {MAX_ITERATIONS}");
-    println!("population: SamplingKind::Spiral, Surface::new(seed, EARTH_RADIUS_M, 22, 0.29, None) heights");
+    println!(
+        "population: SamplingKind::Spiral, Surface::new(seed, EARTH_RADIUS_M, 22, 0.29, None, None, None) heights"
+    );
     println!("c = k * dt * sqrt(A_drainage) / d, over every draining node -- see erosion.rs::erode_step's doc");
     println!();
 

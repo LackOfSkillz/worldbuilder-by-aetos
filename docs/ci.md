@@ -190,15 +190,25 @@ file *appearing* moves the digest exactly as a file *changing* does.
 A mutated artifact is refused rather than silently compared: `REFUSING TO REPORT PARITY --
 STALE ARTIFACT:` with the source/artifact hashes, because "the corpus and the .wasm agree
 with each other and with nothing else" is not evidence. Re-run on the current tree
-(slice 5a added the `erosion/erosion` group through `wb_erosion_run`, which the count below
-now includes -- re-derived, not carried forward from before that export existed):
-`parity: 56254 values compared through the shipped exports, 0 divergent`, exit 0. A control
-run (`--mutate seed`) proves the harness can fail at all: of the same 56,254 values, 53,778
+(slice 5a added the `erosion/erosion` group through `wb_erosion_run`; slice 5b Task 5 added
+the relief channel's three groups and the `water/plain` group through `wb_water_run`; slice
+mountains Task 6 added five tectonic groups through `wb_tectonic_preset`,
+`wb_tectonic_check` and `wb_world_new_tectonic` -- all re-derived, never carried forward from
+before those exports existed):
+`parity: 89861 values compared through the shipped exports, 0 divergent`, exit 0. A control
+run (`--mutate seed`) proves the harness can fail at all: of the same 89,861 values, 86,190
 diverge. A second control, `--mutate erosion-k` (bumps `erodibility_per_yr` by one ULP before
 replaying the erosion record and touches nothing else), isolates that group specifically:
 216 of the erosion group's 3,000 heights diverge and its status/iteration/converged fields do
 not, so this control shows the arithmetic is sensitive to `k` without the divergence being an
-artifact of a different iteration count on the two sides.
+artifact of a different iteration count on the two sides. A third, `--mutate water-pond`
+(moves `pond_max_surface_area_m2` from 1.0e5 to 2.0e10 m² and touches nothing else), is
+narrower still: **60** of the water group's 156 `Body::kind` codes diverge and every other
+field of the manifest -- root node, level, all four extent bounds, the body count, the datum
+-- compares equal, because that parameter reaches exactly one field. **Its count is predicted
+natively, from `water::lake_body_surface_areas_m2`, before the replay runs**, and `parity.mjs`
+exits 1 if any group moves by a different amount; a control gate read off the control's own
+output would be a rubber stamp.
 
    **A correction this project must not re-introduce.** Task 2 of this slice changed the
    `.wasm`'s bytes (`60244aec…` → `dcbed115…`) as a side effect of adding a Cargo
@@ -227,13 +237,23 @@ mismatch, if they disagree or either is missing:
 
   | configuration | listed | ignored | run (pinned in `gates.yml`) |
   |---|---|---|---|
-  | `--no-default-features` | 459 | 5 | **454** |
-  | default | 459 | 5 | **454** |
-  | `--features python` | 461 | 5 | **456** |
-  | `--features wasm` | 495 | 5 | **490** |
-  | `--features python,wasm` | 497 | 5 | **492** |
+  | `--no-default-features` | 522 | 5 | **517** |
+  | default | 522 | 5 | **517** |
+  | `--features python` | 524 | 5 | **519** |
+  | `--features wasm` | 571 | 5 | **566** |
+  | `--features python,wasm` | 573 | 5 | **568** |
 
-  These moved up from 409/409/409/439/439 in the identity slice (`tests/build_fingerprint.rs`,
+  Re-derived for slice 5b Task 6 / relief Task 5, on that host, at `1004f4d`, by running the
+  two `--list` forms per configuration before reading `gates.yml` -- and they match its
+  `expect:` / `expect_ignored:` values exactly. The table had been left at
+  459/459/461/495/497 listed (454/454/456/490/492 run) while slice 5b and the whole
+  relief-amplitude slice landed: **+63 in `lib` across all five rows** (`stream.rs`,
+  `streamfmt.rs`, all of `water.rs`, and `detail.rs`'s `ReliefParams` / `hills()`) and **+13
+  in `tests/wasm_exports.rs`** (36 -> 49: the relief exports and `wb_water_run`), which only
+  the two `wasm` rows compile. The per-task attribution is in `gates.yml`'s own inline
+  commentary, task by task.
+
+  The figures before that moved up from 409/409/409/439/439 in the identity slice (`tests/build_fingerprint.rs`,
   new, adding 9 tests to all five configurations, plus 2 more in `lib` for `--features python`
   because `source_fingerprint()` / `source_fingerprint_inputs()` are PyO3 exports whose
   binding tests only compile with that feature); to 458/458/460/493/495 listed
@@ -267,10 +287,17 @@ mismatch, if they disagree or either is missing:
   (**157**, not 150: the gate pins the file's total, and seven of those are the guard unit
   tests named just above. An earlier draft of this line said 150 and contradicted its own
   preceding bullet.)
-- **Parity corpus**: the total line (`56,254 values compared` -- 53,251 plus the 3,003-value
-  `erosion/erosion` group slice 5a added) is cross-checked against the ten per-group tallies
-  summing to it, so a shrunk corpus fails with `COUNT GATE FAILED / expected 56254 values
-  compared, found <M>` even when provenance and parity both report green on their own.
+- **Parity corpus**: the total line (`89,861 values compared` -- 53,251 from the original
+  Surface-level corpus, plus the 3,003-value `erosion/erosion` group slice 5a added, plus the
+  15,342 slice 5b Task 5 added as 22 preset values, 14,225 on a non-canonical relief world and
+  1,095 of water manifest, plus the 18,265 slice mountains Task 6 added as 34 tectonic preset
+  values, 6 checker statuses, 14,000 scalars on a world built from `TectonicParams::ranges()`
+  and 4,225 tile cells across the belt it builds) is cross-checked against the twenty-four
+  per-group tallies summing to it, so a shrunk corpus fails with `COUNT GATE FAILED / expected
+  89861 values compared, found <M>` even when provenance and parity both report green on their
+  own. All four controls are gated on their own divergent counts too (86,190 / 216 / 60 /
+  6,186), because "the harness can be made to fail" is satisfied by one divergent value and
+  would prove far less than the record claims.
 
 ## What CI does NOT cover
 
