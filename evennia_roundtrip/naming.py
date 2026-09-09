@@ -512,38 +512,37 @@ def _sentence_case(text):
     return text[0].upper() + text[1:] if text else text
 
 
-def ways_sentence(exits):
-    """The sentence that names every way out. See `describe`."""
-    ways = [WAY.get(name, name) for name in exits]
-    if not ways:
-        return "There is no way on from here but the way you came."
-    if len(ways) == 1:
-        return "The only way on lies %s." % ways[0]
-    return "Ways lead %s and %s." % (", ".join(ways[:-1]), ways[-1])
-
-
 def describe(exits, race, rng, band=(34, 79)):
     """
     A room description that satisfies the prose laws by construction.
 
     Args:
-        exits (list): The exit names leading out, e.g. `["north", "west"]`.
+        exits (list): The exit names leading out. Kept for the caller's convenience and
+            deliberately not written into the prose - see the notes.
         race (str): Whose place this is, choosing the vocabulary.
         rng (random.Random): The world's own generator.
         band (tuple): The word count the laws allow.
 
     Returns:
-        text (str): Three or four sentences, inside the word band, naming every way out.
+        text (str): Three or four sentences, inside the word band.
 
     Notes:
-        **Every exit is named because a player cannot see.** The laws require it and the
-        reason is not tidiness: a description that mentions two of three ways out is a
-        description that hides a door, and hidden doors are found by typing every compass
-        point in every room, which is the least interesting thing a game can ask for.
+        **The ways out are not listed here, because the game already lists them.** Every
+        description used to end "Ways lead east, south and north", and the line under it
+        read "Exits: east, south, and north" - the same three facts, twice, in every room
+        of the world. Law G6 forbids a description that *promises* a way the room has not
+        got; it does not ask for the promise. A description that says nothing about the
+        exits cannot lie about them, and the sentence it saves is spent on the room.
 
         **Only permanently true things.** No weather, no light, no birds - those belong in
         an ambient message, because a description is read at noon and at midnight and in
         the rain, and a room that is always sunny is a room nobody believes.
+
+        **The order varies because the opening word was a signature.** Every description
+        began with its surface, so five words opened forty-eight per cent of nine thousand
+        rooms - the loudest tell of a generated world, and one no law catches, because no
+        hand-author has ever written ten thousand rooms in one sitting. Rotating which
+        sentence leads costs nothing and spreads the openings across three vocabularies.
     """
     voice = voice_for(race)
     # **Not every room has a wall.** "A cairn at the turning stands against the wall" is
@@ -551,17 +550,16 @@ def describe(exits, race, rng, band=(34, 79)):
     # of wrong that a word-count band cannot see. Outdoor voices say where their fixture
     # stands in their own terms.
     fixture = rng.choice(voice["fixture"])
-    opening = "%s runs underfoot, and %s stands %s." % (
-        _sentence_case(rng.choice(voice["surface"])), fixture,
-        voice.get("beside", "against the wall"))
+    ground = "%s runs underfoot" % _sentence_case(rng.choice(voice["surface"]))
+    stands = "%s stands %s" % (_sentence_case(fixture),
+                               voice.get("beside", "against the wall"))
     middle = "%s; the air is %s." % (
         _sentence_case(rng.choice(voice["sound"])), rng.choice(voice["smell"]))
-    going = ways_sentence(exits)
 
-    # **The third sentence is the culture's own, not a filler.** The first version padded
-    # every short description with one fixed line, and the other three sentences come to
-    # about thirty words - so that line appeared in essentially every room in the world.
-    # Five thousand rooms sharing a sentence is worse than five thousand sharing a shape.
+    # **The details are the culture's own, not filler.** The first version padded every
+    # short description with one fixed line, and since the other sentences come to about
+    # thirty words, that line appeared in essentially every room in the world. Five
+    # thousand rooms sharing a sentence is worse than five thousand sharing a shape.
     details = list(voice.get("detail") or ("",))
     rng.shuffle(details)
     # **Do not name the same object twice in three sentences.** The fixture and the detail
@@ -569,22 +567,36 @@ def describe(exits, race, rng, band=(34, 79)):
     # both on the salt lick - and "a hide of woven branches stands at the edge of the ride.
     # A hide of woven branches faces down the ride" reads as a stutter rather than a room.
     keyword = " ".join(fixture.split()[1:3]).rstrip(",.")
-    detail = next((line for line in details if keyword and keyword not in line.lower()),
-                  details[0])
-    text = " ".join(part for part in (opening, middle, detail, going) if part)
-    # **Short is a refusal, so it is fixed here rather than reported there.** One area in a
-    # hundred came out at thirty-three words against a floor of thirty-four and was thrown
-    # away whole - fifty rooms discarded over one word. A second detail sentence costs
-    # nothing and is the culture's own voice rather than filler.
-    if len(text.split()) < band[0] and len(details) > 1:
-        text = " ".join(part for part in (opening, middle, detail, details[1], going)
-                        if part)
+    chosen = [line for line in details if keyword and keyword not in line.lower()] or details
+
+    # Three ways to open the same room. The pair that is not leading becomes the second
+    # sentence, so nothing is lost by the rotation - only its place in the paragraph.
+    # Four ways to open the same room. Whichever leads, the rest still get said, so the
+    # rotation costs the description nothing but its habit.
+    lead = rng.randrange(4)
+    if lead == 0:
+        opening = "%s, and %s." % (ground, stands[0].lower() + stands[1:])
+        parts = [opening, middle]
+    elif lead == 1:
+        opening = "%s, and %s underfoot." % (stands, rng.choice(voice["surface"]))
+        parts = [opening, middle]
+    elif lead == 2:
+        opening = "%s, and %s." % (_sentence_case(chosen[0]).rstrip("."),
+                                   stands[0].lower() + stands[1:])
+        chosen = chosen[1:] or details
+        parts = [opening, "%s." % ground, middle]
+    else:
+        # The senses first, which is the one opening that starts with neither a surface
+        # nor an article - and so does most of the work of breaking the pattern.
+        parts = [middle, "%s, and %s." % (ground, stands[0].lower() + stands[1:])]
+
+    parts = parts + [_sentence_case(line) for line in chosen[:2]]
+    text = " ".join(part for part in parts if part).replace("  ", " ")
     # Trimmed against the same band the gate measures, so an area is never refused for a
     # sentence this file could have made the right length.
-    if len(text.split()) > band[1]:
-        text = " ".join([opening, middle, going])
-    if len(text.split()) > band[1]:
-        text = " ".join([opening, going])
+    while len(text.split()) > band[1] and len(parts) > 2:
+        parts.pop()
+        text = " ".join(part for part in parts if part).replace("  ", " ")
     return text
 
 
@@ -620,66 +632,6 @@ def name_and_describe(area, race, rng, settled=True):
     if not area.get("display_name"):
         area["display_name"] = place_name(race, rng)
     return area
-
-
-def retell_exits(area, race=None):
-    """
-    Rewrite each room's last sentence so it names the exits the room actually has.
-
-    Notes:
-        **Roads are laid after the prose is written, and that silently breaks a law.** A
-        description names every way out; a settlement room that later gains a road exit is
-        then a room whose prose hides a door - and it is hidden in exactly the way the law
-        exists to prevent. Measured on a hundred-area run: seven hundred and thirty-two
-        exits went unnamed once the roads were in.
-
-        Only the closing sentence is replaced, because only the closing sentence is about
-        the ways out. A room whose description this module did not write is left alone: it
-        is not this function's prose to rewrite.
-    """
-    by_room = {}
-    for exit_ in area.get("exits") or ():
-        by_room.setdefault(exit_["source"], []).append(exit_["name"])
-    for room in area.get("rooms") or ():
-        text = room.get("desc")
-        if not text:
-            continue
-        head, _, tail = text.rpartition(". ")
-        if not head or not _is_ways_sentence(tail):
-            continue
-        retold = "%s. %s" % (head, ways_sentence(by_room.get(room["id"], [])))
-        # **Rewriting the closing sentence changes the word count, and the gate has already
-        # run.** "Ways lead south and north" is shorter than what it replaced, so a room
-        # that passed the 34-word floor before the roads were laid could fall under it
-        # afterwards - and nothing downstream looks again. One measured at 33 words in a
-        # thirty-area run. The voice's own details make it up rather than filler.
-        details = list(voice_for(race).get("detail") or ())
-        used = 0
-        while len(retold.split()) < 34 and used < len(details):
-            addition = details[used]
-            used += 1
-            if addition in retold:
-                continue
-            retold = "%s %s" % (head + ".", addition) + " " + ways_sentence(
-                by_room.get(room["id"], []))
-        room["desc"] = retold
-    return area
-
-
-def _is_ways_sentence(text):
-    """Whether a sentence is one this module wrote about the ways out."""
-    return text.startswith(("Ways lead ", "The only way on lies ", "There is no way on"))
-
-
-#: What a settlement's through-ways are called, by culture. A street keeps its name for its
-#: whole length; only the part of it changes.
-STREET_HEAD = ("Market", "Mill", "Bridge", "Kings", "Old", "Nether", "Upper", "Salt",
-               "Peel", "Kiln", "Cooper", "Draper", "Water", "Long", "Broad", "Chapel")
-
-#: Which end of a street a room stands at. Only the two actual ends take one: everything
-#: between them is named for the way it crosses, because "Middle" three times in a row is
-#: not three sections of a street, it is one label printed three times.
-ENDS = ("West End", "East End")
 
 
 def _street_names(count, kinds, rng):

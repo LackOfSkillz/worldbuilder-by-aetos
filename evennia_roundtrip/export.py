@@ -57,6 +57,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "{data}")
 ROOM_TYPECLASS = "typeclasses.rooms.Room"
 EXIT_TYPECLASS = "typeclasses.exits.Exit"
+WARES_TYPECLASS = "typeclasses.objects.Object"
+#: NPCs are characters, because a shopkeeper a player can talk to is a character and not a
+#: prop. A game with its own NPC typeclass changes this one line.
+FOLK_TYPECLASS = "typeclasses.characters.Character"
 WB_ID = "{wb_id}"
 
 
@@ -107,6 +111,56 @@ def build(caller=None, data=DATA):
         if record.get("purpose"):
             room.tags.add(record["purpose"], category="wb_purpose")
 
+    # **The wares belong to the keeper, because a shop is a person with goods.**
+    #
+    # They were first written onto a counter standing in the room, which put them where a
+    # player could read them and nowhere they could be asked for. Clicking the shopkeeper
+    # and being shown what they sell is the whole of the interaction, and it wants one
+    # object holding both the goods and the conversation rather than two holding half each.
+    #
+    # The maritime client's land map marks a room as trade by looking through its contents
+    # for anything carrying `stock`, so the keeper lights the map up as the counter did.
+    wares_of = {{}}
+    for record in world["rooms"]:
+        if record.get("stock"):
+            wares_of[record["id"]] = list(record["stock"])
+
+    # **The people the generator placed.** Keyed by the room and their place in it, so a
+    # second import moves nobody and doubles nobody.
+    folk = 0
+    counters = 0
+    for record in world["rooms"]:
+        room = built.get(record["id"])
+        if room is None:
+            continue
+        for place, person in enumerate(record.get("people") or ()):
+            mark = "%s:folk:%s" % (record["id"], place)
+            body = built.get(mark)
+            if body is None:
+                body = create_object(FOLK_TYPECLASS, key=person["name"], location=room)
+                body.attributes.add(WB_ID, mark)
+                built[mark] = body
+                folk += 1
+            body.key = person["name"]
+            body.attributes.add("wb_role", person.get("role") or "folk")
+            wares = wares_of.get(record["id"]) if person.get("role") == "keeper" else None
+            if wares:
+                body.db.stock = wares
+                body.db.desc = ("Goods for sale:"
+                                + "".join(chr(10) + "  " + ware for ware in wares))
+                counters += 1
+            elif not body.db.desc:
+                body.db.desc = "One of the people of this place."
+
+    # A counter built by an earlier version of this file has nothing to do now that the
+    # keeper carries the goods. Left standing it is a prop that duplicates a person.
+    retired = 0
+    for mark, thing in list(built.items()):
+        if isinstance(mark, str) and mark.endswith(":wares"):
+            thing.delete()
+            del built[mark]
+            retired += 1
+
     exits_made = 0
     for record in world["exits"]:
         source = built.get(record["source"])
@@ -120,9 +174,11 @@ def build(caller=None, data=DATA):
                       destination=destination)
         exits_made += 1
 
-    say("worldbuilder: %s rooms built, %s updated, %s exits made"
-        % (made, reused, exits_made))
-    return {{"built": made, "updated": reused, "exits": exits_made}}
+    say("worldbuilder: %s rooms built, %s updated, %s exits made, %s keepers stocked, "
+        "%s people, %s counters retired"
+        % (made, reused, exits_made, counters, folk, retired))
+    return {{"built": made, "updated": reused, "exits": exits_made,
+            "shops": counters, "people": folk, "retired": retired}}
 '''
 
 
@@ -160,6 +216,7 @@ def flatten(document):
                 "longitude_deg": room.get("longitude_deg"),
                 "elevation_m": room.get("elevation_m"),
                 "stock": room.get("stock") or None,
+                "people": room.get("people") or None,
             })
         for exit_ in area.get("exits") or ():
             exits.append({"source": exit_["source"], "name": exit_["name"],

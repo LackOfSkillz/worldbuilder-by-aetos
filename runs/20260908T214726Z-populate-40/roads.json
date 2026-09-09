@@ -1,0 +1,389 @@
+[
+ {
+  "direction": "west",
+  "from": "bayou_trace",
+  "laid": true,
+  "long": false,
+  "metres": 17,
+  "rooms": 0,
+  "to": "ferry_shore"
+ },
+ {
+  "direction": "southeast",
+  "from": "bayou_trace",
+  "laid": true,
+  "long": false,
+  "metres": 437,
+  "rooms": 0,
+  "to": "ranger_camp"
+ },
+ {
+  "direction": "southwest",
+  "from": "ranger_camp",
+  "laid": true,
+  "long": false,
+  "metres": 200350,
+  "rooms": 24,
+  "to": "farground"
+ },
+ {
+  "direction": "east",
+  "from": "ranger_camp",
+  "laid": true,
+  "long": false,
+  "metres": 266656,
+  "rooms": 33,
+  "to": "oldrow"
+ },
+ {
+  "direction": "south",
+  "from": "oldrow",
+  "laid": true,
+  "long": false,
+  "metres": 216156,
+  "rooms": 26,
+  "to": "marketmarket"
+ },
+ {
+  "direction": "north",
+  "from": "oldrow",
+  "laid": true,
+  "long": true,
+  "metres": 2079475,
+  "rooms": 40,
+  "to": "baskingtrace"
+ },
+ {
+  "direction": "east",
+  "from": "baskingtrace",
+  "laid": true,
+  "long": false,
+  "metres": 200808,
+  "rooms": 24,
+  "to": "packhollow"
+ },
+ {
+  "direction": "east",
+  "from": "packhollow",
+  "laid": true,
+  "long": false,
+  "metres": 200687,
+  "rooms": 24,
+  "to": "kingsfield"
+ },
+ {
+  "direction": "north",
+  "from": "kingsfield",
+  "laid": true,
+  "long": false,
+  "metres": 207803,
+  "rooms": 25,
+  "to": "highhowe"
+ },
+ {
+  "direction": "northwest",
+  "from": "highhowe",
+  "laid": true,
+  "long": false,
+  "metres": 207203,
+  "rooms": 25,
+  "to": "cogworks"
+ },
+ {
+  "direction": "west",
+  "from": "cogworks",
+  "laid": true,
+  "long": false,
+  "metres": 206401,
+  "rooms": 25,
+  "to": "bellowsrow"
+ },
+ {
+  "direction": "northeast",
+  "from": "bellowsrow",
+  "laid": true,
+  "long": false,
+  "metres": 191337,
+  "rooms": 23,
+  "to": "delveanvil"
+ },
+ {
+  "direction": "east",
+  "from": "cogworks",
+  "laid": true,
+  "long": false,
+  "metres": 206937,
+  "rooms": 25,
+  "to": "tinkeryard"
+ },
+ {
+  "direction": "southwest",
+  "from": "bellowsrow",
+  "laid": true,
+  "long": false,
+  "metres": 210061,
+  "rooms": 26,
+  "to": "elderwater"
+ },
+ {
+  "direction": "west",
+  "from": "elderwater",
+  "laid": true,
+  "long": false,
+  "metres": 287000,
+  "rooms": 35,
+  "to": "meadowbank"
+ },
+ {
+  "direction": "southwest",
+  "from": "meadowbank",
+  "laid": true,
+  "long": false,
+  "metres": 199527,
+  "rooms": 24,
+  "to": "the-landing-city"
+ },
+ {
+  "direction": "north",
+  "from": "the-landing-city",
+  "laid": true,
+  "long": false,
+  "metres": 0,
+  "rooms": 0,
+  "to": "millfield"
+ },
+ {
+  "direction": "northwest",
+  "from": "the-landing-city",
+  "laid": true,
+  "long": false,
+  "metres": 200086,
+  "rooms": 24,
+  "to": "kingscross"
+ },
+ {
+  "direction": "northwest",
+  "from": "kingscross",
+  "laid": true,
+  "long": false,
+  "metres": 200755,
+  "rooms": 24,
+  "to": "alderwater"
+ },
+ {
+  "direction": "north",
+  "from": "kingscross",
+  "laid": true,
+  "long": false,
+  "metres": 221747,
+  "rooms": 27,
+  "to": "netwalk"
+ },
+ {
+  "direction": "north",
+  "from": "meadowbank",
+  "laid": true,
+  "long": false,
+  "metres": 266029,
+  "rooms": 33,
+  "to": "stairgranite"
+ },
+ {
+  "direction": "north",
+  "from": "alderwater",
+  "laid": true,
+  "long": false,
+  "metres": 326321,
+  "rooms": 40,
+  "to": "aditiron"
+ },
+ {
+  "direction": "west",
+  "from": "alderwater",
+  "laid": true,
+  "long": false,
+  "metres": 334679,
+  "rooms": 40,
+  "to": "stairgranite"
+ },
+ {
+  "direction": "northeast",
+  "from": "aditiron",
+  "laid": true,
+  "long": true,
+  "metres": 579826,
+  "rooms": 40,
+  "to": "holdiron"
+ },
+ {
+  "direction": "west",
+  "from": "stairgranite",
+  "laid": true,
+  "long": true,
+  "metres": 742603,
+  "rooms": 40,
+  "to": "packhowl"
+ },
+ {
+  "direction": "southwest",
+  "from": "packhowl",
+  "laid": true,
+  "long": true,
+  "metres": 3533319,
+  "rooms": 40,
+  "to": "seastair"
+ },
+ {
+  "direction": "northeast",
+  "from": "tinkeryard",
+  "laid": true,
+  "long": true,
+  "metres": 3606055,
+  "rooms": 40,
+  "to": "netherwharf"
+ },
+ {
+  "direction": "southeast",
+  "from": "netherwharf",
+  "laid": true,
+  "long": false,
+  "metres": 200079,
+  "rooms": 24,
+  "to": "standingrun"
+ },
+ {
+  "direction": "northeast",
+  "from": "standingrun",
+  "laid": true,
+  "long": false,
+  "metres": 200074,
+  "rooms": 24,
+  "to": "roughbrae"
+ },
+ {
+  "direction": "southeast",
+  "from": "roughbrae",
+  "laid": true,
+  "long": false,
+  "metres": 199789,
+  "rooms": 24,
+  "to": "stonehowe"
+ },
+ {
+  "direction": "south",
+  "from": "stonehowe",
+  "laid": true,
+  "long": false,
+  "metres": 200488,
+  "rooms": 24,
+  "to": "upperfield"
+ },
+ {
+  "direction": "north",
+  "from": "roughbrae",
+  "laid": true,
+  "long": false,
+  "metres": 200848,
+  "rooms": 24,
+  "to": "oldbridge"
+ },
+ {
+  "direction": "west",
+  "from": "oldbridge",
+  "laid": true,
+  "long": false,
+  "metres": 205091,
+  "rooms": 25,
+  "to": "upperbridge"
+ },
+ {
+  "direction": "east",
+  "from": "oldbridge",
+  "laid": true,
+  "long": false,
+  "metres": 205100,
+  "rooms": 25,
+  "to": "longwalk"
+ },
+ {
+  "direction": "southeast",
+  "from": "stonehowe",
+  "laid": true,
+  "long": false,
+  "metres": 248739,
+  "rooms": 30,
+  "to": "standingcamp"
+ },
+ {
+  "direction": "east",
+  "from": "marketmarket",
+  "laid": true,
+  "long": true,
+  "metres": 3732285,
+  "rooms": 40,
+  "to": "broadcamp"
+ },
+ {
+  "from": "the-road-from-stonehowe-to-upperfield",
+  "laid": true,
+  "long": false,
+  "metres": 174089,
+  "path": true,
+  "rooms": 21,
+  "to": "sharphole"
+ },
+ {
+  "from": "the-road-from-marketmarket-to-broadcamp",
+  "laid": true,
+  "long": true,
+  "metres": 1745548,
+  "path": true,
+  "rooms": 40,
+  "to": "roewood"
+ },
+ {
+  "from": "netwalk",
+  "laid": true,
+  "long": false,
+  "metres": 237889,
+  "path": true,
+  "rooms": 29,
+  "to": "roughground"
+ },
+ {
+  "from": "the-road-from-oldrow-to-marketmarket",
+  "laid": true,
+  "long": false,
+  "metres": 210446,
+  "path": true,
+  "rooms": 26,
+  "to": "barehunt"
+ },
+ {
+  "from": "the-road-from-baskingtrace-to-packhollow",
+  "laid": true,
+  "long": false,
+  "metres": 174143,
+  "path": true,
+  "rooms": 21,
+  "to": "screemidden"
+ },
+ {
+  "from": "upperfield",
+  "laid": true,
+  "long": false,
+  "metres": 201902,
+  "path": true,
+  "rooms": 25,
+  "to": "barehunt"
+ },
+ {
+  "from": "the-road-from-stonehowe-to-standingcamp",
+  "laid": true,
+  "long": false,
+  "metres": 162088,
+  "path": true,
+  "rooms": 20,
+  "to": "barereach"
+ }
+]

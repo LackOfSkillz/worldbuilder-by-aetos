@@ -128,3 +128,92 @@ Two gaps worth considering, since the laws are ours to change:
 - **G1 and R8 are two statements about runs, enforced against names.** Making the naming
   read the run graph directly — as tested above — closes most of both. It may be worth
   saying so in Part 13 rather than leaving each generator to rediscover it.
+
+---
+
+## What walking the world added
+
+The lint above reads the worldfile. These came from importing it into a real game and
+walking it, which found things no linter was asked about.
+
+### 8. The population did not exist
+
+`npcs` was `rooms x density` — a number, computed and reported, with nothing behind it. No
+worldfile carried a single person. Every population figure this generator has printed, in
+every run, described people who were never made; the tally panel added them up and showed a
+total. The docstring on the function that produced it says *"Counted, because a predicted
+number is a different claim"*, which is exactly the mistake it was making.
+
+**Fixed.** `people.py` places a keeper in every shop and scatters folk through the rest at a
+density set by settlement size; hunting grounds get quarry instead — a deer is as much an
+NPC as a stallholder. Named by trade and station (`a stallholder`, `an ostler`, `a red
+deer`) rather than by invented proper nouns, which keeps three thousand pieces of accidental
+lore out of the world. `npcs` is now `len(list)`. The existing 130-area run re-peopled to
+**4,478 people across 257 places**.
+
+### 9. Every description listed the exits, and so did the game
+
+    Ways lead east, south and north.
+    Exits: east, south, and north
+
+Two lines, three facts, twice, in every room of the world. Law G6 forbids a description that
+*promises* a way the room has not got; it never asked for the promise. **Fixed** — the
+sentence is gone, along with `retell_exits` and `ways_sentence`, which existed only to keep
+it honest as roads were added.
+
+### 10. A description does not know what its room is
+
+`the shrine` was described with a hand-cranked winch, chalk sums on a board and a kettle
+being silenced; `the alchemist` smelled of solder and steam. The prose is voiced by the
+**area's** culture and never consults the **room's** purpose, so every room in a gnome town
+reads as a workshop whatever its sign says. A shrine that reads as a workshop is the same
+defect as a shop with no shopkeeper: the name says one thing and the text says another.
+
+**Not fixed.** It needs a per-purpose vocabulary layered over the cultural one — the shrine's
+own furniture, the healer's own smells — and that is a body of writing, not a bug.
+
+### 11. The openings were a signature
+
+Five words opened 48% of 9,160 rooms. **Partly fixed**: the description now rotates which of
+four sentences leads, including one that opens on sound and smell rather than on ground.
+Measured over 3,000 human-voiced rooms, the top five openings fell from 48% to **32%**, with
+18 distinct three-word openings per culture. Still not what a person writing one room at a
+time produces.
+
+### 12. The rooms are legal and thin
+
+Median 43 words against canon's 53, inside a band of 34-79. Removing the ways sentence and
+spending it on a second cultural detail brings the median to **45** — better, still short.
+This is the ceiling of the template approach: more length from the same vocabulary means
+more repetition, not more room.
+
+**Proposed, not built: AI-assisted description as a user-chosen option.** Two generators
+behind one switch — the rules-based one, which is free, instant and deterministic, and a
+model-written one for comparison. The rules to hold to if it is built:
+
+- **The seed must still reproduce the world.** Model-written prose is generated once, into
+  the run's own files, and never at play time. A run either has AI descriptions baked in or
+  it does not.
+- **The choice is the user's, per run**, beside the world and area count — not a setting
+  buried in a config.
+- **The same laws gate both.** Word band, no weather, no time of day, no second person, no
+  promised exits. A model that writes beautifully and breaks G6 is a worse generator, and
+  `prose_lint` already measures the difference.
+- **Cost is stated before the run**, because 9,160 rooms is a real bill and a real wait.
+
+The interesting result is the comparison itself: the same world, described twice, measured
+by the same linter.
+
+### 13. A shop had goods and nobody to sell them
+
+Wares were an attribute on the room — invisible to a player and unreachable by any command.
+**Fixed**: the keeper carries the stock and their description lists it, so clicking a
+shopkeeper shows what they sell. Buying is not possible and is not the generator's to fix:
+the host contrib deliberately ships no economy.
+
+### 14. The generated world does not join the world that was already there
+
+An import adds a world beside the existing one with **zero exits between them**. The exporter
+wires only what is in its own file and has no way to know where a game's edge is. Not a bug —
+a decision nobody has made yet: either the import owns the whole world, or the generator is
+given a room in an existing game and grows toward it.

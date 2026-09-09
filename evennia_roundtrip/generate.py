@@ -27,8 +27,8 @@ import math
 import os
 import random
 
-from . import (areagen, cultures, naming, period, place, planet, populate,
-               reachability, runs, siting, stock)
+from . import (areagen, cultures, naming, people, period, place, planet,
+               populate, reachability, runs, siting, stock)
 
 #: How many of each culture a hundred-area world should hold.
 #:
@@ -53,14 +53,6 @@ QUOTAS = (
     ("aethari", 4),
     ("valran", 4),
 )
-
-#: How many NPCs stand in an area of each size, per room.
-#:
-#: A city is not a village with more streets: it is denser, and the density is what a player
-#: feels as "somewhere busy". Hunting grounds are the other way - more things per room than
-#: a village and none of them will talk to you.
-NPC_DENSITY = {"city": 0.55, "seat": 0.5, "town": 0.45, "village": 0.38,
-               "hamlet": 0.3, "camp": 0.7}
 
 #: The trade rooms, by the name `naming` gives them, so shops can be counted rather than
 #: guessed. A shop is a room; counting them means counting rooms.
@@ -876,6 +868,8 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
 def finish_road(road, rng):
     """Name and describe a road, once every one of its exits exists."""
     naming.name_and_describe(road, "road", rng, settled=False)
+    road.setdefault("size", "road")
+    people.populate(road, "road", rng)
     return road
 
 
@@ -1331,9 +1325,8 @@ def counts(area, culture):
                 if any(marker in room["key"].lower() for marker in TRADE_MARKERS))
     items = sum(len(room.get("stock") or ()) for room in rooms)
     docks = sum(1 for room in rooms if place.water_room(room["key"]))
-    density = NPC_DENSITY.get(culture.size, 0.4)
     return {"room_count": len(rooms), "shops": shops, "docks": docks, "items": items,
-            "npcs": int(round(len(rooms) * density))}
+            "npcs": people.count(area)}
 
 
 #: What the progress feed carries: enough to draw a pin and fill a hover card, and none of
@@ -1388,6 +1381,10 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin):
         wares = stock.stock_for(room["key"], culture.size, rng)
         if wares:
             room["stock"] = wares
+    # **And peopled here, for the same reason.** The tally reported `rooms x density` and
+    # the worldfile held nobody, so every population figure this generator has ever printed
+    # described people who did not exist. See `people.populate`.
+    people.populate(area, voice, rng)
     area["name"] = area["display_name"].lower()
 
     problems = gate(area, culture, at, lattice["shape"])
@@ -1628,14 +1625,6 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # Where two ways cross, they now meet. See `join_crossings`.
         crossings = join_crossings(document["roads"], radius_m, rng, base_id + 90000, at=at)
         run.write_json("crossings.json", crossings)
-        # **Every room's prose is brought back into line with its exits.** The roads were
-        # laid after the descriptions were written, so a settlement room that gained one now
-        # has a door its own text does not mention - the exact fault the law forbids.
-        for area in reachability.places(document):
-            if area.get("culture") or area.get("purpose") in ("road", "path"):
-                naming.retell_exits(area, area.get("voice")
-                                    or ("road" if area.get("purpose") in ("road", "path")
-                                        else area.get("race")))
         run.write_json("roads.json", roads)
         stranded = reachability.check(document)
         run.write_json("worldfile.json", document)

@@ -1,0 +1,191 @@
+[
+ {
+  "direction": "west",
+  "from": "bayou_trace",
+  "laid": true,
+  "long": false,
+  "metres": 17,
+  "rooms": 0,
+  "to": "ferry_shore"
+ },
+ {
+  "direction": "southeast",
+  "from": "bayou_trace",
+  "laid": true,
+  "long": false,
+  "metres": 437,
+  "rooms": 0,
+  "to": "ranger_camp"
+ },
+ {
+  "direction": "southwest",
+  "from": "ranger_camp",
+  "laid": true,
+  "long": false,
+  "metres": 200356,
+  "rooms": 24,
+  "to": "nethergate"
+ },
+ {
+  "direction": "east",
+  "from": "ranger_camp",
+  "laid": true,
+  "long": false,
+  "metres": 266656,
+  "rooms": 33,
+  "to": "oldrow"
+ },
+ {
+  "direction": "south",
+  "from": "oldrow",
+  "laid": true,
+  "long": false,
+  "metres": 216156,
+  "rooms": 26,
+  "to": "marketmarket"
+ },
+ {
+  "direction": "north",
+  "from": "oldrow",
+  "laid": true,
+  "long": true,
+  "metres": 2079475,
+  "rooms": 40,
+  "to": "baskingtrace"
+ },
+ {
+  "direction": "northwest",
+  "from": "baskingtrace",
+  "laid": true,
+  "long": false,
+  "metres": 237734,
+  "rooms": 29,
+  "to": "elderwater"
+ },
+ {
+  "direction": "west",
+  "from": "elderwater",
+  "laid": true,
+  "long": false,
+  "metres": 287000,
+  "rooms": 35,
+  "to": "meadowbank"
+ },
+ {
+  "direction": "southwest",
+  "from": "meadowbank",
+  "laid": true,
+  "long": false,
+  "metres": 199527,
+  "rooms": 24,
+  "to": "the-landing-city"
+ },
+ {
+  "direction": "north",
+  "from": "the-landing-city",
+  "laid": true,
+  "long": false,
+  "metres": 0,
+  "rooms": 0,
+  "to": "millfield"
+ },
+ {
+  "direction": "north",
+  "from": "meadowbank",
+  "laid": true,
+  "long": false,
+  "metres": 266029,
+  "rooms": 33,
+  "to": "stairgranite"
+ },
+ {
+  "direction": "northwest",
+  "from": "meadowbank",
+  "laid": true,
+  "long": false,
+  "metres": 271311,
+  "rooms": 33,
+  "to": "netwalk"
+ },
+ {
+  "direction": "southwest",
+  "from": "netwalk",
+  "laid": true,
+  "long": false,
+  "metres": 262815,
+  "rooms": 32,
+  "to": "grassreach"
+ },
+ {
+  "direction": "northeast",
+  "from": "elderwater",
+  "laid": true,
+  "long": false,
+  "metres": 326285,
+  "rooms": 40,
+  "to": "cogbench"
+ },
+ {
+  "direction": "west",
+  "from": "grassreach",
+  "laid": true,
+  "long": true,
+  "metres": 1077790,
+  "rooms": 40,
+  "to": "packhowl"
+ },
+ {
+  "direction": "southwest",
+  "from": "packhowl",
+  "laid": true,
+  "long": true,
+  "metres": 3533319,
+  "rooms": 40,
+  "to": "seastair"
+ },
+ {
+  "direction": "east",
+  "from": "marketmarket",
+  "laid": true,
+  "long": true,
+  "metres": 3732285,
+  "rooms": 40,
+  "to": "broadcamp"
+ },
+ {
+  "from": "broadcamp",
+  "laid": true,
+  "long": true,
+  "metres": 3938733,
+  "path": true,
+  "rooms": 40,
+  "to": "sharphole"
+ },
+ {
+  "from": "the-road-from-marketmarket-to-broadcamp",
+  "laid": true,
+  "long": true,
+  "metres": 1745548,
+  "path": true,
+  "rooms": 40,
+  "to": "roewood"
+ },
+ {
+  "from": "netwalk",
+  "laid": true,
+  "long": false,
+  "metres": 237889,
+  "path": true,
+  "rooms": 29,
+  "to": "roughground"
+ },
+ {
+  "from": "the-road-from-oldrow-to-marketmarket",
+  "laid": true,
+  "long": false,
+  "metres": 210446,
+  "path": true,
+  "rooms": 26,
+  "to": "barehunt"
+ }
+]
