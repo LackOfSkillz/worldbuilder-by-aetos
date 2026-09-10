@@ -28,6 +28,7 @@ pub mod surface;
 pub mod stream;
 pub mod streamfmt;
 pub mod water;
+pub mod hydrology;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
