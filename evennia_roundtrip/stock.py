@@ -14,6 +14,8 @@ be caught by eye.
 is on the shelves, so the number moves when the stock does.
 """
 
+import re
+
 #: What each kind of shop sells. Keyed by the marker `generate.TRADE_MARKERS` looks for, so
 #: a room named "the weaponsmith" is stocked as one without a second lookup table.
 WARES = {
@@ -140,13 +142,88 @@ def signature(race, rng):
 #: writes "a spider silk short sword" and "a marble dust cook pot", which are not things.
 #: A hilt, a binding, a handle - those a place's own leather and horn and oak really do make,
 #: and it is what somebody means when they say a dagger is from the badlands.
+#:
+#: **By the thing, not by the shop.** Each trade once had a single part and stamped it on
+#: everything it sold, so a weaponsmith sold "an olivewood-hilted spear ferrule", "an
+#: olivewood-hilted sword blank, unhilted" and "an olivewood-hilted hand axe" - a ferrule and
+#: a blank have no hilt, and an axe has a haft. A part now belongs to the goods that have one.
 PARTS = {
-    "weaponsmith": "hilted",
-    "armourer": "bound",
-    "general store": "handled",
-    "stables": "stitched",
-    "shrine": "carved",
+    "weaponsmith": {"sword": "hilted", "dagger": "hilted", "knife": "hilted",
+                    "axe": "hafted", "hammer": "hafted", "spear": "hafted"},
+    "armourer": {"shield": "bound", "buckler": "bound"},
+    "general store": {"knife": "handled", "bucket": "handled", "spoon": "handled"},
+    "stables": {"bridle": "stitched", "blanket": "stitched", "saddle": "stitched"},
+    "shrine": {"token": "carved"},
 }
+
+#: What a part may be made of, by the words a material is named with. **And by the
+#: material, not only the thing:** a place's one material has to be able to make the part -
+#: "olivewood-hilted" is a grip, "olivewood-stitched" is nonsense.
+_WOOD = ("oak", "ash", "yew", "birch", "cedar", "olivewood", "hazel", "willow", "beech",
+         "cypress", "hardwood", "blackthorn", "driftwood", "cane", "wood")
+_SOFT = ("leather", "hide", "skin", "cord", "silk", "gut", "wool", "linen")
+_HARD = ("horn", "bone", "antler", "shell", "ivory", "stone")
+_METAL = ("iron", "bronze", "brass", "pewter", "tin", "copper", "steel", "silver", "gold")
+#: The woods, by name: what a place's material has to be for it to make a haft or a grip.
+WOODS = _WOOD
+PART_MATERIALS = {
+    "hilted": _WOOD + _SOFT + _HARD + _METAL,
+    "hafted": _WOOD + ("iron", "steel", "bronze"),
+    "bound": _SOFT + _METAL + ("horn",),
+    "handled": _WOOD + _SOFT + _HARD + _METAL,
+    "stitched": _SOFT,
+    "carved": _WOOD + _HARD,
+}
+
+#: Measures and vessels: the thing a ware comes in, never the thing it is.
+CONTAINERS = {"bundle", "bag", "sack", "jar", "pot", "phial", "bowl", "mug", "jug", "plate",
+              "wedge", "coil", "hank", "bar", "string", "brace", "bolt", "crock", "basket",
+              "box", "roll", "length", "strip", "twist", "purse", "flask", "pair", "set",
+              "wheel"}
+_ARTICLES = {"a", "an", "the", "one"}
+_PHRASE = re.compile(r",| of | in | with | and | for | from | cut ")
+
+
+def head_noun(ware):
+    """
+    What a ware IS: the last word of its first phrase that is not a container.
+
+    "a bundle of arrows" -> arrows; "a dagger in a plain sheath" -> dagger;
+    "a sword blank, unhilted" -> blank; "a token cut from bone" -> token.
+    """
+    text = ware.lower()
+    for article in ("a ", "an ", "the "):
+        if text.startswith(article):
+            text = text[len(article):]
+            break
+    last_container = None
+    for words in (seg.split() for seg in _PHRASE.split(text)):
+        words = [word for word in words if word not in _ARTICLES]
+        if not words:
+            continue
+        if len(words) > 3:
+            # "something the label does not name": the first word is the noun.
+            return words[0]
+        if words[-1] in CONTAINERS:
+            last_container = words[-1]
+            continue
+        return words[-1]
+    return last_container
+
+
+def part_for(trade, ware, material):
+    """
+    The part a place's material makes of this ware, or None when it makes none.
+
+    Both halves have to fit: the ware has to have the part, and the material has to be able
+    to be it.
+    """
+    part = (PARTS.get(trade) or {}).get(head_noun(ware) or "")
+    if not part:
+        return None
+    fits = PART_MATERIALS.get(part, ())
+    words = set(re.findall(r"[a-z]+", (material or "").lower()))
+    return part if words & set(fits) else None
 
 
 def souvenir(ware, look, place, part=None):
@@ -182,7 +259,9 @@ def souvenir(ware, look, place, part=None):
     # is all that uniqueness actually needs.
     # **A ware that already names its material keeps it.** "a sky-blue fine leather clay
     # lamp" is two materials arguing; the colour is welcome and the second material is not.
-    told = any(word in said for word in MATERIALS)
+    # By whole word: "tin" is inside "hunting", and "a hunting spear" was taken for tinware.
+    words = set(re.findall(r"[a-z]+", said.lower()))
+    told = any(set(word.split()) <= words for word in MATERIALS)
     plain = not any(part in said for part in (" of ", " with ", " and "))
     if not plain or not part:
         # A phrase keeps its own shape, and a trade with no part for a material to be -
@@ -243,5 +322,6 @@ def stock_for(room_key, size, rng, wares=None, depth=None, look=None, place=None
     # two wares cannot fill nineteen thousand shelves without repeating, and a maker's mark
     # is how a real economy told one town's work from another's.
     if look and place and trade in KEEPSAKES:
-        return [souvenir(one, look, place, PARTS.get(trade)) for one in chosen]
+        return [souvenir(one, look, place, part_for(trade, one, look.get("material")))
+                for one in chosen]
     return chosen

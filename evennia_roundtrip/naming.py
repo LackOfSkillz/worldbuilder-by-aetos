@@ -692,9 +692,63 @@ def _article(word):
 
 
 
-def name_and_describe(area, race, rng, settled=True, taken=None):
+#: Words that tell two shops of one name apart, in the order they are reached for.
+#:
+#: **Qualified, never numbered** - law R7, and "a hunter's camp (4)" is what the numbered
+#: fallback produced. An interior is off the lattice, so two with one name are two pieces of
+#: one "street" and law G1 fails; "the old alchemist on Grey Stair" is a shop a player can
+#: ask for by name.
+DISTINGUISHERS = ("old", "new", "little", "great", "far", "near", "upper", "lower")
+
+
+def _distinct(named, used):
+    """
+    `named`, or the nearest version of it no other shop here already has.
+
+    Args:
+        named (str): The name wanted, e.g. "the alchemist on Grey Stair".
+        used (set): Names already given in this place; the chosen one is added.
+
+    Returns:
+        name (str): Unique within `used`.
+    """
+    if named not in used:
+        used.add(named)
+        return named
+    article, _space, rest = named.partition(" ")
+    if article.lower() not in ("the", "a", "an"):
+        article, rest = "", named
+    for depth in range(1, 3):
+        for words in _combinations(DISTINGUISHERS, depth):
+            said = " ".join(words)
+            if article.lower() in ("a", "an"):
+                lead = "an" if said[:1] in "aeiou" else "a"
+                if article[:1].isupper():
+                    lead = lead.title()
+            else:
+                lead = article
+            candidate = ("%s %s %s" % (lead, said, rest)) if lead else \
+                ("%s %s" % (said.title(), rest))
+            if candidate not in used:
+                used.add(candidate)
+                return candidate
+    raise ValueError("more than %d shops called %r in one place"
+                     % (len(DISTINGUISHERS) ** 2, named))
+
+
+def _combinations(words, depth):
+    if depth == 1:
+        return [(word,) for word in words]
+    return [(one, two) for one in words for two in words if one != two]
+
+
+def name_and_describe(area, race, rng, settled=True, taken=None, plan=None):
     """
     Fill an area's rooms with names and prose, in place, and name the area itself.
+
+    Args:
+        plan (dict, optional): `room id -> name` for the street rooms, when the caller
+            knows better than the lattice - a road is one street named for what it joins.
 
     Returns:
         area (dict): The same object, with `display_name` and every room's `key` and `desc`.
@@ -707,7 +761,11 @@ def name_and_describe(area, race, rng, settled=True, taken=None):
     # rooms along one row of the lattice is one street with one name, and only the part of
     # it changes. The trades are dealt among them at the cadence the building laws ask for,
     # and a shop keeps its own name because a shop is not a stretch of street.
-    plan = street_plan(rooms, race, rng) if settled else {}
+    # Wild ground is walked the same way a town is, so its rides and trails are runs too;
+    # it simply names them in its own words ("Hazel Ride", never "Market Beat").
+    if plan is None:
+        plan = street_plan(rooms, race, rng, exits=area.get("exits"))
+    shop_names = set()
     trades = list(TRADES if settled else WILD_TRADES)
     rng.shuffle(trades)
     trade_at = 0
@@ -726,15 +784,25 @@ def name_and_describe(area, race, rng, settled=True, taken=None):
             marker, template = trades[trade_at % len(trades)]
             round_of = trade_at // len(trades)
             trade_at += 1
-            named = (template % place_name(race, rng) if "%s" in template else template)
+            # Drawn without replacement here, so two inns in one town are not both the
+            # Warmbank Inn.
+            named = (template % place_name(race, rng, shop_names) if "%s" in template
+                     else template)
             # A second general store must not share the first's name: an interior is off
             # the lattice, so two of one name are two disconnected pieces sharing it, which
             # is law G1. Named for the street it stands on, the way a real one is.
             if round_of and "%s" not in template:
                 street = plan.get(room["id"]) or ""
                 where = street.split(",")[0].split(" at ")[0].strip()
-                named = "%s on %s" % (named, where) if where else "%s (%d)" % (named,
-                                                                              round_of + 1)
+                # Only a street whose word may be a single room lends its name (law R5):
+                # "the alchemist on Kiln Lane" is a shop, but "a wayside shrine on
+                # Greystair-Bridgerow Road" is read as a one-room road never built out -
+                # 108 of them across thirty-three roads, the first time this was tried.
+                band = _word_band(where) if where else None
+                if where and (band is None or band[0] <= 1):
+                    named = "%s on %s" % (named, where)
+            # And when two land on one street, told apart by a word rather than a number.
+            named = _distinct(named, shop_names)
             doors = TRADE_DOORS if settled else WILD_DOORS
             opening = (marker, named, doors.get(marker))
         if opening and opening[2]:
@@ -762,6 +830,9 @@ def name_and_describe(area, race, rng, settled=True, taken=None):
                 "interior": True,
                 "from": room["id"],
                 "noun": noun,
+                # The trade it keeps, so what is inside can fit it - an inn's hearth, a
+                # smithy's anvil (law F1) - without reading it back out of the name.
+                "trade": opening[0],
                 # An interior does not stand on the lattice (T2). It is drawn where its
                 # street is and is not a place on the map of its own.
                 "latitude_deg": room.get("latitude_deg"),
@@ -802,96 +873,230 @@ def name_and_describe(area, race, rng, settled=True, taken=None):
 STREET_HEAD = ("Market", "Mill", "Bridge", "Kings", "Old", "Nether", "Upper", "Salt",
                "Peel", "Kiln", "Cooper", "Draper", "Water", "Long", "Broad", "Chapel")
 
-#: Which end of a street a room stands at. Only the two actual ends take one: everything
-#: between them is named for the way it crosses, because "Middle" three times in a row is
-#: not three sections of a street, it is one label printed three times.
-ENDS = ("West End", "East End")
+
+#: How long a run each street word may be, copied from the game's area linter
+#: (`area_lint.STREET_RUNS`, laws P7 and R5). A word not listed is not length-checked.
+#:
+#: **Copied, not imported,** because the linter lives in the game and the generator must run
+#: without it. Kept in step by hand; a word checked there and missing here is a street that
+#: lints long.
+STREET_RUNS = {
+    "square": (1, 4), "court": (1, 3), "alley": (1, 3), "lane": (1, 6), "row": (1, 4),
+    "walk": (1, 5), "path": (1, 8), "way": (1, 7), "street": (2, 7), "boulevard": (2, 7),
+    "avenue": (2, 7), "road": (2, 12), "pike": (2, 12), "circle": (3, 16), "trail": (1, 9),
+    "drive": (1, 7),
+}
+
+#: The four straight lines a run of rooms can lie along, as lattice steps. The linter checks
+#: all four (law R8), diagonals included, so a street can run on any of them.
+RUN_AXES = ((1, 0), (0, 1), (1, 1), (1, -1))
+
+#: The two ends of a run, walked in its own direction.
+AXIS_ENDS = {(1, 0): ("West End", "East End"), (0, 1): ("South End", "North End"),
+             (1, 1): ("South-West End", "North-East End"),
+             (1, -1): ("North-West End", "South-East End")}
+
+#: Which way is ahead and which behind along each axis, for "east of Kiln Lane".
+AXIS_SIDES = {(1, 0): ("east", "west"), (0, 1): ("north", "south"),
+              (1, 1): ("north-east", "south-west"), (1, -1): ("south-east", "north-west")}
 
 
-def _street_names(count, kinds, rng):
+def _word_band(kind):
+    """The run lengths the linter allows a street word, or None when it does not check it."""
+    low = kind.lower()
+    for word, band in STREET_RUNS.items():
+        if word in low:
+            return band
+    return None
+
+
+def _fits(kind, length):
+    band = _word_band(kind)
+    return band is None or band[0] <= length <= band[1]
+
+
+def street_runs(rooms, exits):
     """
-    `count` distinct street names, drawn without replacement.
+    Every maximal straight run of linked street rooms, on each of the four axes.
 
-    Two streets in one town with the same name are the same failure as one street with two
-    names, and drawing each independently produced both - sixteen heads and six kinds look
-    like plenty until the birthday problem is applied to thirty streets.
+    Args:
+        rooms (list): Room records; interiors and rooms without a `cell` are ignored.
+        exits (list): The area's exits.
+
+    Returns:
+        runs (list): `(axis, [room id, ...])`, each ordered along its axis, two rooms or more.
+
+    Notes:
+        **Read from the exits, never from the grid.** Two rooms in neighbouring cells with no
+        exit between them are not on one street, however it looks on paper - that is the
+        whole of the fault this replaces. A link counts whichever way it was built, and only
+        when it is one step along an axis, so a run is straight by construction.
     """
-    pool = ["%s %s" % (head, kind.title()) for head in STREET_HEAD for kind in kinds]
-    rng.shuffle(pool)
-    if count <= len(pool):
-        return pool[:count]
-    # More streets than the vocabulary holds: qualify the repeats rather than repeat them.
-    names, spare, index = list(pool), list(STREET_HEAD), 0
-    rng.shuffle(spare)
-    while len(names) < count:
-        names.append("%s %s" % (spare[index % len(spare)], pool[index % len(pool)]))
-        index += 1
-    return names[:count]
+    cells = {}
+    for room in rooms:
+        if room.get("interior") or not room.get("cell"):
+            continue
+        cell = room["cell"]
+        cells[room["id"]] = (cell[0], cell[1], cell[2] if len(cell) > 2 else 0)
+    ahead = {axis: {} for axis in RUN_AXES}
+    for exit_ in exits or ():
+        one, two = exit_["source"], exit_["destination"]
+        if one not in cells or two not in cells or cells[one][2] != cells[two][2]:
+            continue
+        step = (cells[two][0] - cells[one][0], cells[two][1] - cells[one][1])
+        for axis in RUN_AXES:
+            if step == axis:
+                ahead[axis][one] = two
+            elif step == (-axis[0], -axis[1]):
+                ahead[axis][two] = one
+    runs = []
+    for axis in RUN_AXES:
+        onward = ahead[axis]
+        followed = set(onward.values())
+        for first in sorted(onward, key=lambda rid: cells[rid]):
+            if first in followed:
+                continue
+            run = [first]
+            while run[-1] in onward:
+                run.append(onward[run[-1]])
+            runs.append((axis, run))
+    return runs
 
 
-def street_plan(rooms, race, rng, streets=None):
+def _run_names(lengths, kinds, heads, rng):
     """
-    Give every room a street, so a town reads as streets rather than as a list of rooms.
+    One distinct name per run, in a street word the run is the right length for.
+
+    Notes:
+        **The word follows the length.** The linter keeps a Row to four rooms and a Way to
+        seven; a sixteen-room run called a Row is P7 however well it walks. A run no word in
+        the voice fits takes the roomiest one there is.
+    """
+    used, names = set(), []
+    for length in lengths:
+        fitting = [kind for kind in kinds if _fits(kind, length)]
+        if not fitting:
+            fitting = [max(kinds, key=lambda kind: (_word_band(kind) or (0, 999))[1])]
+        pool = ["%s %s" % (head, kind.title()) for head in heads for kind in fitting]
+        pool = [name for name in pool if name not in used]
+        if pool:
+            name = pool[rng.randrange(len(pool))]
+        else:
+            # Qualified, never numbered (law R7): "Upper Mill Lane", not "Mill Lane 2".
+            base = "%s %s" % (heads[rng.randrange(len(heads))],
+                              fitting[rng.randrange(len(fitting))].title())
+            name, tries = base, 0
+            while name in used:
+                name = "%s %s" % (QUALIFIERS[tries % len(QUALIFIERS)], base)
+                tries += 1
+                if tries > len(QUALIFIERS):
+                    name = "%s %s" % (QUALIFIERS[tries % len(QUALIFIERS)], name)
+        used.add(name)
+        names.append(name)
+    return names
+
+
+def street_plan(rooms, race, rng, streets=None, exits=None, heads=None):
+    """
+    Give every street room a name that says which street it is on.
 
     Args:
         rooms (list): Room records carrying `cell` as `[x, y, z]`.
         race (str): Whose place this is, for the street vocabulary.
         rng (random.Random): The world's own generator.
-        streets (dict, optional): Names already chosen, so two calls agree.
+        streets (dict, optional): Unused; kept so older callers still run.
+        exits (list): The area's exits. The streets are read from these.
+        heads (tuple, optional): The first words of street names. The voice's own by default.
 
     Returns:
         plan (dict): `room id -> name`.
 
     Notes:
-        **A road does not change its name at every corner.** Naming each room
-        independently gave a village where four rooms in a row were "a lane", "the street",
-        "a row" and "the market" - four streets that are really one, and a player who
-        cannot say where they are because nowhere has a name that lasts more than one step.
+        **A street is a run of rooms you can walk, not a line on the grid.** The plan this
+        replaces made every row of the lattice a street and every column a cross street, and
+        never looked at the exits. The lattice is a tree with a few loops, so a third of the
+        rooms that sat side by side had no way between them - and Draper Reed Way, sixteen
+        rooms in a perfect column on paper, broke into nine pieces on foot. Law G1 failed 433
+        times in forty areas. Linking every neighbour instead would have fixed G1 by breaking
+        S5 and S3, so the names follow the geometry rather than the other way round.
 
-        A street here is a ROW of the lattice: walk east and you stay on it.
+        **Longest first, two names a room.** A room where two runs meet is "Market Row at
+        Kiln Lane", the address it has always had. The main street is named first and keeps
+        its name through every junction; a third run through a room that already carries
+        two is cut there, and each piece long enough to walk becomes its own street.
 
-        **A section is named for the way it crosses, not for a third of the street.**
-        Sorting a street into three buckets gave a nine-room street three rooms called
-        "Middle" - the original complaint wearing a suffix. Drawn by the game's own map, a
-        generated town had twenty-four of its forty-seven labels repeated. The columns of
-        the lattice are streets too, so the room where they meet has an address: Market Row
-        at Kiln Lane. No two rooms share a crossing, so it is unique by construction, and it
-        is how a real street's blocks have always been told apart.
-
-        **Rows lead and columns cross.** On a lattice only one axis can own the name, so
-        walking east holds "Market Row" while walking north changes it. Rows were already
-        the streets; making that choice explicit beats making it twice.
+        **Sections name the crossing beside them.** The room just past a junction is "Market
+        Row, east of Kiln Lane", the two ends are the ends, and a room in the middle of a
+        stretch with no junction near is simply "Market Row" - which is how canon titles a
+        street: the linter reads a repeated title along one street as one street, correctly.
     """
     voice = voice_for(race)
-    kinds = voice.get("street", ("street",))
-    chosen = streets if streets is not None else {}
+    # **No street shares a word with a door.** "Upper Market" in a town where `go market`
+    # opens the stalls is a street a player tries to walk into; human streets drew both
+    # "Market" and "market" from their vocabulary, and marsh ground "bank". A door word is
+    # kept for the door.
+    doors = set(TRADE_DOORS) | set(WILD_DOORS)
 
-    rows, columns = {}, {}
-    for room in rooms:
-        cell = (room.get("cell") or [0, 0, 0])
-        x, y, z = cell[0], cell[1], (cell[2] if len(cell) > 2 else 0)
-        rows.setdefault(("row", z, y), []).append(room)
-        columns.setdefault(("col", z, x), []).append(room)
+    def plain(word):
+        return not any(door in word.lower() for door in doors)
 
-    # Rows and columns share one vocabulary, so a cross street is never the street itself.
-    wanted = [key for key in list(rows) + list(columns) if key not in chosen]
-    for key, name in zip(wanted, _street_names(len(wanted), kinds, rng)):
-        chosen[key] = name
+    kinds = tuple(k for k in voice.get("street", ("street",)) if plain(k)) or ("way",)
+    heads = tuple(h for h in (heads or voice.get("head") or STREET_HEAD) if plain(h)) \
+        or tuple(h for h in STREET_HEAD if plain(h))
+    order = {axis: rank for rank, axis in enumerate(RUN_AXES)}
+    runs = sorted(street_runs(rooms, exits), key=lambda run: (-len(run[1]), order[run[0]]))
+
+    carried = {}
+    kept = []
+    for axis, run in runs:
+        piece = []
+        for rid in run + [None]:
+            if rid is not None and len(carried.get(rid, ())) < 2:
+                piece.append(rid)
+                continue
+            if len(piece) >= 2:
+                for member in piece:
+                    carried.setdefault(member, []).append(len(kept))
+                kept.append((axis, piece))
+            piece = []
+
+    names = _run_names([len(piece) for _axis, piece in kept], kinds, heads, rng)
+
+    def other_street(rid, index):
+        return next(names[mark] for mark in carried[rid] if mark != index)
 
     plan = {}
-    for key, along in rows.items():
-        along.sort(key=lambda room: (room.get("cell") or [0, 0, 0])[0])
-        name = chosen[key]
-        if len(along) == 1:
-            plan[along[0]["id"]] = name
+    for rid, marks in carried.items():
+        if len(marks) >= 2:
+            plan[rid] = "%s at %s" % (names[marks[0]], names[marks[1]])
             continue
-        for index, room in enumerate(along):
-            if index == 0:
-                plan[room["id"]] = "%s, %s" % (name, ENDS[0])
-            elif index == len(along) - 1:
-                plan[room["id"]] = "%s, %s" % (name, ENDS[1])
-            else:
-                cell = (room.get("cell") or [0, 0, 0])
-                x, z = cell[0], (cell[2] if len(cell) > 2 else 0)
-                plan[room["id"]] = "%s at %s" % (name, chosen[("col", z, x)])
+        index = marks[0]
+        axis, piece = kept[index]
+        where = piece.index(rid)
+        name = names[index]
+        if where == 0:
+            plan[rid] = "%s, %s" % (name, AXIS_ENDS[axis][0])
+        elif where == len(piece) - 1:
+            plan[rid] = "%s, %s" % (name, AXIS_ENDS[axis][1])
+        elif len(carried[piece[where - 1]]) >= 2:
+            plan[rid] = "%s, %s of %s" % (name, AXIS_SIDES[axis][0],
+                                          other_street(piece[where - 1], index))
+        elif len(carried[piece[where + 1]]) >= 2:
+            plan[rid] = "%s, %s of %s" % (name, AXIS_SIDES[axis][1],
+                                          other_street(piece[where + 1], index))
+        else:
+            plan[rid] = name
+
+    # A room on no run at all is a place of its own - a yard, a court - in a word the
+    # linter allows to be a single room (R5), and never a name another room has.
+    loners = [room for room in rooms
+              if not room.get("interior") and room.get("cell") and room["id"] not in plan]
+    if loners:
+        small = [kind for kind in kinds if _fits(kind, 1)] or ["yard"]
+        taken = set(names)
+        for room, name in zip(loners, _run_names([1] * len(loners), small, heads, rng)):
+            while name in taken:
+                name = "%s %s" % (QUALIFIERS[rng.randrange(len(QUALIFIERS))], name)
+            taken.add(name)
+            plan[room["id"]] = name
     return plan

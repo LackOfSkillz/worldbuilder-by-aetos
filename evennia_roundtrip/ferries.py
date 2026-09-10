@@ -71,6 +71,15 @@ def _haversine(lat_a, lon_a, lat_b, lon_b, radius_m):
     return 2 * radius_m * math.asin(min(1.0, math.sqrt(inner)))
 
 
+#: How far inland a town may stand and still send its people to a ferry.
+#:
+#: **Measured, not guessed**: on a 400-area world, 10 towns stood within 3 km of the sea -
+#: five terminals, too few for a network - and 35 within about 11 km, in 21 clusters, which
+#: is the shape a service wants. Twelve takes the second ring of `generate.inland_m` whole,
+#: about half a day's walk to the boat.
+FERRY_INLAND_KM = 12.0
+
+
 def coastal(areas):
     """
     The areas that stand on water.
@@ -82,10 +91,24 @@ def coastal(areas):
         coastal (list): Those with somewhere a boat could come alongside.
 
     Notes:
-        Counted from the rooms rather than from a flag, for the reason the tally is: a flag
-        says what was intended and the rooms say what was built.
+        **A dock room, or a settlement whose ground reaches water.** This was docks alone,
+        and docks were once any street called "Quay" or "Stair" - wrong, but it happened to
+        mark most shore towns. When docks became only rooms truly at the water, 399 of 400
+        areas had none, the planner saw one shore town, and the world had no ferries. What a
+        ferry needs is a town a hull can reach, which the site already measured:
+        `harbour_m` (deep water within 3 km) or `landing_m` (a landing within 800 m), or a
+        town within `FERRY_INLAND_KM` of the sea. The terminal's own berth is built at the
+        shore when the line is laid.
     """
-    return [area for area in areas if (area.get("docks") or 0) > 0]
+    def reaches_water(area):
+        if area.get("purpose") == "hunting":
+            return False
+        if area.get("harbour_m") is not None or area.get("landing_m") is not None:
+            return True
+        inland = area.get("inland_km")
+        return inland is not None and inland <= FERRY_INLAND_KM
+
+    return [area for area in areas if (area.get("docks") or 0) > 0 or reaches_water(area)]
 
 
 def spacing(areas, radius_m):
@@ -232,13 +255,16 @@ def terminal_of(group):
         group (list): One cluster's areas.
 
     Returns:
-        area (dict): The one with the most dock rooms, then the most rooms.
+        area (dict): The one with the most dock rooms, then one with a harbour, then the
+            most rooms.
 
     Notes:
         The busiest waterfront rather than the nearest point: a hamlet on a headland is closer
         to the water than the town behind it and is not where a service would call.
     """
-    return max(group, key=lambda area: ((area.get("docks") or 0), len(area.get("rooms") or ())))
+    return max(group, key=lambda area: ((area.get("docks") or 0),
+                                        area.get("harbour_m") is not None,
+                                        len(area.get("rooms") or ())))
 
 
 def hub_of(terminals, radius_m):

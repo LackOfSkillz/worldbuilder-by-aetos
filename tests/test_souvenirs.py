@@ -76,6 +76,45 @@ class TestHowASouvenirReads(unittest.TestCase):
         self.assertEqual(stock.souvenir("a short sword", ox, "Longmire", "hilted"),
                          "an oxblood oak-hilted short sword from Longmire")
 
+    def test_a_material_is_found_by_whole_word(self):
+        """"tin" is inside "hunting": the spear was taken for tinware and lost its haft."""
+        sky = {"colour": "sky-blue", "material": "olivewood"}
+        self.assertEqual(stock.souvenir("a hunting spear", sky, "Greystair", "hafted"),
+                         "a sky-blue olivewood-hafted hunting spear from Greystair")
+
+
+class TestWhichPartAWareHas(unittest.TestCase):
+    """The shelves once sold "an olivewood-hilted spear ferrule" and "a hilted sword blank,
+    unhilted": the trade's one part stamped on every ware it sold."""
+
+    def test_only_a_ware_with_the_part_gets_it(self):
+        self.assertEqual(stock.part_for("weaponsmith", "a dagger in a plain sheath", "oak"),
+                         "hilted")
+        self.assertEqual(stock.part_for("weaponsmith", "a hand axe", "oak"), "hafted")
+        for ware in ("a spear ferrule", "a sword blank, unhilted", "a whetstone",
+                     "a bundle of arrows"):
+            self.assertIsNone(stock.part_for("weaponsmith", ware, "oak"), ware)
+
+    def test_the_material_has_to_be_able_to_be_the_part(self):
+        self.assertEqual(stock.part_for("stables", "a saddle", "fine leather"), "stitched")
+        self.assertIsNone(stock.part_for("stables", "a saddle", "olivewood"))
+
+    def test_a_material_is_matched_by_whole_word(self):
+        self.assertIsNone(stock.part_for("weaponsmith", "a dagger", "calabash"))
+
+    def test_no_shelf_the_generator_stocks_carries_a_part_it_cannot_have(self):
+        rng = random.Random(7)
+        for trade in stock.PARTS:
+            for material in ("olivewood", "fine leather", "horn", "bronze"):
+                look = {"colour": "grey", "material": material}
+                for _ in range(5):
+                    for ware in stock.stock_for("the %s" % trade, "town", rng, look=look,
+                                                place="Longmire"):
+                        self.assertNotIn("unhilted", ware.replace("a sword blank, unhilted",
+                                                                  ""), ware)
+                        self.assertNotRegex(ware, r"-(hilted|hafted) (spear ferrule|whetstone"
+                                                  r"|sword blank|bundle)", ware)
+
 
 class TestAPlaceHasOneLook(unittest.TestCase):
     def test_a_settlement_works_in_one_colour_and_one_material(self):

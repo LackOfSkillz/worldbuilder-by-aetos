@@ -50,6 +50,9 @@ export function mountWorldPanel(parent, getViewer) {
   // touch them, and `let` in a later block is a temporal-dead-zone error rather than undefined.
   let lastAreas = [];
   let lastRoads = [];
+  //: The rest of the network, and what the run decided about levels. Held beside the roads
+  //: because "save world" writes whatever is held here and nothing else.
+  let lastNetwork = { ferries: [], ferry_lines: [], level_bands: [] };
   let drawn = null;
 
   const wrap = el("div", "wb-section");
@@ -142,7 +145,7 @@ export function mountWorldPanel(parent, getViewer) {
       return;
     }
     const document_ = buildWorldfile(name, location.search, lastAreas, painted,
-                                     wb.spec || null, lastRoads);
+                                     wb.spec || null, lastRoads, lastNetwork);
     // **Say so before writing it, not after.** A parameter the engine could not parse fell back
     // to canonical, so the world drawn is not the world the file names - and a save that records
     // a rejected input is a save of a planet nobody has seen.
@@ -214,9 +217,12 @@ export function mountWorldPanel(parent, getViewer) {
   ///
   /// Called by the populate layer when a run finishes. Replaces rather than merges: the
   /// run generated this world's areas, and appending would double them on a second run.
-  function adoptRun(areas, roads) {
+  function adoptRun(areas, roads, network = {}) {
     lastAreas = Array.isArray(areas) ? areas : [];
     lastRoads = Array.isArray(roads) ? roads : [];
+    lastNetwork = { ferries: network.ferries || [],
+                    ferry_lines: network.ferry_lines || [],
+                    level_bands: network.level_bands || [] };
     paintAreas();
     return lastAreas.length;
   }
@@ -227,13 +233,16 @@ export function mountWorldPanel(parent, getViewer) {
   // in the browser. An event has no ordering to get wrong.
   window.addEventListener("wb-run-finished", (event) => {
     const held = (event && event.detail) || {};
-    adoptRun(held.areas || [], held.roads || []);
+    adoptRun(held.areas || [], held.roads || [], held);
   });
 
   async function loadWorldfile(document_) {
     checkVersion(document_);
     lastAreas = document_.areas || [];
     lastRoads = document_.roads || [];
+    lastNetwork = { ferries: document_.ferries || [],
+                    ferry_lines: document_.ferry_lines || [],
+                    level_bands: document_.level_bands || [] };
     const search = searchFromPlanet(document_.planet);
     const here = new URLSearchParams(location.search);
     const there = new URLSearchParams(search.replace(/^\?/, ""));

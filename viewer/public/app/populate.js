@@ -345,8 +345,16 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
             // panel's `lastAreas` - which is what "save world" writes. Until this line, a
             // run's areas were on screen, on disk under `runs/`, and absent from every
             // world file saved afterwards.
+            // **Everything the run decided, not the half of it that is drawn as lines.**
+            // The roads were added here after a save reopened as towns with no way
+            // between them; the ferry lines and the level bands were the same fault one
+            // iteration later, and quieter - a saved world simply had no boats and no
+            // levels, and nothing said so.
             window.dispatchEvent(new CustomEvent("wb-run-finished", {
-              detail: { areas: doc.areas || [], roads: doc.roads || [] },
+              detail: { areas: doc.areas || [], roads: doc.roads || [],
+                        ferries: doc.ferries || [],
+                        ferry_lines: doc.ferry_lines || [],
+                        level_bands: doc.level_bands || [] },
             }));
           })
           .catch(() => { /* the roads are a picture, not a promise */ });
@@ -391,8 +399,18 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   poll();
   drain();
 
+  // **The curated world replaces the generated one on the cards.** The server writes it
+  // when curation finishes; the populate panel fetches it and announces it here, so a room
+  // card opened afterwards reads the reworked text rather than the template's.
+  const onCurated = (event) => {
+    const detail = (event && event.detail) || {};
+    if (detail.run === runId && detail.doc) rooms = detail.doc;
+  };
+  window.addEventListener("wb-run-curated", onCurated);
+
   const halt = () => {
     stopped = true;
+    window.removeEventListener("wb-run-curated", onCurated);
     if (timer) clearTimeout(timer);
     if (drainTimer) clearTimeout(drainTimer);
     document.removeEventListener("visibilitychange", onVisible);

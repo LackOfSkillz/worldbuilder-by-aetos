@@ -24,6 +24,25 @@ class TestWhoStandsOnWater(unittest.TestCase):
         found = ferries.coastal([area("port", 0.0, 0.0), area("inland", 1.0, 1.0, docks=0)])
         self.assertEqual([one["name"] for one in found], ["port"])
 
+    def test_a_town_at_the_water_is_coastal_without_a_dock_room(self):
+        """When streets stopped counting as docks, 399 of 400 areas had none, the planner
+        saw one shore town, and every world after it had no ferries at all."""
+        harbour = dict(area("harbour", 0.0, 0.0, docks=0), harbour_m=1200.0, landing_m=None)
+        beach = dict(area("beach", 1.0, 0.0, docks=0), harbour_m=None, landing_m=300.0)
+        dry = dict(area("dry", 2.0, 0.0, docks=0), harbour_m=None, landing_m=None)
+        found = ferries.coastal([harbour, beach, dry])
+        self.assertEqual([one["name"] for one in found], ["harbour", "beach"])
+
+    def test_a_town_a_short_walk_from_the_sea_is_coastal(self):
+        near = dict(area("near", 0.0, 0.0, docks=0), inland_km=11.1)
+        far = dict(area("far", 1.0, 0.0, docks=0), inland_km=25.0)
+        self.assertEqual([one["name"] for one in ferries.coastal([near, far])], ["near"])
+
+    def test_a_hunting_ground_is_not_a_ferry_town(self):
+        """Nobody runs a ferry service to a stretch of wild country."""
+        wild = dict(area("marsh", 0.0, 0.0, docks=0), harbour_m=500.0, purpose="hunting")
+        self.assertEqual(ferries.coastal([wild]), [])
+
 
 class TestOneTerminalPerShore(unittest.TestCase):
     def test_towns_along_one_shore_are_one_cluster(self):

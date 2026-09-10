@@ -26,8 +26,9 @@ import json
 import math
 import os
 import random
+import re
 
-from . import (areagen, cultures, ferries, hubs, naming, people, period, place,
+from . import (areagen, fixtures, cultures, ferries, hubs, naming, people, period, place,
                planet, populate, reachability, runs, siting, soundings, stock)
 
 #: How many of each culture a hundred-area world should hold.
@@ -613,7 +614,10 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
     """
     rooms = area.get("rooms") or []
     here = _where(area)
-    anchor_room = min(rooms, key=lambda room: _haversine(
+    # From the street, never from inside a shop: an interior shares its street room's
+    # coordinates, so "the room nearest the water" could be the back of the alchemist's.
+    ground = [room for room in rooms if not room.get("interior")] or rooms
+    anchor_room = min(ground, key=lambda room: _haversine(
         room["latitude_deg"], room["longitude_deg"], toward[0], toward[1], radius_m))
     edge = shoreline_toward(at, (anchor_room["latitude_deg"], anchor_room["longitude_deg"]),
                             toward, radius_m)
@@ -625,6 +629,10 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
         "cell": [0, 0, 0],
         "elevation_m": round(at(edge[0], edge[1]), 3),
         "ramp": True,
+        "dock": True,
+        # Added to its town after the town was furnished, so it brings its own thing to
+        # look at rather than being the one bare room in the place (F1).
+        "fixtures": [dict(zip(("key", "desc"), fixtures.RAMP), kind="fixture")],
     }
     ramp["desc"] = naming.describe([], "human", rng)
     rooms.append(ramp)
@@ -637,7 +645,114 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
     area["exits"].append({
         "source": ramp["id"], "name": OPPOSITE[direction],
         "destination": anchor_room["id"], "ramp": True})
+    ramp["key"] = ramp_name(area, anchor_room, direction)
     return ramp
+
+
+#: The words that make a room a dock - somewhere a boat is tied up - as a whole word.
+#:
+#: **Not the words that merely sound wet.** The list this replaces also held "bridge",
+#: "stair", "steps", "span", "ford" and "causeway", every one of which is an ordinary street
+#: word here ("Bridge Prospect", "Quiet Stair"). So the tally counted streets as docks -
+#: three areas once reported 175 - and the dry-ground gate excused any street with such a
+#: name for standing in the sea.
+DOCK_ROOM_WORDS = ("dock", "docks", "quay", "wharf", "jetty", "pier", "slip", "slipway",
+                   "landing stage", "landing beach", "harbour", "harbor", "staith", "hythe",
+                   "boat ramp")
+
+_DOCK_WORD = re.compile(r"\b(%s)\b" % "|".join(re.escape(w) for w in DOCK_ROOM_WORDS))
+
+#: How far from usable water a room may stand and still be a dock: on the water or near it,
+#: about five rooms from the edge.
+#:
+#: **Not the siting's eight hundred metres.** That is how far a *site* may be from a landing;
+#: a *room* counted at that reach made 65 docks of 40 areas' quay streets, almost none of
+#: them at the water. Measured on that run: within 100 m, 0; 200 m, 1; 400 m, 14; 800 m, 65.
+#: The generator keeps whole towns on dry ground, so a town's "Quay" is usually a name - and
+#: the rooms truly at the edge are the boat ramps, which are docks by construction anyway.
+DOCK_REACH_M = 200.0
+
+
+def names_a_dock(key):
+    """Whether a room's name says it is a dock, by a whole dock word."""
+    return bool(_DOCK_WORD.search((key or "").lower()))
+
+
+def mark_docks(area, at, radius_m, reach_m=DOCK_REACH_M):
+    """
+    Flag the rooms of an area that are docks: named as one, and at the water.
+
+    Args:
+        area (dict): A named area.
+        at (callable): `(lat, lon) -> metres` above datum.
+        radius_m (float): The planet's radius.
+        reach_m (float): How near water a dock must stand.
+
+    Returns:
+        count (int): How many rooms were flagged.
+
+    Notes:
+        **Both, not either.** A name alone is how streets came to be docks; water alone would
+        make every shore room one. A boat ramp is a dock by construction and is flagged
+        where it is built. Interiors never are: "the Harbour Inn" is a tavern.
+    """
+    count = 0
+    for room in area.get("rooms") or ():
+        if room.get("ramp"):
+            room["dock"] = True
+            count += 1
+            continue
+        if room.get("interior") or not names_a_dock(room.get("key")):
+            continue
+        if room.get("latitude_deg") is None:
+            continue
+        if siting.water_within(at, room["latitude_deg"], room["longitude_deg"], radius_m,
+                               siting.LANDING_DEPTH_M, reach_m) is None:
+            continue
+        room["dock"] = True
+        count += 1
+    return count
+
+
+def streets_in(title):
+    """
+    The streets a room title says it stands on, main street first.
+
+    Notes:
+        The convention the game's linter reads titles by: "A at B" is the corner of both,
+        "A, somewhere" is a stretch of A, and a bare title is a place of its own.
+    """
+    text = (title or "").strip()
+    if " at " in text:
+        return [part.strip() for part in text.split(" at ") if part.strip()]
+    if ", " in text:
+        return [text.split(", ", 1)[0].strip()]
+    return [text] if text else []
+
+
+def ramp_name(area, anchor_room, direction):
+    """
+    What to call a boat ramp: a stretch of the street it runs off.
+
+    Notes:
+        **Every ramp was "a boat ramp",** so two in one town were two pieces of a street
+        called that (law G1), and a ramp at the end of a straight street broke the street's
+        run (R8). Named "Alder Walk, boat ramp" it is part of Alder Walk - and it keeps the
+        words "boat ramp", which is what the dock finder recognises a ramp by.
+
+        When the street room is a corner, the ramp takes whichever street it carries on in
+        a straight line: the one the room behind it along the same heading also lies on.
+    """
+    streets = streets_in(anchor_room.get("key"))
+    by_id = {room["id"]: room for room in area.get("rooms") or ()}
+    behind = next((exit_["destination"] for exit_ in area.get("exits") or ()
+                   if exit_["source"] == anchor_room["id"]
+                   and exit_["name"] == OPPOSITE.get(direction)), None)
+    if behind in by_id:
+        aligned = [street for street in streets
+                   if street in streets_in(by_id[behind].get("key"))]
+        streets = aligned or streets
+    return "%s, boat ramp" % streets[0] if streets else "a boat ramp"
 
 
 #: How far a road may run between two areas before it stops being a walk.
@@ -928,6 +1043,57 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
     return road
 
 
+#: How far inland the shore search looks before it calls a place "deep inland".
+#:
+#: `siting.water_within` reaches three kilometres, which answers "is there a harbour here"
+#: and is useless for "how far from the sea is this": areas stand a hundred to two hundred
+#: miles apart, so at that reach every one of them is simply None and the whole world sorts
+#: as a tie.
+INLAND_REACH_M = 900000.0
+
+#: How finely the shore search is walked. Coarse on purpose - the answer is only ever used
+#: to ORDER areas, never as a distance anybody reads, so resolution buys nothing and rays
+#: cost `at()` calls.
+INLAND_RAYS = 24
+INLAND_STEPS = 18
+
+
+def inland_m(at, latitude_deg, longitude_deg, radius_m,
+             reach_m=INLAND_REACH_M, rays=INLAND_RAYS, steps=INLAND_STEPS):
+    """
+    How far this point is from open water.
+
+    Args:
+        at (callable): `(lat, lon) -> metres` above datum.
+        latitude_deg, longitude_deg (float): Where to ask.
+        radius_m (float): The planet's radius.
+        reach_m (float): How far to look before giving up.
+        rays, steps (int): The ring search's resolution.
+
+    Returns:
+        metres (float): Distance to the nearest sea, or `reach_m` when none is within it.
+
+    Notes:
+        A ring search, expanding: the first ring that finds water wins, so the answer is
+        the search's step size rather than a true distance. That is deliberate - it orders
+        the world, and ordering is all the level bands need.
+    """
+    if at(latitude_deg, longitude_deg) < 0.0:
+        return 0.0
+    # **Fine near the shore, coarse in the interior.** Walking out in equal steps makes the
+    # first ring fifty kilometres wide, so every coastal area answers "50" and the two
+    # lowest bands - the ones a new character lives in - come out indistinguishable, both
+    # reading `inland 50 - 50 km`. Squaring the step spends the resolution where the
+    # ordering is crowded: the first ring is under three kilometres, and nobody needs to
+    # tell four hundred kilometres inland from four hundred and fifty.
+    for step in range(1, steps + 1):
+        distance = reach_m * (step / float(steps)) ** 2
+        for lat, lon in siting._ring(latitude_deg, longitude_deg, distance, radius_m, rays):
+            if at(lat, lon) < 0.0:
+                return distance
+    return reach_m
+
+
 def _sea_gap(at, one, other, radius_m):
     """
     How far a boat actually sails between two terminals, or 0 if it cannot.
@@ -948,7 +1114,7 @@ def _sea_gap(at, one, other, radius_m):
     return _line_length(track, radius_m) if track else 0.0
 
 
-def finish_road(road, rng, from_name=None, to_name=None):
+def finish_road(road, rng, from_name=None, to_name=None, kind="road"):
     """
     Name and describe a road, once every one of its exits exists.
 
@@ -968,11 +1134,35 @@ def finish_road(road, rng, from_name=None, to_name=None):
         Said in the description rather than the exit, because the exit is a compass point
         and law L4 says a compass exit is generated from the coordinates, never typed.
     """
-    naming.name_and_describe(road, "road", rng, settled=False)
+    # **A road is one street, named for what it joins.** Its rooms drew names from a pool
+    # of five - "the way", "the verge", "a milestone" - so each recurred all along it, and
+    # every recurrence was a separate piece of a street called "the verge": law G1, 259
+    # times across thirty-three roads. Now the whole road carries one name, the ends say
+    # which place they stand outside, and the middle is the road itself - the way canon
+    # titles its roads, and the way the linter reads a repeated title: as one street.
+    #
+    # Decided before the naming rather than written over it afterwards, so the shrines and
+    # camps along the way are named for the road they are actually on.
+    ground = [room for room in road.get("rooms") or () if not room.get("interior")]
+    street = road_street(from_name, to_name, kind)
+    plan = None
+    if street:
+        road["street"] = street
+        plan = {}
+        for position, room in enumerate(ground):
+            if position == 0 and from_name:
+                plan[room["id"]] = "%s, outside %s" % (street, from_name)
+            elif position == len(ground) - 1 and to_name:
+                plan[room["id"]] = "%s, outside %s" % (street, to_name)
+            else:
+                plan[room["id"]] = street
+    naming.name_and_describe(road, "road", rng, settled=False, plan=plan)
     road.setdefault("size", "road")
     people.populate(road, "road", rng)
+    # Landmarks to stop at and things to look at along the way - law F2.
+    fixtures.furnish_road(road, rng)
 
-    rooms = road.get("rooms") or []
+    rooms = ground
     if rooms and (from_name or to_name):
         ends = ((rooms[0], from_name, to_name), (rooms[-1], to_name, from_name))
         for room, here, there in ends:
@@ -980,12 +1170,56 @@ def finish_road(road, rng, from_name=None, to_name=None):
                 continue
             said = []
             if here:
-                said.append("%s lies back the way you came" % here)
+                # Not "the way you came": a room describes itself, it does not address
+                # the reader (law W4), and this line was in every road end in the world.
+                said.append("%s lies back along the road" % here)
             if there and there != here:
                 said.append("the road runs on to %s" % there)
+            sentence = "; ".join(said)
+            # `str.capitalize()` lowercases everything after the first letter, which is
+            # how "the road runs on to Warmstand" came out as "...on to warmstand".
             room["desc"] = "%s %s." % (room.get("desc", "").rstrip(),
-                                       "; ".join(said).capitalize())
+                                       sentence[:1].upper() + sentence[1:])
     return road
+
+
+def road_street(from_name, to_name, kind="road"):
+    """
+    The street name a road's rooms share.
+
+    Args:
+        from_name (str): The place at one end.
+        to_name (str): The place at the other.
+        kind (str): "road" between two places; "path" out to a hunting ground.
+
+    Returns:
+        name (str or None): None when neither end is known.
+
+    Notes:
+        A road joins two places and is named for both, as roads between towns are. A path
+        runs out to one hunting ground and is named for where it goes.
+    """
+    if kind == "path":
+        return "%s Path" % to_name if to_name else None
+    if from_name and to_name and from_name != to_name:
+        return "%s-%s Road" % (from_name, to_name)
+    return "%s Road" % (to_name or from_name) if (to_name or from_name) else None
+
+
+def _past(rooms, gap=10):
+    """
+    The first id safe to hand out after these rooms, with a little room to spare.
+
+    Notes:
+        **By the highest id, never by the count.** Every budget in this module used to
+        advance by `len(rooms) + 10`, which is right only while a place's ids run unbroken
+        from its first. They do not: a road is laid, thinned and trimmed, so its surviving
+        ids have gaps, and then its wayside shrines and camps are hung off it at `max(id)+1`.
+        The count stopped short of the highest id and the next road started inside it - 98
+        rooms in a 130-area world shared an id with another, and the exporter, correctly,
+        refused to write the world at all.
+    """
+    return max((room["id"] for room in rooms or ()), default=-1) + 1 + gap
 
 
 def ferry_between(from_area, to_area, room_a, room_b, at, radius_m, rng, base_id):
@@ -1318,7 +1552,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                                   "destination": room_a["id"], "road": True})
             rooms_on_it = 0
         else:
-            next_id += len(road["rooms"]) + 10
+            next_id = max(next_id, _past(road["rooms"]))
             built_roads.append(road)
             first, last = road["rooms"][0], road["rooms"][-1]
             other["exits"].append({"source": room_a["id"],
@@ -1385,7 +1619,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                                                     or area["name"])
         trail["name"] = trail["display_name"].lower().replace(" ", "-")
         trail["purpose"] = "path"
-        next_id += len(trail["rooms"]) + 10
+        next_id = max(next_id, _past(trail["rooms"]))
         built_roads.append(trail)
         first, last = trail["rooms"][0], trail["rooms"][-1]
         host["exits"].append({"source": host_room["id"],
@@ -1404,7 +1638,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
         display = trail["display_name"]
         finish_road(trail, rng,
                     from_name=host.get("display_name") or host.get("name"),
-                    to_name=area.get("display_name") or area.get("name"))
+                    to_name=area.get("display_name") or area.get("name"), kind="path")
         trail["display_name"] = display
         roads.append({"from": host["name"], "to": area["name"], "metres": round(gap),
                       "laid": True, "rooms": len(trail["rooms"]), "path": True,
@@ -1432,6 +1666,13 @@ def gate(area, culture, at, shape):
     if not ground["fits"]:
         problems.append("wet: " + ", ".join(ground["wet_unexpected"][:3]))
 
+    # Law F1, held as a MUST for a generated town: a hand-built zone is warned, but a
+    # generator that can furnish every room has no excuse not to.
+    if culture is not None and culture.purpose not in ("hunting",):
+        bare = fixtures.unfurnished(area)
+        if bare:
+            problems.append("things to look at: %d rooms outside one to three" % len(bare))
+
     for room in area["rooms"]:
         words = len((room.get("desc") or "").split())
         if not areagen.DESC_WORD_BAND[0] <= words <= areagen.DESC_WORD_BAND[1]:
@@ -1457,7 +1698,9 @@ def counts(area, culture):
     shops = sum(1 for room in rooms
                 if any(marker in room["key"].lower() for marker in TRADE_MARKERS))
     items = sum(len(room.get("stock") or ()) for room in rooms)
-    docks = sum(1 for room in rooms if place.water_room(room["key"]))
+    # Rooms `mark_docks` found at the water, not rooms whose names sound wet: counted by
+    # name, three areas once reported 175 docks, most of them streets called "Stair".
+    docks = sum(1 for room in rooms if room.get("dock"))
     return {"room_count": len(rooms), "shops": shops, "docks": docks, "items": items,
             "npcs": people.count(area)}
 
@@ -1528,7 +1771,14 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, si
     # the worldfile held nobody, so every population figure this generator has ever printed
     # described people who did not exist. See `people.populate`.
     people.populate(area, voice, rng)
+    # **Something to look at in every room of a town** - law F1, a MUST for a generated
+    # world. Themed by the people who built it and, inside, by the trade kept there.
+    if culture.purpose not in ("hunting",):
+        fixtures.furnish_town(area, voice, rng)
     area["name"] = area["display_name"].lower()
+    # Before the gate, because the gate excuses a dock for standing in water and nothing
+    # else - and it has to know which rooms are docks to do that.
+    mark_docks(area, at, radius_m)
 
     problems = gate(area, culture, at, lattice["shape"])
     if problems:
@@ -1550,8 +1800,24 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, si
         "moved_m": round(_haversine(site["latitude_deg"], site["longitude_deg"],
                                     anchor[0], anchor[1], radius_m)),
     })
+    # **Whether a hull can reach the town**, for the ferry planner (`ferries.coastal`). The
+    # site measured it; a town nudged off its site to fit on land is measured again where it
+    # actually stands.
+    if area["moved_m"] <= MOVED_REMEASURE_M:
+        harbour, landing = site.get("harbour_m"), site.get("landing_m")
+    else:
+        harbour = siting.water_within(at, anchor[0], anchor[1], radius_m,
+                                      siting.HARBOUR_DEPTH_M, siting.HARBOUR_REACH_M)
+        landing = siting.water_within(at, anchor[0], anchor[1], radius_m,
+                                      siting.LANDING_DEPTH_M, siting.LANDING_REACH_M)
+    area["harbour_m"] = None if harbour is None else round(harbour)
+    area["landing_m"] = None if landing is None else round(landing)
     area.update(counts(area, culture))
     return {"area": area, "problems": []}
+
+
+#: How far a town may stand from its site and still take the site's word on its water.
+MOVED_REMEASURE_M = 200.0
 
 
 def populate_world(worldfile_path, project_root, count=100, region=None, label="populate",
@@ -1723,7 +1989,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             area["hub"] = True
             key = _key_for(culture)
             filled[key] = filled.get(key, 0) + 1
-            base_id += len(area["rooms"]) + 10
+            base_id = max(base_id, _past(area["rooms"]))
             made.append(area)
             sites = [one for one in sites if one is not site]
             progress.write(json.dumps(feed_line(area)) + chr(10))
@@ -1779,7 +2045,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     continue
                 area = built["area"]
                 filled[_key_for(culture)] = filled.get(_key_for(culture), 0) + 1
-                base_id += len(area["rooms"]) + 10
+                base_id = max(base_id, _past(area["rooms"]))
                 made.append(area)
                 sites = [one for one in sites if one is not site]
                 progress.write(json.dumps(feed_line(area)) + chr(10))
@@ -1823,7 +2089,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     continue
                 area = built["area"]
                 filled[key] += 1
-                base_id += len(area["rooms"]) + 10
+                base_id = max(base_id, _past(area["rooms"]))
                 made.append(area)
                 progress.write(json.dumps(feed_line(area)) + "\n")
                 # A word every twenty-five, so the stage line moves during the longest
@@ -1845,6 +2111,59 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # culture actually fits them, quota ignored. The manifest records how many were
         # placed this way, because a world whose last twenty areas are all human villages is
         # a fact worth being able to see rather than one to discover by reading it.
+        # **A people with no ideal ground still has to live somewhere.** `fits` gives no
+        # partial credit, so a requirement the world cannot satisfy is not a hard quota - it
+        # is a quota that can never be filled, silently. This world has no rivers painted on
+        # it, so no site anywhere carries fresh water, so the halfling hamlet's `needs`
+        # could only ever return False: a four-hundred-area run placed ZERO halflings, two
+        # saurathi and two felari, and reported the shortfall as though the ground had been
+        # searched and found wanting.
+        #
+        # So before the run tops itself up with whoever fits, every people still short of
+        # its quota is given the least-bad ground left - ranked by `shortfall`, nearest miss
+        # first. The area records what it settled for, because a hamlet standing where its
+        # own culture says there should be a river is a thing a builder should be able to
+        # find rather than discover in play.
+        compromised = 0
+        needy = [key for key in quota if filled.get(key, 0) < quota[key]]
+        if needy and len(made) < count:
+            stage("settling the peoples with no ideal ground",
+                  "%d short: %s" % (len(needy), ", ".join(sorted(needy))))
+            by_key = {}
+            for culture in cultures.DEMO_TABLE:
+                by_key.setdefault(_key_for(culture), []).append(culture)
+            for key in needy:
+                for culture in by_key.get(key, ()):
+                    if filled.get(key, 0) >= quota[key] or len(made) >= count:
+                        break
+                    # Ranked once, then walked: re-ranking per placement is the same
+                    # answer at four hundred times the cost.
+                    ranked = sorted(((culture.shortfall(site), index, site)
+                                     for index, site in enumerate(sites)),
+                                    key=lambda row: (row[0], row[1]))
+                    for miss, _index, site in ranked:
+                        if filled.get(key, 0) >= quota[key] or len(made) >= count:
+                            break
+                        if any(_haversine(site["latitude_deg"], site["longitude_deg"],
+                                          area["latitude_deg"], area["longitude_deg"],
+                                          radius_m) < NEAR_M for area in made):
+                            continue
+                        built = build_area(site, culture, at, radius_m, rng, base_id,
+                                           origin, taken=named)
+                        if built["area"] is None:
+                            continue
+                        area = built["area"]
+                        if miss > 0.0:
+                            area["settled_for"] = round(miss, 2)
+                            compromised += 1
+                        filled[key] = filled.get(key, 0) + 1
+                        base_id = max(base_id, _past(area["rooms"]))
+                        made.append(area)
+                        sites = [one for one in sites if one is not site]
+                        progress.write(json.dumps(feed_line(area)) + chr(10))
+                        if on_area:
+                            on_area(area)
+
         over_quota = 0
         if len(made) < count:
             for site in sites:
@@ -1863,7 +2182,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     area = built["area"]
                     filled[_key_for(culture)] = filled.get(_key_for(culture), 0) + 1
                     over_quota += 1
-                    base_id += len(area["rooms"]) + 10
+                    base_id = max(base_id, _past(area["rooms"]))
                     made.append(area)
                     progress.write(json.dumps(feed_line(area)) + "\n")
                     if on_area:
@@ -1885,32 +2204,71 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                 origin = (heart["anchor"]["latitude_deg"], heart["anchor"]["longitude_deg"])
             stage("measuring the world", "levels counted out from %s"
                   % (heart.get("display_name") or heart.get("name")))
-            # **Each band gets its share of the world.** Ordered by how far a place is from
-            # home, so further is still harder; sliced by share, so the world has somewhere
-            # to start and somewhere to end rather than sixty per cent of itself in one
-            # band. See `cultures.bands_by_share`.
-            outward = sorted(
-                made,
-                key=lambda one: _haversine(origin[0], origin[1],
-                                           one["anchor"]["latitude_deg"],
-                                           one["anchor"]["longitude_deg"], radius_m))
+            # **Every cluster carries the whole ladder, and the ladder climbs inland.**
+            #
+            # One gradient measured from one origin gives a world where levels 1-5 exist in
+            # exactly one place: a player who starts at the far city has nothing to do, and
+            # a player who outgrows the home ring must cross the planet. So the bands are
+            # cut PER CLUSTER - each area belongs to its nearest great city - and every
+            # cluster gets the full 1-100 range in the same 10/10/20/20/20/20 shares.
+            #
+            # **Ordered by distance from the sea, not from home.** The shore is where people
+            # land, trade and start; the deep interior is where they stop going. That reads
+            # as a world rather than as a dartboard, and it means a coastal cluster's own
+            # hinterland supplies its high-level ground instead of the next continent.
+            hubs_made = [one for one in made if one.get("hub")] or [heart]
+            stage("measuring the ladders",
+                  "%d clusters, each carrying levels 1-100" % len(hubs_made))
+
+            def _cluster_of(area):
+                lat = area["anchor"]["latitude_deg"]
+                lon = area["anchor"]["longitude_deg"]
+                return min(range(len(hubs_made)),
+                           key=lambda index: _haversine(
+                               lat, lon,
+                               hubs_made[index]["anchor"]["latitude_deg"],
+                               hubs_made[index]["anchor"]["longitude_deg"], radius_m))
+
+            for area in made:
+                area["inland_km"] = round(
+                    inland_m(at, area["anchor"]["latitude_deg"],
+                             area["anchor"]["longitude_deg"], radius_m) / 1000.0, 1)
+                area["from_origin_km"] = round(
+                    _haversine(origin[0], origin[1], area["anchor"]["latitude_deg"],
+                               area["anchor"]["longitude_deg"], radius_m) / 1000.0, 1)
+
+            clusters = {}
+            for area in made:
+                clusters.setdefault(_cluster_of(area), []).append(area)
+
             reach = {}
-            for area, band in zip(outward, cultures.bands_by_share(len(outward))):
-                gap = _haversine(origin[0], origin[1],
-                                 area["anchor"]["latitude_deg"],
-                                 area["anchor"]["longitude_deg"], radius_m)
-                area["level_band"] = [band[0], band[1]]
-                area["from_origin_km"] = round(gap / 1000.0, 1)
-                near, far = reach.get(band, (gap, gap))
-                reach[band] = (min(near, gap), max(far, gap))
-            # **The bands are still rings; their radii are what the shares decide.** Written
-            # down so a reader can see where one ends and the next begins rather than having
-            # to work it out from four hundred areas.
+            for index, members in sorted(clusters.items()):
+                # The hub itself is where a player arrives, so it anchors the bottom of its
+                # own ladder however far inland it happens to sit.
+                inward = sorted(members, key=lambda one: (not one.get("hub"),
+                                                          one["inland_km"]))
+                shares = cultures.bands_by_share(len(inward))
+                for area, band in zip(inward, shares):
+                    area["level_band"] = [band[0], band[1]]
+                    area["cluster"] = hubs_made[index].get("display_name")                         or hubs_made[index].get("name")
+                    deep = area["inland_km"]
+                    near, far = reach.get(band, (deep, deep))
+                    reach[band] = (min(near, deep), max(far, deep))
+
+            # **Written down as distance inland, because that is what the band now means.**
             document["level_bands"] = [
                 {"band": [band[0], band[1]],
-                 "from_km": round(near / 1000.0, 1), "to_km": round(far / 1000.0, 1),
-                 "areas": sum(1 for one in made if one.get("level_band") == [band[0], band[1]])}
+                 "inland_from_km": round(near, 1), "inland_to_km": round(far, 1),
+                 "areas": sum(1 for one in made
+                              if one.get("level_band") == [band[0], band[1]])}
                 for band, (near, far) in sorted(reach.items())]
+            document["clusters"] = [
+                {"hub": hubs_made[index].get("display_name") or hubs_made[index].get("name"),
+                 "areas": len(members),
+                 "bands": sorted({tuple(one["level_band"]) for one in members})
+                 and [list(b) for b in sorted({tuple(one["level_band"])
+                                               for one in members})]}
+                for index, members in sorted(clusters.items())]
 
         stage("laying roads", "%d areas to join" % len(document["areas"]))
 
@@ -1971,7 +2329,10 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         document["roads"] = list(document.get("roads") or ()) + road_areas
         stage("joining crossings", "%d roads laid" % len(road_areas))
         # Where two ways cross, they now meet. See `join_crossings`.
-        crossings = join_crossings(document["roads"], radius_m, rng, base_id + 90000, at=at)
+        crossings = join_crossings(
+            document["roads"], radius_m, rng,
+            _past([room for place in list(document["areas"]) + list(document["roads"])
+                   for room in place.get("rooms") or ()], gap=1000), at=at)
         run.write_json("crossings.json", crossings)
         run.write_json("roads.json", roads)
         stage("sounding the ground", "checking nothing stands in water")
@@ -1997,6 +2358,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "items": sum(a.get("items", 0) for a in made),
             "refused": len(refused),
             "over_quota": over_quota,
+            "settled_for_less": compromised,
             "short_of": max(0, count - len(made)),
             "roads": sum(1 for road in roads if road["laid"]),
             "road_rooms": sum(len(road["rooms"]) for road in road_areas),

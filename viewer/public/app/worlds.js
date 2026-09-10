@@ -100,7 +100,7 @@ export function searchFromPlanet(planet) {
 /// silently threw away every stroke somebody had painted - the file looked complete, opened
 /// without complaint, and drew a world with no mountains in it.
 export function buildWorldfile(name, search, areas = [], features = [], live = null,
-                               roads = []) {
+                               roads = [], network = {}) {
   const planet = planetFromSearch(search);
   // **The four the reader cannot do without are always written, even when the URL is
   // silent about them.** `planetFromSearch` records what the query string says, and a
@@ -130,6 +130,13 @@ export function buildWorldfile(name, search, areas = [], features = [], live = n
     // and the generator's hardest guarantee - that everywhere can be walked to - was
     // thrown away by the act of saving.
     roads,
+    // **A boat is a way between two places, exactly as a road is.** Saving the roads and
+    // dropping the ferry lines reopens an archipelago as a set of islands nobody can leave,
+    // and the level bands are what tells a reader which of those islands a new character
+    // should be on. Both were computed, drawn, and thrown away by the act of saving.
+    ferries: network.ferries || [],
+    ferry_lines: network.ferry_lines || [],
+    level_bands: network.level_bands || [],
   };
 }
 

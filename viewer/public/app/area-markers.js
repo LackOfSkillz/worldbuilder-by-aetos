@@ -29,6 +29,7 @@
 /// buried in four literals, because they have to agree with each other or a marker fades out and
 /// grows at the same time.
 import { showLayer } from "./globe-layers.js";
+import { fillFor, outlineFor, outlineWidthFor } from "./palette.js";
 
 const NEAR_M = 1.0e3;
 const FAR_M = 2.0e7;
@@ -66,13 +67,11 @@ const DETAIL_MAX_M = 6.0e4;
 /// stays a map.
 const POI_COLOUR = (Cesium) => Cesium.Color.fromCssColorString("#ffcc66");
 
-/// An area with a harbour and one without, so the map answers the port question without a click.
-const PORT_COLOUR = "#4db2ff";
-const INLAND_COLOUR = "#ffc857";
-
+/// **The one palette, the same as a run in progress.** These pins once coloured only "port or
+/// inland", so a world opened from a file drew four hundred identical orange dots while the
+/// same world, freshly generated, drew its peoples and its danger. See `palette.js`.
 function colourFor(Cesium, area) {
-  const port = area.port || {};
-  return Cesium.Color.fromCssColorString(port.has_port ? PORT_COLOUR : INLAND_COLOUR);
+  return fillFor(Cesium, area);
 }
 
 /// The bounding circle of an area's rooms, in metres, so the footprint matches what was placed.
@@ -244,14 +243,23 @@ export function drawAreas(viewer, Cesium, document) {
           wbRoom: {
             key: room.key,
             desc: room.desc || "",
+            // The curator's text, carried beside the generator's so the card can show
+            // either. Absent until a run has been curated, and then the card offers both.
+            key_ai: room.key_ai || null,
+            desc_ai: room.desc_ai || null,
             area: area.display_name || area.name,
             // What is behind the door, named so a click on the street says what is there
             // and what it sells - which is the question the marker raises.
             shop: shop ? shop.key : null,
+            shop_ai: shop ? (shop.key_ai || null) : null,
+            // Things to look at (laws F1, F2), by name - what `look` will find here.
+            things: (room.fixtures || []).map((thing) => thing.key),
             door: shop ? shop.noun : null,
             keeper: keeper ? keeper.name : null,
             people: (room.people || []).map((who) => who.name),
             stock: goods,
+            // The curator's reworked goods, `{name, desc}` item for item with `stock`.
+            stock_ai: (shop || room).stock_ai || null,
             latitude_deg: room.latitude_deg,
             longitude_deg: room.longitude_deg,
           },
@@ -279,8 +287,9 @@ export function drawAreas(viewer, Cesium, document) {
       point: {
         pixelSize: 11,
         color: colour,
-        outlineColor: Cesium.Color.BLACK.withAlpha(0.85),
-        outlineWidth: 2,
+        // Faction fills, race rings - a hostile town is red ringed in its people's colour.
+        outlineColor: outlineFor(Cesium, area),
+        outlineWidth: outlineWidthFor(area),
         disableDepthTestAgainstTerrain: true,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
@@ -568,7 +577,7 @@ export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
 /// says which room the cursor is over and must vanish the instant it leaves; this one is
 /// read, so it has to stay until it is dismissed. One element, shared by every source, for
 /// the reason `makeCard` records.
-function makeRoomPanel() {
+export function makeRoomPanel() {
   const existing = window.document.getElementById("wb-room-card");
   if (existing) return existing;
   const panel = window.document.createElement("div");
@@ -586,8 +595,45 @@ function makeRoomPanel() {
 }
 
 
+//: Which text the room card shows when a room has both: "ai" or "template".
+//
+// Remembered per browser, because the natural way to judge the curator is to walk a town
+// reading one side and then walk it again reading the other - and a toggle that forgot its
+// setting on every click would make that a click per room.
+const CARD_TEXT_KEY = "wb.cardText";
+
+function cardText() {
+  try {
+    return window.localStorage.getItem(CARD_TEXT_KEY) === "template" ? "template" : "ai";
+  } catch {
+    return "ai";
+  }
+}
+
+function setCardText(mode) {
+  try {
+    window.localStorage.setItem(CARD_TEXT_KEY, mode);
+  } catch { /* a private window simply forgets */ }
+}
+
+/// What the card says for a room, in the chosen text. Exported for the tests.
+export function roomText(room, mode) {
+  const shelf = Array.isArray(room.stock_ai) && room.stock_ai.length ? room.stock_ai : null;
+  const ai = mode === "ai" && Boolean(room.desc_ai || shelf);
+  return {
+    ai,
+    key: ai && room.key_ai ? room.key_ai : room.key,
+    desc: ai && room.desc_ai ? room.desc_ai : room.desc,
+    shop: ai && room.shop_ai ? room.shop_ai : room.shop,
+    // Each ware as `{name, desc}`; the template's have no description to show.
+    wares: ai && shelf
+      ? shelf.map((ware) => ({ name: ware.name, desc: ware.desc || "" }))
+      : (room.stock || []).map((name) => ({ name, desc: "" })),
+  };
+}
+
 /// Fill the room card and show it beside the click.
-function showRoom(panel, room, x, y) {
+export function showRoom(panel, room, x, y) {
   const make = (tag, css, text) => {
     const node = window.document.createElement(tag);
     if (css) node.style.cssText = css;
@@ -606,23 +652,54 @@ function showRoom(panel, room, x, y) {
   close.addEventListener("click", () => { panel.style.display = "none"; });
   panel.append(close);
 
-  panel.append(make("div", "font-weight:600;padding-right:16px", room.key));
+  const shown = roomText(room, cardText());
+  panel.append(make("div", "font-weight:600;padding-right:16px", shown.key));
   if (room.area) {
     panel.append(make("div", "color:#8fa3ba;font-size:11px;margin-bottom:6px", room.area));
   }
-  if (room.desc) {
-    panel.append(make("div", "margin-bottom:6px", room.desc));
+  // **AI | template, only where there is a choice.** A room the curator never touched has
+  // one text, and a toggle with nothing behind one side would look broken.
+  if (room.desc_ai || (room.stock_ai && room.stock_ai.length)) {
+    const toggle = make("div", "display:flex;gap:4px;margin-bottom:6px");
+    for (const [mode, label] of [["ai", "AI"], ["template", "template"]]) {
+      const active = (mode === "ai") === shown.ai;
+      const button = make("button", [
+        "border:1px solid rgba(255,255,255,0.25)", "border-radius:4px", "cursor:pointer",
+        "font:11px/1.4 system-ui, sans-serif", "padding:1px 8px",
+        active ? "background:#b89a6a;color:#10141a" : "background:none;color:#9fb0c4",
+      ].join(";"), label);
+      button.type = "button";
+      button.dataset.cardText = mode;
+      button.addEventListener("click", () => {
+        setCardText(mode);
+        showRoom(panel, room, x, y);
+      });
+      toggle.append(button);
+    }
+    panel.append(toggle);
   }
-  if (room.shop) {
+  if (shown.desc) {
+    panel.append(make("div", "margin-bottom:6px", shown.desc));
+  }
+  if (room.things && room.things.length) {
+    panel.append(make("div", "color:#b89a6a;font-size:12px",
+                      `to look at: ${room.things.join(", ")}`));
+  }
+  if (shown.shop) {
     panel.append(make("div", "color:#ffcc66;font-size:12px;margin-top:4px",
-                      `${room.shop} - go ${room.door}`));
+                      `${shown.shop} - go ${room.door}`));
   }
   if (room.keeper) {
     panel.append(make("div", "color:#cfe0f2;font-size:12px", room.keeper));
   }
-  if (room.stock && room.stock.length) {
+  if (shown.wares.length) {
     const list = make("ul", "margin:4px 0 0;padding-left:18px;color:#cfe0f2;font-size:12px");
-    for (const ware of room.stock) list.append(make("li", null, ware));
+    for (const ware of shown.wares) {
+      const item = make("li", null, ware.name);
+      // What the ware looks like, on hover: the list stays a list a player can scan.
+      if (ware.desc) item.title = ware.desc;
+      list.append(item);
+    }
     panel.append(list);
   } else if (room.people && room.people.length && !room.keeper) {
     panel.append(make("div", "color:#8fa3ba;font-size:12px", room.people.join(", ")));
