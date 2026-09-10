@@ -169,9 +169,62 @@ class Culture:
                 return False
         return True
 
+    def shortfall(self, site):
+        """
+        How badly this ground misses, for ranking least-bad ground.
+
+        Args:
+            site (dict): A candidate.
+
+        Returns:
+            miss (float): 0.0 when the site fits outright, larger the worse it is.
+
+        Notes:
+            **A people with no perfect ground still has to live somewhere.** `fits` gives no
+            partial credit, which is right for a first choice and wrong as a last word: a
+            world with no rivers painted on it can never satisfy a halfling hamlet's need
+            for fresh water, so a four-hundred-area run placed twenty-four human villages
+            where the halflings should have been and reported the quota "unfilled" as
+            though the dice had been unkind. It was not the dice - it was arithmetic that
+            could only ever return False.
+
+            A band miss is measured in band-widths so a metre outside a narrow band and a
+            metre outside a wide one are not called equally wrong, and an absent cue costs
+            `MISSING_NEED` - deliberately more than a typical band miss, because standing a
+            fishing village where there is no water at all is a worse compromise than
+            standing it fifty metres too high.
+        """
+        miss = 0.0
+        for field in ("elevation_m", "prominence_m", "relief_m", "slope_m"):
+            band = self.wants.get(field)
+            if band is None:
+                continue
+            low, high = band
+            value = site.get(field)
+            if value is None:
+                miss += MISSING_NEED
+            elif value < low:
+                miss += (low - value) / max(1e-6, high - low)
+            elif value > high:
+                miss += (value - high) / max(1e-6, high - low)
+        for need in self.wants.get("needs", ()):
+            if site.get("%s_m" % need) is None:
+                miss += MISSING_NEED
+        for forbid in self.wants.get("forbids", ()):
+            if site.get("%s_m" % forbid) is not None:
+                miss += MISSING_NEED
+        return miss
+
     def as_dict(self):
         return {"culture": self.name, "race": self.race, "profession": self.profession,
                 "faction": self.faction, "purpose": self.purpose, "size": self.size}
+
+
+#: What one absent requirement costs when ranking least-bad ground, in band-widths.
+#:
+#: Above one on purpose: a cue that is not there at all is a worse compromise than a band
+#: overshot by its own width.
+MISSING_NEED = 1.5
 
 
 def classifier(table):

@@ -928,6 +928,57 @@ def road_between(from_area, to_area, room_a, room_b, gap_m, radius_m, rng, base_
     return road
 
 
+#: How far inland the shore search looks before it calls a place "deep inland".
+#:
+#: `siting.water_within` reaches three kilometres, which answers "is there a harbour here"
+#: and is useless for "how far from the sea is this": areas stand a hundred to two hundred
+#: miles apart, so at that reach every one of them is simply None and the whole world sorts
+#: as a tie.
+INLAND_REACH_M = 900000.0
+
+#: How finely the shore search is walked. Coarse on purpose - the answer is only ever used
+#: to ORDER areas, never as a distance anybody reads, so resolution buys nothing and rays
+#: cost `at()` calls.
+INLAND_RAYS = 24
+INLAND_STEPS = 18
+
+
+def inland_m(at, latitude_deg, longitude_deg, radius_m,
+             reach_m=INLAND_REACH_M, rays=INLAND_RAYS, steps=INLAND_STEPS):
+    """
+    How far this point is from open water.
+
+    Args:
+        at (callable): `(lat, lon) -> metres` above datum.
+        latitude_deg, longitude_deg (float): Where to ask.
+        radius_m (float): The planet's radius.
+        reach_m (float): How far to look before giving up.
+        rays, steps (int): The ring search's resolution.
+
+    Returns:
+        metres (float): Distance to the nearest sea, or `reach_m` when none is within it.
+
+    Notes:
+        A ring search, expanding: the first ring that finds water wins, so the answer is
+        the search's step size rather than a true distance. That is deliberate - it orders
+        the world, and ordering is all the level bands need.
+    """
+    if at(latitude_deg, longitude_deg) < 0.0:
+        return 0.0
+    # **Fine near the shore, coarse in the interior.** Walking out in equal steps makes the
+    # first ring fifty kilometres wide, so every coastal area answers "50" and the two
+    # lowest bands - the ones a new character lives in - come out indistinguishable, both
+    # reading `inland 50 - 50 km`. Squaring the step spends the resolution where the
+    # ordering is crowded: the first ring is under three kilometres, and nobody needs to
+    # tell four hundred kilometres inland from four hundred and fifty.
+    for step in range(1, steps + 1):
+        distance = reach_m * (step / float(steps)) ** 2
+        for lat, lon in siting._ring(latitude_deg, longitude_deg, distance, radius_m, rays):
+            if at(lat, lon) < 0.0:
+                return distance
+    return reach_m
+
+
 def _sea_gap(at, one, other, radius_m):
     """
     How far a boat actually sails between two terminals, or 0 if it cannot.
@@ -1845,6 +1896,59 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         # culture actually fits them, quota ignored. The manifest records how many were
         # placed this way, because a world whose last twenty areas are all human villages is
         # a fact worth being able to see rather than one to discover by reading it.
+        # **A people with no ideal ground still has to live somewhere.** `fits` gives no
+        # partial credit, so a requirement the world cannot satisfy is not a hard quota - it
+        # is a quota that can never be filled, silently. This world has no rivers painted on
+        # it, so no site anywhere carries fresh water, so the halfling hamlet's `needs`
+        # could only ever return False: a four-hundred-area run placed ZERO halflings, two
+        # saurathi and two felari, and reported the shortfall as though the ground had been
+        # searched and found wanting.
+        #
+        # So before the run tops itself up with whoever fits, every people still short of
+        # its quota is given the least-bad ground left - ranked by `shortfall`, nearest miss
+        # first. The area records what it settled for, because a hamlet standing where its
+        # own culture says there should be a river is a thing a builder should be able to
+        # find rather than discover in play.
+        compromised = 0
+        needy = [key for key in quota if filled.get(key, 0) < quota[key]]
+        if needy and len(made) < count:
+            stage("settling the peoples with no ideal ground",
+                  "%d short: %s" % (len(needy), ", ".join(sorted(needy))))
+            by_key = {}
+            for culture in cultures.DEMO_TABLE:
+                by_key.setdefault(_key_for(culture), []).append(culture)
+            for key in needy:
+                for culture in by_key.get(key, ()):
+                    if filled.get(key, 0) >= quota[key] or len(made) >= count:
+                        break
+                    # Ranked once, then walked: re-ranking per placement is the same
+                    # answer at four hundred times the cost.
+                    ranked = sorted(((culture.shortfall(site), index, site)
+                                     for index, site in enumerate(sites)),
+                                    key=lambda row: (row[0], row[1]))
+                    for miss, _index, site in ranked:
+                        if filled.get(key, 0) >= quota[key] or len(made) >= count:
+                            break
+                        if any(_haversine(site["latitude_deg"], site["longitude_deg"],
+                                          area["latitude_deg"], area["longitude_deg"],
+                                          radius_m) < NEAR_M for area in made):
+                            continue
+                        built = build_area(site, culture, at, radius_m, rng, base_id,
+                                           origin, taken=named)
+                        if built["area"] is None:
+                            continue
+                        area = built["area"]
+                        if miss > 0.0:
+                            area["settled_for"] = round(miss, 2)
+                            compromised += 1
+                        filled[key] = filled.get(key, 0) + 1
+                        base_id += len(area["rooms"]) + 10
+                        made.append(area)
+                        sites = [one for one in sites if one is not site]
+                        progress.write(json.dumps(feed_line(area)) + chr(10))
+                        if on_area:
+                            on_area(area)
+
         over_quota = 0
         if len(made) < count:
             for site in sites:
@@ -1885,32 +1989,71 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                 origin = (heart["anchor"]["latitude_deg"], heart["anchor"]["longitude_deg"])
             stage("measuring the world", "levels counted out from %s"
                   % (heart.get("display_name") or heart.get("name")))
-            # **Each band gets its share of the world.** Ordered by how far a place is from
-            # home, so further is still harder; sliced by share, so the world has somewhere
-            # to start and somewhere to end rather than sixty per cent of itself in one
-            # band. See `cultures.bands_by_share`.
-            outward = sorted(
-                made,
-                key=lambda one: _haversine(origin[0], origin[1],
-                                           one["anchor"]["latitude_deg"],
-                                           one["anchor"]["longitude_deg"], radius_m))
+            # **Every cluster carries the whole ladder, and the ladder climbs inland.**
+            #
+            # One gradient measured from one origin gives a world where levels 1-5 exist in
+            # exactly one place: a player who starts at the far city has nothing to do, and
+            # a player who outgrows the home ring must cross the planet. So the bands are
+            # cut PER CLUSTER - each area belongs to its nearest great city - and every
+            # cluster gets the full 1-100 range in the same 10/10/20/20/20/20 shares.
+            #
+            # **Ordered by distance from the sea, not from home.** The shore is where people
+            # land, trade and start; the deep interior is where they stop going. That reads
+            # as a world rather than as a dartboard, and it means a coastal cluster's own
+            # hinterland supplies its high-level ground instead of the next continent.
+            hubs_made = [one for one in made if one.get("hub")] or [heart]
+            stage("measuring the ladders",
+                  "%d clusters, each carrying levels 1-100" % len(hubs_made))
+
+            def _cluster_of(area):
+                lat = area["anchor"]["latitude_deg"]
+                lon = area["anchor"]["longitude_deg"]
+                return min(range(len(hubs_made)),
+                           key=lambda index: _haversine(
+                               lat, lon,
+                               hubs_made[index]["anchor"]["latitude_deg"],
+                               hubs_made[index]["anchor"]["longitude_deg"], radius_m))
+
+            for area in made:
+                area["inland_km"] = round(
+                    inland_m(at, area["anchor"]["latitude_deg"],
+                             area["anchor"]["longitude_deg"], radius_m) / 1000.0, 1)
+                area["from_origin_km"] = round(
+                    _haversine(origin[0], origin[1], area["anchor"]["latitude_deg"],
+                               area["anchor"]["longitude_deg"], radius_m) / 1000.0, 1)
+
+            clusters = {}
+            for area in made:
+                clusters.setdefault(_cluster_of(area), []).append(area)
+
             reach = {}
-            for area, band in zip(outward, cultures.bands_by_share(len(outward))):
-                gap = _haversine(origin[0], origin[1],
-                                 area["anchor"]["latitude_deg"],
-                                 area["anchor"]["longitude_deg"], radius_m)
-                area["level_band"] = [band[0], band[1]]
-                area["from_origin_km"] = round(gap / 1000.0, 1)
-                near, far = reach.get(band, (gap, gap))
-                reach[band] = (min(near, gap), max(far, gap))
-            # **The bands are still rings; their radii are what the shares decide.** Written
-            # down so a reader can see where one ends and the next begins rather than having
-            # to work it out from four hundred areas.
+            for index, members in sorted(clusters.items()):
+                # The hub itself is where a player arrives, so it anchors the bottom of its
+                # own ladder however far inland it happens to sit.
+                inward = sorted(members, key=lambda one: (not one.get("hub"),
+                                                          one["inland_km"]))
+                shares = cultures.bands_by_share(len(inward))
+                for area, band in zip(inward, shares):
+                    area["level_band"] = [band[0], band[1]]
+                    area["cluster"] = hubs_made[index].get("display_name")                         or hubs_made[index].get("name")
+                    deep = area["inland_km"]
+                    near, far = reach.get(band, (deep, deep))
+                    reach[band] = (min(near, deep), max(far, deep))
+
+            # **Written down as distance inland, because that is what the band now means.**
             document["level_bands"] = [
                 {"band": [band[0], band[1]],
-                 "from_km": round(near / 1000.0, 1), "to_km": round(far / 1000.0, 1),
-                 "areas": sum(1 for one in made if one.get("level_band") == [band[0], band[1]])}
+                 "inland_from_km": round(near, 1), "inland_to_km": round(far, 1),
+                 "areas": sum(1 for one in made
+                              if one.get("level_band") == [band[0], band[1]])}
                 for band, (near, far) in sorted(reach.items())]
+            document["clusters"] = [
+                {"hub": hubs_made[index].get("display_name") or hubs_made[index].get("name"),
+                 "areas": len(members),
+                 "bands": sorted({tuple(one["level_band"]) for one in members})
+                 and [list(b) for b in sorted({tuple(one["level_band"])
+                                               for one in members})]}
+                for index, members in sorted(clusters.items())]
 
         stage("laying roads", "%d areas to join" % len(document["areas"]))
 
@@ -1997,6 +2140,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             "items": sum(a.get("items", 0) for a in made),
             "refused": len(refused),
             "over_quota": over_quota,
+            "settled_for_less": compromised,
             "short_of": max(0, count - len(made)),
             "roads": sum(1 for road in roads if road["laid"]),
             "road_rooms": sum(len(road["rooms"]) for road in road_areas),
