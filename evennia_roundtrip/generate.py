@@ -1800,8 +1800,24 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, si
         "moved_m": round(_haversine(site["latitude_deg"], site["longitude_deg"],
                                     anchor[0], anchor[1], radius_m)),
     })
+    # **Whether a hull can reach the town**, for the ferry planner (`ferries.coastal`). The
+    # site measured it; a town nudged off its site to fit on land is measured again where it
+    # actually stands.
+    if area["moved_m"] <= MOVED_REMEASURE_M:
+        harbour, landing = site.get("harbour_m"), site.get("landing_m")
+    else:
+        harbour = siting.water_within(at, anchor[0], anchor[1], radius_m,
+                                      siting.HARBOUR_DEPTH_M, siting.HARBOUR_REACH_M)
+        landing = siting.water_within(at, anchor[0], anchor[1], radius_m,
+                                      siting.LANDING_DEPTH_M, siting.LANDING_REACH_M)
+    area["harbour_m"] = None if harbour is None else round(harbour)
+    area["landing_m"] = None if landing is None else round(landing)
     area.update(counts(area, culture))
     return {"area": area, "problems": []}
+
+
+#: How far a town may stand from its site and still take the site's word on its water.
+MOVED_REMEASURE_M = 200.0
 
 
 def populate_world(worldfile_path, project_root, count=100, region=None, label="populate",
