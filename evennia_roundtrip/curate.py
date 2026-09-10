@@ -142,12 +142,32 @@ def sentences(text):
     return len(re.findall(r"[.!?]", text or ""))
 
 
-def judge(text):
+def doors_of(area, room):
+    """
+    The words a player must type to leave this room through a door.
+
+    Returns:
+        doors (list): `(noun, what is through it)` for every interior opening off here.
+
+    Notes:
+        Law T5: the noun a player types is the noun in the room description. The templates
+        guaranteed it by construction; a curator rewriting the street does not, and on its
+        first full pass 656 of 1,802 street rooms stopped mentioning their door - the Quiet-
+        hall Inn's sign creaking over a room whose only way in is `go tavern`.
+    """
+    return [(inside["noun"], inside.get("key") or inside["noun"])
+            for inside in area.get("rooms") or ()
+            if inside.get("interior") and inside.get("noun")
+            and inside.get("from") == room["id"]]
+
+
+def judge(text, must_name=()):
     """
     Whether a description may stand, and why not when it may not.
 
     Args:
         text (str): What the model returned.
+        must_name (iterable): Door nouns the text has to contain, word for word.
 
     Returns:
         fault (str or None): None when it passes; otherwise the law it broke.
@@ -179,6 +199,10 @@ def judge(text):
     if re.search(r"\b(beckons?|beckoning|invites?|inviting|greets?|welcomes?|awaits?)\b",
                  text, re.I):
         return "addresses the reader"
+    for noun in must_name:
+        # Whole word: "inn" must not be satisfied by "inner", nor "stall" by "installed".
+        if not re.search(r"\b%s\b" % re.escape(noun), text, re.I):
+            return "door not named (%s)" % noun
     return None
 
 
@@ -298,6 +322,16 @@ def brief_for(area, room, neighbours):
                      % ", ".join(p.get("name", "someone") for p in room["people"][:4]))
     if neighbours:
         lines.append("It opens onto: %s." % ", ".join(neighbours[:6]))
+    doors = doors_of(area, room)
+    if doors:
+        # **Said as a requirement, not as context.** Listed among the neighbours by name,
+        # the model wrote about the Quiethall Inn and never said "tavern" - which is the
+        # only word that opens it.
+        lines.append("")
+        lines.append("REQUIRED: players enter the buildings here by typing a single word, "
+                     "so the description MUST contain each of these exact words, and "
+                     "should make clear it is a way in: %s."
+                     % "; ".join("'%s' (%s)" % (noun, what) for noun, what in doors))
     lines += ["", "The template wrote this, which you are replacing:",
               (room.get("desc") or "").strip()]
     return "\n".join(lines)
@@ -412,7 +446,8 @@ def _ask_room(area, room, model, attempts=ATTEMPTS):
         if not got:
             fault = "no JSON in reply"
             continue
-        fault = judge(got.get("desc"))
+        fault = judge(got.get("desc"),
+                      must_name=[noun for noun, _what in doors_of(area, room)])
         if fault is None:
             return {"record": {"name": (got.get("name") or "").strip(),
                                "desc": got.get("desc").strip(),

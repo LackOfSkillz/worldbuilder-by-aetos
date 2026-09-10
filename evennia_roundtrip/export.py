@@ -263,7 +263,54 @@ def check(world):
     return problems
 
 
-def write(document, directory, name="aetosia"):
+def adopt_curated(document):
+    """
+    A copy of a worldfile with the curator's text taken wherever it is safe to take.
+
+    Args:
+        document (dict): A worldfile the curator has been over (`desc_ai`, `key_ai`).
+
+    Returns:
+        adopted (dict): The copy, with `desc` and interior `key` replaced.
+        counts (dict): How many rooms took the new text and how many kept the old, and why.
+
+    Notes:
+        **Room by room, and re-checked here rather than trusted.** The curator gates what it
+        keeps, but its gates have changed as its faults were found - a journal written before
+        the door rule existed holds text that passed every check then and hides a shop now.
+        So every description is judged again at the moment it is adopted, against today's
+        rules, and a room that fails keeps the template's text. Shipping a street that does
+        not name its door costs a player a shop; keeping the older prose costs nothing.
+
+        **Only interiors take a new name.** A street room's name is shared by its whole
+        street and must stay a connected run (law G1); a shop's name is its own.
+    """
+    from evennia_roundtrip import curate
+
+    adopted = json.loads(json.dumps(document))
+    counts = {"curated": 0, "template": 0, "renamed": 0, "refused": {}}
+    for place in list(adopted.get("areas") or ()) + list(adopted.get("roads") or ()):
+        for room in place.get("rooms") or ():
+            text = room.get("desc_ai")
+            if not text:
+                counts["template"] += 1
+                continue
+            nouns = [noun for noun, _what in curate.doors_of(place, room)]
+            fault = curate.judge(text, must_name=nouns)
+            if fault:
+                counts["template"] += 1
+                counts["refused"][fault] = counts["refused"].get(fault, 0) + 1
+                continue
+            room["desc"] = text
+            counts["curated"] += 1
+            if room.get("interior") and (room.get("key_ai") or "").strip():
+                if room["key_ai"].strip() != room.get("key"):
+                    counts["renamed"] += 1
+                room["key"] = room["key_ai"].strip()
+    return adopted, counts
+
+
+def write(document, directory, name="aetosia", curated=False):
     """
     Write the data file and the batchcode that builds it.
 
@@ -271,6 +318,7 @@ def write(document, directory, name="aetosia"):
         document (dict): A worldfile.
         directory (str): Where to write - a game's `world/` directory in practice.
         name (str): The base name for both files.
+        curated (bool): Take the curator's text where it passes the laws (`adopt_curated`).
 
     Returns:
         report (dict): The two paths, the counts, and any `problems` found.
@@ -279,6 +327,9 @@ def write(document, directory, name="aetosia"):
         Nothing is written when the check fails, because a game asked to build a broken
         world builds most of it and then stops in the middle.
     """
+    adoption = None
+    if curated:
+        document, adoption = adopt_curated(document)
     world = flatten(document)
     problems = check(world)
     if problems:
@@ -296,10 +347,13 @@ def write(document, directory, name="aetosia"):
     with open(code_path, "w", encoding="utf-8") as handle:
         handle.write(BUILDER.format(module="build_%s" % name, data=data_name,
                                     wb_id=WB_ID))
-    return {"written": True, "problems": [], "data": data_path, "code": code_path,
-            "rooms": len(world["rooms"]), "exits": len(world["exits"]),
-            "areas": len(world["areas"]),
-            "command": "@py from world.build_%s import build; build(self)" % name}
+    report = {"written": True, "problems": [], "data": data_path, "code": code_path,
+              "rooms": len(world["rooms"]), "exits": len(world["exits"]),
+              "areas": len(world["areas"]),
+              "command": "@py from world.build_%s import build; build(self)" % name}
+    if adoption is not None:
+        report["curated"] = adoption
+    return report
 
 
 def main(argv=None):
@@ -310,11 +364,14 @@ def main(argv=None):
     parser.add_argument("--worldfile", required=True)
     parser.add_argument("--into", required=True, help="the game's world/ directory")
     parser.add_argument("--name", default="aetosia")
+    parser.add_argument("--curated", action="store_true",
+                        help="take the curator's descriptions (desc_ai) where they pass the "
+                             "laws; any room that fails keeps its template text")
     args = parser.parse_args(argv)
 
     with open(args.worldfile, encoding="utf-8") as handle:
         document = json.load(handle)
-    report = write(document, args.into, args.name)
+    report = write(document, args.into, args.name, curated=args.curated)
     print(json.dumps(report, indent=2))
     return 0 if report["written"] else 1
 

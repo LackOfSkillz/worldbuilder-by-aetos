@@ -1039,6 +1039,22 @@ def finish_road(road, rng, from_name=None, to_name=None):
     return road
 
 
+def _past(rooms, gap=10):
+    """
+    The first id safe to hand out after these rooms, with a little room to spare.
+
+    Notes:
+        **By the highest id, never by the count.** Every budget in this module used to
+        advance by `len(rooms) + 10`, which is right only while a place's ids run unbroken
+        from its first. They do not: a road is laid, thinned and trimmed, so its surviving
+        ids have gaps, and then its wayside shrines and camps are hung off it at `max(id)+1`.
+        The count stopped short of the highest id and the next road started inside it - 98
+        rooms in a 130-area world shared an id with another, and the exporter, correctly,
+        refused to write the world at all.
+    """
+    return max((room["id"] for room in rooms or ()), default=-1) + 1 + gap
+
+
 def ferry_between(from_area, to_area, room_a, room_b, at, radius_m, rng, base_id):
     """
     A boat crossing: a ramp on each shore, and the water track between them.
@@ -1369,7 +1385,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                                   "destination": room_a["id"], "road": True})
             rooms_on_it = 0
         else:
-            next_id += len(road["rooms"]) + 10
+            next_id = max(next_id, _past(road["rooms"]))
             built_roads.append(road)
             first, last = road["rooms"][0], road["rooms"][-1]
             other["exits"].append({"source": room_a["id"],
@@ -1436,7 +1452,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
                                                     or area["name"])
         trail["name"] = trail["display_name"].lower().replace(" ", "-")
         trail["purpose"] = "path"
-        next_id += len(trail["rooms"]) + 10
+        next_id = max(next_id, _past(trail["rooms"]))
         built_roads.append(trail)
         first, last = trail["rooms"][0], trail["rooms"][-1]
         host["exits"].append({"source": host_room["id"],
@@ -1774,7 +1790,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
             area["hub"] = True
             key = _key_for(culture)
             filled[key] = filled.get(key, 0) + 1
-            base_id += len(area["rooms"]) + 10
+            base_id = max(base_id, _past(area["rooms"]))
             made.append(area)
             sites = [one for one in sites if one is not site]
             progress.write(json.dumps(feed_line(area)) + chr(10))
@@ -1830,7 +1846,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     continue
                 area = built["area"]
                 filled[_key_for(culture)] = filled.get(_key_for(culture), 0) + 1
-                base_id += len(area["rooms"]) + 10
+                base_id = max(base_id, _past(area["rooms"]))
                 made.append(area)
                 sites = [one for one in sites if one is not site]
                 progress.write(json.dumps(feed_line(area)) + chr(10))
@@ -1874,7 +1890,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     continue
                 area = built["area"]
                 filled[key] += 1
-                base_id += len(area["rooms"]) + 10
+                base_id = max(base_id, _past(area["rooms"]))
                 made.append(area)
                 progress.write(json.dumps(feed_line(area)) + "\n")
                 # A word every twenty-five, so the stage line moves during the longest
@@ -1942,7 +1958,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                             area["settled_for"] = round(miss, 2)
                             compromised += 1
                         filled[key] = filled.get(key, 0) + 1
-                        base_id += len(area["rooms"]) + 10
+                        base_id = max(base_id, _past(area["rooms"]))
                         made.append(area)
                         sites = [one for one in sites if one is not site]
                         progress.write(json.dumps(feed_line(area)) + chr(10))
@@ -1967,7 +1983,7 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
                     area = built["area"]
                     filled[_key_for(culture)] = filled.get(_key_for(culture), 0) + 1
                     over_quota += 1
-                    base_id += len(area["rooms"]) + 10
+                    base_id = max(base_id, _past(area["rooms"]))
                     made.append(area)
                     progress.write(json.dumps(feed_line(area)) + "\n")
                     if on_area:
@@ -2114,7 +2130,10 @@ def populate_world(worldfile_path, project_root, count=100, region=None, label="
         document["roads"] = list(document.get("roads") or ()) + road_areas
         stage("joining crossings", "%d roads laid" % len(road_areas))
         # Where two ways cross, they now meet. See `join_crossings`.
-        crossings = join_crossings(document["roads"], radius_m, rng, base_id + 90000, at=at)
+        crossings = join_crossings(
+            document["roads"], radius_m, rng,
+            _past([room for place in list(document["areas"]) + list(document["roads"])
+                   for room in place.get("rooms") or ()], gap=1000), at=at)
         run.write_json("crossings.json", crossings)
         run.write_json("roads.json", roads)
         stage("sounding the ground", "checking nothing stands in water")
