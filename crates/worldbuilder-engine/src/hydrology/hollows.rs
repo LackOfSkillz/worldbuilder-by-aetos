@@ -112,8 +112,9 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
     hollows
 }
 
-pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
-    let mut forced_nodes: Vec<u32> = Vec::new();
+/// Every node nearest a forced-outlet point, sorted and deduplicated.
+pub fn forced_nodes(graph: &LandGraph, params: &HydroParams) -> Vec<u32> {
+    let mut forced: Vec<u32> = Vec::new();
     if !params.forced_outlets.is_empty() {
         let spacing = crate::stream::nominal_spacing_m(
             graph.len() as u32, graph.radius_m); // cast-ok: node count fits in u32 by construction
@@ -123,11 +124,17 @@ pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
         }
         for point in &params.forced_outlets {
             if let Some(node) = index.nearest(point, &graph.positions) {
-                forced_nodes.push(node);
+                forced.push(node);
             }
         }
-        forced_nodes.sort_unstable();
+        forced.sort_unstable();
+        forced.dedup();
     }
+    forced
+}
+
+pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
+    let forced_nodes = forced_nodes(graph, params);
     for hollow in hollows.iter_mut() {
         hollow.forced = hollow.members.iter().any(|m| forced_nodes.binary_search(m).is_ok());
         let big = hollow.depth_m >= params.keep_depth_m && hollow.area_m2 >= params.keep_area_m2;

@@ -2,7 +2,7 @@
 //! drained hollows run out, and every other node down its steepest slope.
 
 use crate::hydrology::flood::{flood, Flood, NO_NODE};
-use crate::hydrology::hollows::{find_hollows, judge, Fate, Hollow};
+use crate::hydrology::hollows::{find_hollows, forced_nodes, judge, Fate, Hollow};
 use crate::hydrology::landgraph::LandGraph;
 use crate::hydrology::HydroParams;
 
@@ -30,12 +30,23 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
     let n = graph.len();
     let mut parent = global.parent.clone();
 
-    // 1. Enclosed kept hollows: the ring above the datum drains into the basin, not over the rim.
+    // Rank of each node in the global flood's pop order, for picking each pocket's lake_entry.
+    let mut global_rank = vec![u32::MAX; n];
+    for (r, &node) in global.order.iter().enumerate() {
+        global_rank[node as usize] = r as u32; // cast-ok: order length is bounded by the node count
+    }
+    let forced = forced_nodes(graph, params);
+
+    // 1. Enclosed kept hollows: the ring above the datum drains into the basin, not over the rim,
+    //    and each below-datum pocket inside becomes its own lake (Ruling W1).
     let enclosed: Vec<usize> = (0..hollows.len())
         .filter(|&h| hollows[h].enclosed && hollows[h].fate == Fate::Keep)
         .collect();
     for h in enclosed {
         let members = hollows[h].members.clone();
+
+        // Sub-flood seeded from every submerged member, confined to H; shore nodes reached from
+        // it get re-parented into the basin instead of over the rim.
         let seeds: Vec<(u32, f64)> = members
             .iter()
             .filter(|&&m| graph.height_m[m as usize] <= 0.0)
@@ -48,45 +59,103 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
                 parent[m as usize] = sub.parent[m as usize];
             }
         }
-        // Where the flood's way in reaches the water: the lake's own entry.
-        let entry = hollows[h].entry;
-        let mut lake_entry = entry;
-        let mut guard = 0usize;
-        while graph.height_m[lake_entry as usize] > 0.0 && sub.parent[lake_entry as usize] != NO_NODE
-            && guard <= members.len() {
-            lake_entry = sub.parent[lake_entry as usize];
-            guard += 1;
-        }
-        // In-lake routing: every submerged member reaches the entry without leaving the water.
-        let submerged: Vec<u32> = members.iter().copied()
-            .filter(|&m| graph.height_m[m as usize] <= 0.0).collect();
-        let under = |node: u32| submerged.binary_search(&node).is_ok();
-        let inner = flood(graph, &[(lake_entry, 0.0)], &under);
-        for &m in &submerged {
-            parent[m as usize] = inner.parent[m as usize];
-        }
-        // The way out, should the basin prove fresh: entry, up the shore, over the rim, down.
-        let mut ring = vec![entry];
-        let mut up = entry;
-        while up != lake_entry && sub.parent[up as usize] != NO_NODE && ring.len() <= members.len() {
-            up = sub.parent[up as usize];
-            ring.push(up);
-        }
-        ring.reverse();
-        let mut path = ring;
-        let mut down = hollows[h].outlet;
-        while down != NO_NODE && !graph.ocean[down as usize] && path.len() <= graph.len() {
-            path.push(down);
-            down = global.parent[down as usize];
-        }
-        hollows[h].lake_entry = lake_entry;
-        hollows[h].outlet_path = path;
+
+        // Nested hollows found in the sub-flood: a hollow that itself contains a submerged seed
+        // member is one of the pockets below, not a real nested hollow (Ruling 1) - drop it.
+        // The rest (shore-only pools above the datum) are judged as ordinary, non-enclosed
+        // hollows.
         let mut nested = find_hollows(graph, &sub);
+        nested.retain(|hollow| !hollow.members.iter().any(|&m| graph.height_m[m as usize] <= 0.0));
         for hollow in nested.iter_mut() {
             hollow.enclosed = false;
         }
         judge(&mut nested, graph, params);
         hollows.extend(nested);
+
+        // Group the below-datum members into pockets, one per enclosed component id (Ruling 2).
+        let mut keyed: Vec<(u32, u32)> = members
+            .iter()
+            .copied()
+            .filter(|&m| graph.height_m[m as usize] <= 0.0)
+            .map(|m| (graph.enclosed[m as usize], m))
+            .collect();
+        keyed.sort_unstable();
+
+        let mut pockets: Vec<Hollow> = Vec::new();
+        let mut i = 0;
+        while i < keyed.len() {
+            let component = keyed[i].0;
+            let mut pocket_members = Vec::new();
+            while i < keyed.len() && keyed[i].0 == component {
+                pocket_members.push(keyed[i].1);
+                i += 1;
+            }
+            pocket_members.sort_unstable();
+
+            let mut floor = pocket_members[0];
+            let mut entry = pocket_members[0];
+            let mut area_m2 = 0.0;
+            for &m in &pocket_members {
+                area_m2 += graph.area_m2[m as usize];
+                if graph.height_m[m as usize] < graph.height_m[floor as usize] {
+                    floor = m;
+                }
+                if global_rank[m as usize] < global_rank[entry as usize] {
+                    entry = m;
+                }
+            }
+            let floor_m = graph.height_m[floor as usize];
+
+            let raw_outlet = global.parent[entry as usize];
+            let outlet = if raw_outlet == NO_NODE { entry } else { raw_outlet };
+
+            let mut outlet_path = vec![entry];
+            let mut cur = entry;
+            while outlet_path.len() < graph.len() {
+                let next = global.parent[cur as usize];
+                if next == NO_NODE || graph.ocean[next as usize] {
+                    break;
+                }
+                outlet_path.push(next);
+                cur = next;
+            }
+
+            let is_forced = pocket_members.iter().any(|m| forced.binary_search(m).is_ok());
+
+            pockets.push(Hollow {
+                members: pocket_members,
+                floor,
+                floor_m,
+                level_m: 0.0,
+                depth_m: 0.0 - floor_m,
+                area_m2,
+                entry,
+                outlet,
+                enclosed: true,
+                forced: is_forced,
+                fate: Fate::Keep,
+                lake_entry: entry,
+                outlet_path,
+            });
+        }
+
+        // In-lake flood per pocket: every pocket member reaches its own entry without leaving the
+        // water (without it, a submerged node's parent can be a shore node whose own descent
+        // points back into the lake - a cycle).
+        for pocket in &pockets {
+            let under = |node: u32| pocket.members.binary_search(&node).is_ok();
+            let inner = flood(graph, &[(pocket.lake_entry, 0.0)], &under);
+            for &m in &pocket.members {
+                parent[m as usize] = inner.parent[m as usize];
+            }
+        }
+
+        // Replace hollows[h] with the first pocket (lowest component id); append the rest.
+        let mut pockets = pockets.into_iter();
+        if let Some(first) = pockets.next() {
+            hollows[h] = first;
+        }
+        hollows.extend(pockets);
     }
 
     // 2. Kept hollows stand flat at their level.
@@ -163,8 +232,12 @@ fn steepest(graph: &LandGraph, surface: &[f64], node: u32) -> u32 {
 }
 
 /// Cut a channel from `start` along its parent chain so it strictly falls, until the ground is
-/// already lower than the channel or the sea is reached.
+/// already lower than the channel, a lake member is reached, or the sea is reached. A start node
+/// that is ocean or already a lake member does nothing.
 pub fn cut_route(routing: &mut Routing, graph: &LandGraph, start: u32, start_bed_m: f64) {
+    if graph.ocean[start as usize] || routing.lake_of[start as usize] != NO_LAKE {
+        return;
+    }
     let mut nodes = vec![start];
     let mut beds = vec![start_bed_m];
     routing.surface_m[start as usize] = start_bed_m;
@@ -176,6 +249,10 @@ pub fn cut_route(routing: &mut Routing, graph: &LandGraph, start: u32, start_bed
             break;
         }
         routing.receiver[here as usize] = next;
+        if routing.lake_of[next as usize] != NO_LAKE {
+            // A lake member stops the cut here; its surface is never touched.
+            break;
+        }
         if graph.ocean[next as usize] || routing.surface_m[next as usize] < bed {
             break;
         }
@@ -193,14 +270,22 @@ pub fn set_sink(routing: &mut Routing, hollow: &Hollow) {
     routing.receiver[hollow.lake_entry as usize] = NO_NODE;
 }
 
-/// Cut an explicit path so it strictly falls from `start_bed_m`; `path[0]` keeps its surface.
+/// Cut an explicit path so it strictly falls from `start_bed_m`; `path[0]` keeps its surface. A
+/// path shorter than 2 does nothing (no empty `NotchRoute`).
 pub fn cut_path(routing: &mut Routing, graph: &LandGraph, path: &[u32], start_bed_m: f64) {
+    if path.len() < 2 {
+        return;
+    }
     let mut nodes = Vec::new();
     let mut beds = Vec::new();
     let mut bed = start_bed_m;
     for k in 1..path.len() {
         let node = path[k];
         routing.receiver[path[k - 1] as usize] = node;
+        if routing.lake_of[node as usize] != NO_LAKE {
+            // A lake member stops the cut here; its surface is never touched.
+            break;
+        }
         if graph.ocean[node as usize] || routing.surface_m[node as usize] < bed {
             break;
         }
@@ -290,6 +375,66 @@ mod tests {
         let (_, r) = routed(&g);
         assert_eq!(r.surface_m[4], 0.0);
         assert_eq!(terminus(&r, 5), 4, "the shore above the datum drains into the basin");
+    }
+
+    #[test]
+    fn seed_pockets_are_not_nested_hollows_and_nothing_loops() {
+        let g = line(&[60.0, 10.0, -12.0, -10.0, 39.0, -30.0, -40.0, -50.0], 1.0e6);
+        let (_, r) = routed(&g);
+        for node in 0..g.len() as u32 { // cast-ok: node index
+            if g.ocean[node as usize] {
+                continue;
+            }
+            let end = terminus(&r, node);
+            assert!(g.ocean[end as usize] || r.lake_of[end as usize] != NO_LAKE,
+                    "node {node} ends at {end}, neither sea nor lake");
+        }
+    }
+
+    #[test]
+    fn every_below_datum_pocket_is_its_own_lake() {
+        let g = line(&[60.0, -5.0, 5.0, -5.0, 39.0, -30.0, -40.0, -50.0], 1.0e6);
+        let (hollows, r) = routed(&g);
+        assert_ne!(r.lake_of[1], NO_LAKE, "node 1's pocket is a lake");
+        assert_ne!(r.lake_of[3], NO_LAKE, "node 3's pocket is a lake");
+        assert_ne!(r.lake_of[1], r.lake_of[3], "the two pockets are different lakes");
+        for node in 0..g.len() as u32 { // cast-ok: node index
+            if g.ocean[node as usize] {
+                continue;
+            }
+            let end = terminus(&r, node);
+            assert!(g.ocean[end as usize] || r.lake_of[end as usize] != NO_LAKE,
+                    "node {node} ends at {end}, neither sea nor lake");
+        }
+        for hollow in hollows.iter().filter(|h| h.enclosed && h.fate == Fate::Keep) {
+            assert_eq!(hollow.outlet_path[0], hollow.lake_entry,
+                       "each pocket lake's outlet_path starts at its own lake_entry");
+        }
+    }
+
+    #[test]
+    fn a_notch_never_cuts_a_lake() {
+        let g = line(&[-50.0, 25.0, 12.0, 30.0, 24.0, 70.0], 2.0e6);
+        let (hollows, r) = routed(&g);
+        for hollow in hollows.iter().filter(|h| h.fate == Fate::Keep) {
+            for &m in &hollow.members {
+                if r.lake_of[m as usize] != NO_LAKE {
+                    assert_eq!(r.surface_m[m as usize], hollow.level_m,
+                               "a notch must never cut through a kept lake member");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_enclosed_fixture_has_exactly_one_lake() {
+        let g = line(&[-50.0, -40.0, -30.0, 39.0, -5.0, 10.0, 60.0], 1.0e6);
+        let (hollows, _r) = routed(&g);
+        let kept_enclosed: Vec<&crate::hydrology::hollows::Hollow> =
+            hollows.iter().filter(|h| h.enclosed && h.fate == Fate::Keep).collect();
+        assert_eq!(kept_enclosed.len(), 1, "exactly one enclosed lake");
+        assert_eq!(kept_enclosed[0].lake_entry, 4);
+        assert_eq!(kept_enclosed[0].outlet_path, vec![4, 3]);
     }
 
     #[test]
