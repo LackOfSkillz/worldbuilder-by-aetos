@@ -29,6 +29,7 @@
 /// buried in four literals, because they have to agree with each other or a marker fades out and
 /// grows at the same time.
 import { showLayer } from "./globe-layers.js";
+import { fillFor, outlineFor, outlineWidthFor } from "./palette.js";
 
 const NEAR_M = 1.0e3;
 const FAR_M = 2.0e7;
@@ -66,13 +67,11 @@ const DETAIL_MAX_M = 6.0e4;
 /// stays a map.
 const POI_COLOUR = (Cesium) => Cesium.Color.fromCssColorString("#ffcc66");
 
-/// An area with a harbour and one without, so the map answers the port question without a click.
-const PORT_COLOUR = "#4db2ff";
-const INLAND_COLOUR = "#ffc857";
-
+/// **The one palette, the same as a run in progress.** These pins once coloured only "port or
+/// inland", so a world opened from a file drew four hundred identical orange dots while the
+/// same world, freshly generated, drew its peoples and its danger. See `palette.js`.
 function colourFor(Cesium, area) {
-  const port = area.port || {};
-  return Cesium.Color.fromCssColorString(port.has_port ? PORT_COLOUR : INLAND_COLOUR);
+  return fillFor(Cesium, area);
 }
 
 /// The bounding circle of an area's rooms, in metres, so the footprint matches what was placed.
@@ -288,8 +287,9 @@ export function drawAreas(viewer, Cesium, document) {
       point: {
         pixelSize: 11,
         color: colour,
-        outlineColor: Cesium.Color.BLACK.withAlpha(0.85),
-        outlineWidth: 2,
+        // Faction fills, race rings - a hostile town is red ringed in its people's colour.
+        outlineColor: outlineFor(Cesium, area),
+        outlineWidth: outlineWidthFor(area),
         disableDepthTestAgainstTerrain: true,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
         heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
