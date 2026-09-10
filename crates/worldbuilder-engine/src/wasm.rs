@@ -3982,11 +3982,16 @@ pub const WB_HYDRO_PARAMS_STRIDE: usize = 12;
 /// large has chosen a slow bake, not a dead one.
 pub const WB_MAX_HYDRO_NODES: u32 = 4_000_000;
 
+/// The ceiling on `forced_count` for [`wb_hydro_bake`] -- forced outlets are a handful of
+/// owner overrides, never a data set.
+pub const WB_MAX_HYDRO_FORCED: u32 = 1_024;
+
 /// Decode a `wb_hydro_bake` params buffer into a `HydroParams`, or `None` if the record is
 /// malformed. Every numeric domain check `hydrology::bake` itself would make is left to
 /// `bake`; what this function refuses is a record `bake` cannot even be asked about --
 /// non-finite words, a non-integral node count or forced-outlet count, a stride that does not
-/// match its own declared `forced_count`, or a node count above [`WB_MAX_HYDRO_NODES`].
+/// match its own declared `forced_count`, a node count above [`WB_MAX_HYDRO_NODES`], or a
+/// `forced_count` above [`WB_MAX_HYDRO_FORCED`].
 fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
     let whole = |w: f64| w.is_finite() && w >= 0.0 && m::floor(w) == w;
     if words.len() < WB_HYDRO_PARAMS_STRIDE || words.iter().any(|w| !w.is_finite()) {
@@ -3998,8 +4003,17 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
     if words[0] > WB_MAX_HYDRO_NODES as f64 || words[1] > WB_MAX_HYDRO_NODES as f64 { // cast-ok: a ceiling constant widened to f64 for a domain comparison, exact for every u32
         return None;
     }
-    let forced = words[11] as usize; // (usize casts are not banned)
-    if words.len() != WB_HYDRO_PARAMS_STRIDE + 2 * forced {
+    // Refused before any cast: an absurd forced_count (e.g. 2^63) would saturate `as usize`
+    // and overflow `2 * forced` below -- a panic reachable from extern "C".
+    if words[11] > WB_MAX_HYDRO_FORCED as f64 { // cast-ok: a ceiling constant widened to f64 for a domain comparison, exact for every u32
+        return None;
+    }
+    let forced = words[11] as usize; // cast-ok: checked non-negative, integral and <= WB_MAX_HYDRO_FORCED above
+    let expected_len = match forced.checked_mul(2).and_then(|doubled| doubled.checked_add(WB_HYDRO_PARAMS_STRIDE)) {
+        Some(len) => len,
+        None => return None,
+    };
+    if words.len() != expected_len {
         return None;
     }
     let total = words[0] as u32; // cast-ok: checked integral, non-negative and <= WB_MAX_HYDRO_NODES above
@@ -4084,6 +4098,9 @@ pub extern "C" fn wb_hydro_bake(handle: u32, params: *const f64, params_len: u32
         u32::try_from(table.len()).unwrap_or(0)
     });
     if id == 0 {
+        // The table is already at u32::MAX entries, so no fresh id can be issued -- there is
+        // no dedicated status for "the handle table is full", so this mirrors WORLDS's own
+        // convention of collapsing that case into WB_ERR_HANDLE.
         return WB_ERR_HANDLE;
     }
     unsafe { *out_id = id };

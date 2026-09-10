@@ -5390,3 +5390,32 @@ fn a_hydro_bake_refuses_bad_params_without_writing_an_id() {
     assert_eq!(wb_hydro_bake(9_999, hydro_params(12_000).as_ptr(), 12, &mut id), WB_ERR_HANDLE);
     wb_world_free(world);
 }
+
+#[test]
+fn a_hydro_bake_refuses_an_absurd_forced_count() {
+    let world = plain_world();
+    let mut id: u32 = 77;
+
+    // 2^63 saturates a naive `as usize` cast; the old code then overflowed `2 * forced`.
+    let mut huge = hydro_params(12_000);
+    huge[11] = 9_223_372_036_854_775_808.0; // 2^63
+    assert_eq!(
+        wb_hydro_bake(world, huge.as_ptr(), huge.len() as u32, &mut id), // cast-ok: a 12-word buffer
+        WB_ERR_PARAM
+    );
+    assert_eq!(id, 77, "out_id must be left untouched on refusal");
+
+    // One more than WB_MAX_HYDRO_FORCED, with a buffer long enough to match the declared
+    // stride, so only the forced-count ceiling -- not the length check -- is under test.
+    let over_ceiling: u32 = 1_025;
+    let mut padded = hydro_params(12_000);
+    padded[11] = over_ceiling as f64; // cast-ok: a small literal fixture value
+    padded.extend(std::iter::repeat(0.0).take(2 * over_ceiling as usize)); // cast-ok: a small literal fixture value
+    assert_eq!(
+        wb_hydro_bake(world, padded.as_ptr(), padded.len() as u32, &mut id), // cast-ok: a bounded fixture-sized buffer
+        WB_ERR_PARAM
+    );
+    assert_eq!(id, 77, "out_id must be left untouched on refusal");
+
+    wb_world_free(world);
+}
