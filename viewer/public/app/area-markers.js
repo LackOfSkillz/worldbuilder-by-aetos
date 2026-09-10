@@ -244,10 +244,15 @@ export function drawAreas(viewer, Cesium, document) {
           wbRoom: {
             key: room.key,
             desc: room.desc || "",
+            // The curator's text, carried beside the generator's so the card can show
+            // either. Absent until a run has been curated, and then the card offers both.
+            key_ai: room.key_ai || null,
+            desc_ai: room.desc_ai || null,
             area: area.display_name || area.name,
             // What is behind the door, named so a click on the street says what is there
             // and what it sells - which is the question the marker raises.
             shop: shop ? shop.key : null,
+            shop_ai: shop ? (shop.key_ai || null) : null,
             door: shop ? shop.noun : null,
             keeper: keeper ? keeper.name : null,
             people: (room.people || []).map((who) => who.name),
@@ -568,7 +573,7 @@ export function flyToPlace(viewer, Cesium, latitudeDeg, longitudeDeg,
 /// says which room the cursor is over and must vanish the instant it leaves; this one is
 /// read, so it has to stay until it is dismissed. One element, shared by every source, for
 /// the reason `makeCard` records.
-function makeRoomPanel() {
+export function makeRoomPanel() {
   const existing = window.document.getElementById("wb-room-card");
   if (existing) return existing;
   const panel = window.document.createElement("div");
@@ -586,8 +591,40 @@ function makeRoomPanel() {
 }
 
 
+//: Which text the room card shows when a room has both: "ai" or "template".
+//
+// Remembered per browser, because the natural way to judge the curator is to walk a town
+// reading one side and then walk it again reading the other - and a toggle that forgot its
+// setting on every click would make that a click per room.
+const CARD_TEXT_KEY = "wb.cardText";
+
+function cardText() {
+  try {
+    return window.localStorage.getItem(CARD_TEXT_KEY) === "template" ? "template" : "ai";
+  } catch {
+    return "ai";
+  }
+}
+
+function setCardText(mode) {
+  try {
+    window.localStorage.setItem(CARD_TEXT_KEY, mode);
+  } catch { /* a private window simply forgets */ }
+}
+
+/// What the card says for a room, in the chosen text. Exported for the tests.
+export function roomText(room, mode) {
+  const ai = mode === "ai" && Boolean(room.desc_ai);
+  return {
+    ai,
+    key: ai && room.key_ai ? room.key_ai : room.key,
+    desc: ai ? room.desc_ai : room.desc,
+    shop: ai && room.shop_ai ? room.shop_ai : room.shop,
+  };
+}
+
 /// Fill the room card and show it beside the click.
-function showRoom(panel, room, x, y) {
+export function showRoom(panel, room, x, y) {
   const make = (tag, css, text) => {
     const node = window.document.createElement(tag);
     if (css) node.style.cssText = css;
@@ -606,16 +643,38 @@ function showRoom(panel, room, x, y) {
   close.addEventListener("click", () => { panel.style.display = "none"; });
   panel.append(close);
 
-  panel.append(make("div", "font-weight:600;padding-right:16px", room.key));
+  const shown = roomText(room, cardText());
+  panel.append(make("div", "font-weight:600;padding-right:16px", shown.key));
   if (room.area) {
     panel.append(make("div", "color:#8fa3ba;font-size:11px;margin-bottom:6px", room.area));
   }
-  if (room.desc) {
-    panel.append(make("div", "margin-bottom:6px", room.desc));
+  // **AI | template, only where there is a choice.** A room the curator never touched has
+  // one text, and a toggle with nothing behind one side would look broken.
+  if (room.desc_ai) {
+    const toggle = make("div", "display:flex;gap:4px;margin-bottom:6px");
+    for (const [mode, label] of [["ai", "AI"], ["template", "template"]]) {
+      const active = (mode === "ai") === shown.ai;
+      const button = make("button", [
+        "border:1px solid rgba(255,255,255,0.25)", "border-radius:4px", "cursor:pointer",
+        "font:11px/1.4 system-ui, sans-serif", "padding:1px 8px",
+        active ? "background:#b89a6a;color:#10141a" : "background:none;color:#9fb0c4",
+      ].join(";"), label);
+      button.type = "button";
+      button.dataset.cardText = mode;
+      button.addEventListener("click", () => {
+        setCardText(mode);
+        showRoom(panel, room, x, y);
+      });
+      toggle.append(button);
+    }
+    panel.append(toggle);
   }
-  if (room.shop) {
+  if (shown.desc) {
+    panel.append(make("div", "margin-bottom:6px", shown.desc));
+  }
+  if (shown.shop) {
     panel.append(make("div", "color:#ffcc66;font-size:12px;margin-top:4px",
-                      `${room.shop} - go ${room.door}`));
+                      `${shown.shop} - go ${room.door}`));
   }
   if (room.keeper) {
     panel.append(make("div", "color:#cfe0f2;font-size:12px", room.keeper));
