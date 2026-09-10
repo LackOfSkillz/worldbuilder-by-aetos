@@ -159,6 +159,9 @@ def build(caller=None, data=DATA):
             wares = wares_of.get(record["id"]) if person.get("role") == "keeper" else None
             if wares:
                 body.db.stock = wares
+                # What each ware looks like, name to description, when the curator wrote it.
+                if record.get("stock_notes"):
+                    body.db.stock_notes = dict(record["stock_notes"])
                 body.db.desc = ("Goods for sale:"
                                 + "".join(chr(10) + "  " + ware for ware in wares))
                 counters += 1
@@ -423,6 +426,7 @@ def flatten(document):
                 "longitude_deg": room.get("longitude_deg"),
                 "elevation_m": room.get("elevation_m"),
                 "stock": room.get("stock") or None,
+                "stock_notes": room.get("stock_notes") or None,
                 "people": room.get("people") or None,
                 "fixtures": room.get("fixtures") or None,
                 "landmark": room.get("landmark") or None,
@@ -495,9 +499,11 @@ def adopt_curated(document):
     from evennia_roundtrip import curate
 
     adopted = json.loads(json.dumps(document))
-    counts = {"curated": 0, "template": 0, "renamed": 0, "refused": {}}
+    counts = {"curated": 0, "template": 0, "renamed": 0, "refused": {},
+              "shelves_curated": 0, "shelves_template": 0, "shelves_refused": {}}
     for place in list(adopted.get("areas") or ()) + list(adopted.get("roads") or ()):
         for room in place.get("rooms") or ():
+            _adopt_wares(place, room, counts)
             text = room.get("desc_ai")
             if not text:
                 counts["template"] += 1
@@ -515,6 +521,40 @@ def adopt_curated(document):
                     counts["renamed"] += 1
                 room["key"] = room["key_ai"].strip()
     return adopted, counts
+
+
+def _adopt_wares(place, room, counts):
+    """
+    One shop's curated goods in place of the generator's, if they still pass the gate.
+
+    Notes:
+        **The names replace `stock`; the descriptions travel beside it.** `stock` stays a
+        list of plain names because everything that reads it - the keeper, the maritime
+        client's trade marker - expects names. What each ware looks like goes in
+        `stock_notes`, name to description, for a game that wants to show it.
+
+        Re-judged here like the room text, and all or nothing: a shelf half the model's and
+        half the generator's could sell the same dagger twice under two names.
+    """
+    from evennia_roundtrip import wares
+
+    reworked = room.get("stock_ai")
+    if not room.get("stock"):
+        return
+    if not reworked:
+        counts["shelves_template"] += 1
+        return
+    name = place.get("display_name") or place.get("name") or ""
+    fault = wares.judge(room["stock"], reworked, name, room.get("trade"), place.get("look"))
+    if fault:
+        counts["shelves_template"] += 1
+        # The fault names the ware; the tally wants the kind of fault.
+        kind = fault.split(" (")[0] if "(" in fault else fault
+        counts["shelves_refused"][kind] = counts["shelves_refused"].get(kind, 0) + 1
+        return
+    room["stock"] = [ware["name"].strip() for ware in reworked]
+    room["stock_notes"] = {ware["name"].strip(): ware["desc"].strip() for ware in reworked}
+    counts["shelves_curated"] += 1
 
 
 #: Every output this can write. `direct` is the data file and its builder; `batchcode` wraps

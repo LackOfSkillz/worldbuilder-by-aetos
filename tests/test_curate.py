@@ -182,6 +182,14 @@ class TestARunEndToEnd(unittest.TestCase):
         self.assertEqual(status["kept"], 5)
         FakeBackend.replies = []
 
+    def test_a_run_over_part_of_the_world_still_writes_all_of_it(self):
+        """`--areas 1` once wrote a curated.json holding one area's curation and none of the
+        rest, though the journal still had every answer."""
+        self.curate()
+        self.curate("--areas", "1")  # the slice leaves the road out
+        world = self.read("curated.json")
+        self.assertTrue(all(r.get("desc_ai") for r in world["roads"][0]["rooms"]))
+
     def test_no_address_answering_stops_cleanly_and_says_why(self):
         code = curate.main(["--run", self.run, "--base-url", closed_url(), "--quiet"])
         self.assertEqual(code, 2)

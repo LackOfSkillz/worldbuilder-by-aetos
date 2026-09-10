@@ -204,5 +204,52 @@ class TestTheExport(unittest.TestCase):
             compile(source, name, "exec")
 
 
+class TestAdoptingCuratedWares(unittest.TestCase):
+    """The curator's goods replace the generator's names on the way out, re-judged."""
+
+    GOOD = [{"name": "a dented pewter tankard", "desc": "A heavy tankard, its lid hinged "
+                                                        "and its handle worn smooth."},
+            {"name": "a loaf of barley bread", "desc": "A round loaf, dark and dense, baked "
+                                                      "that morning in the inn's own oven."}]
+
+    def world(self, shelf):
+        world = a_world()
+        inn = world["areas"][0]["rooms"][2]
+        inn["trade"] = "inn"
+        inn["stock_ai"] = shelf
+        return world, inn["id"]
+
+    def test_a_shelf_that_passes_replaces_the_names_and_carries_its_notes(self):
+        world, inn = self.world(self.GOOD)
+        adopted, counts = export.adopt_curated(world)
+        room = adopted["areas"][0]["rooms"][2]
+        self.assertEqual(room["stock"], ["a dented pewter tankard", "a loaf of barley bread"])
+        self.assertIn("hinged", room["stock_notes"]["a dented pewter tankard"])
+        self.assertEqual(counts["shelves_curated"], 1)
+        flat = {r["id"]: r for r in export.flatten(adopted)["rooms"]}
+        self.assertEqual(flat[inn]["stock_notes"], room["stock_notes"])
+
+    def test_a_shelf_that_fails_today_keeps_the_generators_goods(self):
+        bad = [dict(self.GOOD[0], name="a dented pewter cup"), self.GOOD[1]]
+        world, _inn = self.world(bad)
+        adopted, counts = export.adopt_curated(world)
+        room = adopted["areas"][0]["rooms"][2]
+        self.assertEqual(room["stock"], ["a pewter tankard", "a loaf of barley bread"])
+        self.assertNotIn("stock_notes", room)
+        self.assertEqual(counts["shelves_template"], 1)
+        self.assertEqual(list(counts["shelves_refused"]), ["'a dented pewter cup' no longer "
+                                                            "says what it is"])
+
+    def test_the_batch_file_gives_the_keeper_the_notes(self):
+        world, _inn = self.world(self.GOOD)
+        adopted, _counts = export.adopt_curated(world)
+        lines = list(batchfile.commands(export.flatten(adopted)))
+        notes = [line for line in lines if "/stock_notes = " in line]
+        self.assertEqual(len(notes), 1)
+        import ast
+        value = ast.literal_eval(notes[0].split(" = ", 1)[1])
+        self.assertIn("a dented pewter tankard", value)
+
+
 if __name__ == "__main__":
     unittest.main()

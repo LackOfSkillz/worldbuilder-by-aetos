@@ -226,7 +226,8 @@ export function buildTally(document_, worldName = "—", wanted = 0) {
       resumeButton.hidden = !["paused", "stopped", "interrupted", "failed"].includes(state);
       stopButton.hidden = !(active || state === "paused");
       const named = {
-        starting: "curating · finding the model", running: "curating rooms",
+        starting: "curating · finding the model",
+        running: status.doing === "shelves" ? "curating shelves" : "curating rooms",
         paused: "curation paused", stopped: "curation stopped",
         interrupted: "curation interrupted", failed: "curation failed", done: "complete",
       }[state] || state;
@@ -356,7 +357,9 @@ export function curationNote(status) {
     parts.push(`kept ${kept.toLocaleString()}`);
     if (left) parts.push(`${left.toLocaleString()} kept the template`);
   }
-  if (status.rate_per_min) parts.push(`${Math.round(status.rate_per_min)} rooms/min`);
+  // Rooms first, then the shelves in every shop: the rate is of whichever it is doing.
+  const unit = status.doing === "shelves" ? "shelves" : "rooms";
+  if (status.rate_per_min) parts.push(`${Math.round(status.rate_per_min)} ${unit}/min`);
   const eta = status.eta_seconds;
   if (eta && (status.state === "running" || status.state === "starting")) {
     const hours = Math.floor(eta / 3600);

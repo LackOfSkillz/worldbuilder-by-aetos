@@ -36,6 +36,8 @@ import urllib.error
 import urllib.request
 from concurrent import futures
 
+from evennia_roundtrip import wares
+
 #: The prose laws, in the words the model is held to. Copied from the game's own
 #: `area_lint.DESC_WORD_BAND` and `DESC_SENTENCE_BAND` rather than invented here: a curator
 #: judged by looser rules than the templates would win the comparison by cheating.
@@ -98,7 +100,8 @@ Hard rules, every one of which is checked after you answer:
   no people coming or going. A description is read a thousand times over years; anything
   that could change between two readings belongs somewhere else.
 - No proper nouns you invented. Use only names given to you.
-- British spelling. Nothing anachronistic: no clockwork, no chemicals, no machinery.
+- British spelling. Nothing out of period: no engines, no electricity, no gunpowder or
+  firearms, no modern materials. Clockwork, springs and steam are allowed.
 - Do not address or invite the reader even indirectly. No "beckon", "invite", "greet",
   "welcome", "await". The room does not know anybody is reading it.
 
@@ -440,6 +443,31 @@ def work_list(document, areas=None, roads=True):
         for index, road in enumerate(document.get("roads") or ()):
             for room in road.get("rooms") or ():
                 jobs.append({"kind": "roads", "area": index, "room": room["id"]})
+    jobs.extend(ware_jobs(document, areas, roads))
+    return jobs
+
+
+def ware_jobs(document, areas=None, roads=True):
+    """
+    One job per shelf: every room with wares on it, areas first, then roads.
+
+    Notes:
+        After every room, not interleaved: the descriptions are what a player reads first,
+        and a run paused halfway should have finished the rooms before starting the goods.
+    """
+    jobs = []
+    kinds = [("areas", (document.get("areas") or [])[:areas] if areas
+              else (document.get("areas") or []))]
+    if roads:
+        kinds.append(("roads", document.get("roads") or []))
+    for kind, places in kinds:
+        for index, place in enumerate(places):
+            for room in place.get("rooms") or ():
+                if room.get("stock"):
+                    job = {"what": "wares", "area": index, "room": room["id"]}
+                    if kind != "areas":
+                        job["kind"] = kind
+                    jobs.append(job)
     return jobs
 
 
@@ -452,8 +480,12 @@ def token(entry):
         says so, because road 3 and area 3 are different places with the same index.
     """
     if entry.get("kind", "areas") == "roads":
-        return "roads:%s/%s" % (entry["area"], entry["room"])
-    return "%s/%s" % (entry["area"], entry["room"])
+        base = "roads:%s/%s" % (entry["area"], entry["room"])
+    else:
+        base = "%s/%s" % (entry["area"], entry["room"])
+    # A shelf is its own job in the same room: the room's description and its goods are
+    # asked for separately and journalled separately.
+    return "wares:" + base if entry.get("what") == "wares" else base
 
 
 def read_journal(path):
@@ -505,7 +537,56 @@ def _ask_room(area, room, model, attempts=ATTEMPTS):
                            few=SENTENCE_BAND[0], many=SENTENCE_BAND[1],
                            name_rule=(FREE_NAME if room.get("interior") else KEEP_NAME))
     brief = brief_for(area, room, [n for n in neighbours if n])
+    doors = [noun for noun, _what in doors_of(area, room)]
 
+    def check(got):
+        fault = judge(got.get("desc"), must_name=doors)
+        if fault:
+            return None, fault
+        return {"name": (got.get("name") or "").strip(), "desc": got.get("desc").strip()}, None
+
+    return ask_until(model, system, brief, check, attempts)
+
+
+def _ask_wares(area, room, model, attempts=ATTEMPTS):
+    """
+    Ask the model to rework the goods on one shop's shelves. See `wares`.
+
+    Returns:
+        answer (dict): As `_ask_room`, with `record["wares"]` the reworked goods.
+    """
+    place = area.get("display_name") or area.get("name") or ""
+    brief = wares.brief(area, room, place)
+    originals = list(room.get("stock") or ())
+
+    def check(got):
+        fault = wares.judge(originals, got.get("wares"), place, room.get("trade"),
+                            area.get("look"))
+        if fault:
+            return None, fault
+        return {"wares": [{"name": w["name"].strip(), "desc": w["desc"].strip()}
+                          for w in got["wares"]]}, None
+
+    return ask_until(model, wares.SYSTEM, brief, check, attempts)
+
+
+def ask_until(model, system, brief, check, attempts=ATTEMPTS):
+    """
+    Ask, judge, and ask again warmer, until an answer passes or the attempts run out.
+
+    Args:
+        check (callable): `got -> (record, None)` when the answer may stand, or
+            `(None, fault)` when it may not.
+
+    Returns:
+        answer (dict): `record` and `asked`, or `fault` and `asked`, or `stop` when the
+            backend could not be reached at all.
+
+    Notes:
+        The one loop both rooms and wares go through, so a lesson learned about asking - a
+        refusal is one item's problem, a lost connection is the whole run's - is learned
+        once.
+    """
     fault = None
     for attempt in range(attempts):
         try:
@@ -524,15 +605,33 @@ def _ask_room(area, room, model, attempts=ATTEMPTS):
         if not got:
             fault = "no JSON in reply"
             continue
-        fault = judge(got.get("desc"),
-                      must_name=[noun for noun, _what in doors_of(area, room)])
-        if fault is None:
-            return {"record": {"name": (got.get("name") or "").strip(),
-                               "desc": got.get("desc").strip(),
-                               "attempts": attempt + 1,
-                               "fingerprint": _fingerprint({"b": brief, "m": model.name})},
-                    "asked": attempt + 1}
+        record, fault = check(got)
+        if record is not None:
+            record.update(attempts=attempt + 1,
+                          fingerprint=_fingerprint({"b": brief, "m": model.name}))
+            return {"record": record, "asked": attempt + 1}
     return {"fault": fault or "unknown", "asked": attempts}
+
+
+def replay(document, journal_path, jobs):
+    """
+    Put every journalled answer for `jobs` back onto the world, asking nothing.
+
+    Returns:
+        count (int): How many were applied.
+    """
+    done = read_journal(journal_path)
+    count = 0
+    for job in jobs:
+        record = done.get(token(job))
+        if record is None:
+            continue
+        place = (document.get(job.get("kind", "areas")) or [])[job["area"]]
+        room = next((r for r in place.get("rooms") or () if r["id"] == job["room"]), None)
+        if room is not None:
+            _apply(place, room, record)
+            count += 1
+    return count
 
 
 def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
@@ -598,7 +697,8 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
             sent = {}
             for job in pending:
                 area, room = locate(job)
-                sent[pool.submit(_ask_room, area, room, model, attempts)] = job
+                ask = _ask_wares if job.get("what") == "wares" else _ask_room
+                sent[pool.submit(ask, area, room, model, attempts)] = job
             for finished in futures.as_completed(sent):
                 job = sent[finished]
                 area, room = locate(job)
@@ -617,12 +717,15 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
                 where = {"area": job["area"], "room": job["room"]}
                 if job.get("kind", "areas") != "areas":
                     where["kind"] = job["kind"]
+                if job.get("what") == "wares":
+                    where["what"] = "wares"
                 if answer.get("record"):
                     record = dict(answer["record"], **where)
                     tally["kept"] += 1
-                    record["image"] = image_brief(area, room,
-                                                  record["name"] or room.get("key"))
-                    record["image_size"] = list(IMAGE_SIZE)
+                    if job.get("what") != "wares":
+                        record["image"] = image_brief(area, room,
+                                                      record["name"] or room.get("key"))
+                        record["image_size"] = list(IMAGE_SIZE)
                     _apply(area, room, record)
                 else:
                     # **The template's text stands, and the reason is written down.** A
@@ -645,6 +748,10 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
 def _apply(area, room, record):
     """Hang the model's answer on the room, beside the template's, never over it."""
     if record.get("left"):
+        return
+    if record.get("what") == "wares":
+        # The reworked goods, aligned with `stock` item for item. Never in place of it.
+        room["stock_ai"] = record.get("wares") or []
         return
     if record.get("name"):
         room["key_ai"] = record["name"]
@@ -737,6 +844,8 @@ def main(argv=None):
                         help="Say how far along it is and stop, doing no work.")
     parser.add_argument("--compare", action="store_true",
                         help="Print the side-by-side and stop.")
+    parser.add_argument("--no-wares", action="store_true",
+                        help="Curate rooms only, and leave every shelf as the generator made it.")
     parser.add_argument("--quiet", action="store_true",
                         help="No line per room. The studio uses this and reads status.json.")
     args = parser.parse_args(argv)
@@ -764,14 +873,29 @@ def main(argv=None):
     # working exactly as built and doing the wrong thing.
     if os.path.exists(jobs_path):
         with io.open(jobs_path, encoding="utf-8") as handle:
-            jobs = json.load(handle)["jobs"]
+            stored = json.load(handle)
+        jobs = stored["jobs"]
+        # **A run curated before wares were a job gains them, appended.** Every existing job
+        # keeps its place and its journal key, so nothing already curated is asked again.
+        if not any(job.get("what") == "wares" for job in jobs):
+            extra = ware_jobs(document)
+            if extra:
+                jobs = jobs + extra
+                stored["jobs"] = jobs
+                with io.open(jobs_path, "w", encoding="utf-8") as handle:
+                    json.dump(stored, handle)
     else:
         jobs = work_list(document)
         with io.open(jobs_path, "w", encoding="utf-8") as handle:
             json.dump({"jobs": jobs, "model": args.model}, handle)
+    # The whole world's work, kept before slicing: what is written out at the end is the
+    # whole world, whatever part of it this run was asked to work on.
+    every_job = list(jobs)
     if args.areas:
         jobs = [job for job in jobs
                 if job.get("kind", "areas") == "areas" and job["area"] < args.areas]
+    if args.no_wares:
+        jobs = [job for job in jobs if job.get("what") != "wares"]
 
     done = read_journal(journal_path)
     if args.status or args.compare:
@@ -807,7 +931,10 @@ def main(argv=None):
               "kept": seen["kept"], "left": seen["left"], "asked": 0, "rate_per_min": None,
               "eta_seconds": None,
               "url": None, "started_at": started, "updated_at": started, "stopped": None,
-              "faults": {}}
+              "faults": {},
+              # Rooms first, then shelves (see `ware_jobs`): which the dial is counting now.
+              "doing": "rooms" if any(token(job) not in done for job in jobs
+                                      if job.get("what") != "wares") else "shelves"}
     write_status(status_path, status)
 
     # **Find a road to the model before promising anything.** An address that is not there
@@ -829,6 +956,7 @@ def main(argv=None):
             return
         seen["asked"] += 1
         seen["left" if record.get("left") else "kept"] += 1
+        status["doing"] = "shelves" if record.get("what") == "wares" else "rooms"
         if record.get("left"):
             status["faults"][record.get("fault", "unknown")] = \
                 status["faults"].get(record.get("fault", "unknown"), 0) + 1
@@ -851,6 +979,11 @@ def main(argv=None):
 
     tally = curate(document, model, journal_path, jobs, on_room=progress,
                    at_once=args.at_once)
+
+    # **Everything the journal holds, not only this run's slice.** A run told `--areas 1`
+    # once wrote a curated.json holding one area's curation and silently dropped the other
+    # hundred and twenty-nine - the journal still had them; the file did not.
+    replay(document, journal_path, every_job)
 
     # The curated world is written before the status says "done", so whoever sees "done"
     # can open it at once.

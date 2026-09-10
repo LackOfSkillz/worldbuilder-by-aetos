@@ -80,6 +80,9 @@ PHRASE_EXCEPTIONS = (
     "siege engine", "siege engines", "engine of war", "wire-drawn", "gold wire",
     "silver wire", "wire brush", "spun wire", "bulb of garlic", "flower bulb",
     "bulbs of garlic", "switch of birch", "cannon bone",
+    # The camp's own stock sells "a bundle of snare wire", and a snare has been wire since
+    # long before anybody wired anything; without this every camp shelf failed its check.
+    "snare wire",
 )
 
 

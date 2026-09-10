@@ -36,3 +36,16 @@ test("a street keeps its name on the AI side when the curator left it alone", ()
   const street = { key: "Mill Lane, East End", key_ai: null, desc: "t", desc_ai: "a" };
   assert.equal(roomText(street, "ai").key, "Mill Lane, East End");
 });
+
+test("the AI side lists the curator's goods with what each looks like", () => {
+  const shop = { key: "Hill Road", desc: "t", stock: ["a whetstone from Greystair"],
+                 stock_ai: [{ name: "a fine-grit whetstone from Greystair",
+                              desc: "A grey stone worn hollow in the middle by long use." }] };
+  const ai = roomText(shop, "ai");
+  assert.equal(ai.ai, true, "a curated shelf alone is enough to offer the AI side");
+  assert.deepEqual(ai.wares.map((w) => w.name), ["a fine-grit whetstone from Greystair"]);
+  assert.match(ai.wares[0].desc, /worn hollow/);
+  assert.equal(ai.desc, "t", "no curated room text falls back to the template's");
+  const plain = roomText(shop, "template");
+  assert.deepEqual(plain.wares, [{ name: "a whetstone from Greystair", desc: "" }]);
+});

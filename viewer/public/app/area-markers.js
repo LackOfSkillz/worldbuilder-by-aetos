@@ -259,6 +259,8 @@ export function drawAreas(viewer, Cesium, document) {
             keeper: keeper ? keeper.name : null,
             people: (room.people || []).map((who) => who.name),
             stock: goods,
+            // The curator's reworked goods, `{name, desc}` item for item with `stock`.
+            stock_ai: (shop || room).stock_ai || null,
             latitude_deg: room.latitude_deg,
             longitude_deg: room.longitude_deg,
           },
@@ -616,12 +618,17 @@ function setCardText(mode) {
 
 /// What the card says for a room, in the chosen text. Exported for the tests.
 export function roomText(room, mode) {
-  const ai = mode === "ai" && Boolean(room.desc_ai);
+  const shelf = Array.isArray(room.stock_ai) && room.stock_ai.length ? room.stock_ai : null;
+  const ai = mode === "ai" && Boolean(room.desc_ai || shelf);
   return {
     ai,
     key: ai && room.key_ai ? room.key_ai : room.key,
-    desc: ai ? room.desc_ai : room.desc,
+    desc: ai && room.desc_ai ? room.desc_ai : room.desc,
     shop: ai && room.shop_ai ? room.shop_ai : room.shop,
+    // Each ware as `{name, desc}`; the template's have no description to show.
+    wares: ai && shelf
+      ? shelf.map((ware) => ({ name: ware.name, desc: ware.desc || "" }))
+      : (room.stock || []).map((name) => ({ name, desc: "" })),
   };
 }
 
@@ -652,7 +659,7 @@ export function showRoom(panel, room, x, y) {
   }
   // **AI | template, only where there is a choice.** A room the curator never touched has
   // one text, and a toggle with nothing behind one side would look broken.
-  if (room.desc_ai) {
+  if (room.desc_ai || (room.stock_ai && room.stock_ai.length)) {
     const toggle = make("div", "display:flex;gap:4px;margin-bottom:6px");
     for (const [mode, label] of [["ai", "AI"], ["template", "template"]]) {
       const active = (mode === "ai") === shown.ai;
@@ -685,9 +692,14 @@ export function showRoom(panel, room, x, y) {
   if (room.keeper) {
     panel.append(make("div", "color:#cfe0f2;font-size:12px", room.keeper));
   }
-  if (room.stock && room.stock.length) {
+  if (shown.wares.length) {
     const list = make("ul", "margin:4px 0 0;padding-left:18px;color:#cfe0f2;font-size:12px");
-    for (const ware of room.stock) list.append(make("li", null, ware));
+    for (const ware of shown.wares) {
+      const item = make("li", null, ware.name);
+      // What the ware looks like, on hover: the list stays a list a player can scan.
+      if (ware.desc) item.title = ware.desc;
+      list.append(item);
+    }
     panel.append(list);
   } else if (room.people && room.people.length && !room.keeper) {
     panel.append(make("div", "color:#8fa3ba;font-size:12px", room.people.join(", ")));

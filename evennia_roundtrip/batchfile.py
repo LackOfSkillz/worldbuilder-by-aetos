@@ -158,6 +158,9 @@ def commands(world):
             wares = record.get("stock") if person.get("role") == "keeper" else None
             if wares:
                 yield "set %s/stock = %s" % (handle, _literal(list(wares)))
+                if record.get("stock_notes"):
+                    yield "set %s/stock_notes = %s" % (handle,
+                                                        _literal(dict(record["stock_notes"])))
                 yield _desc(handle, "Goods for sale:" + "".join("\n  " + w for w in wares))
             else:
                 yield _desc(handle, "One of the people of this place.")
