@@ -11,6 +11,11 @@ pub struct Closure {
     pub closed: Vec<bool>,
     pub salt_flat: Vec<bool>,
     pub fresh_enclosed: Vec<bool>,
+    /// Ruling 12b-2: for a fresh enclosed basin, the index into `routing.notches` of the outlet
+    /// cut `close_lakes` made for it, if `cut_path` actually pushed one (a path shorter than 2
+    /// nodes pushes nothing). `None` for every hollow that never got an outlet cut here --
+    /// either it is not a fresh enclosed basin, or its path was too short to cut.
+    pub outlet_notch: Vec<Option<usize>>,
 }
 
 pub fn accumulate(graph: &LandGraph, routing: &Routing) -> Vec<f64> {
@@ -70,6 +75,7 @@ pub fn close_lakes(graph: &LandGraph, routing: &mut Routing, hollows: &[Hollow],
         closed: vec![false; count],
         salt_flat: vec![false; count],
         fresh_enclosed: vec![false; count],
+        outlet_notch: vec![None; count],
     };
 
     // Enclosed basins first: they are sinks until their balance says otherwise.
@@ -82,7 +88,12 @@ pub fn close_lakes(graph: &LandGraph, routing: &mut Routing, hollows: &[Hollow],
         let loss = evaporation(graph, routing, id, hollow, params.evaporation_factor);
         if hollow.forced || inflow >= loss {
             closure.fresh_enclosed[id] = true;
+            // `cut_path` pushes exactly one `NotchRoute` when the path has 2+ nodes, and none
+            // otherwise (see its own doc) -- record the index it is about to land at, before
+            // calling it, so the record filter (Ruling 12b-2) can tell this notch is an outlet.
+            let notch_index = if hollow.outlet_path.len() >= 2 { Some(routing.notches.len()) } else { None };
             cut_path(routing, graph, &hollow.outlet_path, hollow.level_m - params.notch_fall_m);
+            closure.outlet_notch[id] = notch_index;
         } else {
             closure.closed[id] = true;
             closure.salt_flat[id] = inflow < params.salt_flat_share * loss;

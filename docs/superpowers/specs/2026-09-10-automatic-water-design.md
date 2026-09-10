@@ -193,6 +193,24 @@ These thresholds are recorded in the world and are initial values to be calibrat
   `a` and `c` are chosen so a stream at its threshold is 3 m wide by 0.5 m deep and a great
   river at its threshold is 1,000 m wide.
 
+### 6.5a Calibration, 1a
+
+Task 12b (plan 1a) measured a 500k/1M-node coarse bake against the owner's real world and ruled
+on five points the sections above left open. Full measurements and reasoning are in
+`.superpowers/sdd/2026-09-10-water-1a-coarse-bake/task-12b-brief.md` and
+`task-12b-report.md`; the table states the outcome.
+
+| Ruling | What it changes | Why |
+|---|---|---|
+| 12b-1: resolution-aware thresholds | Section 6.5's thresholds become floors, not fixed values: `stream = max(stream_flow_m2, min_stream_nodes × median land-node area)`, `river = max(river_flow_m2, 10 × stream)`, `great = max(great_flow_m2, 10 × river)`. `HydroParams.min_stream_nodes = 10.0` in `earth_like`. `BakeStats` records the three effective values used. | At 500k nodes a land node stands for ~2,200 km² of catchment, above the 250 km² stream threshold -- every land node would be a channel. The plan's "stream ×2, up to 4 steps" lever (Ruling 12b-4: superseded) cannot land: ×16 would put stream above river. |
+| 12b-2: record only the notches that matter | A notch route is recorded only if a node of it is a channel node of a recorded reach, or it is an outlet cut from a fresh enclosed pocket. Routing still cuts and keeps every notch; only the record filters. | Notches, not reaches, set record size at coarse resolution (41,202 of them at 500k, all sub-resolution dips). Stage 2's fine tracing is what should carve a drained dip a recorded river never crosses. |
+| 12b-3: node budget | `pub const DEFAULT_TOTAL_NODES: u32 = 1_000_000;` | Studio heap 372 MB at 1M nodes, under the 512 MB ceiling from 6.1; an 80 s wasm bake on the owner's world. Bifurcation ratios are reported (Section 6.5's 3-5 target), not forced to it -- the gap is a known property of this budget, not closed here. |
+| 12b-4: plan deviation | The "stream ×2, up to 4 steps" calibration lever (Section 6.5) is superseded by 12b-1. | The lever is structurally unable to land at this resolution (see 12b-1's reasoning). |
+| 12b-5: no lake larger than the Caspian | `HydroParams.keep_max_area_m2 = 4.0e11` in `earth_like`. In Section 6.3's judging, an open hollow (neither enclosed nor forced) with `area_m2 > keep_max_area_m2` is notched however deep it is. Enclosed basins are exempt (the coastline lock already keeps them). | The owner's world kept open basins of 0.6-2.0M km² at 290-629 m fill levels -- broad landform basins filled to their rims, not real lakes (Earth's largest, the Caspian, is 0.371M km²). Real basins this large are breached by a great river; stage 2's mountains erosion will reshape them anyway. |
+
+Neither `min_stream_nodes` nor `keep_max_area_m2` is a wasm parameter in 1a -- a wasm bake
+always takes `earth_like`'s value for both.
+
 ### 6.6 Refinement
 
 - **Tracing.** Each reach is re-traced on the landform at 1.5 km steps. Every step goes downhill,

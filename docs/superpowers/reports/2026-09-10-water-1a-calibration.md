@@ -157,12 +157,59 @@ the number that belongs beside the old 1,361 in the spec's calibration table.
 
 ## Owner world (studio)
 
-To be filled by the controller, per Ruling E: Step 2's browser-console run against
-`worlds/world-1788998299904.json` (radius 9,309 km) through the studio's own wasm build, the
-wasm heap readings at 500k/1M/2M nodes, the great-lake/forced-outlet check against 26.00S
-30.25W, the bifurcation-ratio tuning steps (if any) at the chosen default node count, the pit
-lake comparison against the old 1,361/638-single-node figures, and `DEFAULT_TOTAL_NODES`'s
-final value in `mod.rs`.
+Filled by the controller (Task 12b), from a browser-studio run (http://localhost:8138, wasm)
+against the owner's saved world `worlds/world-1788998299904.json` (radius 9,309 km, land 0.4,
+forced outlet at the inland sea's centre, 0°N 0°E).
+
+| Run (500,000 nodes) | Reaches | Streams / rivers / great | Top order | Bifurcation | Record | Time |
+|---|---|---|---|---|---|---|
+| earth_like | 69,544 | 16,160 / 48,081 / 5,303 | 6 | 4.66-52 | 31 MB | 30 s |
+| stream x2 | 54,181 | 7,902 / 41,621 / 4,658 | 5 | 4.71-8 | 28 MB | 32 s |
+| stream = 10 x node area (2.2e10 / 2.2e11 / 2.2e12) | 2,126 | 1,695 / 424 / 7 | 4 | 5.28-43 | 17 MB | 41 s |
+| stream = 30 x node area | 606 | 524 / 77 / 5 | 3 | 7.61-22 | 16 MB | 42 s |
+| **1,000,000 nodes**, stream = 10 x node area (1.1e10 / 1.1e11 / 1.1e12) | 4,697 | 3,398 / 1,219 / 80 | 4 | 4.68-12.1 | 39 MB | 80 s |
+
+At 1M nodes: hollows 1,190 (352 kept, 778 notched, 60 closed), notch routes 84,145, **heap
+372 MB** (under the 512 MB ceiling from section 6.1). At 500k nodes: hollows 722 (286 kept, 436
+notched, 42 closed), **notch routes 41,202** (which set the record size before Ruling 12b-2),
+heap 244 MB.
+
+**The great lake (500k):** the forced body is fresh, enclosed and level 0, area 41.24M km²
+(measured earlier at 41.7M), an outlet reach, anchor at 6.05°N 11.76°E. Body kinds: 244 lakes,
+39 salt lakes, 3 salt flats, 0 ponds (ponds cannot exist at graph resolution -- unchanged from
+the native survey's own finding above; addressed in plan 1b, not here). The median kept-lake
+area is 8,816 km².
+
+**Findings that drove the rulings (see the spec's section 6.5a and the ruling table there for
+the resulting changes):**
+
+1. **The Earth thresholds cannot apply to a graph that cannot see below its own node area.** At
+   500k nodes, a land node stands for about 2,200 km² of catchment, above the 250 km² stream
+   threshold from section 6.5, so every land node is a channel. The plan's calibration lever
+   (stream x2, up to 4 steps) cannot land: x16 would put the stream threshold above the river
+   one, and even x2 leaves 54k reaches. Ruling 12b-1 replaces the lever with resolution-aware
+   floors; Ruling 12b-4 records the deviation.
+2. **Notches, not reaches, set the record size.** Every sub-resolution dip on the landform graph
+   is drained by a notch route, and all 41,202 of them were recorded before this task. Ruling
+   12b-2 records only a notch that a recorded river runs through, or a fresh enclosed pocket's
+   outlet.
+3. **The owner's bake also kept open lakes several times the Caspian's size** (2.02M, 1.24M,
+   0.95M, 0.78M, 0.76M, 0.64M and 0.61M km², levels 290-629 m, depths 71-273 m) -- broad
+   landform basins filled to their rims, not real lakes. Ruling 12b-5 notches an open hollow
+   above `keep_max_area_m2 = 4.0e11` regardless of depth, exempting enclosed basins (the
+   coastline lock already keeps the owner's 41.2M km² great lake, which is correctly exempt).
+
+**Node budget (Ruling 12b-3):** `DEFAULT_TOTAL_NODES = 1_000_000` in `mod.rs` -- the 1M row's
+372 MB studio heap is under the 512 MB ceiling with margin, and its 80 s wasm bake is well
+inside the brief's time allowance. Bifurcation ratios (4.68-12.1 at 1M) are reported, not
+forced toward the 3-5 target from section 6.5 -- the gap between what a graph this coarse can
+resolve and that target is a known property of the resolution, not something this task's
+calibration closes; plan 1b's finer tracing is where it narrows.
+
+**Pit-lake comparison:** 352 kept bodies at 1M nodes (286 at 500k) is consistent with the
+native survey's own finding above -- nowhere near the spec's old figure of 1,361 bodies (638
+single-node) measured on a fine, undetrended mesh, for the same reason given there: the coarse
+`LandGraph` samples the landform only, never detail noise.
 
 ## Rebuild, parity, and count check (Step 4, native parts)
 

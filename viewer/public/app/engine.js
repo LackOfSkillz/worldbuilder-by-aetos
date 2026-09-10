@@ -755,10 +755,12 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 17-word header into a plain object. The header table, in
-  /// order: `schema`, `bodies`, `reaches`, `notches`, `falls`, `nodes`, `landNodes`,
-  /// `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`, `great`, `maxOrder`,
-  /// `bifurcationMin`, `bifurcationMax`.
+  /// Read a `hydroBake` record's 20-word header (schema 2, Task 12b) into a plain object. The
+  /// header table, in order: `schema`, `bodies`, `reaches`, `notches`, `falls`, `nodes`,
+  /// `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`, `great`,
+  /// `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
+  /// `greatFlowM2` -- the last three are the effective thresholds a coarse bake actually used
+  /// (Ruling 12b-1), not necessarily the ones the caller asked for.
   hydroSummary(words) {
     return {
       schema: words[0],
@@ -778,6 +780,9 @@ export class Engine {
       maxOrder: words[14],
       bifurcationMin: words[15],
       bifurcationMax: words[16],
+      streamFlowM2: words[17],
+      riverFlowM2: words[18],
+      greatFlowM2: words[19],
     };
   }
 }

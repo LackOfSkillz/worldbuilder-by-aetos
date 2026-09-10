@@ -138,7 +138,19 @@ pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
     for hollow in hollows.iter_mut() {
         hollow.forced = hollow.members.iter().any(|m| forced_nodes.binary_search(m).is_ok());
         let big = hollow.depth_m >= params.keep_depth_m && hollow.area_m2 >= params.keep_area_m2;
-        hollow.fate = if hollow.enclosed || hollow.forced || big { Fate::Keep } else { Fate::Notch };
+        // Ruling 12b-5: a hollow that is neither enclosed nor forced and whose area exceeds
+        // `keep_max_area_m2` is notched regardless of depth -- a broad landform basin filled to
+        // its rim is a drained lowland at graph scale, not an inland sea the size of several
+        // Caspians. Enclosed basins are exempt: the coastline lock (Ruling W1) already keeps
+        // them, whatever their size.
+        let too_large = !hollow.enclosed && !hollow.forced && hollow.area_m2 > params.keep_max_area_m2;
+        hollow.fate = if too_large {
+            Fate::Notch
+        } else if hollow.enclosed || hollow.forced || big {
+            Fate::Keep
+        } else {
+            Fate::Notch
+        };
     }
 }
 
@@ -212,6 +224,33 @@ mod tests {
         assert_eq!(enclosed[0].fate, Fate::Keep);
         assert_eq!(enclosed[0].level_m, 0.0, "Ruling W1: the shoreline does not move");
         assert_eq!(enclosed[0].outlet, 3, "its lowest way to the ocean is the 39 m ridge");
+    }
+
+    /// Ruling 12b-5: a hollow larger than `keep_max_area_m2` drains, whatever its depth --
+    /// unless it is enclosed, in which case the coastline lock (Ruling W1) keeps it regardless.
+    #[test]
+    fn a_hollow_larger_than_the_caspian_drains() {
+        // Deep and wide enough to pass `big` (the ordinary keep rule), but its 6.0e6 m^2 area
+        // exceeds a test-scale `keep_max_area_m2` of 5.0e6 -- so the open hollow must drain.
+        let g = line(&[-50.0, 40.0, 5.0, 12.0, 25.0, 70.0], 2.0e6);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 5.0e6;
+        judge(&mut hollows, &g, &params);
+        assert_eq!(hollows[0].area_m2, 6.0e6, "sanity: this hollow is above the test cap");
+        assert_eq!(hollows[0].fate, Fate::Notch, "a hollow this large is not an open lake, whatever its depth");
+
+        // The same size, but enclosed -- exempt, per Ruling W1.
+        let g = line(&[-50.0, -40.0, -30.0, 39.0, -5.0, 10.0, 60.0], 2.0e6);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 1.0;
+        judge(&mut hollows, &g, &params);
+        let enclosed: Vec<&Hollow> = hollows.iter().filter(|h| h.enclosed).collect();
+        assert_eq!(enclosed.len(), 1);
+        assert_eq!(enclosed[0].fate, Fate::Keep, "an enclosed basin is kept however large");
     }
 
     #[test]

@@ -11,7 +11,10 @@ use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
 use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, ReachLine, ReachPoint};
 
-pub const SCHEMA: f64 = 1.0;
+/// 2.0 as of Task 12b (Ruling 12b-1): the header grew from 17 to 20 words, adding the three
+/// effective thresholds (`stream_flow_m2`, `river_flow_m2`, `great_flow_m2`) a coarse bake
+/// actually used, after `bake()`'s resolution-aware floor.
+pub const SCHEMA: f64 = 2.0;
 
 fn word_to_u32(w: f64) -> Option<u32> {
     if w.is_finite() && w >= 0.0 && w <= u32::MAX as f64 && m::floor(w) == w {
@@ -180,6 +183,9 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.max_order as f64);
     out.push(stats.bifurcation_min);
     out.push(stats.bifurcation_max);
+    out.push(stats.stream_flow_m2);
+    out.push(stats.river_flow_m2);
+    out.push(stats.great_flow_m2);
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -264,6 +270,9 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         max_order: r.u32()?,
         bifurcation_min: r.word()?,
         bifurcation_max: r.word()?,
+        stream_flow_m2: r.word()?,
+        river_flow_m2: r.word()?,
+        great_flow_m2: r.word()?,
     };
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
@@ -451,14 +460,18 @@ mod tests {
                 max_order: 2,
                 bifurcation_min: 2.5,
                 bifurcation_max: 4.0,
+                stream_flow_m2: 3.0e10,
+                river_flow_m2: 3.0e11,
+                great_flow_m2: 3.0e12,
             },
         }
     }
 
     #[test]
-    fn a_hand_built_record_round_trips() {
+    fn a_hand_built_record_round_trips_at_schema_2() {
         let record = sample();
         let words = encode(&record);
+        assert_eq!(SCHEMA, 2.0, "Task 12b (Ruling 12b-1) bumped the schema for the 20-word header");
         assert_eq!(words[0], SCHEMA);
         assert_eq!(decode(&words), Some(record));
     }

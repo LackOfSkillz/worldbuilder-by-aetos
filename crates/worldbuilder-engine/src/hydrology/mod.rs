@@ -43,11 +43,24 @@ pub struct HydroParams {
     pub evaporation_factor: f64,
     pub salt_flat_share: f64,
     pub forced_outlets: Vec<SpherePoint>,
+    /// Ruling 12b-1: the floor for the stream threshold, in graph nodes rather than m^2 -- the
+    /// effective stream threshold is `max(stream_flow_m2, min_stream_nodes * median land-node
+    /// area)`, so a coarse graph's threshold rises to what it can actually resolve. Not a wasm
+    /// param in 1a: `hydro_params_from` never sets this field, so a wasm bake always takes
+    /// `earth_like`'s value.
+    pub min_stream_nodes: f64,
+    /// Ruling 12b-5: an open hollow (neither enclosed nor forced) larger than this is notched
+    /// however deep it is -- a broad landform basin filled to its rim is a drained lowland at
+    /// graph scale, not an inland sea several Caspians wide. Not a wasm param in 1a, for the
+    /// same reason as `min_stream_nodes`.
+    pub keep_max_area_m2: f64,
 }
 
 impl HydroParams {
-    /// The spec's Earth-like starting values (section 6). Task 12 of plan 1a tunes them against
-    /// the owner's world and records the result here.
+    /// The spec's Earth-like starting values (section 6), tuned against the owner's world by
+    /// Task 12b of plan 1a (see `.superpowers/sdd/2026-09-10-water-1a-coarse-bake/
+    /// task-12b-report.md` for the measurements behind `min_stream_nodes` and
+    /// `keep_max_area_m2`).
     pub fn earth_like(total_nodes: u32) -> Self {
         Self {
             total_nodes,
@@ -62,9 +75,17 @@ impl HydroParams {
             evaporation_factor: 1.0,
             salt_flat_share: 0.1,
             forced_outlets: Vec::new(),
+            min_stream_nodes: 10.0,
+            keep_max_area_m2: 4.0e11,
         }
     }
 }
+
+/// Ruling 12b-3: the node budget for a coarse bake, measured against the owner's world (studio
+/// heap 372 MB at this count, under the 512 MB ceiling; an 80 s wasm bake). Bifurcation ratios
+/// are reported by `BakeStats`, not forced toward the Earth-like 3-5 target -- the gap between
+/// what this budget's graph resolves and that target is documented, not closed here.
+pub const DEFAULT_TOTAL_NODES: u32 = 1_000_000;
 
 /// What kind of standing water a body is. Salt vs fresh is `Body::fresh`; this is the shape
 /// and the surface, not the chemistry.
@@ -145,6 +166,12 @@ pub struct BakeStats {
     pub max_order: u32,
     pub bifurcation_min: f64,
     pub bifurcation_max: f64,
+    /// Ruling 12b-1: the effective thresholds this bake actually used, after the
+    /// resolution-aware floor -- so a record says what it used, not just what `HydroParams`
+    /// asked for.
+    pub stream_flow_m2: f64,
+    pub river_flow_m2: f64,
+    pub great_flow_m2: f64,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the
@@ -216,6 +243,8 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
     require_finite_positive("notch_fall_m", params.notch_fall_m)?;
     require_finite_positive("evaporation_factor", params.evaporation_factor)?;
     require_finite_positive("salt_flat_share", params.salt_flat_share)?;
+    require_finite_positive("min_stream_nodes", params.min_stream_nodes)?;
+    require_finite_positive("keep_max_area_m2", params.keep_max_area_m2)?;
     if !(params.stream_flow_m2 <= params.river_flow_m2 && params.river_flow_m2 <= params.great_flow_m2) {
         return Err(HydroError::Params("stream_flow_m2 <= river_flow_m2 <= great_flow_m2 required"));
     }
@@ -228,7 +257,42 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
     judge(&mut hollows, &graph, params);
     let mut routing = route(&graph, &global_flood, &mut hollows, params);
     let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, params);
-    let reaches = extract(&graph, &routing, &flow, params);
+
+    // Ruling 12b-1: the effective thresholds a graph this coarse can actually resolve. Sorted,
+    // deterministic median of the land-node areas (the lower of the two middles on an even
+    // count), never a HashMap and never an arbitrary tie-break.
+    let mut land_areas: Vec<f64> = (0..graph.len())
+        .filter(|&i| !graph.ocean[i])
+        .map(|i| graph.area_m2[i])
+        .collect();
+    land_areas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_land_area_m2 = if land_areas.is_empty() {
+        0.0
+    } else {
+        let mid = if land_areas.len() % 2 == 0 { land_areas.len() / 2 - 1 } else { land_areas.len() / 2 };
+        land_areas[mid]
+    };
+
+    let node_based_stream = params.min_stream_nodes * median_land_area_m2;
+    let effective_stream_flow_m2 =
+        if params.stream_flow_m2 > node_based_stream { params.stream_flow_m2 } else { node_based_stream };
+    let node_based_river = 10.0 * effective_stream_flow_m2;
+    let effective_river_flow_m2 =
+        if params.river_flow_m2 > node_based_river { params.river_flow_m2 } else { node_based_river };
+    let node_based_great = 10.0 * effective_river_flow_m2;
+    let effective_great_flow_m2 =
+        if params.great_flow_m2 > node_based_great { params.great_flow_m2 } else { node_based_great };
+
+    // `extract` reads its thresholds off a `HydroParams`; the smallest clean way to hand it the
+    // effective values without a second parameter type is a cloned copy with just those three
+    // fields overwritten. Everything else -- including `reach_points`' width/depth anchor below,
+    // which stays on the caller's own `stream_flow_m2` -- keeps using the params `bake` was
+    // called with.
+    let mut effective_params = params.clone();
+    effective_params.stream_flow_m2 = effective_stream_flow_m2;
+    effective_params.river_flow_m2 = effective_river_flow_m2;
+    effective_params.great_flow_m2 = effective_great_flow_m2;
+    let reaches = extract(&graph, &routing, &flow, &effective_params);
 
     // hollow index -> body id, kept hollows only, in hollow order (Controller ruling: body ids
     // are one per kept hollow, numbered 0.., and a reach's Downstream::Body carries the hollow
@@ -311,8 +375,33 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         });
     }
 
-    let mut notches = Vec::with_capacity(routing.notches.len());
-    for notch in &routing.notches {
+    // Ruling 12b-2: routing keeps every cut (drainage correctness needs them all), but the
+    // record only describes the notches that matter -- one that a recorded reach's channel
+    // runs through, or one `close_lakes` cut as a fresh enclosed pocket's outlet. `reach.nodes`
+    // (not just the reach's endpoints) are every node its channel visits, so membership there is
+    // "lies on a river's path". Node-id equality stands in for the brief's lat/lon comparison:
+    // both a notch's points and a reach's points come from the same `graph.positions`, keyed by
+    // this same node index, so comparing indices is comparing positions exactly, without paying
+    // for a `to_latlon()` round trip on nodes the filter is about to discard anyway.
+    let mut is_river_node = vec![false; graph.len()];
+    for reach in &reaches {
+        for &node in &reach.nodes {
+            is_river_node[node as usize] = true;
+        }
+    }
+    let mut is_outlet_notch = vec![false; routing.notches.len()];
+    for &opt in &closure.outlet_notch {
+        if let Some(idx) = opt {
+            is_outlet_notch[idx] = true;
+        }
+    }
+
+    let mut notches = Vec::new();
+    for (idx, notch) in routing.notches.iter().enumerate() {
+        let on_a_river = notch.nodes.iter().any(|&node| is_river_node[node as usize]);
+        if !(on_a_river || is_outlet_notch[idx]) {
+            continue;
+        }
         let mut points = Vec::with_capacity(notch.nodes.len());
         for (&node, &bed_m) in notch.nodes.iter().zip(&notch.bed_m) {
             let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
@@ -362,6 +451,9 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         max_order,
         bifurcation_min,
         bifurcation_max,
+        stream_flow_m2: effective_stream_flow_m2,
+        river_flow_m2: effective_river_flow_m2,
+        great_flow_m2: effective_great_flow_m2,
     };
 
     Ok(HydroRecord { bodies, reaches: reach_lines, notches, falls, stats })
@@ -427,6 +519,71 @@ mod bake_tests {
         let words = encode(&record);
         assert_eq!(decode(&words).as_ref(), Some(&record));
         assert_eq!(words[0], record::SCHEMA);
+    }
+
+    /// Ruling 12b-1: the effective thresholds rise to what a graph this coarse can resolve --
+    /// at least the floor `min_stream_nodes * median land-node area`, and at least the Earth
+    /// value where that binds instead, with river/great kept at 10x the reach below them.
+    #[test]
+    fn effective_thresholds_rise_to_the_graph_resolution() {
+        let p = params();
+        let record = bake(&world(), &p).expect("bake");
+
+        let graph = LandGraph::sample(&world(), p.total_nodes, p.wetness_nodes).expect("graph");
+        let mut land_areas: Vec<f64> =
+            (0..graph.len()).filter(|&i| !graph.ocean[i]).map(|i| graph.area_m2[i]).collect();
+        land_areas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = if land_areas.len() % 2 == 0 { land_areas.len() / 2 - 1 } else { land_areas.len() / 2 };
+        let median_land_area_m2 = land_areas[mid];
+
+        assert!(record.stats.stream_flow_m2 >= p.min_stream_nodes * median_land_area_m2);
+        assert!(record.stats.stream_flow_m2 >= p.stream_flow_m2);
+        assert!(record.stats.river_flow_m2 >= 10.0 * record.stats.stream_flow_m2);
+        assert!(record.stats.river_flow_m2 >= p.river_flow_m2);
+        assert!(record.stats.great_flow_m2 >= 10.0 * record.stats.river_flow_m2);
+        assert!(record.stats.great_flow_m2 >= p.great_flow_m2);
+    }
+
+    /// Ruling 12b-2: a recorded notch either lies on a recorded river's channel or was cut by
+    /// `close_lakes` as a fresh enclosed pocket's outlet -- nothing else. Reruns the same
+    /// pipeline `bake()` folds together, so it can see `closure.outlet_notch` and the raw
+    /// `routing.notches` bake() itself filters against, and compares lat/lon exactly (both a
+    /// notch's points and a reach's points come from the same node positions).
+    #[test]
+    fn only_notches_on_rivers_or_outlets_are_recorded() {
+        let surface = world();
+        let p = params();
+        let graph = LandGraph::sample(&surface, p.total_nodes, p.wetness_nodes).expect("graph");
+        let global_flood = flood(&graph, &ocean_seeds(&graph), &|_| true);
+        let mut hollows = find_hollows(&graph, &global_flood);
+        judge(&mut hollows, &graph, &p);
+        let mut routing = route(&graph, &global_flood, &mut hollows, &p);
+        let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, &p);
+        let reaches = extract(&graph, &routing, &flow, &p);
+
+        let mut river_positions: Vec<(f64, f64)> = Vec::new();
+        for reach in &reaches {
+            for &node in &reach.nodes {
+                river_positions.push(graph.positions[node as usize].to_latlon());
+            }
+        }
+        let mut outlet_positions: Vec<(f64, f64)> = Vec::new();
+        for opt in &closure.outlet_notch {
+            if let Some(idx) = *opt {
+                for &node in &routing.notches[idx].nodes {
+                    outlet_positions.push(graph.positions[node as usize].to_latlon());
+                }
+            }
+        }
+
+        let record = bake(&surface, &p).expect("bake");
+        assert!(!record.notches.is_empty(), "sanity: this fixture must record at least one notch");
+        for notch in &record.notches {
+            let matches = notch.points.iter().any(|&(lat, lon, _bed_m)| {
+                river_positions.contains(&(lat, lon)) || outlet_positions.contains(&(lat, lon))
+            });
+            assert!(matches, "a recorded notch matched neither a river channel nor an outlet cut");
+        }
     }
 
     #[test]
