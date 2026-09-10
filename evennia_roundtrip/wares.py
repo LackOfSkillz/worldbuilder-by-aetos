@@ -124,6 +124,10 @@ def _stray_names(text, place):
 #: still sold "a bridle with an olivewood bit" and "olivewood buckles at the calf".
 _NOT_WOOD = r"(nails?|bits?|blades?|buckles?|rings?|horseshoes?|rivets?)"
 _BARE_METAL = r"(blades?|steel|iron|horseshoes?|bits?)"
+#: Colours metal takes on its own, by a word in the colour's name: "iron-grey steel" and
+#: "blackened iron" are finishes, not paint, and the whole-world run refused both.
+METAL_COLOURS = (r"\b(grey|gray|black|blackened|silver|gilt|gold|golden|brass|bronze|copper|"
+                 r"verdigris|tarnished|soot|iron|steel|pewter)\b")
 
 
 def _misused_look(text, look, original=""):
@@ -138,7 +142,7 @@ def _misused_look(text, look, original=""):
         found = re.search(r"\b%s[\w-]* %s\b" % (re.escape(material), _NOT_WOOD), lowered)
         if found and found.group(0) not in original.lower():
             return "%s cannot make that (%s)" % (material, found.group(0))
-    if colour:
+    if colour and not re.search(METAL_COLOURS, colour):
         found = re.search(r"\b%s[\w-]* %s\b" % (re.escape(colour), _BARE_METAL), lowered)
         if found and found.group(0) not in original.lower():
             return "coloured bare metal (%s)" % found.group(0)

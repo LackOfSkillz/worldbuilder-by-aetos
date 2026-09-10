@@ -116,6 +116,18 @@ class TestTheGate(unittest.TestCase):
         self.assertIn("coloured bare metal",
                       wares.judge(["a short sword from Farsteading"], blade, PLACE, look=look))
 
+    def test_a_colour_metal_takes_of_itself_is_a_finish_not_paint(self):
+        look = {"colour": "iron-grey", "material": "bronze"}
+        blade = [{"name": "a short sword with an iron-grey steel blade from Farsteading",
+                  "desc": "A soldier's sword, balanced for the hand and plainly hilted."}]
+        self.assertIsNone(wares.judge(["a short sword from Farsteading"], blade, PLACE,
+                                      look=look))
+
+    def test_wire_as_a_smith_uses_it_is_period(self):
+        grip = [{"name": "a dagger with a wire-wrapped grip from Farsteading",
+                 "desc": "The grip is bound in brass wire, the pommel a plain iron disc."}]
+        self.assertIsNone(wares.judge(["a dagger from Farsteading"], grip, PLACE))
+
     def test_what_the_generator_already_said_is_not_held_against_the_model(self):
         """The generator's own "a sky-blue iron cook pot" is its fault to fix, not a reason
         to throw away the model's whole shelf."""

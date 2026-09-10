@@ -83,6 +83,12 @@ PHRASE_EXCEPTIONS = (
     # The camp's own stock sells "a bundle of snare wire", and a snare has been wire since
     # long before anybody wired anything; without this every camp shelf failed its check.
     "snare wire",
+    # Drawn metal wire is a smith's material long before it carries anything: a grip is
+    # wire-wrapped, a hilt bound in brass wire. The whole-world shelf run lost thirty-nine
+    # shelves to "wire" in phrases like these.
+    "brass wire", "copper wire", "bronze wire", "iron wire", "steel wire", "fine wire",
+    "twisted wire", "wire-wrapped", "wire-bound", "wire-wound", "bound with wire",
+    "wrapped in wire", "wound with wire",
 )
 
 
