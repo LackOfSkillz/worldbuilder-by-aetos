@@ -5,3 +5,4 @@
 //! default elevation path: a bake is requested, not implied.
 
 pub mod heap;
+pub mod buckets;
