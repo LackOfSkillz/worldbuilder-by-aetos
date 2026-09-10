@@ -4629,6 +4629,19 @@ in `src/`, so every configuration sees them alike; `tests/wasm_exports.rs` gaine
 only an in-place move of its one hydro pin (the header-length floor, 17 -> 20 words at the new
 SCHEMA 2.0). Re-derived through `assert_counts.py cargo-list` AFTER the last source edit.
 
+**2026-09-10, Task 12b fix round 1 (the threshold test must see the floor bind):**
+684/684/686/790/792 -> 685/685/687/791/793, 5 ignored, unchanged. **+1 uniformly on every row**:
+`the_node_floor_binds_on_a_coarse_graph` (`mod.rs`, `src/`), added because
+`effective_thresholds_rise_to_the_graph_resolution` runs on the bake test world's overridden
+thresholds (3.0e10/3.0e11/3.0e12), which already sit above `min_stream_nodes * median`, so the
+node-based branch never bound and the test would still pass with the floor removed. The new
+test uses `HydroParams::earth_like(12_000)`'s stock thresholds (2.5e8/2.5e9/1.0e11), well below
+that graph's own median land-node area, so the floor must bind; RED was shown by temporarily
+replacing the effective stream threshold with `params.stream_flow_m2` (unconditionally), which
+failed the new assertions (`250000000.0 != 424166660158.80225`), then restoring the floor logic
+for GREEN. No wasm rebuild was needed -- this is test-only code. Re-derived per configuration
+through `assert_counts.py cargo-list` AFTER the last source edit.
+
 All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
 every row** (it widened no C ABI), the coast channel **+18 on the two WASM rows only**

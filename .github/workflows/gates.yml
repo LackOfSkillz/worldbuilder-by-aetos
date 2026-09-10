@@ -1078,25 +1078,33 @@ jobs:
           # `tests/wasm_exports.rs` test was added (its one pinned assertion, the header-length
           # floor, moved from 17 to 20 words in place). Re-derived through `assert_counts.py
           # cargo-list` AFTER the last source edit.
+          # 2026-09-10, Task 12b fix round 1 (the threshold test must see the floor bind):
+          # 684/684/686/790/792 -> 685/685/687/791/793, 5 ignored, unchanged. +1 uniformly on
+          # every row -- `the_node_floor_binds_on_a_coarse_graph` (mod.rs, `src/`), the new test
+          # the fix's own brief asks for so the node-based branch actually gets exercised (the
+          # existing `effective_thresholds_rise_to_the_graph_resolution` runs on test-world
+          # overrides that already sit above the floor, so it never binds there). No other test
+          # added or removed. Re-derived per configuration through `assert_counts.py cargo-list`
+          # AFTER the last source edit.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 684
+            expect: 685
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 684
+            expect: 685
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 686
+            expect: 687
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 790
+            expect: 791
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 792
+            expect: 793
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4

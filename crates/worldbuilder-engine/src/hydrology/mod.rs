@@ -521,9 +521,11 @@ mod bake_tests {
         assert_eq!(words[0], record::SCHEMA);
     }
 
-    /// Ruling 12b-1: the effective thresholds rise to what a graph this coarse can resolve --
-    /// at least the floor `min_stream_nodes * median land-node area`, and at least the Earth
-    /// value where that binds instead, with river/great kept at 10x the reach below them.
+    /// Ruling 12b-1, the params-bind case: on this suite's test-world overrides (3.0e10 /
+    /// 3.0e11 / 3.0e12), the params already sit above `min_stream_nodes * median land-node
+    /// area`, so the node-based branch never binds here -- see
+    /// `the_node_floor_binds_on_a_coarse_graph` below for the case where it does. Kept with
+    /// `>=` on both sides so it stays meaningful regardless of which branch wins.
     #[test]
     fn effective_thresholds_rise_to_the_graph_resolution() {
         let p = params();
@@ -542,6 +544,31 @@ mod bake_tests {
         assert!(record.stats.river_flow_m2 >= p.river_flow_m2);
         assert!(record.stats.great_flow_m2 >= 10.0 * record.stats.river_flow_m2);
         assert!(record.stats.great_flow_m2 >= p.great_flow_m2);
+    }
+
+    /// Task 12b fix round 1: the node floor actually binds here. `HydroParams::earth_like`'s
+    /// stock thresholds (2.5e8 / 2.5e9 / 1.0e11) sit far below one node's share of this 12,000
+    /// node world (about 4.25e10 m^2), so the node-based branch must win, and the assertions
+    /// below fail if the floor is ever removed -- unlike
+    /// `effective_thresholds_rise_to_the_graph_resolution` above, whose test-world overrides
+    /// never exercise this branch.
+    #[test]
+    fn the_node_floor_binds_on_a_coarse_graph() {
+        let mut p = HydroParams::earth_like(12_000);
+        p.wetness_nodes = 500;
+        let record = bake(&world(), &p).expect("bake");
+
+        let graph = LandGraph::sample(&world(), p.total_nodes, p.wetness_nodes).expect("graph");
+        let mut land_areas: Vec<f64> =
+            (0..graph.len()).filter(|&i| !graph.ocean[i]).map(|i| graph.area_m2[i]).collect();
+        land_areas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = if land_areas.len() % 2 == 0 { land_areas.len() / 2 - 1 } else { land_areas.len() / 2 };
+        let median_land_area_m2 = land_areas[mid];
+
+        assert_eq!(record.stats.stream_flow_m2, 10.0 * median_land_area_m2);
+        assert_eq!(record.stats.river_flow_m2, 10.0 * record.stats.stream_flow_m2);
+        assert_eq!(record.stats.great_flow_m2, 10.0 * record.stats.river_flow_m2);
+        assert!(record.stats.stream_flow_m2 > 2.5e8);
     }
 
     /// Ruling 12b-2: a recorded notch either lies on a recorded river's channel or was cut by
