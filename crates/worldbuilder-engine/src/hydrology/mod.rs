@@ -11,6 +11,7 @@ pub mod flood;
 pub mod hollows;
 pub mod routing;
 pub mod flow;
+pub mod reaches;
 
 use crate::sphere::SpherePoint;
 
