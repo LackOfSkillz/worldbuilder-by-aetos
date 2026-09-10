@@ -203,10 +203,12 @@ These thresholds are recorded in the world and are initial values to be calibrat
   join at a shared vertex. Rivers end at the coast or at a lake shore.
 - **Lake outlines.** Each kept lake is filled at 250 m resolution from its lowest point up to its
   level, within its coarse basin. The outline is traced and then simplified to 250 m tolerance.
-- **Small lakes and ponds.** A fine hollow search (250 m cells, the Section 6.3 rules) runs only
-  within 3 km of refined river lines, and in terrain with wetness above the 60th percentile and
-  slopes under 3%. At most one small lake or pond per 500 km² of searched area is kept, the
-  deepest first.
+- **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined
+  river lines, and in terrain with wetness above the 60th percentile and slopes under 3%. It has
+  **its own keep rule: depth ≥ 2 m and area ≥ 0.05 km²**. Section 6.3's rule (area ≥ 1 km²)
+  could never keep a pond, whose surface is under 1 km² by definition. Found hollows that fail
+  are simply not recorded; at this scale they are texture and need no notch. At most one small
+  lake or pond per 500 km² of searched area is kept, the deepest first.
 
 ### 6.7 Waterfalls
 
@@ -357,7 +359,7 @@ own branch or PR.
 
 | Stage | Delivers | Done when |
 |---|---|---|
-| 1. The bake | Land graph, priority flood, hollow judgement, flow, reaches, refinement, falls, the record. A native survey binary and a wasm export. | The record is bit-identical native vs wasm (parity harness), the section 14 properties hold, and calibration is reported on the owner's world. |
+| 1. The bake (two plans: **1a** coarse, **1b** refinement) | 1a: land graph, priority flood, hollow judgement, flow, reaches, the record at graph resolution, the wasm export, parity, calibration. 1b: refinement (tracing, outlines, small lakes and ponds), falls. A native survey binary and a wasm export. | The record is bit-identical native vs wasm (parity harness), the section 14 properties hold, and calibration is reported on the owner's world. |
 | 2. Water in the ground | Water layer, spatial index (features too), `water_at` in wasm and PyO3, the `hydrology` block and fingerprint, the version bump. | The index meets the section 8.2 targets, conformance and parity are green with the counts updated, and `water_at` agrees with the record at sampled points. |
 | 3. The studio | Bake worker and progress, per-texel drawing, water panel, adjustments. The old box drawing is removed. | Screenshots of the owner's world show true shorelines and rivers, adjustments survive a re-bake, and stale adjustments are shown. |
 | 4. Generator and trial | `water_at` in the generator, the trial on the owner's world. | Fresh water is found from real water, a 400-area trial run places halflings on real rivers, and the trial world is saved beside the original. |
