@@ -11,3 +11,7 @@ node_modules/
 
 # The AI curator's saved settings - may hold an API key. Never committed.
 curator.local.json
+
+# The studio server's own logs, when it is started detached.
+serve.log
+serve.log.err

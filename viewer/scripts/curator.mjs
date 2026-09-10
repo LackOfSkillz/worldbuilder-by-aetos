@@ -10,7 +10,8 @@
 // wrong half the time. Whichever answers first is the one used, and the curator falls over
 // to the next if the one it is using stops answering mid-run.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -138,8 +139,151 @@ function send(res, status, value) {
      .end(JSON.stringify(value));
 }
 
-/// Handle `/curator/...`. Returns true when the request was one of these.
-export async function handleCurator(req, res, pathname, { file = SETTINGS_FILE } = {}) {
+// ---------------------------------------------------------------------------------------
+// Curation jobs.
+//
+// **The curator's own `status.json` is the truth about progress; this only adds what a file
+// cannot know** - whether the process is alive, and whether somebody paused it. So the
+// server holds nothing it could lose: after a restart the files still say how far a run got,
+// and a run whose process is gone but whose status says "running" is reported as
+// interrupted, which is exactly what it is.
+
+const jobs = new Map();
+
+const RUN_ID = /^[A-Za-z0-9_.-]+$/;
+
+function curateDir(runsDir, runId) {
+  if (!RUN_ID.test(runId)) throw new Error("bad run id");
+  const dir = join(runsDir, runId, "curate");
+  if (!dir.startsWith(runsDir)) throw new Error("path escape");
+  return dir;
+}
+
+async function readJson(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/// Where a run's curation stands: the curator's numbers, and one word for its state.
+///
+/// `state` is one of: none, starting, running, paused, stopped, interrupted, done, failed.
+export async function curationStatus(runsDir, runId) {
+  const dir = curateDir(runsDir, runId);
+  const status = await readJson(join(dir, "status.json"));
+  const control = await readJson(join(dir, "control.json"));
+  const job = jobs.get(runId);
+  let state;
+  if (job && job.alive) state = job.state === "starting" ? "starting" : "running";
+  else if (control && (control.state === "paused" || control.state === "stopped")
+           && !(status && status.state === "done")) state = control.state;
+  else if (job && job.error) state = "failed";
+  else if (!status) state = "none";
+  else if (status.state === "running" || status.state === "starting") state = "interrupted";
+  else state = status.state;
+  // The curator's numbers first and the computed state after: spread the other way round,
+  // the curator's own "running" overwrote "paused" and a paused run looked alive.
+  return { ...(status || {}), run: runId, state, state_detail: status && status.state,
+           error: job && job.error ? job.error : undefined,
+           control: control ? control.state : undefined };
+}
+
+/// Start (or resume) curating a run. A run already being curated is left alone.
+export async function startCuration(runId, { runsDir, root, python, settingsFile = SETTINGS_FILE }) {
+  const dir = curateDir(runsDir, runId);
+  const running = jobs.get(runId);
+  if (running && running.alive) return { started: false, reason: "already running" };
+  const settings = await loadSettings(settingsFile);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "control.json"), JSON.stringify({ state: "running" }), "utf8");
+  const args = [
+    "-m", "evennia_roundtrip.curate",
+    "--run", join(runsDir, runId),
+    "--base-url", settings.base_urls.join(","),
+    "--model", settings.model,
+    "--at-once", String(settings.at_once),
+    "--quiet",
+  ];
+  // **The key goes in the environment, never the command line**, where any process listing
+  // on the machine would show it.
+  const env = { ...process.env };
+  if (settings.key) env.WB_CURATOR_KEY = settings.key;
+  // **Stdout is thrown away, not piped and ignored.** The curator can print a line a room,
+  // and a pipe nobody reads fills after a few hundred rooms and blocks the writer - which
+  // would look exactly like a hung model. Progress comes from status.json instead.
+  const child = spawn(python(), args, { cwd: root, env, windowsHide: true,
+                                        stdio: ["ignore", "ignore", "pipe"] });
+  const job = { child, alive: true, state: "starting", error: null, stderr: "" };
+  jobs.set(runId, job);
+  child.stderr.on("data", (chunk) => { job.stderr = (job.stderr + chunk).slice(-4000); });
+  child.on("spawn", () => { job.state = "running"; });
+  child.on("error", (error) => { job.alive = false; job.error = String(error.message); });
+  child.on("close", (code) => {
+    job.alive = false;
+    // A pause or stop kills the process on purpose; that is not a failure. Code 2 is the
+    // curator saying no address answered, which its status file already explains.
+    if (!job.killed && code !== 0 && code !== 2) {
+      job.error = `the curator exited ${code}: ${job.stderr.slice(-300)}`;
+    }
+    console.log(`curation of ${runId} ended (${job.killed ? job.state : `exit ${code}`})`);
+  });
+  console.log(`curation of ${runId} started (${settings.model} at ${settings.base_urls.join(" / ")})`);
+  return { started: true };
+}
+
+/// Pause or stop a run's curation. Both kill the process - every finished room is already
+/// in the journal - and differ only in what the studio offers next.
+export async function haltCuration(runId, how, { runsDir }) {
+  const dir = curateDir(runsDir, runId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "control.json"), JSON.stringify({ state: how }), "utf8");
+  const job = jobs.get(runId);
+  if (job && job.alive) {
+    job.killed = true;
+    job.state = how;
+    job.child.kill();
+  }
+  return { halted: how };
+}
+
+/// Curate a freshly generated run if the settings say to. Called when the generator exits.
+export async function curateIfWanted(runId, context) {
+  const settings = await loadSettings(context.settingsFile || SETTINGS_FILE);
+  if (!settings.enabled) return false;
+  await startCuration(runId, context);
+  return true;
+}
+
+/// Handle `/curator/...` and `/curate/...`. Returns true when the request was one of these.
+export async function handleCurator(req, res, pathname, context = {}) {
+  const { file = SETTINGS_FILE } = context;
+  if (pathname === "/curate/" || pathname === "/curate") {
+    try {
+      const runId = String(context.url.searchParams.get("run") || "");
+      if (req.method === "GET") {
+        send(res, 200, await curationStatus(context.runsDir, runId));
+        return true;
+      }
+      if (req.method === "POST") {
+        const action = String(context.url.searchParams.get("action") || "");
+        if (action === "start" || action === "resume") {
+          await startCuration(runId, { ...context, settingsFile: file });
+        } else if (action === "pause" || action === "stop") {
+          await haltCuration(runId, action === "pause" ? "paused" : "stopped", context);
+        } else {
+          throw new Error(`unknown action ${action}`);
+        }
+        send(res, 200, await curationStatus(context.runsDir, runId));
+        return true;
+      }
+      send(res, 405, { error: `${req.method} not allowed on /curate/` });
+    } catch (error) {
+      send(res, 400, { error: String(error.message || error) });
+    }
+    return true;
+  }
   if (pathname !== "/curator/settings" && pathname !== "/curator/test") return false;
   try {
     if (pathname === "/curator/settings" && req.method === "GET") {

@@ -399,8 +399,18 @@ export function watchRun(viewer, Cesium, runId, onTick = null,
   poll();
   drain();
 
+  // **The curated world replaces the generated one on the cards.** The server writes it
+  // when curation finishes; the populate panel fetches it and announces it here, so a room
+  // card opened afterwards reads the reworked text rather than the template's.
+  const onCurated = (event) => {
+    const detail = (event && event.detail) || {};
+    if (detail.run === runId && detail.doc) rooms = detail.doc;
+  };
+  window.addEventListener("wb-run-curated", onCurated);
+
   const halt = () => {
     stopped = true;
+    window.removeEventListener("wb-run-curated", onCurated);
     if (timer) clearTimeout(timer);
     if (drainTimer) clearTimeout(drainTimer);
     document.removeEventListener("visibilitychange", onVisible);

@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULTS, loadSettings, mergeSettings, publicView, probe, saveSettings }
+import { DEFAULTS, curationStatus, loadSettings, mergeSettings, publicView, probe, saveSettings }
   from "../scripts/curator.mjs";
 
 test("a missing settings file is the defaults, LAN first and Tailscale second", async () => {
@@ -98,4 +98,38 @@ test("nothing answering is a clear no, with what each address did", async () => 
   assert.equal(result.ok, false);
   assert.equal(result.tried.length, 2);
   assert.ok(result.tried.every((t) => t.error));
+});
+
+async function aRun(status, control) {
+  const runsDir = await mkdtemp(join(tmpdir(), "runs-"));
+  const dir = join(runsDir, "r1", "curate");
+  await mkdir(dir, { recursive: true });
+  if (status) await writeFile(join(dir, "status.json"), JSON.stringify(status));
+  if (control) await writeFile(join(dir, "control.json"), JSON.stringify({ state: control }));
+  return runsDir;
+}
+
+test("a paused run says paused, whatever the curator last wrote", async () => {
+  // The curator's status.json still says "running" after it is killed on pause - it had no
+  // chance to write anything else. The answer is what the person asked for.
+  const runsDir = await aRun({ state: "running", done: 186, total: 322 }, "paused");
+  const answer = await curationStatus(runsDir, "r1");
+  assert.equal(answer.state, "paused");
+  assert.equal(answer.done, 186, "the numbers still come through");
+});
+
+test("a run whose curator vanished without being paused is interrupted", async () => {
+  const runsDir = await aRun({ state: "running", done: 40, total: 100 }, "running");
+  assert.equal((await curationStatus(runsDir, "r1")).state, "interrupted");
+});
+
+test("a finished run is done even if it was once paused", async () => {
+  const runsDir = await aRun({ state: "done", done: 100, total: 100 }, "paused");
+  assert.equal((await curationStatus(runsDir, "r1")).state, "done");
+});
+
+test("a run never curated is none, and a malformed run id is refused", async () => {
+  const runsDir = await aRun(null, null);
+  assert.equal((await curationStatus(runsDir, "r1")).state, "none");
+  await assert.rejects(() => curationStatus(runsDir, "../escape"), /bad run id/);
 });

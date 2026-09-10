@@ -216,12 +216,55 @@ class Model(object):
         need this class to reach vLLM.
     """
 
+    #: How long an address gets to answer a probe. Short on purpose: the request timeout is
+    #: three minutes because a long description takes time to write, and a dead address does
+    #: not refuse - it simply never answers - so without a probe a run started away from
+    #: home would wait three minutes on the house LAN before trying anything else.
+    PROBE_SECONDS = 5.0
+
     def __init__(self, base_url, name, key=None, timeout=180.0, thinking=None):
-        self.base_url = base_url.rstrip("/")
+        urls = base_url if isinstance(base_url, (list, tuple)) else str(base_url).split(",")
+        self.base_urls = [u.strip().rstrip("/") for u in urls if u.strip()]
+        if not self.base_urls:
+            raise ValueError("a model needs at least one address")
+        self.current = 0
         self.name = name
         self.key = key
         self.timeout = timeout
         self.thinking = thinking
+
+    @property
+    def base_url(self):
+        """The address in use."""
+        return self.base_urls[self.current]
+
+    def _headers(self):
+        return {"content-type": "application/json",
+                "authorization": "Bearer %s" % (self.key or "none")}
+
+    def pick(self):
+        """
+        Use the first address that answers a quick probe.
+
+        Returns:
+            url (str or None): The address now in use, or None when nothing answered.
+
+        Notes:
+            **One backend, several ways to reach it.** The GX10 cluster is on the house LAN
+            at home and on Tailscale away from it. This is asked at the start of a run and
+            again whenever the address in use stops answering, so a laptop carried out of
+            the house mid-run changes road rather than stopping.
+        """
+        for index, base in enumerate(self.base_urls):
+            request = urllib.request.Request(base + "/models", headers=self._headers())
+            try:
+                with urllib.request.urlopen(request, timeout=self.PROBE_SECONDS) as answer:
+                    answer.read()
+            except (urllib.error.URLError, OSError, TimeoutError):
+                continue
+            self.current = index
+            return base
+        return None
 
     def ask(self, system, user, temperature=0.7):
         """
@@ -245,11 +288,24 @@ class Model(object):
             # are the whole cost of a long batch, and a room description argued with itself
             # first is not a better room description.
             body["chat_template_kwargs"] = {"thinking": bool(self.thinking)}
-        request = urllib.request.Request(
-            self.base_url + "/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"content-type": "application/json",
-                     "authorization": "Bearer %s" % (self.key or "none")})
+        payload = json.dumps(body).encode("utf-8")
+        try:
+            return self._post(payload)
+        except urllib.error.HTTPError as trouble:
+            # **The backend answered, and said no.** That is one room's problem - a request
+            # it disliked - and not a lost connection, so it is not a reason to pause the
+            # run. HTTPError is a URLError, which is why it has to be caught first.
+            raise ValueError("HTTP %s from the model" % trouble.code)
+        except (urllib.error.URLError, OSError, TimeoutError):
+            # The address in use stopped answering. Find one that does and try once more;
+            # if none does, say so, and the caller backs off and eventually stops cleanly.
+            if self.pick() is None:
+                raise
+            return self._post(payload)
+
+    def _post(self, payload):
+        request = urllib.request.Request(self.base_url + "/chat/completions", data=payload,
+                                         headers=self._headers())
         with urllib.request.urlopen(request, timeout=self.timeout) as answer:
             got = json.loads(answer.read().decode("utf-8"))
         return got["choices"][0]["message"]["content"]
@@ -355,27 +411,49 @@ def image_brief(area, room, name):
     return "%s, %s" % (subject, IMAGE_STYLE)
 
 
-def work_list(document, areas=None):
+def work_list(document, areas=None, roads=True):
     """
     Every room to be curated, in a fixed order.
 
     Args:
         document (dict): A run's worldfile.
         areas (int, optional): Curate only this many areas, for a first look.
+        roads (bool): Include the roads' rooms, after the areas'.
 
     Returns:
-        jobs (list): `{"area": index, "room": id}` in the order they will be done.
+        jobs (list): `{"area": index, "room": id}` for an area's room, and the same with
+            `"kind": "roads"` for a road's, in the order they will be done.
 
     Notes:
         **Written out before any of it is done.** A work list computed as it goes cannot be
         resumed, because nothing on disk says what "the rest" was.
+
+        **Roads too.** They were left out at first, so a curated world kept the road
+        template's "Lowrock lies back the way you came" in every road end it had.
     """
     jobs = []
     chosen = (document.get("areas") or [])[:areas] if areas else (document.get("areas") or [])
     for index, area in enumerate(chosen):
         for room in area.get("rooms") or ():
             jobs.append({"area": index, "room": room["id"]})
+    if roads:
+        for index, road in enumerate(document.get("roads") or ()):
+            for room in road.get("rooms") or ():
+                jobs.append({"kind": "roads", "area": index, "room": room["id"]})
     return jobs
+
+
+def token(entry):
+    """
+    What a job or a journal record is known by.
+
+    Notes:
+        An area's room keeps the form every existing journal was written in; a road's room
+        says so, because road 3 and area 3 are different places with the same index.
+    """
+    if entry.get("kind", "areas") == "roads":
+        return "roads:%s/%s" % (entry["area"], entry["room"])
+    return "%s/%s" % (entry["area"], entry["room"])
 
 
 def read_journal(path):
@@ -402,7 +480,7 @@ def read_journal(path):
                 record = json.loads(line)
             except ValueError:
                 continue
-            done["%s/%s" % (record["area"], record["room"])] = record
+            done[token(record)] = record
     return done
 
 
@@ -487,13 +565,12 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
         returns what it has. The journal is on disk either way, so the next run continues
         rather than restarts.
     """
-    areas = document.get("areas") or []
     done = read_journal(journal_path)
     tally = {"asked": 0, "kept": 0, "rejected": 0, "replayed": 0, "left": 0,
              "faults": {}, "stopped": None}
 
     def locate(job):
-        area = areas[job["area"]]
+        area = (document.get(job.get("kind", "areas")) or [])[job["area"]]
         room = next((r for r in area.get("rooms") or () if r["id"] == job["room"]), None)
         return area, room
 
@@ -504,10 +581,9 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
         area, room = locate(job)
         if room is None:
             continue
-        token = "%s/%s" % (job["area"], job["room"])
-        if token in done:
+        if token(job) in done:
             tally["replayed"] += 1
-            _apply(area, room, done[token])
+            _apply(area, room, done[token(job)])
             continue
         pending.append(job)
 
@@ -538,8 +614,11 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
                         tally["stopped"] = answer["stop"]
                     continue
 
+                where = {"area": job["area"], "room": job["room"]}
+                if job.get("kind", "areas") != "areas":
+                    where["kind"] = job["kind"]
                 if answer.get("record"):
-                    record = dict(answer["record"], area=job["area"], room=job["room"])
+                    record = dict(answer["record"], **where)
                     tally["kept"] += 1
                     record["image"] = image_brief(area, room,
                                                   record["name"] or room.get("key"))
@@ -553,8 +632,7 @@ def curate(document, model, journal_path, jobs, on_room=None, attempts=ATTEMPTS,
                     tally["left"] += 1
                     tally["rejected"] += 1
                     tally["faults"][fault] = tally["faults"].get(fault, 0) + 1
-                    record = {"area": job["area"], "room": job["room"], "left": True,
-                              "fault": fault}
+                    record = dict(where, left=True, fault=fault)
 
                 journal.write(json.dumps(record, ensure_ascii=False) + chr(10))
                 journal.flush()
@@ -608,6 +686,33 @@ def compare(document, areas=None, limit=6):
     return chr(10).join(lines)
 
 
+#: Where a run is told to look for the model when nothing else says: the GX10 cluster on the
+#: house LAN, then on Tailscale. Tried in order.
+DEFAULT_URLS = "http://192.168.1.200:8888/v1,http://100.92.130.112:8888/v1"
+
+#: How often, at most, `status.json` is rewritten. A watcher polls it every couple of seconds;
+#: writing it for every room of twenty-four thousand would be most of the disk traffic.
+STATUS_EVERY_SECONDS = 2.0
+
+
+def write_status(path, status):
+    """
+    Replace `status.json` whole, so a reader never sees half of one.
+
+    Notes:
+        Advisory, so a failure to write it never stops the curation it describes: on Windows
+        a reader holding the file open for an instant can refuse the replace, and the next
+        write will land.
+    """
+    temporary = path + ".tmp"
+    try:
+        with io.open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(status, handle)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
 def main(argv=None):
     """Curate a finished run, resumably."""
     import argparse
@@ -615,9 +720,10 @@ def main(argv=None):
     parser.add_argument("--run", required=True,
                         help="A run directory, or a worldfile.json inside one.")
     parser.add_argument("--areas", type=int, default=None,
-                        help="Only the first N areas. Leave off for the whole world.")
-    parser.add_argument("--base-url", default=os.environ.get(
-        "WB_CURATOR_URL", "http://100.92.130.112:8888/v1"))
+                        help="Only the first N areas, and no roads. Leave off for the whole "
+                             "world.")
+    parser.add_argument("--base-url", default=os.environ.get("WB_CURATOR_URL", DEFAULT_URLS),
+                        help="One address or several, comma-separated, tried in order.")
     parser.add_argument("--model", default=os.environ.get(
         "WB_CURATOR_MODEL", "deepseek-v4-flash-0731"))
     parser.add_argument("--key", default=os.environ.get("WB_CURATOR_KEY"))
@@ -631,6 +737,8 @@ def main(argv=None):
                         help="Say how far along it is and stop, doing no work.")
     parser.add_argument("--compare", action="store_true",
                         help="Print the side-by-side and stop.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="No line per room. The studio uses this and reads status.json.")
     args = parser.parse_args(argv)
 
     run_dir = args.run
@@ -645,6 +753,7 @@ def main(argv=None):
         os.makedirs(where)
     journal_path = os.path.join(where, "done.jsonl")
     jobs_path = os.path.join(where, "job.json")
+    status_path = os.path.join(where, "status.json")
 
     # **The work list is written once and re-read after.** A list recomputed on resume is a
     # different list whenever anything upstream changed, and the journal would then be
@@ -652,9 +761,7 @@ def main(argv=None):
     # **The stored list is always the WHOLE world; `--areas` slices it.** Storing the
     # narrowed list pinned the scope to whatever the first run asked for, so a later
     # `--areas 3` re-read a one-area list and quietly did one area - the resume machinery
-    # working exactly as built and doing the wrong thing. Because the list is ordered by
-    # area, any `--areas N` is a prefix of it, which means widening the scope simply
-    # carries on from where the narrow run stopped.
+    # working exactly as built and doing the wrong thing.
     if os.path.exists(jobs_path):
         with io.open(jobs_path, encoding="utf-8") as handle:
             jobs = json.load(handle)["jobs"]
@@ -663,43 +770,99 @@ def main(argv=None):
         with io.open(jobs_path, "w", encoding="utf-8") as handle:
             json.dump({"jobs": jobs, "model": args.model}, handle)
     if args.areas:
-        jobs = [job for job in jobs if job["area"] < args.areas]
+        jobs = [job for job in jobs
+                if job.get("kind", "areas") == "areas" and job["area"] < args.areas]
 
     done = read_journal(journal_path)
     if args.status or args.compare:
         for job in jobs:
-            token = "%s/%s" % (job["area"], job["room"])
-            if token not in done:
+            if token(job) not in done:
                 continue
-            area = document["areas"][job["area"]]
-            room = next((r for r in area.get("rooms") or () if r["id"] == job["room"]), None)
+            place = (document.get(job.get("kind", "areas")) or [])[job["area"]]
+            room = next((r for r in place.get("rooms") or () if r["id"] == job["room"]), None)
             if room is not None:
-                _apply(area, room, done[token])
+                _apply(place, room, done[token(job)])
         if args.compare:
             print(compare(document, args.areas))
         else:
-            left = sum(1 for record in done.values() if record.get("left"))
-            print(json.dumps({"rooms": len(jobs), "done": len(done),
+            finished = sum(1 for job in jobs if token(job) in done)
+            left = sum(1 for job in jobs if done.get(token(job), {}).get("left"))
+            print(json.dumps({"rooms": len(jobs), "done": finished,
                               "left_as_template": left,
-                              "remaining": len(jobs) - len(done)}))
+                              "remaining": len(jobs) - finished}))
         return 0
 
     model = Model(args.base_url, args.model, key=args.key,
                   thinking=(args.thinking == "on") if args.thinking else False)
+    # Kept and left are the run's totals, not this process's: started from what the journal
+    # already holds, or a resumed run tells its watcher it has kept 21 rooms of 209 done.
+    # The rate stays this process's own - it is a measure of now, not of the whole run.
+    earlier = [done[token(job)] for job in jobs if token(job) in done]
+    seen = {"asked": 0, "kept": sum(1 for r in earlier if not r.get("left")),
+            "left": sum(1 for r in earlier if r.get("left")), "last": 0.0}
+    started = time.time()
+    status = {"state": "starting", "run": os.path.basename(os.path.normpath(run_dir)),
+              "model": args.model, "total": len(jobs),
+              "done": sum(1 for job in jobs if token(job) in done),
+              "kept": seen["kept"], "left": seen["left"], "asked": 0, "rate_per_min": None,
+              "eta_seconds": None,
+              "url": None, "started_at": started, "updated_at": started, "stopped": None,
+              "faults": {}}
+    write_status(status_path, status)
 
-    def say(count, total, record):
-        mark = "left" if record.get("left") else "kept"
-        print(json.dumps({"room": count, "of": total, "how": mark,
-                          "name": record.get("name") or record.get("fault")}),
-              flush=True)
+    # **Find a road to the model before promising anything.** An address that is not there
+    # does not refuse, it just never answers; probing first means a run started away from
+    # home uses Tailscale at once instead of waiting three minutes on the house LAN.
+    url = model.pick()
+    if url is None:
+        status.update(state="stopped", updated_at=time.time(),
+                      stopped="no address answered: %s" % ", ".join(model.base_urls))
+        write_status(status_path, status)
+        print(json.dumps({"stopped": status["stopped"]}), flush=True)
+        return 2
+    status.update(state="running", url=url)
+    write_status(status_path, status)
 
-    tally = curate(document, model, journal_path, jobs, on_room=say,
+
+    def progress(count, total, record):
+        if "replayed" in record:
+            return
+        seen["asked"] += 1
+        seen["left" if record.get("left") else "kept"] += 1
+        if record.get("left"):
+            status["faults"][record.get("fault", "unknown")] = \
+                status["faults"].get(record.get("fault", "unknown"), 0) + 1
+        if not args.quiet:
+            print(json.dumps({"room": count, "of": total,
+                              "how": "left" if record.get("left") else "kept",
+                              "name": record.get("name") or record.get("fault")}),
+                  flush=True)
+        now = time.time()
+        if now - seen["last"] < STATUS_EVERY_SECONDS and count < total:
+            return
+        seen["last"] = now
+        minutes = max(1e-6, (now - started) / 60.0)
+        rate = seen["asked"] / minutes
+        remaining = total - count
+        status.update(done=count, kept=seen["kept"], left=seen["left"], asked=seen["asked"],
+                      rate_per_min=round(rate, 1), url=model.base_url, updated_at=now,
+                      eta_seconds=round(remaining / rate * 60.0) if rate > 0 else None)
+        write_status(status_path, status)
+
+    tally = curate(document, model, journal_path, jobs, on_room=progress,
                    at_once=args.at_once)
 
+    # The curated world is written before the status says "done", so whoever sees "done"
+    # can open it at once.
     with io.open(os.path.join(where, "curated.json"), "w", encoding="utf-8") as handle:
         json.dump(document, handle, ensure_ascii=False)
     with io.open(os.path.join(where, "compare.txt"), "w", encoding="utf-8") as handle:
         handle.write(compare(document, args.areas))
+    finished = sum(1 for job in jobs if token(job) in read_journal(journal_path))
+    status.update(state="stopped" if tally["stopped"] else "done", done=finished,
+                  stopped=tally["stopped"], updated_at=time.time(), eta_seconds=0,
+                  kept=seen["kept"], left=seen["left"], asked=seen["asked"])
+    write_status(status_path, status)
     print(json.dumps(tally), flush=True)
     return 0
 

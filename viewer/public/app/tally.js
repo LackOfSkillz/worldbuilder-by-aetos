@@ -164,6 +164,28 @@ export function buildTally(document_, worldName = "—", wanted = 0) {
 
   const foot = el("div", "wb-tally-foot", "");
   card.append(foot);
+
+  // Pause, resume and stop, under the dial while curation runs. Hidden until then: a
+  // generation run has nothing to pause - it is over in minutes.
+  const controls = el("div", "wb-tally-controls");
+  controls.hidden = true;
+  const control = (label, action) => {
+    const button = el("button", "wb-mini", label);
+    button.type = "button";
+    button.dataset.action = action;
+    controls.append(button);
+    return button;
+  };
+  const pauseButton = control("pause", "pause");
+  const resumeButton = control("resume", "resume");
+  const stopButton = control("stop", "stop");
+  card.insertBefore(controls, rows);
+  let curating = false;
+  let onControl = null;
+  controls.addEventListener("click", (event) => {
+    const action = event.target && event.target.dataset && event.target.dataset.action;
+    if (action && onControl) onControl(action);
+  });
   document_.body.appendChild(card);
 
   const landed = [];
@@ -183,6 +205,34 @@ export function buildTally(document_, worldName = "—", wanted = 0) {
     show: () => { card.style.display = ""; },
     hide: () => { card.style.display = "none"; },
     hidden: () => card.style.display === "none",
+
+    /// Show where the run's AI curation stands, from `/curate/`.
+    ///
+    /// Args:
+    ///   status: the server's answer - `state`, `done`, `total`, `kept`, `left`,
+    ///     `rate_per_min`, `eta_seconds`, `url`, and `stopped` or `error` when it ended badly.
+    ///   act: `(action) => void`, called with "pause", "resume" or "stop".
+    curation(status, act) {
+      onControl = act;
+      if (!curating) {
+        curating = true;
+        dial.phase("rooms", status.total || 0);
+        controls.hidden = false;
+      }
+      dial.reading(status.done || 0);
+      const state = status.state;
+      const active = state === "running" || state === "starting";
+      pauseButton.hidden = !active;
+      resumeButton.hidden = !["paused", "stopped", "interrupted", "failed"].includes(state);
+      stopButton.hidden = !(active || state === "paused");
+      const named = {
+        starting: "curating · finding the model", running: "curating rooms",
+        paused: "curation paused", stopped: "curation stopped",
+        interrupted: "curation interrupted", failed: "curation failed", done: "complete",
+      }[state] || state;
+      dial.stage(named, curationNote(status));
+      if (state === "done") controls.hidden = true;
+    },
 
     /// Fold one landed area into the counts.
     add(area) {
@@ -295,6 +345,36 @@ export function buildTally(document_, worldName = "—", wanted = 0) {
 }
 
 
+/// The line under the dial while curation runs: what was kept, how fast, how long, and which
+/// road to the model it is using - the last because at home and away it is a different one,
+/// and "why is it slow" is usually "because it is on Tailscale".
+export function curationNote(status) {
+  const parts = [];
+  const kept = status.kept || 0;
+  const left = status.left || 0;
+  if (kept || left) {
+    parts.push(`kept ${kept.toLocaleString()}`);
+    if (left) parts.push(`${left.toLocaleString()} kept the template`);
+  }
+  if (status.rate_per_min) parts.push(`${Math.round(status.rate_per_min)} rooms/min`);
+  const eta = status.eta_seconds;
+  if (eta && (status.state === "running" || status.state === "starting")) {
+    const hours = Math.floor(eta / 3600);
+    const minutes = Math.round((eta % 3600) / 60);
+    parts.push(hours ? `about ${hours}h ${minutes}m left` : `about ${minutes}m left`);
+  }
+  if (status.url) {
+    const host = (() => { try { return new URL(status.url).hostname; } catch { return ""; } })();
+    parts.push(host.startsWith("100.") ? "via Tailscale"
+      : host.startsWith("192.168.") ? "via the house LAN" : host ? `via ${host}` : "");
+  }
+  if (status.state === "interrupted") parts.push("the curator stopped with the studio - resume carries on");
+  if (status.state === "paused") parts.push("every finished room is kept; resume carries on");
+  if (status.stopped) parts.push(String(status.stopped));
+  if (status.error) parts.push(String(status.error));
+  return parts.filter(Boolean).join(" · ");
+}
+
 /// The dial: how far along the run is, what it is doing, and how long it has been doing it.
 ///
 /// **A number that does not move is indistinguishable from a program that has stopped.** A
@@ -397,7 +477,7 @@ function buildDial(document_, wanted = 0) {
   };
   swing(0);
 
-  const began = Date.now();
+  let began = Date.now();
   const tick = () => {
     const seconds = Math.round((Date.now() - began) / 1000);
     clock.textContent =
@@ -408,6 +488,20 @@ function buildDial(document_, wanted = 0) {
 
   return {
     node,
+    /// Start a second measure on the same dial: the needle rescaled to a new total, the
+    /// clock started again. Curation is a run of its own inside the run - hours to the
+    /// generator's minutes - and a needle already pinned at "complete" says nothing about it.
+    phase(unit, total) {
+      wanted = Number(total) || 0;
+      scale.textContent = wanted ? `of ${wanted.toLocaleString()} ${unit}` : unit;
+      reading.textContent = "0";
+      node.dataset.done = "";
+      node.dataset.phase = unit;
+      swing(0);
+      began = Date.now();
+      tick();
+      if (!ticking) ticking = window.setInterval(tick, 1000);
+    },
     /// Move the needle to a count of areas.
     reading(count) {
       reading.textContent = Number(count || 0).toLocaleString();

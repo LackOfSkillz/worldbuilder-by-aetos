@@ -152,9 +152,96 @@ export function buildGeneratePanel(parent, getViewer) {
   /// and scoring the ground take the better part of a minute between the click and the
   /// first pin, and until the card exists there is nothing on screen saying anything has
   /// happened at all.
+  // --- curation: the same run, carried on by the server -------------------------------
+  //
+  // **The server decides whether a run is curated, not this page.** It starts the curator
+  // the moment the generator exits, if curation is switched on - so a four-hundred-area run
+  // is curated even if nobody is watching when it finishes. This only watches, adopts the
+  // result, and forwards pause, resume and stop.
+  let curationTimer = null;
+  let curationRun = null;
+  const stopCurationWatch = () => {
+    if (curationTimer) clearTimeout(curationTimer);
+    curationTimer = null;
+  };
+  const forgetRun = () => {
+    try {
+      sessionStorage.removeItem(WATCHING_KEY);
+    } catch { /* nothing to clean up */ }
+  };
+
+  /// Take the curated world as this world: the room cards read it, and "save world" writes
+  /// it, so the new text is not left behind in `runs/` while the old text is saved.
+  const adoptCurated = async (runId) => {
+    try {
+      const response = await fetch(`/runs/${encodeURIComponent(runId)}/curate/curated.json`,
+                                    { cache: "no-store" });
+      const doc = await response.json();
+      window.dispatchEvent(new CustomEvent("wb-run-curated", { detail: { run: runId, doc } }));
+      window.dispatchEvent(new CustomEvent("wb-run-finished", {
+        detail: { areas: doc.areas || [], roads: doc.roads || [], ferries: doc.ferries || [],
+                  ferry_lines: doc.ferry_lines || [], level_bands: doc.level_bands || [] },
+      }));
+      note.textContent = "curated · save world keeps the new text";
+    } catch (error) {
+      note.textContent = `curated, but the curated world could not be read: ${error.message}`;
+    }
+  };
+
+  const watchCuration = (runId, tally) => {
+    stopCurationWatch();
+    curationRun = runId;
+    let waited = 0;
+    const act = async (action) => {
+      try {
+        await fetch(`/curate/?run=${encodeURIComponent(runId)}&action=${action}`,
+                    { method: "POST" });
+      } catch { /* the next poll says what actually happened */ }
+      stopCurationWatch();
+      poll();
+    };
+    const poll = async () => {
+      if (curationRun !== runId) return;
+      let status;
+      try {
+        const response = await fetch(`/curate/?run=${encodeURIComponent(runId)}`,
+                                     { cache: "no-store" });
+        status = await response.json();
+      } catch {
+        curationTimer = setTimeout(poll, 5000);
+        return;
+      }
+      if (status.state === "none") {
+        // The server starts curation as the generator exits. A run with curation switched
+        // off never gets past here, and after a few looks the page stops asking.
+        waited += 1;
+        if (waited < 5) curationTimer = setTimeout(poll, 1500);
+        else forgetRun();
+        return;
+      }
+      if (tally) tally.curation(status, act);
+      if (status.state === "running" || status.state === "starting") {
+        curationTimer = setTimeout(poll, 2000);
+        return;
+      }
+      if (status.state === "done") {
+        await adoptCurated(runId);
+        forgetRun();
+        return;
+      }
+      // Paused, stopped, interrupted or failed: the dial says which and the buttons offer
+      // what can be done about it. Still looked at, slowly - another tab, or the command
+      // line, may resume it, and a page that stopped asking would go on saying "paused".
+      curationTimer = setTimeout(poll, 15000);
+    };
+    poll();
+  };
+
   const follow = (runId, wanted, worldName) => {
     const viewer = getViewer();
     if (!viewer || !window.Cesium) return null;
+    stopCurationWatch();
+    let curationWatched = false;
     // **The previous run's pins come off before this one's go on.** Each run adds its own
     // data source and nothing removed the last, so running three times stacked three worlds
     // on one globe - the same good sites picked repeatedly, drawn as clumps of overlapping
@@ -191,9 +278,12 @@ export function buildGeneratePanel(parent, getViewer) {
         note.textContent = `done: ${drawn} areas, every quota filled`;
       }
       go.textContent = "populate world";
-      try {
-        sessionStorage.removeItem(WATCHING_KEY);
-      } catch { /* nothing to clean up */ }
+      // Generation is over; curation, if it is on, is only starting. The run stays
+      // remembered until curation settles, so a reload mid-curation finds its way back.
+      if (!curationWatched) {
+        curationWatched = true;
+        watchCuration(runId, watching && watching.tally);
+      }
     }, { worldName, wanted });
   };
 
@@ -246,6 +336,8 @@ export function buildGeneratePanel(parent, getViewer) {
       // button than the one somebody pressed.
       watching.stop();
       watching = null;
+      stopCurationWatch();
+      curationRun = null;
       go.textContent = "populate world";
       note.textContent = "stopped watching; the run carries on";
       return;

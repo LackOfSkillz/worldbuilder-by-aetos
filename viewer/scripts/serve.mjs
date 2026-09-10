@@ -7,7 +7,7 @@ import { stat, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { handleCurator } from "./curator.mjs";
+import { curateIfWanted, handleCurator } from "./curator.mjs";
 
 // ---------------------------------------------------------------------------------------
 // Caching: a VALIDATOR, not a lifetime.
@@ -184,12 +184,18 @@ const CSP = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+/// What the curator needs from this server: where runs live, the repository root it is run
+/// from, and which Python has the engine in it.
+function curatorContext(url) {
+  return { url, runsDir, root: join(worldsDir, ".."), python: pythonForGenerator };
+}
+
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   let raw = decodeURIComponent(url.pathname);
 
-  // The AI curator's settings and connection test live in their own module.
-  if (await handleCurator(req, res, raw)) return;
+  // The AI curator's settings, connection test and curation jobs live in their own module.
+  if (await handleCurator(req, res, raw, curatorContext(url))) return;
 
   // `/worlds/` lists what is on disk; `/worlds/<name>.json` serves one. The listing carries the
   // name and the area count out of each file, so the panel can label a row without fetching
@@ -316,6 +322,7 @@ createServer(async (req, res) => {
       const child = spawn(python, args, { cwd: join(worldsDir, ".."), windowsHide: true });
       let out = "";
       let answered = false;
+      let runId = null;
       const fail = (why) => {
         if (answered) return;
         answered = true;
@@ -330,6 +337,7 @@ createServer(async (req, res) => {
         try {
           const first = JSON.parse(line);
           if (!first.run_id) throw new Error("no run_id");
+          runId = String(first.run_id);
           answered = true;
           console.log(`200 POST /generate/ -> ${first.run_id} (${count} areas of ${world})`);
           res.writeHead(200, { "content-type": "application/json" })
@@ -344,6 +352,14 @@ createServer(async (req, res) => {
       child.on("close", (code) => {
         if (code !== 0) console.log(`generator exited ${code}: ${errors.slice(-400)}`);
         if (code !== 0) fail(`the generator exited ${code}: ${errors.slice(-300)}`);
+        // **The same run carries on into curation, when curation is switched on.** Decided
+        // here, by the server, rather than by the page: the page may be closed by the time
+        // a four-hundred-area run finishes, and the curation should start regardless.
+        if (code === 0 && runId) {
+          curateIfWanted(runId, curatorContext()).catch((error) => {
+            console.log(`curation of ${runId} did not start: ${error.message}`);
+          });
+        }
       });
     });
     return;
