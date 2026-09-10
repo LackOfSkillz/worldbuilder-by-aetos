@@ -140,6 +140,23 @@ impl<'a> Reader<'a> {
     fn boolean(&mut self) -> Option<bool> {
         word_to_bool(self.word()?)
     }
+
+    fn remaining(&self) -> usize {
+        self.words.len() - self.pos
+    }
+}
+
+/// Ruling 1 (fix round 1): before trusting a decoded count to size a `Vec::with_capacity` or
+/// drive a loop, check it against the words actually left in the record. `min_words` is the
+/// fewest words one item of that kind can occupy (a body's outline, a reach's points, etc. add
+/// more on top, but every item needs at least this many); `count * min_words` overflowing or
+/// exceeding what remains means the count is bogus, so the whole record is refused instead of
+/// allocating on it.
+fn count_fits(count: usize, min_words: usize, remaining: usize) -> bool {
+    match count.checked_mul(min_words) {
+        Some(need) => need <= remaining,
+        None => false,
+    }
 }
 
 pub fn encode(record: &HydroRecord) -> Vec<f64> {
@@ -249,6 +266,11 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         bifurcation_max: r.word()?,
     };
 
+    // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
+    // anchor_lat, anchor_lon, outline_len -- 12 words, plus its outline.
+    if !count_fits(body_count, 12, r.remaining()) {
+        return None;
+    }
     let mut bodies = Vec::with_capacity(body_count);
     for _ in 0..body_count {
         let id = r.u32()?;
@@ -263,6 +285,10 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let anchor_lat = r.word()?;
         let anchor_lon = r.word()?;
         let outline_len = r.u32()? as usize;
+        // Outline pair: lat, lon -- 2 words per point.
+        if !count_fits(outline_len, 2, r.remaining()) {
+            return None;
+        }
         let mut outline = Vec::with_capacity(outline_len);
         for _ in 0..outline_len {
             let lat = r.word()?;
@@ -284,6 +310,11 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         });
     }
 
+    // Reach: id, class, order, downstream_kind, downstream_id, point_count -- 6 words, plus its
+    // points.
+    if !count_fits(reach_count, 6, r.remaining()) {
+        return None;
+    }
     let mut reaches = Vec::with_capacity(reach_count);
     for _ in 0..reach_count {
         let id = r.u32()?;
@@ -293,6 +324,10 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let downstream_id = r.word()?;
         let downstream = words_to_downstream(downstream_kind, downstream_id)?;
         let point_count = r.u32()? as usize;
+        // Reach point: lat, lon, bed_m, width_m, depth_m, flow_m2 -- 6 words per point.
+        if !count_fits(point_count, 6, r.remaining()) {
+            return None;
+        }
         let mut points = Vec::with_capacity(point_count);
         for _ in 0..point_count {
             let lat_deg = r.word()?;
@@ -306,9 +341,17 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         reaches.push(ReachLine { id, class, order, downstream, points });
     }
 
+    // Notch: point_count -- 1 word, plus its points.
+    if !count_fits(notch_count, 1, r.remaining()) {
+        return None;
+    }
     let mut notches = Vec::with_capacity(notch_count);
     for _ in 0..notch_count {
         let point_count = r.u32()? as usize;
+        // Notch point: lat, lon, bed_m -- 3 words per point.
+        if !count_fits(point_count, 3, r.remaining()) {
+            return None;
+        }
         let mut points = Vec::with_capacity(point_count);
         for _ in 0..point_count {
             let lat = r.word()?;
@@ -319,6 +362,10 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         notches.push(NotchLine { points });
     }
 
+    // Fall: reach, lat, lon, height_m -- 4 words.
+    if !count_fits(fall_count, 4, r.remaining()) {
+        return None;
+    }
     let mut falls = Vec::with_capacity(fall_count);
     for _ in 0..fall_count {
         let reach = r.u32()?;
@@ -431,6 +478,17 @@ mod tests {
         let mut words = encode(&sample());
         words[0] = SCHEMA + 1.0;
         assert_eq!(decode(&words), None);
+    }
+
+    #[test]
+    fn decode_refuses_absurd_counts_without_allocating() {
+        let mut words = encode(&sample());
+        words[1] = 3.0e9; // body_count, absurd
+        assert_eq!(decode(&words), None, "absurd body_count must be refused, not allocated");
+
+        let mut words = encode(&sample());
+        words[2] = 4.0e9; // reach_count, absurd
+        assert_eq!(decode(&words), None, "absurd reach_count must be refused, not allocated");
     }
 
     #[test]

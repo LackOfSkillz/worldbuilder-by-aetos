@@ -248,6 +248,8 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         };
         let (anchor_lat, anchor_lon) = graph.positions[hollow.floor as usize].to_latlon();
         bodies.push(Body {
+            // body_id_of_hollow[i] was just set to Some(..) above, for every i whose fate is
+            // Keep -- this loop only reaches here when hollow.fate == Fate::Keep.
             id: body_id_of_hollow[i].expect("kept hollow has a body id"),
             kind,
             fresh: !closed,
@@ -266,6 +268,8 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
     for (id, reach) in reaches.iter().enumerate() {
         let downstream = match reach.downstream {
             Downstream::Body(hollow_index) => {
+                // route() only ever writes lake_of (and so extract's Downstream::Body(hollow))
+                // for a hollow whose fate is Keep, so every lake member's hollow has a body id.
                 let body_id = body_id_of_hollow[hollow_index as usize]
                     .expect("a lake reach's target hollow is always kept");
                 Downstream::Body(body_id)
@@ -276,11 +280,17 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         let mut points = Vec::with_capacity(reach.nodes.len());
         for (idx, &node) in reach.nodes.iter().enumerate() {
             let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-            let q = flow[node as usize];
-            let w = width_m(q, params);
-            let d = depth_m(q, params);
             let is_terminal = idx == last_index
                 && (graph.ocean[node as usize] || routing.lake_of[node as usize] != NO_LAKE);
+            // Ruling 2 (fix round 1): a terminal ocean or lake node's own accumulated flow is
+            // the ocean/lake's total inflow (everything that drains there), not this channel's
+            // -- the same reason reaches::extract substitutes the second-to-last node's flow
+            // for classification. Reuse that same q here so width/depth/flow_m2 stay the
+            // channel's own values all the way to the last point; bed_m keeps the terminal
+            // node's own surface, unchanged.
+            let q = if is_terminal && idx > 0 { flow[reach.nodes[idx - 1] as usize] } else { flow[node as usize] };
+            let w = width_m(q, params);
+            let d = depth_m(q, params);
             let bed_m = if is_terminal { routing.surface_m[node as usize] } else { routing.surface_m[node as usize] - d };
             points.push(ReachPoint { lat_deg, lon_deg, bed_m, width_m: w, depth_m: d, flow_m2: q });
         }
@@ -451,6 +461,26 @@ mod bake_tests {
         let mut p = params();
         p.total_nodes = 1;
         assert!(matches!(bake(&world(), &p), Err(HydroError::Params(_))));
+    }
+
+    #[test]
+    fn a_reach_keeps_its_width_to_the_sea() {
+        let record = bake(&world(), &params()).expect("bake");
+        for reach in &record.reaches {
+            let reaches_sea_or_lake = matches!(reach.downstream, Downstream::Ocean | Downstream::Body(_));
+            if !reaches_sea_or_lake {
+                continue;
+            }
+            let n = reach.points.len();
+            if n < 2 {
+                continue;
+            }
+            let last = &reach.points[n - 1];
+            let prev = &reach.points[n - 2];
+            assert!(last.width_m >= prev.width_m,
+                    "reach {} last width {} < previous width {}", reach.id, last.width_m, prev.width_m);
+            assert!(last.width_m > 0.0, "reach {} terminal width is zero", reach.id);
+        }
     }
 
     /// Mutation guard for the connectivity property: a hand-broken reach list must fail it.
