@@ -1,10 +1,10 @@
 worldbuilder_engine.wasm
-bytes: 248057
-exports (27): memory, wb_alloc, wb_bottom_at, wb_climate_calibration, wb_climate_tile_f32, wb_coast_check, wb_coast_preset, wb_dealloc, wb_elevation_m, wb_erosion_run, wb_fill_tile_f32, wb_generator_version, wb_gully_check, wb_gully_preset, wb_relief_check, wb_relief_preset, wb_structural_m, wb_tectonic_check, wb_tectonic_preset, wb_water_run, wb_world_count, wb_world_free, wb_world_new, wb_world_new_coast, wb_world_new_gully, wb_world_new_relief, wb_world_new_tectonic
+bytes: 317779
+exports (31): memory, wb_alloc, wb_bottom_at, wb_climate_calibration, wb_climate_tile_f32, wb_coast_check, wb_coast_preset, wb_dealloc, wb_elevation_m, wb_erosion_run, wb_fill_tile_f32, wb_generator_version, wb_gully_check, wb_gully_preset, wb_hydro_bake, wb_hydro_copy, wb_hydro_free, wb_hydro_len, wb_relief_check, wb_relief_preset, wb_structural_m, wb_tectonic_check, wb_tectonic_preset, wb_water_run, wb_world_count, wb_world_free, wb_world_new, wb_world_new_coast, wb_world_new_gully, wb_world_new_relief, wb_world_new_tectonic
 imports: 0
-built: 2026-09-07T13:25:57.409Z
-artifact-sha256: b52b51ad6f1b2faf07eee0a3b237333a18919da92b922e2b349589a1e35f1f4f
-source-fingerprint: 29cbf9dbbcaf850ff41f1ea17b05d556c23dc27c485a21f1bbee1328ad7fb2f5
+built: 2026-09-10T22:25:45.016Z
+artifact-sha256: ef0fa694bed96d9e7169817d57d7b0951316344c6c23a41079c50bfd6726dec4
+source-fingerprint: c7dcf67745f99ca4ed1af6d7e1b58cf301bdcf55253eee9fa6b9818c2783e27e
 toolchain: rustc 1.98.0 88d9e12ae178fab0fb5cc050a94da85685d449ea x86_64-pc-windows-msvc
 build: cargo build -p worldbuilder-engine --release --target wasm32-unknown-unknown --no-default-features --features wasm
-fingerprint-inputs: 41
+fingerprint-inputs: 51

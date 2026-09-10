@@ -103,6 +103,17 @@ export const WB_CLIMATE_CANONICAL_SAMPLES = 0xffffffff;
 /// uninterruptible call, per sample, and a tile is `width * height` samples.
 export const WB_MAX_CLIMATE_MARCH_SAMPLES = 1024;
 
+/// f64 per `wb_hydro_bake` params record before the forced-outlet pairs, and **the order is
+/// the ABI**: `totalNodes`, `wetnessNodes`, `keepDepthM`, `keepAreaM2`, `pondMaxAreaM2`,
+/// `streamFlowM2`, `riverFlowM2`, `greatFlowM2`, `notchFallM`, `evaporationFactor`,
+/// `saltFlatShare`, `forcedCount`, followed by `forcedCount` pairs of
+/// `[latitudeDeg, longitudeDeg]`. Mirrored from `WB_HYDRO_PARAMS_STRIDE`.
+export const WB_HYDRO_PARAMS_STRIDE = 12;
+
+/// The export's own ceiling on `totalNodes` and `wetnessNodes`, mirrored from
+/// `WB_MAX_HYDRO_NODES`.
+export const WB_MAX_HYDRO_NODES = 4000000;
+
 export class Engine {
   constructor(instance) {
     this.instance = instance;
@@ -137,6 +148,7 @@ export class Engine {
       "wb_world_new_gully", "wb_gully_preset", "wb_gully_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32", "wb_water_run",
+      "wb_hydro_bake", "wb_hydro_len", "wb_hydro_copy", "wb_hydro_free",
     ]) {
       if (typeof engine.exports[name] !== "function") {
         throw new Error(`engine wasm is missing export ${name}`);
@@ -678,6 +690,95 @@ export class Engine {
       if (bodyPtr !== 0) this.exports.wb_dealloc(bodyPtr, bodyBytes);
       this.exports.wb_dealloc(scalarPtr, scalarBytes);
     }
+  }
+
+  /// Bake `handle`'s hydrology and hand back the encoded record as a **copy**, a
+  /// `Float64Array` on the JS heap.
+  ///
+  /// `wb_hydro_bake` cannot be sized in one call the way `wb_water_run` is, because the
+  /// record's own length depends on how many hollows, reaches, notches and falls the bake
+  /// finds -- so this is measure-then-copy: bake and hold (`wb_hydro_bake`), ask the held
+  /// record's length (`wb_hydro_len`), copy it out (`wb_hydro_copy`), then free the held
+  /// copy (`wb_hydro_free`) whether the copy succeeded or not.
+  ///
+  /// `params` takes camelCase fields mirroring `WB_HYDRO_PARAMS_STRIDE`'s documented order:
+  /// `totalNodes`, `wetnessNodes`, `keepDepthM`, `keepAreaM2`, `pondMaxAreaM2`,
+  /// `streamFlowM2`, `riverFlowM2`, `greatFlowM2`, `notchFallM`, `evaporationFactor`,
+  /// `saltFlatShare`, and `forcedOutlets` -- an array of `{ latitudeDeg, longitudeDeg }`,
+  /// defaulting to none.
+  hydroBake({ handle, params }) {
+    const forced = params.forcedOutlets ?? [];
+    const stride = WB_HYDRO_PARAMS_STRIDE + 2 * forced.length;
+    const paramsBytes = stride * 8;
+    const paramsPtr = this.exports.wb_alloc(paramsBytes);
+    if (paramsPtr === 0) throw new Error("wb_alloc refused the hydro params buffer");
+    const idBytes = 4;
+    const idPtr = this.exports.wb_alloc(idBytes);
+    if (idPtr === 0) {
+      this.exports.wb_dealloc(paramsPtr, paramsBytes);
+      throw new Error("wb_alloc refused the hydro id buffer");
+    }
+    let id = 0;
+    let wordsPtr = 0;
+    let wordsBytes = 0;
+    try {
+      const words = new Float64Array(this.memory.buffer, paramsPtr, stride);
+      words.set([
+        params.totalNodes, params.wetnessNodes, params.keepDepthM, params.keepAreaM2,
+        params.pondMaxAreaM2, params.streamFlowM2, params.riverFlowM2, params.greatFlowM2,
+        params.notchFallM, params.evaporationFactor, params.saltFlatShare, forced.length,
+      ]);
+      forced.forEach((outlet, i) => {
+        words.set([outlet.latitudeDeg, outlet.longitudeDeg], WB_HYDRO_PARAMS_STRIDE + 2 * i);
+      });
+      const status = this.exports.wb_hydro_bake(handle, paramsPtr, stride, idPtr) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_hydro_bake returned ${statusName(status)}`);
+      }
+      id = new Uint32Array(this.memory.buffer, idPtr, 1)[0] >>> 0;
+      const len = this.exports.wb_hydro_len(id) >>> 0;
+      wordsBytes = len * 8;
+      wordsPtr = this.exports.wb_alloc(wordsBytes);
+      if (wordsPtr === 0) throw new Error(`wb_alloc refused ${wordsBytes} bytes for a hydro record`);
+      const copyStatus = this.exports.wb_hydro_copy(id, wordsPtr, len) >>> 0;
+      if (copyStatus !== WB_OK) {
+        throw new Error(`wb_hydro_copy returned ${statusName(copyStatus)}`);
+      }
+      // The view is created after the allocation and copied immediately, before this
+      // function's own dealloc calls can detach the buffer -- the module doc's rule 1.
+      return new Float64Array(this.memory.buffer, wordsPtr, len).slice();
+    } finally {
+      if (id !== 0) this.exports.wb_hydro_free(id);
+      if (wordsPtr !== 0) this.exports.wb_dealloc(wordsPtr, wordsBytes);
+      this.exports.wb_dealloc(idPtr, idBytes);
+      this.exports.wb_dealloc(paramsPtr, paramsBytes);
+    }
+  }
+
+  /// Read a `hydroBake` record's 17-word header into a plain object. The header table, in
+  /// order: `schema`, `bodies`, `reaches`, `notches`, `falls`, `nodes`, `landNodes`,
+  /// `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`, `great`, `maxOrder`,
+  /// `bifurcationMin`, `bifurcationMax`.
+  hydroSummary(words) {
+    return {
+      schema: words[0],
+      bodies: words[1],
+      reaches: words[2],
+      notches: words[3],
+      falls: words[4],
+      nodes: words[5],
+      landNodes: words[6],
+      hollows: words[7],
+      kept: words[8],
+      notched: words[9],
+      closed: words[10],
+      streams: words[11],
+      rivers: words[12],
+      great: words[13],
+      maxOrder: words[14],
+      bifurcationMin: words[15],
+      bifurcationMax: words[16],
+    };
   }
 }
 

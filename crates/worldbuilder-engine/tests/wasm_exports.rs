@@ -5343,3 +5343,50 @@ fn the_land_sample_count_is_what_tells_a_worthless_calibration_from_a_real_one()
     assert_eq!(wb_world_free(plain), WB_OK);
     assert_eq!(wb_world_free(ocean), WB_OK);
 }
+
+// ============================================================ the hydrology channel
+//
+// Task 10: hold a hydrology bake behind the same handle-table discipline `WORLDS` already
+// keeps, so a browser host can free the record it copied without waiting on GC. Same shape
+// as every other channel in this file: a flat f64 params record in a documented order, and a
+// status-refuses-entire constructor rather than one that admits a record with a field
+// silently adjusted.
+
+fn hydro_params(total: u32) -> Vec<f64> {
+    vec![total as f64, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0]
+}
+
+#[test]
+fn a_hydro_bake_is_held_copied_and_freed() {
+    let world = plain_world();
+    let params = hydro_params(12_000);
+    let mut id: u32 = 0;
+    let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: a 12-word buffer
+    assert_eq!(status, WB_OK);
+    let len = wb_hydro_len(id);
+    assert!(len >= 17, "at least the header");
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
+    assert_eq!(words[0], 1.0, "schema 1");
+    let mut short = vec![0.0f64; len as usize - 1];
+    assert_eq!(wb_hydro_copy(id, short.as_mut_ptr(), len - 1), WB_ERR_BUFFER);
+    assert_eq!(wb_hydro_free(id), WB_OK);
+    assert_eq!(wb_hydro_len(id), 0);
+    assert_eq!(wb_hydro_free(id), WB_ERR_HANDLE);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_hydro_bake_refuses_bad_params_without_writing_an_id() {
+    let world = plain_world();
+    let mut id: u32 = 77;
+    let mut params = hydro_params(12_000);
+    params[6] = 1.0; // river below stream
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
+    assert_eq!(id, 77);
+    let mut params = hydro_params(12_000);
+    params[11] = 1.0; // one forced outlet promised, none given
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
+    assert_eq!(wb_hydro_bake(9_999, hydro_params(12_000).as_ptr(), 12, &mut id), WB_ERR_HANDLE);
+    wb_world_free(world);
+}
