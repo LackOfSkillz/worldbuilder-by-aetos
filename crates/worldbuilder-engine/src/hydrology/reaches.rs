@@ -235,6 +235,85 @@ mod tests {
         assert!(width_m(params.great_flow_m2, &params) > width_m(params.river_flow_m2, &params));
     }
 
+    /// Closes a coverage gap: `bifurcation_ratios` must count a Horton stream once even when
+    /// it is split across more than one `Reach` (a same-order reach draining into another
+    /// same-order reach, with a single input, is a continuation of the reach upstream of it,
+    /// not a second stream).
+    ///
+    /// Twelve order-1 sources pair up into 6 order-2 junctions (ids 12..=17), each fed by two
+    /// order-1 reaches (giving each an order of 2, since `at_top >= 2`). Five of the junctions
+    /// (12..=16) drain straight to the ocean. The sixth (17) drains into a seventh order-2
+    /// reach (id 18) that has only J17 as an input -- `at_top == 1` there, so `strahler` keeps
+    /// its order at 2 rather than promoting it to 3, exactly the "continues" case
+    /// `bifurcation_ratios` exists to fold back into its upstream reach's count.
+    ///
+    /// Horton's count of order-2 streams is therefore 6, not 7: reach 18 does not start a new
+    /// order-2 stream, it continues J17's. `counts[order]` in `bifurcation_ratios` implements
+    /// exactly this by never incrementing for a reach whose downstream neighbour marked it as
+    /// a continuation -- so N2 = 6, and the ratio is 12.0 / 6.0 = 2.0.
+    #[test]
+    fn bifurcation_ratios_count_horton_streams_on_a_hand_network() {
+        let mut reaches = Vec::new();
+        // 12 order-1 sources (ids 0..=11), pairing into junctions 12..=17.
+        for pair in 0..6u32 {
+            let junction = 12 + pair;
+            reaches.push(Reach {
+                nodes: vec![2 * pair, 100 + pair],
+                class: ReachClass::Stream,
+                order: 0,
+                downstream: Downstream::Reach(junction),
+            });
+            reaches.push(Reach {
+                nodes: vec![2 * pair + 1, 100 + pair],
+                class: ReachClass::Stream,
+                order: 0,
+                downstream: Downstream::Reach(junction),
+            });
+        }
+        // Junctions 12..=16 drain straight to the ocean.
+        for junction in 12..17u32 {
+            reaches.push(Reach {
+                nodes: vec![200 + junction, 201 + junction],
+                class: ReachClass::Stream,
+                order: 0,
+                downstream: Downstream::Ocean,
+            });
+        }
+        // Junction 17 continues into reach 18: a single input, same order once ordered.
+        reaches.push(Reach {
+            nodes: vec![217, 218],
+            class: ReachClass::Stream,
+            order: 0,
+            downstream: Downstream::Reach(18),
+        });
+        reaches.push(Reach {
+            nodes: vec![218, 219],
+            class: ReachClass::Stream,
+            order: 0,
+            downstream: Downstream::Ocean,
+        });
+
+        assert_eq!(reaches.len(), 19);
+        let ordered = strahler(reaches);
+        let order_of = |id: usize| ordered[id].order;
+        for id in 0..12 {
+            assert_eq!(order_of(id), 1, "reach {id} is an order-1 source");
+        }
+        for id in 12..19 {
+            assert_eq!(order_of(id), 2, "reach {id} is order 2 (never promoted past a single input)");
+        }
+
+        assert_eq!(bifurcation_ratios(&ordered), vec![12.0 / 6.0]);
+
+        // Fewer than 10 order-1 streams: no ratio is reported at all.
+        let small = vec![
+            Reach { nodes: vec![0, 1], class: ReachClass::Stream, order: 0, downstream: Downstream::Ocean },
+            Reach { nodes: vec![2, 3], class: ReachClass::Stream, order: 0, downstream: Downstream::Ocean },
+        ];
+        let small = strahler(small);
+        assert!(bifurcation_ratios(&small).is_empty(), "fewer than 10 order-1 streams reports nothing");
+    }
+
     #[test]
     fn a_hand_network_has_the_expected_strahler_orders() {
         // Two order-1 sources join (order 2), a third order-1 joins that (still 2).
