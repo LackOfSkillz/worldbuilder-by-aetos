@@ -98,6 +98,9 @@ def build(caller=None, data=DATA):
         else:
             room.key = record["key"]
             reused += 1
+        # The same handle the batch-command file digs every room under, so a world built
+        # either way answers to `tel wb_0020227`, and the two formats build one world.
+        room.aliases.add("wb_%07d" % int(record["id"]))
         room.db.desc = record.get("desc") or ""
         for field, value in (("wb_area", record.get("area")),
                              ("wb_latitude", record.get("latitude_deg")),
@@ -137,11 +140,15 @@ def build(caller=None, data=DATA):
             mark = "%s:folk:%s" % (record["id"], place)
             body = built.get(mark)
             if body is None:
-                body = create_object(FOLK_TYPECLASS, key=person["name"], location=room)
+                # Home is their own room, as `create/drop` makes it in the batch-command
+                # file: a keeper sent home should go back behind the counter, not to Limbo.
+                body = create_object(FOLK_TYPECLASS, key=person["name"], location=room,
+                                     home=room)
                 body.attributes.add(WB_ID, mark)
                 built[mark] = body
                 folk += 1
             body.key = person["name"]
+            body.aliases.add("wbp_%07d_%02d" % (int(record["id"]), place))
             body.attributes.add("wb_role", person.get("role") or "folk")
             wares = wares_of.get(record["id"]) if person.get("role") == "keeper" else None
             if wares:
@@ -182,6 +189,94 @@ def build(caller=None, data=DATA):
     return {{"built": made, "updated": reused, "exits": exits_made,
             "shops": counters, "people": folk, "retired": retired}}
 '''
+
+
+#: The batch-code wrapper: the direct builder, reachable from Evennia's `batchcode` command.
+#:
+#: **One builder, two doors.** Some games run world scripts with `@py`, some with the batch-
+#: code processor, and a dev receiving this should not have to translate between them. This
+#: adds no logic of its own - it calls the same `build` - so the two cannot drift apart.
+BATCHCODE = '''"""Build this world with Evennia's batch-code processor.
+
+    batchcode batch_{name}
+
+The same builder as `@py from world.build_{name} import build; build(self)`, run through the
+batch-code processor instead. Safe to run again: rooms are found by their wb_id and updated,
+never doubled.
+"""
+
+#HEADER
+
+from world.build_{name} import build
+
+#CODE
+
+build(caller)
+'''
+
+#: Instructions for whoever receives the files. Written for another Evennia developer, who
+#: has none of this project's context and should not need any.
+README = """# {name} - a generated world for Evennia
+
+{rooms} rooms, {exits} exits and {people} people across {areas} areas and roads.
+
+## Two ways to build it
+
+| | `{name}.ev` - batch commands | `build_{name}.py` - direct |
+|---|---|---|
+| How | ordinary builder commands, one at a time | writes the database directly |
+| Run | `batchcommands {name}` | `batchcode batch_{name}` or `@py from world.build_{name} import build; build(self)` |
+| Speed | slow - {commands} commands, each echoed | fast |
+| Run twice | **builds a second world** | updates in place; never doubles |
+| Readable | yes - open it and see every command | the data is `{name}_world.json` |
+
+**Use the direct builder** unless you specifically want to read or edit the commands before
+they run. The batch-command file is there for the dev who wants to see exactly what goes into
+their game; it builds the same world.
+
+## Install
+
+Copy these files into your game's `world/` folder:
+
+{files}
+
+## Requirements
+
+- A stock Evennia game (built and tested on Evennia 6.1). The files use the default
+  typeclasses: `typeclasses.rooms.Room`, `typeclasses.exits.Exit` and
+  `typeclasses.characters.Character` for the people. A game with its own typeclasses changes
+  the constants at the top of `build_{name}.py`, or the paths in `{name}.ev`.
+- Permission, which differs by door:
+  - `batchcommands {name}` - **Developer** is enough.
+  - `@py from world.build_{name} import build; build(self)` - **Developer** is enough.
+  - `batchcode batch_{name}` - **superuser only**. Evennia locks `batchcode` to superusers
+    because it runs arbitrary Python; a Developer does not even see the command. Use `@py`
+    instead if you are not the superuser - it runs the same builder.
+- Nothing from the generator. These files are the whole world.
+
+## What it builds
+
+- Every room, with its description; tagged with its area (category `area`) and purpose
+  (category `wb_purpose`), and carrying `wb_id` plus its latitude, longitude and elevation.
+- Every exit. Shops are rooms entered by a word (`go tavern`), left by the same word or `out`.
+- The people: a keeper in every shop, holding what it sells as `stock`; townsfolk and quarry.
+- An alias on every room, `wb_` and its id: `tel wb_{sample}` goes straight there.
+
+## What it does not do
+
+- **Join to your existing rooms.** It builds a separate world. Link it with `open` from
+  wherever you want players to arrive.
+- **Set locks beyond Evennia's defaults.** Anything built by `batchcommands` is owned by the
+  builder who ran it, as dug rooms always are; the direct builder uses the typeclass defaults.
+
+## Removing it
+
+Everything this builds carries `wb_id`. To take it all out again:
+
+    py from evennia.objects.models import ObjectDB; [o.delete() for o in list(ObjectDB.objects.get_by_attribute(key="wb_id"))]
+
+Deleting a room deletes the exits in and out of it.
+"""
 
 
 def flatten(document):
@@ -310,23 +405,38 @@ def adopt_curated(document):
     return adopted, counts
 
 
-def write(document, directory, name="aetosia", curated=False):
+#: Every output this can write. `direct` is the data file and its builder; `batchcode` wraps
+#: that builder for Evennia's batch-code processor; `ev` is the batch-command file.
+FORMATS = ("direct", "batchcode", "ev")
+
+
+def write(document, directory, name="aetosia", curated=False, formats=FORMATS, bundle=False):
     """
-    Write the data file and the batchcode that builds it.
+    Write the world in every format asked for, with instructions, and optionally a zip.
 
     Args:
         document (dict): A worldfile.
-        directory (str): Where to write - a game's `world/` directory in practice.
-        name (str): The base name for both files.
+        directory (str): Where to write - a game's `world/` directory, or a folder to hand on.
+        name (str): The base name for every file.
         curated (bool): Take the curator's text where it passes the laws (`adopt_curated`).
+        formats (iterable): Any of `FORMATS`. `batchcode` brings `direct` with it, since it
+            calls the same builder.
+        bundle (bool): Also write `<name>_export.zip` holding every file, to hand to someone.
 
     Returns:
-        report (dict): The two paths, the counts, and any `problems` found.
+        report (dict): Paths, counts, and any `problems` found.
 
     Notes:
         Nothing is written when the check fails, because a game asked to build a broken
         world builds most of it and then stops in the middle.
     """
+    formats = set(formats)
+    unknown = formats - set(FORMATS)
+    if unknown:
+        raise ValueError("unknown format(s): %s; choose from %s"
+                         % (", ".join(sorted(unknown)), ", ".join(FORMATS)))
+    if "batchcode" in formats:
+        formats.add("direct")
     adoption = None
     if curated:
         document, adoption = adopt_curated(document)
@@ -336,21 +446,59 @@ def write(document, directory, name="aetosia", curated=False):
         return {"written": False, "problems": problems,
                 "rooms": len(world["rooms"]), "exits": len(world["exits"])}
 
-    os.makedirs(directory, exist_ok=True)
-    data_name = "%s_world.json" % name
-    code_name = "build_%s.py" % name
-    data_path = os.path.join(directory, data_name)
-    code_path = os.path.join(directory, code_name)
+    from evennia_roundtrip import batchfile
 
-    with open(data_path, "w", encoding="utf-8") as handle:
-        json.dump(world, handle, separators=(",", ":"))
-    with open(code_path, "w", encoding="utf-8") as handle:
-        handle.write(BUILDER.format(module="build_%s" % name, data=data_name,
-                                    wb_id=WB_ID))
-    report = {"written": True, "problems": [], "data": data_path, "code": code_path,
+    os.makedirs(directory, exist_ok=True)
+    written = []
+
+    def put(filename, text):
+        path = os.path.join(directory, filename)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        written.append(path)
+        return path
+
+    report = {"written": True, "problems": [], "files": written,
               "rooms": len(world["rooms"]), "exits": len(world["exits"]),
-              "areas": len(world["areas"]),
-              "command": "@py from world.build_%s import build; build(self)" % name}
+              "areas": len(world["areas"]), "commands": {}}
+
+    if "direct" in formats:
+        data_name = "%s_world.json" % name
+        report["data"] = put(data_name, json.dumps(world, separators=(",", ":")))
+        report["code"] = put("build_%s.py" % name,
+                             BUILDER.format(module="build_%s" % name, data=data_name,
+                                            wb_id=WB_ID))
+        report["commands"]["direct"] = "@py from world.build_%s import build; build(self)" % name
+        report["command"] = report["commands"]["direct"]
+    if "batchcode" in formats:
+        report["batchcode"] = put("batch_%s.py" % name, BATCHCODE.format(name=name))
+        report["commands"]["batchcode"] = "batchcode batch_%s" % name
+    ev_counts = {}
+    if "ev" in formats:
+        ev_path = os.path.join(directory, "%s.ev" % name)
+        ev_counts = batchfile.write(world, ev_path, name)
+        written.append(ev_path)
+        report["ev"] = ev_path
+        report["ev_commands"] = ev_counts["commands"]
+        report["ev_renamed_by_py"] = ev_counts["renamed_by_py"]
+        report["commands"]["ev"] = "batchcommands %s" % name
+
+    people = sum(len(r.get("people") or ()) for r in world["rooms"])
+    sample = world["rooms"][0]["id"] if world["rooms"] else 0
+    report["readme"] = put("%s_README.md" % name, README.format(
+        name=name, rooms=len(world["rooms"]), exits=len(world["exits"]), people=people,
+        areas=len(world["areas"]), commands=ev_counts.get("commands", "tens of thousands of"),
+        sample="%07d" % int(sample),
+        files="\n".join("- `%s`" % os.path.basename(p) for p in written)))
+
+    if bundle:
+        import zipfile
+        zip_path = os.path.join(directory, "%s_export.zip" % name)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in written:
+                archive.write(path, os.path.basename(path))
+        report["zip"] = zip_path
+
     if adoption is not None:
         report["curated"] = adoption
     return report
@@ -367,11 +515,17 @@ def main(argv=None):
     parser.add_argument("--curated", action="store_true",
                         help="take the curator's descriptions (desc_ai) where they pass the "
                              "laws; any room that fails keeps its template text")
+    parser.add_argument("--formats", default=",".join(FORMATS),
+                        help="comma-separated, from: %s (default: all)" % ", ".join(FORMATS))
+    parser.add_argument("--zip", action="store_true",
+                        help="also write <name>_export.zip holding every file, to hand on")
     args = parser.parse_args(argv)
 
     with open(args.worldfile, encoding="utf-8") as handle:
         document = json.load(handle)
-    report = write(document, args.into, args.name, curated=args.curated)
+    report = write(document, args.into, args.name, curated=args.curated,
+                   formats=[f.strip() for f in args.formats.split(",") if f.strip()],
+                   bundle=args.zip)
     print(json.dumps(report, indent=2))
     return 0 if report["written"] else 1
 
