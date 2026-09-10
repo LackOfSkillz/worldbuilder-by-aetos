@@ -10,6 +10,7 @@ pub mod landgraph;
 pub mod flood;
 pub mod hollows;
 pub mod routing;
+pub mod flow;
 
 use crate::sphere::SpherePoint;
 
