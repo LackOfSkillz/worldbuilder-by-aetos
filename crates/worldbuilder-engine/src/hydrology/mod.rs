@@ -176,6 +176,31 @@ fn require_finite_positive(name: &'static str, value: f64) -> Result<(), HydroEr
     }
 }
 
+/// Builds the `ReachPoint`s for one reach's node list, in order. Extracted out of `bake()` so
+/// the terminal-point fix (Ruling 2, fix round 1) can be exercised directly on a hand fixture,
+/// not only end to end.
+///
+/// Ruling 2 (fix round 1): a terminal ocean or lake node's own accumulated flow is the
+/// ocean/lake's total inflow (everything that drains there), not this channel's -- the same
+/// reason `reaches::extract` substitutes the second-to-last node's flow for classification.
+/// Reuse that same q here so width_m/depth_m/flow_m2 stay the channel's own values all the way
+/// to the last point; bed_m keeps the terminal node's own surface, unchanged.
+fn reach_points(graph: &LandGraph, routing: &routing::Routing, flow: &[f64], nodes: &[u32], params: &HydroParams) -> Vec<ReachPoint> {
+    let last_index = nodes.len() - 1;
+    let mut points = Vec::with_capacity(nodes.len());
+    for (idx, &node) in nodes.iter().enumerate() {
+        let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
+        let is_terminal = idx == last_index
+            && (graph.ocean[node as usize] || routing.lake_of[node as usize] != NO_LAKE);
+        let q = if is_terminal && idx > 0 { flow[nodes[idx - 1] as usize] } else { flow[node as usize] };
+        let w = width_m(q, params);
+        let d = depth_m(q, params);
+        let bed_m = if is_terminal { routing.surface_m[node as usize] } else { routing.surface_m[node as usize] - d };
+        points.push(ReachPoint { lat_deg, lon_deg, bed_m, width_m: w, depth_m: d, flow_m2: q });
+    }
+    points
+}
+
 /// The bake, end to end: `LandGraph::sample` -> `flood(ocean_seeds)` -> `find_hollows` +
 /// `judge` -> `route` -> `close_lakes` -> `extract`, folded into the public record types.
 pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, HydroError> {
@@ -276,24 +301,7 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
             }
             other => other,
         };
-        let last_index = reach.nodes.len() - 1;
-        let mut points = Vec::with_capacity(reach.nodes.len());
-        for (idx, &node) in reach.nodes.iter().enumerate() {
-            let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-            let is_terminal = idx == last_index
-                && (graph.ocean[node as usize] || routing.lake_of[node as usize] != NO_LAKE);
-            // Ruling 2 (fix round 1): a terminal ocean or lake node's own accumulated flow is
-            // the ocean/lake's total inflow (everything that drains there), not this channel's
-            // -- the same reason reaches::extract substitutes the second-to-last node's flow
-            // for classification. Reuse that same q here so width/depth/flow_m2 stay the
-            // channel's own values all the way to the last point; bed_m keeps the terminal
-            // node's own surface, unchanged.
-            let q = if is_terminal && idx > 0 { flow[reach.nodes[idx - 1] as usize] } else { flow[node as usize] };
-            let w = width_m(q, params);
-            let d = depth_m(q, params);
-            let bed_m = if is_terminal { routing.surface_m[node as usize] } else { routing.surface_m[node as usize] - d };
-            points.push(ReachPoint { lat_deg, lon_deg, bed_m, width_m: w, depth_m: d, flow_m2: q });
-        }
+        let points = reach_points(&graph, &routing, &flow, &reach.nodes, params);
         reach_lines.push(ReachLine {
             id: id as u32, // cast-ok: at most one reach per index
             class: reach.class,
@@ -463,6 +471,12 @@ mod bake_tests {
         assert!(matches!(bake(&world(), &p), Err(HydroError::Params(_))));
     }
 
+    /// Sanity check only -- it does not discriminate. Flow only ever accumulates downstream, so
+    /// the old (wrong) terminal-point value, the ocean/lake's total inflow, is structurally
+    /// always `>=` the fixed, channel-only value on this bake world's topology (one land
+    /// neighbor per ocean cell); it passes before and after the fix (see fix round 1's report).
+    /// `the_mouth_point_carries_its_own_river_not_the_whole_sea` below is the discriminating
+    /// regression test.
     #[test]
     fn a_reach_keeps_its_width_to_the_sea() {
         let record = bake(&world(), &params()).expect("bake");
@@ -481,6 +495,69 @@ mod bake_tests {
                     "reach {} last width {} < previous width {}", reach.id, last.width_m, prev.width_m);
             assert!(last.width_m > 0.0, "reach {} terminal width is zero", reach.id);
         }
+    }
+
+    /// Two land branches feeding the same ocean node, with different areas so their flows
+    /// differ. Node 2 is the only below-datum node, so `LandGraph::label_water` makes it the
+    /// ocean; nodes 0-1 and 3-4 are separate branches, each a monotonic downhill run straight
+    /// into node 2 -- no hollow forms on either side.
+    fn two_branches_into_one_sea() -> LandGraph {
+        let heights = [20.0, 10.0, -50.0, 10.0, 20.0];
+        let n = heights.len();
+        let positions: Vec<SpherePoint> =
+            (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+        let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+            .map(|i| {
+                let mut v = Vec::new();
+                if i > 0 { v.push(i - 1); }
+                if (i as usize) + 1 < n { v.push(i + 1); }
+                v
+            })
+            .collect();
+        // The left branch (nodes 0-1) is a third the area of the right branch (nodes 3-4), so
+        // the two channels draining into node 2 carry different flow.
+        let area_m2 = vec![1.0e6, 1.0e6, 1.0e6, 3.0e6, 3.0e6];
+        let wetness = vec![0.5; n];
+        LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), area_m2, &directed, wetness)
+    }
+
+    /// The discriminating regression for Ruling 2 (fix round 2). Unlike
+    /// `a_reach_keeps_its_width_to_the_sea` above, this can tell the fixed terminal-point flow
+    /// from the old, conflated one: the ocean node here collects two distinct branches, so its
+    /// total inflow is strictly greater than either branch's own flow, not just `>=` by
+    /// monotonicity.
+    #[test]
+    fn the_mouth_point_carries_its_own_river_not_the_whole_sea() {
+        let g = two_branches_into_one_sea();
+        let params = HydroParams::earth_like(0);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &params);
+        let mut routing = route(&g, &f, &mut hollows, &params);
+        let (flow, _closure) = close_lakes(&g, &mut routing, &hollows, &params);
+
+        // The left branch's own receiver chain, derived from routing.receiver rather than
+        // assumed -- it happens to land on [0, 1, 2] for this fixture.
+        let mut nodes = vec![0u32];
+        let mut here = 0u32;
+        let mut steps = 0;
+        while routing.receiver[here as usize] != crate::hydrology::flood::NO_NODE {
+            here = routing.receiver[here as usize];
+            nodes.push(here);
+            steps += 1;
+            assert!(steps < 10, "a cycle");
+        }
+        assert_eq!(nodes, vec![0, 1, 2], "left branch drains node 0 -> 1 -> the ocean at 2");
+        assert!(g.ocean[2], "node 2 is the ocean");
+
+        let points = reach_points(&g, &routing, &flow, &nodes, &params);
+        let last = points.last().expect("at least one point");
+        assert_eq!(last.flow_m2, flow[1],
+                   "the mouth point must carry node 1's own channel flow, not node 2's");
+        assert!(last.flow_m2 < flow[2],
+                "node 2's accumulated flow also holds the right branch's inflow, so the \
+                 channel's own flow must be strictly less: last {} flow[2] {}",
+                last.flow_m2, flow[2]);
     }
 
     /// Mutation guard for the connectivity property: a hand-broken reach list must fail it.
