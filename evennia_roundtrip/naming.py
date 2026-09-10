@@ -830,6 +830,9 @@ def name_and_describe(area, race, rng, settled=True, taken=None, plan=None):
                 "interior": True,
                 "from": room["id"],
                 "noun": noun,
+                # The trade it keeps, so what is inside can fit it - an inn's hearth, a
+                # smithy's anvil (law F1) - without reading it back out of the name.
+                "trade": opening[0],
                 # An interior does not stand on the lattice (T2). It is drawn where its
                 # street is and is not a place on the map of its own.
                 "latitude_deg": room.get("latitude_deg"),

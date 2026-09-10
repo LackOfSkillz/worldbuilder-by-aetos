@@ -28,7 +28,7 @@ import os
 import random
 import re
 
-from . import (areagen, cultures, ferries, hubs, naming, people, period, place,
+from . import (areagen, fixtures, cultures, ferries, hubs, naming, people, period, place,
                planet, populate, reachability, runs, siting, soundings, stock)
 
 #: How many of each culture a hundred-area world should hold.
@@ -630,6 +630,9 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
         "elevation_m": round(at(edge[0], edge[1]), 3),
         "ramp": True,
         "dock": True,
+        # Added to its town after the town was furnished, so it brings its own thing to
+        # look at rather than being the one bare room in the place (F1).
+        "fixtures": [dict(zip(("key", "desc"), fixtures.RAMP), kind="fixture")],
     }
     ramp["desc"] = naming.describe([], "human", rng)
     rooms.append(ramp)
@@ -1156,6 +1159,8 @@ def finish_road(road, rng, from_name=None, to_name=None, kind="road"):
     naming.name_and_describe(road, "road", rng, settled=False, plan=plan)
     road.setdefault("size", "road")
     people.populate(road, "road", rng)
+    # Landmarks to stop at and things to look at along the way - law F2.
+    fixtures.furnish_road(road, rng)
 
     rooms = ground
     if rooms and (from_name or to_name):
@@ -1661,6 +1666,13 @@ def gate(area, culture, at, shape):
     if not ground["fits"]:
         problems.append("wet: " + ", ".join(ground["wet_unexpected"][:3]))
 
+    # Law F1, held as a MUST for a generated town: a hand-built zone is warned, but a
+    # generator that can furnish every room has no excuse not to.
+    if culture is not None and culture.purpose not in ("hunting",):
+        bare = fixtures.unfurnished(area)
+        if bare:
+            problems.append("things to look at: %d rooms outside one to three" % len(bare))
+
     for room in area["rooms"]:
         words = len((room.get("desc") or "").split())
         if not areagen.DESC_WORD_BAND[0] <= words <= areagen.DESC_WORD_BAND[1]:
@@ -1759,6 +1771,10 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, si
     # the worldfile held nobody, so every population figure this generator has ever printed
     # described people who did not exist. See `people.populate`.
     people.populate(area, voice, rng)
+    # **Something to look at in every room of a town** - law F1, a MUST for a generated
+    # world. Themed by the people who built it and, inside, by the trade kept there.
+    if culture.purpose not in ("hunting",):
+        fixtures.furnish_town(area, voice, rng)
     area["name"] = area["display_name"].lower()
     # Before the gate, because the gate excuses a dock for standing in water and nothing
     # else - and it has to know which rooms are docks to do that.

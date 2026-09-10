@@ -34,6 +34,11 @@ UNSAFE = re.compile(r"[,;:/=]")
 ROOM_TYPECLASS = "typeclasses.rooms.Room"
 EXIT_TYPECLASS = "typeclasses.exits.Exit"
 FOLK_TYPECLASS = "typeclasses.characters.Character"
+#: Things to look at (laws F1, F2), from the wb_fixtures.py the export writes beside this file.
+THING_TYPECLASS = {"fixture": "world.wb_fixtures.Fixture",
+                   "landmark": "world.wb_fixtures.Fixture",
+                   "mirror": "world.wb_fixtures.Mirror",
+                   "clock": "world.wb_fixtures.Clock"}
 
 
 def room_alias(room_id):
@@ -58,6 +63,16 @@ def person_alias(room_id, place):
         for the room also find the people standing in it.
     """
     return "wbp_%07d_%02d" % (int(room_id), int(place))
+
+
+def thing_alias(room_id, place):
+    """
+    The handle a thing to look at is found by.
+
+    Notes:
+        Its own prefix, so that no search for a room or a person ever finds a clock.
+    """
+    return "wbt_%07d_%02d" % (int(room_id), int(place))
 
 
 def _literal(value):
@@ -146,6 +161,17 @@ def commands(world):
                 yield _desc(handle, "Goods for sale:" + "".join("\n  " + w for w in wares))
             else:
                 yield _desc(handle, "One of the people of this place.")
+
+        for place, thing in enumerate(record.get("fixtures") or ()):
+            handle = thing_alias(record["id"], place)
+            typed = UNSAFE.split(thing["key"])[0].strip() or handle
+            kind = THING_TYPECLASS.get(thing.get("kind"), THING_TYPECLASS["fixture"])
+            yield "create/drop %s;%s:%s" % (typed, handle, kind)
+            if UNSAFE.search(thing["key"]):
+                yield ("py [o for o in here.contents if %s in o.aliases.all()][0].key = %s"
+                       % (_literal(handle), _literal(thing["key"])))
+            yield "set %s/wb_id = %s" % (handle, _literal("%s:thing:%s" % (record["id"], place)))
+            yield _desc(handle, thing.get("desc") or "")
 
         for exit_ in exits_from.get(record["id"], ()):
             aliases = "".join(";" + a for a in (exit_.get("aliases") or ()))

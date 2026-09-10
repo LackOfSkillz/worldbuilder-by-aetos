@@ -29,7 +29,8 @@ def a_world():
             "rooms": [
                 {"id": 20227, "key": "Water Colonnade, West End",
                  "desc": "Swept marble runs underfoot. A plinth stands against the wall.",
-                 "latitude_deg": 1.5, "longitude_deg": 2.5, "elevation_m": 12.0},
+                 "latitude_deg": 1.5, "longitude_deg": 2.5, "elevation_m": 12.0,
+                 "fixtures": [{"key": "bronze dial", "desc": "A sun dial.", "kind": "fixture"}]},
                 {"id": 202270, "key": "Market Row",
                  "desc": "Carts have worn two ruts in the stone. A tavern door stands open.",
                  "latitude_deg": 1.6, "longitude_deg": 2.5, "elevation_m": 11.0,
@@ -37,7 +38,9 @@ def a_world():
                 {"id": 202271, "key": "the Saltmarket Inn", "interior": True,
                  "desc": "A low taproom with a slate counter. Stairs climb to rooms above.",
                  "stock": ["a pewter tankard", "a loaf of barley bread"],
-                 "people": [{"name": "an innkeeper", "role": "keeper"}]},
+                 "people": [{"name": "an innkeeper", "role": "keeper"}],
+                 "fixtures": [{"key": "hearth", "desc": "A wide hearth.", "kind": "fixture"},
+                              {"key": "mirror", "desc": "A tall mirror.", "kind": "mirror"}]},
             ],
             "exits": [
                 {"source": 20227, "name": "east", "destination": 202270},
@@ -110,6 +113,22 @@ class TestTheBatchCommandFile(unittest.TestCase):
         self.assertEqual(len(keeper_desc), 1)
         self.assertIn("\\n  a pewter tankard", keeper_desc[0])
 
+    def test_every_thing_to_look_at_is_made_with_its_own_typeclass(self):
+        """Laws F1/F2: the mirror has to be a Mirror, or it cannot reflect anybody."""
+        made = [line for line in self.lines if line.startswith("create/drop")
+                and "wb_fixtures" in line]
+        self.assertIn("create/drop bronze dial;wbt_0020227_00:world.wb_fixtures.Fixture", made)
+        self.assertIn("create/drop mirror;wbt_0202271_01:world.wb_fixtures.Mirror", made)
+        self.assertIn("set wbt_0202271_01/wb_id = '202271:thing:1'", self.lines)
+
+    def test_handles_for_rooms_people_and_things_never_find_each_other(self):
+        room, person, thing = (batchfile.room_alias(202271), batchfile.person_alias(202271, 0),
+                               batchfile.thing_alias(202271, 0))
+        for one in (room, person, thing):
+            for other in (room, person, thing):
+                if one != other:
+                    self.assertFalse(other.startswith(one), (one, other))
+
     def test_no_command_names_a_dbref(self):
         """A file handed to another game cannot know its dbrefs; Limbo is not always #2."""
         for line in self.lines:
@@ -146,7 +165,7 @@ class TestTheExport(unittest.TestCase):
         self.assertTrue(report["written"], report.get("problems"))
         names = sorted(os.listdir(self.where))
         self.assertEqual(names, sorted(["t_world.json", "build_t.py", "batch_t.py", "t.ev",
-                                        "t_README.md", "t_export.zip"]))
+                                        "wb_fixtures.py", "t_README.md", "t_export.zip"]))
         self.assertEqual(set(report["commands"]), {"direct", "batchcode", "ev"})
 
     def test_the_readme_does_not_overwrite_the_games_own(self):
@@ -180,7 +199,7 @@ class TestTheExport(unittest.TestCase):
 
     def test_the_builder_is_valid_python(self):
         export.write(a_world(), self.where, "t")
-        for name in ("build_t.py", "batch_t.py"):
+        for name in ("build_t.py", "batch_t.py", "wb_fixtures.py"):
             source = io.open(os.path.join(self.where, name), encoding="utf-8").read()
             compile(source, name, "exec")
 

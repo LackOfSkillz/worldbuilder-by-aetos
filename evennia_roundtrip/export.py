@@ -61,6 +61,12 @@ WARES_TYPECLASS = "typeclasses.objects.Object"
 #: NPCs are characters, because a shopkeeper a player can talk to is a character and not a
 #: prop. A game with its own NPC typeclass changes this one line.
 FOLK_TYPECLASS = "typeclasses.characters.Character"
+#: Things to look at (laws F1 and F2), from wb_fixtures.py beside this file. A fixture cannot
+#: be picked up; the mirror shows whoever looks into it; the clock reads the game's time.
+THING_TYPECLASS = {{"fixture": "world.wb_fixtures.Fixture",
+                   "landmark": "world.wb_fixtures.Fixture",
+                   "mirror": "world.wb_fixtures.Mirror",
+                   "clock": "world.wb_fixtures.Clock"}}
 WB_ID = "{wb_id}"
 
 
@@ -159,6 +165,27 @@ def build(caller=None, data=DATA):
             elif not body.db.desc:
                 body.db.desc = "One of the people of this place."
 
+    # **Things to look at** - laws F1 and F2. Keyed like the people, by the room and their
+    # place in it, so a second import moves nothing and doubles nothing.
+    things = 0
+    for record in world["rooms"]:
+        room = built.get(record["id"])
+        if room is None:
+            continue
+        for place, thing in enumerate(record.get("fixtures") or ()):
+            mark = "%s:thing:%s" % (record["id"], place)
+            body = built.get(mark)
+            if body is None:
+                body = create_object(THING_TYPECLASS.get(thing.get("kind"),
+                                                         THING_TYPECLASS["fixture"]),
+                                     key=thing["key"], location=room, home=room)
+                body.attributes.add(WB_ID, mark)
+                built[mark] = body
+                things += 1
+            body.key = thing["key"]
+            body.aliases.add("wbt_%07d_%02d" % (int(record["id"]), place))
+            body.db.desc = thing.get("desc") or ""
+
     # A counter built by an earlier version of this file has nothing to do now that the
     # keeper carries the goods. Left standing it is a prop that duplicates a person.
     retired = 0
@@ -184,10 +211,89 @@ def build(caller=None, data=DATA):
         exits_made += 1
 
     say("worldbuilder: %s rooms built, %s updated, %s exits made, %s keepers stocked, "
-        "%s people, %s counters retired"
-        % (made, reused, exits_made, counters, folk, retired))
+        "%s people, %s things to look at, %s counters retired"
+        % (made, reused, exits_made, counters, folk, things, retired))
     return {{"built": made, "updated": reused, "exits": exits_made,
-            "shops": counters, "people": folk, "retired": retired}}
+            "shops": counters, "people": folk, "things": things, "retired": retired}}
+'''
+
+
+#: The typeclasses the things to look at are built as. Shipped as `world/wb_fixtures.py`.
+#:
+#: **Behaviour, not just words.** "A mirror that shows the character in the mirror" was the
+#: requirement, and a mirror that is only a description cannot do it. So the mirror adds the
+#: looker's own reflection to what it says, and the clock tells the game's time in words.
+FIXTURES_MODULE = '''"""Things to look at in a generated world (area-building laws F1 and F2).
+
+Fixture - cannot be picked up.
+Mirror  - a fixture that shows whoever looks into it.
+Clock   - a fixture that tells the game's time.
+
+Written by the world exporter. Nothing here depends on it.
+"""
+
+import datetime
+
+from evennia import DefaultObject
+from evennia.utils import gametime
+
+_HOURS = ("twelve", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+          "ten", "eleven")
+
+
+def clock_words(hour, minute):
+    """"half past seven", "quarter to nine", "a little after three"."""
+    minute = int(round(minute / 5.0)) * 5
+    if minute == 60:
+        hour, minute = hour + 1, 0
+    this, next_ = _HOURS[hour % 12], _HOURS[(hour + 1) % 12]
+    if minute == 0:
+        return "%s o'clock" % this
+    if minute == 15:
+        return "a quarter past %s" % this
+    if minute == 30:
+        return "half past %s" % this
+    if minute == 45:
+        return "a quarter to %s" % next_
+    if minute < 30:
+        return "%d minutes past %s" % (minute, this)
+    return "%d minutes to %s" % (60 - minute, next_)
+
+
+class Fixture(DefaultObject):
+    """Something fixed in a room, to be looked at and left where it is."""
+
+    def at_object_creation(self):
+        super().at_object_creation()
+        self.locks.add("get:false()")
+        self.db.get_err_msg = "It is fixed where it stands."
+
+
+class Mirror(Fixture):
+    """A mirror that shows whoever looks into it."""
+
+    def return_appearance(self, looker, **kwargs):
+        text = super().return_appearance(looker, **kwargs)
+        if looker is None:
+            return text
+        face = looker.get_display_name(looker)
+        own = (looker.db.desc or "").strip()
+        reflection = "In the glass, %s looks back." % face
+        if own:
+            reflection += " " + own
+        return "%s\\n%s" % (text, reflection)
+
+
+class Clock(Fixture):
+    """A clock that tells the game's time."""
+
+    def return_appearance(self, looker, **kwargs):
+        text = super().return_appearance(looker, **kwargs)
+        try:
+            now = datetime.datetime.fromtimestamp(gametime.gametime(absolute=True))
+        except Exception:
+            return text
+        return "%s\\nThe hands stand at %s." % (text, clock_words(now.hour, now.minute))
 '''
 
 
@@ -261,6 +367,10 @@ Copy these files into your game's `world/` folder:
 - Every exit. Shops are rooms entered by a word (`go tavern`), left by the same word or `out`.
 - The people: a keeper in every shop, holding what it sells as `stock`; townsfolk and quarry.
 - An alias on every room, `wb_` and its id: `tel wb_{sample}` goes straight there.
+- Things to look at (area-building laws F1 and F2): one to three in every town room, fitted
+  to the room and its people, and landmarks and fixtures along the roads. They are objects,
+  built from `wb_fixtures.py` - which must be in `world/` too. A fixture cannot be picked up;
+  the **mirror** shows whoever looks into it; the **clock** tells the game's time.
 
 ## What it does not do
 
@@ -314,6 +424,8 @@ def flatten(document):
                 "elevation_m": room.get("elevation_m"),
                 "stock": room.get("stock") or None,
                 "people": room.get("people") or None,
+                "fixtures": room.get("fixtures") or None,
+                "landmark": room.get("landmark") or None,
             })
         for exit_ in area.get("exits") or ():
             exits.append({"source": exit_["source"], "name": exit_["name"],
@@ -461,6 +573,10 @@ def write(document, directory, name="aetosia", curated=False, formats=FORMATS, b
     report = {"written": True, "problems": [], "files": written,
               "rooms": len(world["rooms"]), "exits": len(world["exits"]),
               "areas": len(world["areas"]), "commands": {}}
+
+    # The typeclasses the things to look at are built as, needed by both formats. One module
+    # for every world exported into a game, so it is named for what it is, not for a world.
+    report["fixtures"] = put("wb_fixtures.py", FIXTURES_MODULE)
 
     if "direct" in formats:
         data_name = "%s_world.json" % name

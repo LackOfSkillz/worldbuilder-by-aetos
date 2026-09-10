@@ -253,6 +253,8 @@ export function drawAreas(viewer, Cesium, document) {
             // and what it sells - which is the question the marker raises.
             shop: shop ? shop.key : null,
             shop_ai: shop ? (shop.key_ai || null) : null,
+            // Things to look at (laws F1, F2), by name - what `look` will find here.
+            things: (room.fixtures || []).map((thing) => thing.key),
             door: shop ? shop.noun : null,
             keeper: keeper ? keeper.name : null,
             people: (room.people || []).map((who) => who.name),
@@ -671,6 +673,10 @@ export function showRoom(panel, room, x, y) {
   }
   if (shown.desc) {
     panel.append(make("div", "margin-bottom:6px", shown.desc));
+  }
+  if (room.things && room.things.length) {
+    panel.append(make("div", "color:#b89a6a;font-size:12px",
+                      `to look at: ${room.things.join(", ")}`));
   }
   if (shown.shop) {
     panel.append(make("div", "color:#ffcc66;font-size:12px;margin-top:4px",
