@@ -659,9 +659,15 @@ DOCK_ROOM_WORDS = ("dock", "docks", "quay", "wharf", "jetty", "pier", "slip", "s
 
 _DOCK_WORD = re.compile(r"\b(%s)\b" % "|".join(re.escape(w) for w in DOCK_ROOM_WORDS))
 
-#: How far from usable water a room may stand and still be a dock. The same reach the siting
-#: uses for a landing: a quay two miles inland is a street with a nautical name.
-DOCK_REACH_M = siting.LANDING_REACH_M
+#: How far from usable water a room may stand and still be a dock: on the water or near it,
+#: about five rooms from the edge.
+#:
+#: **Not the siting's eight hundred metres.** That is how far a *site* may be from a landing;
+#: a *room* counted at that reach made 65 docks of 40 areas' quay streets, almost none of
+#: them at the water. Measured on that run: within 100 m, 0; 200 m, 1; 400 m, 14; 800 m, 65.
+#: The generator keeps whole towns on dry ground, so a town's "Quay" is usually a name - and
+#: the rooms truly at the edge are the boat ramps, which are docks by construction anyway.
+DOCK_REACH_M = 200.0
 
 
 def names_a_dock(key):
