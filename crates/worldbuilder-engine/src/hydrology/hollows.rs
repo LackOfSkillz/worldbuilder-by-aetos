@@ -1,0 +1,221 @@
+//! A hollow is a connected set of nodes the flood had to raise to one flat level. It is kept as
+//! a lake or pond, or notched so it drains (spec section 6.3).
+
+use crate::hydrology::buckets::BucketIndex;
+use crate::hydrology::flood::{Flood, NO_NODE};
+use crate::hydrology::heap::sortable;
+use crate::hydrology::landgraph::{LandGraph, NO_BASIN};
+use crate::hydrology::HydroParams;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fate {
+    Keep,
+    Notch,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hollow {
+    pub members: Vec<u32>,
+    pub floor: u32,
+    pub floor_m: f64,
+    pub level_m: f64,
+    pub depth_m: f64,
+    pub area_m2: f64,
+    pub entry: u32,
+    pub outlet: u32,
+    pub enclosed: bool,
+    pub forced: bool,
+    pub fate: Fate,
+    /// Where lake water gathers to leave: the entry for a hollow above the datum; for an
+    /// enclosed basin, the submerged node the flood's way in leads down to (set by `route`).
+    pub lake_entry: u32,
+    /// For an enclosed basin: lake entry, up the shore, over the rim and down to the sea -
+    /// the channel cut if the basin proves fresh (set by `route`, cut by `close_lakes`).
+    pub outlet_path: Vec<u32>,
+}
+
+pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
+    let n = graph.len();
+    let raised = |i: usize| flood.reached[i] && flood.spill_m[i] > graph.height_m[i];
+    // Rank of each node in pop order, so "first reached" is a number.
+    let mut rank = vec![u32::MAX; n];
+    for (r, &node) in flood.order.iter().enumerate() {
+        rank[node as usize] = r as u32; // cast-ok: pop order is bounded by the node count
+    }
+    let mut label = vec![u32::MAX; n];
+    let mut hollows = Vec::new();
+    let mut stack = Vec::new();
+    for start in 0..n {
+        if !raised(start) || label[start] != u32::MAX || graph.ocean[start] {
+            continue;
+        }
+        let key = sortable(flood.spill_m[start]);
+        let id = hollows.len() as u32; // cast-ok: at most one hollow per node
+        let mut members = Vec::new();
+        label[start] = id;
+        stack.push(start as u32); // cast-ok: node index
+        while let Some(node) = stack.pop() {
+            members.push(node);
+            for &next in graph.neighbours(node) {
+                let i = next as usize;
+                if label[i] == u32::MAX && raised(i) && !graph.ocean[i]
+                    && sortable(flood.spill_m[i]) == key {
+                    label[i] = id;
+                    stack.push(next);
+                }
+            }
+        }
+        members.sort_unstable();
+        let level_m = flood.spill_m[start];
+        let mut floor = members[0];
+        let mut entry = members[0];
+        let mut area_m2 = 0.0;
+        let mut enclosed = false;
+        for &m in &members {
+            let i = m as usize;
+            area_m2 += graph.area_m2[i];
+            let lower = graph.height_m[i] < graph.height_m[floor as usize];
+            if lower {
+                floor = m;
+            }
+            if rank[i] < rank[entry as usize] {
+                entry = m;
+            }
+            if graph.enclosed[i] != NO_BASIN {
+                enclosed = true;
+            }
+        }
+        let floor_m = graph.height_m[floor as usize];
+        let outlet = flood.parent[entry as usize];
+        if enclosed {
+            area_m2 = members.iter()
+                .filter(|&&m| graph.height_m[m as usize] <= 0.0)
+                .map(|&m| graph.area_m2[m as usize])
+                .sum();
+        }
+        hollows.push(Hollow {
+            members,
+            floor,
+            floor_m,
+            level_m: if enclosed { 0.0 } else { level_m },
+            depth_m: if enclosed { 0.0 - floor_m } else { level_m - floor_m },
+            area_m2,
+            entry,
+            outlet: if outlet == NO_NODE { entry } else { outlet },
+            enclosed,
+            forced: false,
+            fate: Fate::Notch,
+            lake_entry: entry,
+            outlet_path: Vec::new(),
+        });
+    }
+    hollows
+}
+
+pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
+    let mut forced_nodes: Vec<u32> = Vec::new();
+    if !params.forced_outlets.is_empty() {
+        let spacing = crate::stream::nominal_spacing_m(
+            graph.len() as u32, graph.radius_m); // cast-ok: node count fits in u32 by construction
+        let mut index = BucketIndex::new(graph.radius_m, spacing);
+        for (i, p) in graph.positions.iter().enumerate() {
+            index.insert(p, i as u32); // cast-ok: node index
+        }
+        for point in &params.forced_outlets {
+            if let Some(node) = index.nearest(point, &graph.positions) {
+                forced_nodes.push(node);
+            }
+        }
+        forced_nodes.sort_unstable();
+    }
+    for hollow in hollows.iter_mut() {
+        hollow.forced = hollow.members.iter().any(|m| forced_nodes.binary_search(m).is_ok());
+        let big = hollow.depth_m >= params.keep_depth_m && hollow.area_m2 >= params.keep_area_m2;
+        hollow.fate = if hollow.enclosed || hollow.forced || big { Fate::Keep } else { Fate::Notch };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hydrology::flood::{flood, ocean_seeds};
+    use crate::hydrology::landgraph::LandGraph;
+    use crate::hydrology::HydroParams;
+    use crate::sphere::SpherePoint;
+
+    fn line(heights: &[f64], area: f64) -> LandGraph {
+        let n = heights.len();
+        let positions: Vec<SpherePoint> =
+            (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+        let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+            .map(|i| {
+                let mut v = Vec::new();
+                if i > 0 { v.push(i - 1); }
+                if (i as usize) + 1 < n { v.push(i + 1); }
+                v
+            })
+            .collect();
+        LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![area; n], &directed,
+                              vec![0.5; n])
+    }
+
+    #[test]
+    fn a_hollow_knows_its_floor_depth_area_and_outlet() {
+        // ocean, then a 40 m ridge; behind it 5, 12, 25, then a 70 m wall. The only way out is
+        // back over the 40 m ridge, so the hollow fills to 40.
+        let g = line(&[-50.0, 40.0, 5.0, 12.0, 25.0, 70.0], 2.0e6);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let hollows = find_hollows(&g, &f);
+        assert_eq!(hollows.len(), 1);
+        let h = &hollows[0];
+        assert_eq!(h.members, vec![2, 3, 4]);
+        assert_eq!(h.floor, 2);
+        assert_eq!(h.level_m, 40.0);
+        assert_eq!(h.depth_m, 35.0);
+        assert_eq!(h.area_m2, 6.0e6);
+        assert_eq!(h.entry, 2);
+        assert_eq!(h.outlet, 1, "it spills back over the 40 m ridge");
+    }
+
+    #[test]
+    fn deep_wide_hollows_are_kept_and_shallow_ones_notched() {
+        let deep = line(&[-50.0, 40.0, 5.0, 12.0, 25.0, 70.0], 2.0e6);
+        let f = flood(&deep, &ocean_seeds(&deep), &|_| true);
+        let mut hollows = find_hollows(&deep, &f);
+        judge(&mut hollows, &deep, &HydroParams::earth_like(0));
+        assert_eq!(hollows[0].fate, Fate::Keep);
+
+        let shallow = line(&[-50.0, 30.0, 26.0, 27.0, 28.0, 70.0], 2.0e6);
+        let f = flood(&shallow, &ocean_seeds(&shallow), &|_| true);
+        let mut hollows = find_hollows(&shallow, &f);
+        judge(&mut hollows, &shallow, &HydroParams::earth_like(0));
+        assert_eq!(hollows[0].depth_m, 4.0);
+        assert_eq!(hollows[0].fate, Fate::Notch, "4 m deep is under the 8 m rule");
+    }
+
+    #[test]
+    fn an_enclosed_basin_is_always_kept_at_the_datum() {
+        // big ocean on the left, a below-datum pocket at node 4 behind a 39 m ridge
+        let g = line(&[-50.0, -40.0, -30.0, 39.0, -5.0, 10.0, 60.0], 1.0e6);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &HydroParams::earth_like(0));
+        let enclosed: Vec<&Hollow> = hollows.iter().filter(|h| h.enclosed).collect();
+        assert_eq!(enclosed.len(), 1);
+        assert_eq!(enclosed[0].fate, Fate::Keep);
+        assert_eq!(enclosed[0].level_m, 0.0, "Ruling W1: the shoreline does not move");
+        assert_eq!(enclosed[0].outlet, 3, "its lowest way to the ocean is the 39 m ridge");
+    }
+
+    #[test]
+    fn a_forced_outlet_keeps_a_hollow_the_rule_would_notch() {
+        let g = line(&[-50.0, 30.0, 26.0, 27.0, 28.0, 70.0], 2.0e6);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        let mut params = HydroParams::earth_like(0);
+        params.forced_outlets = vec![SpherePoint::from_latlon(0.0, 1.0)];
+        judge(&mut hollows, &g, &params);
+        assert!(hollows[0].forced);
+        assert_eq!(hollows[0].fate, Fate::Keep);
+    }
+}
