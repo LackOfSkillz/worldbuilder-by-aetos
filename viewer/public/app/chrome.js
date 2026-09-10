@@ -290,8 +290,14 @@ export function splitColumns(document) {
     // feature nobody had written.
     // The populate section, above the brushes: the order somebody works in is choose a
     // world, fill it, then adjust what came out.
-    import("./generate-panel.js").then((mod) => {
+    import("./generate-panel.js").then(async (mod) => {
       mod.buildGeneratePanel(left, () => (window.__wb || {}).viewer);
+      // The AI curation settings sit right under the button whose runs they curate.
+      try {
+        (await import("./ai-panel.js")).buildAiPanel(left);
+      } catch (error) {
+        console.error("worldbuilder: ai curation panel failed to build", error);
+      }
       const stack = left.querySelector(".wb-section:last-child");
       if (stack) left.append(stack);
     }).catch((error) => {

@@ -7,6 +7,7 @@ import { stat, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, normalize, extname, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { handleCurator } from "./curator.mjs";
 
 // ---------------------------------------------------------------------------------------
 // Caching: a VALIDATOR, not a lifetime.
@@ -186,6 +187,9 @@ const CSP = [
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   let raw = decodeURIComponent(url.pathname);
+
+  // The AI curator's settings and connection test live in their own module.
+  if (await handleCurator(req, res, raw)) return;
 
   // `/worlds/` lists what is on disk; `/worlds/<name>.json` serves one. The listing carries the
   // name and the area count out of each file, so the panel can label a row without fetching
