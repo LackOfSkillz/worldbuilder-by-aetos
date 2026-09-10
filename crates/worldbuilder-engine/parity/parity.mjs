@@ -861,6 +861,50 @@ for (const raw of lines) {
       };
       break;
     }
+    case 'H': {
+      // H <world> <params_len> <params hex...> <status> <len> <record hex...>
+      //
+      // Task 11's hydrology bake, through `wb_hydro_bake` / `wb_hydro_len` / `wb_hydro_copy` /
+      // `wb_hydro_free` -- the only door onto the hydrology bake across the shipped surface,
+      // exactly the shape `wb_erosion_run` and `wb_water_run` are for their own modules.
+      //
+      // `--mutate seed` reaches this record for free: it is baked on the `plain` world, whose
+      // own `world` line already rebuilds with `world_seed + 1` under that mutation, so a
+      // different planet underneath the bake is exactly what should move these words.
+      const h = worlds.get(f[1]);
+      const pl = Number(f[2]);
+      const params = f.slice(3, 3 + pl).map(f64of);
+      const status = f[3 + pl];
+      const len = Number(f[4 + pl]);
+      const words = f.slice(5 + pl);
+      if (words.length !== len) throw new Error('hydro line is the wrong length');
+      const pp = wb.wb_alloc(pl * 8);
+      const idp = wb.wb_alloc(4);
+      if (pp === 0 || idp === 0) throw new Error('wb_alloc refused a hydro input buffer');
+      new Float64Array(wb.memory.buffer, pp, pl).set(params);
+      const got = wb.wb_hydro_bake(h, pp, pl, idp);
+      group = `hydro/${f[1]}`;
+      tally(String(got) === status);
+      if (String(got) !== status) note(`hydro status ${f[1]}`, status, String(got));
+      const id = mem().getUint32(idp, true);
+      const n = wb.wb_hydro_len(id);
+      tally(n === len);
+      if (n !== len) note(`hydro len ${f[1]}`, String(len), String(n));
+      const out = wb.wb_alloc(n * 8);
+      if (out === 0) throw new Error('wb_alloc refused the hydro output buffer');
+      wb.wb_hydro_copy(id, out, n);
+      const view = mem();
+      for (let i = 0; i < len; i += 1) {
+        const bits = bitsOf(view.getFloat64(out + i * 8, true));
+        tally(bits === words[i]);
+        if (bits !== words[i]) note(`hydro word ${i}`, words[i], bits);
+      }
+      wb.wb_hydro_free(id);
+      wb.wb_dealloc(out, n * 8);
+      wb.wb_dealloc(pp, pl * 8);
+      wb.wb_dealloc(idp, 4);
+      break;
+    }
     case 'version': {
       const got = String(wb.wb_generator_version());
       group = 'version';

@@ -1047,25 +1047,47 @@ jobs:
           # stays GREEN, which is a property of a direct-mapped cache that verifies its key
           # rather than a hole in the test; the load-bearing line is the comparison, and the
           # mutation that finds it removes that instead.
+          # 2026-09-10, water 1a: 632/632/634/735/737 -> 681/681/683/787/789, 5 ignored,
+          # unchanged. Shape: +49 uniformly on the three non-wasm rows and +52 on the two wasm
+          # rows -- the same "uniform src/ tests plus wasm-only tests/wasm_exports.rs tests"
+          # split every prior entry in this block has had, not a new shape. The +3 on the wasm
+          # rows over the uniform +49 is `tests/wasm_exports.rs`'s own hydro-channel tests
+          # (`#![cfg(feature = "wasm")]` in its entirety), which the three non-wasm rows never
+          # see. None of this movement is Task 11's own: it is the accumulated `src/water.rs`
+          # hydro-bake work (`Water: bake, measure, copy and free a hydro record from wasm`,
+          # `Water: the hydro bake refuses an absurd forced-outlet count instead of
+          # overflowing`, and the commits before them) landing on a branch whose count gate was
+          # last pinned before that work began -- this task is the first to re-run the gate's
+          # own commands since. Task 11 itself adds no test; it adds the `H` parity record and
+          # re-derives this block to match a suite that had already moved out from under it.
+          # The parity delta is the `H plain` record: 127,659 -> 148,707 compared (+21,048 =
+          # 2 + a 21,046-word hydro bake at total_nodes = 12,000), 0 divergent; `--mutate seed`
+          # is the only control the record moves under (122,208 -> 142,630, +20,422 of the
+          # record's own 21,048 words), because the bake runs on the `plain` world and that
+          # world's own line already rebuilds under the seed mutation -- every other control
+          # (erosion-k, water-pond, tectonic-warp, coast-amplitude, gully-steer,
+          # climate-samples) is byte-for-byte unmoved, which is what says the hydro channel
+          # reaches nothing those controls perturb. Re-derived per configuration through
+          # `assert_counts.py cargo-list` AFTER the last source edit.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 632
+            expect: 681
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 632
+            expect: 681
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 634
+            expect: 683
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 735
+            expect: 787
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 737
+            expect: 789
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -1519,12 +1541,12 @@ jobs:
       #
       # The script also checks the twenty-four per-group tallies sum to the total, so a format
       # change fails loudly instead of matching nothing.
-      - name: Assert the corpus -- 127,659 values, 0 divergent
+      - name: Assert the corpus -- 148,707 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 127659 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 148707 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
       # `--mutate seed` moves the world seed by one and 68,457 of 71,596 values diverge. A
@@ -1561,12 +1583,12 @@ jobs:
       # divergent value; the recorded figure is 53,778 of 56,254, and a control that
       # collapsed to a handful would still exit 0 while proving far less than the record says
       # it proves.
-      - name: Assert the control -- 121,682 of 127,659 divergent
+      - name: Assert the control -- 142,630 of 148,707 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 127659 --expect-divergent 122208
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 148707 --expect-divergent 142630
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -1596,12 +1618,12 @@ jobs:
       # of neither `k` nor erosion, so a control whose count had moved with them would have
       # been reaching something it does not name. The water control's 60 is unchanged for the
       # same reason.
-      - name: Assert the erosion control -- 216 of 127,659 divergent
+      - name: Assert the erosion control -- 216 of 148,707 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 127659 --expect-divergent 216
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 148707 --expect-divergent 216
 
       # THE THIRD CONTROL, slice 5b Task 5's own, and the one with the sharpest claim.
       #
@@ -1642,12 +1664,12 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate water-pond 2>&1 | tee water-control.out
 
-      - name: Assert the water control -- 60 of 127,659 divergent, all of them `kind`
+      - name: Assert the water control -- 60 of 148,707 divergent, all of them `kind`
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 127659 --expect-divergent 60
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 148707 --expect-divergent 60
 
       # THE FOURTH CONTROL, slice mountains Task 6's own, and the first that says anything
       # about the tectonic channel at all.
@@ -1685,12 +1707,12 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate tectonic-warp 2>&1 | tee tectonic-control.out
 
-      - name: Assert the tectonic control -- 6,186 of 127,659 divergent, all on the belt
+      - name: Assert the tectonic control -- 6,186 of 148,707 divergent, all on the belt
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 127659 --expect-divergent 6186
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 148707 --expect-divergent 6186
 
       # THE FIFTH CONTROL, the photoreal slice's Task 6, and the first that exercises the coast
       # channel at all.
@@ -1741,12 +1763,12 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate coast-amplitude 2>&1 | tee coast-control.out
 
-      - name: Assert the coast control -- 13,128 of 127,659 divergent, all on the coast world
+      - name: Assert the coast control -- 13,128 of 148,707 divergent, all on the coast world
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 127659 --expect-divergent 13128
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 148707 --expect-divergent 13128
 
       # THE SIXTH CONTROL (the gully slice). `--mutate gully-steer` replays the two `worldg`
       # records with word 9, `steer_lattice_m`, moved from the shipped 2,000 m to 500 m -- a
@@ -1790,14 +1812,14 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate gully-steer 2>&1 | tee gully-control.out
 
-      - name: Assert the gully control -- 3,752 of 127,659 divergent, none of them structural
+      - name: Assert the gully control -- 3,752 of 148,707 divergent, none of them structural
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
           python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
             --output gully-control.out --expect-label "CONTROL (--mutate gully-steer)" \
-            --expect-compared 127659 --expect-divergent 3752
+            --expect-compared 148707 --expect-divergent 3752
 
       # THE SEVENTH CONTROL (the climate slice). `--mutate climate-samples` adds ONE upwind step
       # to every `CL` and `CK` record and touches nothing else. It is a control with a shape
@@ -1814,11 +1836,11 @@ jobs:
           set -euo pipefail
           node parity.mjs native.txt --mutate climate-samples 2>&1 | tee climate-control.out
 
-      - name: Assert the climate control -- 648 of 127,659 divergent, every one of them moisture
+      - name: Assert the climate control -- 648 of 148,707 divergent, every one of them moisture
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
           python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
             --output climate-control.out --expect-label "CONTROL (--mutate climate-samples)" \
-            --expect-compared 127659 --expect-divergent 648
+            --expect-compared 148707 --expect-divergent 648

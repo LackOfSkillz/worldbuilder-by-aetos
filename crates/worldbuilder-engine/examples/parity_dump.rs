@@ -1796,5 +1796,39 @@ fn main() {
          {control_elevation_flank} {control_structural_flank} {control_tile_flank}"
     );
 
+    // --- the hydrology channel: one capped bake, through the shipped export -------------
+    //
+    // Task 11. `wb_hydro_bake` is the only door onto the hydrology bake across the shipped
+    // surface -- before it existed, that bake's native/WASM agreement was unfalsifiable,
+    // exactly the sense this file's own doc gives for `wb_erosion_run` and `wb_water_run`.
+    //
+    // **Controller Ruling C.** This twelve-word params array is a SEPARATE literal from
+    // `tests/wasm_exports.rs::hydro_params`, not a shared function: an example cannot see a
+    // test module's helpers, so the corpus and that export's own parameter-validation tests
+    // each carry their own copy of the fixture. Keep the two equal by inspection if either
+    // changes; a silent drift between them would mean the corpus and the unit tests are no
+    // longer describing the same bake.
+    const HYDRO_PARAMS: [f64; 12] =
+        [12_000.0, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0];
+
+    let mut hydro_id: u32 = 0;
+    let hydro_status =
+        wb_hydro_bake(plain, HYDRO_PARAMS.as_ptr(), HYDRO_PARAMS.len() as u32, &mut hydro_id); // cast-ok: a compile-time twelve-word buffer
+    assert_eq!(hydro_status, WB_OK, "the hydro bake must succeed for the parity corpus");
+    let hydro_len = wb_hydro_len(hydro_id);
+    assert!(hydro_len > 0, "a corpus of zero words would compare nothing");
+    let mut hydro_words = vec![0.0f64; hydro_len as usize];
+    assert_eq!(wb_hydro_copy(hydro_id, hydro_words.as_mut_ptr(), hydro_len), WB_OK);
+    assert_eq!(wb_hydro_free(hydro_id), WB_OK);
+
+    let params_hex: Vec<String> = HYDRO_PARAMS.iter().map(|v| hex(*v)).collect();
+    let words_hex: Vec<String> = hydro_words.iter().map(|v| hex(*v)).collect();
+    println!(
+        "H plain {} {} {hydro_status} {hydro_len} {}",
+        HYDRO_PARAMS.len(),
+        params_hex.join(" "),
+        words_hex.join(" ")
+    );
+
     println!("version {}", wb_generator_version());
 }

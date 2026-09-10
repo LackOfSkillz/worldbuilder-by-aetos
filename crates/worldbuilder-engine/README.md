@@ -4603,11 +4603,20 @@ from `$?` directly, never through a pipe.**
 
 | configuration | listed | ignored | **run** |
 |---|---|---|---|
-| `--no-default-features` | 637 | 5 | **632** |
-| default | 637 | 5 | **632** |
-| `--features python` | 639 | 5 | **634** |
-| `--features wasm` | 740 | 5 | **735** |
-| `--features python,wasm` | 742 | 5 | **737** |
+| `--no-default-features` | 686 | 5 | **681** |
+| default | 686 | 5 | **681** |
+| `--features python` | 688 | 5 | **683** |
+| `--features wasm` | 792 | 5 | **787** |
+| `--features python,wasm` | 794 | 5 | **789** |
+
+**2026-09-10, water 1a:** re-derived again, the same way, after the hydro-bake work
+(`src/water.rs`'s bake/measure/copy/free path and its WASM export) landed on this branch --
+632/632/634/735/737 -> 681/681/683/787/789, 5 ignored, unchanged, over the same 15 binaries. The
+movement is +49 uniformly on the three non-wasm rows and +52 on the two wasm rows: the shape this
+table has always had (uniform `src/` tests plus wasm-only `tests/wasm_exports.rs` tests), not a new
+one. Task 11 itself adds no test -- it adds the `H` parity record below and re-derives this table
+against a suite that had already moved out from under it. Re-derived through `assert_counts.py
+cargo-list` AFTER the last source edit.
 
 All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
@@ -4642,14 +4651,23 @@ moment**, and one of the 398 is a millisecond wearing a count's clothes.
 
 | | compared | divergent |
 |---|---|---|
-| `parity` | **127,659** | **0** |
-| `--mutate seed` | 127,659 | 122,208 |
-| `--mutate erosion-k` | 127,659 | 216 |
-| `--mutate water-pond` | 127,659 | 60 |
-| `--mutate tectonic-warp` | 127,659 | 6,186 |
-| `--mutate coast-amplitude` | 127,659 | 13,128 |
-| `--mutate gully-steer` | 127,659 | 3,752 |
-| `--mutate climate-samples` | 127,659 | 648 |
+| `parity` | **148,707** | **0** |
+| `--mutate seed` | 148,707 | 142,630 |
+| `--mutate erosion-k` | 148,707 | 216 |
+| `--mutate water-pond` | 148,707 | 60 |
+| `--mutate tectonic-warp` | 148,707 | 6,186 |
+| `--mutate coast-amplitude` | 148,707 | 13,128 |
+| `--mutate gully-steer` | 148,707 | 3,752 |
+| `--mutate climate-samples` | 148,707 | 648 |
+
+**2026-09-10, water 1a:** the `H plain` record adds the hydrology bake (`wb_hydro_bake` /
+`wb_hydro_len` / `wb_hydro_copy` / `wb_hydro_free`, `total_nodes = 12,000`) to the corpus:
+127,659 -> 148,707 compared (+21,048 = 2 + a 21,046-word record), 0 divergent. `--mutate seed`
+is the only control the record moves under -- 122,208 -> 142,630, +20,422 of the record's own
+21,048 words -- because the bake runs on the `plain` world and that world's own `world` line
+already rebuilds under the seed mutation; every other control (erosion-k, water-pond,
+tectonic-warp, coast-amplitude, gully-steer, climate-samples) is byte-for-byte unmoved, which is
+what says the hydro channel reaches nothing those controls perturb.
 
 All seven exited 0 and **every control matched its recorded figure exactly**, which is the statement
 that nothing in this slice moved a crossing value. `node scripts/build-wasm.mjs check` reports the
