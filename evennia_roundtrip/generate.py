@@ -613,7 +613,10 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
     """
     rooms = area.get("rooms") or []
     here = _where(area)
-    anchor_room = min(rooms, key=lambda room: _haversine(
+    # From the street, never from inside a shop: an interior shares its street room's
+    # coordinates, so "the room nearest the water" could be the back of the alchemist's.
+    ground = [room for room in rooms if not room.get("interior")] or rooms
+    anchor_room = min(ground, key=lambda room: _haversine(
         room["latitude_deg"], room["longitude_deg"], toward[0], toward[1], radius_m))
     edge = shoreline_toward(at, (anchor_room["latitude_deg"], anchor_room["longitude_deg"]),
                             toward, radius_m)
@@ -637,7 +640,49 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
     area["exits"].append({
         "source": ramp["id"], "name": OPPOSITE[direction],
         "destination": anchor_room["id"], "ramp": True})
+    ramp["key"] = ramp_name(area, anchor_room, direction)
     return ramp
+
+
+def streets_in(title):
+    """
+    The streets a room title says it stands on, main street first.
+
+    Notes:
+        The convention the game's linter reads titles by: "A at B" is the corner of both,
+        "A, somewhere" is a stretch of A, and a bare title is a place of its own.
+    """
+    text = (title or "").strip()
+    if " at " in text:
+        return [part.strip() for part in text.split(" at ") if part.strip()]
+    if ", " in text:
+        return [text.split(", ", 1)[0].strip()]
+    return [text] if text else []
+
+
+def ramp_name(area, anchor_room, direction):
+    """
+    What to call a boat ramp: a stretch of the street it runs off.
+
+    Notes:
+        **Every ramp was "a boat ramp",** so two in one town were two pieces of a street
+        called that (law G1), and a ramp at the end of a straight street broke the street's
+        run (R8). Named "Alder Walk, boat ramp" it is part of Alder Walk - and it keeps the
+        words "boat ramp", which is what the dock finder recognises a ramp by.
+
+        When the street room is a corner, the ramp takes whichever street it carries on in
+        a straight line: the one the room behind it along the same heading also lies on.
+    """
+    streets = streets_in(anchor_room.get("key"))
+    by_id = {room["id"]: room for room in area.get("rooms") or ()}
+    behind = next((exit_["destination"] for exit_ in area.get("exits") or ()
+                   if exit_["source"] == anchor_room["id"]
+                   and exit_["name"] == OPPOSITE.get(direction)), None)
+    if behind in by_id:
+        aligned = [street for street in streets
+                   if street in streets_in(by_id[behind].get("key"))]
+        streets = aligned or streets
+    return "%s, boat ramp" % streets[0] if streets else "a boat ramp"
 
 
 #: How far a road may run between two areas before it stops being a walk.
@@ -999,7 +1044,7 @@ def _sea_gap(at, one, other, radius_m):
     return _line_length(track, radius_m) if track else 0.0
 
 
-def finish_road(road, rng, from_name=None, to_name=None):
+def finish_road(road, rng, from_name=None, to_name=None, kind="road"):
     """
     Name and describe a road, once every one of its exits exists.
 
@@ -1019,11 +1064,33 @@ def finish_road(road, rng, from_name=None, to_name=None):
         Said in the description rather than the exit, because the exit is a compass point
         and law L4 says a compass exit is generated from the coordinates, never typed.
     """
-    naming.name_and_describe(road, "road", rng, settled=False)
+    # **A road is one street, named for what it joins.** Its rooms drew names from a pool
+    # of five - "the way", "the verge", "a milestone" - so each recurred all along it, and
+    # every recurrence was a separate piece of a street called "the verge": law G1, 259
+    # times across thirty-three roads. Now the whole road carries one name, the ends say
+    # which place they stand outside, and the middle is the road itself - the way canon
+    # titles its roads, and the way the linter reads a repeated title: as one street.
+    #
+    # Decided before the naming rather than written over it afterwards, so the shrines and
+    # camps along the way are named for the road they are actually on.
+    ground = [room for room in road.get("rooms") or () if not room.get("interior")]
+    street = road_street(from_name, to_name, kind)
+    plan = None
+    if street:
+        road["street"] = street
+        plan = {}
+        for position, room in enumerate(ground):
+            if position == 0 and from_name:
+                plan[room["id"]] = "%s, outside %s" % (street, from_name)
+            elif position == len(ground) - 1 and to_name:
+                plan[room["id"]] = "%s, outside %s" % (street, to_name)
+            else:
+                plan[room["id"]] = street
+    naming.name_and_describe(road, "road", rng, settled=False, plan=plan)
     road.setdefault("size", "road")
     people.populate(road, "road", rng)
 
-    rooms = road.get("rooms") or []
+    rooms = ground
     if rooms and (from_name or to_name):
         ends = ((rooms[0], from_name, to_name), (rooms[-1], to_name, from_name))
         for room, here, there in ends:
@@ -1031,12 +1098,40 @@ def finish_road(road, rng, from_name=None, to_name=None):
                 continue
             said = []
             if here:
-                said.append("%s lies back the way you came" % here)
+                # Not "the way you came": a room describes itself, it does not address
+                # the reader (law W4), and this line was in every road end in the world.
+                said.append("%s lies back along the road" % here)
             if there and there != here:
                 said.append("the road runs on to %s" % there)
+            sentence = "; ".join(said)
+            # `str.capitalize()` lowercases everything after the first letter, which is
+            # how "the road runs on to Warmstand" came out as "...on to warmstand".
             room["desc"] = "%s %s." % (room.get("desc", "").rstrip(),
-                                       "; ".join(said).capitalize())
+                                       sentence[:1].upper() + sentence[1:])
     return road
+
+
+def road_street(from_name, to_name, kind="road"):
+    """
+    The street name a road's rooms share.
+
+    Args:
+        from_name (str): The place at one end.
+        to_name (str): The place at the other.
+        kind (str): "road" between two places; "path" out to a hunting ground.
+
+    Returns:
+        name (str or None): None when neither end is known.
+
+    Notes:
+        A road joins two places and is named for both, as roads between towns are. A path
+        runs out to one hunting ground and is named for where it goes.
+    """
+    if kind == "path":
+        return "%s Path" % to_name if to_name else None
+    if from_name and to_name and from_name != to_name:
+        return "%s-%s Road" % (from_name, to_name)
+    return "%s Road" % (to_name or from_name) if (to_name or from_name) else None
 
 
 def _past(rooms, gap=10):
@@ -1471,7 +1566,7 @@ def connect_areas(areas, radius_m, rng, base_id, at=None, reach_m=ROAD_REACH_M):
         display = trail["display_name"]
         finish_road(trail, rng,
                     from_name=host.get("display_name") or host.get("name"),
-                    to_name=area.get("display_name") or area.get("name"))
+                    to_name=area.get("display_name") or area.get("name"), kind="path")
         trail["display_name"] = display
         roads.append({"from": host["name"], "to": area["name"], "metres": round(gap),
                       "laid": True, "rooms": len(trail["rooms"]), "path": True,
