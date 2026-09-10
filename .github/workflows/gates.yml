@@ -1287,13 +1287,21 @@ jobs:
       # one). Those 6 exercise the pure helper functions with a fake engine object and a
       # tmp_path manifest -- the module-level gate itself runs once, at collection, before
       # any test function exists to assert against it.
-      - name: Assert the suite -- 398 tests, 157 of them conformance
+      #
+      # 2026-09-10: 398 -> 565. The Evennia round-trip slice (`evennia_roundtrip/` and its
+      # tests: level bands, peoples, streets, docks, things to look at, curation, shelves,
+      # export formats, ferries) grew the suite; test_conformance.py is unchanged at 157.
+      # The pin had gone stale on master itself with the slice's merge (#22), so master's own
+      # runs failed this gate from 2026-09-09. Re-derived by `pytest --collect-only -q
+      # tests` (565) and the same over tests/test_conformance.py (157), and matched by CI's
+      # own "collected: 565 tests over 28 files".
+      - name: Assert the suite -- 565 tests, 157 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 398 --expect-file tests/test_conformance.py=157
+            --expect-total 565 --expect-file tests/test_conformance.py=157
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
