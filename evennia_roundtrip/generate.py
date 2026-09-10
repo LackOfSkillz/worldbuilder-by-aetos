@@ -26,6 +26,7 @@ import json
 import math
 import os
 import random
+import re
 
 from . import (areagen, cultures, ferries, hubs, naming, people, period, place,
                planet, populate, reachability, runs, siting, soundings, stock)
@@ -628,6 +629,7 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
         "cell": [0, 0, 0],
         "elevation_m": round(at(edge[0], edge[1]), 3),
         "ramp": True,
+        "dock": True,
     }
     ramp["desc"] = naming.describe([], "human", rng)
     rooms.append(ramp)
@@ -642,6 +644,65 @@ def add_boat_ramp(area, toward, at, radius_m, rng, room_id):
         "destination": anchor_room["id"], "ramp": True})
     ramp["key"] = ramp_name(area, anchor_room, direction)
     return ramp
+
+
+#: The words that make a room a dock - somewhere a boat is tied up - as a whole word.
+#:
+#: **Not the words that merely sound wet.** The list this replaces also held "bridge",
+#: "stair", "steps", "span", "ford" and "causeway", every one of which is an ordinary street
+#: word here ("Bridge Prospect", "Quiet Stair"). So the tally counted streets as docks -
+#: three areas once reported 175 - and the dry-ground gate excused any street with such a
+#: name for standing in the sea.
+DOCK_ROOM_WORDS = ("dock", "docks", "quay", "wharf", "jetty", "pier", "slip", "slipway",
+                   "landing stage", "landing beach", "harbour", "harbor", "staith", "hythe",
+                   "boat ramp")
+
+_DOCK_WORD = re.compile(r"\b(%s)\b" % "|".join(re.escape(w) for w in DOCK_ROOM_WORDS))
+
+#: How far from usable water a room may stand and still be a dock. The same reach the siting
+#: uses for a landing: a quay two miles inland is a street with a nautical name.
+DOCK_REACH_M = siting.LANDING_REACH_M
+
+
+def names_a_dock(key):
+    """Whether a room's name says it is a dock, by a whole dock word."""
+    return bool(_DOCK_WORD.search((key or "").lower()))
+
+
+def mark_docks(area, at, radius_m, reach_m=DOCK_REACH_M):
+    """
+    Flag the rooms of an area that are docks: named as one, and at the water.
+
+    Args:
+        area (dict): A named area.
+        at (callable): `(lat, lon) -> metres` above datum.
+        radius_m (float): The planet's radius.
+        reach_m (float): How near water a dock must stand.
+
+    Returns:
+        count (int): How many rooms were flagged.
+
+    Notes:
+        **Both, not either.** A name alone is how streets came to be docks; water alone would
+        make every shore room one. A boat ramp is a dock by construction and is flagged
+        where it is built. Interiors never are: "the Harbour Inn" is a tavern.
+    """
+    count = 0
+    for room in area.get("rooms") or ():
+        if room.get("ramp"):
+            room["dock"] = True
+            count += 1
+            continue
+        if room.get("interior") or not names_a_dock(room.get("key")):
+            continue
+        if room.get("latitude_deg") is None:
+            continue
+        if siting.water_within(at, room["latitude_deg"], room["longitude_deg"], radius_m,
+                               siting.LANDING_DEPTH_M, reach_m) is None:
+            continue
+        room["dock"] = True
+        count += 1
+    return count
 
 
 def streets_in(title):
@@ -1619,7 +1680,9 @@ def counts(area, culture):
     shops = sum(1 for room in rooms
                 if any(marker in room["key"].lower() for marker in TRADE_MARKERS))
     items = sum(len(room.get("stock") or ()) for room in rooms)
-    docks = sum(1 for room in rooms if place.water_room(room["key"]))
+    # Rooms `mark_docks` found at the water, not rooms whose names sound wet: counted by
+    # name, three areas once reported 175 docks, most of them streets called "Stair".
+    docks = sum(1 for room in rooms if room.get("dock"))
     return {"room_count": len(rooms), "shops": shops, "docks": docks, "items": items,
             "npcs": people.count(area)}
 
@@ -1691,6 +1754,9 @@ def build_area(site, culture, at, radius_m, rng, base_id, origin, taken=None, si
     # described people who did not exist. See `people.populate`.
     people.populate(area, voice, rng)
     area["name"] = area["display_name"].lower()
+    # Before the gate, because the gate excuses a dock for standing in water and nothing
+    # else - and it has to know which rooms are docks to do that.
+    mark_docks(area, at, radius_m)
 
     problems = gate(area, culture, at, lattice["shape"])
     if problems:

@@ -14,17 +14,18 @@ the word and sentence bands, ground against the water. A failed area is discarde
 site is left empty rather than shipped and repaired later, because a hundred areas is more
 than anybody will read and the gate is the only thing that will notice.
 
-**Only piers may stand in water.** A room named as a dock, quay, jetty, pier, bridge or
-slipway is allowed to be wet; every other room must be on dry land. An area with a wet
-room that is not one of those is refused outright - which is exactly the fault that put
-eleven of eleven ferry-shore rooms under water while its anchor sat happily on the beach.
+**Only docks may stand in water.** A room flagged a dock - named as one and found at the
+water by `generate.mark_docks` - or built as a boat ramp is allowed to be wet; every other
+room must be on dry land, whatever it is called. An area with a wet room that is not one of
+those is refused outright - which is exactly the fault that put eleven of eleven
+ferry-shore rooms under water while its anchor sat happily on the beach.
 """
 
 import json
 import math
 import random
 
-from . import areagen, cultures, pack as packmod, place, planet, runs, siting
+from . import areagen, cultures, pack as packmod, planet, runs, siting
 
 #: Ten to thirty miles, in metres. A floor and a reach, not a target and a tolerance.
 NEAR_M = 16093.0
@@ -91,17 +92,23 @@ def dry_enough(rooms, at):
         report (dict): `wet_unexpected` rooms and whether the area `fits`.
 
     Notes:
-        **Only piers may be wet.** `place.water_room` names the exceptions - dock, quay,
-        jetty, pier, bridge, slipway, steps - and everything else must be on dry ground.
-        The anchor being on land is not the test and never was: ferry_shore's anchor sat on
-        a beach while all eleven of its rooms stood in an eleven-metre dredged channel.
+        **Only docks may be wet.** A room flagged a dock (or a boat ramp) may stand at or
+        below the waterline; everything else must be on dry ground. The anchor being on
+        land is not the test and never was: ferry_shore's anchor sat on a beach while all
+        eleven of its rooms stood in an eleven-metre dredged channel.
+
+        **By flag, not by name.** The exception used to be any room whose name contained a
+        water word - and "bridge", "stair" and "causeway" are ordinary street words in a
+        generated town, so "Quiet Stair" could stand in the sea and pass this check. A
+        generated dock is flagged by `generate.mark_docks`, which asks the ground as well
+        as the name.
     """
     wet = []
     for room in rooms:
         height = at(room["latitude_deg"], room["longitude_deg"])
         room["elevation_m"] = round(height, 3)
         room["submerged"] = height < 0.0
-        if height < 0.0 and not place.water_room(room["key"]):
+        if height < 0.0 and not (room.get("dock") or room.get("ramp")):
             wet.append(room["key"])
     return {"wet_unexpected": wet, "fits": not wet}
 
