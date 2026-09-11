@@ -48,6 +48,37 @@ Measured in the branch studio (wasm), on `worlds/world-1788998299904.json` at th
 
 Plan 1b-1 closed items 1, 2, 4 and 5 below, the §7 fields, the forced-miss report and the `mod.rs` split (see `2026-09-11-water-1b1-verification.md`: record 2.2 MB, 0 fresh lakes dead-end, forced outlets reported). **Item 3 (I3) stays open.** Its mechanism is fixed and keeps 79 inner lakes over 122 real 15k–40k worlds, but it is not counted on the owner world at 1M, because the record carries no "capped" flag. The ruling says it closes only on that count, so plan 1b-2 adds a capped-inner-lakes statistic and measures it. Item 6 (the fine layer) is plan 1b-2.
 
+## Status after plan 1b-2 (2026-09-12)
+
+Plan 1b-2 re-traces every reach on the landform at 1.5 km, adds falls and meanders, and simplifies each refined line. See `2026-09-12-water-1b2-verification.md`. On the owner's world at 1M nodes, forced outlet 0°N 0°E, measured in the branch studio (wasm) on the owner's laptop:
+
+- the record is 5,957,984 bytes and the bake takes 64.4 s;
+- 0 bed rises along any reach;
+- all 3,268 junctions are shared bit for bit;
+- 0 mouths sit above their water;
+- 0 fresh lakes dead-end.
+
+The size gate failed at the planned 250 m tolerance (8,659,856 bytes), so `refine_simplify_m` rose to 500 m.
+
+It closed:
+
+- **I3**, on the owner-world count: 7 capped basins keep 9 of their 60 inner hollows;
+- the notch ends and splits;
+- the flow bound;
+- the forced index;
+- the tests split;
+- the drainage status code;
+- the parity status check;
+- acyclicity in O(R);
+- the stale docs;
+- the doc comments;
+- the I4 mouth rise (Ruling R-4).
+
+Two parts of item 6 remain:
+
+- **Lake outlines, and small lakes and ponds**, go to **plan 1b-3 (shores)**, which starts with a spike.
+- **Falls** work (4 on a native `ranges()` stand-in, and analytic cliff tests), but there are **0 on the owner world**. Its landform has no 10 m drop within 150 m along any reach at these resolutions. Falls await the mountains project's steeper relief.
+
 ## Plan 1b must fix (load-bearing for stage 2)
 
 1. **Done in 1b-1.** **The residual outlet-cut cycle.** `cut_path` stops on "ground already lower" (`routing.rs:~316`) even when that ground's receiver chain leads back into the source lake. A minima cut that descends to below −1 m next to a pocket can then close a cycle.
@@ -55,33 +86,33 @@ Plan 1b-1 closed items 1, 2, 4 and 5 below, the §7 fields, the forced-miss repo
    - Real worlds: 0 of 96 bakes were refused.
    - Fix: do not stop on lower ground that drains back into the source lake, or lower that ground to the cut's bed.
 2. **Done in 1b-1.** **I2:** notch and outlet paths inside flat-filled hollows follow node-index tie order, which is raster-like because spiral indices follow latitude. Make them terrain-following or least-cost before stage 2 carves them (this moves the parity pins).
-3. **Open: mechanism done in 1b-1, owner-world count pending (1b-2).** **I3:** 12b-5's capped giant basins lose their inner lake-worthy sub-basins. Give them nested judging.
+3. **Closed in 1b-2.** Mechanism done in 1b-1; on the owner world at 1M, 7 capped basins keep 9 of their 60 inner hollows (SCHEMA 4 header words 32–34). **I3:** 12b-5's capped giant basins lose their inner lake-worthy sub-basins. Give them nested judging.
 4. **Done in 1b-1.** **I5:** fresh lakes with no downstream link (4–34 per 200k world). Add `Body.downstream`, or always start a reach at a fresh lake's outlet.
 5. **Done in 1b-1.** **Record size:** 23.6 MB against the spec's 8 MB target, where notches are 74–94% of the words. About half of the retained notch points duplicate reach points (whose bed already carries the cut). Record only outlet cuts, plus off-reach cut segments above a depth threshold.
-6. **The fine layer itself:** tracing at 1.5 km, lake outlines, small lakes and ponds (which have their own keep rule), and waterfalls. There are 0 ponds at graph resolution.
+6. **Tracing and waterfalls done in 1b-2; outlines and ponds are plan 1b-3.** **The fine layer itself:** tracing at 1.5 km, lake outlines, small lakes and ponds (which have their own keep rule), and waterfalls. There are 0 ponds at graph resolution. Falls are 0 on the owner world and await steeper relief (see the 1b-2 status above).
 
 ## Smaller items (plan 1b or stage 2)
 
 - **Done in 1b-1.** Spec §7 fields missing from the record: notch `width_m`, reach `fresh`, body `override`, a params echo.
 - A width-anchor ruling. Spec §6.5 over-determines it: 3 m at the stream threshold and 1,000 m at the great threshold cannot both hold with a fixed exponent. The code anchors the stream end.
 - **Done in 1b-1.** Report silent forced-outlet misses. A forced point whose nearest node is land, ocean or shore is ignored. C1-a can also drain a forced nested hollow on an outlet path.
-- The I4 side effect: a mouth's bed can rise at the last step (the neighbour at about −1 m minus depth, the mouth at 0). Stage 2 carving should expect it.
+- **Done in 1b-2** (Ruling R-4: a mouth's bed is `min(previous bed, water level)`). The I4 side effect: a mouth's bed can rise at the last step (the neighbour at about −1 m minus depth, the mouth at 0). Stage 2 carving should expect it.
 - **Done in 1b-1.** `cut_path` pushes an empty `NotchRoute` when it stops at k=1, and `outlet_notch` then points at it.
 - C1-b never takes back a fresh verdict when a later cut reduces a pocket's inflow (monotone by design).
-- `HydroError::Drainage` shares `WB_ERR_GRAPH` with sampling failures.
-- If a control ever makes `wb_hydro_bake` fail, `parity.mjs` case `H` reads an unwritten `out_id`.
-- `reaches_are_acyclic` is O(R²). `mod.rs` was split in 1b-1 (227 lines, with `bake.rs` at 730, both at 049d9c1; `bake.rs` has grown since with its tests); the hydro half of `wasm.rs` still waits for stage 2.
-- Stale docs:
+- **Done in 1b-2** (`WB_ERR_DRAINAGE = 7`). `HydroError::Drainage` shares `WB_ERR_GRAPH` with sampling failures.
+- **Done in 1b-2** (a non-zero status is divergent, and `out_id` is not read). If a control ever makes `wb_hydro_bake` fail, `parity.mjs` case `H` reads an unwritten `out_id`.
+- **Acyclicity done in 1b-2** (a colour walk, O(R)). `reaches_are_acyclic` is O(R²). `mod.rs` was split in 1b-1 (227 lines, with `bake.rs` at 730, both at 049d9c1; `bake.rs` has grown since with its tests); the hydro half of `wasm.rs` still waits for stage 2.
+- **Done in 1b-2.** Stale docs:
   - the calibration report's post-fix parity figures should be 136,086 / seed 130,366 / tectonic-warp 13,590;
   - the gates.yml step name "all on the belt";
   - the README says "other four TCTL fields", and there are five.
-- debug_asserts or doc comments for: `BucketIndex::nearest`'s unchecked index, `candidates`' third disjunct, seeds versus `allowed`, the wetness length, the `outlet == NO_NODE` fallback, the `outlet_path.len() < 2` fresh sink, the reaches.rs invariants, and the `count_fits` minimums.
+- **Done in 1b-2, except the reaches.rs invariants** (not in the plan; still open). debug_asserts or doc comments for: `BucketIndex::nearest`'s unchecked index, `candidates`' third disjunct, seeds versus `allowed`, the wetness length, the `outlet == NO_NODE` fallback, the `outlet_path.len() < 2` fresh sink, the reaches.rs invariants, and the `count_fits` minimums.
 
 ## Added by the plan 1b-1 final review (2026-09-11)
 
 **Plan 1b-2 must fix (stage 2 blocks on it):**
 
-- [ ] **Notch lines have no ends, and some join nodes that are not neighbours.**
+- [x] **Done in 1b-2 (Task 2, Ruling F-3a).** **Notch lines have no ends, and some join nodes that are not neighbours.**
   - 475 of 478 outlet cuts stop one node short of the water they drain into.
   - Split a `NotchLine` wherever two consecutive points are not graph neighbours.
   - Append the node the cut stopped at as a final point. Its surface is the datum for the ocean, or the lake's level otherwise (Ruling I4).
@@ -90,10 +121,10 @@ Plan 1b-1 closed items 1, 2, 4 and 5 below, the §7 fields, the forced-miss repo
 
 **Plan 1b-2 carry-forward:**
 
-- [ ] A finite `stream_flow_m2` of 1e308 overflows the effective river threshold to infinity, so the record carries non-finite words. Refuse or bound such params. Code: the effective-threshold code in `bake.rs`.
-- [ ] `judge` rebuilds the forced-outlet index for every enclosed or capped basin. This is a speed cost only.
-- [ ] Split `bake.rs`'s tests into their own file. The file is 1,306 lines, about 840 of them tests.
-- [ ] The comment on `effective_thresholds_rise_to_the_graph_resolution`, and the matching README note, say the test world's thresholds sit above the node floor. They don't: the floor binds there too.
+- [x] **Done in 1b-2** (flow thresholds above 1e20 m² are refused). A finite `stream_flow_m2` of 1e308 overflows the effective river threshold to infinity, so the record carries non-finite words. Refuse or bound such params. Code: the effective-threshold code in `bake.rs`.
+- [x] **Done in 1b-2.** `judge` rebuilds the forced-outlet index for every enclosed or capped basin. This is a speed cost only.
+- [x] **Done in 1b-2** (`bake_tests.rs`). Split `bake.rs`'s tests into their own file. The file is 1,306 lines, about 840 of them tests.
+- [x] **Done in 1b-2.** The comment on `effective_thresholds_rise_to_the_graph_resolution`, and the matching README note, say the test world's thresholds sit above the node floor. They don't: the floor binds there too.
 
 **Stage 2:**
 
