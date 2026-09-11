@@ -42,6 +42,6 @@
 
 ## CI and parity (Task 7)
 
-- Engine pins: 707/707/709/813/815 with 6 ignored (the new drainage sweep is `#[ignore]`d; run it with `cargo test --release --lib every_small_world_drains -- --ignored`, about 70 s).
+- Engine pins: 707/707/709/813/815 at Task 7; 710/710/712/816/818 after the final review's fix wave (ad6f206). Both have 6 ignored (the new drainage sweep is `#[ignore]`d; run it with `cargo test --release --lib every_small_world_drains -- --ignored`, about 70 s).
 - Parity: plain 0 divergent, and every control re-pinned.
 - Python pin: 565.

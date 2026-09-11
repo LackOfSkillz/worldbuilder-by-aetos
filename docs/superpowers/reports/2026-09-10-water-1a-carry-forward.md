@@ -76,3 +76,30 @@ Plan 1b-1 closed items 1, 2, 4 and 5 below, the §7 fields, the forced-miss repo
   - the gates.yml step name "all on the belt";
   - the README says "other four TCTL fields", and there are five.
 - debug_asserts or doc comments for: `BucketIndex::nearest`'s unchecked index, `candidates`' third disjunct, seeds versus `allowed`, the wetness length, the `outlet == NO_NODE` fallback, the `outlet_path.len() < 2` fresh sink, the reaches.rs invariants, and the `count_fits` minimums.
+
+## Added by the plan 1b-1 final review (2026-09-11)
+
+**Plan 1b-2 must fix (stage 2 blocks on it):**
+
+- [ ] **Notch lines have no ends, and some join nodes that are not neighbours.**
+  - 475 of 478 outlet cuts stop one node short of the water they drain into.
+  - Split a `NotchLine` wherever two consecutive points are not graph neighbours.
+  - Append the node the cut stopped at as a final point. Its surface is the datum for the ocean, or the lake's level otherwise (Ruling I4).
+  - The layout stays as it is.
+  - Code: `routing.rs` around 435, and the notch emission in `bake.rs`.
+
+**Plan 1b-2 carry-forward:**
+
+- [ ] A finite `stream_flow_m2` of 1e308 overflows the effective river threshold to infinity, so the record carries non-finite words. Refuse or bound such params. Code: the effective-threshold code in `bake.rs`.
+- [ ] `judge` rebuilds the forced-outlet index for every enclosed or capped basin. This is a speed cost only.
+- [ ] Split `bake.rs`'s tests into their own file. The file is 1,306 lines, about 840 of them tests.
+- [ ] The comment on `effective_thresholds_rise_to_the_graph_resolution`, and the matching README note, say the test world's thresholds sit above the node floor. They don't: the floor binds there too.
+
+**Stage 2:**
+
+- [ ] `decode` accepts dangling links. Add a validation pass before stage 2 reads records from disk.
+
+**Rulings from the final review:**
+
+- **F-1:** notch widths use the caller's params, the same as reaches.
+- **F-2:** notch point word 3 is the cut surface; reach point word 3 is the bed (surface − depth). A test holds the two consistent wherever they meet.
