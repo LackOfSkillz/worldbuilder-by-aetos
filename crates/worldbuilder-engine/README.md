@@ -4922,15 +4922,18 @@ not a regression in this worktree, and it does not touch the 565/157 collection 
 both properties of the coarse-fixes slice's flood/notch/capped-basin changes re-shaping which
 notches and forced outlets each bake records, not of any change to what is compared.
 
-**The seed control** moves by the same 3,631 the corpus lost from `hydro/plain` plus the
-`hydro/ranges` shrink's own share, landing at 126,735 of 132,472 (was 130,366 of 136,086); every
-non-hydro group's movement is unchanged from the prior pin.
+**The seed control** drops by 3,631, both hydro groups together -- `hydro/plain` 622 -> 567
+(-55) and `hydro/ranges` 7,536 -> 3,960 (-3,576) -- landing at 126,735 of 132,472 (was 130,366
+of 136,086); every non-hydro group's movement is unchanged at 122,208. (Corrected in the final
+fix wave below: this paragraph first said the drop was all `hydro/plain`, which `hydro/plain`'s
+647 words cannot hold. The split was re-derived by replaying b49dd5a's own dump through
+b49dd5a's own wasm.)
 
 **The tectonic-warp control is the one whose shape actually changed, and it was checked against
 the native TCTL prediction rather than merely re-run:** `hydro/ranges`'s own divergent count
 under this control moved from 7,404 of 7,739 to **3,822 of 4,166** -- the re-baked `H ranges`
-record is smaller, and `margin_warp_m` still moves the same fraction of it (a hair over 91.7%
-both before and after) -- while `elevation/ranges` (132/5,000), `structural/ranges` (132/5,000),
+record is smaller, and `margin_warp_m` moves a slightly smaller fraction of it (95.7% before,
+91.7% after; corrected in the final fix wave below) -- while `elevation/ranges` (132/5,000), `structural/ranges` (132/5,000),
 `elevation/belt` (1,269/2,000), `structural/belt` (1,269/2,000) and `tile/belt` (3,384/4,225) are
 byte-for-byte unchanged. The control's own printed line confirms it: `hydro/ranges 3822/4166
 moved, exactly as the native side predicted`. **The tectonic-warp control still matches the
@@ -4961,3 +4964,59 @@ cargo run --release -p worldbuilder-engine --example parity_dump --features wasm
 cd crates/worldbuilder-engine/parity && node parity.mjs native.txt
 node parity.mjs native.txt --mutate {seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples}
 ```
+
+## 2026-09-11, water 1b-1 final review fix wave: pins re-derived
+
+Notch widths now use the caller's params, as reach widths do (Ruling F-1), so `src/` moved and
+the wasm was rebuilt: 335,764 bytes, 31 exports, 0 imports; artifact-sha256
+cdb971154cc8d3edb36f0171bafcad0500a8279474c26df2d0d092288c954aea, source-fingerprint
+bf7f1565496a5114aedfb5479a1bc76c5042163da384d7d49a360b982278a380 (53 inputs). `npm run
+check:wasm` reports it matches its manifest and the source here.
+
+**Engine, re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
+--list` (and `--ignored`) and `assert_counts.py cargo-list`, which printed `count OK` at all
+five:**
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 716 | 6 | **710** |
+| default | 716 | 6 | **710** |
+| `--features python` | 718 | 6 | **712** |
+| `--features wasm` | 822 | 6 | **816** |
+| `--features python,wasm` | 824 | 6 | **818** |
+
+707/707/709/813/815 -> **710/710/712/816/818**, 6 ignored, unchanged, over the same 16 test
+binaries (16 since water 1a Task 12b; the Task 7 note in `gates.yml` that called this "FIFTEEN
+at 16" is corrected there). **+3 uniformly on every row**, all in `src/hydrology/bake.rs`:
+`an_outlet_cut_agrees_with_the_reach_it_runs_along`, `every_reach_that_reaches_the_ocean_is_fresh`
+and `an_open_lake_may_drain_into_a_closed_lake`. `cargo test -p worldbuilder-engine
+--no-fail-fast` ran 710 passed / 0 failed / 6 ignored, and `--features wasm --no-fail-fast` 816 /
+0 / 6. The ignored sweep, `cargo test --release --lib every_small_world_drains -- --ignored`,
+passed (73.8 s).
+
+**Python:** 565 collected, 157 of them conformance -- unchanged (`pytest --collect-only -q`).
+
+**Viewer:** `npm test` in `viewer/` -- **332 passed, 0 failed** (330 + the two new hydro tests).
+
+**Parity, all eight runs `count OK` against `assert_counts.py parity`:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **132,472** | **0** |
+| `--mutate seed` | 132,472 | **126,737** (was 126,735) |
+| `--mutate erosion-k` | 132,472 | 216 |
+| `--mutate water-pond` | 132,472 | 60 |
+| `--mutate tectonic-warp` | 132,472 | **10,013** (was 10,008) |
+| `--mutate coast-amplitude` | 132,472 | 13,128 |
+| `--mutate gully-steer` | 132,472 | 3,752 |
+| `--mutate climate-samples` | 132,472 | 648 |
+
+Against a dump taken at b49dd5a, 11 `hydro/plain` words and 31 `hydro/ranges` words moved --
+every recorded notch width, each scaled by sqrt(effective / caller stream threshold): 3.760171x
+on the plain bake, 18.432198x on the ranges bake. No count and no other word moved, and both
+sides moved together, so the plain run stays at 0 divergent. The seed control moves by 2, all in
+`hydro/plain` (567 -> 569 of 647). The tectonic control moves by 5, all in `hydro/ranges` (3,822
+-> 3,827 of 4,166), and the native TCTL prediction moved with it, so the control still prints
+"exactly as the native side predicted". The other five controls are unchanged.
+
+The reproduction commands are the ones above, with `--expect-passed <710|710|712|816|818>`.

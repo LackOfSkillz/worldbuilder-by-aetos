@@ -70,7 +70,7 @@ Plan 1b-1 closed items 1, 2, 4 and 5 below, the §7 fields, the forced-miss repo
 - C1-b never takes back a fresh verdict when a later cut reduces a pocket's inflow (monotone by design).
 - `HydroError::Drainage` shares `WB_ERR_GRAPH` with sampling failures.
 - If a control ever makes `wb_hydro_bake` fail, `parity.mjs` case `H` reads an unwritten `out_id`.
-- `reaches_are_acyclic` is O(R²). `mod.rs` was split in 1b-1 (227 lines, with `bake.rs` at 730); the hydro half of `wasm.rs` still waits for stage 2.
+- `reaches_are_acyclic` is O(R²). `mod.rs` was split in 1b-1 (227 lines, with `bake.rs` at 730, both at 049d9c1; `bake.rs` has grown since with its tests); the hydro half of `wasm.rs` still waits for stage 2.
 - Stale docs:
   - the calibration report's post-fix parity figures should be 136,086 / seed 130,366 / tectonic-warp 13,590;
   - the gates.yml step name "all on the belt";

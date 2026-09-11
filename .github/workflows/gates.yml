@@ -1106,32 +1106,41 @@ jobs:
           # the two wasm rows, from the coarse-fixes slice's own source changes across
           # Tasks 1-6 (the bake.rs split, the flood tie-break, the cut-path committed-node
           # deviation, the capped-basin escape chain, `Body.downstream`, and the record
-          # schema 3 layout) -- no new `#[cfg]` and no new test binary; `assert_counts.py`
-          # still reports FIFTEEN test binaries at 16 (`cargo-list` prints "over 16 binaries"
-          # here, one more than the fifteen the last README count named, from a binary added
-          # earlier in this slice's own Task 1-6 work rather than by this task). Re-derived
-          # per configuration through `cargo test -p worldbuilder-engine <cfg> -- --list`
-          # (and `--ignored`), through `assert_counts.py cargo-list` itself, which reported
-          # `count OK` at all five.
+          # schema 3 layout) -- no new `#[cfg]` and no new test binary; `assert_counts.py
+          # cargo-list` reports 16 test binaries, the count it has reported since water 1a
+          # Task 12b (the README's ledger for that task records the move from 15 to 16).
+          # Re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
+          # --list` (and `--ignored`), through `assert_counts.py cargo-list` itself, which
+          # reported `count OK` at all five.
+          # 2026-09-11, water 1b-1 final review fix wave: 707/707/709/813/815 ->
+          # 710/710/712/816/818, 6 ignored, unchanged, over the same 16 binaries (`listed`
+          # 716/716/718/822/824). +3 uniformly on every row, all in `src/hydrology/bake.rs`:
+          # `an_outlet_cut_agrees_with_the_reach_it_runs_along` (Rulings F-1/F-2),
+          # `every_reach_that_reaches_the_ocean_is_fresh` (the reach `fresh` guard) and
+          # `an_open_lake_may_drain_into_a_closed_lake` (the relaxed downstream helpers). No
+          # `tests/wasm_exports.rs` test was added, so the wasm rows move by the same +3.
+          # Re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
+          # --list` (and `--ignored`) and `assert_counts.py cargo-list` AFTER the last source
+          # edit; all five printed `count OK`.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 707
+            expect: 710
             expect_ignored: 6
           - name: default
             features: ""
-            expect: 707
+            expect: 710
             expect_ignored: 6
           - name: python
             features: "--features python"
-            expect: 709
+            expect: 712
             expect_ignored: 6
           - name: wasm
             features: "--features wasm"
-            expect: 813
+            expect: 816
             expect_ignored: 6
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 815
+            expect: 818
             expect_ignored: 6
     steps:
       - uses: actions/checkout@v4
@@ -1616,8 +1625,16 @@ jobs:
       # wasm was rebuilt against the coarse-fixes slice's Tasks 1-6 (bake.rs split, flood
       # tie-break, cut-path committed-node deviation, capped-basin escape chain,
       # Body.downstream, record schema 3), which shrank `hydro/plain` (688 -> 647 words) and
-      # `hydro/ranges` (4,166 unchanged in count but re-baked). No H word diverges native
-      # against wasm.
+      # `hydro/ranges` (7,739 -> 4,166 words): -41 and -3,573, the whole -3,614. No H word
+      # diverges native against wasm.
+      # 2026-09-11, water 1b-1 final review fix wave: 132,472 compared, 0 divergent,
+      # UNCHANGED. Notch widths now use the caller's params (Ruling F-1), so the wasm was
+      # rebuilt (335,764 bytes, artifact-sha256 cdb97115...). Measured against a dump taken
+      # at b49dd5a: 11 `hydro/plain` words and 31 `hydro/ranges` words moved -- every notch
+      # width, each scaled by sqrt(effective / caller stream threshold), 3.760171x and
+      # 18.432198x -- and no count or other word moved; both sides moved together, so 0
+      # divergent. Every non-H line of the dump is byte-identical except the tectonic
+      # control's native TCTL prediction (see that control).
       - name: Assert the corpus -- 132,472 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -1680,15 +1697,21 @@ jobs:
       # `plain` does, so a different planet under the forced-outlet bake is exactly what should
       # move these words. Every non-hydro group is unmoved (130,366 - 622 - 7,536 = 122,208,
       # the same non-hydro figure this pin has carried since Task 12b).
-      # 2026-09-11, water 1b-1 Task 7: 136,086/130,366 -> 132,472/126,735 (compared shrinks
-      # with `hydro/plain`, as above; divergent tracks it down by the same 3,631, all of it
-      # `hydro/plain` moving under the seed).
-      - name: Assert the control -- 126,735 of 132,472 divergent
+      # 2026-09-11, water 1b-1 Task 7: 136,086/130,366 -> 132,472/126,735. Compared shrinks
+      # by 3,614 with both hydro records, as above. Divergent drops by 3,631, both hydro
+      # groups together: `hydro/plain` 622 -> 567 of 647 (-55) and `hydro/ranges` 7,536 ->
+      # 3,960 of 4,166 (-3,576). Every non-hydro group is unmoved at 122,208. (Re-derived
+      # in the final fix wave by replaying b49dd5a's own dump through b49dd5a's own wasm.)
+      # 2026-09-11, water 1b-1 final review fix wave: 132,472/126,735 -> 132,472/126,737.
+      # `hydro/plain` 567 -> 569 of 647, `hydro/ranges` unmoved at 3,960 of 4,166, non-hydro
+      # unmoved at 122,208: the notch widths (Ruling F-1) are the only words that moved, and
+      # two more of them now differ between the plain and the seed-moved world's bakes.
+      - name: Assert the control -- 126,737 of 132,472 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 132472 --expect-divergent 126735
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 132472 --expect-divergent 126737
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -1842,18 +1865,21 @@ jobs:
       # whole delta is the new `hydro/ranges` group (7,739 compared, 7,404 divergent) -- see the
       # comment above the run step for how that count is predicted. `hydro/plain` stays at 0.
       # 2026-09-11, water 1b-1 Task 7: 136,086/13,590 -> 132,472/10,008. `hydro/ranges`'s own
-      # divergent count under this control moved from 7,404 of 7,739 to 3,822 of 4,166 -- the
-      # coarse-fixes slice's flood/notch/capped-basin changes re-baked the `H ranges` record on
-      # a smaller total, and `margin_warp_m` still moves the same fraction of it; every other
-      # group's movement (132/5,000, 132/5,000, 1,269/2,000, 1,269/2,000, 3,384/4,225) is
-      # UNCHANGED. Re-confirmed: the tectonic-warp control still matches the native TCTL
-      # prediction for `hydro/ranges`.
-      - name: Assert the tectonic control -- 10,008 of 132,472 divergent, all on the belt
+      # divergent count under this control moved from 7,404 of 7,739 (95.7%) to 3,822 of
+      # 4,166 (91.7%) -- the coarse-fixes slice's flood/notch/capped-basin changes re-baked the
+      # `H ranges` record on a smaller total; every other group's movement (132/5,000,
+      # 132/5,000, 1,269/2,000, 1,269/2,000, 3,384/4,225) is UNCHANGED. Re-confirmed: the
+      # tectonic-warp control still matches the native TCTL prediction for `hydro/ranges`.
+      # 2026-09-11, water 1b-1 final review fix wave: 132,472/10,008 -> 132,472/10,013.
+      # `hydro/ranges` 3,822 -> 3,827 of 4,166, and the native TCTL prediction moved with it
+      # (its sixth field 3822 -> 3827, computed by `examples/parity_dump.rs`); the control
+      # printed "exactly as the native side predicted". The five belt groups are UNCHANGED.
+      - name: Assert the tectonic control -- 10,013 of 132,472 divergent, all on the belt
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 132472 --expect-divergent 10008
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 132472 --expect-divergent 10013
 
       # THE FIFTH CONTROL, the photoreal slice's Task 6, and the first that exercises the coast
       # channel at all.

@@ -38,7 +38,7 @@
 | Record size | **Fixed** (Task 6): 2.2 MB. |
 | Spec §7 fields | **Fixed** (Task 6): body `downstream`, reach `fresh`, notch `width_m`, a params echo, and `forced_requested` / `forced_matched`. The body `override` is expressed by `forced`. |
 | Silent forced-outlet misses | **Fixed** (Task 6): `forced_matched`. |
-| `mod.rs` size | **Fixed** (Task 1): `mod.rs` 227 lines, `bake.rs` 730. |
+| `mod.rs` size | **Fixed** (Task 1): `mod.rs` 227 lines and `bake.rs` 730, both at 049d9c1 (the split); `bake.rs` has grown since with its tests. |
 
 ## CI and parity (Task 7)
 
