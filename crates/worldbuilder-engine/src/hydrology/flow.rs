@@ -432,6 +432,37 @@ mod tests {
         assert!(drainage_check(&g, &r).is_err(), "a 2-cycle between {a} and {b} must fail the check");
     }
 
+    /// Task 4, Ruling 12b-5's carry-forward: a hollow too large to keep (`capped`) still holds a
+    /// real inner basin. The outer basin (nodes 2-7, a 5 m floor under a 40 m rim, area 6.0e6 m^2
+    /// against a 5.0e6 m^2 test cap) must drain, but the 15 m-deep pocket at node 4 (its own 25 m
+    /// rim) inside it is deep and wide enough to be its own kept lake. It fails today: the single
+    /// global flood never sees the pocket separately (it is fully submerged at the outer basin's
+    /// 40 m level), so the whole basin is one hollow and the pocket is simply cut along with it.
+    #[test]
+    fn a_capped_basin_keeps_a_deep_inner_lake() {
+        let g = line(&[-50.0, 40.0, 5.0, 25.0, 10.0, 25.0, 30.0, 35.0, 70.0], 1.0e6, 0.5);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 5.0e6;
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &params);
+        assert_eq!(hollows.len(), 1, "sanity: one hollow before routing splits it");
+        assert_eq!(hollows[0].area_m2, 6.0e6, "sanity: over the test cap");
+        let mut r = route(&g, &f, &mut hollows, &params);
+
+        let outer = hollows.iter().find(|h| h.members.contains(&2)).expect("the outer basin");
+        assert_eq!(outer.fate, Fate::Notch, "too large to keep, whatever the inner lake");
+
+        let inner_id = hollows.iter().position(|h| h.members == vec![4]).expect("the inner pocket");
+        let inner = &hollows[inner_id];
+        assert_eq!(inner.fate, Fate::Keep, "deep and wide enough on its own");
+        assert_eq!(r.lake_of[4], inner_id as u32, "the pocket floor is that lake's member"); // cast-ok: hollow index, bounded by hollows.len()
+        assert_eq!(r.surface_m[4], inner.level_m, "the pocket floor stands at its lake's level");
+
+        let (_, _closure) = close_lakes(&g, &mut r, &hollows, &params);
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
     /// Beyond the brief: a full pipeline run on a real sampled world must conserve the total
     /// wetness-weighted catchment between the ocean and any closed-lake sinks, and every flow
     /// value must be finite and non-negative.

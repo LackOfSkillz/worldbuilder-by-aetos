@@ -25,6 +25,9 @@ pub struct Hollow {
     pub outlet: u32,
     pub enclosed: bool,
     pub forced: bool,
+    /// Set by `judge`: too large to keep, whatever its depth (Ruling 12b-5). `route` sub-floods
+    /// a capped hollow from its floor so any real inner basin still gets judged as its own lake.
+    pub capped: bool,
     pub fate: Fate,
     /// Where lake water gathers to leave: the entry for a hollow above the datum; for an
     /// enclosed basin, the submerged node the flood's way in leads down to (set by `route`).
@@ -104,6 +107,7 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
             outlet: if outlet == NO_NODE { entry } else { outlet },
             enclosed,
             forced: false,
+            capped: false,
             fate: Fate::Notch,
             lake_entry: entry,
             outlet_path: Vec::new(),
@@ -144,6 +148,7 @@ pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
         // Caspians. Enclosed basins are exempt: the coastline lock (Ruling W1) already keeps
         // them, whatever their size.
         let too_large = !hollow.enclosed && !hollow.forced && hollow.area_m2 > params.keep_max_area_m2;
+        hollow.capped = too_large;
         hollow.fate = if too_large {
             Fate::Notch
         } else if hollow.enclosed || hollow.forced || big {

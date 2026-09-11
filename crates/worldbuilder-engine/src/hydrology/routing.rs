@@ -139,6 +139,7 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
                 outlet,
                 enclosed: true,
                 forced: is_forced,
+                capped: false,
                 fate: Fate::Keep,
                 lake_entry: entry,
                 outlet_path,
@@ -162,6 +163,71 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
             hollows[h] = first;
         }
         hollows.extend(pockets);
+    }
+
+    // 1b. Capped basins (Ruling 12b-5): a hollow too large to keep may still hold a real inner
+    // basin, hidden because the single global flood submerges it along with everything else at
+    // the outer basin's own, higher spill level. A sub-flood seeded at the floor -- the outer
+    // basin's own local minimum -- finds any such inner basin on its own terms.
+    //
+    // Only a kept inner lake's own members get re-parented, onto the sub-flood's tree, so their
+    // internal flow (and any lake member besides the entry) converges on that lake's own entry
+    // and outlet instead of the outer basin's now-meaningless flat level. A notched inner hollow
+    // needs nothing extra: it is ordinary terrain, cut by the minima pass like any other, along
+    // the GLOBAL parent chain it already had. The floor is never a kept inner hollow's member
+    // (it is the sub-flood's seed, so it is never raised in it), so it always keeps its GLOBAL
+    // parent too -- its own way out, cut by the same minima pass, once judged Notch here leaves
+    // it a local minimum. Reparenting every reached member instead (including ordinary, non-lake
+    // ground) risks a two-node cycle: a member whose GLOBAL parent is another member that the
+    // sub-flood, in turn, reaches through it.
+    let capped: Vec<usize> = (0..hollows.len()).filter(|&h| hollows[h].capped).collect();
+    for h in capped {
+        let members = hollows[h].members.clone();
+        let floor = hollows[h].floor;
+        let floor_m = hollows[h].floor_m;
+
+        let inside = |node: u32| members.binary_search(&node).is_ok();
+        let sub = flood(graph, &[(floor, floor_m)], &inside);
+
+        // The floor's own way out, restricted to this hollow's members: the very chain the
+        // minima pass will cut, once this basin is judged Notch (as a capped one always is). A
+        // member on it keeps its GLOBAL parent, unreparented, exactly as it would on any other
+        // notched hollow -- and any hollow the sub-flood finds along it is notched below, never
+        // kept. Ruling C1-a's kin: a kept lake there would need its own entry pointed back down
+        // this same chain (its outlet, over its own rim), while the chain's own next member --
+        // reached by the sub-flood *through* that lake -- still needs to carry on past it. Both
+        // cannot hold without a two-node cycle at the seam.
+        let mut escape = vec![floor];
+        let mut cur = floor;
+        while escape.len() < members.len() {
+            let next = global.parent[cur as usize];
+            if next == NO_NODE || !inside(next) {
+                break;
+            }
+            escape.push(next);
+            cur = next;
+        }
+        escape.sort_unstable();
+
+        // Inner basins the sub-flood reveals: judged by the same rules as any other hollow (not
+        // enclosed; one may itself be capped, and is then simply notched in its turn). One that
+        // touches the escape chain is notched regardless of the ordinary rule's verdict.
+        let mut inner = find_hollows(graph, &sub);
+        judge(&mut inner, graph, params);
+        for hollow in inner.iter_mut() {
+            if hollow.fate == Fate::Keep && hollow.members.iter().any(|m| escape.binary_search(m).is_ok()) {
+                hollow.fate = Fate::Notch;
+            }
+        }
+        for &m in &members {
+            if escape.binary_search(&m).is_ok() {
+                continue;
+            }
+            if sub.reached[m as usize] && sub.parent[m as usize] != NO_NODE {
+                parent[m as usize] = sub.parent[m as usize];
+            }
+        }
+        hollows.extend(inner);
     }
 
     // Ruling C1-a: no kept lake on an outlet path. A fresh pocket's outlet cut (`close_lakes`,
