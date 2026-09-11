@@ -46,31 +46,31 @@ Measured in the branch studio (wasm), on `worlds/world-1788998299904.json` at th
 
 ## Status after plan 1b-1 (2026-09-11)
 
-Items 1-5 below and the §7 fields, the forced-miss report and the `mod.rs` split are **done in plan 1b-1**. See `2026-09-11-water-1b1-verification.md`: the record is 2.2 MB, 0 fresh lakes dead-end, and forced outlets are reported. I3 is fixed in mechanism but not counted on the owner world. What remains for plan 1b-2 is item 6, the fine layer, plus the smaller items not ticked below.
+Plan 1b-1 closed items 1, 2, 4 and 5 below, the §7 fields, the forced-miss report and the `mod.rs` split (see `2026-09-11-water-1b1-verification.md`: record 2.2 MB, 0 fresh lakes dead-end, forced outlets reported). **Item 3 (I3) stays open.** Its mechanism is fixed and keeps 79 inner lakes over 122 real 15k–40k worlds, but it is not counted on the owner world at 1M, because the record carries no "capped" flag. The ruling says it closes only on that count, so plan 1b-2 adds a capped-inner-lakes statistic and measures it. Item 6 (the fine layer) is plan 1b-2.
 
 ## Plan 1b must fix (load-bearing for stage 2)
 
-1. **The residual outlet-cut cycle.** `cut_path` stops on "ground already lower" (`routing.rs:~316`) even when that ground's receiver chain leads back into the source lake. A minima cut that descends to below −1 m next to a pocket can then close a cycle.
+1. **Done in 1b-1.** **The residual outlet-cut cycle.** `cut_path` stops on "ground already lower" (`routing.rs:~316`) even when that ground's receiver chain leads back into the source lake. A minima cut that descends to below −1 m next to a pocket can then close a cycle.
    - Fixtures: line `[-50,-40,39,10,0.02,0.1,0.3,0.5,-5,60]`, and `[-50,-40,39,30,0.05,20,14,12,10,8,6,4,2,-5,60]` (via C1-a), both at area 1e6 and wetness 0.5.
    - Real worlds: 0 of 96 bakes were refused.
    - Fix: do not stop on lower ground that drains back into the source lake, or lower that ground to the cut's bed.
-2. **I2:** notch and outlet paths inside flat-filled hollows follow node-index tie order, which is raster-like because spiral indices follow latitude. Make them terrain-following or least-cost before stage 2 carves them (this moves the parity pins).
-3. **I3:** 12b-5's capped giant basins lose their inner lake-worthy sub-basins. Give them nested judging.
-4. **I5:** fresh lakes with no downstream link (4–34 per 200k world). Add `Body.downstream`, or always start a reach at a fresh lake's outlet.
-5. **Record size:** 23.6 MB against the spec's 8 MB target, where notches are 74–94% of the words. About half of the retained notch points duplicate reach points (whose bed already carries the cut). Record only outlet cuts, plus off-reach cut segments above a depth threshold.
+2. **Done in 1b-1.** **I2:** notch and outlet paths inside flat-filled hollows follow node-index tie order, which is raster-like because spiral indices follow latitude. Make them terrain-following or least-cost before stage 2 carves them (this moves the parity pins).
+3. **Open: mechanism done in 1b-1, owner-world count pending (1b-2).** **I3:** 12b-5's capped giant basins lose their inner lake-worthy sub-basins. Give them nested judging.
+4. **Done in 1b-1.** **I5:** fresh lakes with no downstream link (4–34 per 200k world). Add `Body.downstream`, or always start a reach at a fresh lake's outlet.
+5. **Done in 1b-1.** **Record size:** 23.6 MB against the spec's 8 MB target, where notches are 74–94% of the words. About half of the retained notch points duplicate reach points (whose bed already carries the cut). Record only outlet cuts, plus off-reach cut segments above a depth threshold.
 6. **The fine layer itself:** tracing at 1.5 km, lake outlines, small lakes and ponds (which have their own keep rule), and waterfalls. There are 0 ponds at graph resolution.
 
 ## Smaller items (plan 1b or stage 2)
 
-- Spec §7 fields missing from the record: notch `width_m`, reach `fresh`, body `override`, a params echo.
+- **Done in 1b-1.** Spec §7 fields missing from the record: notch `width_m`, reach `fresh`, body `override`, a params echo.
 - A width-anchor ruling. Spec §6.5 over-determines it: 3 m at the stream threshold and 1,000 m at the great threshold cannot both hold with a fixed exponent. The code anchors the stream end.
-- Report silent forced-outlet misses. A forced point whose nearest node is land, ocean or shore is ignored. C1-a can also drain a forced nested hollow on an outlet path.
+- **Done in 1b-1.** Report silent forced-outlet misses. A forced point whose nearest node is land, ocean or shore is ignored. C1-a can also drain a forced nested hollow on an outlet path.
 - The I4 side effect: a mouth's bed can rise at the last step (the neighbour at about −1 m minus depth, the mouth at 0). Stage 2 carving should expect it.
-- `cut_path` pushes an empty `NotchRoute` when it stops at k=1, and `outlet_notch` then points at it.
+- **Done in 1b-1.** `cut_path` pushes an empty `NotchRoute` when it stops at k=1, and `outlet_notch` then points at it.
 - C1-b never takes back a fresh verdict when a later cut reduces a pocket's inflow (monotone by design).
 - `HydroError::Drainage` shares `WB_ERR_GRAPH` with sampling failures.
 - If a control ever makes `wb_hydro_bake` fail, `parity.mjs` case `H` reads an unwritten `out_id`.
-- `reaches_are_acyclic` is O(R²). `mod.rs` (about 760 lines) and the hydro half of `wasm.rs` should be split.
+- `reaches_are_acyclic` is O(R²). `mod.rs` was split in 1b-1 (227 lines, with `bake.rs` at 730); the hydro half of `wasm.rs` still waits for stage 2.
 - Stale docs:
   - the calibration report's post-fix parity figures should be 136,086 / seed 130,366 / tectonic-warp 13,590;
   - the gates.yml step name "all on the belt";
