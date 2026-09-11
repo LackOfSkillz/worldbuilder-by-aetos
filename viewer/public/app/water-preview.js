@@ -356,8 +356,8 @@ function bodyPixelSize(areaM2) {
 }
 
 /// Draw a decoded hydro-bake record over the globe: every reach as a polyline, the outlet
-/// path from the largest (or forced) fresh body drawn again on top in amber, and every body
-/// as a point sized by its area.
+/// path from the largest (or forced) fresh body drawn again on top in amber, every body as a
+/// point sized by its area, and every waterfall as a small white point.
 ///
 /// Never depth-tested and always clamped to ground, the same rules `hydrology.js` draws
 /// carved courses by -- a preview line that sinks into the terrain it has not carved is worse
@@ -422,10 +422,28 @@ export function drawPreview(viewer, Cesium, decoded) {
     bodiesDrawn += 1;
   }
 
+  // Spec §6.7 falls, at their upper end (Ruling R-5): white points over every reach line, so a
+  // fall on a river still shows.
+  let fallsDrawn = 0;
+  for (const fall of decoded.falls) {
+    source.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(fall.lon, fall.lat),
+      point: {
+        pixelSize: 7,
+        color: Cesium.Color.WHITE,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      description: `waterfall, ${fall.heightM.toFixed(1)} m`,
+    });
+    fallsDrawn += 1;
+  }
+
   const layer = showLayer(viewer, source);
   return {
     source,
-    counts: { reaches: reachesDrawn, bodies: bodiesDrawn, outletReaches: outlet.reachIds.length },
+    counts: {
+      reaches: reachesDrawn, bodies: bodiesDrawn, falls: fallsDrawn, outletReaches: outlet.reachIds.length,
+    },
     remove: () => layer.remove(true),
   };
 }

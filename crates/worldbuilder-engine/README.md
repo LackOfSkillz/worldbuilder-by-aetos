@@ -5023,3 +5023,61 @@ sides moved together, so the plain run stays at 0 divergent. The seed control mo
 "exactly as the native side predicted". The other five controls are unchanged.
 
 The reproduction commands are the ones above, with `--expect-passed <710|710|712|816|818>`.
+
+## 2026-09-12, water 1b-2 Task 8 (plan 1b-2): pins re-derived
+
+Plan 1b-2 re-traces every reach at 1.5 km, adds falls and meanders, simplifies to 250 m and 1 m,
+and moves the record to SCHEMA 4 (a 43-word header). `src/` moved in every task, and Task 8's
+survey edit moved the fingerprint again, so the wasm was rebuilt (byte-identical to Task 7's
+build; only the fingerprint moved): 351,072 bytes, 31 exports, 0 imports; artifact-sha256
+978ba9a6e6dd860e9b5d86b6025c0884af61aa1f2a939e4a7bc2867cadcb7281, source-fingerprint
+7fd5a28b86695a4e2c8fadbb354801c85250db3bafd42cf986d127ae10ef3ffb (55 inputs, up from 53 with
+`bake_tests.rs` and `refine.rs`). `npm run check:wasm` reports it matches its manifest and the
+source here.
+
+**Engine, re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
+--list` (and `--ignored`) and `assert_counts.py cargo-list`, which printed `count OK` at all
+five:**
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 749 | 6 | **743** (was 710) |
+| default | 749 | 6 | **743** (was 710) |
+| `--features python` | 751 | 6 | **745** (was 712) |
+| `--features wasm` | 855 | 6 | **849** (was 816) |
+| `--features python,wasm` | 857 | 6 | **851** (was 818) |
+
+710/710/712/816/818 -> **743/743/745/849/851**, 6 ignored, unchanged, over the same 16 test
+binaries. **+33 uniformly on every row**, all in `src/hydrology/`: the bake tests moved from
+`bake.rs` (23) to `bake_tests.rs` (35, so 12 new), 20 new in `refine.rs`, and 1 new in
+`routing.rs`. `cargo test -p worldbuilder-engine --no-default-features --no-fail-fast` ran 743
+passed / 0 failed / 6 ignored, and `--features wasm --no-fail-fast` 849 / 0 / 6. The ignored
+sweep, `cargo test --release -p worldbuilder-engine --lib every_small_world_drains --
+--ignored`, passed (83.8 s).
+
+**Python:** 565 collected, 157 of them conformance -- unchanged (`pytest --collect-only -q`).
+
+**Viewer:** `npm test` in `viewer/` -- **333 passed, 0 failed** (332 + the preview's falls test).
+
+**Parity, all eight runs `count OK` against `assert_counts.py parity`:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **164,501** (was 132,472) | **0** |
+| `--mutate seed` | 164,501 | **158,765** (was 126,737) |
+| `--mutate erosion-k` | 164,501 | 216 |
+| `--mutate water-pond` | 164,501 | 60 |
+| `--mutate tectonic-warp` | 164,501 | **34,909** (was 10,013) |
+| `--mutate coast-amplitude` | 164,501 | 13,128 |
+| `--mutate gully-steer` | 164,501 | 3,752 |
+| `--mutate climate-samples` | 164,501 | 648 |
+
+The whole +32,029 compared is the two hydro records growing with refinement: `hydro/plain` 647
+-> 7,784 words and `hydro/ranges` 4,166 -> 29,058. No H word diverges native against wasm. The
+seed control's hydro groups move to 7,703 of 7,784 and 28,854 of 29,058; every non-hydro group
+is unmoved at 122,208. The tectonic control's `hydro/ranges` moves to 28,723 of 29,058, and the
+native TCTL prediction's sixth field moved with it (3827 -> 28723), so the control still prints
+"exactly as the native side predicted"; the five belt groups are unchanged at 6,186. The other
+five controls are unchanged.
+
+The reproduction commands are the ones above, with `--expect-passed <743|743|745|849|851>`.

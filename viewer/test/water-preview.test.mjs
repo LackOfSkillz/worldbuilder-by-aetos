@@ -1,6 +1,7 @@
 // Node-native tests for water-preview.js's decode half, against the checked-in wasm the way
-// `hydro.test.mjs` does. `drawPreview` touches Cesium and is not exercised here; everything
-// this file drives is DOM-free by design.
+// `hydro.test.mjs` does. `drawPreview` touches Cesium, so its one test here drives it with a
+// minimal stand-in that records what is added; everything else this file drives is DOM-free by
+// design.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -8,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Engine } from "../public/app/engine.js";
 import {
-  decodeHydro, forcedOutletsFromParams, outletPath,
+  decodeHydro, drawPreview, forcedOutletsFromParams, outletPath,
 } from "../public/app/water-preview.js";
 
 const wasmPath = fileURLToPath(new URL("../public/wasm/worldbuilder_engine.wasm", import.meta.url));
@@ -145,4 +146,40 @@ test("forcedOutletsFromParams parses repeatable ?forcedOutlet= and skips bad inp
 
 test("forcedOutletsFromParams returns an empty array when nothing is given", () => {
   assert.deepEqual(forcedOutletsFromParams(new URLSearchParams()), []);
+});
+
+test("drawPreview draws every waterfall as a white point, labelled with its height, and counts them", () => {
+  // Just enough of Cesium for drawPreview: positions and colours are passed through as plain
+  // values, and the data source keeps every entity it is handed.
+  const Cesium = {
+    CustomDataSource: class { constructor(name) { this.name = name; this.entities = { list: [], add(e) { this.list.push(e); return e; } }; } },
+    Cartesian3: {
+      fromDegrees: (lon, lat) => ({ lon, lat }),
+      fromDegreesArray: (flat) => flat,
+    },
+    Color: {
+      WHITE: "white",
+      fromCssColorString: (css) => ({ css, withAlpha: () => css }),
+    },
+  };
+  const viewer = { dataSources: { contains: () => false, add: (source) => source } };
+  const decoded = {
+    bodies: [],
+    reaches: [],
+    notches: 0,
+    falls: [
+      { reach: 0, lat: 10, lon: 20, heightM: 12.34 },
+      { reach: 3, lat: -5, lon: 7, heightM: 40 },
+    ],
+  };
+  const drawn = drawPreview(viewer, Cesium, decoded);
+  assert.equal(drawn.counts.falls, 2);
+  const points = drawn.source.entities.list.filter((e) => e.point);
+  assert.equal(points.length, 2);
+  assert.deepEqual(points[0].position, { lon: 20, lat: 10 });
+  assert.equal(points[0].point.color, "white");
+  assert.equal(points[0].point.pixelSize, 7);
+  assert.equal(points[0].point.disableDepthTestDistance, Number.POSITIVE_INFINITY);
+  assert.equal(points[0].description, "waterfall, 12.3 m");
+  assert.equal(points[1].description, "waterfall, 40.0 m");
 });
