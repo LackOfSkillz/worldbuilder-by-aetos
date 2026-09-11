@@ -111,8 +111,9 @@ export const WB_MAX_CLIMATE_MARCH_SAMPLES = 1024;
 export const WB_HYDRO_PARAMS_STRIDE = 12;
 
 /// The export's own ceiling on `totalNodes` and `wetnessNodes`, mirrored from
-/// `WB_MAX_HYDRO_NODES`.
-export const WB_MAX_HYDRO_NODES = 4000000;
+/// `WB_MAX_HYDRO_NODES` (1.3M since the water 1a final review: the measured heap at 1M is
+/// about 372 MB of the 512 MB ceiling -- lower the count, never raise the ceiling).
+export const WB_MAX_HYDRO_NODES = 1300000;
 
 export class Engine {
   constructor(instance) {

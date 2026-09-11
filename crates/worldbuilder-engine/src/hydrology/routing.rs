@@ -42,6 +42,8 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
     let enclosed: Vec<usize> = (0..hollows.len())
         .filter(|&h| hollows[h].enclosed && hollows[h].fate == Fate::Keep)
         .collect();
+    // Indices of the nested (shore) hollows appended below, for Ruling C1-a.
+    let mut nested_ids: Vec<usize> = Vec::new();
     for h in enclosed {
         let members = hollows[h].members.clone();
 
@@ -70,6 +72,7 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
             hollow.enclosed = false;
         }
         judge(&mut nested, graph, params);
+        nested_ids.extend(hollows.len()..hollows.len() + nested.len());
         hollows.extend(nested);
 
         // Group the below-datum members into pockets, one per enclosed component id (Ruling 2).
@@ -156,6 +159,30 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
             hollows[h] = first;
         }
         hollows.extend(pockets);
+    }
+
+    // Ruling C1-a: no kept lake on an outlet path. A fresh pocket's outlet cut (`close_lakes`,
+    // `cut_path`) stops at the first lake member it meets, and a nested shore lake's own exit
+    // leads back down toward the pocket it sits above -- so a kept nested hollow with a member
+    // on ANY pocket's `outlet_path` would close a receiver cycle. Such a hollow is notched here,
+    // before surfaces and receivers are set, so the minima pass drains it like any other.
+    // Cost if wrong: a shore lake on the way out of an inland sea becomes drained ground even if
+    // that sea later proves closed (its outlet never cut) -- the lake is lost, never the drainage.
+    if !nested_ids.is_empty() {
+        let mut on_outlet_path = vec![false; n];
+        for hollow in hollows.iter() {
+            if hollow.enclosed && hollow.fate == Fate::Keep {
+                for &node in &hollow.outlet_path {
+                    on_outlet_path[node as usize] = true;
+                }
+            }
+        }
+        for &id in &nested_ids {
+            let hollow = &mut hollows[id];
+            if hollow.fate == Fate::Keep && hollow.members.iter().any(|&m| on_outlet_path[m as usize]) {
+                hollow.fate = Fate::Notch;
+            }
+        }
     }
 
     // 2. Kept hollows stand flat at their level.
@@ -435,6 +462,21 @@ mod tests {
         assert_eq!(kept_enclosed.len(), 1, "exactly one enclosed lake");
         assert_eq!(kept_enclosed[0].lake_entry, 4);
         assert_eq!(kept_enclosed[0].outlet_path, vec![4, 3]);
+    }
+
+    /// Ruling C1-a: the shore pool at node 4 (a nested hollow at 20 m, deep and wide enough to
+    /// keep) sits on the pocket's outlet path `[6, 5, 4, 3, 2]`, so it is notched, not kept.
+    #[test]
+    fn a_shore_lake_on_a_pockets_outlet_path_is_notched() {
+        let g = line(&[-50.0, -40.0, 39.0, 30.0, 5.0, 20.0, -5.0, 60.0], 1.0e6);
+        let (hollows, r) = routed(&g);
+        let pocket = hollows.iter().find(|h| h.enclosed && h.fate == Fate::Keep).expect("the pocket");
+        assert_eq!(pocket.outlet_path, vec![6, 5, 4, 3, 2]);
+        let shore = hollows.iter().find(|h| !h.enclosed && h.members == vec![4]).expect("the nested shore pool");
+        assert!(shore.depth_m >= 8.0 && shore.area_m2 >= 1.0e6, "sanity: the keep rule alone would keep it");
+        assert_eq!(shore.fate, Fate::Notch);
+        assert_eq!(r.lake_of[4], NO_LAKE);
+        assert_eq!(terminus(&r, 4), 6, "the notched pool drains into the pocket");
     }
 
     #[test]

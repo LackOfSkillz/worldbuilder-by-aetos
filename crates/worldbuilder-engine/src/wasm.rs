@@ -3975,12 +3975,12 @@ pub extern "C" fn wb_water_run(
 /// contract**, the same words every other flat record in this file carries at its own doc.
 pub const WB_HYDRO_PARAMS_STRIDE: usize = 12;
 
-/// The ceiling on `total_nodes` and `wetness_nodes` for [`wb_hydro_bake`]. Chosen with margin
-/// over any bake this crate's own fixtures run, the same posture [`WB_MAX_EROSION_NODES`]
-/// takes for its own channel -- a domain statement rather than a measured hazard, because
-/// `hydrology::bake`'s own cost scales with node count and a caller choosing a number this
-/// large has chosen a slow bake, not a dead one.
-pub const WB_MAX_HYDRO_NODES: u32 = 4_000_000;
+/// The ceiling on `total_nodes` and `wetness_nodes` for [`wb_hydro_bake`]. Ruling I7 (final
+/// review of water 1a): a measured hazard, not a domain margin -- the studio heap was about
+/// 372 MB at 1,000,000 nodes against a 512 MB ceiling, so 1,300,000 is roughly where a bake
+/// stops fitting. Spec section 6.1: when a bake does not fit, lower the node count; never raise
+/// this ceiling. (It was 4,000,000, which would have aborted the browser tab, not refused.)
+pub const WB_MAX_HYDRO_NODES: u32 = 1_300_000;
 
 /// The ceiling on `forced_count` for [`wb_hydro_bake`] -- forced outlets are a handful of
 /// owner overrides, never a data set.
@@ -4050,8 +4050,9 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
 /// cannot be decoded or `hydrology::bake` refuses its contents (`HydroError::Params`);
 /// `WB_ERR_BUFFER` if `params` or `out_id` is null or misaligned, or `params_len` is short;
 /// `WB_ERR_HANDLE` if `handle` names no live world; [`WB_ERR_GRAPH`] if `bake` could not
-/// sample or build a graph over the surface (`HydroError::Sampling`). `*out_id` is written
-/// only on `WB_OK`.
+/// sample or build a graph over the surface (`HydroError::Sampling`), or if the routing it
+/// built failed the drainage check (`HydroError::Drainage`). `*out_id` is written only on
+/// `WB_OK`.
 ///
 /// # Safety
 /// `params` must be null or a live, 8-aligned allocation of at least `params_len` f64.
@@ -4088,6 +4089,9 @@ pub extern "C" fn wb_hydro_bake(handle: u32, params: *const f64, params_len: u32
         None => return WB_ERR_HANDLE,
         Some(Err(HydroError::Params(_))) => return WB_ERR_PARAM,
         Some(Err(HydroError::Sampling)) => return WB_ERR_GRAPH,
+        // Ruling C1-c: a routing that fails the drainage check is a graph the bake could not
+        // make drain -- refused as a graph error, never handed out as a record that loses water.
+        Some(Err(HydroError::Drainage(_))) => return WB_ERR_GRAPH,
         Some(Ok(record)) => record,
     };
 

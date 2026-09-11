@@ -5388,6 +5388,12 @@ fn a_hydro_bake_refuses_bad_params_without_writing_an_id() {
     params[11] = 1.0; // one forced outlet promised, none given
     assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
     assert_eq!(wb_hydro_bake(9_999, hydro_params(12_000).as_ptr(), 12, &mut id), WB_ERR_HANDLE);
+    // Ruling I7: the ceiling is 1.3M nodes (about 372 MB of studio heap was measured at 1M; the
+    // spec lowers the count, never raises the ceiling) -- one node over it is refused.
+    assert_eq!(WB_MAX_HYDRO_NODES, 1_300_000);
+    let params = hydro_params(WB_MAX_HYDRO_NODES + 1);
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
+    assert_eq!(id, 77);
     wb_world_free(world);
 }
 

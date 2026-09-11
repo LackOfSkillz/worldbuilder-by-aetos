@@ -17,8 +17,8 @@ pub mod record;
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 
-use crate::hydrology::flood::{flood, ocean_seeds};
-use crate::hydrology::flow::close_lakes;
+use crate::hydrology::flood::{flood, ocean_seeds, NO_NODE};
+use crate::hydrology::flow::{close_lakes, drainage_check};
 use crate::hydrology::hollows::{find_hollows, judge, Fate};
 use crate::hydrology::landgraph::LandGraph;
 use crate::hydrology::reaches::{bifurcation_ratios, depth_m, extract, width_m};
@@ -191,6 +191,22 @@ pub struct HydroRecord {
 pub enum HydroError {
     Params(&'static str),
     Sampling,
+    /// Ruling C1-c: the routing broke "everything drains" -- the node is the lowest-index one
+    /// whose receiver chain cycles or stops on dry land (see `flow::drainage_check`). The bake
+    /// refuses rather than silently losing that node's water.
+    Drainage(u32),
+}
+
+/// The bake's working state up to and including the lake closure, before it is folded into a
+/// `HydroRecord`. `bake()` is exactly `bake_stages` then `record_of`, so a survey that times
+/// the two halves is timing what ships.
+#[derive(Debug, Clone)]
+pub struct BakeStages {
+    pub graph: LandGraph,
+    pub hollows: Vec<hollows::Hollow>,
+    pub routing: routing::Routing,
+    pub flow: Vec<f64>,
+    pub closure: flow::Closure,
 }
 
 /// A threshold-like parameter must be a finite positive number; `name` is the field name, for
@@ -211,26 +227,44 @@ fn require_finite_positive(name: &'static str, value: f64) -> Result<(), HydroEr
 /// ocean/lake's total inflow (everything that drains there), not this channel's -- the same
 /// reason `reaches::extract` substitutes the second-to-last node's flow for classification.
 /// Reuse that same q here so width_m/depth_m/flow_m2 stay the channel's own values all the way
-/// to the last point; bed_m keeps the terminal node's own surface, unchanged.
-fn reach_points(graph: &LandGraph, routing: &routing::Routing, flow: &[f64], nodes: &[u32], params: &HydroParams) -> Vec<ReachPoint> {
+/// to the last point.
+///
+/// Ruling I4: a terminal point's bed is the water it runs into, not the ground under it -- the
+/// datum (0.0) for an ocean node, so a river mouth never carves the seabed, and the lake's own
+/// level for a lake node.
+fn reach_points(graph: &LandGraph, routing: &routing::Routing, hollows: &[hollows::Hollow], flow: &[f64], nodes: &[u32], params: &HydroParams) -> Vec<ReachPoint> {
     let last_index = nodes.len() - 1;
     let mut points = Vec::with_capacity(nodes.len());
     for (idx, &node) in nodes.iter().enumerate() {
         let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-        let is_terminal = idx == last_index
-            && (graph.ocean[node as usize] || routing.lake_of[node as usize] != NO_LAKE);
+        let at_ocean = graph.ocean[node as usize];
+        let lake = routing.lake_of[node as usize];
+        let is_terminal = idx == last_index && (at_ocean || lake != NO_LAKE);
         let q = if is_terminal && idx > 0 { flow[nodes[idx - 1] as usize] } else { flow[node as usize] };
         let w = width_m(q, params);
         let d = depth_m(q, params);
-        let bed_m = if is_terminal { routing.surface_m[node as usize] } else { routing.surface_m[node as usize] - d };
+        let bed_m = if is_terminal && at_ocean {
+            0.0
+        } else if is_terminal {
+            hollows[lake as usize].level_m
+        } else {
+            routing.surface_m[node as usize] - d
+        };
         points.push(ReachPoint { lat_deg, lon_deg, bed_m, width_m: w, depth_m: d, flow_m2: q });
     }
     points
 }
 
-/// The bake, end to end: `LandGraph::sample` -> `flood(ocean_seeds)` -> `find_hollows` +
-/// `judge` -> `route` -> `close_lakes` -> `extract`, folded into the public record types.
+/// The bake, end to end: `bake_stages` then `record_of`.
 pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, HydroError> {
+    let stages = bake_stages(surface, params)?;
+    Ok(record_of(&stages, params))
+}
+
+/// The bake up to the lake closure: validation, `LandGraph::sample` -> `flood(ocean_seeds)` ->
+/// `find_hollows` + `judge` -> `route` -> `close_lakes`, then `flow::drainage_check` (Ruling
+/// C1-c), which refuses a routing where any node's water fails to reach the sea or a sink.
+pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages, HydroError> {
     if params.total_nodes < 2 || params.total_nodes > crate::stream::MAX_NODES {
         return Err(HydroError::Params("total_nodes must be in 2..=stream::MAX_NODES"));
     }
@@ -257,6 +291,14 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
     judge(&mut hollows, &graph, params);
     let mut routing = route(&graph, &global_flood, &mut hollows, params);
     let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, params);
+    drainage_check(&graph, &routing).map_err(HydroError::Drainage)?;
+    Ok(BakeStages { graph, hollows, routing, flow, closure })
+}
+
+/// Folds a drained `BakeStages` into the public record: reaches (`extract`, on the effective
+/// thresholds), bodies, the recorded notches and the stats.
+pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
+    let BakeStages { graph, hollows, routing, flow, closure } = stages;
 
     // Ruling 12b-1: the effective thresholds a graph this coarse can actually resolve. Sorted,
     // deterministic median of the land-node areas (the lower of the two middles on an even
@@ -265,7 +307,7 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         .filter(|&i| !graph.ocean[i])
         .map(|i| graph.area_m2[i])
         .collect();
-    land_areas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    land_areas.sort_unstable_by(|a, b| a.total_cmp(b));
     let median_land_area_m2 = if land_areas.is_empty() {
         0.0
     } else {
@@ -292,7 +334,7 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
     effective_params.stream_flow_m2 = effective_stream_flow_m2;
     effective_params.river_flow_m2 = effective_river_flow_m2;
     effective_params.great_flow_m2 = effective_great_flow_m2;
-    let reaches = extract(&graph, &routing, &flow, &effective_params);
+    let reaches = extract(graph, routing, flow, &effective_params);
 
     // hollow index -> body id, kept hollows only, in hollow order (Controller ruling: body ids
     // are one per kept hollow, numbered 0.., and a reach's Downstream::Body carries the hollow
@@ -329,11 +371,15 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         } else {
             BodyKind::Lake
         };
-        let outlet_node = hollow.outlet as usize;
-        let outlet_reach = if reach_of_first_node[outlet_node] != u32::MAX {
-            Some(reach_of_first_node[outlet_node])
-        } else {
+        // Ruling I1: a closed lake has no outlet. An open lake's outlet reach is the one that
+        // starts where its water actually leaves -- the receiver of its lake entry (the rim
+        // outlet for a lake above the datum, the first node of the cut for a fresh pocket) --
+        // or none if no reach starts there.
+        let leaves_to = routing.receiver[hollow.lake_entry as usize];
+        let outlet_reach = if closed || leaves_to == NO_NODE || reach_of_first_node[leaves_to as usize] == u32::MAX {
             None
+        } else {
+            Some(reach_of_first_node[leaves_to as usize])
         };
         let (anchor_lat, anchor_lon) = graph.positions[hollow.floor as usize].to_latlon();
         bodies.push(Body {
@@ -365,7 +411,7 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
             }
             other => other,
         };
-        let points = reach_points(&graph, &routing, &flow, &reach.nodes, params);
+        let points = reach_points(graph, routing, hollows, flow, &reach.nodes, params);
         reach_lines.push(ReachLine {
             id: id as u32, // cast-ok: at most one reach per index
             class: reach.class,
@@ -456,7 +502,7 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
         great_flow_m2: effective_great_flow_m2,
     };
 
-    Ok(HydroRecord { bodies, reaches: reach_lines, notches, falls, stats })
+    HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }
 }
 
 /// Walks downstream from every reach and fails on a revisit. `mod.rs` owns it (rather than
@@ -534,7 +580,7 @@ mod bake_tests {
         let graph = LandGraph::sample(&world(), p.total_nodes, p.wetness_nodes).expect("graph");
         let mut land_areas: Vec<f64> =
             (0..graph.len()).filter(|&i| !graph.ocean[i]).map(|i| graph.area_m2[i]).collect();
-        land_areas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        land_areas.sort_unstable_by(|a, b| a.total_cmp(b));
         let mid = if land_areas.len() % 2 == 0 { land_areas.len() / 2 - 1 } else { land_areas.len() / 2 };
         let median_land_area_m2 = land_areas[mid];
 
@@ -561,7 +607,7 @@ mod bake_tests {
         let graph = LandGraph::sample(&world(), p.total_nodes, p.wetness_nodes).expect("graph");
         let mut land_areas: Vec<f64> =
             (0..graph.len()).filter(|&i| !graph.ocean[i]).map(|i| graph.area_m2[i]).collect();
-        land_areas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        land_areas.sort_unstable_by(|a, b| a.total_cmp(b));
         let mid = if land_areas.len() % 2 == 0 { land_areas.len() / 2 - 1 } else { land_areas.len() / 2 };
         let median_land_area_m2 = land_areas[mid];
 
@@ -734,7 +780,7 @@ mod bake_tests {
         assert_eq!(nodes, vec![0, 1, 2], "left branch drains node 0 -> 1 -> the ocean at 2");
         assert!(g.ocean[2], "node 2 is the ocean");
 
-        let points = reach_points(&g, &routing, &flow, &nodes, &params);
+        let points = reach_points(&g, &routing, &hollows, &flow, &nodes, &params);
         let last = points.last().expect("at least one point");
         assert_eq!(last.flow_m2, flow[1],
                    "the mouth point must carry node 1's own channel flow, not node 2's");
@@ -742,6 +788,145 @@ mod bake_tests {
                 "node 2's accumulated flow also holds the right branch's inflow, so the \
                  channel's own flow must be strictly less: last {} flow[2] {}",
                 last.flow_m2, flow[2]);
+    }
+
+    /// Ruling I4: a mouth's bed is the water it meets. On the two-branch fixture the ocean node
+    /// (node 2) is 50 m below the datum; the mouth point must stand at the datum, not carve it.
+    #[test]
+    fn a_river_mouth_does_not_carve_the_seabed() {
+        let g = two_branches_into_one_sea();
+        let params = HydroParams::earth_like(0);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &params);
+        let mut routing = route(&g, &f, &mut hollows, &params);
+        let (flow, _closure) = close_lakes(&g, &mut routing, &hollows, &params);
+        let points = reach_points(&g, &routing, &hollows, &flow, &[0, 1, 2], &params);
+        assert_eq!(points[2].bed_m, 0.0, "the mouth stands at the datum, not the -50 m seabed");
+        assert!(points[1].bed_m < routing.surface_m[1], "an inland point still sits below its ground");
+
+        // End to end: every ocean mouth at the datum, every lake mouth at its lake's level.
+        let record = bake(&world(), &params_for_world()).expect("bake");
+        let mut ocean_mouths = 0;
+        for reach in &record.reaches {
+            let last = reach.points.last().expect("a reach has points");
+            match reach.downstream {
+                Downstream::Ocean => {
+                    assert_eq!(last.bed_m, 0.0, "reach {} mouth", reach.id);
+                    ocean_mouths += 1;
+                }
+                Downstream::Body(id) => {
+                    assert_eq!(last.bed_m, record.bodies[id as usize].level_m, "reach {} lake mouth", reach.id);
+                }
+                _ => {}
+            }
+        }
+        assert!(ocean_mouths > 0, "sanity: this world has rivers that reach the sea");
+    }
+
+    fn params_for_world() -> HydroParams {
+        params()
+    }
+
+    /// Ruling I1: a closed lake reports no outlet reach, and an open lake's outlet reach starts
+    /// where its water actually leaves -- `routing.receiver[lake_entry]`.
+    #[test]
+    fn no_closed_body_has_an_outlet_reach() {
+        // By hand: a dry lake behind a 40 m rim (node 1). It closes, yet the rim node sheds
+        // enough of its own water, at these thresholds, to start a reach to the sea -- which the
+        // old rule (the reach starting at `hollow.outlet`) reported as the closed lake's outlet.
+        let heights = [-50.0, 40.0, 5.0, 12.0, 25.0, 70.0];
+        let n = heights.len();
+        let positions: Vec<SpherePoint> =
+            (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+        let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+            .map(|i| {
+                let mut v = Vec::new();
+                if i > 0 { v.push(i - 1); }
+                if (i as usize) + 1 < n { v.push(i + 1); }
+                v
+            })
+            .collect();
+        let g = LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![2.0e6; n], &directed, vec![0.05; n]);
+        let mut p = HydroParams::earth_like(0);
+        p.stream_flow_m2 = 5.0e4;
+        p.river_flow_m2 = 5.0e5;
+        p.great_flow_m2 = 5.0e6;
+        p.min_stream_nodes = 1.0e-9;
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &p);
+        let mut routing = route(&g, &f, &mut hollows, &p);
+        let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
+        let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+        let record = record_of(&stages, &p);
+        assert_eq!(record.bodies.len(), 1);
+        assert!(!record.bodies[0].fresh, "sanity: wetness 0.05 closes the lake");
+        assert!(record.reaches.iter().any(|r| r.points[0].lon_deg == 0.5), "sanity: a reach starts at the rim");
+        assert_eq!(record.bodies[0].outlet_reach, None, "a closed lake has no outlet reach");
+
+        // On a real world, dry enough (evaporation x5) that some lakes close and some stay open.
+        let surface = world();
+        let mut p = params();
+        p.evaporation_factor = 5.0;
+        let stages = bake_stages(&surface, &p).expect("bake");
+        let record = record_of(&stages, &p);
+        let kept: Vec<&hollows::Hollow> = stages.hollows.iter().filter(|h| h.fate == Fate::Keep).collect();
+        assert_eq!(kept.len(), record.bodies.len());
+        let closed = record.bodies.iter().filter(|b| !b.fresh).count();
+        assert!(closed > 0, "sanity: this world closes at least one lake");
+        let mut with_outlet = 0;
+        for (body, hollow) in record.bodies.iter().zip(&kept) {
+            if !body.fresh {
+                assert_eq!(body.outlet_reach, None, "closed body {} reports an outlet reach", body.id);
+                continue;
+            }
+            if let Some(id) = body.outlet_reach {
+                with_outlet += 1;
+                let leaves_to = stages.routing.receiver[hollow.lake_entry as usize];
+                let first = &record.reaches[id as usize].points[0];
+                assert_eq!((first.lat_deg, first.lon_deg), stages.graph.positions[leaves_to as usize].to_latlon(),
+                           "body {}'s outlet reach starts where its water leaves", body.id);
+            }
+        }
+        assert!(with_outlet > 0, "sanity: at least one open lake feeds a reach");
+    }
+
+    /// Ruling C1-d: the full bake on the two real worlds the drainage cycle was found on, at the
+    /// smallest node count (of those tried: 10k, 14k, 16k, 18k, 20k, 30k, 50k) at which each
+    /// reproduced it before the fix -- seed 1 (ranges) at 10,000 nodes (317 undrained land
+    /// nodes), seed 4242 at 20,000 (39). `bake()` is `Ok`, and everything the land sheds reaches
+    /// the sea or a closed lake's sink.
+    #[test]
+    fn real_worlds_drain_everything_through_the_full_bake() {
+        let cases = [
+            (Surface::new(1, 6.371e6, 12, 0.40, None, None, Some(crate::tectonics::TectonicParams::ranges())), 10_000u32),
+            (Surface::new(4242, 6.371e6, 16, 0.35, None, None, None), 20_000u32),
+        ];
+        for (surface, nodes) in &cases {
+            let p = HydroParams::earth_like(*nodes);
+            // `bake()` is exactly `bake_stages` then `record_of`; calling the halves once each
+            // is the full bake without paying for a second debug-build sample of the world.
+            let stages = bake_stages(surface, &p).expect("the bake drains, so bake_stages is Ok");
+            let record = record_of(&stages, &p);
+            assert!(!record.bodies.is_empty() && !record.reaches.is_empty(), "sanity: a real bake at {nodes} nodes");
+            let (g, r, flow) = (&stages.graph, &stages.routing, &stages.flow);
+            assert_eq!(drainage_check(g, r), Ok(()));
+            let mut total = 0.0;
+            let mut delivered = 0.0;
+            for i in 0..g.len() {
+                if g.ocean[i] {
+                    continue;
+                }
+                total += g.area_m2[i] * g.wetness[i];
+                let recv = r.receiver[i];
+                if recv == NO_NODE || g.ocean[recv as usize] {
+                    delivered += flow[i];
+                }
+            }
+            let rel = (delivered - total).abs() / total;
+            assert!(rel < 1e-9, "{nodes} nodes: delivered {delivered}, shed {total}, rel {rel}");
+        }
     }
 
     /// Mutation guard for the connectivity property: a hand-broken reach list must fail it.

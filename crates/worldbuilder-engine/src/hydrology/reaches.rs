@@ -62,11 +62,16 @@ pub fn extract(graph: &LandGraph, routing: &Routing, flow: &[f64], params: &Hydr
     for &start in &starts {
         let mut nodes = vec![start];
         let mut here = start;
+        let mut steps = 0usize;
         let downstream = loop {
             let next = routing.receiver[here as usize];
-            if next == NO_NODE {
+            // A receiver chain visits each node at most once unless it cycles; `bake()` refuses
+            // a cycle (`drainage_check`), and this bound keeps any other caller from walking
+            // one forever -- a walk that would revisit is ended as a sink.
+            if next == NO_NODE || steps >= n {
                 break Downstream::Sink;
             }
+            steps += 1;
             let j = next as usize;
             if graph.ocean[j] {
                 nodes.push(next);
