@@ -173,7 +173,7 @@ mod tests {
     use super::*;
     use crate::hydrology::flood::{flood, ocean_seeds};
     use crate::hydrology::flow::close_lakes;
-    use crate::hydrology::hollows::{find_hollows, judge};
+    use crate::hydrology::hollows::{find_hollows, forced_nodes, judge};
     use crate::hydrology::landgraph::LandGraph;
     use crate::hydrology::routing::route;
     use crate::hydrology::HydroParams;
@@ -188,7 +188,7 @@ mod tests {
         params.great_flow_m2 = 3.0e12;
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (flow, _) = close_lakes(&g, &mut r, &hollows, &params);
         let reaches = extract(&g, &r, &flow, &params);

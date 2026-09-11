@@ -14,6 +14,9 @@ pub mod flow;
 pub mod reaches;
 pub mod record;
 pub mod bake;
+pub mod refine;
+#[cfg(test)]
+mod bake_tests;
 
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
@@ -49,6 +52,24 @@ pub struct HydroParams {
     /// graph scale, not an inland sea several Caspians wide. Not a wasm param in 1a, for the
     /// same reason as `min_stream_nodes`.
     pub keep_max_area_m2: f64,
+    /// Spec §6.6: the fine tracer's station spacing along a coarse segment.
+    pub refine_step_m: f64,
+    /// Ruling R-7: Douglas–Peucker horizontal tolerance for refined reaches. 500 m in
+    /// `earth_like`: planned at 250 m, and raised by plan 1b-2 Task 8's size gate when the
+    /// owner's world baked an 8,659,856-byte record at 250 m (the target is 8 MB).
+    pub refine_simplify_m: f64,
+    /// Ruling R-7: the vertical tolerance, on the bed.
+    pub refine_vertical_m: f64,
+    /// Spec §6.7: a fall drops at least this much ...
+    pub fall_min_drop_m: f64,
+    /// ... over at most this much of its length.
+    pub fall_max_run_m: f64,
+    /// Ruling R-6: meander wavelength, in channel widths.
+    pub meander_wavelength_widths: f64,
+    /// Ruling R-6: meander amplitude, in channel widths.
+    pub meander_amplitude_widths: f64,
+    /// Ruling R-6: a segment meanders only if its bed falls less steeply than this.
+    pub meander_max_slope: f64,
 }
 
 impl HydroParams {
@@ -72,6 +93,14 @@ impl HydroParams {
             forced_outlets: Vec::new(),
             min_stream_nodes: 10.0,
             keep_max_area_m2: 4.0e11,
+            refine_step_m: 1_500.0,
+            refine_simplify_m: 500.0,
+            refine_vertical_m: 1.0,
+            fall_min_drop_m: 10.0,
+            fall_max_run_m: 150.0,
+            meander_wavelength_widths: 11.0,
+            meander_amplitude_widths: 1.5,
+            meander_max_slope: 0.002,
         }
     }
 }
@@ -205,6 +234,25 @@ pub struct BakeStats {
     /// Of those, how many landed on a submerged member of a kept lake -- the same nearest-node
     /// mapping `hollows::forced_nodes` uses, checked against `Routing::lake_of` after routing.
     pub forced_matched: u32,
+    /// SCHEMA 4, carry-forward I3: hollows with `capped == true` -- the record says how many
+    /// there were, so the owner-world bake can show whether capped basins keep their inner
+    /// lakes at 1M nodes.
+    pub capped_basins: u32,
+    /// Hollows with `inner_of_capped`: every inner hollow a capped basin's sub-flood revealed.
+    pub capped_inner: u32,
+    /// Of those, how many were kept (`fate == Fate::Keep`) rather than notched for sitting on
+    /// their basin's way out.
+    pub capped_inner_kept: u32,
+    /// SCHEMA 4's refinement params echo (Ruling R-8: not wasm params, always `earth_like`'s
+    /// values on a wasm bake). Mirrors `HydroParams` field for field.
+    pub refine_step_m: f64,
+    pub refine_simplify_m: f64,
+    pub refine_vertical_m: f64,
+    pub fall_min_drop_m: f64,
+    pub fall_max_run_m: f64,
+    pub meander_wavelength_widths: f64,
+    pub meander_amplitude_widths: f64,
+    pub meander_max_slope: f64,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the
@@ -230,24 +278,34 @@ pub enum HydroError {
     Drainage(u32),
 }
 
-/// The bake, end to end: `bake_stages` then `record_of`.
+/// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine` (spec §6.6).
 pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, HydroError> {
     let stages = bake_stages(surface, params)?;
-    Ok(record_of(&stages, params))
+    let mut record = record_of(&stages, params);
+    let height = |p: &SpherePoint| surface.structural_m(p);
+    let ground = refine::Ground::for_surface(surface, &height, params);
+    refine::refine(&mut record, &ground, params);
+    Ok(record)
 }
 
 /// Walks downstream from every reach and fails on a revisit. `mod.rs` owns it (rather than
 /// `reaches.rs`) because the survey (a later task) reuses it against `ReachLine`, the public
 /// record type, not `reaches::Reach`.
 pub fn reaches_are_acyclic(reaches: &[ReachLine]) -> bool {
+    // 0 unvisited, 1 on the current walk, 2 known to end without a cycle.
+    let mut state = vec![0u8; reaches.len()];
+    let mut walk: Vec<usize> = Vec::new();
     for start in 0..reaches.len() {
-        let mut seen = vec![false; reaches.len()];
         let mut here = start;
         loop {
-            if seen[here] {
+            if state[here] == 2 {
+                break;
+            }
+            if state[here] == 1 {
                 return false;
             }
-            seen[here] = true;
+            state[here] = 1;
+            walk.push(here);
             match reaches[here].downstream {
                 Downstream::Reach(next) => {
                     let next = next as usize;
@@ -259,6 +317,10 @@ pub fn reaches_are_acyclic(reaches: &[ReachLine]) -> bool {
                 _ => break,
             }
         }
+        for &id in &walk {
+            state[id] = 2;
+        }
+        walk.clear();
     }
     true
 }

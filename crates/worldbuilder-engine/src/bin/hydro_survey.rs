@@ -1,22 +1,25 @@
-//! Task 12 (plan 1a) native survey of the coarse hydrology bake: the wall time of `bake`
-//! itself, its drainage check, a memory proxy, and the body/reach counts the bake produces, at
-//! three node counts on two worlds.
+//! Native survey of the hydrology bake: the wall time of each part of `hydrology::bake`, its
+//! drainage check, a memory proxy, the body/reach counts the bake produces, and (plan 1b-2,
+//! Task 8) the refinement's own time, point counts, falls, capped-basin counts and record size.
 //!
 //! ```text
-//! cargo run --release --no-default-features --bin hydro_survey
+//! cargo run --release --no-default-features --bin hydro_survey -- [--simplify M] [NODES ...]
 //! ```
 //!
+//! With no `NODES`, every world is baked at 1,000,000 nodes (plan 1b-2, Task 8). `--simplify M`
+//! overrides `HydroParams::refine_simplify_m` for the run, so Task 8's size gate can measure a
+//! raised tolerance before `earth_like` is changed; without it the bake takes `earth_like`'s
+//! value, as a wasm bake does. `--help` prints this usage.
+//!
 //! This is a `[[bin]]`, not a `cargo test`-visible fixture, for the reason `streambench.rs`,
-//! `pond_threshold_survey.rs` and `climate_survey.rs` already are: a 2,000,000-node bake is a
+//! `pond_threshold_survey.rs` and `climate_survey.rs` already are: a 1,000,000-node bake is a
 //! minutes-per-run, one-machine measurement, not a property a suite that runs on every push
 //! should re-pay.
 //!
-//! **Native half only.** Step 2 of Task 12's brief (calibrating on the owner's saved studio
-//! world, `worlds/world-1788998299904.json`, baked through the wasm build in the browser) is
-//! the controller's half, per Ruling E in the task-12 ledger, and is not attempted here. The
-//! `owner_survey` world below is a tectonics-shaped stand-in used only to see how the bake's
-//! own cost and thresholds move on a tectonics world, natively -- it is not the owner's saved
-//! world and its numbers do not replace Step 2's.
+//! **Native only.** The owner's saved studio world (`worlds/world-1788998299904.json`) is baked
+//! through the wasm build in the browser by the controller. The worlds below are stand-ins used
+//! to see how the bake's cost and size move, natively -- their numbers do not replace the owner
+//! world's.
 //!
 //! # Method (every figure below names its population, its method with parameters, and its host)
 //!
@@ -27,16 +30,27 @@
 //!     tectonics -- the crate's other everyday test/survey world.
 //!   - `owner_survey`: seed 562,423,712, radius 4,500,000 m, 28 plates, land fraction 0.16,
 //!     `TectonicParams::ranges()`.
-//! - **Node counts:** 250,000 / 1,000,000 / 2,000,000, each run once, with `HydroParams::
-//!   earth_like(n)` (no forced outlets, no threshold tuning -- Task 12's calibration step is
-//!   the owner-world half).
-//! - **Wall time:** `std::time::Instant` around the two halves `hydrology::bake` itself is made
+//!   - `seed1_ranges`: seed 1, radius 6,371,000 m, 12 plates, land fraction 0.40,
+//!     `TectonicParams::ranges()` -- the world `real_worlds_drain_everything_through_the_full_bake`
+//!     bakes at 10,000 nodes.
+//! - **Params:** `HydroParams::earth_like(n)` (no forced outlets, no threshold tuning), with
+//!   `refine_simplify_m` replaced only when `--simplify` is given.
+//! - **Wall time:** `std::time::Instant` around the three parts `hydrology::bake` itself is made
 //!   of, called here exactly as `bake` calls them -- `hydrology::bake_stages` (validation,
 //!   `LandGraph::sample`, the flood, hollows and judging, `route`, `close_lakes`, and
-//!   `flow::drainage_check`) and `hydrology::record_of` (reach extraction on the effective
-//!   thresholds, bodies, notch filter, stats). Their sum is the time of the bake that ships; no
-//!   step is re-implemented here (water 1a final review, I8: the survey used to re-stage the
-//!   pipeline by hand, and had drifted from `bake`).
+//!   `flow::drainage_check`), `hydrology::record_of` (reach extraction on the effective
+//!   thresholds, bodies, notch filter, stats) and `refine::refine` (tracing, falls, meander and
+//!   simplification), on a `refine::Ground` built exactly as `bake` builds it. Their sum is the
+//!   time of the bake that ships; no step is re-implemented here (water 1a final review, I8).
+//!   `record::encode` is timed separately and is not part of `bake`.
+//! - **Record size:** `record::encode(&record).len() * 8` bytes -- the words the wasm export
+//!   hands the studio.
+//! - **Points:** `coarse` is the sum of `ReachLine::points` lengths after `record_of`, `refined`
+//!   the same sum after `refine`. Notch points are the sum of `NotchLine::points` lengths.
+//! - **Duplicate notch points (Ruling R-9):** a `(lat, lon)` pair (compared bit for bit) that
+//!   appears in more than one notch line. `keys` counts such pairs; `extra` counts every
+//!   appearance past the first line that holds it (the words it costs are `extra * 4 * 8`
+//!   bytes). A pair repeated inside one line is not counted.
 //! - **Drainage:** `hydrology::flow::drainage_check` on every world at every count, printed.
 //!   `bake_stages` already refuses a routing that fails it (`HydroError::Drainage`), so a
 //!   failure prints the refusal and the node instead of the run's figures.
@@ -44,33 +58,31 @@
 //!   (`size_of::<SpherePoint>()` each), `height_m`/`area_m2`/`wetness` (8 bytes each),
 //!   `adj_start`/`enclosed` (4 bytes each, `adj_start` one longer than the node count),
 //!   `adj` (4 bytes per directed half-edge), `ocean` (1 byte each) -- summed from each
-//!   `Vec`'s own `len()`, not sampled from a live allocator. This is the bake's own working
-//!   set; the wasm heap Step 2 reads separately also carries the wasm runtime and the studio's
-//!   own state around it.
+//!   `Vec`'s own `len()`, not sampled from a live allocator.
 //! - **Median land-node area:** the sorted median of `graph.area_m2` restricted to nodes with
-//!   `!graph.ocean[i]`, reported so the controller can reason about how coarse a "land node"
-//!   is at each count, on each world.
-//! - **Body counts by kind:** read off the record `record_of` returns (`Body::kind`), so
-//!   they are the bake's own classification rather than a re-derivation of it.
-//! - **Enclosed:** the count of hollows (any fate) whose own `.enclosed` flag is set -- a
-//!   below-datum basin `LandGraph::label_water` did not call the ocean -- distinct from
-//!   `closed`, which is the evaporative-closure outcome `flow::close_lakes` gives a kept
-//!   basin.
+//!   `!graph.ocean[i]`.
+//! - **Body counts by kind:** read off the record (`Body::kind`), so they are the bake's own
+//!   classification rather than a re-derivation of it.
+//! - **Enclosed:** the count of hollows (any fate) whose own `.enclosed` flag is set, distinct
+//!   from `closed`, the evaporative-closure outcome `flow::close_lakes` gives a kept basin.
+//! - **Capped basins:** the record's own `BakeStats::capped_basins`, `capped_inner` and
+//!   `capped_inner_kept` (carry-forward I3).
 //! - **Bifurcation ratios:** the record's own `BakeStats` min/max over
-//!   `reaches::bifurcation_ratios`, over whatever orders it returns a ratio for (its own `>= 10` / `>= 1` population floors, per
-//!   order, decide which orders appear at all -- reported as they fall, per the task brief,
-//!   since `HydroParams::earth_like`'s thresholds are tuned for a much finer graph).
+//!   `reaches::bifurcation_ratios`, over whatever orders it returns a ratio for.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use worldbuilder_engine::hydrology::flow::drainage_check;
 use worldbuilder_engine::hydrology::hollows::Fate;
-use worldbuilder_engine::hydrology::{bake_stages, record_of, BodyKind, HydroError, HydroParams, ReachClass};
+use worldbuilder_engine::hydrology::{
+    bake_stages, record, record_of, refine, BodyKind, HydroError, HydroParams, HydroRecord, ReachClass,
+};
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::Surface;
 use worldbuilder_engine::tectonics::TectonicParams;
 
-const NODE_COUNTS: &[u32] = &[250_000, 1_000_000, 2_000_000];
+const DEFAULT_NODES: u32 = 1_000_000;
 
 struct World {
     name: &'static str,
@@ -95,6 +107,10 @@ fn worlds() -> Vec<World> {
                 Some(TectonicParams::ranges()),
             ),
         },
+        World {
+            name: "seed1_ranges",
+            surface: Surface::new(1, 6_371_000.0, 12, 0.40, None, None, Some(TectonicParams::ranges())),
+        },
     ]
 }
 
@@ -109,6 +125,33 @@ fn median_of_sorted(values: &[f64]) -> f64 {
         let b = values[n / 2];
         (a + b) / 2.0
     }
+}
+
+fn reach_points(record: &HydroRecord) -> u64 {
+    record.reaches.iter().map(|r| r.points.len() as u64).sum() // cast-ok: a point count, never negative
+}
+
+/// `(keys, extra)`: see the module doc's "Duplicate notch points" paragraph.
+fn duplicate_notch_points(record: &HydroRecord) -> (u64, u64) {
+    let mut lines_holding: BTreeMap<(u64, u64), u64> = BTreeMap::new();
+    for notch in &record.notches {
+        let mut seen: Vec<(u64, u64)> =
+            notch.points.iter().map(|&(lat, lon, _, _)| (lat.to_bits(), lon.to_bits())).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        for key in seen {
+            *lines_holding.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut keys = 0u64;
+    let mut extra = 0u64;
+    for &lines in lines_holding.values() {
+        if lines > 1 {
+            keys += 1;
+            extra += lines - 1;
+        }
+    }
+    (keys, extra)
 }
 
 struct RunResult {
@@ -133,19 +176,47 @@ struct RunResult {
     drainage: Result<(), u32>,
     stages_s: f64,
     record_s: f64,
+    refine_s: f64,
+    encode_s: f64,
+    coarse_points: u64,
+    refined_points: u64,
+    notch_lines: u64,
+    notch_points: u64,
+    duplicate_notch_keys: u64,
+    duplicate_notch_extra: u64,
+    falls: u64,
+    capped_basins: u32,
+    capped_inner: u32,
+    capped_inner_kept: u32,
+    record_bytes: u64,
 }
 
-fn run(surface: &Surface, nodes: u32) -> Result<RunResult, HydroError> {
-    let params = HydroParams::earth_like(nodes);
+fn run(surface: &Surface, nodes: u32, simplify_m: Option<f64>) -> Result<RunResult, HydroError> {
+    let mut params = HydroParams::earth_like(nodes);
+    if let Some(m) = simplify_m {
+        params.refine_simplify_m = m;
+    }
 
-    // `hydrology::bake` is exactly these two calls, in this order.
+    // `hydrology::bake` is exactly these three calls, in this order, on this `Ground`.
     let t = Instant::now();
     let stages = bake_stages(surface, &params)?;
     let stages_s = t.elapsed().as_secs_f64();
 
     let t = Instant::now();
-    let record = record_of(&stages, &params);
+    let mut record = record_of(&stages, &params);
     let record_s = t.elapsed().as_secs_f64();
+
+    let coarse_points = reach_points(&record);
+    let height = |p: &SpherePoint| surface.structural_m(p);
+    let ground = refine::Ground::for_surface(surface, &height, &params);
+    let t = Instant::now();
+    refine::refine(&mut record, &ground, &params);
+    let refine_s = t.elapsed().as_secs_f64();
+
+    let t = Instant::now();
+    let words = record::encode(&record);
+    let encode_s = t.elapsed().as_secs_f64();
+    let record_bytes = words.len() as u64 * 8; // cast-ok: a word count, never negative
 
     let graph = &stages.graph;
     let drainage = drainage_check(graph, &stages.routing);
@@ -186,6 +257,9 @@ fn run(surface: &Surface, nodes: u32) -> Result<RunResult, HydroError> {
         Some((record.stats.bifurcation_min, record.stats.bifurcation_max))
     };
 
+    let (duplicate_notch_keys, duplicate_notch_extra) = duplicate_notch_points(&record);
+    let notch_points: u64 = record.notches.iter().map(|l| l.points.len() as u64).sum(); // cast-ok: a point count
+
     Ok(RunResult {
         nodes: record.stats.nodes,
         land_nodes,
@@ -208,6 +282,19 @@ fn run(surface: &Surface, nodes: u32) -> Result<RunResult, HydroError> {
         drainage,
         stages_s,
         record_s,
+        refine_s,
+        encode_s,
+        coarse_points,
+        refined_points: reach_points(&record),
+        notch_lines: record.notches.len() as u64, // cast-ok: a line count
+        notch_points,
+        duplicate_notch_keys,
+        duplicate_notch_extra,
+        falls: record.falls.len() as u64, // cast-ok: a fall count
+        capped_basins: record.stats.capped_basins,
+        capped_inner: record.stats.capped_inner,
+        capped_inner_kept: record.stats.capped_inner_kept,
+        record_bytes,
     })
 }
 
@@ -217,12 +304,35 @@ fn print_result(r: &RunResult) {
         Err(node) => format!("FAILED at node {node}"),
     };
     println!(
-        "  n = {:>9}  bake {:>7.2} s  (bake_stages {:>6.2}  record_of {:>6.2})  drainage {}",
+        "  n = {:>9}  bake {:>7.2} s  (bake_stages {:>6.2}  record_of {:>6.2}  refine {:>6.2})  \
+         encode {:>5.2} s  drainage {}",
         r.nodes,
-        r.stages_s + r.record_s,
+        r.stages_s + r.record_s + r.refine_s,
         r.stages_s,
         r.record_s,
+        r.refine_s,
+        r.encode_s,
         drainage,
+    );
+    println!(
+        "    record {:>10} bytes ({:.3} MB)  reach points coarse {:>8} -> refined {:>8}  falls {:>6}",
+        r.record_bytes,
+        (r.record_bytes as f64) / 1.0e6, // cast-ok: a byte count to f64 for a printed MB figure
+        r.coarse_points,
+        r.refined_points,
+        r.falls,
+    );
+    println!(
+        "    notches: lines {:>6}  points {:>8}  duplicate points: keys {:>6}  extra {:>6} ({} bytes)",
+        r.notch_lines,
+        r.notch_points,
+        r.duplicate_notch_keys,
+        r.duplicate_notch_extra,
+        r.duplicate_notch_extra * 4 * 8,
+    );
+    println!(
+        "    capped basins {:>5}  capped inner {:>5}  capped inner kept {:>5}",
+        r.capped_basins, r.capped_inner, r.capped_inner_kept,
     );
     println!(
         "    memory proxy {:>10.3} MiB  land nodes {:>9}  median land area {:>10.3e} m^2",
@@ -252,20 +362,57 @@ fn print_result(r: &RunResult) {
     }
 }
 
+const USAGE: &str = "usage: hydro_survey [--simplify M] [NODES ...]\n\
+    \n\
+    Bakes three stand-in worlds natively and prints each part's time, the record's size and its\n\
+    counts. NODES defaults to 1000000. --simplify M overrides refine_simplify_m (metres).";
+
 fn main() {
-    println!("hydro_survey: native half of Task 12's calibration (plan 1a)");
+    let mut node_counts: Vec<u32> = Vec::new();
+    let mut simplify_m: Option<f64> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--help" || arg == "-h" {
+            println!("{USAGE}");
+            return;
+        } else if arg == "--simplify" {
+            match args.next().and_then(|v| v.parse::<f64>().ok()) {
+                Some(v) if v.is_finite() && v > 0.0 => simplify_m = Some(v),
+                _ => {
+                    eprintln!("--simplify needs a positive number of metres\n{USAGE}");
+                    std::process::exit(2);
+                }
+            }
+        } else {
+            match arg.parse::<u32>() {
+                Ok(n) => node_counts.push(n),
+                Err(_) => {
+                    eprintln!("not a node count: {arg}\n{USAGE}");
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+    if node_counts.is_empty() {
+        node_counts.push(DEFAULT_NODES);
+    }
+
+    println!("hydro_survey: native bake survey (plan 1b-2, Task 8)");
     println!("worlds: plain (20260904, 6.371 Mm, 12 plates, 0.29 land, no tectonics)");
-    println!(
-        "        owner_survey (562423712, 4.5 Mm, 28 plates, 0.16 land, TectonicParams::ranges())"
-    );
-    println!("node counts: 250,000 / 1,000,000 / 2,000,000, each with HydroParams::earth_like(n)");
+    println!("        owner_survey (562423712, 4.5 Mm, 28 plates, 0.16 land, TectonicParams::ranges())");
+    println!("        seed1_ranges (1, 6.371 Mm, 12 plates, 0.40 land, TectonicParams::ranges())");
+    let simplify_note = match simplify_m {
+        Some(m) => format!("refine_simplify_m overridden to {m} m"),
+        None => format!("refine_simplify_m {} m (earth_like)", HydroParams::earth_like(DEFAULT_NODES).refine_simplify_m),
+    };
+    println!("node counts: {node_counts:?}, each with HydroParams::earth_like(n); {simplify_note}");
 
     for world in worlds() {
         println!();
         println!("== {} ==", world.name);
-        for &nodes in NODE_COUNTS {
+        for &nodes in &node_counts {
             let t = Instant::now();
-            let outcome = run(&world.surface, nodes);
+            let outcome = run(&world.surface, nodes, simplify_m);
             let wall_s = t.elapsed().as_secs_f64();
             match outcome {
                 Ok(r) => print_result(&r),

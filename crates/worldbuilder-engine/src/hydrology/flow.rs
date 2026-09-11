@@ -201,7 +201,7 @@ pub fn close_lakes(graph: &LandGraph, routing: &mut Routing, hollows: &[Hollow],
 mod tests {
     use super::*;
     use crate::hydrology::flood::{flood, ocean_seeds, NO_NODE};
-    use crate::hydrology::hollows::{find_hollows, judge};
+    use crate::hydrology::hollows::{find_hollows, forced_nodes, judge};
     use crate::hydrology::landgraph::LandGraph;
     use crate::hydrology::routing::route;
     use crate::hydrology::HydroParams;
@@ -230,7 +230,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let r = route(&g, &f, &mut hollows, &params);
         let flow = accumulate(&g, &r);
         assert_eq!(flow[4], 0.5e6);
@@ -243,7 +243,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
         let id = hollows.iter().position(|h| h.enclosed).expect("one enclosed basin");
@@ -261,7 +261,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
         assert!(closure.closed[0], "wetness 0.05 cannot keep a lake topped up");
@@ -275,7 +275,7 @@ mod tests {
         params.forced_outlets = vec![SpherePoint::from_latlon(0.0, 2.0)];
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
         let id = hollows.iter().position(|h| h.enclosed).expect("one enclosed basin");
@@ -292,7 +292,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
         let id = hollows.iter().position(|h| h.enclosed && h.fate == Fate::Keep).expect("the pocket");
@@ -334,7 +334,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
         let pocket_b = hollows.iter().position(|h| h.enclosed && h.lake_entry == 3).expect("pocket B");
@@ -356,7 +356,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
         (g, hollows, r, closure)
@@ -413,7 +413,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let _ = close_lakes(&g, &mut r, &hollows, &params);
         assert_eq!(drainage_check(&g, &r), Ok(()), "sanity: the unmutated routing drains");
@@ -445,7 +445,7 @@ mod tests {
         params.keep_max_area_m2 = 5.0e6;
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         assert_eq!(hollows.len(), 1, "sanity: one hollow before routing splits it");
         assert_eq!(hollows[0].area_m2, 6.0e6, "sanity: over the test cap");
         let mut r = route(&g, &f, &mut hollows, &params);
@@ -467,7 +467,7 @@ mod tests {
     fn closed_with(g: &LandGraph, params: &HydroParams) -> (Vec<Hollow>, Routing) {
         let f = flood(g, &ocean_seeds(g), &|_| true);
         let mut hollows = find_hollows(g, &f);
-        judge(&mut hollows, g, params);
+        judge(&mut hollows, &forced_nodes(g, params), params);
         let mut r = route(g, &f, &mut hollows, params);
         let _ = close_lakes(g, &mut r, &hollows, params);
         (hollows, r)
@@ -565,7 +565,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let mut r = route(&g, &f, &mut hollows, &params);
         let (flow, _closure) = close_lakes(&g, &mut r, &hollows, &params);
 

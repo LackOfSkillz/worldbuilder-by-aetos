@@ -629,6 +629,7 @@ export function mountWorldPanel(parent, getViewer) {
       }
       previewNote.textContent = `${decoded.bodies.length} lakes (${fresh} fresh, ${salt} salt), `
         + `${decoded.reaches.length} reaches (${byClass.stream}/${byClass.river}/${byClass.great})`
+        + `, ${decoded.falls.length} waterfalls`
         + outletText + forcedText;
       previewButton.textContent = "hide water preview";
     } catch (error) {

@@ -5364,10 +5364,10 @@ fn a_hydro_bake_is_held_copied_and_freed() {
     let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: a 12-word buffer
     assert_eq!(status, WB_OK);
     let len = wb_hydro_len(id);
-    assert!(len >= 32, "at least the header (Task 6: 32 words at schema 3)");
+    assert!(len >= 43, "at least the header (plan 1b-2 Task 3: 43 words at schema 4)");
     let mut words = vec![0.0f64; len as usize];
     assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
-    assert_eq!(words[0], 3.0, "schema 3");
+    assert_eq!(words[0], 4.0, "schema 4");
     let mut short = vec![0.0f64; len as usize - 1];
     assert_eq!(wb_hydro_copy(id, short.as_mut_ptr(), len - 1), WB_ERR_BUFFER);
     assert_eq!(wb_hydro_free(id), WB_OK);
@@ -5396,6 +5396,12 @@ fn a_hydro_bake_refuses_bad_params_without_writing_an_id() {
     assert_eq!(id, 77);
     wb_world_free(world);
 }
+
+// `WB_ERR_DRAINAGE` (`HydroError::Drainage`, the routing failed "everything drains") has no
+// test here: `hydrology::bake_stages` already refuses to hand back a routing that fails
+// `drainage_check`, so there is no real world (or hand fixture short of duplicating that
+// internal state) that reaches `wb_hydro_bake`'s `Drainage` arm from outside. The mapping to
+// `WB_ERR_DRAINAGE` is covered by inspection of `wb_hydro_bake` only.
 
 #[test]
 fn a_hydro_bake_refuses_an_absurd_forced_count() {

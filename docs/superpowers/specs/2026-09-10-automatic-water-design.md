@@ -216,12 +216,49 @@ always takes `earth_like`'s value for both.
 
 ### 6.6 Refinement
 
-- **Tracing.** Each reach is re-traced on the landform at 1.5 km steps. Every step goes downhill,
-  and the path stays within a corridor of one graph spacing around the coarse route, so it cannot
-  cross into another basin. A hollow met on the way is judged by Section 6.3. On slopes under
-  0.2%, a fixed meander (amplitude and wavelength scaled to width, driven by the engine's
-  deterministic noise) is applied to the carved line, never outside the corridor. Tributaries
-  join at a shared vertex. Rivers end at the coast or at a lake shore.
+- **Tracing.** Each reach is re-traced on the landform at 1.5 km steps. At each station the tracer
+  takes the lowest allowed ground, and the bed never rises: where the ground rises the bed holds,
+  which is a cut. The path stays within a corridor of one graph spacing around the coarse route, so
+  it cannot cross into another basin. On slopes under 0.2%, a fixed meander (amplitude and wavelength
+  scaled to width, driven by the engine's deterministic noise) is applied to the carved line,
+  never outside the corridor. Tributaries join at a shared vertex. Rivers end at the coast or at a
+  lake shore.
+  - The coarse reach points are kept exactly, and tracing runs between each consecutive pair.
+    That is what makes the shared junction vertex free. The coarse beds already fall, because a
+    later notch cut that runs into an earlier one standing above it re-lowers it (Rulings R-1 and
+    R-9).
+  - The bed follows the ground down, less the channel's depth, and never falls below the coarse
+    segment's lower end. Where the ground rises, the bed holds, which is a cut. A fine dip met on
+    the way is not judged as a new lake: the bed stays level across it. A new body mid-reach
+    would change routing after the drainage check (Ruling R-2).
+  - A segment that is not the reach's last never steps onto ground at or below the datum, so a
+    lowest-ground search along a coast cannot wander into the sea. The last segment of a reach
+    into the sea or a lake ends at the first station whose ground is at or below that water:
+    the shore trim (Ruling R-3).
+  - Where every candidate at a station is at or below the datum, the tracer steps back toward its
+    chord in half-spacing increments and takes the first lateral whose ground is above the datum,
+    trying the chord point itself last. It does not hold the line where it is, which used to leave
+    a station on sea ground tens of kilometres sideways on a coast. If even the chord point is at
+    or below the datum -- a coarse chord across a bay -- the chord point is kept. That is the one
+    exception to the rule above (Ruling R-3a).
+  - A mouth's bed is the lower of the bed that reaches it and the water level, so the bed never
+    rises, mouths included (Ruling R-4).
+  - The corridor keeps a refined line inside its own coarse route's basin, but it does not stop
+    two reaches from crossing one another inside their corridors, and neither did the coarse
+    graph: at 1M nodes the plain world has 61 coarse crossings and 1,957 refined, and the seed 1
+    `ranges` world 95 and 3,922 (final review, Ruling FF-3). Plan 1b-3 fixes it, before stage 2
+    carves crossing channels into each other.
+  - A meander is drawn only where a wavelength (11 widths) of at least four steps (6 km) can
+    represent it, the segment's bed slope is under 0.2%, and the segment carries no fall. Its
+    amplitude is 1.5 widths, tapered to zero at both coarse points, and clamped inside the
+    corridor. It moves the line, never the bed (Ruling R-6).
+
+**Scope of plan 1b-2.** Lake outlines and small lakes and ponds, below, are plan 1b-3 (shores),
+which starts with a spike. A 250 m fill of the owner's 41.33M km² great lake would be about
+6.6×10⁸ cells, and its 250 m outline alone would break the 8 MB record target. So the outline
+method must be decided on measurements first. Plan 1b-2 does the channels, which stage 2's
+carving needs.
+
 - **Lake outlines.** Each kept lake is filled at 250 m resolution from its lowest point up to its
   level, within its coarse basin. The outline is traced and then simplified to 250 m tolerance.
 - **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined
@@ -236,6 +273,10 @@ always takes `earth_like`'s value for both.
 Wherever a refined reach falls at least 10 m over at most 150 m of its length, a waterfall is
 recorded with its height and its two ends (Mark 2 section 13.3). Maritime reads it as the
 upstream limit of navigation.
+
+- A fall is recorded as its upper end (`falls[].at`) and height. Both ends are inserted as reach
+  points, protected from simplification, so stage 2 later carves a real step there instead of
+  smoothing it into a ramp. The lower end is the next point on the reach (Ruling R-5).
 
 ## 7. The hydro record
 
@@ -257,6 +298,8 @@ hydrology: {
 }
 ```
 
+- **A fall's `at` is its upper end**; the lower end is the next point on that reach, and the bed
+  drops by `height_m` between them (Ruling R-5, §6.7).
 - **A reach point's third value is the bed**: the water surface there minus the channel's depth.
   **A notch point's third value is the cut surface**: the lowered ground, which is the water
   surface through the cut. Where a notch point and a reach point sit on the same place, the notch
