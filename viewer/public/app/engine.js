@@ -756,13 +756,28 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 20-word header (schema 2, Task 12b) into a plain object. The
-  /// header table, in order: `schema`, `bodies`, `reaches`, `notches`, `falls`, `nodes`,
-  /// `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`, `great`,
+  /// Read a `hydroBake` record's 32-word header (schema 3, Task 6) into a plain object. Words
+  /// 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`, `falls`,
+  /// `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`, `great`,
   /// `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
   /// `greatFlowM2` -- the last three are the effective thresholds a coarse bake actually used
-  /// (Ruling 12b-1), not necessarily the ones the caller asked for.
+  /// (Ruling 12b-1), not necessarily the ones the caller asked for. Words 20-31 are new: the
+  /// params echo (`totalNodes`, `wetnessNodes`, `keepDepthM`, `keepAreaM2`, `pondMaxAreaM2`,
+  /// `keepMaxAreaM2`, `minStreamNodes`, `notchFallM`, `evaporationFactor`, `saltFlatShare`) and
+  /// the forced-outlet match counts (`forcedRequested`, `forcedMatched`).
+  ///
+  /// Throws on a schema other than 3: another schema's header is not these 32 words, and a
+  /// summary read off it would be wrong silently.
+  ///
+  /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
+  /// a slot and not a meaning, as `record.rs`'s module doc states: a reach point's third word is
+  /// the bed (the water surface minus the depth), and a notch point's third word is the cut
+  /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
+  /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
+    if (words[0] !== 3) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 3)`);
+    }
     return {
       schema: words[0],
       bodies: words[1],
@@ -784,6 +799,18 @@ export class Engine {
       streamFlowM2: words[17],
       riverFlowM2: words[18],
       greatFlowM2: words[19],
+      totalNodes: words[20],
+      wetnessNodes: words[21],
+      keepDepthM: words[22],
+      keepAreaM2: words[23],
+      pondMaxAreaM2: words[24],
+      keepMaxAreaM2: words[25],
+      minStreamNodes: words[26],
+      notchFallM: words[27],
+      evaporationFactor: words[28],
+      saltFlatShare: words[29],
+      forcedRequested: words[30],
+      forcedMatched: words[31],
     };
   }
 }

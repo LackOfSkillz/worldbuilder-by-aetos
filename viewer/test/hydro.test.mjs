@@ -14,11 +14,11 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-test("a bake comes back with a schema-2 header and counts that add up", () => {
+test("a bake comes back with a schema-3 header and counts that add up", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
   const s = engine.hydroSummary(words);
-  assert.equal(s.schema, 2);
+  assert.equal(s.schema, 3);
   assert.equal(s.nodes, 12000);
   assert.ok(s.landNodes > 0 && s.landNodes < 12000);
   assert.equal(s.kept + s.notched, s.hollows);
@@ -30,6 +30,44 @@ test("a bake comes back with a schema-2 header and counts that add up", () => {
   assert.ok(s.greatFlowM2 >= PARAMS.greatFlowM2);
   assert.ok(s.riverFlowM2 >= 10 * s.streamFlowM2);
   assert.ok(s.greatFlowM2 >= 10 * s.riverFlowM2);
+});
+
+test("hydroSummary reads the SCHEMA 3 params echo and forced-outlet match counts", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const params = {
+    ...PARAMS,
+    forcedOutlets: [{ latitudeDeg: 0, longitudeDeg: 0 }],
+  };
+  const words = engine.hydroBake({ handle, params });
+  const s = engine.hydroSummary(words);
+  // The params echo (word 20-29): what this bake actually ran with.
+  assert.equal(s.totalNodes, params.totalNodes);
+  assert.equal(s.wetnessNodes, params.wetnessNodes);
+  assert.equal(s.keepDepthM, params.keepDepthM);
+  assert.equal(s.keepAreaM2, params.keepAreaM2);
+  assert.equal(s.pondMaxAreaM2, params.pondMaxAreaM2);
+  assert.equal(s.notchFallM, params.notchFallM);
+  assert.equal(s.evaporationFactor, params.evaporationFactor);
+  assert.equal(s.saltFlatShare, params.saltFlatShare);
+  // Not exposed as a wasm param (Ruling 12b-1's note); still carries its earth_like default.
+  assert.ok(Number.isFinite(s.minStreamNodes) && s.minStreamNodes > 0);
+  assert.ok(Number.isFinite(s.keepMaxAreaM2) && s.keepMaxAreaM2 > 0);
+  // One forced outlet requested; whether it matched a submerged node on this world is not
+  // pinned here (that is `water-preview.test.mjs`'s job with a controlled record) -- only that
+  // the count round-trips and never exceeds what was requested.
+  assert.equal(s.forcedRequested, 1);
+  assert.ok(s.forcedMatched >= 0 && s.forcedMatched <= s.forcedRequested);
+});
+
+test("hydroSummary throws on a schema other than 3 rather than misreading the header", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const words = engine.hydroBake({ handle, params: PARAMS });
+  for (const schema of [2, 4, Number.NaN]) {
+    const tampered = words.slice();
+    tampered[0] = schema;
+    assert.throws(() => engine.hydroSummary(tampered), /schema/);
+  }
+  assert.equal(engine.hydroSummary(words).schema, 3);
 });
 
 test("the same bake twice is the same words", () => {

@@ -25,10 +25,10 @@ pub fn unsortable(key: u64) -> f64 {
     f64::from_bits(bits)
 }
 
-/// Lowest level first; equal levels pop in ascending node order.
+/// Lowest level first; equal levels pop in ascending tie order, then ascending node order.
 #[derive(Debug, Default)]
 pub struct FloodQueue {
-    heap: BinaryHeap<Reverse<(u64, u32)>>,
+    heap: BinaryHeap<Reverse<(u64, u64, u32)>>,
 }
 
 impl FloodQueue {
@@ -36,12 +36,17 @@ impl FloodQueue {
         Self { heap: BinaryHeap::new() }
     }
 
+    /// Push with an explicit tie-break key, compared after `level_m` and before `node`.
+    pub fn push_tied(&mut self, level_m: f64, tie_m: f64, node: u32) {
+        self.heap.push(Reverse((sortable(level_m), sortable(tie_m), node)));
+    }
+
     pub fn push(&mut self, level_m: f64, node: u32) {
-        self.heap.push(Reverse((sortable(level_m), node)));
+        self.push_tied(level_m, level_m, node);
     }
 
     pub fn pop(&mut self) -> Option<(f64, u32)> {
-        self.heap.pop().map(|Reverse((key, node))| (unsortable(key), node))
+        self.heap.pop().map(|Reverse((key, _tie, node))| (unsortable(key), node))
     }
 
     pub fn len(&self) -> usize {
@@ -82,5 +87,15 @@ mod tests {
         let order: Vec<(f64, u32)> = std::iter::from_fn(|| queue.pop()).collect();
         assert_eq!(order, vec![(-2.0, 9), (1.0, 1), (5.0, 3), (5.0, 7)]);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn ties_break_by_ground_then_node() {
+        let mut queue = FloodQueue::new();
+        queue.push_tied(5.0, 3.0, 7);
+        queue.push_tied(5.0, 1.0, 9);
+        queue.push_tied(5.0, 1.0, 2);
+        let order: Vec<u32> = std::iter::from_fn(|| queue.pop()).map(|(_, node)| node).collect();
+        assert_eq!(order, vec![2, 9, 7]);
     }
 }

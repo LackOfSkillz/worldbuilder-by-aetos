@@ -25,6 +25,9 @@ pub struct Hollow {
     pub outlet: u32,
     pub enclosed: bool,
     pub forced: bool,
+    /// Set by `judge`: too large to keep, whatever its depth (Ruling 12b-5). `route` sub-floods
+    /// a capped hollow from its floor so any real inner basin still gets judged as its own lake.
+    pub capped: bool,
     pub fate: Fate,
     /// Where lake water gathers to leave: the entry for a hollow above the datum; for an
     /// enclosed basin, the submerged node the flood's way in leads down to (set by `route`).
@@ -104,6 +107,7 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
             outlet: if outlet == NO_NODE { entry } else { outlet },
             enclosed,
             forced: false,
+            capped: false,
             fate: Fate::Notch,
             lake_entry: entry,
             outlet_path: Vec::new(),
@@ -112,24 +116,29 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
     hollows
 }
 
+/// The nearest node to each requested forced-outlet point, one entry per point and in request
+/// order (`None` only when the graph has no nodes to match against). `forced_nodes` collapses
+/// this same mapping to a sorted, deduplicated node list; Task 6's forced-outlet accounting
+/// (`forced_requested`/`forced_matched`) needs it point by point, with duplicates and misses
+/// still visible.
+pub fn nearest_forced_nodes(graph: &LandGraph, params: &HydroParams) -> Vec<Option<u32>> {
+    if params.forced_outlets.is_empty() {
+        return Vec::new();
+    }
+    let spacing =
+        crate::stream::nominal_spacing_m(graph.len() as u32, graph.radius_m); // cast-ok: node count fits in u32 by construction
+    let mut index = BucketIndex::new(graph.radius_m, spacing);
+    for (i, p) in graph.positions.iter().enumerate() {
+        index.insert(p, i as u32); // cast-ok: node index
+    }
+    params.forced_outlets.iter().map(|point| index.nearest(point, &graph.positions)).collect()
+}
+
 /// Every node nearest a forced-outlet point, sorted and deduplicated.
 pub fn forced_nodes(graph: &LandGraph, params: &HydroParams) -> Vec<u32> {
-    let mut forced: Vec<u32> = Vec::new();
-    if !params.forced_outlets.is_empty() {
-        let spacing = crate::stream::nominal_spacing_m(
-            graph.len() as u32, graph.radius_m); // cast-ok: node count fits in u32 by construction
-        let mut index = BucketIndex::new(graph.radius_m, spacing);
-        for (i, p) in graph.positions.iter().enumerate() {
-            index.insert(p, i as u32); // cast-ok: node index
-        }
-        for point in &params.forced_outlets {
-            if let Some(node) = index.nearest(point, &graph.positions) {
-                forced.push(node);
-            }
-        }
-        forced.sort_unstable();
-        forced.dedup();
-    }
+    let mut forced: Vec<u32> = nearest_forced_nodes(graph, params).into_iter().flatten().collect();
+    forced.sort_unstable();
+    forced.dedup();
     forced
 }
 
@@ -144,6 +153,7 @@ pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
         // Caspians. Enclosed basins are exempt: the coastline lock (Ruling W1) already keeps
         // them, whatever their size.
         let too_large = !hollow.enclosed && !hollow.forced && hollow.area_m2 > params.keep_max_area_m2;
+        hollow.capped = too_large;
         hollow.fate = if too_large {
             Fate::Notch
         } else if hollow.enclosed || hollow.forced || big {

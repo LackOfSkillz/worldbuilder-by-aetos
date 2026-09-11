@@ -24,6 +24,9 @@ pub struct Routing {
     pub lake_of: Vec<u32>,
     pub parent: Vec<u32>,
     pub notches: Vec<NotchRoute>,
+    /// Nodes whose receiver was set by a cut (`cut_route` or `cut_path`). A committed node's
+    /// receiver is always its `parent`, and a later cut that reaches one stops there.
+    pub committed: Vec<bool>,
 }
 
 pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, params: &HydroParams) -> Routing {
@@ -42,7 +45,8 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
     let enclosed: Vec<usize> = (0..hollows.len())
         .filter(|&h| hollows[h].enclosed && hollows[h].fate == Fate::Keep)
         .collect();
-    // Indices of the nested (shore) hollows appended below, for Ruling C1-a.
+    // Indices of the nested hollows appended below (the enclosed step's shore hollows and the
+    // capped step's inner hollows), for Ruling C1-a.
     let mut nested_ids: Vec<usize> = Vec::new();
     for h in enclosed {
         let members = hollows[h].members.clone();
@@ -136,6 +140,7 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
                 outlet,
                 enclosed: true,
                 forced: is_forced,
+                capped: false,
                 fate: Fate::Keep,
                 lake_entry: entry,
                 outlet_path,
@@ -161,11 +166,86 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
         hollows.extend(pockets);
     }
 
+    // 1b. Capped basins (Ruling 12b-5): a hollow too large to keep may still hold a real inner
+    // basin, hidden because the single global flood submerges it along with everything else at
+    // the outer basin's own, higher spill level. A sub-flood seeded at the floor -- the outer
+    // basin's own local minimum -- finds any such inner basin on its own terms.
+    //
+    // Two kinds of member (the ledger's escape-chain ruling):
+    // - **On the escape chain** (below): the member keeps its CURRENT parent, as the global
+    //   flood or the enclosed step above left it. The chain is the basin's way out, and the
+    //   minima pass cuts it like any other notched hollow's.
+    // - **Off the chain**: every member the sub-flood reached takes the sub-flood's parent, so the
+    //   water in the basin runs down to the floor (or onto the chain), and a kept inner lake's
+    //   members converge on its own entry and leave over its own rim.
+    // The floor is always on the chain: it is the sub-flood's seed, never raised in it, so it is
+    // never a kept inner lake's member either.
+    //
+    // The inner hollows join `nested_ids`, so C1-a below also notches one that sits on a pocket's
+    // `outlet_path` (Ruling 4-2).
+    let capped: Vec<usize> = (0..hollows.len()).filter(|&h| hollows[h].capped).collect();
+    for h in capped {
+        let members = hollows[h].members.clone();
+        let floor = hollows[h].floor;
+        let floor_m = hollows[h].floor_m;
+
+        let inside = |node: u32| members.binary_search(&node).is_ok();
+        let sub = flood(graph, &[(floor, floor_m)], &inside);
+
+        // The escape chain: the floor's way out along the CURRENT parent, while it stays inside
+        // this hollow. It is the chain the minima pass will cut, once this basin is judged Notch
+        // (as a capped one always is). Its members keep that parent, and any inner hollow that
+        // touches it is notched below, never kept. Ruling C1-a's kin: a kept lake there would
+        // need its entry pointed back down this chain (its outlet, over its own rim), while the
+        // chain's next member -- reached by the sub-flood *through* that lake -- must carry on
+        // past it. Both cannot hold without a two-node cycle at the seam.
+        //
+        // Ruling 4-1: the CURRENT parent, not `global.parent`. A capped shore hollow inside an
+        // enclosed basin was found in the enclosed step's sub-flood, and that step already
+        // pointed its members down toward the pocket. Its global parents lead over the rim
+        // instead, so a chain walked on them spares the wrong members and closes a 2-cycle with
+        // the members re-pointed below. The current parents are those of the flood that found
+        // the hollow, whichever it was.
+        let mut escape = vec![floor];
+        let mut cur = floor;
+        while escape.len() < members.len() {
+            let next = parent[cur as usize];
+            if next == NO_NODE || !inside(next) {
+                break;
+            }
+            escape.push(next);
+            cur = next;
+        }
+        escape.sort_unstable();
+
+        // Inner basins the sub-flood reveals: judged by the same rules as any other hollow (not
+        // enclosed; one may itself be capped, and is then simply notched in its turn). One that
+        // touches the escape chain is notched regardless of the ordinary rule's verdict.
+        let mut inner = find_hollows(graph, &sub);
+        judge(&mut inner, graph, params);
+        for hollow in inner.iter_mut() {
+            if hollow.fate == Fate::Keep && hollow.members.iter().any(|m| escape.binary_search(m).is_ok()) {
+                hollow.fate = Fate::Notch;
+            }
+        }
+        for &m in &members {
+            if escape.binary_search(&m).is_ok() {
+                continue;
+            }
+            if sub.reached[m as usize] && sub.parent[m as usize] != NO_NODE {
+                parent[m as usize] = sub.parent[m as usize];
+            }
+        }
+        nested_ids.extend(hollows.len()..hollows.len() + inner.len());
+        hollows.extend(inner);
+    }
+
     // Ruling C1-a: no kept lake on an outlet path. A fresh pocket's outlet cut (`close_lakes`,
-    // `cut_path`) stops at the first lake member it meets, and a nested shore lake's own exit
-    // leads back down toward the pocket it sits above -- so a kept nested hollow with a member
-    // on ANY pocket's `outlet_path` would close a receiver cycle. Such a hollow is notched here,
-    // before surfaces and receivers are set, so the minima pass drains it like any other.
+    // `cut_path`) stops at the first lake member it meets, and a nested lake's own exit can lead
+    // back toward the pocket -- a shore lake's down toward the pocket it sits above, a capped
+    // basin's inner lake down its basin's way out (Ruling 4-2) -- so a kept nested hollow with a
+    // member on ANY pocket's `outlet_path` would close a receiver cycle. Such a hollow is notched
+    // here, before surfaces and receivers are set, so the minima pass drains it like any other.
     // Cost if wrong: a shore lake on the way out of an inland sea becomes drained ground even if
     // that sea later proves closed (its outlet never cut) -- the lake is lost, never the drainage.
     if !nested_ids.is_empty() {
@@ -202,7 +282,14 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
         }
     }
 
-    let mut routing = Routing { surface_m, receiver: vec![NO_NODE; n], lake_of, parent, notches: Vec::new() };
+    let mut routing = Routing {
+        surface_m,
+        receiver: vec![NO_NODE; n],
+        lake_of,
+        parent,
+        notches: Vec::new(),
+        committed: vec![false; n],
+    };
 
     // 3. Receivers.
     for node in 0..n {
@@ -258,38 +345,124 @@ fn steepest(graph: &LandGraph, surface: &[f64], node: u32) -> u32 {
     best
 }
 
-/// Cut a channel from `start` along its parent chain so it strictly falls, until the ground is
-/// already lower than the channel, a lake member is reached, or the sea is reached. A start node
-/// that is ocean or already a lake member does nothing.
+/// Cut a channel from `start` along its parent chain (the flood tree) until it reaches the sea,
+/// a lake member, or a node an earlier cut committed -- and never sooner. Lower ground does not
+/// stop it. Each step sets the node's receiver to its parent and commits it. The bed grades
+/// down from `start_bed_m` by `NOTCH_GRADE_M`; where the ground is already lower, the bed
+/// follows the ground and grades on from there. The node the cut stops at is never touched.
+/// The `NotchRoute` lists only the nodes whose surface the cut actually lowered. A start node
+/// that is ocean, a lake member, or already committed does nothing.
+///
+/// # Why no receiver cycle survives (Task 3)
+///
+/// Once `route` and `close_lakes` have run, every receiver edge `x -> r` is one of two kinds.
+///
+/// - **Steepest.** `route` sets these for non-lake nodes on the surface as it stood then (lakes
+///   raised, nothing cut), so `r` is strictly lower. Cuts only ever lower a surface, and a cut
+///   gives every node it lowers a cut receiver in the same call. So the tail of a surviving
+///   steepest edge keeps its surface, and its head can only go down: the edge still falls
+///   strictly on the final surface.
+/// - **Parent.** `r == parent[x]` for the final `parent`. This covers every committed node, every
+///   lake member (whose receiver `route` sets to its parent inside the lake), and a kept open
+///   lake's `entry -> outlet` (`find_hollows` takes the outlet from the parent of the entry in
+///   the flood that found the lake -- the global one, or an enclosed or capped step's sub-flood
+///   -- and `route` copies that flood's parents into `parent`). `set_sink` only removes an edge.
+///
+/// `parent` is a forest. Each flood's parents form one, and a parent always leads to a node the
+/// flood popped earlier. Since Task 2's tie-break, a flood pops each raised hollow's members in
+/// one unbroken run. `route` changes parents in two places:
+/// - Inside an enclosed basin, members point only at other members, rooted at the pocket
+///   entries, so nothing that enters the basin leaves it.
+/// - Inside a capped basin, a member off the escape chain takes the sub-flood's parent, which
+///   stays inside the basin and leads to the floor. The floor and the chain keep the parents of
+///   the flood that found the basin (Ruling 4-1), and the chain leaves the basin for a node that
+///   flood popped before the basin's run.
+///
+/// So a walk along parents, counted by the pop rank of the run it is in, only ever goes to an
+/// earlier run of the same flood, or down into an enclosed basin it never leaves. Only
+/// `cut_path` changes `parent` afterwards, and it stays a forest (see there). So no cycle is made
+/// of parent edges alone, and every cycle contains a steepest edge.
+///
+/// **Heights.** Around a cycle the surface must come back to where it started, so a cycle with
+/// a strictly falling (steepest) edge needs an edge that rises. None of these rise:
+/// - A cut step: the next node is lowered below this one's bed, or already stood lower and the
+///   bed followed it down. A later cut that re-lowers a node also resets its receiver.
+/// - An edge inside a lake: flat.
+/// - A lake's way out, to its outlet or to a rim node at its level: never rises, because the
+///   flood reached the lake from there, so that node's flood level (and ground) is at most the
+///   lake's.
+///
+/// The one edge left is a cut's *last* step, into a lake or an earlier cut that stands higher
+/// than the bed, where a notch is dug below what it runs into. That step is still a parent
+/// edge, and so is everything after it until the water leaves a lake by its way out. Every edge
+/// here is also non-increasing in the global flood's spill level. Parent edges are, by
+/// construction. Steepest edges are too: a flood never raises a lower neighbour above its own
+/// spill. So a cycle would stay on one spill level `S`. There, a kept open lake stands exactly
+/// at `S`, and no steepest edge on the level can enter it, since that needs a node above `S`.
+/// The water leaves through a node `o` at height `S` and can only come back to the cut through
+/// a steepest edge `o -> w` into the cut's side. That side drains into the lake, which the flood
+/// reached from `o`. So `w` was not yet reached when `o` was popped, and a flood gives such a
+/// neighbour the popped node as its parent. The cut through `w` therefore walked on to `o` and
+/// committed it, and `o` has no steepest edge. `every_small_world_drains` sweeps 48 real worlds
+/// for this case, and `drainage_check` refuses any routing it misses.
+///
+/// Three kinds of kept lake stand *below* their members' global spill level: a capped basin's
+/// inner lakes (Task 4), the enclosed pockets at the datum, and an enclosed basin's shore lakes
+/// (the nested hollows its sub-flood finds above the datum, judged in `route`'s step 1). The
+/// spill-level step above does not cover a cut's last step into one of those. There, "no cycle" rests on C1-a (no nested
+/// lake on a pocket's outlet path, Ruling 4-2) and the escape-chain rule (no kept inner lake on
+/// its basin's way out), and it is *enforced*, not proved, by `drainage_check`, which `bake`
+/// runs on every routing.
+///
+/// Stopping at committed nodes keeps the total work of all `cut_route` calls O(n): each node
+/// is walked on from at most once.
 pub fn cut_route(routing: &mut Routing, graph: &LandGraph, start: u32, start_bed_m: f64) {
-    if graph.ocean[start as usize] || routing.lake_of[start as usize] != NO_LAKE {
+    let s = start as usize;
+    if graph.ocean[s] || routing.lake_of[s] != NO_LAKE || routing.committed[s] {
         return;
     }
-    let mut nodes = vec![start];
-    let mut beds = vec![start_bed_m];
-    routing.surface_m[start as usize] = start_bed_m;
-    let mut bed = start_bed_m;
+    let mut nodes = Vec::new();
+    let mut beds = Vec::new();
+    let bed = grade(routing, start, start_bed_m, &mut nodes, &mut beds);
+    follow_parents(routing, graph, start, bed, &mut nodes, &mut beds);
+    if !nodes.is_empty() {
+        routing.notches.push(NotchRoute { nodes, bed_m: beds });
+    }
+}
+
+/// Lowers `node` to `bed_m` if it stands higher, recording it. Returns the bed the cut carries
+/// on from, which is the node's surface after the step: `bed_m`, or the lower ground the bed
+/// follows.
+fn grade(routing: &mut Routing, node: u32, bed_m: f64, nodes: &mut Vec<u32>, beds: &mut Vec<f64>) -> f64 {
+    let i = node as usize;
+    if routing.surface_m[i] > bed_m {
+        routing.surface_m[i] = bed_m;
+        nodes.push(node);
+        beds.push(bed_m);
+    }
+    routing.surface_m[i]
+}
+
+/// Carries a cut on from `start`, already graded to `bed_m`, along its parent chain. It stops at
+/// the sea, a lake member, a committed node or the chain's end, and nowhere else.
+fn follow_parents(routing: &mut Routing, graph: &LandGraph, start: u32, bed_m: f64, nodes: &mut Vec<u32>, beds: &mut Vec<f64>) {
     let mut here = start;
+    let mut bed = bed_m;
     loop {
         let next = routing.parent[here as usize];
         if next == NO_NODE {
             break;
         }
+        let i = next as usize;
+        let stops = graph.ocean[i] || routing.lake_of[i] != NO_LAKE || routing.committed[i];
         routing.receiver[here as usize] = next;
-        if routing.lake_of[next as usize] != NO_LAKE {
-            // A lake member stops the cut here; its surface is never touched.
+        routing.committed[here as usize] = true;
+        if stops {
             break;
         }
-        if graph.ocean[next as usize] || routing.surface_m[next as usize] < bed {
-            break;
-        }
-        bed -= NOTCH_GRADE_M;
-        routing.surface_m[next as usize] = bed;
-        nodes.push(next);
-        beds.push(bed);
+        bed = grade(routing, next, bed - NOTCH_GRADE_M, nodes, beds);
         here = next;
     }
-    routing.notches.push(NotchRoute { nodes, bed_m: beds });
 }
 
 /// A closed lake keeps its water: its entry drains nowhere.
@@ -297,8 +470,31 @@ pub fn set_sink(routing: &mut Routing, hollow: &Hollow) {
     routing.receiver[hollow.lake_entry as usize] = NO_NODE;
 }
 
-/// Cut an explicit path so it strictly falls from `start_bed_m`; `path[0]` keeps its surface. A
-/// path shorter than 2 does nothing (no empty `NotchRoute`).
+/// Cut a fresh pocket's outlet: along the explicit `path` (lake entry, up the shore, over the
+/// rim), then on along the parent chain of its last node. The rule is `cut_route`'s, and so is
+/// the proof there. `path[0]` keeps its surface, and `path[1]` is cut to `start_bed_m`.
+///
+/// Along the explicit path, each node's receiver *and parent* become the next path node, and
+/// only the sea or a lake member stops the cut. A node an earlier cut committed does not stop
+/// it: it is re-pointed along the path. Inside an enclosed basin `parent` leads back down to
+/// the pocket, and `path` (the global flood's chain) leads out. Stopping at such a node would
+/// leave `entry -> ... -> node -> ... -> entry`, a cycle. After the path, committed nodes stop
+/// the cut, as in `cut_route`.
+///
+/// **`parent` stays a forest.** A cycle would have to run from the re-pointed nodes, through
+/// the node the cut stopped at, and back along its old parent chain. That stop is the sea, the
+/// path's end (whose parent is the sea), or a lake member. A lake member's old chain leads to
+/// its entry, then on along global-flood parents. That is a pocket whose own entry the flood
+/// reached earlier, since the entry is the pocket's first-reached member and this chain reached
+/// one of its members first. Or it is an open lake found by the global flood: C1-a leaves no
+/// nested lake -- an enclosed basin's shore lake or a capped basin's inner lake (Ruling 4-2) --
+/// on any outlet path. Global-flood parents only lead to nodes popped earlier. Since Task 2's
+/// tie-break, the flood pops a raised hollow's members in one unbroken run, so the chain never
+/// comes back into the basin it left, or to anything the path had already crossed. A chain that
+/// enters a capped basin runs down to its floor and leaves along its escape chain, for a run
+/// popped earlier still (see `cut_route`'s forest argument).
+///
+/// A path shorter than 2 does nothing. If nothing is lowered, no `NotchRoute` is pushed.
 pub fn cut_path(routing: &mut Routing, graph: &LandGraph, path: &[u32], start_bed_m: f64) {
     if path.len() < 2 {
         return;
@@ -306,27 +502,26 @@ pub fn cut_path(routing: &mut Routing, graph: &LandGraph, path: &[u32], start_be
     let mut nodes = Vec::new();
     let mut beds = Vec::new();
     let mut bed = start_bed_m;
+    let mut stopped = false;
     for k in 1..path.len() {
-        let node = path[k];
-        routing.receiver[path[k - 1] as usize] = node;
-        if routing.lake_of[node as usize] != NO_LAKE {
-            // A lake member stops the cut here; its surface is never touched.
+        let (here, next) = (path[k - 1], path[k]);
+        routing.receiver[here as usize] = next;
+        routing.parent[here as usize] = next;
+        routing.committed[here as usize] = true;
+        if graph.ocean[next as usize] || routing.lake_of[next as usize] != NO_LAKE {
+            // The sea or a lake member stops the cut here; its surface is never touched.
+            stopped = true;
             break;
         }
-        if graph.ocean[node as usize] || routing.surface_m[node as usize] < bed {
-            break;
-        }
-        routing.surface_m[node as usize] = bed;
-        nodes.push(node);
-        beds.push(bed);
-        bed -= NOTCH_GRADE_M;
+        let target = if k == 1 { start_bed_m } else { bed - NOTCH_GRADE_M };
+        bed = grade(routing, next, target, &mut nodes, &mut beds);
     }
-    if let (Some(&last), Some(&cut)) = (path.last(), nodes.last()) {
-        if last == cut {
-            routing.receiver[last as usize] = routing.parent[last as usize];
-        }
+    if !stopped {
+        follow_parents(routing, graph, path[path.len() - 1], bed, &mut nodes, &mut beds);
     }
-    routing.notches.push(NotchRoute { nodes, bed_m: beds });
+    if !nodes.is_empty() {
+        routing.notches.push(NotchRoute { nodes, bed_m: beds });
+    }
 }
 
 #[cfg(test)]

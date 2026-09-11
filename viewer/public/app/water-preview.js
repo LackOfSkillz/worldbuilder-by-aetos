@@ -6,13 +6,30 @@
 // `hydro.test.mjs` does; `drawPreview` is the only export that touches Cesium.
 //
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
-// pair -- schema 2, Task 12b's 20-word header. This file is the JS side of that contract and
+// pair -- schema 3, Task 6's 32-word header. This file is the JS side of that contract and
 // mirrors its field order and its refusals (a truncated record, a wrong schema, a trailing
-// word) rather than trusting the words blindly.
+// word, an index or count word outside u32) rather than trusting the words blindly.
+//
+// Two positions share a slot and not a meaning, and two flags share a name and not a meaning,
+// exactly as `record.rs`'s module doc states:
+// - a reach point's third word (`bedM`) is the bed: the water surface minus the depth;
+// - a notch point's third word is the cut surface: the lowered ground, which is the water
+//   surface through the cut, not a bed below it;
+// - body `fresh` means "not closed" (it has an outlet, though its water may end in a closed
+//   lake); reach `fresh` means "its chain reaches the ocean".
 
 import { showLayer } from "./globe-layers.js";
 
-const SCHEMA = 2;
+const SCHEMA = 3;
+
+/// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
+const U32_MAX = 4294967295;
+
+/// A valid index or count word, the same test `record.rs`'s `word_to_u32` applies: finite,
+/// non-negative, integral, and no larger than `u32::MAX`.
+function isU32Word(w) {
+  return Number.isFinite(w) && w >= 0 && w <= U32_MAX && Math.floor(w) === w;
+}
 
 const BODY_KIND = ["lake", "pond", "saltLake", "saltFlat"];
 const REACH_CLASS = ["stream", "river", "great"];
@@ -68,12 +85,13 @@ class Cursor {
     return this.words[this.pos++];
   }
 
-  /// A count or index word: finite, non-negative, integral. Not a checked upper bound the
-  /// way `record.rs`'s `count_fits` is -- a length mismatch at the end of `decodeHydro`
-  /// catches the same absurd-count case without duplicating that arithmetic here.
+  /// A count or index word: finite, non-negative, integral and at most `u32::MAX`, as
+  /// `record.rs`'s `word_to_u32` requires. `count_fits`' words-left check is not mirrored --
+  /// a length mismatch at the end of `decodeHydro` catches the same absurd-count case without
+  /// duplicating that arithmetic here.
   u32() {
     const w = this.word();
-    if (!(Number.isFinite(w) && w >= 0 && Math.floor(w) === w)) {
+    if (!isU32Word(w)) {
       throw new Error(`hydro record: bad count/index word ${w}`);
     }
     return w;
@@ -83,7 +101,7 @@ class Cursor {
   optionalU32() {
     const w = this.word();
     if (w === -1) return null;
-    if (!(Number.isFinite(w) && w >= 0 && Math.floor(w) === w)) {
+    if (!isU32Word(w)) {
       throw new Error(`hydro record: bad optional index word ${w}`);
     }
     return w;
@@ -101,13 +119,13 @@ function readDownstream(cursor) {
   const kindWord = cursor.word();
   const idWord = cursor.word();
   if (kindWord === 0) {
-    if (!(Number.isFinite(idWord) && idWord >= 0 && Math.floor(idWord) === idWord)) {
+    if (!isU32Word(idWord)) {
       throw new Error(`hydro record: bad downstream reach id ${idWord}`);
     }
     return { kind: "reach", id: idWord };
   }
   if (kindWord === 1) {
-    if (!(Number.isFinite(idWord) && idWord >= 0 && Math.floor(idWord) === idWord)) {
+    if (!isU32Word(idWord)) {
       throw new Error(`hydro record: bad downstream body id ${idWord}`);
     }
     return { kind: "body", id: idWord };
@@ -123,7 +141,7 @@ function readDownstream(cursor) {
   throw new Error(`hydro record: bad downstream kind ${kindWord}`);
 }
 
-/// Decode a `hydroBake` record. Throws on a schema other than 2, on a truncated array, or on
+/// Decode a `hydroBake` record. Throws on a schema other than 3, on a truncated array, or on
 /// a length mismatch (extra trailing words, or a count that does not add up) -- never returns
 /// a partial record.
 export function decodeHydro(words) {
@@ -160,6 +178,20 @@ export function decodeHydro(words) {
     streamFlowM2: cursor.word(),
     riverFlowM2: cursor.word(),
     greatFlowM2: cursor.word(),
+    // SCHEMA 3's params echo (words 20-29) and forced-outlet match counts (words 30-31) --
+    // mirrors `hydroSummary`'s field names in `engine.js`.
+    totalNodes: cursor.u32(),
+    wetnessNodes: cursor.u32(),
+    keepDepthM: cursor.word(),
+    keepAreaM2: cursor.word(),
+    pondMaxAreaM2: cursor.word(),
+    keepMaxAreaM2: cursor.word(),
+    minStreamNodes: cursor.word(),
+    notchFallM: cursor.word(),
+    evaporationFactor: cursor.word(),
+    saltFlatShare: cursor.word(),
+    forcedRequested: cursor.u32(),
+    forcedMatched: cursor.u32(),
   };
 
   const bodies = [];
@@ -179,6 +211,7 @@ export function decodeHydro(words) {
     const outletReach = cursor.optionalU32();
     const anchorLat = cursor.word();
     const anchorLon = cursor.word();
+    const downstream = readDownstream(cursor);
     const outlineLen = cursor.u32();
     const outline = [];
     for (let j = 0; j < outlineLen; j += 1) {
@@ -186,7 +219,7 @@ export function decodeHydro(words) {
     }
     bodies.push({
       id, kind, fresh, enclosed, forced, levelM, areaM2, depthM, outletReach,
-      anchor: [anchorLat, anchorLon], outline,
+      anchor: [anchorLat, anchorLon], downstream, outline,
     });
   }
 
@@ -200,6 +233,7 @@ export function decodeHydro(words) {
     const reachClass = REACH_CLASS[classWord];
     const order = cursor.u32();
     const downstream = readDownstream(cursor);
+    const fresh = cursor.boolean();
     const pointCount = cursor.u32();
     const points = [];
     for (let j = 0; j < pointCount; j += 1) {
@@ -208,16 +242,17 @@ export function decodeHydro(words) {
         widthM: cursor.word(), depthM: cursor.word(), flowM2: cursor.word(),
       });
     }
-    reaches.push({ id, class: reachClass, order, downstream, points });
+    reaches.push({ id, class: reachClass, order, downstream, fresh, points });
   }
 
   // Notch geometry carves the ground; the preview draws none of it, so only the count is
   // kept -- but every word still has to be walked, or the falls below would be read starting
-  // mid-notch.
+  // mid-notch. Each point is lat, lon, the cut surface (not a bed -- see the file comment
+  // above), width.
   for (let i = 0; i < notchCount; i += 1) {
     const pointCount = cursor.u32();
     for (let j = 0; j < pointCount; j += 1) {
-      cursor.word(); cursor.word(); cursor.word();
+      cursor.word(); cursor.word(); cursor.word(); cursor.word();
     }
   }
 

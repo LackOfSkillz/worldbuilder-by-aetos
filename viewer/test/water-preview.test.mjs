@@ -36,8 +36,22 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.reaches.length, summary.reaches);
   assert.equal(decoded.notches, summary.notches);
   assert.equal(decoded.falls.length, summary.falls);
-  assert.equal(decoded.header.schema, 2);
+  assert.equal(decoded.header.schema, 3);
   assert.equal(decoded.header.nodes, summary.nodes);
+  assert.equal(decoded.header.forcedRequested, summary.forcedRequested);
+  assert.equal(decoded.header.forcedMatched, summary.forcedMatched);
+});
+
+test("decodeHydro consumes a real SCHEMA 3 bake exactly, reach fresh and body downstream included", () => {
+  const decoded = decodeHydro(bake());
+  assert.ok(decoded.reaches.length > 0, "sanity: this world has reaches");
+  for (const reach of decoded.reaches) {
+    assert.equal(typeof reach.fresh, "boolean");
+  }
+  assert.ok(decoded.bodies.length > 0, "sanity: this world has bodies");
+  for (const body of decoded.bodies) {
+    assert.ok(["reach", "body", "ocean", "sink"].includes(body.downstream.kind));
+  }
 });
 
 test("decodeHydro throws on a truncated array", () => {
@@ -46,11 +60,38 @@ test("decodeHydro throws on a truncated array", () => {
   assert.throws(() => decodeHydro(new Float64Array(0)), /truncated|ran out of words/);
 });
 
-test("decodeHydro throws on a schema-1 header", () => {
+test("decodeHydro throws on a schema-2 header", () => {
   const words = bake();
   const tampered = words.slice();
-  tampered[0] = 1;
+  tampered[0] = 2;
   assert.throws(() => decodeHydro(tampered), /unsupported schema/);
+});
+
+test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {
+  const words = bake();
+  const U32_MAX = 4294967295;
+
+  // The boundary itself is a valid u32: word 5 (`nodes`) at exactly u32::MAX still decodes.
+  const atMax = words.slice();
+  atMax[5] = U32_MAX;
+  assert.equal(decodeHydro(atMax).header.nodes, U32_MAX);
+
+  // One past it is refused, in a header count...
+  const header = words.slice();
+  header[5] = U32_MAX + 1;
+  assert.throws(() => decodeHydro(header), /bad count\/index word/);
+
+  // ...in a body's optional outlet reach (body 0's word 8, record word 40)...
+  assert.ok(words[1] > 0, "sanity: this world has a body to tamper with");
+  const outlet = words.slice();
+  outlet[32 + 8] = U32_MAX + 1;
+  assert.throws(() => decodeHydro(outlet), /bad optional index word/);
+
+  // ...and in a downstream id (body 0's words 11-12, record words 43-44, made a body link).
+  const downstream = words.slice();
+  downstream[32 + 11] = 1;
+  downstream[32 + 12] = U32_MAX + 1;
+  assert.throws(() => decodeHydro(downstream), /bad downstream body id/);
 });
 
 test("decodeHydro throws on a trailing word", () => {
