@@ -6,13 +6,13 @@
 // `hydro.test.mjs` does; `drawPreview` is the only export that touches Cesium.
 //
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
-// pair -- schema 2, Task 12b's 20-word header. This file is the JS side of that contract and
+// pair -- schema 3, Task 6's 32-word header. This file is the JS side of that contract and
 // mirrors its field order and its refusals (a truncated record, a wrong schema, a trailing
 // word) rather than trusting the words blindly.
 
 import { showLayer } from "./globe-layers.js";
 
-const SCHEMA = 2;
+const SCHEMA = 3;
 
 const BODY_KIND = ["lake", "pond", "saltLake", "saltFlat"];
 const REACH_CLASS = ["stream", "river", "great"];
@@ -123,7 +123,7 @@ function readDownstream(cursor) {
   throw new Error(`hydro record: bad downstream kind ${kindWord}`);
 }
 
-/// Decode a `hydroBake` record. Throws on a schema other than 2, on a truncated array, or on
+/// Decode a `hydroBake` record. Throws on a schema other than 3, on a truncated array, or on
 /// a length mismatch (extra trailing words, or a count that does not add up) -- never returns
 /// a partial record.
 export function decodeHydro(words) {
@@ -160,6 +160,20 @@ export function decodeHydro(words) {
     streamFlowM2: cursor.word(),
     riverFlowM2: cursor.word(),
     greatFlowM2: cursor.word(),
+    // SCHEMA 3's params echo (words 20-29) and forced-outlet match counts (words 30-31) --
+    // mirrors `hydroSummary`'s field names in `engine.js`.
+    totalNodes: cursor.u32(),
+    wetnessNodes: cursor.u32(),
+    keepDepthM: cursor.word(),
+    keepAreaM2: cursor.word(),
+    pondMaxAreaM2: cursor.word(),
+    keepMaxAreaM2: cursor.word(),
+    minStreamNodes: cursor.word(),
+    notchFallM: cursor.word(),
+    evaporationFactor: cursor.word(),
+    saltFlatShare: cursor.word(),
+    forcedRequested: cursor.u32(),
+    forcedMatched: cursor.u32(),
   };
 
   const bodies = [];
@@ -179,6 +193,7 @@ export function decodeHydro(words) {
     const outletReach = cursor.optionalU32();
     const anchorLat = cursor.word();
     const anchorLon = cursor.word();
+    const downstream = readDownstream(cursor);
     const outlineLen = cursor.u32();
     const outline = [];
     for (let j = 0; j < outlineLen; j += 1) {
@@ -186,7 +201,7 @@ export function decodeHydro(words) {
     }
     bodies.push({
       id, kind, fresh, enclosed, forced, levelM, areaM2, depthM, outletReach,
-      anchor: [anchorLat, anchorLon], outline,
+      anchor: [anchorLat, anchorLon], downstream, outline,
     });
   }
 
@@ -200,6 +215,7 @@ export function decodeHydro(words) {
     const reachClass = REACH_CLASS[classWord];
     const order = cursor.u32();
     const downstream = readDownstream(cursor);
+    const fresh = cursor.boolean();
     const pointCount = cursor.u32();
     const points = [];
     for (let j = 0; j < pointCount; j += 1) {
@@ -208,7 +224,7 @@ export function decodeHydro(words) {
         widthM: cursor.word(), depthM: cursor.word(), flowM2: cursor.word(),
       });
     }
-    reaches.push({ id, class: reachClass, order, downstream, points });
+    reaches.push({ id, class: reachClass, order, downstream, fresh, points });
   }
 
   // Notch geometry carves the ground; the preview draws none of it, so only the count is
@@ -217,7 +233,7 @@ export function decodeHydro(words) {
   for (let i = 0; i < notchCount; i += 1) {
     const pointCount = cursor.u32();
     for (let j = 0; j < pointCount; j += 1) {
-      cursor.word(); cursor.word(); cursor.word();
+      cursor.word(); cursor.word(); cursor.word(); cursor.word();
     }
   }
 

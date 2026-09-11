@@ -116,24 +116,29 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
     hollows
 }
 
+/// The nearest node to each requested forced-outlet point, one entry per point and in request
+/// order (`None` only when the graph has no nodes to match against). `forced_nodes` collapses
+/// this same mapping to a sorted, deduplicated node list; Task 6's forced-outlet accounting
+/// (`forced_requested`/`forced_matched`) needs it point by point, with duplicates and misses
+/// still visible.
+pub fn nearest_forced_nodes(graph: &LandGraph, params: &HydroParams) -> Vec<Option<u32>> {
+    if params.forced_outlets.is_empty() {
+        return Vec::new();
+    }
+    let spacing =
+        crate::stream::nominal_spacing_m(graph.len() as u32, graph.radius_m); // cast-ok: node count fits in u32 by construction
+    let mut index = BucketIndex::new(graph.radius_m, spacing);
+    for (i, p) in graph.positions.iter().enumerate() {
+        index.insert(p, i as u32); // cast-ok: node index
+    }
+    params.forced_outlets.iter().map(|point| index.nearest(point, &graph.positions)).collect()
+}
+
 /// Every node nearest a forced-outlet point, sorted and deduplicated.
 pub fn forced_nodes(graph: &LandGraph, params: &HydroParams) -> Vec<u32> {
-    let mut forced: Vec<u32> = Vec::new();
-    if !params.forced_outlets.is_empty() {
-        let spacing = crate::stream::nominal_spacing_m(
-            graph.len() as u32, graph.radius_m); // cast-ok: node count fits in u32 by construction
-        let mut index = BucketIndex::new(graph.radius_m, spacing);
-        for (i, p) in graph.positions.iter().enumerate() {
-            index.insert(p, i as u32); // cast-ok: node index
-        }
-        for point in &params.forced_outlets {
-            if let Some(node) = index.nearest(point, &graph.positions) {
-                forced.push(node);
-            }
-        }
-        forced.sort_unstable();
-        forced.dedup();
-    }
+    let mut forced: Vec<u32> = nearest_forced_nodes(graph, params).into_iter().flatten().collect();
+    forced.sort_unstable();
+    forced.dedup();
     forced
 }
 

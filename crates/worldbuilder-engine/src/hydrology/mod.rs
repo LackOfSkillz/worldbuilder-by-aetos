@@ -108,9 +108,8 @@ pub struct Body {
     pub anchor: (f64, f64),
     pub outline: Vec<(f64, f64)>,
     /// Where this body's water goes next: the first reach it feeds, the next body it drains
-    /// straight into (no reach between them), the ocean, or nowhere (a closed lake). Not yet
-    /// part of the record's wire encoding -- Task 6 owns SCHEMA 3's layout, so `record::decode`
-    /// always fills this with `Downstream::Sink` for now.
+    /// straight into (no reach between them), the ocean, or nowhere (a closed lake). On the wire
+    /// as of SCHEMA 3.
     pub downstream: Downstream,
 }
 
@@ -132,14 +131,20 @@ pub struct ReachLine {
     pub class: ReachClass,
     pub order: u32,
     pub downstream: Downstream,
+    /// SCHEMA 3: `false` if this reach's downstream chain (through reaches, then bodies via
+    /// `Body::downstream`) ends at a closed lake's sink; `true` otherwise (the ocean, or the
+    /// walk's bound runs out without a clean answer -- which "everything drains" rules out on a
+    /// bake that passed `drainage_check`).
+    pub fresh: bool,
     pub points: Vec<ReachPoint>,
 }
 
 /// A cut channel through a notched hollow's rim, as the falling course `routing::cut_route` or
-/// `cut_path` left behind.
+/// `cut_path` left behind. SCHEMA 3 adds each point's width, so a notch can be drawn to scale
+/// like a reach rather than as a bare line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotchLine {
-    pub points: Vec<(f64, f64, f64)>,
+    pub points: Vec<(f64, f64, f64, f64)>,
 }
 
 /// A drop along a reach. Empty in 1a: no waterfall geometry is derived yet.
@@ -172,6 +177,26 @@ pub struct BakeStats {
     pub stream_flow_m2: f64,
     pub river_flow_m2: f64,
     pub great_flow_m2: f64,
+    /// SCHEMA 3's params echo: the request this bake actually ran with, alongside the effective
+    /// thresholds above -- so a record (or a studio reading one) can show what was asked for, not
+    /// only what a coarse graph raised it to. Mirrors `HydroParams` field for field, except the
+    /// three flow thresholds (already covered above) and `forced_outlets` itself, which the two
+    /// counts below stand in for.
+    pub total_nodes: u32,
+    pub wetness_nodes: u32,
+    pub keep_depth_m: f64,
+    pub keep_area_m2: f64,
+    pub pond_max_area_m2: f64,
+    pub keep_max_area_m2: f64,
+    pub min_stream_nodes: f64,
+    pub notch_fall_m: f64,
+    pub evaporation_factor: f64,
+    pub salt_flat_share: f64,
+    /// How many forced-outlet points `params` asked for.
+    pub forced_requested: u32,
+    /// Of those, how many landed on a submerged member of a kept lake -- the same nearest-node
+    /// mapping `hollows::forced_nodes` uses, checked against `Routing::lake_of` after routing.
+    pub forced_matched: u32,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the

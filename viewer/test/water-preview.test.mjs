@@ -36,8 +36,22 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.reaches.length, summary.reaches);
   assert.equal(decoded.notches, summary.notches);
   assert.equal(decoded.falls.length, summary.falls);
-  assert.equal(decoded.header.schema, 2);
+  assert.equal(decoded.header.schema, 3);
   assert.equal(decoded.header.nodes, summary.nodes);
+  assert.equal(decoded.header.forcedRequested, summary.forcedRequested);
+  assert.equal(decoded.header.forcedMatched, summary.forcedMatched);
+});
+
+test("decodeHydro consumes a real SCHEMA 3 bake exactly, reach fresh and body downstream included", () => {
+  const decoded = decodeHydro(bake());
+  assert.ok(decoded.reaches.length > 0, "sanity: this world has reaches");
+  for (const reach of decoded.reaches) {
+    assert.equal(typeof reach.fresh, "boolean");
+  }
+  assert.ok(decoded.bodies.length > 0, "sanity: this world has bodies");
+  for (const body of decoded.bodies) {
+    assert.ok(["reach", "body", "ocean", "sink"].includes(body.downstream.kind));
+  }
 });
 
 test("decodeHydro throws on a truncated array", () => {
@@ -46,10 +60,10 @@ test("decodeHydro throws on a truncated array", () => {
   assert.throws(() => decodeHydro(new Float64Array(0)), /truncated|ran out of words/);
 });
 
-test("decodeHydro throws on a schema-1 header", () => {
+test("decodeHydro throws on a schema-2 header", () => {
   const words = bake();
   const tampered = words.slice();
-  tampered[0] = 1;
+  tampered[0] = 2;
   assert.throws(() => decodeHydro(tampered), /unsupported schema/);
 });
 

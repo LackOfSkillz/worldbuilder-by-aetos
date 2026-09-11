@@ -623,9 +623,13 @@ export function mountWorldPanel(parent, getViewer) {
             + `${lastPoint.lat.toFixed(3)}, ${lastPoint.lon.toFixed(3)}`;
         }
       }
+      let forcedText = "";
+      if (decoded.header.forcedRequested > 0) {
+        forcedText = ` · ${decoded.header.forcedMatched}/${decoded.header.forcedRequested} forced outlets matched`;
+      }
       previewNote.textContent = `${decoded.bodies.length} lakes (${fresh} fresh, ${salt} salt), `
         + `${decoded.reaches.length} reaches (${byClass.stream}/${byClass.river}/${byClass.great})`
-        + outletText;
+        + outletText + forcedText;
       previewButton.textContent = "hide water preview";
     } catch (error) {
       previewNote.textContent = `water preview failed: ${error.message}`;

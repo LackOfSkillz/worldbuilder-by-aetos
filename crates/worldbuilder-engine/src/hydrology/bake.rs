@@ -119,6 +119,27 @@ fn body_downstream(
     }
 }
 
+/// SCHEMA 3's `ReachLine::fresh`: `false` if following `start` through reaches (`reach_downstream`,
+/// id-indexed, remapped to body ids already) and bodies (`Body::downstream`) ends at `Sink` --
+/// which only a closed lake ever reports (an open body always names somewhere else to go, and a
+/// reach with nowhere downstream is itself `Sink`, the same terminal) -- `true` if it ends at
+/// `Ocean`. Bounded the same way `bake_tests::follows_to_ocean` is: more hops than any acyclic
+/// chain in this record could have, so running past it (a cycle) reports `false` rather than
+/// looping -- "everything drains" (Ruling C1-c) means a real bake never does.
+fn downstream_is_fresh(bodies: &[Body], reach_downstream: &[Downstream], start: Downstream) -> bool {
+    let bound = reach_downstream.len() + bodies.len() + 1;
+    let mut here = start;
+    for _ in 0..bound {
+        match here {
+            Downstream::Ocean => return true,
+            Downstream::Sink => return false,
+            Downstream::Reach(id) => here = reach_downstream[id as usize],
+            Downstream::Body(id) => here = bodies[id as usize].downstream,
+        }
+    }
+    false
+}
+
 /// The bake up to the lake closure: validation, `LandGraph::sample` -> `flood(ocean_seeds)` ->
 /// `find_hollows` + `judge` -> `route` -> `close_lakes`, then `flow::drainage_check` (Ruling
 /// C1-c), which refuses a routing where any node's water fails to reach the sea or a sink.
@@ -272,36 +293,53 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         });
     }
 
+    // Every reach's downstream, remapped to a body id where it lands on one, id-indexed so a
+    // `Downstream::Reach` link can be followed without borrowing `reach_lines` while it is still
+    // being built.
+    let reach_downstream: Vec<Downstream> = reaches.iter().map(|reach| match reach.downstream {
+        Downstream::Body(hollow_index) => {
+            // route() only ever writes lake_of (and so extract's Downstream::Body(hollow))
+            // for a hollow whose fate is Keep, so every lake member's hollow has a body id.
+            let body_id = body_id_of_hollow[hollow_index as usize]
+                .expect("a lake reach's target hollow is always kept");
+            Downstream::Body(body_id)
+        }
+        other => other,
+    }).collect();
+
     let mut reach_lines = Vec::with_capacity(reaches.len());
     for (id, reach) in reaches.iter().enumerate() {
-        let downstream = match reach.downstream {
-            Downstream::Body(hollow_index) => {
-                // route() only ever writes lake_of (and so extract's Downstream::Body(hollow))
-                // for a hollow whose fate is Keep, so every lake member's hollow has a body id.
-                let body_id = body_id_of_hollow[hollow_index as usize]
-                    .expect("a lake reach's target hollow is always kept");
-                Downstream::Body(body_id)
-            }
-            other => other,
-        };
         let points = reach_points(graph, routing, hollows, flow, &reach.nodes, params);
         reach_lines.push(ReachLine {
             id: id as u32, // cast-ok: at most one reach per index
             class: reach.class,
             order: reach.order,
-            downstream,
+            downstream: reach_downstream[id],
+            fresh: downstream_is_fresh(&bodies, &reach_downstream, reach_downstream[id]),
             points,
         });
     }
 
-    // Ruling 12b-2: routing keeps every cut (drainage correctness needs them all), but the
-    // record only describes the notches that matter -- one that a recorded reach's channel
-    // runs through, or one `close_lakes` cut as a fresh enclosed pocket's outlet. `reach.nodes`
-    // (not just the reach's endpoints) are every node its channel visits, so membership there is
-    // "lies on a river's path". Node-id equality stands in for the brief's lat/lon comparison:
-    // both a notch's points and a reach's points come from the same `graph.positions`, keyed by
-    // this same node index, so comparing indices is comparing positions exactly, without paying
-    // for a `to_latlon()` round trip on nodes the filter is about to discard anyway.
+    // Task 6's notch filter (replaces 12b-2): routing keeps every cut (drainage correctness
+    // needs them all), but the record only describes the notches, and the points within them,
+    // that matter.
+    //
+    // (a) An outlet cut from `close_lakes` (`closure.outlet_notch`) is recorded whole -- it is
+    //     the one channel a fresh enclosed pocket actually has, however shallow any one step of
+    //     it is.
+    // (b) Any other notch is reduced to the points that are not a recorded reach's own channel
+    //     nodes (its bed already carries that cut) *and* whose cut depth --
+    //     `graph.height_m - bed` -- is at least `NOTCH_RECORD_MIN_CUT_M`. A notch left with no
+    //     such points is dropped entirely, not recorded empty.
+    //
+    // Node-id equality stands in for a lat/lon comparison here: both a notch's points and a
+    // reach's points come from the same `graph.positions`, keyed by this same node index.
+    //
+    // A point's width is `width_m` at its own flow for an outlet cut (it is the pocket's only
+    // way out, whatever it carries), or at `max(flow, effective stream threshold)` otherwise --
+    // never narrower than the anchor an ordinary stream reach would report.
+    const NOTCH_RECORD_MIN_CUT_M: f64 = 2.0;
+
     let mut is_river_node = vec![false; graph.len()];
     for reach in &reaches {
         for &node in &reach.nodes {
@@ -317,17 +355,46 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
 
     let mut notches = Vec::new();
     for (idx, notch) in routing.notches.iter().enumerate() {
-        let on_a_river = notch.nodes.iter().any(|&node| is_river_node[node as usize]);
-        if !(on_a_river || is_outlet_notch[idx]) {
-            continue;
-        }
         let mut points = Vec::with_capacity(notch.nodes.len());
-        for (&node, &bed_m) in notch.nodes.iter().zip(&notch.bed_m) {
-            let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-            points.push((lat_deg, lon_deg, bed_m));
+        if is_outlet_notch[idx] {
+            for (&node, &bed_m) in notch.nodes.iter().zip(&notch.bed_m) {
+                let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
+                let width_m = width_m(flow[node as usize], &effective_params);
+                points.push((lat_deg, lon_deg, bed_m, width_m));
+            }
+        } else {
+            for (&node, &bed_m) in notch.nodes.iter().zip(&notch.bed_m) {
+                if is_river_node[node as usize] {
+                    continue;
+                }
+                let cut_depth_m = graph.height_m[node as usize] - bed_m;
+                if cut_depth_m < NOTCH_RECORD_MIN_CUT_M {
+                    continue;
+                }
+                let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
+                let q = flow[node as usize];
+                let q_for_width = if q > effective_stream_flow_m2 { q } else { effective_stream_flow_m2 };
+                let width_m = width_m(q_for_width, &effective_params);
+                points.push((lat_deg, lon_deg, bed_m, width_m));
+            }
+        }
+        if points.is_empty() {
+            continue;
         }
         notches.push(NotchLine { points });
     }
+
+    // Task 6's forced-outlet accounting: how many forced-outlet points `params` asked for, and
+    // of those, how many landed on a submerged member of a kept lake -- the same nearest-node
+    // mapping `hollows::forced_nodes` uses (`nearest_forced_nodes`, point by point rather than
+    // deduplicated), checked against `routing.lake_of` now that routing has settled. `lake_of`
+    // is only ever set for a hollow whose fate is Keep, so this check alone is "submerged member
+    // of a *kept* lake" -- no separate fate lookup is needed.
+    let nearest_forced = hollows::nearest_forced_nodes(graph, params);
+    let forced_requested = nearest_forced.len() as u32; // cast-ok: bounded by WB_MAX_HYDRO_FORCED
+    let forced_matched = nearest_forced.iter()
+        .filter(|&&node| node.map_or(false, |n| routing.lake_of[n as usize] != NO_LAKE))
+        .count() as u32; // cast-ok: bounded by forced_requested
 
     let falls: Vec<Fall> = Vec::new();
 
@@ -373,6 +440,18 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         stream_flow_m2: effective_stream_flow_m2,
         river_flow_m2: effective_river_flow_m2,
         great_flow_m2: effective_great_flow_m2,
+        total_nodes: params.total_nodes,
+        wetness_nodes: params.wetness_nodes,
+        keep_depth_m: params.keep_depth_m,
+        keep_area_m2: params.keep_area_m2,
+        pond_max_area_m2: params.pond_max_area_m2,
+        keep_max_area_m2: params.keep_max_area_m2,
+        min_stream_nodes: params.min_stream_nodes,
+        notch_fall_m: params.notch_fall_m,
+        evaporation_factor: params.evaporation_factor,
+        salt_flat_share: params.salt_flat_share,
+        forced_requested,
+        forced_matched,
     };
 
     HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }
@@ -410,15 +489,7 @@ mod bake_tests {
     fn the_record_round_trips() {
         let record = super::super::bake(&world(), &params()).expect("bake");
         let words = encode(&record);
-        // `Body.downstream` (Task 5) isn't on the wire yet -- Task 6 owns SCHEMA 3's layout --
-        // so `decode` always reports `Sink` for it. The round trip is checked on everything
-        // else; `expected` pins that one field down to what `decode` actually produces so the
-        // rest of the comparison still catches a real mismatch.
-        let mut expected = record.clone();
-        for body in &mut expected.bodies {
-            body.downstream = Downstream::Sink;
-        }
-        assert_eq!(decode(&words).as_ref(), Some(&expected));
+        assert_eq!(decode(&words).as_ref(), Some(&record));
         assert_eq!(words[0], crate::hydrology::record::SCHEMA);
     }
 
@@ -472,13 +543,14 @@ mod bake_tests {
         assert!(record.stats.stream_flow_m2 > 2.5e8);
     }
 
-    /// Ruling 12b-2: a recorded notch either lies on a recorded river's channel or was cut by
-    /// `close_lakes` as a fresh enclosed pocket's outlet -- nothing else. Reruns the same
-    /// pipeline `bake()` folds together, so it can see `closure.outlet_notch` and the raw
-    /// `routing.notches` bake() itself filters against, and compares lat/lon exactly (both a
-    /// notch's points and a reach's points come from the same node positions).
+    /// Task 6's notch filter: every recorded point is either on an outlet cut, or off every
+    /// recorded reach's channel nodes with a cut depth of at least
+    /// `NOTCH_RECORD_MIN_CUT_M` (2.0 m). Reruns the same pipeline `bake()` folds together, so it
+    /// can see `closure.outlet_notch` and the raw `routing.notches` the filter runs against, and
+    /// maps a recorded point back to its node by lat/lon (both a notch's points and a reach's
+    /// points come from the same node positions, so the map is exact).
     #[test]
-    fn only_notches_on_rivers_or_outlets_are_recorded() {
+    fn the_record_keeps_only_notches_that_matter() {
         let surface = world();
         let p = params();
         let graph = LandGraph::sample(&surface, p.total_nodes, p.wetness_nodes).expect("graph");
@@ -487,30 +559,52 @@ mod bake_tests {
         judge(&mut hollows, &graph, &p);
         let mut routing = route(&graph, &global_flood, &mut hollows, &p);
         let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, &p);
-        let reaches = extract(&graph, &routing, &flow, &p);
 
-        let mut river_positions: Vec<(f64, f64)> = Vec::new();
-        for reach in &reaches {
-            for &node in &reach.nodes {
-                river_positions.push(graph.positions[node as usize].to_latlon());
-            }
+        // node -> (lat, lon) exactly as `record_of` computes it, and the reverse, so a recorded
+        // point can be mapped back to the node it came from without recomputing `extract` (whose
+        // effective thresholds live inside `record_of`, not out here).
+        let mut position_to_node: std::collections::HashMap<(u64, u64), u32> =
+            std::collections::HashMap::new();
+        for node in 0..graph.len() as u32 { // cast-ok: node index
+            let (lat, lon) = graph.positions[node as usize].to_latlon();
+            position_to_node.insert((lat.to_bits(), lon.to_bits()), node);
         }
-        let mut outlet_positions: Vec<(f64, f64)> = Vec::new();
+        let mut outlet_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for opt in &closure.outlet_notch {
             if let Some(idx) = *opt {
-                for &node in &routing.notches[idx].nodes {
-                    outlet_positions.push(graph.positions[node as usize].to_latlon());
-                }
+                outlet_nodes.extend(routing.notches[idx].nodes.iter().copied());
             }
         }
 
-        let record = super::super::bake(&surface, &p).expect("bake");
+        let stages = BakeStages { graph, hollows, routing, flow, closure };
+        let record = record_of(&stages, &p);
         assert!(!record.notches.is_empty(), "sanity: this fixture must record at least one notch");
+
+        // The recorded reaches are the ground truth for "on a river's channel" -- built from the
+        // same effective thresholds `record_of` itself used, not a second, possibly-diverging
+        // `extract` call out here.
+        let mut is_river_node = vec![false; stages.graph.len()];
+        for reach in &record.reaches {
+            for point in &reach.points {
+                let node = *position_to_node.get(&(point.lat_deg.to_bits(), point.lon_deg.to_bits()))
+                    .expect("a reach point matches a graph node");
+                is_river_node[node as usize] = true;
+            }
+        }
+
         for notch in &record.notches {
-            let matches = notch.points.iter().any(|&(lat, lon, _bed_m)| {
-                river_positions.contains(&(lat, lon)) || outlet_positions.contains(&(lat, lon))
-            });
-            assert!(matches, "a recorded notch matched neither a river channel nor an outlet cut");
+            for &(lat, lon, bed_m, _width_m) in &notch.points {
+                let node = *position_to_node.get(&(lat.to_bits(), lon.to_bits()))
+                    .expect("a recorded point matches a graph node");
+                if outlet_nodes.contains(&node) {
+                    continue;
+                }
+                assert!(!is_river_node[node as usize],
+                        "a non-outlet point must not sit on a recorded reach's channel");
+                let cut_depth_m = stages.graph.height_m[node as usize] - bed_m;
+                assert!(cut_depth_m >= 2.0 - 1e-9,
+                        "a non-outlet point's cut depth {cut_depth_m} is under the 2 m floor");
+            }
         }
     }
 
@@ -519,6 +613,88 @@ mod bake_tests {
         let words = encode(&super::super::bake(&world(), &params()).expect("bake"));
         assert_eq!(decode(&words[..words.len() - 1]), None);
         assert_eq!(decode(&[]), None);
+    }
+
+    /// Hand fixture: ocean, a 39 m ridge, then a below-datum pocket (node 4, the only member of
+    /// an enclosed, always-kept basin per Ruling W1) and a dry peak (node 6). One forced-outlet
+    /// point lands exactly on the pocket's own node -- a submerged member of a kept lake once
+    /// routing has run -- and the other lands exactly on the dry peak, nowhere near any lake.
+    #[test]
+    fn forced_outlets_report_how_many_matched() {
+        let heights = [-50.0, -40.0, -30.0, 39.0, -5.0, 10.0, 60.0];
+        let n = heights.len();
+        let positions: Vec<SpherePoint> =
+            (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+        let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+            .map(|i| {
+                let mut v = Vec::new();
+                if i > 0 { v.push(i - 1); }
+                if (i as usize) + 1 < n { v.push(i + 1); }
+                v
+            })
+            .collect();
+        let g = LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![1.0e6; n], &directed, vec![0.5; n]);
+
+        let mut p = HydroParams::earth_like(0);
+        p.forced_outlets = vec![
+            SpherePoint::from_latlon(0.0, 2.0), // node 4: the enclosed pocket's own member
+            SpherePoint::from_latlon(0.0, 3.0), // node 6: dry high ground, no lake nearby
+        ];
+
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &p);
+        let mut routing = route(&g, &f, &mut hollows, &p);
+        let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
+        let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+        let record = record_of(&stages, &p);
+
+        assert_eq!(record.stats.forced_requested, 2);
+        assert_eq!(record.stats.forced_matched, 1);
+    }
+
+    /// Hand fixture: a tributary (nodes 3-4, high wetness so it clears the stream threshold)
+    /// feeds straight into a lake (node 2, behind a 40 m rim) that an enormous evaporation
+    /// factor keeps closed no matter how much the tributary delivers. The reach that ends at
+    /// that lake must report `fresh: false`.
+    #[test]
+    fn a_reach_into_a_closed_lake_is_not_fresh() {
+        let heights = [-50.0, 40.0, 5.0, 45.0, 90.0];
+        let n = heights.len();
+        let positions: Vec<SpherePoint> =
+            (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+        let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+            .map(|i| {
+                let mut v = Vec::new();
+                if i > 0 { v.push(i - 1); }
+                if (i as usize) + 1 < n { v.push(i + 1); }
+                v
+            })
+            .collect();
+        let wetness = vec![0.5, 0.5, 0.5, 0.9, 0.9];
+        let g = LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![1.0e6; n], &directed, wetness);
+
+        let mut p = HydroParams::earth_like(0);
+        p.stream_flow_m2 = 1.0e5;
+        p.river_flow_m2 = 1.0e6;
+        p.great_flow_m2 = 1.0e7;
+        p.min_stream_nodes = 1.0e-9;
+        p.evaporation_factor = 1.0e6;
+
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &p);
+        let mut routing = route(&g, &f, &mut hollows, &p);
+        let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
+        assert_eq!(drainage_check(&g, &routing), Ok(()));
+        let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+        let record = record_of(&stages, &p);
+
+        assert_eq!(record.bodies.len(), 1, "sanity: one lake");
+        assert!(!record.bodies[0].fresh, "sanity: the lake must close despite the tributary's flow");
+        let feeding_reach = record.reaches.iter().find(|r| r.downstream == Downstream::Body(record.bodies[0].id))
+            .expect("sanity: a reach feeds straight into the lake");
+        assert!(!feeding_reach.fresh, "a reach into a closed lake must not report fresh");
     }
 
     #[test]

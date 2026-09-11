@@ -11,10 +11,12 @@ use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
 use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, ReachLine, ReachPoint};
 
-/// 2.0 as of Task 12b (Ruling 12b-1): the header grew from 17 to 20 words, adding the three
-/// effective thresholds (`stream_flow_m2`, `river_flow_m2`, `great_flow_m2`) a coarse bake
-/// actually used, after `bake()`'s resolution-aware floor.
-pub const SCHEMA: f64 = 2.0;
+/// 3.0 as of Task 6 (plan 1b-1): the header grew from 20 to 32 words, adding the params echo
+/// and the forced-outlet match counts (see `BakeStats`'s trailing fields); `Body` gained its
+/// `downstream` link on the wire; `ReachLine` gained `fresh`; and each notch point gained a
+/// width. Earlier schemas are refused outright -- `decode` never adapts an old record to the
+/// new shape.
+pub const SCHEMA: f64 = 3.0;
 
 fn word_to_u32(w: f64) -> Option<u32> {
     if w.is_finite() && w >= 0.0 && w <= u32::MAX as f64 && m::floor(w) == w {
@@ -186,6 +188,18 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.stream_flow_m2);
     out.push(stats.river_flow_m2);
     out.push(stats.great_flow_m2);
+    out.push(stats.total_nodes as f64);
+    out.push(stats.wetness_nodes as f64);
+    out.push(stats.keep_depth_m);
+    out.push(stats.keep_area_m2);
+    out.push(stats.pond_max_area_m2);
+    out.push(stats.keep_max_area_m2);
+    out.push(stats.min_stream_nodes);
+    out.push(stats.notch_fall_m);
+    out.push(stats.evaporation_factor);
+    out.push(stats.salt_flat_share);
+    out.push(stats.forced_requested as f64);
+    out.push(stats.forced_matched as f64);
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -202,6 +216,9 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
         });
         out.push(body.anchor.0);
         out.push(body.anchor.1);
+        let (downstream_kind, downstream_id) = downstream_words(body.downstream);
+        out.push(downstream_kind);
+        out.push(downstream_id);
         out.push(body.outline.len() as f64);
         for &(lat, lon) in &body.outline {
             out.push(lat);
@@ -216,6 +233,7 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
         let (kind, id) = downstream_words(reach.downstream);
         out.push(kind);
         out.push(id);
+        out.push(bool_word(reach.fresh));
         out.push(reach.points.len() as f64);
         for point in &reach.points {
             out.push(point.lat_deg);
@@ -229,10 +247,11 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
 
     for notch in &record.notches {
         out.push(notch.points.len() as f64);
-        for &(lat, lon, bed_m) in &notch.points {
+        for &(lat, lon, bed_m, width_m) in &notch.points {
             out.push(lat);
             out.push(lon);
             out.push(bed_m);
+            out.push(width_m);
         }
     }
 
@@ -273,11 +292,24 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         stream_flow_m2: r.word()?,
         river_flow_m2: r.word()?,
         great_flow_m2: r.word()?,
+        total_nodes: r.u32()?,
+        wetness_nodes: r.u32()?,
+        keep_depth_m: r.word()?,
+        keep_area_m2: r.word()?,
+        pond_max_area_m2: r.word()?,
+        keep_max_area_m2: r.word()?,
+        min_stream_nodes: r.word()?,
+        notch_fall_m: r.word()?,
+        evaporation_factor: r.word()?,
+        salt_flat_share: r.word()?,
+        forced_requested: r.u32()?,
+        forced_matched: r.u32()?,
     };
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
-    // anchor_lat, anchor_lon, outline_len -- 12 words, plus its outline.
-    if !count_fits(body_count, 12, r.remaining()) {
+    // anchor_lat, anchor_lon, downstream_kind, downstream_id, outline_len -- 14 words, plus its
+    // outline.
+    if !count_fits(body_count, 14, r.remaining()) {
         return None;
     }
     let mut bodies = Vec::with_capacity(body_count);
@@ -293,6 +325,9 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let outlet_reach = r.optional_u32()?;
         let anchor_lat = r.word()?;
         let anchor_lon = r.word()?;
+        let downstream_kind = r.word()?;
+        let downstream_id = r.word()?;
+        let downstream = words_to_downstream(downstream_kind, downstream_id)?;
         let outline_len = r.u32()? as usize;
         // Outline pair: lat, lon -- 2 words per point.
         if !count_fits(outline_len, 2, r.remaining()) {
@@ -316,15 +351,13 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
             outlet_reach,
             anchor: (anchor_lat, anchor_lon),
             outline,
-            // Not on the wire yet -- Task 6 owns SCHEMA 3's layout, which is where
-            // `Body.downstream` gets encoded. Until then every decoded body reports `Sink`.
-            downstream: Downstream::Sink,
+            downstream,
         });
     }
 
-    // Reach: id, class, order, downstream_kind, downstream_id, point_count -- 6 words, plus its
-    // points.
-    if !count_fits(reach_count, 6, r.remaining()) {
+    // Reach: id, class, order, downstream_kind, downstream_id, fresh, point_count -- 7 words,
+    // plus its points.
+    if !count_fits(reach_count, 7, r.remaining()) {
         return None;
     }
     let mut reaches = Vec::with_capacity(reach_count);
@@ -335,6 +368,7 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let downstream_kind = r.word()?;
         let downstream_id = r.word()?;
         let downstream = words_to_downstream(downstream_kind, downstream_id)?;
+        let fresh = r.boolean()?;
         let point_count = r.u32()? as usize;
         // Reach point: lat, lon, bed_m, width_m, depth_m, flow_m2 -- 6 words per point.
         if !count_fits(point_count, 6, r.remaining()) {
@@ -350,7 +384,7 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
             let flow_m2 = r.word()?;
             points.push(ReachPoint { lat_deg, lon_deg, bed_m, width_m, depth_m, flow_m2 });
         }
-        reaches.push(ReachLine { id, class, order, downstream, points });
+        reaches.push(ReachLine { id, class, order, downstream, fresh, points });
     }
 
     // Notch: point_count -- 1 word, plus its points.
@@ -360,8 +394,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
     let mut notches = Vec::with_capacity(notch_count);
     for _ in 0..notch_count {
         let point_count = r.u32()? as usize;
-        // Notch point: lat, lon, bed_m -- 3 words per point.
-        if !count_fits(point_count, 3, r.remaining()) {
+        // Notch point: lat, lon, bed_m, width_m -- 4 words per point.
+        if !count_fits(point_count, 4, r.remaining()) {
             return None;
         }
         let mut points = Vec::with_capacity(point_count);
@@ -369,7 +403,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
             let lat = r.word()?;
             let lon = r.word()?;
             let bed_m = r.word()?;
-            points.push((lat, lon, bed_m));
+            let width_m = r.word()?;
+            points.push((lat, lon, bed_m, width_m));
         }
         notches.push(NotchLine { points });
     }
@@ -414,9 +449,7 @@ mod tests {
                     outlet_reach: Some(1),
                     anchor: (10.0, 20.0),
                     outline: Vec::new(),
-                    // Not encoded yet (Task 6); decode always fills Sink, so the round-trip
-                    // test below only holds if this fixture already is Sink.
-                    downstream: Downstream::Sink,
+                    downstream: Downstream::Reach(1),
                 },
                 Body {
                     id: 1,
@@ -439,6 +472,7 @@ mod tests {
                     class: ReachClass::River,
                     order: 2,
                     downstream: Downstream::Body(0),
+                    fresh: true,
                     points: vec![
                         ReachPoint { lat_deg: 1.0, lon_deg: 2.0, bed_m: 3.0, width_m: 4.0, depth_m: 5.0, flow_m2: 6.0 },
                         ReachPoint { lat_deg: 7.0, lon_deg: 8.0, bed_m: 9.0, width_m: 10.0, depth_m: 11.0, flow_m2: 12.0 },
@@ -449,10 +483,11 @@ mod tests {
                     class: ReachClass::Stream,
                     order: 1,
                     downstream: Downstream::Ocean,
+                    fresh: true,
                     points: vec![ReachPoint { lat_deg: 0.0, lon_deg: 0.0, bed_m: 0.0, width_m: 0.0, depth_m: 0.0, flow_m2: 0.0 }],
                 },
             ],
-            notches: vec![NotchLine { points: vec![(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)] }],
+            notches: vec![NotchLine { points: vec![(1.0, 2.0, 3.0, 0.5), (4.0, 5.0, 6.0, 1.5)] }],
             falls: vec![Fall { reach: 0, at: (1.0, 2.0), height_m: 3.0 }],
             stats: BakeStats {
                 nodes: 100,
@@ -470,17 +505,36 @@ mod tests {
                 stream_flow_m2: 3.0e10,
                 river_flow_m2: 3.0e11,
                 great_flow_m2: 3.0e12,
+                total_nodes: 100,
+                wetness_nodes: 20,
+                keep_depth_m: 8.0,
+                keep_area_m2: 1.0e6,
+                pond_max_area_m2: 1.0e6,
+                keep_max_area_m2: 4.0e11,
+                min_stream_nodes: 10.0,
+                notch_fall_m: 1.0,
+                evaporation_factor: 1.0,
+                salt_flat_share: 0.1,
+                forced_requested: 2,
+                forced_matched: 1,
             },
         }
     }
 
     #[test]
-    fn a_hand_built_record_round_trips_at_schema_2() {
+    fn a_hand_built_record_round_trips_at_schema_3() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(SCHEMA, 2.0, "Task 12b (Ruling 12b-1) bumped the schema for the 20-word header");
+        assert_eq!(SCHEMA, 3.0, "Task 6 (plan 1b-1) bumped the schema for the 32-word header");
         assert_eq!(words[0], SCHEMA);
         assert_eq!(decode(&words), Some(record));
+    }
+
+    #[test]
+    fn a_schema_2_record_is_refused() {
+        let mut words = encode(&sample());
+        words[0] = 2.0;
+        assert_eq!(decode(&words), None, "SCHEMA 2 input must be refused outright, not adapted");
     }
 
     #[test]
