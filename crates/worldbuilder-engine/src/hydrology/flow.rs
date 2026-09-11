@@ -12,9 +12,9 @@ pub struct Closure {
     pub salt_flat: Vec<bool>,
     pub fresh_enclosed: Vec<bool>,
     /// Ruling 12b-2: for a fresh enclosed basin, the index into `routing.notches` of the outlet
-    /// cut `close_lakes` made for it, if `cut_path` actually pushed one (a path shorter than 2
-    /// nodes pushes nothing). `None` for every hollow that never got an outlet cut here --
-    /// either it is not a fresh enclosed basin, or its path was too short to cut.
+    /// cut `close_lakes` made for it, if `cut_path` actually pushed one. It pushes nothing for a
+    /// path shorter than 2 nodes, or when it lowered no node. `None` for every hollow that never
+    /// got an outlet notch here: it is not a fresh enclosed basin, or its cut lowered nothing.
     pub outlet_notch: Vec<Option<usize>>,
 }
 
@@ -149,13 +149,12 @@ pub fn close_lakes(graph: &LandGraph, routing: &mut Routing, hollows: &[Hollow],
             if hollow.forced || inflow >= loss {
                 closure.fresh_enclosed[id] = true;
                 freshened = true;
-                // `cut_path` pushes exactly one `NotchRoute` when the path has 2+ nodes, and
-                // none otherwise (see its own doc) -- record the index it is about to land at,
-                // before calling it, so the record filter (Ruling 12b-2) can tell this notch is
-                // an outlet.
-                let notch_index = if hollow.outlet_path.len() >= 2 { Some(routing.notches.len()) } else { None };
+                // `cut_path` pushes at most one `NotchRoute`, and only if it lowered something
+                // (see its own doc). Read the index after the call, so the record filter
+                // (Ruling 12b-2) sees exactly the notch this outlet cut produced, or none.
+                let before = routing.notches.len();
                 cut_path(routing, graph, &hollow.outlet_path, hollow.level_m - params.notch_fall_m);
-                closure.outlet_notch[id] = notch_index;
+                closure.outlet_notch[id] = if routing.notches.len() > before { Some(before) } else { None };
             }
         }
         if !freshened {
@@ -349,6 +348,60 @@ mod tests {
         let mut steps = 0;
         while r.receiver[here as usize] != NO_NODE { here = r.receiver[here as usize]; steps += 1; assert!(steps < 100); }
         assert!(g.ocean[here as usize], "A's catchment reaches the sea through B");
+    }
+
+    /// Routes a line fixture through the whole pipeline up to `close_lakes`, at `earth_like(0)`.
+    fn closed(heights: &[f64]) -> (LandGraph, Vec<Hollow>, Routing, Closure) {
+        let g = line(heights, 1.0e6, 0.5);
+        let params = HydroParams::earth_like(0);
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &params);
+        let mut r = route(&g, &f, &mut hollows, &params);
+        let (_, closure) = close_lakes(&g, &mut r, &hollows, &params);
+        (g, hollows, r, closure)
+    }
+
+    /// Task 3, the review's first fixture: a cut that stopped on "lower ground" left that ground
+    /// draining by steepest descent -- back up the flood tree into the cut -- and closed a cycle.
+    #[test]
+    fn a_cut_never_stops_on_ground_that_drains_back() {
+        let (g, _, r, _) = closed(&[-50.0, -40.0, 39.0, 10.0, 0.02, 0.1, 0.3, 0.5, -5.0, 60.0]);
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
+    /// Task 3, the review's second fixture: a notched shore hollow on a fresh pocket's outlet
+    /// path must not close a cycle with the pocket's outlet cut.
+    #[test]
+    fn a_notched_shore_lake_cannot_close_a_cycle() {
+        let (g, _, r, _) =
+            closed(&[-50.0, -40.0, 39.0, 30.0, 0.05, 20.0, 14.0, 12.0, 10.0, 8.0, 6.0, 4.0, 2.0, -5.0, 60.0]);
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
+    /// Task 3, the property sweep: seeds 1 to 24 at 12,000 nodes, each with and without the
+    /// tectonic ranges, all through `bake_stages`, which refuses any routing that fails
+    /// `drainage_check`. That is 48 bakes.
+    ///
+    /// Ignored by the ledger's sweep ruling. It took 384 s in a debug test build (and about 88 s
+    /// in release) on the dev host, against a 60 s budget. Seeds 1 and 4242 stay in the default
+    /// suite (`real_worlds_drain_everything_through_the_full_bake`). Run it with:
+    /// `cargo test -p worldbuilder-engine --release --lib every_small_world_drains -- --ignored`
+    #[test]
+    #[ignore = "48 bakes, about 6 minutes in debug; run with --release -- --ignored"]
+    fn every_small_world_drains() {
+        let params = HydroParams::earth_like(12_000);
+        let mut failures = Vec::new();
+        for seed in 1..=24i64 {
+            for tectonics in [None, Some(crate::tectonics::TectonicParams::ranges())] {
+                let ranged = tectonics.is_some();
+                let surface = crate::surface::Surface::new(seed, 6.371e6, 12, 0.35, None, None, tectonics);
+                if let Err(e) = crate::hydrology::bake_stages(&surface, &params) {
+                    failures.push((seed, ranged, e));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "worlds that fail to drain (seed, ranges, error): {failures:?}");
     }
 
     /// Ruling C1-d, the mutation guard: a real routing that passes the check must fail it once
