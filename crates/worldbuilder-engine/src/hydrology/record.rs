@@ -16,10 +16,12 @@
 //!   (Ruling F-2). Where a notch point and a reach point sit on the same node, `notch word 3 -
 //!   reach depth == reach bed`, and the two widths are equal (both on the caller's params).
 //! - **Ruling F-3:** a notch line splits wherever two consecutive points are not graph
-//!   neighbours, and reaches the water it drains into: a line that keeps its route's last node
-//!   ends with one extra point, the node the cut stopped at, whose word 3 is the water level
-//!   there -- 0.0 for the ocean, the lake's `level_m` for a lake member, or the committed
-//!   surface for a node an earlier cut already lowered -- never a cut surface.
+//!   neighbours. **Ruling F-3a:** a line that keeps its route's last lowered node ends with one
+//!   extra point, `receiver` of that node -- the water it drains into, an earlier cut's
+//!   committed node, or lower ground the cut walked over without lowering (a route's `nodes`
+//!   lists only what it lowered, so `receiver` of the last one is not always water). That
+//!   point's word 3 is its own current water surface: 0.0 for the ocean, the lake's `level_m`
+//!   for a lake member, or `routing.surface_m` otherwise.
 //! - **Body `fresh`** means "not closed": the lake has an outlet. Its water may still end in a
 //!   closed lake downstream rather than the sea.
 //! - **Reach `fresh`** means "its chain reaches the ocean": following its `downstream` through

@@ -360,13 +360,19 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     // through the cut -- not a bed below it (Ruling F-2). A reach point's third word is its bed,
     // surface minus depth, so where the two coincide `notch - reach.depth == reach.bed`.
     //
-    // Ruling F-3: stage 2 carves a notch line segment by segment, so a recorded line must reach
-    // the water it drains into, and must split wherever consecutive kept points are not graph
-    // neighbours. When the route's own last node survives the filter above, one extra point is
-    // appended: the node the cut stopped at (`routing.receiver` of that last node). That point's
-    // third word is the water level there -- 0.0 for the ocean, the lake's own `level_m` for a
-    // lake member, or `routing.surface_m` for a node an earlier cut already committed -- never a
-    // cut surface, since nothing was cut there by this route.
+    // Ruling F-3: stage 2 carves a notch line segment by segment, so a recorded line must split
+    // wherever consecutive kept points are not graph neighbours.
+    //
+    // Ruling F-3a: `NotchRoute.nodes` lists only the nodes a route actually lowered -- lower
+    // ground it merely walked over does not stop it and is nowhere recorded there (`routing.rs`'s
+    // `follow_parents`). So when the route's own last (lowered) node survives the filter above,
+    // one extra point is appended: `routing.receiver` of that last node, which is one of --
+    //   * the water it drains into (the ocean or a lake member);
+    //   * a node an earlier cut already committed;
+    //   * lower ground the cut walked over without lowering it.
+    // Either way that point's third word is that node's own current water surface -- 0.0 for the
+    // ocean, the lake's own `level_m` for a lake member, or `routing.surface_m` otherwise -- not
+    // necessarily a cut this route itself made.
     const NOTCH_RECORD_MIN_CUT_M: f64 = 2.0;
 
     let mut is_river_node = vec![false; graph.len()];

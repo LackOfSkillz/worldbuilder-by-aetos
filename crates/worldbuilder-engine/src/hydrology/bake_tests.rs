@@ -1,9 +1,9 @@
 use crate::hydrology::bake::*;
 use crate::hydrology::flood::{flood, ocean_seeds, NO_NODE};
-use crate::hydrology::flow::{close_lakes, drainage_check};
+use crate::hydrology::flow::{close_lakes, drainage_check, Closure};
 use crate::hydrology::hollows::{self, find_hollows, judge, Fate};
 use crate::hydrology::landgraph::LandGraph;
-use crate::hydrology::routing::{route, NO_LAKE};
+use crate::hydrology::routing::{route, NotchRoute, Routing, NO_LAKE};
 use crate::hydrology::{Downstream, HydroError, HydroParams, HydroRecord};
 use crate::hydrology::record::{decode, encode};
 use crate::sphere::SpherePoint;
@@ -280,9 +280,88 @@ fn every_notch_segment_joins_graph_neighbours() {
     assert!(segments > 0, "the test world must record at least one notch segment");
 }
 
-/// Ruling F-3: an outlet cut ends in the water it drains into, not one node short of it.
+/// Code-review finding I1: the bake test world never gives a route a kept-point gap (every
+/// segment already joins graph neighbours without the split branch doing anything), so this
+/// hand fixture builds one directly. A 6-node chain, 0 the ocean and 1..5 land, each node
+/// adjacent only to its immediate chain neighbours (0-1-2-3-4-5). A single hand-built
+/// `NotchRoute` walks it downhill as `5, 4, 3, 2, 1` (heights 50, 40, 30, 20, 10; ocean at
+/// -10), cut to beds 10 m below each node except node 3, cut only 0.5 m -- under
+/// `NOTCH_RECORD_MIN_CUT_M` (2.0 m), so `record_of` drops it. The surviving kept nodes,
+/// `5, 4, 2, 1`, are not all graph neighbours in sequence (4 and 2 are two chain hops apart):
+/// the record must split there into two lines, `[5, 4]` and `[2, 1, <ocean stop>]` (node 1's
+/// receiver is the ocean, node 0, appended by Ruling F-3a).
+///
+/// `flow` is all zero, so `extract` finds no channel nodes and this notch is filtered purely
+/// on cut depth, never on `is_river_node`. `closure.outlet_notch` is empty, so this route is
+/// not treated as an outlet cut -- the depth filter is what drops node 3.
 #[test]
-fn every_outlet_cut_ends_in_the_water_it_drains_into() {
+fn a_notch_line_splits_where_the_filter_opens_a_gap() {
+    let n = 6;
+    let heights = vec![-10.0, 10.0, 20.0, 30.0, 40.0, 50.0];
+    let positions: Vec<SpherePoint> =
+        (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+    let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+        .map(|i| {
+            let mut v = Vec::new();
+            if i > 0 { v.push(i - 1); }
+            if (i as usize) + 1 < n { v.push(i + 1); }
+            v
+        })
+        .collect();
+    let graph = LandGraph::from_parts(
+        6_371_000.0, positions, heights.clone(), vec![1.0e6; n], &directed, vec![0.5; n],
+    );
+
+    let mut receiver = vec![NO_NODE; n];
+    receiver[1] = 0; // node 1's cut stops at the ocean.
+    let routing = Routing {
+        surface_m: heights,
+        receiver,
+        lake_of: vec![NO_LAKE; n],
+        parent: vec![NO_NODE; n],
+        notches: vec![NotchRoute {
+            nodes: vec![5, 4, 3, 2, 1],
+            bed_m: vec![40.0, 30.0, 29.5, 10.0, 5.0],
+        }],
+        committed: vec![false; n],
+    };
+    let closure = Closure {
+        closed: Vec::new(),
+        salt_flat: Vec::new(),
+        fresh_enclosed: Vec::new(),
+        outlet_notch: Vec::new(),
+    };
+    let stages = BakeStages { graph, hollows: Vec::new(), routing, flow: vec![0.0; n], closure };
+
+    let p = HydroParams::earth_like(0);
+    let record = record_of(&stages, &p);
+    let lookup = node_at(&stages.graph);
+
+    let lines: Vec<Vec<u32>> = record.notches.iter()
+        .map(|line| line.points.iter()
+            .map(|&(lat, lon, _, _)| lookup[&(lat.to_bits(), lon.to_bits())])
+            .collect())
+        .collect();
+    assert_eq!(lines, vec![vec![5, 4], vec![2, 1, 0]],
+                "the gap at the dropped node 3 must split the route into two lines");
+
+    for line in &lines {
+        for pair in line.windows(2) {
+            assert!(stages.graph.neighbours(pair[0]).binary_search(&pair[1]).is_ok(),
+                    "notch points {} and {} are not neighbours", pair[0], pair[1]);
+        }
+    }
+}
+
+/// Ruling F-3a: `NotchRoute.nodes` lists only the nodes a route actually lowered -- lower
+/// ground it merely walked over does not stop it and is not pushed there (`routing.rs`'s
+/// `follow_parents`). So `receiver` of the route's last (lowered) node is not necessarily
+/// water: it is whichever node the loop's very next step landed on, and that can be the
+/// ocean, a lake, an earlier cut's committed node, or lower ground the cut walked over
+/// without lowering. The append is unconditional on which of those it is -- this only checks
+/// that the recorded line's last point is exactly that node, at its own current level.
+#[test]
+fn every_outlet_cut_ends_at_the_node_its_cut_stops_at() {
     let p = params();
     let stages = bake_stages(&world(), &p).expect("stages");
     let record = record_of(&stages, &p);
@@ -292,12 +371,12 @@ fn every_outlet_cut_ends_in_the_water_it_drains_into() {
         let last = *route.nodes.last().expect("an outlet cut has nodes");
         let stop = stages.routing.receiver[last as usize];
         let i = stop as usize;
-        assert!(stages.graph.ocean[i] || stages.routing.lake_of[i] != NO_LAKE,
-                "an outlet cut stops at the ocean or a lake");
         let level = if stages.graph.ocean[i] {
             0.0
-        } else {
+        } else if stages.routing.lake_of[i] != NO_LAKE {
             stages.hollows[stages.routing.lake_of[i] as usize].level_m
+        } else {
+            stages.routing.surface_m[i]
         };
         let (lat, lon) = stages.graph.positions[i].to_latlon();
         assert!(record.notches.iter().any(|line| {
