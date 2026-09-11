@@ -1132,6 +1132,17 @@ jobs:
           # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) and
           # `assert_counts.py cargo-list` AFTER the last source edit; all five printed
           # `count OK`.
+          # 2026-09-12, water 1b-2 final review fix wave: 743/743/745/849/851 ->
+          # 751/751/753/857/859, 6 ignored, unchanged, over the same 16 binaries (`listed`
+          # 757/757/759/863/865). +8 uniformly on every row, all in `src/hydrology/`: 5 new in
+          # `refine.rs` (a fall at a coarse start, a cliff in a step's last window, the blocked
+          # station's step back, the chord-point exception R-3a, a short `protected` slice) and
+          # 3 new in `bake_tests.rs` (no inland station on sea ground, every refined mouth at or
+          # below its water, the refinement params' floors). No `tests/wasm_exports.rs` test was
+          # added, so the wasm rows move by the same +8. Re-derived per configuration through
+          # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) and
+          # `assert_counts.py cargo-list` AFTER the last source edit; all five printed
+          # `count OK`.
           # 2026-09-12, water 1b-2 Task 8, the 500 m ruling (`refine_simplify_m` 250 -> 500 m,
           # because the owner world's record was 8,659,856 bytes at 250 m): 743/743/745/849/851
           # -> 743/743/745/849/851, 6 ignored, UNCHANGED. The one test that named a tolerance
@@ -1140,23 +1151,23 @@ jobs:
           # printed `count OK`.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 743
+            expect: 751
             expect_ignored: 6
           - name: default
             features: ""
-            expect: 743
+            expect: 751
             expect_ignored: 6
           - name: python
             features: "--features python"
-            expect: 745
+            expect: 753
             expect_ignored: 6
           - name: wasm
             features: "--features wasm"
-            expect: 849
+            expect: 857
             expect_ignored: 6
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 851
+            expect: 859
             expect_ignored: 6
     steps:
       - uses: actions/checkout@v4
@@ -1669,6 +1680,12 @@ jobs:
       # `hydro/ranges` 29,058 -> 14,958 (-14,100), the whole -17,946. Every non-H group is
       # unmoved. Wasm rebuilt: 351,072 bytes, artifact-sha256 3e0a3050..., source-fingerprint
       # 72fa850d... (55 inputs).
+      # 2026-09-12, water 1b-2 final review fix wave: 146,555 compared, 0 divergent, UNCHANGED.
+      # The fix wave changed where a blocked station stands and how a fall's ends are recorded, so
+      # the wasm was rebuilt (351,584 bytes, artifact-sha256 5eb54e0a..., source-fingerprint
+      # c31e0952..., 55 inputs), and both hydro records kept their word counts (`hydro/plain`
+      # 3,938 and `hydro/ranges` 14,958): the fixes move station positions and a fall's recorded
+      # point, not the number of words. Native and wasm moved together, so 0 divergent.
       - name: Assert the corpus -- 146,555 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -1747,6 +1764,9 @@ jobs:
       # 2026-09-12, the 500 m ruling: 164,501/158,765 -> 146,555/140,818. `hydro/plain` 7,703
       # -> 3,857 of 3,938 and `hydro/ranges` 28,854 -> 14,753 of 14,958; non-hydro unmoved at
       # 122,208 (122,208 + 3,857 + 14,753 = 140,818).
+      # 2026-09-12, water 1b-2 final review fix wave: 146,555/140,818, UNCHANGED. `hydro/plain`
+      # 3,857 of 3,938 and `hydro/ranges` 14,753 of 14,958 are both unmoved, and non-hydro stays
+      # at 122,208.
       - name: Assert the control -- 140,818 of 146,555 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -1932,12 +1952,19 @@ jobs:
       # of 29,058 -> 14,625 of 14,958, and the native TCTL prediction's sixth field moved with
       # it (28723 -> 14625); the control printed "exactly as the native side predicted". The
       # five belt groups are UNCHANGED (6,186 + 14,625 = 20,811).
-      - name: Assert the tectonic control -- 20,811 of 146,555 divergent, across the belt groups and hydro/ranges
+      # 2026-09-12, water 1b-2 final review fix wave: 146,555/20,811 -> 146,555/20,808.
+      # `hydro/ranges` 14,625 -> 14,622 of 14,958, and the native TCTL prediction's sixth field
+      # moved with it (14625 -> 14622, computed by `examples/parity_dump.rs`): three words of the
+      # warp-0 world's bake now agree with the recorded one, where a blocked station steps back to
+      # the same place on both terrains (Ruling R-3a). The control printed "exactly as the native
+      # side predicted". The five belt groups are UNCHANGED (6,186 + 14,622 = 20,808), and
+      # `hydro/plain` stays at 0.
+      - name: Assert the tectonic control -- 20,808 of 146,555 divergent, across the belt groups and hydro/ranges
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 146555 --expect-divergent 20811
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 146555 --expect-divergent 20808
 
       # THE FIFTH CONTROL, the photoreal slice's Task 6, and the first that exercises the coast
       # channel at all.

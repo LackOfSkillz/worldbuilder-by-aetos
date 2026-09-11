@@ -5120,3 +5120,72 @@ the non-hydro groups unmoved at 122,208. The tectonic control's `hydro/ranges` i
 are unmoved at 6,186.
 
 The reproduction commands are the ones above, with `--expect-passed <743|743|745|849|851>`.
+
+## 2026-09-12, water 1b-2 final review fix wave: pins re-derived
+
+The fix wave records a fall's ends as points of its reach rather than re-derived coordinates
+(Rulings FF-1 and FF-4), steps a blocked station back toward its chord (Ruling FF-2 / R-3a), and
+floors the refinement params (Ruling FF-5). `src/` moved, so the wasm was rebuilt: 351,584 bytes,
+31 exports, 0 imports; artifact-sha256
+5eb54e0a5ef5a69158e675a951190715da3e038a4c18edaf3b89cf49becaccb6, source-fingerprint
+c31e095278b3930413431e782b6c629ca9ed6387c079b3328ccca259cfef54d2 (55 inputs). `npm run
+check:wasm` reports it matches its manifest and the source here.
+
+**Engine, re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
+--list` (and `--ignored`) and `assert_counts.py cargo-list`, which printed `count OK` at all
+five:**
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 757 | 6 | **751** (was 743) |
+| default | 757 | 6 | **751** (was 743) |
+| `--features python` | 759 | 6 | **753** (was 745) |
+| `--features wasm` | 863 | 6 | **857** (was 849) |
+| `--features python,wasm` | 865 | 6 | **859** (was 851) |
+
+743/743/745/849/851 -> **751/751/753/857/859**, 6 ignored, unchanged, over the same 16 test
+binaries. **+8 uniformly on every row**, all in `src/hydrology/`: 5 new in `refine.rs` (a fall at
+a coarse start, a cliff in a step's last window, the blocked station's step back, the chord-point
+exception R-3a, a short `protected` slice) and 3 new in `bake_tests.rs` (no inland station on sea
+ground, every refined mouth at or below its water, the refinement params' floors). Every
+configuration was also run, not only listed: 751 / 0 / 6, 751 / 0 / 6, 753 / 0 / 6, 857 / 0 / 6
+and 859 / 0 / 6 passed / failed / ignored. The ignored sweep, `cargo test --release -p
+worldbuilder-engine --lib every_small_world_drains -- --ignored`, passed (67.0 s).
+
+**Python:** 565 collected, 157 of them conformance -- unchanged (`pytest --collect-only -q`).
+
+**Viewer:** `npm test` in `viewer/` -- **333 passed, 0 failed**, unchanged.
+
+**Parity, all eight runs `count OK` against `assert_counts.py parity`:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | 146,555 | **0** |
+| `--mutate seed` | 146,555 | 140,818 |
+| `--mutate erosion-k` | 146,555 | 216 |
+| `--mutate water-pond` | 146,555 | 60 |
+| `--mutate tectonic-warp` | 146,555 | **20,808** (was 20,811) |
+| `--mutate coast-amplitude` | 146,555 | 13,128 |
+| `--mutate gully-steer` | 146,555 | 3,752 |
+| `--mutate climate-samples` | 146,555 | 648 |
+
+Both hydro records keep their word counts (`hydro/plain` 3,938, `hydro/ranges` 14,958): these
+fixes move where a station stands and which point a fall names, not how many words a record has.
+Native and wasm moved together, so the plain run stays at 0 divergent, and the seed control is
+unmoved in every group (3,857 of 3,938, 14,753 of 14,958, non-hydro 122,208). The tectonic
+control's `hydro/ranges` moves by 3, to 14,622 of 14,958, and the native TCTL prediction's sixth
+field moved with it (14625 -> 14622), so the control still prints "exactly as the native side
+predicted"; the five belt groups are unchanged at 6,186.
+
+**`hydro_survey` at 1,000,000 nodes** (native, release, this host; the owner-world figures stay
+the controller's):
+
+| world | bake | (stages / record_of / refine) | record | falls |
+|---|---|---|---|---|
+| plain | 11.22 s | 10.02 / 0.03 / 1.18 | 4,227,936 bytes (was 4,227,936) | 0 |
+| owner_survey | 10.94 s | 10.39 / 0.02 / 0.54 | 2,471,360 bytes (was 2,471,408) | 4 |
+| seed1_ranges | 12.05 s | 10.21 / 0.05 / 1.79 | 5,967,064 bytes (was 5,966,824) | 0 |
+
+All three are under the 8 MB target, and `drainage_check` is `Ok` on all three.
+
+The reproduction commands are the ones above, with `--expect-passed <751|751|753|857|859>`.

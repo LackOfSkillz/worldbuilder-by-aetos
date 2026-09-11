@@ -7,9 +7,8 @@
 //! graph spacing either side of the chord). It never steps onto ground at or below the datum
 //! before its mouth (Ruling R-3), stepping back toward its chord where it must, and keeping the
 //! chord point where even that is water (Ruling R-3a). It always arrives back on the next coarse
-//! point. Coarse points
-//! are kept exactly, so a tributary still ends on its receiver's first vertex (Ruling R-1, spec
-//! §14.4).
+//! point. Coarse points are kept exactly, so a tributary still ends on its receiver's first
+//! vertex (Ruling R-1, spec §14.4).
 //!
 //! The bed never rises (spec §14.5). Inside a segment it follows the ground down, less the
 //! channel's depth, but never below the segment's lower end. Where the ground rises, the bed
