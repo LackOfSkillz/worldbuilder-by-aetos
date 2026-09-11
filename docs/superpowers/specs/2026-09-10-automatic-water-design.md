@@ -243,6 +243,11 @@ always takes `earth_like`'s value for both.
     exception to the rule above (Ruling R-3a).
   - A mouth's bed is the lower of the bed that reaches it and the water level, so the bed never
     rises, mouths included (Ruling R-4).
+  - The corridor keeps a refined line inside its own coarse route's basin, but it does not stop
+    two reaches from crossing one another inside their corridors, and neither did the coarse
+    graph: at 1M nodes the plain world has 61 coarse crossings and 1,957 refined, and the seed 1
+    `ranges` world 95 and 3,922 (final review, Ruling FF-3). Plan 1b-3 fixes it, before stage 2
+    carves crossing channels into each other.
   - A meander is drawn only where a wavelength (11 widths) of at least four steps (6 km) can
     represent it, the segment's bed slope is under 0.2%, and the segment carries no fall. Its
     amplitude is 1.5 widths, tapered to zero at both coarse points, and clamped inside the

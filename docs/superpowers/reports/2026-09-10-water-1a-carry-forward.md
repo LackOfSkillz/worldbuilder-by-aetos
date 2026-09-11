@@ -77,6 +77,7 @@ It closed:
 Two parts of item 6 remain:
 
 - **Lake outlines, and small lakes and ponds**, go to **plan 1b-3 (shores)**, which starts with a spike.
+- **Reaches still cross one another** inside their corridors (Ruling FF-3 of the 1b-2 final review). The corridor keeps a refined line in its own basin and no more, and the coarse graph crossed too: at 1M nodes, the plain world has 61 coarse crossings and 1,957 refined; the seed 1 `ranges` world 95 and 3,922. It must be fixed before stage 2 carves two channels into each other.
 - **Falls** work (4 on a native `ranges()` stand-in, and analytic cliff tests), but there are **0 on the owner world**. Its landform has no 10 m drop within 150 m along any reach at these resolutions. Falls await the mountains project's steeper relief.
 
 ## Plan 1b must fix (load-bearing for stage 2)

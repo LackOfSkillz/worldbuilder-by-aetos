@@ -773,6 +773,12 @@ export class Engine {
   /// `refineVerticalM`, `fallMinDropM`, `fallMaxRunM`, `meanderWavelengthWidths`,
   /// `meanderAmplitudeWidths`, `meanderMaxSlope`).
   ///
+  /// Of the schema 4 words this returns ONLY 32-34, the three capped-basin counts. The
+  /// refinement params echo in words 35-42 is in the record and read by `water-preview.js`'s
+  /// `decodeHydro`; it is not a field of this summary. Nothing here is a params echo the studio
+  /// can set: by Ruling R-8 the refinement params are not wasm params, so a wasm bake always
+  /// used `earth_like`'s values for them.
+  ///
   /// Throws on a schema other than 4: another schema's header is not these 43 words, and a
   /// summary read off it would be wrong silently.
   ///
