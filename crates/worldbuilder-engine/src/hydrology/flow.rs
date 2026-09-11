@@ -463,6 +463,98 @@ mod tests {
         assert_eq!(drainage_check(&g, &r), Ok(()));
     }
 
+    /// Routes `g` through the whole pipeline up to `close_lakes`, at the given `params`.
+    fn closed_with(g: &LandGraph, params: &HydroParams) -> (Vec<Hollow>, Routing) {
+        let f = flood(g, &ocean_seeds(g), &|_| true);
+        let mut hollows = find_hollows(g, &f);
+        judge(&mut hollows, g, params);
+        let mut r = route(g, &f, &mut hollows, params);
+        let _ = close_lakes(g, &mut r, &hollows, params);
+        (hollows, r)
+    }
+
+    /// Task 4 fix 1, the review's fixture A (Ruling 4-1): a capped shore hollow inside an
+    /// enclosed basin. The enclosed step has already pointed its members down toward the pocket,
+    /// so its escape chain must follow those parents. Walking the global flood's parents instead
+    /// leads over the rim, and the chain it spares closes a 2-cycle with the members it re-points.
+    #[test]
+    fn a_capped_shore_hollow_walks_its_own_way_out() {
+        let g = line(&[-50.0, 30.0, 10.0, 10.0, 20.0, -5.0], 1.0e6, 0.5);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 1.5e6;
+        params.evaporation_factor = 3.0;
+        let (_, r) = closed_with(&g, &params);
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
+    /// Task 4 fix 1, the review's fixture B (Ruling 4-2): a 4-connected 6x3 grid where a capped
+    /// basin keeps an inner lake that sits on a fresh pocket's outlet path. The pocket's cut stops
+    /// at that lake, whose own way out leads back toward the pocket. C1-a must judge the capped
+    /// step's inner hollows too, and notch that one.
+    #[test]
+    fn a_capped_basins_inner_lake_stays_off_a_pockets_outlet_path() {
+        let (w, h) = (6usize, 3usize);
+        let heights = [
+            -50.0, 60.0, 60.0, 10.0, 60.0, 60.0,
+            -50.0, 0.0, 40.0, 30.0, 60.0, 60.0,
+            -50.0, 60.0, 10.0, 30.0, 50.0, 0.0,
+        ];
+        let n = w * h;
+        let positions: Vec<SpherePoint> = (0..n)
+            .map(|i| SpherePoint::from_latlon((i / w) as f64 * 0.5, (i % w) as f64 * 0.5))
+            .collect();
+        let directed: Vec<Vec<u32>> = (0..n)
+            .map(|i| {
+                let (row, col) = (i / w, i % w);
+                let mut v = Vec::new();
+                if row > 0 { v.push((i - w) as u32); } // cast-ok: tiny fixture
+                if col > 0 { v.push((i - 1) as u32); } // cast-ok: tiny fixture
+                if col + 1 < w { v.push((i + 1) as u32); } // cast-ok: tiny fixture
+                if row + 1 < h { v.push((i + w) as u32); } // cast-ok: tiny fixture
+                v
+            })
+            .collect();
+        let g = LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![1.0e6; n], &directed,
+                                      vec![0.5; n]);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 1.5e6;
+        params.evaporation_factor = 0.01;
+        let (_, r) = closed_with(&g, &params);
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
+    /// Task 4 fix 1: the capped basin (nodes 2-6, floor 5 m at node 5) leaves over the 40 m rim
+    /// along 5 -> 4 -> 3 -> 2 -> 1. The inner hollow at node 3, deep and wide enough to keep on
+    /// its own, sits on that way out, so it is notched and holds no water.
+    #[test]
+    fn a_lake_on_a_capped_basins_way_out_is_notched() {
+        let g = line(&[-50.0, 40.0, 30.0, 10.0, 25.0, 5.0, 35.0, 70.0], 1.0e6, 0.5);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 4.0e6;
+        let (hollows, r) = closed_with(&g, &params);
+        let inner = hollows.iter().find(|h| h.members == vec![3]).expect("the inner hollow at node 3");
+        assert_eq!(inner.fate, Fate::Notch, "on the escape chain");
+        assert_eq!(r.lake_of[3], NO_LAKE);
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
+    /// Task 4 fix 1: the same capped basin, wider. The inner hollow at node 3 is on the floor's
+    /// way out and is notched; the one at node 7 is off it, and is kept as its own lake.
+    #[test]
+    fn a_capped_basin_keeps_the_lake_off_its_way_out() {
+        let g = line(&[-50.0, 40.0, 30.0, 10.0, 25.0, 5.0, 25.0, 12.0, 28.0, 35.0, 70.0], 1.0e6, 0.5);
+        let mut params = HydroParams::earth_like(0);
+        params.keep_max_area_m2 = 7.0e6;
+        let (hollows, r) = closed_with(&g, &params);
+        let on_chain = hollows.iter().find(|h| h.members == vec![3]).expect("the inner hollow at node 3");
+        assert_eq!(on_chain.fate, Fate::Notch, "on the escape chain");
+        assert_eq!(r.lake_of[3], NO_LAKE);
+        let off_id = hollows.iter().position(|h| h.members == vec![7]).expect("the inner hollow at node 7");
+        assert_eq!(hollows[off_id].fate, Fate::Keep, "off the escape chain");
+        assert_eq!(r.lake_of[7], off_id as u32, "node 7 is that lake's member"); // cast-ok: hollow index, bounded by hollows.len()
+        assert_eq!(drainage_check(&g, &r), Ok(()));
+    }
+
     /// Beyond the brief: a full pipeline run on a real sampled world must conserve the total
     /// wetness-weighted catchment between the ocean and any closed-lake sinks, and every flow
     /// value must be finite and non-negative.
