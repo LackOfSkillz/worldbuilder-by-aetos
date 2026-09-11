@@ -128,3 +128,17 @@ All figures were re-derived by running them on the host above, not by transcribi
 - **Parity:** only the two hydro records move. `hydro/plain` grows from 647 words to 7,784 at 250 m, then 3,938 at 500 m. `hydro/ranges` grows from 4,166 to 29,058, then 14,958. No H word diverges native against wasm. The seed control's non-hydro groups stay at 122,208, and the tectonic control's belt groups stay at 6,186.
 - **Wasm at f34229f:** 351,072 bytes, artifact-sha256 3e0a305014e7e38b4d8bd710804cf12cc9b4aad596be36fd5af4677aa73e8c98, source-fingerprint 72fa850d7fdaef7cdd13114327bcf5d975bcfb4799cbbfffd2bdf866fe252fc3 (55 inputs).
 - **The ignored drainage sweep** (`cargo test --release -p worldbuilder-engine --lib every_small_world_drains -- --ignored`) passes: 83.8 s at 250 m, 81.9 s at 500 m.
+
+## Re-measured after the final review's fix wave (2db6a17)
+
+**Population:** the owner's world again, same method and host as above (the branch studio on :8138, the wasm pool worker, the world opened from the library with its two painted features, `PREVIEW_PARAMS` at 1M nodes, one forced outlet at 0°N 0°E). Measured by the controller.
+
+| | at f34229f | at 2db6a17 |
+|---|---|---|
+| Wall time, dispatch to words | 64.4 s | **70.4 s** |
+| Record bytes | 5,957,984 | **5,958,896** |
+| Refined reach points | 117,150 | **117,169** |
+
+Everything else is unchanged: 348 bodies (296 fresh, 52 salt); 4,876 reaches (3,420 / 1,319 / 137); 0 falls; capped basins 7, inner hollows 60, inner kept 9; forced 1 of 1; 0 fresh dead-ends; 0 rising beds; 3,268 junctions all shared bit for bit; 0 mouths above their water; and the great lake (body 63) still drains 63 → 316 → 317 → 318 → 322 → 319 to the ocean at 25.938°S 30.106°W. Every recorded fall's `at` is a point of its own reach with a lower point after it (0 falls here, so the check is vacuous on this world; `ranges_world` in the tests carries three).
+
+The nineteen extra points and the 912 extra bytes are the fix wave's step-back rule (R-3a) moving a few blocked stations back toward their chord.
