@@ -38,7 +38,7 @@ pub fn flood(graph: &LandGraph, seeds: &[(u32, f64)], allowed: &dyn Fn(u32) -> b
         is_seed[node as usize] = true;
         reached[node as usize] = true;
         spill_m[node as usize] = level;
-        queue.push(level, node);
+        queue.push_tied(level, level, node);
     }
     while let Some((level, node)) = queue.pop() {
         if !is_seed[node as usize] {
@@ -54,7 +54,10 @@ pub fn flood(graph: &LandGraph, seeds: &[(u32, f64)], allowed: &dyn Fn(u32) -> b
             let own = graph.height_m[i];
             let spill = if own > level { own } else { level };
             spill_m[i] = spill;
-            queue.push(spill, next);
+            // Inside a filled hollow every node shares the same spill; break the tie by the
+            // node's own ground height so the flood reaches the lowest ground first, and parent
+            // chains follow valley floors instead of node index.
+            queue.push_tied(spill, own, next);
         }
     }
     Flood { spill_m, parent, order, reached }
@@ -132,5 +135,83 @@ mod tests {
         let f = flood(&g, &ocean_seeds(&g), &|n| n <= 2);
         assert!(f.reached[2]);
         assert!(!f.reached[3]);
+    }
+
+    /// A 5x5 lattice, 4-neighbour adjacency, positions on a 0.1-degree patch near the equator.
+    /// `(0,0)` is the only below-datum node (the ocean). `(0,1)` is a single rim node the ocean
+    /// touches, at 31 m. Everything else is a 30 m flat, except a staircase of nodes running
+    /// from the far corner `(4,4)` to `(1,1)` at 29 m -- a valley one metre below the flat it
+    /// crosses. Once the flood reaches the rim, the whole flat (valley included) spills at the
+    /// same 31 m level: a single filled basin where only the tie-break can choose the path.
+    fn grid_with_a_diagonal_valley() -> LandGraph {
+        let rows = 5usize;
+        let cols = 5usize;
+        let n = rows * cols;
+        let idx = |r: usize, c: usize| -> u32 { (r * cols + c) as u32 }; // cast-ok: tiny fixture
+
+        let positions: Vec<SpherePoint> = (0..n)
+            .map(|i| {
+                let r = i / cols;
+                let c = i % cols;
+                SpherePoint::from_latlon(r as f64 * 0.1, c as f64 * 0.1)
+            })
+            .collect();
+
+        let mut height_m = vec![30.0; n];
+        height_m[idx(0, 0) as usize] = -10.0;
+        height_m[idx(0, 1) as usize] = 31.0;
+        let valley = [(4, 4), (3, 4), (3, 3), (2, 3), (2, 2), (1, 2), (1, 1)];
+        for &(r, c) in &valley {
+            height_m[idx(r, c) as usize] = 29.0;
+        }
+
+        let mut directed: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for r in 0..rows {
+            for c in 0..cols {
+                let mut neighbours = Vec::new();
+                if r > 0 { neighbours.push(idx(r - 1, c)); }
+                if r + 1 < rows { neighbours.push(idx(r + 1, c)); }
+                if c > 0 { neighbours.push(idx(r, c - 1)); }
+                if c + 1 < cols { neighbours.push(idx(r, c + 1)); }
+                directed[idx(r, c) as usize] = neighbours;
+            }
+        }
+        // The ocean touches a single rim node, (0,1). Cut its edge to (1,0).
+        let ocean = idx(0, 0) as usize;
+        let south = idx(1, 0);
+        directed[ocean].retain(|&x| x != south);
+        directed[south as usize].retain(|&x| x != idx(0, 0));
+
+        LandGraph::from_parts(6_371_000.0, positions, height_m, vec![1.0e6; n], &directed,
+                              vec![0.5; n])
+    }
+
+    #[test]
+    fn inside_a_flat_the_flood_follows_the_low_ground() {
+        let g = grid_with_a_diagonal_valley();
+        assert!(g.ocean[0], "the corner is the only below-datum node");
+
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+
+        // The staircase valley, far corner (24) toward the rim (1), excluding the rim itself.
+        let valley: [u32; 7] = [24, 19, 18, 13, 12, 7, 6];
+        let rim = 1u32;
+
+        let mut here = 24u32;
+        let mut steps = 0;
+        loop {
+            let parent = f.parent[here as usize];
+            steps += 1;
+            assert!(steps < 25, "cycle in the parent chain");
+            if parent == rim {
+                break;
+            }
+            assert!(
+                valley.contains(&parent),
+                "expected the flood to follow the valley floor, found node {parent}"
+            );
+            here = parent;
+        }
+        assert_eq!(f.parent[rim as usize], 0, "the rim's parent is the ocean");
     }
 }
