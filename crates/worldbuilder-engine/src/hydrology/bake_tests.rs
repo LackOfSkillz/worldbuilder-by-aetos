@@ -515,6 +515,27 @@ fn bad_params_are_refused_not_panicked() {
     assert!(matches!(crate::hydrology::bake(&world(), &p), Err(HydroError::Params(_))));
 }
 
+/// Ruling FF-5: the refinement params have floors as well as being finite and positive, so a
+/// refinement is refused rather than planning absurd work (a 1e-300 m step) or dividing a step
+/// into more fall windows than it has metres.
+#[test]
+fn refinement_params_below_their_floors_are_refused() {
+    let mut step = params();
+    step.refine_step_m = 9.9;
+    let mut run = params();
+    run.fall_max_run_m = run.refine_step_m / 100.0 - 0.001;
+    let mut simplify = params();
+    simplify.refine_simplify_m = 0.9;
+    let mut vertical = params();
+    vertical.refine_vertical_m = 0.009;
+    for (name, p) in [("refine_step_m", step), ("fall_max_run_m", run),
+                      ("refine_simplify_m", simplify), ("refine_vertical_m", vertical)] {
+        assert!(matches!(crate::hydrology::bake(&world(), &p), Err(HydroError::Params(_))),
+                "{name} below its floor is refused");
+    }
+    assert!(bake_stages(&world(), &params()).is_ok(), "sanity: the test params are accepted");
+}
+
 /// Sanity check only -- it does not discriminate. Flow only ever accumulates downstream, so
 /// the old (wrong) terminal-point value, the ocean/lake's total inflow, is structurally
 /// always `>=` the fixed, channel-only value on this bake world's topology (one land

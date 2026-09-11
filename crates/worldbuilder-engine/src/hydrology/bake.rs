@@ -183,6 +183,22 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     if params.min_stream_nodes > MAX_MIN_STREAM_NODES {
         return Err(HydroError::Params("min_stream_nodes must be <= 1e7"));
     }
+    // Ruling FF-5: floors for the refinement params. Being finite and positive is not enough --
+    // a 1e-300 m step plans a segment's worth of stations no machine will finish, a fall run far
+    // under the step divides every step into millions of windows, and tolerances below these
+    // cannot survive the arithmetic of a line measured in metres.
+    if !(params.refine_step_m >= 10.0) {
+        return Err(HydroError::Params("refine_step_m must be >= 10 m"));
+    }
+    if !(params.fall_max_run_m >= params.refine_step_m / 100.0) {
+        return Err(HydroError::Params("fall_max_run_m must be >= refine_step_m / 100"));
+    }
+    if !(params.refine_simplify_m >= 1.0) {
+        return Err(HydroError::Params("refine_simplify_m must be >= 1 m"));
+    }
+    if !(params.refine_vertical_m >= 0.01) {
+        return Err(HydroError::Params("refine_vertical_m must be >= 0.01 m"));
+    }
 
     let graph = LandGraph::sample(surface, params.total_nodes, params.wetness_nodes)
         .ok_or(HydroError::Sampling)?;

@@ -367,7 +367,8 @@ fn find_fall(ground: &Ground, params: &HydroParams, at: &dyn Fn(f64, f64) -> Sph
 /// strays furthest -- sideways from their chord, in units of `refine_simplify_m`, or off their
 /// straight-line bed, in units of `refine_vertical_m`, whichever is worse -- is kept if it strays
 /// more than one unit, and the two halves are examined in turn. Protected points (coarse points,
-/// fall ends, the mouth) and both ends are always kept. Keeping a subset of a falling bed keeps it
+/// fall ends, the mouth) and both ends are always kept; a `protected` shorter than `points` simply
+/// protects nothing past its end. Keeping a subset of a falling bed keeps it
 /// falling, so spec §14.5 survives. The outcome does not depend on the order spans are examined.
 pub fn simplify(points: &[ReachPoint], protected: &[bool], radius_m: f64, params: &HydroParams) -> Vec<ReachPoint> {
     let n = points.len();
@@ -375,7 +376,9 @@ pub fn simplify(points: &[ReachPoint], protected: &[bool], radius_m: f64, params
         return points.to_vec();
     }
     let at = |p: &ReachPoint| SpherePoint::from_latlon(p.lat_deg, p.lon_deg);
-    let mut keep: Vec<bool> = protected.to_vec();
+    // Ruling FF-5: `protected` is a parallel array, but a short one is not an error -- entries it
+    // does not have are unprotected, and nothing is read past it.
+    let mut keep: Vec<bool> = (0..n).map(|i| protected.get(i) == Some(&true)).collect();
     keep[0] = true;
     keep[n - 1] = true;
     let anchors: Vec<usize> = (0..n).filter(|&i| keep[i]).collect();
@@ -909,6 +912,18 @@ mod tests {
         let pts = line_of(&[10.0, 9.0, 8.0, 7.0, 6.0], &[0.0; 5]);
         let out = simplify(&pts, &[true, false, true, false, true], R, &params());
         assert_eq!(out, vec![pts[0].clone(), pts[2].clone(), pts[4].clone()]);
+    }
+
+    /// Ruling FF-5: `protected` is a parallel array, but a caller can hand a short one. Entries
+    /// beyond its length are simply unprotected, and nothing is read past it.
+    #[test]
+    fn a_short_protected_slice_leaves_the_rest_unprotected() {
+        let pts = line_of(&[10.0, 9.0, 8.0, 7.0, 6.0], &[0.0; 5]);
+        assert_eq!(simplify(&pts, &[true], R, &params()), vec![pts[0].clone(), pts[4].clone()]);
+        assert_eq!(simplify(&pts, &[], R, &params()), vec![pts[0].clone(), pts[4].clone()]);
+        let out = simplify(&pts, &[false, false, true], R, &params());
+        assert_eq!(out, vec![pts[0].clone(), pts[2].clone(), pts[4].clone()],
+                   "the entries it does have still count");
     }
 
     #[test]
