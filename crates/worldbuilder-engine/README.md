@@ -5081,3 +5081,42 @@ native TCTL prediction's sixth field moved with it (3827 -> 28723), so the contr
 five controls are unchanged.
 
 The reproduction commands are the ones above, with `--expect-passed <743|743|745|849|851>`.
+
+## 2026-09-12, water 1b-2 Task 8, the 500 m ruling: pins re-derived again
+
+The owner's world (`worlds/world-1788998299904.json`, forced outlet 0,0, 1,000,000 nodes, baked
+in the studio) produced an 8,659,856-byte record at `refine_simplify_m` 250 m, over the 8 MB
+target, so the plan's Step 2 rule applied: `earth_like`'s `refine_simplify_m` rose from 250 to
+**500 m** (Ruling R-7's tolerance). At 500 m the native stand-ins at 1M nodes are 4,227,936 /
+2,471,408 / 5,966,824 bytes (plain / owner_survey / seed1_ranges). The wasm was rebuilt: 351,072
+bytes, 31 exports, 0 imports; artifact-sha256
+3e0a305014e7e38b4d8bd710804cf12cc9b4aad596be36fd5af4677aa73e8c98, source-fingerprint
+72fa850d7fdaef7cdd13114327bcf5d975bcfb4799cbbfffd2bdf866fe252fc3 (55 inputs).
+
+**Engine:** 743/743/745/849/851, 6 ignored (listed 749/749/751/855/857), **unchanged**; all five
+printed `count OK`. The one test that named the tolerance now scales its offsets with it.
+`--no-default-features --no-fail-fast` ran 743 / 0 / 6, `--features wasm --no-fail-fast` 849 /
+0 / 6, and the ignored `every_small_world_drains` sweep passed (81.9 s).
+
+**Python:** 565 collected, 157 conformance, unchanged. **Viewer:** 333 passed, 0 failed.
+
+**Parity, all eight `count OK`:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **146,555** (was 164,501) | **0** |
+| `--mutate seed` | 146,555 | **140,818** (was 158,765) |
+| `--mutate erosion-k` | 146,555 | 216 |
+| `--mutate water-pond` | 146,555 | 60 |
+| `--mutate tectonic-warp` | 146,555 | **20,811** (was 34,909) |
+| `--mutate coast-amplitude` | 146,555 | 13,128 |
+| `--mutate gully-steer` | 146,555 | 3,752 |
+| `--mutate climate-samples` | 146,555 | 648 |
+
+`hydro/plain` shrinks from 7,784 to 3,938 words and `hydro/ranges` from 29,058 to 14,958 (the
+whole -17,946). The seed control's hydro groups are 3,857 of 3,938 and 14,753 of 14,958, with
+the non-hydro groups unmoved at 122,208. The tectonic control's `hydro/ranges` is 14,625 of
+14,958, matching the native TCTL prediction's sixth field (28723 -> 14625); the belt groups
+are unmoved at 6,186.
+
+The reproduction commands are the ones above, with `--expect-passed <743|743|745|849|851>`.

@@ -54,7 +54,9 @@ pub struct HydroParams {
     pub keep_max_area_m2: f64,
     /// Spec §6.6: the fine tracer's station spacing along a coarse segment.
     pub refine_step_m: f64,
-    /// Ruling R-7: Douglas–Peucker horizontal tolerance for refined reaches.
+    /// Ruling R-7: Douglas–Peucker horizontal tolerance for refined reaches. 500 m in
+    /// `earth_like`: planned at 250 m, and raised by plan 1b-2 Task 8's size gate when the
+    /// owner's world baked an 8,659,856-byte record at 250 m (the target is 8 MB).
     pub refine_simplify_m: f64,
     /// Ruling R-7: the vertical tolerance, on the bed.
     pub refine_vertical_m: f64,
@@ -92,7 +94,7 @@ impl HydroParams {
             min_stream_nodes: 10.0,
             keep_max_area_m2: 4.0e11,
             refine_step_m: 1_500.0,
-            refine_simplify_m: 250.0,
+            refine_simplify_m: 500.0,
             refine_vertical_m: 1.0,
             fall_min_drop_m: 10.0,
             fall_max_run_m: 150.0,

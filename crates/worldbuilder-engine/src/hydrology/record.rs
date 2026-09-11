@@ -575,7 +575,7 @@ mod tests {
                 capped_inner: 2,
                 capped_inner_kept: 1,
                 refine_step_m: 1_500.0,
-                refine_simplify_m: 250.0,
+                refine_simplify_m: 500.0,
                 refine_vertical_m: 1.0,
                 fall_min_drop_m: 10.0,
                 fall_max_run_m: 150.0,

@@ -686,9 +686,12 @@ mod tests {
 
     #[test]
     fn a_bend_wider_than_the_tolerance_is_kept_and_a_small_one_is_not() {
-        let pts = line_of(&[10.0, 9.0, 8.0], &[0.0, 400.0, 0.0]);
+        // Offsets scale with the tolerance, so the test holds at whatever `earth_like` sets it
+        // to (500 m since plan 1b-2 Task 8): 1.6 tolerances out is kept, 0.4 is not.
+        let tol = params().refine_simplify_m;
+        let pts = line_of(&[10.0, 9.0, 8.0], &[0.0, 1.6 * tol, 0.0]);
         assert_eq!(simplify(&pts, &[true, false, true], R, &params()).len(), 3);
-        let small = line_of(&[10.0, 9.0, 8.0], &[0.0, 100.0, 0.0]);
+        let small = line_of(&[10.0, 9.0, 8.0], &[0.0, 0.4 * tol, 0.0]);
         assert_eq!(simplify(&small, &[true, false, true], R, &params()).len(), 2);
     }
 

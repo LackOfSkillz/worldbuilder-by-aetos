@@ -39,7 +39,7 @@
 | R-4 | A mouth's bed is `min(previous bed, water level)`. | It removes the I4 side effect (a mouth's bed rising at the last step), so §14.5 holds everywhere. | Stage 2 carves a mouth slightly below the water, which is under water anyway. |
 | R-5 | A fall is recorded as its upper end (`Fall.at`) and height. Both ends are inserted as reach points, protected from simplification. The lower end is the next point. | §6.7 names two ends, and §7's 4-word fall layout stays. Stage 2 then carves a real step, not a 1.5 km ramp. | None: the layout is unchanged. |
 | R-6 | Meander only where it can be drawn: wavelength (11 widths) at least 4 steps (6 km), segment slope under 0.2%, no fall in the segment. The amplitude is 1.5 widths, tapered to zero at coarse points, and kept inside the corridor. | A 3 m stream's 33 m wavelength cannot be drawn at 1.5 km steps; it would alias into zigzags. | Only great rivers meander. |
-| R-7 | Simplification: Douglas–Peucker with horizontal tolerance `refine_simplify_m` (250 m) and vertical tolerance `refine_vertical_m` (1 m). Coarse points, fall ends and the mouth are always kept. | It is what makes 1.5 km tracing fit the 8 MB target. Task 8 measures it and raises the tolerance if needed. | A bend or bed change smaller than the tolerances is lost. |
+| R-7 | Simplification: Douglas–Peucker with horizontal tolerance `refine_simplify_m` (250 m as planned; **500 m** since Task 8, when the owner world's record came to 8,659,856 bytes at 250 m) and vertical tolerance `refine_vertical_m` (1 m). Coarse points, fall ends and the mouth are always kept. | It is what makes 1.5 km tracing fit the 8 MB target. Task 8 measures it and raises the tolerance if needed. | A bend or bed change smaller than the tolerances is lost. |
 | R-8 | The refinement params are not wasm params. A wasm bake takes `earth_like`'s values, like `min_stream_nodes`. | `WB_HYDRO_PARAMS_STRIDE` stays 12, and the studio has no controls for them yet (stage 3). | None. |
 
 ## File Structure
@@ -406,7 +406,7 @@ Update the big comment above the loop to state Ruling F-3: split at non-neighbou
     /// Spec §6.6: the fine tracer's station spacing along a coarse segment.
     pub refine_step_m: f64,             // 1_500.0
     /// Ruling R-7: Douglas–Peucker horizontal tolerance for refined reaches.
-    pub refine_simplify_m: f64,         // 250.0
+    pub refine_simplify_m: f64,         // 250.0 (raised to 500.0 by Task 8)
     /// Ruling R-7: the vertical tolerance, on the bed.
     pub refine_vertical_m: f64,         // 1.0
     /// Spec §6.7: a fall drops at least this much ...
