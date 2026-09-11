@@ -1092,6 +1092,10 @@ fn the_record_echoes_the_refinement_params() {
 /// The bake test world with the stream floor lowered to 2 nodes: 165 reaches, 34 of them ending
 /// on another reach. `params()` gives 12 reaches and none ending on another reach (8 run to the
 /// sea, 4 to a lake), so a junction property needs this.
+fn ranges_world() -> Surface {
+    Surface::new(1, 6.371e6, 12, 0.40, None, None, Some(crate::tectonics::TectonicParams::ranges()))
+}
+
 fn junction_params() -> HydroParams {
     let mut p = params();
     p.min_stream_nodes = 2.0;
@@ -1176,24 +1180,27 @@ fn refinement_keeps_every_coarse_point_in_order() {
     assert!(added > 0, "refinement added fine points");
 }
 
-/// Spec §6.7: every recorded fall sits on its own reach, at a point of that reach, and the next
-/// point is lower by the fall's height. Run on both populations: `params()` and, because a
-/// coarse junction is a different reach shape, `junction_params()`.
+/// Spec §6.7: every recorded fall sits on its own reach, at a point of that reach bit for bit
+/// (Ruling FF-1), and the next point is lower by the fall's height. Neither the bake test world
+/// nor the 10 m default gives this property a population: it runs on the seed 1 `ranges` world
+/// at 12,000 nodes with `fall_min_drop_m` lowered to 2 m, which has falls, and requires them.
 #[test]
 fn every_fall_is_a_step_on_its_own_reach() {
-    for (name, p) in [("params", params()), ("junction_params", junction_params())] {
-        let record = crate::hydrology::bake(&world(), &p).expect("bake");
-        for fall in &record.falls {
-            let reach = &record.reaches[fall.reach as usize];
-            let i = reach.points.iter().position(|p| (p.lat_deg, p.lon_deg) == fall.at)
-                .expect("a fall's upper end is a point of its reach");
-            let drop = reach.points[i].bed_m - reach.points[i + 1].bed_m;
-            let d = drop - fall.height_m;
-            assert!(d < 1e-6 && d > -1e-6, "fall height {} but the bed drops {}", fall.height_m, drop);
-            assert!(fall.height_m >= 10.0);
-        }
-        eprintln!("falls on the test world ({name}): {}", record.falls.len());
+    let mut p = HydroParams::earth_like(12_000);
+    p.fall_min_drop_m = 2.0;
+    let record = crate::hydrology::bake(&ranges_world(), &p).expect("bake");
+    for fall in &record.falls {
+        let reach = &record.reaches[fall.reach as usize];
+        let at = (fall.at.0.to_bits(), fall.at.1.to_bits());
+        let i = reach.points.iter().position(|q| (q.lat_deg.to_bits(), q.lon_deg.to_bits()) == at)
+            .expect("a fall's upper end is a point of its reach");
+        let drop = reach.points[i].bed_m - reach.points[i + 1].bed_m;
+        let d = drop - fall.height_m;
+        assert!(d < 1e-6 && d > -1e-6, "fall height {} but the bed drops {}", fall.height_m, drop);
+        assert!(fall.height_m >= p.fall_min_drop_m);
     }
+    eprintln!("falls on the ranges world (12,000 nodes, 2 m): {}", record.falls.len());
+    assert!(!record.falls.is_empty(), "the population has falls");
 }
 
 /// Ruling R-7, Task 7 step 4: reports the size effect of simplification on both test
