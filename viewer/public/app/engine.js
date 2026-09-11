@@ -43,6 +43,8 @@ export const WB_ERR_PARAM = 5;
 /// needed it. `wb_water_run` is the first export the viewer calls that can return it, and an
 /// unnamed status prints as a bare `6` in the one message that has to say what went wrong.
 export const WB_ERR_GRAPH = 6;
+/// `wasm.rs`'s seventh status: `wb_hydro_bake` refused a world whose routing did not drain.
+export const WB_ERR_DRAINAGE = 7;
 
 const STATUS_NAMES = {
   0: "WB_OK",
@@ -52,6 +54,7 @@ const STATUS_NAMES = {
   4: "WB_ERR_SUBSTRATE",
   5: "WB_ERR_PARAM",
   6: "WB_ERR_GRAPH",
+  7: "WB_ERR_DRAINAGE",
 };
 
 /// Feature record codes, mirrored from `wasm.rs`. A record is eight f64.

@@ -1874,7 +1874,7 @@ jobs:
       # `hydro/ranges` 3,822 -> 3,827 of 4,166, and the native TCTL prediction moved with it
       # (its sixth field 3822 -> 3827, computed by `examples/parity_dump.rs`); the control
       # printed "exactly as the native side predicted". The five belt groups are UNCHANGED.
-      - name: Assert the tectonic control -- 10,013 of 132,472 divergent, all on the belt
+      - name: Assert the tectonic control -- 10,013 of 132,472 divergent, across the belt groups and hydro/ranges
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |

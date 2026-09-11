@@ -80,6 +80,10 @@ impl BucketIndex {
             let widest = if south.abs() > north.abs() { south.abs() } else { north.abs() };
             let cos = m::cos(m::to_radians(widest));
             let count = self.columns[row];
+            // Third disjunct: a reach that carries the query past a pole (its latitude band
+            // running off the top or bottom of the grid) covers every longitude at that row
+            // regardless of `cos` or `reach_deg / cos` -- the row's whole circle is within
+            // reach once the cap itself is, so there is no narrower column range to compute.
             let everything = cos <= 1.0e-9 || reach_deg / cos >= 180.0 || lat.abs() + reach_deg >= 90.0;
             if everything {
                 for column in 0..count {
@@ -112,6 +116,9 @@ impl BucketIndex {
         loop {
             let mut best: Option<(f64, u32)> = None;
             for id in self.candidates(point, reach) {
+                // Unchecked: every id `candidates` returns came from `insert`, whose caller is
+                // trusted to pass the same id space as `positions` here -- one entry per
+                // position, in the same index. `candidates` never invents an id.
                 let d = point.distance_to(&positions[id as usize], self.radius_m);
                 best = match best {
                     Some((bd, bid)) if bd < d || (bd == d && bid < id) => Some((bd, bid)),

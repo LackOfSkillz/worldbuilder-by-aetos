@@ -4633,10 +4633,13 @@ SCHEMA 2.0). Re-derived through `assert_counts.py cargo-list` AFTER the last sou
 684/684/686/790/792 -> 685/685/687/791/793, 5 ignored, unchanged. **+1 uniformly on every row**:
 `the_node_floor_binds_on_a_coarse_graph` (`mod.rs`, `src/`), added because
 `effective_thresholds_rise_to_the_graph_resolution` runs on the bake test world's overridden
-thresholds (3.0e10/3.0e11/3.0e12), which already sit above `min_stream_nodes * median`, so the
-node-based branch never bound and the test would still pass with the floor removed. The new
-test uses `HydroParams::earth_like(12_000)`'s stock thresholds (2.5e8/2.5e9/1.0e11), well below
-that graph's own median land-node area, so the floor must bind; RED was shown by temporarily
+thresholds (3.0e10/3.0e11/3.0e12); at the time this was believed to sit above
+`min_stream_nodes * median`, so the node-based branch would never bind and the test would
+still pass with the floor removed. That belief was itself wrong -- the floor binds on this
+world too (about 4.24e11 against the 3.0e10 asked for), corrected in water 1b-2 Task 1 -- but
+the new test added here stands on its own regardless: it uses `HydroParams::earth_like(12_000)`'s
+stock thresholds (2.5e8/2.5e9/1.0e11), further below that graph's own median land-node area, so
+the floor must bind; RED was shown by temporarily
 replacing the effective stream threshold with `params.stream_flow_m2` (unconditionally), which
 failed the new assertions (`250000000.0 != 424166660158.80225`), then restoring the floor logic
 for GREEN. No wasm rebuild was needed -- this is test-only code. Re-derived per configuration
@@ -4800,10 +4803,10 @@ stack garbage that happened to differ.
 same number as before, now for the sound reason above. `--mutate tectonic-warp` is the other
 control that reaches `hydro/ranges`: turning `margin_warp_m` off changes the terrain under the
 forced-outlet bake, and the native side predicts the resulting divergence the same way the other
-four `TCTL` fields are predicted -- baking the warp-0 world natively with the identical
+five `TCTL` fields are predicted -- baking the warp-0 world natively with the identical
 forced-outlet params and comparing under rule (a). Measured: 7,404 of 7,739. `parity.mjs`'s
 tectonic-control check now holds `hydro/ranges` to that count exactly, the same discipline it
-already held the other four groups to. The other five controls (erosion-k, water-pond,
+already held the other five groups to. The other five controls (erosion-k, water-pond,
 coast-amplitude, gully-steer, climate-samples) leave both hydro groups at 0, which each control's
 own per-group check (where one exists) now enforces for `hydro/ranges` too.
 

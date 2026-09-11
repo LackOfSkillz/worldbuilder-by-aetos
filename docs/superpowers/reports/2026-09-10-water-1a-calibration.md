@@ -254,7 +254,12 @@ can move; none of the figures in this section has been re-measured since.
   `--mutate seed` control **122,825** divergent at 12b. After the final review's fix wave the
   corpus is still **128,347 / 0** and the seed control is **122,830** (the seed-moved world's
   bake changed; see `.superpowers/sdd/2026-09-10-water-1a-coarse-bake/final-fix-report.md`).
-  The other six controls are unchanged at 216 / 60 / 6,186 / 13,128 / 3,752 / 648. Confirmed against the gate's own assertion:
+  The other six controls are unchanged at 216 / 60 / 6,186 / 13,128 / 3,752 / 648.
+
+  **Correction (water 1b-1 carry-forward).** The post-fix parity figures above are themselves
+  stale: the corpus is **136,086 compared, 0 divergent**, the `--mutate seed` control is
+  **130,366** divergent, and the `--mutate tectonic-warp` control is **13,590** divergent
+  (superseded by later pins; see gates.yml). Confirmed against the gate's own assertion:
   `python .github/scripts/assert_counts.py parity --output parity.out --expect-label parity
   --expect-compared 148707 --expect-divergent 0` printed `count OK: the corpus is the size the
   record says it is`.

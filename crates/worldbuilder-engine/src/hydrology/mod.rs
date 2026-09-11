@@ -14,6 +14,8 @@ pub mod flow;
 pub mod reaches;
 pub mod record;
 pub mod bake;
+#[cfg(test)]
+mod bake_tests;
 
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
@@ -240,14 +242,20 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
 /// `reaches.rs`) because the survey (a later task) reuses it against `ReachLine`, the public
 /// record type, not `reaches::Reach`.
 pub fn reaches_are_acyclic(reaches: &[ReachLine]) -> bool {
+    // 0 unvisited, 1 on the current walk, 2 known to end without a cycle.
+    let mut state = vec![0u8; reaches.len()];
+    let mut walk: Vec<usize> = Vec::new();
     for start in 0..reaches.len() {
-        let mut seen = vec![false; reaches.len()];
         let mut here = start;
         loop {
-            if seen[here] {
+            if state[here] == 2 {
+                break;
+            }
+            if state[here] == 1 {
                 return false;
             }
-            seen[here] = true;
+            state[here] = 1;
+            walk.push(here);
             match reaches[here].downstream {
                 Downstream::Reach(next) => {
                     let next = next as usize;
@@ -259,6 +267,10 @@ pub fn reaches_are_acyclic(reaches: &[ReachLine]) -> bool {
                 _ => break,
             }
         }
+        for &id in &walk {
+            state[id] = 2;
+        }
+        walk.clear();
     }
     true
 }

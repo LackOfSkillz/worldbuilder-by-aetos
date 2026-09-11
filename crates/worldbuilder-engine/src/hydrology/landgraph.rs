@@ -102,6 +102,10 @@ impl LandGraph {
         }
         let adj: Vec<u32> = pairs.iter().map(|&(_, b)| b).collect();
 
+        // `wetness` is indexed by node exactly like `height_m`/`area_m2` everywhere else in this
+        // struct; every caller builds it one entry per node (`LandGraph::sample`'s own wetness
+        // pass, and every hand fixture in this crate's tests), so it is never shorter or longer.
+        debug_assert_eq!(wetness.len(), n, "wetness must have one entry per node");
         let mut graph = Self {
             radius_m, positions, height_m, area_m2, adj_start, adj,
             ocean: vec![false; n], enclosed: vec![NO_BASIN; n], enclosed_count: 0, wetness,

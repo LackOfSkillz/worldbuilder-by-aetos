@@ -149,6 +149,8 @@ pub const WB_ERR_PARAM: u32 = 5;
 /// not a licence to panic if a later change to `sample_nodes` or `StreamGraph::build` ever
 /// makes it false -- which, for the tiny-radius case, it already has.
 pub const WB_ERR_GRAPH: u32 = 6;
+/// `hydrology::bake` refused: the routing broke "everything drains" (`HydroError::Drainage`).
+pub const WB_ERR_DRAINAGE: u32 = 7;
 
 /// The ceiling on `node_count` for [`wb_erosion_run`]. Not the planetary target -- slice 1p
 /// measured a 20,000,000-node graph at 1.45 GB of arrays and 2.16 GB peak RSS, which does
@@ -4050,9 +4052,9 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
 /// cannot be decoded or `hydrology::bake` refuses its contents (`HydroError::Params`);
 /// `WB_ERR_BUFFER` if `params` or `out_id` is null or misaligned, or `params_len` is short;
 /// `WB_ERR_HANDLE` if `handle` names no live world; [`WB_ERR_GRAPH`] if `bake` could not
-/// sample or build a graph over the surface (`HydroError::Sampling`), or if the routing it
-/// built failed the drainage check (`HydroError::Drainage`). `*out_id` is written only on
-/// `WB_OK`.
+/// sample or build a graph over the surface (`HydroError::Sampling`); [`WB_ERR_DRAINAGE`] if
+/// the routing it built failed the drainage check (`HydroError::Drainage`). `*out_id` is
+/// written only on `WB_OK`.
 ///
 /// # Safety
 /// `params` must be null or a live, 8-aligned allocation of at least `params_len` f64.
@@ -4089,9 +4091,11 @@ pub extern "C" fn wb_hydro_bake(handle: u32, params: *const f64, params_len: u32
         None => return WB_ERR_HANDLE,
         Some(Err(HydroError::Params(_))) => return WB_ERR_PARAM,
         Some(Err(HydroError::Sampling)) => return WB_ERR_GRAPH,
-        // Ruling C1-c: a routing that fails the drainage check is a graph the bake could not
-        // make drain -- refused as a graph error, never handed out as a record that loses water.
-        Some(Err(HydroError::Drainage(_))) => return WB_ERR_GRAPH,
+        // Ruling C1-c: a routing that fails the drainage check is refused with its own status,
+        // never handed out as a record that loses water. Not tested by provoking it on a real
+        // world -- `bake_stages` already refuses to build one whose routing fails to drain, so
+        // this arm is covered by inspection only (see this task's report).
+        Some(Err(HydroError::Drainage(_))) => return WB_ERR_DRAINAGE,
         Some(Ok(record)) => record,
     };
 

@@ -104,6 +104,10 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
             depth_m: if enclosed { 0.0 - floor_m } else { level_m - floor_m },
             area_m2,
             entry,
+            // `flood.parent[entry]` is `NO_NODE` only for a flood seed, and a hollow's entry is
+            // never a seed (`find_hollows` only groups non-ocean nodes the flood had to raise --
+            // seeds start at their own ground level and are never members of a raised hollow).
+            // Falling back to `entry` itself is defensive, not reachable on that invariant.
             outlet: if outlet == NO_NODE { entry } else { outlet },
             enclosed,
             forced: false,
@@ -142,10 +146,9 @@ pub fn forced_nodes(graph: &LandGraph, params: &HydroParams) -> Vec<u32> {
     forced
 }
 
-pub fn judge(hollows: &mut [Hollow], graph: &LandGraph, params: &HydroParams) {
-    let forced_nodes = forced_nodes(graph, params);
+pub fn judge(hollows: &mut [Hollow], forced: &[u32], params: &HydroParams) {
     for hollow in hollows.iter_mut() {
-        hollow.forced = hollow.members.iter().any(|m| forced_nodes.binary_search(m).is_ok());
+        hollow.forced = hollow.members.iter().any(|m| forced.binary_search(m).is_ok());
         let big = hollow.depth_m >= params.keep_depth_m && hollow.area_m2 >= params.keep_area_m2;
         // Ruling 12b-5: a hollow that is neither enclosed nor forced and whose area exceeds
         // `keep_max_area_m2` is notched regardless of depth -- a broad landform basin filled to
@@ -211,13 +214,15 @@ mod tests {
         let deep = line(&[-50.0, 40.0, 5.0, 12.0, 25.0, 70.0], 2.0e6);
         let f = flood(&deep, &ocean_seeds(&deep), &|_| true);
         let mut hollows = find_hollows(&deep, &f);
-        judge(&mut hollows, &deep, &HydroParams::earth_like(0));
+        let params = HydroParams::earth_like(0);
+        judge(&mut hollows, &forced_nodes(&deep, &params), &params);
         assert_eq!(hollows[0].fate, Fate::Keep);
 
         let shallow = line(&[-50.0, 30.0, 26.0, 27.0, 28.0, 70.0], 2.0e6);
         let f = flood(&shallow, &ocean_seeds(&shallow), &|_| true);
         let mut hollows = find_hollows(&shallow, &f);
-        judge(&mut hollows, &shallow, &HydroParams::earth_like(0));
+        let params = HydroParams::earth_like(0);
+        judge(&mut hollows, &forced_nodes(&shallow, &params), &params);
         assert_eq!(hollows[0].depth_m, 4.0);
         assert_eq!(hollows[0].fate, Fate::Notch, "4 m deep is under the 8 m rule");
     }
@@ -228,7 +233,8 @@ mod tests {
         let g = line(&[-50.0, -40.0, -30.0, 39.0, -5.0, 10.0, 60.0], 1.0e6);
         let f = flood(&g, &ocean_seeds(&g), &|_| true);
         let mut hollows = find_hollows(&g, &f);
-        judge(&mut hollows, &g, &HydroParams::earth_like(0));
+        let params = HydroParams::earth_like(0);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let enclosed: Vec<&Hollow> = hollows.iter().filter(|h| h.enclosed).collect();
         assert_eq!(enclosed.len(), 1);
         assert_eq!(enclosed[0].fate, Fate::Keep);
@@ -247,7 +253,7 @@ mod tests {
         let mut hollows = find_hollows(&g, &f);
         let mut params = HydroParams::earth_like(0);
         params.keep_max_area_m2 = 5.0e6;
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         assert_eq!(hollows[0].area_m2, 6.0e6, "sanity: this hollow is above the test cap");
         assert_eq!(hollows[0].fate, Fate::Notch, "a hollow this large is not an open lake, whatever its depth");
 
@@ -257,7 +263,7 @@ mod tests {
         let mut hollows = find_hollows(&g, &f);
         let mut params = HydroParams::earth_like(0);
         params.keep_max_area_m2 = 1.0;
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         let enclosed: Vec<&Hollow> = hollows.iter().filter(|h| h.enclosed).collect();
         assert_eq!(enclosed.len(), 1);
         assert_eq!(enclosed[0].fate, Fate::Keep, "an enclosed basin is kept however large");
@@ -270,7 +276,7 @@ mod tests {
         let mut hollows = find_hollows(&g, &f);
         let mut params = HydroParams::earth_like(0);
         params.forced_outlets = vec![SpherePoint::from_latlon(0.0, 1.0)];
-        judge(&mut hollows, &g, &params);
+        judge(&mut hollows, &forced_nodes(&g, &params), &params);
         assert!(hollows[0].forced);
         assert_eq!(hollows[0].fate, Fate::Keep);
     }

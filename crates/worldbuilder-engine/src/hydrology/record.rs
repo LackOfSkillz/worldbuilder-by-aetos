@@ -170,6 +170,14 @@ impl<'a> Reader<'a> {
 /// more on top, but every item needs at least this many); `count * min_words` overflowing or
 /// exceeding what remains means the count is bogus, so the whole record is refused instead of
 /// allocating on it.
+///
+/// Unchecked: each call site's `min_words` literal (14 for a body, 7 for a reach, 1 for a
+/// notch, 4 for a fall, and the nested per-point minimums) is not tied to the fixed reads its
+/// own loop performs below it by anything the compiler enforces -- it holds only because the
+/// comment above each call site is kept in sync by hand with that loop's field list. Widening a
+/// record's fixed fields without raising the matching literal here would undercount, not
+/// overcount, so a corrupt record with an inflated count could pass this gate and only fail
+/// (safely, via `r.word()?`'s own bounds check) partway through decoding it.
 fn count_fits(count: usize, min_words: usize, remaining: usize) -> bool {
     match count.checked_mul(min_words) {
         Some(need) => need <= remaining,

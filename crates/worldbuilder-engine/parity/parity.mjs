@@ -889,6 +889,15 @@ for (const raw of lines) {
       group = `hydro/${f[1]}`;
       tally(String(got) === status);
       if (String(got) !== status) note(`hydro status ${f[1]}`, status, String(got));
+      if (got !== 0) {
+        // `out_id` is written only on `WB_OK` (`wb_hydro_bake`'s own doc); on any other status
+        // -- `bake_hydro_native` records `len` 0 and no words for exactly this reason -- reading
+        // it would read whatever `wb_alloc` happened to leave at `idp`, not a real id. The
+        // status tally above is the whole comparison for this case.
+        wb.wb_dealloc(pp, pl * 8);
+        wb.wb_dealloc(idp, 4);
+        break;
+      }
       const id = mem().getUint32(idp, true);
       const n = wb.wb_hydro_len(id);
       // Final review I6, rule (a). In a plain run `n` and the recorded `len` must be the same

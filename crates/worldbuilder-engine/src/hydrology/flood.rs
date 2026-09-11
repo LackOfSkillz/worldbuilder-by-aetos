@@ -34,6 +34,10 @@ pub fn flood(graph: &LandGraph, seeds: &[(u32, f64)], allowed: &dyn Fn(u32) -> b
     let mut order = Vec::new();
     let mut queue = FloodQueue::new();
     let mut is_seed = vec![false; n];
+    // Seeds are never run through `allowed`: every caller only ever seeds a node it already
+    // considers reachable (ocean seeds are ocean nodes with no `allowed` restricting the ocean
+    // itself; a sub-flood's seeds are members of the very basin its own `allowed` confines the
+    // flood to). `allowed` only gates which further neighbours the flood may step onto.
     for &(node, level) in seeds {
         is_seed[node as usize] = true;
         reached[node as usize] = true;

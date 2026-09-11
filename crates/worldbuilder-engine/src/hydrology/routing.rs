@@ -75,7 +75,7 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
         for hollow in nested.iter_mut() {
             hollow.enclosed = false;
         }
-        judge(&mut nested, graph, params);
+        judge(&mut nested, &forced, params);
         nested_ids.extend(hollows.len()..hollows.len() + nested.len());
         hollows.extend(nested);
 
@@ -222,7 +222,7 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
         // enclosed; one may itself be capped, and is then simply notched in its turn). One that
         // touches the escape chain is notched regardless of the ordinary rule's verdict.
         let mut inner = find_hollows(graph, &sub);
-        judge(&mut inner, graph, params);
+        judge(&mut inner, &forced, params);
         for hollow in inner.iter_mut() {
             if hollow.fate == Fate::Keep && hollow.members.iter().any(|m| escape.binary_search(m).is_ok()) {
                 hollow.fate = Fate::Notch;
@@ -496,6 +496,11 @@ pub fn set_sink(routing: &mut Routing, hollow: &Hollow) {
 ///
 /// A path shorter than 2 does nothing. If nothing is lowered, no `NotchRoute` is pushed.
 pub fn cut_path(routing: &mut Routing, graph: &LandGraph, path: &[u32], start_bed_m: f64) {
+    // A length-1 `outlet_path` is a fresh sink with nothing to cut: it happens exactly when the
+    // pocket's `entry` already has no parent or borders the ocean directly (the loop that builds
+    // `outlet_path` breaks before pushing a second node), so freshening it needs no notch --
+    // there is no ground between the entry and the sea to lower. `close_lakes` still marks such
+    // a pocket fresh on its own inflow/loss balance; only the notch is skipped here.
     if path.len() < 2 {
         return;
     }
@@ -553,7 +558,7 @@ mod tests {
         let params = HydroParams::earth_like(0);
         let f = flood(g, &ocean_seeds(g), &|_| true);
         let mut hollows = find_hollows(g, &f);
-        judge(&mut hollows, g, &params);
+        judge(&mut hollows, &forced_nodes(g, &params), &params);
         let r = route(g, &f, &mut hollows, &params);
         (hollows, r)
     }

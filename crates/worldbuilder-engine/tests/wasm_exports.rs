@@ -5397,6 +5397,12 @@ fn a_hydro_bake_refuses_bad_params_without_writing_an_id() {
     wb_world_free(world);
 }
 
+// `WB_ERR_DRAINAGE` (`HydroError::Drainage`, the routing failed "everything drains") has no
+// test here: `hydrology::bake_stages` already refuses to hand back a routing that fails
+// `drainage_check`, so there is no real world (or hand fixture short of duplicating that
+// internal state) that reaches `wb_hydro_bake`'s `Drainage` arm from outside. The mapping to
+// `WB_ERR_DRAINAGE` is covered by inspection of `wb_hydro_bake` only.
+
 #[test]
 fn a_hydro_bake_refuses_an_absurd_forced_count() {
     let world = plain_world();
