@@ -107,6 +107,11 @@ pub struct Body {
     pub outlet_reach: Option<u32>,
     pub anchor: (f64, f64),
     pub outline: Vec<(f64, f64)>,
+    /// Where this body's water goes next: the first reach it feeds, the next body it drains
+    /// straight into (no reach between them), the ocean, or nowhere (a closed lake). Not yet
+    /// part of the record's wire encoding -- Task 6 owns SCHEMA 3's layout, so `record::decode`
+    /// always fills this with `Downstream::Sink` for now.
+    pub downstream: Downstream,
 }
 
 /// One node along a reach's course.

@@ -316,6 +316,9 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
             outlet_reach,
             anchor: (anchor_lat, anchor_lon),
             outline,
+            // Not on the wire yet -- Task 6 owns SCHEMA 3's layout, which is where
+            // `Body.downstream` gets encoded. Until then every decoded body reports `Sink`.
+            downstream: Downstream::Sink,
         });
     }
 
@@ -411,6 +414,9 @@ mod tests {
                     outlet_reach: Some(1),
                     anchor: (10.0, 20.0),
                     outline: Vec::new(),
+                    // Not encoded yet (Task 6); decode always fills Sink, so the round-trip
+                    // test below only holds if this fixture already is Sink.
+                    downstream: Downstream::Sink,
                 },
                 Body {
                     id: 1,
@@ -424,6 +430,7 @@ mod tests {
                     outlet_reach: None,
                     anchor: (-5.0, 40.0),
                     outline: Vec::new(),
+                    downstream: Downstream::Sink,
                 },
             ],
             reaches: vec![
