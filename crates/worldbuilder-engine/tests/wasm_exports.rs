@@ -5343,3 +5343,85 @@ fn the_land_sample_count_is_what_tells_a_worthless_calibration_from_a_real_one()
     assert_eq!(wb_world_free(plain), WB_OK);
     assert_eq!(wb_world_free(ocean), WB_OK);
 }
+
+// ============================================================ the hydrology channel
+//
+// Task 10: hold a hydrology bake behind the same handle-table discipline `WORLDS` already
+// keeps, so a browser host can free the record it copied without waiting on GC. Same shape
+// as every other channel in this file: a flat f64 params record in a documented order, and a
+// status-refuses-entire constructor rather than one that admits a record with a field
+// silently adjusted.
+
+fn hydro_params(total: u32) -> Vec<f64> {
+    vec![total as f64, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0]
+}
+
+#[test]
+fn a_hydro_bake_is_held_copied_and_freed() {
+    let world = plain_world();
+    let params = hydro_params(12_000);
+    let mut id: u32 = 0;
+    let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: a 12-word buffer
+    assert_eq!(status, WB_OK);
+    let len = wb_hydro_len(id);
+    assert!(len >= 20, "at least the header (Task 12b: 20 words at schema 2)");
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
+    assert_eq!(words[0], 2.0, "schema 2");
+    let mut short = vec![0.0f64; len as usize - 1];
+    assert_eq!(wb_hydro_copy(id, short.as_mut_ptr(), len - 1), WB_ERR_BUFFER);
+    assert_eq!(wb_hydro_free(id), WB_OK);
+    assert_eq!(wb_hydro_len(id), 0);
+    assert_eq!(wb_hydro_free(id), WB_ERR_HANDLE);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_hydro_bake_refuses_bad_params_without_writing_an_id() {
+    let world = plain_world();
+    let mut id: u32 = 77;
+    let mut params = hydro_params(12_000);
+    params[6] = 1.0; // river below stream
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
+    assert_eq!(id, 77);
+    let mut params = hydro_params(12_000);
+    params[11] = 1.0; // one forced outlet promised, none given
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
+    assert_eq!(wb_hydro_bake(9_999, hydro_params(12_000).as_ptr(), 12, &mut id), WB_ERR_HANDLE);
+    // Ruling I7: the ceiling is 1.3M nodes (about 372 MB of studio heap was measured at 1M; the
+    // spec lowers the count, never raises the ceiling) -- one node over it is refused.
+    assert_eq!(WB_MAX_HYDRO_NODES, 1_300_000);
+    let params = hydro_params(WB_MAX_HYDRO_NODES + 1);
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id), WB_ERR_PARAM); // cast-ok: a 12-word buffer
+    assert_eq!(id, 77);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_hydro_bake_refuses_an_absurd_forced_count() {
+    let world = plain_world();
+    let mut id: u32 = 77;
+
+    // 2^63 saturates a naive `as usize` cast; the old code then overflowed `2 * forced`.
+    let mut huge = hydro_params(12_000);
+    huge[11] = 9_223_372_036_854_775_808.0; // 2^63
+    assert_eq!(
+        wb_hydro_bake(world, huge.as_ptr(), huge.len() as u32, &mut id), // cast-ok: a 12-word buffer
+        WB_ERR_PARAM
+    );
+    assert_eq!(id, 77, "out_id must be left untouched on refusal");
+
+    // One more than WB_MAX_HYDRO_FORCED, with a buffer long enough to match the declared
+    // stride, so only the forced-count ceiling -- not the length check -- is under test.
+    let over_ceiling: u32 = 1_025;
+    let mut padded = hydro_params(12_000);
+    padded[11] = over_ceiling as f64; // cast-ok: a small literal fixture value
+    padded.extend(std::iter::repeat(0.0).take(2 * over_ceiling as usize)); // cast-ok: a small literal fixture value
+    assert_eq!(
+        wb_hydro_bake(world, padded.as_ptr(), padded.len() as u32, &mut id), // cast-ok: a bounded fixture-sized buffer
+        WB_ERR_PARAM
+    );
+    assert_eq!(id, 77, "out_id must be left untouched on refusal");
+
+    wb_world_free(world);
+}

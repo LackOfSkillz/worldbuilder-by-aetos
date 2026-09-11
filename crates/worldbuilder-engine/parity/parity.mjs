@@ -724,20 +724,23 @@ for (const raw of lines) {
     }
     case 'TCTL': {
       // TCTL <elevation/ranges> <structural/ranges> <elevation/belt> <structural/belt>
-      //      <tile/belt>
+      //      <tile/belt> <hydro/ranges>
       //
-      // Prediction, not a compared value: nothing here goes through `tally`. The five counts
-      // are computed natively in `examples/parity_dump.rs` -- through the exports AND, as a
-      // second derivation, through the library's own `Surface` with blocks read from
-      // `tectonics.rs` rather than from the sixteen words that crossed the boundary -- and
-      // this script requires every one of these groups to move exactly the predicted amount
-      // and every other group to move zero.
+      // Prediction, not a compared value: nothing here goes through `tally`. The first five
+      // counts are computed natively in `examples/parity_dump.rs` -- through the exports AND,
+      // as a second derivation, through the library's own `Surface` with blocks read from
+      // `tectonics.rs` rather than from the sixteen words that crossed the boundary. The sixth,
+      // `hydro/ranges`, is I6's addition (final review of water 1a): the divergence between the
+      // forced-outlet `H ranges` record and the same bake on the warp-0 world, under rule (a)'s
+      // length-safe accounting. This script requires every one of these groups to move exactly
+      // the predicted amount and every other group to move zero.
       tectonicControl = {
         'elevation/ranges': Number(f[1]),
         'structural/ranges': Number(f[2]),
         'elevation/belt': Number(f[3]),
         'structural/belt': Number(f[4]),
         'tile/belt': Number(f[5]),
+        'hydro/ranges': Number(f[6]),
       };
       break;
     }
@@ -859,6 +862,77 @@ for (const raw of lines) {
         'structural/flank': Number(f[4]),
         'tile/flank': Number(f[5]),
       };
+      break;
+    }
+    case 'H': {
+      // H <world> <params_len> <params hex...> <status> <len> <record hex...>
+      //
+      // Task 11's hydrology bake, through `wb_hydro_bake` / `wb_hydro_len` / `wb_hydro_copy` /
+      // `wb_hydro_free` -- the only door onto the hydrology bake across the shipped surface,
+      // exactly the shape `wb_erosion_run` and `wb_water_run` are for their own modules.
+      //
+      // `--mutate seed` reaches this record for free: it is baked on the `plain` world, whose
+      // own `world` line already rebuilds with `world_seed + 1` under that mutation, so a
+      // different planet underneath the bake is exactly what should move these words.
+      const h = worlds.get(f[1]);
+      const pl = Number(f[2]);
+      const params = f.slice(3, 3 + pl).map(f64of);
+      const status = f[3 + pl];
+      const len = Number(f[4 + pl]);
+      const words = f.slice(5 + pl);
+      if (words.length !== len) throw new Error('hydro line is the wrong length');
+      const pp = wb.wb_alloc(pl * 8);
+      const idp = wb.wb_alloc(4);
+      if (pp === 0 || idp === 0) throw new Error('wb_alloc refused a hydro input buffer');
+      new Float64Array(wb.memory.buffer, pp, pl).set(params);
+      const got = wb.wb_hydro_bake(h, pp, pl, idp);
+      group = `hydro/${f[1]}`;
+      tally(String(got) === status);
+      if (String(got) !== status) note(`hydro status ${f[1]}`, status, String(got));
+      const id = mem().getUint32(idp, true);
+      const n = wb.wb_hydro_len(id);
+      // Final review I6, rule (a). In a plain run `n` and the recorded `len` must be the same
+      // length by construction -- a mismatch there means the bake is not reproducible even
+      // before a single word is compared, and reading `len` words out of an `n`-word buffer
+      // would walk off the copy. Under a control, a mismatch is exactly what some mutations
+      // are supposed to produce (`--mutate seed` rebuilds a differently-sized world), so it is
+      // tallied like any other divergence instead of refused, and the word loop below never
+      // reads past the `n` words `out` actually holds.
+      tally(n === len);
+      if (n !== len) {
+        note(`hydro len ${f[1]}`, String(len), String(n));
+        if (!mutate) {
+          throw new Error(
+            `hydro len ${f[1]}: wb_hydro_len returned ${n}, recorded length was ${len} -- a ` +
+            'plain run must reproduce the same length, and comparing past it would read noise');
+        }
+      }
+      const out = wb.wb_alloc(n * 8);
+      if (n > 0 && out === 0) throw new Error('wb_alloc refused the hydro output buffer');
+      // Final review I6: a copy that did not happen leaves `out` holding whatever the allocator
+      // had there, and comparing that is comparing noise. `out` is exactly `n` words, the length
+      // `wb_hydro_len` just gave, so anything but WB_OK (0) here is a broken export, not a
+      // divergent value -- refuse outright rather than tally.
+      const copied = wb.wb_hydro_copy(id, out, n);
+      if (copied !== 0) throw new Error(`wb_hydro_copy returned ${copied} for hydro/${f[1]}`);
+      const view = mem();
+      for (let i = 0; i < len; i += 1) {
+        if (i < n) {
+          const bits = bitsOf(view.getFloat64(out + i * 8, true));
+          tally(bits === words[i]);
+          if (bits !== words[i]) note(`hydro word ${i}`, words[i], bits);
+        } else {
+          // Rule (a): a recorded word past the copy's own length counts as divergent without
+          // reading `out` at that index -- `out` is only `n` words long, and this is exactly
+          // the over-read the final review caught.
+          tally(false);
+          note(`hydro word ${i}`, words[i], '<past the copy>');
+        }
+      }
+      wb.wb_hydro_free(id);
+      wb.wb_dealloc(out, n * 8);
+      wb.wb_dealloc(pp, pl * 8);
+      wb.wb_dealloc(idp, 4);
       break;
     }
     case 'version': {

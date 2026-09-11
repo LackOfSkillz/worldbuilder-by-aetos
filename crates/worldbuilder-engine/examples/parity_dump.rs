@@ -42,6 +42,7 @@
 
 use worldbuilder_engine::continentality::CoastParams;
 use worldbuilder_engine::detail::GullyParams;
+use worldbuilder_engine::hydrology;
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use worldbuilder_engine::surface::Surface;
@@ -89,6 +90,57 @@ fn hex(value: f64) -> String {
 
 fn hex32(value: f32) -> String {
     format!("{:08x}", value.to_bits())
+}
+
+/// One hydro bake through the shipped exports, native side. Returns the status and, on
+/// `WB_OK`, the full word vector; on any other status the word vector is empty and the length
+/// is 0, since `out_id` was never written and there is nothing to copy.
+fn bake_hydro_native(world: u32, params: &[f64]) -> (u32, u32, Vec<f64>) {
+    let mut id: u32 = 0;
+    let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: params is a small, compile-time-bounded local buffer
+    if status != WB_OK {
+        return (status, 0, Vec::new());
+    }
+    let len = wb_hydro_len(id);
+    let mut words = vec![0.0f64; len as usize]; // cast-ok: a freshly measured record length used to size its own buffer
+    assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
+    assert_eq!(wb_hydro_free(id), WB_OK);
+    (status, len, words)
+}
+
+/// I6 (final review ruling, rule (a)): the divergence between a recorded hydro record
+/// (`status_on`/`len`/`words_on`) and a freshly measured one under a control
+/// (`status_off`/`n`/`words_off`). One tally for the status, one for the length equality, and
+/// then bit-for-bit words `i < min(n, len)`; a recorded word at `i >= n` counts as divergent
+/// without reading anything at that index, since `words_off` never held that many words in the
+/// first place -- this is the native prediction the `--mutate tectonic-warp` control replays.
+fn divergent_count(
+    status_on: u32,
+    len: u32,
+    words_on: &[f64],
+    status_off: u32,
+    n: u32,
+    words_off: &[f64],
+) -> usize {
+    let mut divergent = 0usize;
+    if status_on != status_off {
+        divergent += 1;
+    }
+    if len != n {
+        divergent += 1;
+    }
+    let len = len as usize; // cast-ok: a hydro record length, already used to size a Vec above
+    let n = n as usize; // cast-ok: as above
+    for i in 0..len {
+        if i < n {
+            if words_on[i].to_bits() != words_off[i].to_bits() {
+                divergent += 1;
+            }
+        } else {
+            divergent += 1;
+        }
+    }
+    divergent
 }
 
 fn main() {
@@ -1028,9 +1080,79 @@ fn main() {
         );
     }
 
+    // I6 (final review of water 1a): a second `H` record, on this same tectonic `ranges`
+    // world, with one forced outlet inside its first enclosed pocket. `earth_like`'s
+    // thresholds at 60,000 nodes put the 12b-1 node-area floor in charge of the stream
+    // threshold, which is the point -- the plain `H` record above never binds that floor.
+    //
+    // The forced point is not chosen by hand: an unforced probe bake finds the world's
+    // enclosed pockets, and the FIRST one (in bake order) gives its anchor lat/lon, exactly as
+    // the ruling asks. That keeps the corpus reproducible from the tectonic block alone,
+    // without a hand-picked coordinate this file would otherwise have to justify.
+    const HYDRO_TECTONIC_PARAMS_BASE: [f64; 12] =
+        [60_000.0, 20_000.0, 8.0, 1.0e6, 1.0e6, 2.5e8, 2.5e9, 1.0e11, 1.0, 1.0, 0.1, 0.0];
+
+    let forced_anchor = {
+        let (probe_status, probe_len, probe_words) =
+            bake_hydro_native(tectonic_world, &HYDRO_TECTONIC_PARAMS_BASE);
+        assert_eq!(probe_status, WB_OK, "the unforced probe bake on the ranges world must succeed");
+        assert!(probe_len > 0, "a probe record of zero words has no body to anchor on");
+        let record = hydrology::record::decode(&probe_words)
+            .expect("the probe record must decode -- it was just encoded by this same binary");
+        let body = record
+            .bodies
+            .iter()
+            .find(|b| b.enclosed)
+            .expect("the ranges world at 60,000 nodes must have at least one enclosed body");
+        body.anchor
+    };
+
+    let mut hydro_tectonic_params = HYDRO_TECTONIC_PARAMS_BASE.to_vec();
+    hydro_tectonic_params[11] = 1.0; // one forced outlet
+    hydro_tectonic_params.push(forced_anchor.0);
+    hydro_tectonic_params.push(forced_anchor.1);
+
+    let (h_ranges_status, h_ranges_len, h_ranges_words) =
+        bake_hydro_native(tectonic_world, &hydro_tectonic_params);
+    assert_eq!(h_ranges_status, WB_OK, "the forced-outlet bake on the ranges world must succeed");
+    assert!(h_ranges_len > 0, "a corpus of zero words would compare nothing");
+
+    let h_ranges_params_hex: Vec<String> = hydro_tectonic_params.iter().map(|v| hex(*v)).collect();
+    let h_ranges_words_hex: Vec<String> = h_ranges_words.iter().map(|v| hex(*v)).collect();
+    println!(
+        "H ranges {} {} {h_ranges_status} {h_ranges_len} {}",
+        hydro_tectonic_params.len(),
+        h_ranges_params_hex.join(" "),
+        h_ranges_words_hex.join(" ")
+    );
+
+    // The native prediction for `--mutate tectonic-warp`: the same forced params, baked on the
+    // warp-0 world instead, compared against the record just printed above under rule (a). This
+    // is what lets `parity.mjs` require `hydro/ranges` to move by exactly this many words under
+    // that control and by nothing under any other -- the same discipline `TCTL`'s other four
+    // counts already hold it to.
+    let (h_ranges_off_status, h_ranges_off_len, h_ranges_off_words) =
+        bake_hydro_native(tectonic_control_world, &hydro_tectonic_params);
+    let hydro_ranges_control = divergent_count(
+        h_ranges_status,
+        h_ranges_len,
+        &h_ranges_words,
+        h_ranges_off_status,
+        h_ranges_off_len,
+        &h_ranges_off_words,
+    );
+    assert!(
+        hydro_ranges_control > 0 && hydro_ranges_control < h_ranges_len as usize + 2, // cast-ok: the record's own length, widened to compare against a divergent count over the same 2+len accounting
+        "hydro/ranges: the control moved {hydro_ranges_control} of {}. A control that moves \
+         everything is as uninformative as one that moves nothing, and this corpus refuses to \
+         write either",
+        h_ranges_len + 2,
+    );
+
     println!(
         "TCTL {control_elevation_ranges} {control_structural_ranges} \
-         {control_elevation_belt} {control_structural_belt} {control_tile_belt}"
+         {control_elevation_belt} {control_structural_belt} {control_tile_belt} \
+         {hydro_ranges_control}"
     );
 
     // --- the coast channel: the presets, the checker, and a world built from one -----------
@@ -1794,6 +1916,40 @@ fn main() {
     println!(
         "GCTL {control_elevation_drainage} {control_structural_drainage} \
          {control_elevation_flank} {control_structural_flank} {control_tile_flank}"
+    );
+
+    // --- the hydrology channel: one capped bake, through the shipped export -------------
+    //
+    // Task 11. `wb_hydro_bake` is the only door onto the hydrology bake across the shipped
+    // surface -- before it existed, that bake's native/WASM agreement was unfalsifiable,
+    // exactly the sense this file's own doc gives for `wb_erosion_run` and `wb_water_run`.
+    //
+    // **Controller Ruling C.** This twelve-word params array is a SEPARATE literal from
+    // `tests/wasm_exports.rs::hydro_params`, not a shared function: an example cannot see a
+    // test module's helpers, so the corpus and that export's own parameter-validation tests
+    // each carry their own copy of the fixture. Keep the two equal by inspection if either
+    // changes; a silent drift between them would mean the corpus and the unit tests are no
+    // longer describing the same bake.
+    const HYDRO_PARAMS: [f64; 12] =
+        [12_000.0, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0];
+
+    let mut hydro_id: u32 = 0;
+    let hydro_status =
+        wb_hydro_bake(plain, HYDRO_PARAMS.as_ptr(), HYDRO_PARAMS.len() as u32, &mut hydro_id); // cast-ok: a compile-time twelve-word buffer
+    assert_eq!(hydro_status, WB_OK, "the hydro bake must succeed for the parity corpus");
+    let hydro_len = wb_hydro_len(hydro_id);
+    assert!(hydro_len > 0, "a corpus of zero words would compare nothing");
+    let mut hydro_words = vec![0.0f64; hydro_len as usize];
+    assert_eq!(wb_hydro_copy(hydro_id, hydro_words.as_mut_ptr(), hydro_len), WB_OK);
+    assert_eq!(wb_hydro_free(hydro_id), WB_OK);
+
+    let params_hex: Vec<String> = HYDRO_PARAMS.iter().map(|v| hex(*v)).collect();
+    let words_hex: Vec<String> = hydro_words.iter().map(|v| hex(*v)).collect();
+    println!(
+        "H plain {} {} {hydro_status} {hydro_len} {}",
+        HYDRO_PARAMS.len(),
+        params_hex.join(" "),
+        words_hex.join(" ")
     );
 
     println!("version {}", wb_generator_version());

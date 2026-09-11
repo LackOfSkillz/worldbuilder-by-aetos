@@ -4603,11 +4603,53 @@ from `$?` directly, never through a pipe.**
 
 | configuration | listed | ignored | **run** |
 |---|---|---|---|
-| `--no-default-features` | 637 | 5 | **632** |
-| default | 637 | 5 | **632** |
-| `--features python` | 639 | 5 | **634** |
-| `--features wasm` | 740 | 5 | **735** |
-| `--features python,wasm` | 742 | 5 | **737** |
+| `--no-default-features` | 686 | 5 | **681** |
+| default | 686 | 5 | **681** |
+| `--features python` | 688 | 5 | **683** |
+| `--features wasm` | 792 | 5 | **787** |
+| `--features python,wasm` | 794 | 5 | **789** |
+
+**2026-09-10, water 1a:** re-derived again, the same way, after the hydro-bake work
+(`src/hydrology`'s bake and its bake/measure/copy/free WASM exports) landed on this branch --
+632/632/634/735/737 -> 681/681/683/787/789, 5 ignored, unchanged, over the same 15 binaries. The
+movement is +49 uniformly on the three non-wasm rows and +52 on the two wasm rows: the shape this
+table has always had (uniform `src/` tests plus wasm-only `tests/wasm_exports.rs` tests), not a new
+one. Task 11 itself adds no test -- it adds the `H` parity record below and re-derives this table
+against a suite that had already moved out from under it. Re-derived through `assert_counts.py
+cargo-list` AFTER the last source edit.
+
+**2026-09-10, water 1a Task 12b (the calibration rulings):** 681/681/683/787/789 ->
+684/684/686/790/792, 5 ignored, unchanged. `assert_counts.py cargo-list` reports 16 test
+binaries now (up from 15 at Task 11); this task added no `[[bin]]`, so that binary was already
+in the tree, just not yet re-counted here. **+3 uniformly on every row**:
+`a_hollow_larger_than_the_caspian_drains` (Ruling 12b-5, `hollows.rs`),
+`effective_thresholds_rise_to_the_graph_resolution` and
+`only_notches_on_rivers_or_outlets_are_recorded` (Rulings 12b-1/12b-2, `mod.rs`) -- all three
+in `src/`, so every configuration sees them alike; `tests/wasm_exports.rs` gained no new test,
+only an in-place move of its one hydro pin (the header-length floor, 17 -> 20 words at the new
+SCHEMA 2.0). Re-derived through `assert_counts.py cargo-list` AFTER the last source edit.
+
+**2026-09-10, Task 12b fix round 1 (the threshold test must see the floor bind):**
+684/684/686/790/792 -> 685/685/687/791/793, 5 ignored, unchanged. **+1 uniformly on every row**:
+`the_node_floor_binds_on_a_coarse_graph` (`mod.rs`, `src/`), added because
+`effective_thresholds_rise_to_the_graph_resolution` runs on the bake test world's overridden
+thresholds (3.0e10/3.0e11/3.0e12), which already sit above `min_stream_nodes * median`, so the
+node-based branch never bound and the test would still pass with the floor removed. The new
+test uses `HydroParams::earth_like(12_000)`'s stock thresholds (2.5e8/2.5e9/1.0e11), well below
+that graph's own median land-node area, so the floor must bind; RED was shown by temporarily
+replacing the effective stream threshold with `params.stream_flow_m2` (unconditionally), which
+failed the new assertions (`250000000.0 != 424166660158.80225`), then restoring the floor logic
+for GREEN. No wasm rebuild was needed -- this is test-only code. Re-derived per configuration
+through `assert_counts.py cargo-list` AFTER the last source edit.
+
+**2026-09-10, water 1a final review fix wave:** 685/685/687/791/793 -> **692/692/694/798/800**,
+5 ignored, unchanged, over the same 16 binaries (`listed` 697/697/699/803/805). **+7 uniformly on
+every row**, all in `src/`: the drainage-cycle repro, the pocket re-judging test and the
+drainage-check mutation guard (`flow.rs`), the shore-lake-on-an-outlet-path test (`routing.rs`),
+and the real-world full-bake drainage test, the closed-lake outlet test and the river-mouth bed
+test (`mod.rs`). The 1.3M node-ceiling check went into an existing `tests/wasm_exports.rs` test in
+place, so the two wasm rows move by the same +7 and no more. Re-derived per configuration through
+`assert_counts.py cargo-list` AFTER the last source edit; all five printed `count OK`.
 
 All five exited 0 and `assert_counts.py` reported `count OK` at all five, over **15 test
 binaries**. The movement decomposes cleanly and the shape is the check: the coast term was **+9 on
@@ -4642,18 +4684,77 @@ moment**, and one of the 398 is a millisecond wearing a count's clothes.
 
 | | compared | divergent |
 |---|---|---|
-| `parity` | **127,659** | **0** |
-| `--mutate seed` | 127,659 | 122,208 |
-| `--mutate erosion-k` | 127,659 | 216 |
-| `--mutate water-pond` | 127,659 | 60 |
-| `--mutate tectonic-warp` | 127,659 | 6,186 |
-| `--mutate coast-amplitude` | 127,659 | 13,128 |
-| `--mutate gully-steer` | 127,659 | 3,752 |
-| `--mutate climate-samples` | 127,659 | 648 |
+| `parity` | **148,707** | **0** |
+| `--mutate seed` | 148,707 | 142,630 |
+| `--mutate erosion-k` | 148,707 | 216 |
+| `--mutate water-pond` | 148,707 | 60 |
+| `--mutate tectonic-warp` | 148,707 | 6,186 |
+| `--mutate coast-amplitude` | 148,707 | 13,128 |
+| `--mutate gully-steer` | 148,707 | 3,752 |
+| `--mutate climate-samples` | 148,707 | 648 |
+
+**2026-09-10, water 1a:** the `H plain` record adds the hydrology bake (`wb_hydro_bake` /
+`wb_hydro_len` / `wb_hydro_copy` / `wb_hydro_free`, `total_nodes = 12,000`) to the corpus:
+127,659 -> 148,707 compared (+21,048 = 2 + a 21,046-word record), 0 divergent. `--mutate seed`
+is the only control the record moves under -- 122,208 -> 142,630, +20,422 of the record's own
+21,048 words -- because the bake runs on the `plain` world and that world's own `world` line
+already rebuilds under the seed mutation; every other control (erosion-k, water-pond,
+tectonic-warp, coast-amplitude, gully-steer, climate-samples) is byte-for-byte unmoved, which is
+what says the hydro channel reaches nothing those controls perturb.
 
 All seven exited 0 and **every control matched its recorded figure exactly**, which is the statement
 that nothing in this slice moved a crossing value. `node scripts/build-wasm.mjs check` reports the
 committed artifact matches its manifest and the source that is here now.
+
+**2026-09-10, water 1a Task 12b (the calibration rulings):**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **128,347** | **0** |
+| `--mutate seed` | 128,347 | 122,825 |
+| `--mutate erosion-k` | 128,347 | 216 |
+| `--mutate water-pond` | 128,347 | 60 |
+| `--mutate tectonic-warp` | 128,347 | 6,186 |
+| `--mutate coast-amplitude` | 128,347 | 13,128 |
+| `--mutate gully-steer` | 128,347 | 3,752 |
+| `--mutate climate-samples` | 128,347 | 648 |
+
+The `H plain` record's header moved from 17 to 20 words at SCHEMA 2.0 (Ruling 12b-1: the three
+effective thresholds), but the corpus **shrinks**, 148,707 -> 128,347 (-20,360), because Ruling
+12b-2 (record only the notches on a recorded river or an outlet cut) drops the test world's
+graph-scale notches from 21,046 to 686 recorded words -- the params buffer is still the same
+12-word `HYDRO_PARAMS` fixture, unaffected by `min_stream_nodes`/`keep_max_area_m2`, which are
+not wasm params in 1a. `--mutate seed` is still the only control that moves the hydro group
+(617 of the group's 688 words, down from 20,422 of 21,048, the same fraction of a much smaller
+group); every other control is byte-for-byte unmoved at its Task 11 figure, which is what says
+Ruling 12b-1/12b-2's filtering logic is confined to the channel it was written in. All eight
+`node parity.mjs ... [--mutate ...]` runs were re-verified against `assert_counts.py parity`
+with the exact `--expect-compared`/`--expect-divergent` pairs now committed in `gates.yml`, and
+all eight printed `count OK`. `node scripts/build-wasm.mjs check` reports the rebuilt artifact
+(326,137 bytes) matches its manifest and the source that is here now.
+
+**2026-09-10, water 1a final review fix wave:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **128,347** | **0** |
+| `--mutate seed` | 128,347 | **122,830** (was 122,825) |
+| `--mutate erosion-k` | 128,347 | 216 |
+| `--mutate water-pond` | 128,347 | 60 |
+| `--mutate tectonic-warp` | 128,347 | 6,186 |
+| `--mutate coast-amplitude` | 128,347 | 13,128 |
+| `--mutate gully-steer` | 128,347 | 3,752 |
+| `--mutate climate-samples` | 128,347 | 648 |
+
+The wasm was rebuilt for the drainage fix, the outlet-reach and mouth-bed rules and the 1.3M
+ceiling (329,197 bytes). The `H plain` record is still 686 words; against the pre-fix dump exactly
+8 of them moved, the beds of its 8 ocean mouths (each from the seabed under it to the datum), and
+every non-`H` line of the dump is byte-identical. The seed control moves by 5, all in `hydro/plain`
+(617 -> 622 of 688). **Caution:** on the seed-moved world the bake is 594 words, not 686, and the
+harness still compares 686, so the last 92 are read past the copied buffer. The review's length
+check (I6) is what closes that. It is not in this change; see the fix-wave report. The other six
+controls are byte-for-byte unmoved. All eight runs were checked against `assert_counts.py parity`
+with the pairs committed in `gates.yml`; all eight printed `count OK`.
 
 **The coast control was written in the same commit as the export**, deliberately: the tectonic
 channel sat unwatched by parity for three tasks, and each of the three reports named the gap
@@ -4664,6 +4765,54 @@ simply had no owner until a task was written whose subject it was.
 would be wrong** -- a tectonic belt is a line on the planet, while the coastal window covers the
 whole shelf. The first corpus cut was refused by the dump's own both-ends-refused guard, because a
 2-degree box on the largest mover is entirely *inside* the coastal band and moved 100%.
+
+**2026-09-10, water 1a I6 (the ruling implemented, closing the final review's one blocked item):**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **136,086** | **0** |
+| `--mutate seed` | 136,086 | **130,366** (was 122,830) |
+| `--mutate erosion-k` | 136,086 | 216 |
+| `--mutate water-pond` | 136,086 | 60 |
+| `--mutate tectonic-warp` | 136,086 | **13,590** (was 6,186) |
+| `--mutate coast-amplitude` | 136,086 | 13,128 |
+| `--mutate gully-steer` | 136,086 | 3,752 |
+| `--mutate climate-samples` | 136,086 | 648 |
+
+A second `H` record, `H ranges`, is added on the tectonic `ranges` world (as `parity_dump.rs`
+already builds it for the tectonic control) with `earth_like` thresholds at 60,000 nodes, so the
+12b-1 node-area floor binds, and one forced outlet: an unforced probe bake finds the world's first
+enclosed body and its anchor (measured: 74.42 deg N, 38.72 deg E), and the forced bake on that
+anchor gives a 7,737-word record -- both figures exactly as the ruling predicted. Corpus:
+128,347 -> 136,086 (+7,739 = 2 + 7,737), 0 divergent on the plain run.
+
+`parity.mjs` case `H` now implements the ruling's rule (a): a plain run throws if `wb_hydro_len`
+disagrees with the recorded length, before reading a single word; a control run instead tallies
+the length match (as before) and, for any recorded word at an index the fresh bake's buffer does
+not reach, counts it divergent WITHOUT reading past the copy. `compared` for a hydro group is
+still `2 + len` either way. This retires the seed control's old caution: previously the last 92 of
+`hydro/plain`'s 686 words were read past a 594-word copy (whatever the wasm heap held there); now
+they are counted divergent by construction, for the reason the ruling gives rather than by reading
+stack garbage that happened to differ.
+
+`--mutate seed` moves `hydro/ranges` by 7,536 of its 7,739 words (the `ranges` world rebuilds with
+`world_seed + 1`, same as `plain` does) and leaves `hydro/plain` at its already-pinned 622 of 688 --
+same number as before, now for the sound reason above. `--mutate tectonic-warp` is the other
+control that reaches `hydro/ranges`: turning `margin_warp_m` off changes the terrain under the
+forced-outlet bake, and the native side predicts the resulting divergence the same way the other
+four `TCTL` fields are predicted -- baking the warp-0 world natively with the identical
+forced-outlet params and comparing under rule (a). Measured: 7,404 of 7,739. `parity.mjs`'s
+tectonic-control check now holds `hydro/ranges` to that count exactly, the same discipline it
+already held the other four groups to. The other five controls (erosion-k, water-pond,
+coast-amplitude, gully-steer, climate-samples) leave both hydro groups at 0, which each control's
+own per-group check (where one exists) now enforces for `hydro/ranges` too.
+
+All eight `node parity.mjs ... [--mutate ...]` runs were re-verified against `assert_counts.py
+parity` with the exact `--expect-compared`/`--expect-divergent` pairs now committed in `gates.yml`,
+and all eight printed `count OK`. The wasm was rebuilt (329,197 bytes, byte-identical to the
+pre-I6 artifact -- only `examples/parity_dump.rs`, a fingerprinted input, moved the source
+fingerprint) and `node scripts/build-wasm.mjs check` reports it matches its manifest and the
+source that is here now. No `src/` file changed, so the five CI count pins are unmoved.
 
 ### What is still open here
 

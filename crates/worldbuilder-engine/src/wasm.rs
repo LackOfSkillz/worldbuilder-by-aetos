@@ -107,6 +107,8 @@ use crate::tectonics::{
     TectonicParams, COASTAL_UPLIFT_OFFSET_M, COLLISION_SYMMETRIC, ISLAND_ARC_OFFSET_M,
     MAX_TECTONIC_RANGE_M,
 };
+use crate::detmath as m;
+use crate::hydrology::{self, HydroError, HydroParams};
 use crate::water;
 use crate::{World, GENERATOR_VERSION};
 
@@ -1151,6 +1153,10 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_climate_calibration",
     "wb_erosion_run",
     "wb_water_run",
+    "wb_hydro_bake",
+    "wb_hydro_len",
+    "wb_hydro_copy",
+    "wb_hydro_free",
 ];
 
 // -------------------------------------------------------------------- the handle table
@@ -1173,6 +1179,14 @@ thread_local! {
     /// fresh one -- convenient, and stated here so nobody reads a `wb_world_count` of zero
     /// on another thread as a bug.
     static WORLDS: RefCell<Vec<Option<Box<World>>>> = const { RefCell::new(Vec::new()) };
+
+    /// Held hydrology bakes, encoded to the flat f64 record `hydrology::record::encode`
+    /// already produces. Same discipline as `WORLDS`: 1-based ids, never reused, a freed slot
+    /// stays freed. A bake is not a world, so it gets its own table rather than sharing
+    /// `WORLDS`'s handle space -- `wb_hydro_bake` takes a world handle as an *input* and
+    /// returns a *different* kind of id, and conflating the two spaces would let a stale
+    /// world handle and a live bake id collide by coincidence of the same integer.
+    static HYDRO: RefCell<Vec<Option<Vec<f64>>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Install a world built by Rust and hand back its handle, or 0 if the table is full.
@@ -3927,4 +3941,247 @@ pub extern "C" fn wb_water_run(
         *out_sea_level_m = manifest.sea_level_m;
     }
     WB_OK
+}
+
+// ------------------------------------------------------------------- the hydrology channel
+//
+// Task 10 of `2026-09-10-water-1a-coarse-bake`: the browser door onto `hydrology::bake`. Same
+// shape as every other channel in this file -- a flat f64 params record in a documented
+// order, a status that refuses the whole record rather than adjusting one field silently --
+// plus a second table, because a bake's *output* does not fit in a caller-sized buffer the
+// way `wb_water_run`'s does: `hydrology::record::encode` writes a header whose length is not
+// known until the bake has run, so this channel is measure-then-copy rather than
+// pass-a-buffer-and-hope, exactly like `wb_climate_calibration`'s own count-then-fill shape
+// but held across two calls instead of one.
+
+/// f64 words per hydrology params record, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `total_nodes` -- an integer carried as an f64 |
+/// | 1 | `wetness_nodes` -- an integer carried as an f64 |
+/// | 2 | `keep_depth_m` |
+/// | 3 | `keep_area_m2` |
+/// | 4 | `pond_max_area_m2` |
+/// | 5 | `stream_flow_m2` |
+/// | 6 | `river_flow_m2` |
+/// | 7 | `great_flow_m2` |
+/// | 8 | `notch_fall_m` |
+/// | 9 | `evaporation_factor` |
+/// | 10 | `salt_flat_share` |
+/// | 11 | `forced_count` -- an integer carried as an f64 |
+///
+/// followed by `forced_count` pairs of `[latitude_deg, longitude_deg]`. **The order is the
+/// contract**, the same words every other flat record in this file carries at its own doc.
+pub const WB_HYDRO_PARAMS_STRIDE: usize = 12;
+
+/// The ceiling on `total_nodes` and `wetness_nodes` for [`wb_hydro_bake`]. Ruling I7 (final
+/// review of water 1a): a measured hazard, not a domain margin -- the studio heap was about
+/// 372 MB at 1,000,000 nodes against a 512 MB ceiling, so 1,300,000 is roughly where a bake
+/// stops fitting. Spec section 6.1: when a bake does not fit, lower the node count; never raise
+/// this ceiling. (It was 4,000,000, which would have aborted the browser tab, not refused.)
+pub const WB_MAX_HYDRO_NODES: u32 = 1_300_000;
+
+/// The ceiling on `forced_count` for [`wb_hydro_bake`] -- forced outlets are a handful of
+/// owner overrides, never a data set.
+pub const WB_MAX_HYDRO_FORCED: u32 = 1_024;
+
+/// Decode a `wb_hydro_bake` params buffer into a `HydroParams`, or `None` if the record is
+/// malformed. Every numeric domain check `hydrology::bake` itself would make is left to
+/// `bake`; what this function refuses is a record `bake` cannot even be asked about --
+/// non-finite words, a non-integral node count or forced-outlet count, a stride that does not
+/// match its own declared `forced_count`, a node count above [`WB_MAX_HYDRO_NODES`], or a
+/// `forced_count` above [`WB_MAX_HYDRO_FORCED`].
+fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
+    let whole = |w: f64| w.is_finite() && w >= 0.0 && m::floor(w) == w;
+    if words.len() < WB_HYDRO_PARAMS_STRIDE || words.iter().any(|w| !w.is_finite()) {
+        return None;
+    }
+    if !whole(words[0]) || !whole(words[1]) || !whole(words[11]) {
+        return None;
+    }
+    if words[0] > WB_MAX_HYDRO_NODES as f64 || words[1] > WB_MAX_HYDRO_NODES as f64 { // cast-ok: a ceiling constant widened to f64 for a domain comparison, exact for every u32
+        return None;
+    }
+    // Refused before any cast: an absurd forced_count (e.g. 2^63) would saturate `as usize`
+    // and overflow `2 * forced` below -- a panic reachable from extern "C".
+    if words[11] > WB_MAX_HYDRO_FORCED as f64 { // cast-ok: a ceiling constant widened to f64 for a domain comparison, exact for every u32
+        return None;
+    }
+    let forced = words[11] as usize; // cast-ok: checked non-negative, integral and <= WB_MAX_HYDRO_FORCED above
+    let expected_len = match forced.checked_mul(2).and_then(|doubled| doubled.checked_add(WB_HYDRO_PARAMS_STRIDE)) {
+        Some(len) => len,
+        None => return None,
+    };
+    if words.len() != expected_len {
+        return None;
+    }
+    let total = words[0] as u32; // cast-ok: checked integral, non-negative and <= WB_MAX_HYDRO_NODES above
+    let wet = words[1] as u32; // cast-ok: checked integral, non-negative and <= WB_MAX_HYDRO_NODES above
+    let mut p = HydroParams::earth_like(total);
+    p.wetness_nodes = wet;
+    p.keep_depth_m = words[2];
+    p.keep_area_m2 = words[3];
+    p.pond_max_area_m2 = words[4];
+    p.stream_flow_m2 = words[5];
+    p.river_flow_m2 = words[6];
+    p.great_flow_m2 = words[7];
+    p.notch_fall_m = words[8];
+    p.evaporation_factor = words[9];
+    p.salt_flat_share = words[10];
+    p.forced_outlets = (0..forced)
+        .map(|k| SpherePoint::from_latlon(words[12 + 2 * k], words[13 + 2 * k]))
+        .collect();
+    Some(p)
+}
+
+/// Bake `handle`'s hydrology and hold the encoded record behind a fresh id in the `HYDRO`
+/// table, for [`wb_hydro_len`] and [`wb_hydro_copy`] to read and [`wb_hydro_free`] to drop.
+///
+/// # Parameters
+/// `params` is a [`WB_HYDRO_PARAMS_STRIDE`]-word record (plus two words per forced outlet),
+/// in the order that constant documents. `params_len` must equal
+/// `WB_HYDRO_PARAMS_STRIDE + 2 * forced_count`, every word must be finite, `total_nodes` and
+/// `wetness_nodes` must be integral and no larger than [`WB_MAX_HYDRO_NODES`], and
+/// `forced_count` must be integral. `params` must be non-null and 8-aligned.
+///
+/// # Returns
+/// `WB_OK` with `*out_id` written to a fresh, never-reused id; `WB_ERR_PARAM` if the record
+/// cannot be decoded or `hydrology::bake` refuses its contents (`HydroError::Params`);
+/// `WB_ERR_BUFFER` if `params` or `out_id` is null or misaligned, or `params_len` is short;
+/// `WB_ERR_HANDLE` if `handle` names no live world; [`WB_ERR_GRAPH`] if `bake` could not
+/// sample or build a graph over the surface (`HydroError::Sampling`), or if the routing it
+/// built failed the drainage check (`HydroError::Drainage`). `*out_id` is written only on
+/// `WB_OK`.
+///
+/// # Safety
+/// `params` must be null or a live, 8-aligned allocation of at least `params_len` f64.
+/// `out_id` must be non-null and a live, 4-aligned `u32`.
+#[no_mangle]
+pub extern "C" fn wb_hydro_bake(handle: u32, params: *const f64, params_len: u32, out_id: *mut u32) -> u32 {
+    if out_id.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    if (out_id as usize) % core::mem::align_of::<u32>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        return WB_ERR_BUFFER;
+    }
+    if params.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    if (params as usize) % core::mem::align_of::<f64>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        return WB_ERR_BUFFER;
+    }
+    let len = match usize::try_from(params_len) {
+        Ok(len) => len,
+        Err(_) => return WB_ERR_BUFFER,
+    };
+    if len < WB_HYDRO_PARAMS_STRIDE {
+        return WB_ERR_BUFFER;
+    }
+    let words: &[f64] = unsafe { core::slice::from_raw_parts(params, len) };
+    let hydro_params = match hydro_params_from(words) {
+        Some(p) => p,
+        None => return WB_ERR_PARAM,
+    };
+
+    let outcome = with_world(handle, |world| hydrology::bake(world.surface(), &hydro_params));
+    let record = match outcome {
+        None => return WB_ERR_HANDLE,
+        Some(Err(HydroError::Params(_))) => return WB_ERR_PARAM,
+        Some(Err(HydroError::Sampling)) => return WB_ERR_GRAPH,
+        // Ruling C1-c: a routing that fails the drainage check is a graph the bake could not
+        // make drain -- refused as a graph error, never handed out as a record that loses water.
+        Some(Err(HydroError::Drainage(_))) => return WB_ERR_GRAPH,
+        Some(Ok(record)) => record,
+    };
+
+    let encoded = hydrology::record::encode(&record);
+    let id = HYDRO.with(|cell| {
+        let mut table = cell.borrow_mut();
+        table.push(Some(encoded));
+        u32::try_from(table.len()).unwrap_or(0)
+    });
+    if id == 0 {
+        // The table is already at u32::MAX entries, so no fresh id can be issued -- there is
+        // no dedicated status for "the handle table is full", so this mirrors WORLDS's own
+        // convention of collapsing that case into WB_ERR_HANDLE.
+        return WB_ERR_HANDLE;
+    }
+    unsafe { *out_id = id };
+    WB_OK
+}
+
+/// The length, in f64 words, of the hydro record held under `id` -- or `0` if `id` names no
+/// live bake, which doubles as the answer after [`wb_hydro_free`].
+#[no_mangle]
+pub extern "C" fn wb_hydro_len(id: u32) -> u32 {
+    HYDRO.with(|cell| {
+        let table = cell.borrow();
+        let index = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
+            Ok(index) => index,
+            Err(_) => return 0,
+        };
+        table.get(index).and_then(|slot| slot.as_ref()).map(|record| record.len()).and_then(|len| u32::try_from(len).ok()).unwrap_or(0)
+    })
+}
+
+/// Copy the hydro record held under `id` into `out`, all-or-nothing: `out_len` must be at
+/// least the record's own length ([`wb_hydro_len`]), and nothing is written if it is short.
+///
+/// # Returns
+/// `WB_OK` on a full copy; `WB_ERR_BUFFER` if `out` is null, misaligned, or `out_len` is
+/// shorter than the record; `WB_ERR_HANDLE` if `id` names no live bake.
+///
+/// # Safety
+/// `out` must be non-null and a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_hydro_copy(id: u32, out: *mut f64, out_len: u32) -> u32 {
+    if out.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    if (out as usize) % core::mem::align_of::<f64>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        return WB_ERR_BUFFER;
+    }
+    let capacity = match usize::try_from(out_len) {
+        Ok(len) => len,
+        Err(_) => return WB_ERR_BUFFER,
+    };
+    HYDRO.with(|cell| {
+        let table = cell.borrow();
+        let index = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
+            Ok(index) => index,
+            Err(_) => return WB_ERR_HANDLE,
+        };
+        let record = match table.get(index).and_then(|slot| slot.as_ref()) {
+            Some(record) => record,
+            None => return WB_ERR_HANDLE,
+        };
+        if capacity < record.len() {
+            return WB_ERR_BUFFER;
+        }
+        for (offset, value) in record.iter().enumerate() {
+            unsafe { out.add(offset).write(*value) };
+        }
+        WB_OK
+    })
+}
+
+/// Drop the hydro record held under `id`. `WB_OK` if it was live, `WB_ERR_HANDLE` if `id`
+/// names no live bake -- never issued, or already freed, same as [`wb_world_free`].
+#[no_mangle]
+pub extern "C" fn wb_hydro_free(id: u32) -> u32 {
+    HYDRO.with(|cell| {
+        let mut table = cell.borrow_mut();
+        let index = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
+            Ok(index) => index,
+            Err(_) => return WB_ERR_HANDLE,
+        };
+        match table.get_mut(index) {
+            Some(slot @ Some(_)) => {
+                *slot = None;
+                WB_OK
+            }
+            _ => WB_ERR_HANDLE,
+        }
+    })
 }
