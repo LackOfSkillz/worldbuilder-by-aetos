@@ -98,6 +98,8 @@ pub enum BodyKind {
 pub struct Body {
     pub id: u32,
     pub kind: BodyKind,
+    /// "Not closed": the lake has an outlet. Its water may still end in a closed lake downstream
+    /// rather than the sea -- not the same meaning as `ReachLine::fresh`.
     pub fresh: bool,
     pub enclosed: bool,
     pub forced: bool,
@@ -118,6 +120,8 @@ pub struct Body {
 pub struct ReachPoint {
     pub lat_deg: f64,
     pub lon_deg: f64,
+    /// The channel bed: the water surface here minus `depth_m` (at a mouth, the level of the
+    /// water it runs into). Not the cut surface a notch point's third word carries.
     pub bed_m: f64,
     pub width_m: f64,
     pub depth_m: f64,
@@ -131,10 +135,10 @@ pub struct ReachLine {
     pub class: ReachClass,
     pub order: u32,
     pub downstream: Downstream,
-    /// SCHEMA 3: `false` if this reach's downstream chain (through reaches, then bodies via
-    /// `Body::downstream`) ends at a closed lake's sink; `true` otherwise (the ocean, or the
-    /// walk's bound runs out without a clean answer -- which "everything drains" rules out on a
-    /// bake that passed `drainage_check`).
+    /// SCHEMA 3: "its chain reaches the ocean" -- `true` if this reach's downstream chain
+    /// (through reaches, then bodies via `Body::downstream`) ends at `Ocean`, `false` if it ends
+    /// at a closed lake's sink (or the walk's bound runs out, which "everything drains" rules out
+    /// on a bake that passed `drainage_check`). Not the same meaning as `Body::fresh`.
     pub fresh: bool,
     pub points: Vec<ReachPoint>,
 }
@@ -142,6 +146,10 @@ pub struct ReachLine {
 /// A cut channel through a notched hollow's rim, as the falling course `routing::cut_route` or
 /// `cut_path` left behind. SCHEMA 3 adds each point's width, so a notch can be drawn to scale
 /// like a reach rather than as a bare line.
+///
+/// Each point is `(lat, lon, surface_m, width_m)`. The third is the cut surface -- the lowered
+/// ground, which is the water surface through the cut -- not a bed below it the way a
+/// `ReachPoint::bed_m` is (Ruling F-2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotchLine {
     pub points: Vec<(f64, f64, f64, f64)>,

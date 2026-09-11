@@ -6,6 +6,19 @@
 //! derived from an arbitrary float by a truncating cast. `word_to_u32` is the one checked path
 //! from a word back to an index or count: finite, non-negative, integral and in range, or the
 //! whole record is refused.
+//!
+//! Two words share a position and not a meaning, and two flags share a name and not a meaning:
+//!
+//! - **Word 3 of a reach point** (`lat, lon, bed_m, width_m, depth_m, flow_m2`) is the **bed**:
+//!   the water surface there minus the channel's depth (at a mouth, the water it runs into).
+//! - **Word 3 of a notch point** (`lat, lon, surface_m, width_m`) is the **cut surface**: the
+//!   lowered ground, which is the water surface through the cut. It is not a bed below that
+//!   (Ruling F-2). Where a notch point and a reach point sit on the same node, `notch word 3 -
+//!   reach depth == reach bed`, and the two widths are equal (both on the caller's params).
+//! - **Body `fresh`** means "not closed": the lake has an outlet. Its water may still end in a
+//!   closed lake downstream rather than the sea.
+//! - **Reach `fresh`** means "its chain reaches the ocean": following its `downstream` through
+//!   reaches and bodies ends at `Ocean`, not at a closed lake's `Sink`.
 
 use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
@@ -247,10 +260,10 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
 
     for notch in &record.notches {
         out.push(notch.points.len() as f64);
-        for &(lat, lon, bed_m, width_m) in &notch.points {
+        for &(lat, lon, surface_m, width_m) in &notch.points {
             out.push(lat);
             out.push(lon);
-            out.push(bed_m);
+            out.push(surface_m);
             out.push(width_m);
         }
     }
@@ -370,7 +383,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let downstream = words_to_downstream(downstream_kind, downstream_id)?;
         let fresh = r.boolean()?;
         let point_count = r.u32()? as usize;
-        // Reach point: lat, lon, bed_m, width_m, depth_m, flow_m2 -- 6 words per point.
+        // Reach point: lat, lon, bed_m (surface minus depth -- see the module doc), width_m,
+        // depth_m, flow_m2 -- 6 words per point.
         if !count_fits(point_count, 6, r.remaining()) {
             return None;
         }
@@ -394,7 +408,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
     let mut notches = Vec::with_capacity(notch_count);
     for _ in 0..notch_count {
         let point_count = r.u32()? as usize;
-        // Notch point: lat, lon, bed_m, width_m -- 4 words per point.
+        // Notch point: lat, lon, surface_m (the cut surface, not a bed -- see the module doc),
+        // width_m -- 4 words per point.
         if !count_fits(point_count, 4, r.remaining()) {
             return None;
         }
@@ -402,9 +417,9 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         for _ in 0..point_count {
             let lat = r.word()?;
             let lon = r.word()?;
-            let bed_m = r.word()?;
+            let surface_m = r.word()?;
             let width_m = r.word()?;
-            points.push((lat, lon, bed_m, width_m));
+            points.push((lat, lon, surface_m, width_m));
         }
         notches.push(NotchLine { points });
     }

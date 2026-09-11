@@ -57,6 +57,13 @@ pub fn flood(graph: &LandGraph, seeds: &[(u32, f64)], allowed: &dyn Fn(u32) -> b
             // Inside a filled hollow every node shares the same spill; break the tie by the
             // node's own ground height so the flood reaches the lowest ground first, and parent
             // chains follow valley floors instead of node index.
+            //
+            // The key is load-bearing for drainage, not cosmetic: parent chains become cut routes
+            // and receivers, and "everything drains" rests on their shape. Measured 2026-09-11
+            // with the whole-branch review's drainage fuzzer (hand-built graphs, cases
+            // 0..2,000,000, 1,971,596 of them run), release build on a 32-thread Windows host:
+            // ties broken by node index instead (`queue.push(spill, next)`) fail
+            // `drainage_check` on 2,498 cases; this key fails none.
             queue.push_tied(spill, own, next);
         }
     }

@@ -145,7 +145,10 @@ bake, expected at the measured 26.00°S 30.25°W.
 
 A single sweep inward from every ocean-adjacent node (Barnes et al. 2014, "Priority-flood"),
 always expanding the lowest node on the frontier:
-- **Ties** break by node index, so the order is the same on every build.
+- **Ties** at one spill level break by the node's own ground height, then by node index, so the
+  flood reaches the lowest ground first and the order is the same on every build. The height key
+  is load-bearing: with ties broken by index alone, parent chains stop following valley floors
+  and the drainage check fails on some hand-built graphs (see `flood.rs`).
 - **Output per node:** its receiver (the downstream node) and its **spill level**, which is its own
   height or the fill level of the hollow it sits in.
 - A hollow is a connected set of nodes whose spill level exceeds their height. Its depth is the
@@ -249,10 +252,17 @@ hydrology: {
               outlet: reach id | null, override: null|"forced"|"closed" } ],
   reaches: [ { id, class, fresh, downstream: reach id | body id | "ocean",
                points: [[lat, lon, bed_m, width_m, depth_m, flow], ...] } ],
-  notches: [ { points: [[lat, lon, bed_m, width_m], ...] } ],
+  notches: [ { points: [[lat, lon, surface_m, width_m], ...] } ],
   falls:   [ { reach, at: [lat, lon], height_m } ]
 }
 ```
+
+- **A reach point's third value is the bed**: the water surface there minus the channel's depth.
+  **A notch point's third value is the cut surface**: the lowered ground, which is the water
+  surface through the cut. Where a notch point and a reach point sit on the same place, the notch
+  value minus the reach's depth is the reach's bed, and the two widths are equal.
+- **Body `fresh` means "not closed"**: the lake has an outlet, though its water may still end in a
+  closed lake downstream. **Reach `fresh` means "its chain reaches the ocean"**.
 
 - **Size target:** under 8 MB of JSON for the owner's world, measured in stage 1. Coordinates are
   rounded to 1e-5 degrees and levels to centimetres.

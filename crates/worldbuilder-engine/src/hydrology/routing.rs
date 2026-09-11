@@ -406,9 +406,10 @@ fn steepest(graph: &LandGraph, surface: &[f64], node: u32) -> u32 {
 /// committed it, and `o` has no steepest edge. `every_small_world_drains` sweeps 48 real worlds
 /// for this case, and `drainage_check` refuses any routing it misses.
 ///
-/// Two kinds of kept lake stand *below* their members' global spill level: a capped basin's
-/// inner lakes (Task 4), and the enclosed pockets at the datum. The spill-level step above does
-/// not cover a cut's last step into one of those. There, "no cycle" rests on C1-a (no nested
+/// Three kinds of kept lake stand *below* their members' global spill level: a capped basin's
+/// inner lakes (Task 4), the enclosed pockets at the datum, and an enclosed basin's shore lakes
+/// (the nested hollows its sub-flood finds above the datum, judged in `route`'s step 1). The
+/// spill-level step above does not cover a cut's last step into one of those. There, "no cycle" rests on C1-a (no nested
 /// lake on a pocket's outlet path, Ruling 4-2) and the escape-chain rule (no kept inner lake on
 /// its basin's way out), and it is *enforced*, not proved, by `drainage_check`, which `bake`
 /// runs on every routing.

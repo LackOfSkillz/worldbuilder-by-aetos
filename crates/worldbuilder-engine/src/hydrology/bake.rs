@@ -103,6 +103,9 @@ fn body_downstream(
         }
         steps += 1;
         let i = here as usize;
+        // Precedence, checked in this order at each node: the ocean first, then a member of
+        // another lake, then the start of a reach. A node that is more than one of these answers
+        // with the first.
         if graph.ocean[i] {
             return Downstream::Ocean;
         }
@@ -206,9 +209,9 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
 
     // `extract` reads its thresholds off a `HydroParams`; the smallest clean way to hand it the
     // effective values without a second parameter type is a cloned copy with just those three
-    // fields overwritten. Everything else -- including `reach_points`' width/depth anchor below,
-    // which stays on the caller's own `stream_flow_m2` -- keeps using the params `bake` was
-    // called with.
+    // fields overwritten. Everything else -- including `reach_points`' width/depth anchor and the
+    // notch widths below, which both stay on the caller's own `stream_flow_m2` -- keeps using the
+    // params `bake` was called with.
     let mut effective_params = params.clone();
     effective_params.stream_flow_m2 = effective_stream_flow_m2;
     effective_params.river_flow_m2 = effective_river_flow_m2;
@@ -337,7 +340,13 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     //
     // A point's width is `width_m` at its own flow for an outlet cut (it is the pocket's only
     // way out, whatever it carries), or at `max(flow, effective stream threshold)` otherwise --
-    // never narrower than the anchor an ordinary stream reach would report.
+    // never narrower than the narrowest stream reach the record holds. Either way it is sized
+    // on the caller's own `params`, exactly as `reach_points` sizes a reach (Ruling F-1): where
+    // an outlet cut runs along a reach, the two report the same width.
+    //
+    // A point's third word is the cut surface -- the lowered ground, which is the water surface
+    // through the cut -- not a bed below it (Ruling F-2). A reach point's third word is its bed,
+    // surface minus depth, so where the two coincide `notch - reach.depth == reach.bed`.
     const NOTCH_RECORD_MIN_CUT_M: f64 = 2.0;
 
     let mut is_river_node = vec![false; graph.len()];
@@ -357,25 +366,25 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     for (idx, notch) in routing.notches.iter().enumerate() {
         let mut points = Vec::with_capacity(notch.nodes.len());
         if is_outlet_notch[idx] {
-            for (&node, &bed_m) in notch.nodes.iter().zip(&notch.bed_m) {
+            for (&node, &surface_m) in notch.nodes.iter().zip(&notch.bed_m) {
                 let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-                let width_m = width_m(flow[node as usize], &effective_params);
-                points.push((lat_deg, lon_deg, bed_m, width_m));
+                let width_m = width_m(flow[node as usize], params);
+                points.push((lat_deg, lon_deg, surface_m, width_m));
             }
         } else {
-            for (&node, &bed_m) in notch.nodes.iter().zip(&notch.bed_m) {
+            for (&node, &surface_m) in notch.nodes.iter().zip(&notch.bed_m) {
                 if is_river_node[node as usize] {
                     continue;
                 }
-                let cut_depth_m = graph.height_m[node as usize] - bed_m;
+                let cut_depth_m = graph.height_m[node as usize] - surface_m;
                 if cut_depth_m < NOTCH_RECORD_MIN_CUT_M {
                     continue;
                 }
                 let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
                 let q = flow[node as usize];
                 let q_for_width = if q > effective_stream_flow_m2 { q } else { effective_stream_flow_m2 };
-                let width_m = width_m(q_for_width, &effective_params);
-                points.push((lat_deg, lon_deg, bed_m, width_m));
+                let width_m = width_m(q_for_width, params);
+                points.push((lat_deg, lon_deg, surface_m, width_m));
             }
         }
         if points.is_empty() {
@@ -606,6 +615,60 @@ mod bake_tests {
                         "a non-outlet point's cut depth {cut_depth_m} is under the 2 m floor");
             }
         }
+    }
+
+    /// Rulings F-1 and F-2: where an outlet cut runs along a recorded reach, the two describe
+    /// the same channel, so they must agree on it. A notch point's word 3 is the cut surface
+    /// (the lowered ground, the water surface through the cut) and a reach point's is its bed
+    /// (surface minus depth), so `notch.surface - reach.depth == reach.bed`; and both widths
+    /// come from the caller's own `params`, so they are equal.
+    ///
+    /// On the bake test world the node floor binds (effective stream threshold about 4.2e11
+    /// against the 3.0e10 asked for), so a notch width sized on the effective thresholds parts
+    /// from the reach's by a factor of about 3.8 -- which is what this catches.
+    #[test]
+    fn an_outlet_cut_agrees_with_the_reach_it_runs_along() {
+        let p = params();
+        let stages = bake_stages(&world(), &p).expect("bake");
+        let record = record_of(&stages, &p);
+        assert!(record.stats.stream_flow_m2 > p.stream_flow_m2,
+                "sanity: the node floor binds, so effective and caller thresholds differ");
+
+        // Every outlet cut's nodes, by the exact (lat, lon) bits `record_of` writes.
+        let mut outlet_positions: Vec<(u64, u64)> = Vec::new();
+        for opt in &stages.closure.outlet_notch {
+            if let Some(idx) = *opt {
+                for &node in &stages.routing.notches[idx].nodes {
+                    let (lat, lon) = stages.graph.positions[node as usize].to_latlon();
+                    outlet_positions.push((lat.to_bits(), lon.to_bits()));
+                }
+            }
+        }
+        outlet_positions.sort_unstable();
+
+        let mut compared = 0usize;
+        for notch in &record.notches {
+            for &(lat, lon, surface_m, notch_width_m) in &notch.points {
+                if outlet_positions.binary_search(&(lat.to_bits(), lon.to_bits())).is_err() {
+                    continue;
+                }
+                for reach in &record.reaches {
+                    for point in &reach.points {
+                        if point.lat_deg.to_bits() != lat.to_bits() || point.lon_deg.to_bits() != lon.to_bits() {
+                            continue;
+                        }
+                        compared += 1;
+                        assert_eq!(notch_width_m, point.width_m,
+                                   "reach {} at ({lat}, {lon}): notch width vs reach width", reach.id);
+                        let gap = (surface_m - point.depth_m) - point.bed_m;
+                        assert!(gap.abs() <= 1e-6,
+                                "reach {} at ({lat}, {lon}): notch surface {surface_m} - reach depth {}                                  != reach bed {} (gap {gap})",
+                                reach.id, point.depth_m, point.bed_m);
+                    }
+                }
+            }
+        }
+        assert!(compared > 0, "sanity: at least one outlet-cut point is also a reach point");
     }
 
     #[test]
@@ -989,22 +1052,69 @@ mod bake_tests {
         false // ran past the bound without reaching Ocean or Sink: a loop.
     }
 
+    /// Follows `Body`/`Reach` downstream links from `start` and says whether the chain ends
+    /// where the spec lets an open body's water end: at the ocean, or at a closed (not fresh)
+    /// body, whose own `downstream` is `Sink`. A `Sink` reached any other way, or a loop (the
+    /// same bound as `follows_to_ocean`), is `false`.
+    fn ends_at_the_ocean_or_a_closed_body(record: &HydroRecord, start: Downstream) -> bool {
+        let bound = record.bodies.len() + record.reaches.len() + 1;
+        let mut here = start;
+        for _ in 0..bound {
+            match here {
+                Downstream::Ocean => return true,
+                Downstream::Sink => return false,
+                Downstream::Reach(id) => here = record.reaches[id as usize].downstream,
+                Downstream::Body(id) => {
+                    let body = &record.bodies[id as usize];
+                    if !body.fresh {
+                        return true;
+                    }
+                    here = body.downstream;
+                }
+            }
+        }
+        false // ran past the bound: a loop.
+    }
+
     /// Task 5's rule, checked on one baked record: every fresh (open) body names somewhere its
     /// water goes that is not `Sink`, every closed body reports `Sink`, and chasing `Body`/`Reach`
-    /// links from any fresh body reaches the ocean without looping.
+    /// links from any fresh body ends, without looping, at the ocean or at a closed body. Body
+    /// `fresh` means "not closed", not "reaches the sea": the spec lets an open lake drain into a
+    /// closed one (`an_open_lake_may_drain_into_a_closed_lake`).
     fn check_downstream_invariants(record: &HydroRecord) {
         assert!(!record.bodies.is_empty(), "sanity: this world has bodies to check");
         for body in &record.bodies {
             if body.fresh {
                 assert_ne!(body.downstream, Downstream::Sink,
                            "fresh body {} reports Sink", body.id);
-                assert!(follows_to_ocean(record, Downstream::Body(body.id)),
-                        "body {}'s downstream chain must reach the ocean without looping", body.id);
+                assert!(ends_at_the_ocean_or_a_closed_body(record, body.downstream),
+                        "body {}'s downstream chain must end at the ocean or a closed body without looping",
+                        body.id);
             } else {
                 assert_eq!(body.downstream, Downstream::Sink,
                            "closed body {} doesn't report Sink", body.id);
             }
         }
+    }
+
+    /// Reach `fresh` means "its chain reaches the ocean". The positive half: on the bake test
+    /// world every reach whose downstream chain (followed here by `follows_to_ocean`, not by
+    /// `downstream_is_fresh`) reaches `Ocean` reports `fresh`, and there is at least one. The
+    /// negative half is `a_reach_into_a_closed_lake_is_not_fresh`; with only that one, a
+    /// constant `false` passed.
+    #[test]
+    fn every_reach_that_reaches_the_ocean_is_fresh() {
+        let record = super::super::bake(&world(), &params()).expect("bake");
+        let mut to_the_ocean = 0;
+        for reach in &record.reaches {
+            let reaches_the_ocean = follows_to_ocean(&record, reach.downstream);
+            if reaches_the_ocean {
+                to_the_ocean += 1;
+            }
+            assert_eq!(reach.fresh, reaches_the_ocean,
+                       "reach {}: fresh must say whether its chain reaches the ocean", reach.id);
+        }
+        assert!(to_the_ocean > 0, "sanity: at least one reach's chain reaches the ocean");
     }
 
     #[test]
@@ -1019,6 +1129,58 @@ mod bake_tests {
                                     Some(crate::tectonics::TectonicParams::ranges()));
         let p = HydroParams::earth_like(12_000);
         check_downstream_invariants(&super::super::bake(&surface, &p).expect("bake"));
+    }
+
+    /// Hand fixture: an open lake whose water ends in a closed lake, not the ocean -- which the
+    /// spec allows (a body is `fresh` when it is not closed, whether or not its chain reaches the
+    /// sea). Node 0 (8 m, behind a 40 m rim) is the forced lake; node 2 (25 m, behind a 39 m
+    /// rim) is the lake it drains into, which an evaporation factor of 10 closes; node 4 is the
+    /// ocean. The bake drains, and the downstream invariants hold once a chain may end at a
+    /// closed body.
+    #[test]
+    fn an_open_lake_may_drain_into_a_closed_lake() {
+        let heights = [8.0, 40.0, 25.0, 39.0, -0.5];
+        let n = heights.len();
+        let positions: Vec<SpherePoint> =
+            (0..n).map(|i| SpherePoint::from_latlon(0.0, i as f64 * 0.5)).collect();
+        let directed: Vec<Vec<u32>> = (0..n as u32) // cast-ok: tiny fixture
+            .map(|i| {
+                let mut v = Vec::new();
+                if i > 0 { v.push(i - 1); }
+                if (i as usize) + 1 < n { v.push(i + 1); }
+                v
+            })
+            .collect();
+        let wetness = vec![
+            0.3683336814498558, 0.11148793465094886, 0.2098924682493466, 0.6374726220308857, 0.5058177992954012,
+        ];
+        let g = LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![1.0e6; n], &directed, wetness);
+
+        let mut p = HydroParams::earth_like(0);
+        p.keep_max_area_m2 = 7.0e6;
+        p.evaporation_factor = 10.0;
+        p.keep_depth_m = 8.0;
+        p.notch_fall_m = 5.0;
+        p.forced_outlets = vec![SpherePoint::from_latlon(0.0, 0.0)];
+
+        let f = flood(&g, &ocean_seeds(&g), &|_| true);
+        let mut hollows = find_hollows(&g, &f);
+        judge(&mut hollows, &g, &p);
+        let mut routing = route(&g, &f, &mut hollows, &p);
+        let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
+        assert_eq!(drainage_check(&g, &routing), Ok(()), "the bake is Ok: everything drains");
+        let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+        let record = record_of(&stages, &p);
+
+        let forced = record.bodies.iter().find(|b| b.forced).expect("sanity: the forced lake is kept");
+        assert!(forced.fresh, "sanity: the forced lake is open");
+        let Downstream::Body(into) = forced.downstream else {
+            panic!("sanity: the forced lake drains straight into another body, got {:?}", forced.downstream);
+        };
+        assert!(!record.bodies[into as usize].fresh, "sanity: the lake it drains into is closed");
+        assert!(!follows_to_ocean(&record, forced.downstream), "sanity: this chain never reaches the ocean");
+
+        check_downstream_invariants(&record);
     }
 
     /// The brief's first-step check: `outlet_reach` is `Some(id)` exactly when the first node
