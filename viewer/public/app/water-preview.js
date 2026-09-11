@@ -8,11 +8,28 @@
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
 // pair -- schema 3, Task 6's 32-word header. This file is the JS side of that contract and
 // mirrors its field order and its refusals (a truncated record, a wrong schema, a trailing
-// word) rather than trusting the words blindly.
+// word, an index or count word outside u32) rather than trusting the words blindly.
+//
+// Two positions share a slot and not a meaning, and two flags share a name and not a meaning,
+// exactly as `record.rs`'s module doc states:
+// - a reach point's third word (`bedM`) is the bed: the water surface minus the depth;
+// - a notch point's third word is the cut surface: the lowered ground, which is the water
+//   surface through the cut, not a bed below it;
+// - body `fresh` means "not closed" (it has an outlet, though its water may end in a closed
+//   lake); reach `fresh` means "its chain reaches the ocean".
 
 import { showLayer } from "./globe-layers.js";
 
 const SCHEMA = 3;
+
+/// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
+const U32_MAX = 4294967295;
+
+/// A valid index or count word, the same test `record.rs`'s `word_to_u32` applies: finite,
+/// non-negative, integral, and no larger than `u32::MAX`.
+function isU32Word(w) {
+  return Number.isFinite(w) && w >= 0 && w <= U32_MAX && Math.floor(w) === w;
+}
 
 const BODY_KIND = ["lake", "pond", "saltLake", "saltFlat"];
 const REACH_CLASS = ["stream", "river", "great"];
@@ -68,12 +85,13 @@ class Cursor {
     return this.words[this.pos++];
   }
 
-  /// A count or index word: finite, non-negative, integral. Not a checked upper bound the
-  /// way `record.rs`'s `count_fits` is -- a length mismatch at the end of `decodeHydro`
-  /// catches the same absurd-count case without duplicating that arithmetic here.
+  /// A count or index word: finite, non-negative, integral and at most `u32::MAX`, as
+  /// `record.rs`'s `word_to_u32` requires. `count_fits`' words-left check is not mirrored --
+  /// a length mismatch at the end of `decodeHydro` catches the same absurd-count case without
+  /// duplicating that arithmetic here.
   u32() {
     const w = this.word();
-    if (!(Number.isFinite(w) && w >= 0 && Math.floor(w) === w)) {
+    if (!isU32Word(w)) {
       throw new Error(`hydro record: bad count/index word ${w}`);
     }
     return w;
@@ -83,7 +101,7 @@ class Cursor {
   optionalU32() {
     const w = this.word();
     if (w === -1) return null;
-    if (!(Number.isFinite(w) && w >= 0 && Math.floor(w) === w)) {
+    if (!isU32Word(w)) {
       throw new Error(`hydro record: bad optional index word ${w}`);
     }
     return w;
@@ -101,13 +119,13 @@ function readDownstream(cursor) {
   const kindWord = cursor.word();
   const idWord = cursor.word();
   if (kindWord === 0) {
-    if (!(Number.isFinite(idWord) && idWord >= 0 && Math.floor(idWord) === idWord)) {
+    if (!isU32Word(idWord)) {
       throw new Error(`hydro record: bad downstream reach id ${idWord}`);
     }
     return { kind: "reach", id: idWord };
   }
   if (kindWord === 1) {
-    if (!(Number.isFinite(idWord) && idWord >= 0 && Math.floor(idWord) === idWord)) {
+    if (!isU32Word(idWord)) {
       throw new Error(`hydro record: bad downstream body id ${idWord}`);
     }
     return { kind: "body", id: idWord };
@@ -229,7 +247,8 @@ export function decodeHydro(words) {
 
   // Notch geometry carves the ground; the preview draws none of it, so only the count is
   // kept -- but every word still has to be walked, or the falls below would be read starting
-  // mid-notch.
+  // mid-notch. Each point is lat, lon, the cut surface (not a bed -- see the file comment
+  // above), width.
   for (let i = 0; i < notchCount; i += 1) {
     const pointCount = cursor.u32();
     for (let j = 0; j < pointCount; j += 1) {

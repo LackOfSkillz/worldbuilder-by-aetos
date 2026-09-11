@@ -765,7 +765,19 @@ export class Engine {
   /// params echo (`totalNodes`, `wetnessNodes`, `keepDepthM`, `keepAreaM2`, `pondMaxAreaM2`,
   /// `keepMaxAreaM2`, `minStreamNodes`, `notchFallM`, `evaporationFactor`, `saltFlatShare`) and
   /// the forced-outlet match counts (`forcedRequested`, `forcedMatched`).
+  ///
+  /// Throws on a schema other than 3: another schema's header is not these 32 words, and a
+  /// summary read off it would be wrong silently.
+  ///
+  /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
+  /// a slot and not a meaning, as `record.rs`'s module doc states: a reach point's third word is
+  /// the bed (the water surface minus the depth), and a notch point's third word is the cut
+  /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
+  /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
+    if (words[0] !== 3) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 3)`);
+    }
     return {
       schema: words[0],
       bodies: words[1],

@@ -59,6 +59,17 @@ test("hydroSummary reads the SCHEMA 3 params echo and forced-outlet match counts
   assert.ok(s.forcedMatched >= 0 && s.forcedMatched <= s.forcedRequested);
 });
 
+test("hydroSummary throws on a schema other than 3 rather than misreading the header", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const words = engine.hydroBake({ handle, params: PARAMS });
+  for (const schema of [2, 4, Number.NaN]) {
+    const tampered = words.slice();
+    tampered[0] = schema;
+    assert.throws(() => engine.hydroSummary(tampered), /schema/);
+  }
+  assert.equal(engine.hydroSummary(words).schema, 3);
+});
+
 test("the same bake twice is the same words", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const a = engine.hydroBake({ handle, params: PARAMS });
