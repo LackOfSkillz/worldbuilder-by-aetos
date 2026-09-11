@@ -309,13 +309,16 @@ fn a_notch_line_splits_where_the_filter_opens_a_gap() {
         })
         .collect();
     let graph = LandGraph::from_parts(
-        6_371_000.0, positions, heights.clone(), vec![1.0e6; n], &directed, vec![0.5; n],
+        6_371_000.0, positions, heights, vec![1.0e6; n], &directed, vec![0.5; n],
     );
 
     let mut receiver = vec![NO_NODE; n];
     receiver[1] = 0; // node 1's cut stops at the ocean.
+    // The surface the cut left: each lowered node stands at its bed. `record_of` reads the final
+    // surface, not the route's own `bed_m` (Ruling R-9), so the two agree here as a real cut's do.
+    let surface_m = vec![-10.0, 5.0, 10.0, 29.5, 30.0, 40.0];
     let routing = Routing {
-        surface_m: heights,
+        surface_m,
         receiver,
         lake_of: vec![NO_LAKE; n],
         parent: vec![NO_NODE; n],
@@ -1081,4 +1084,37 @@ fn the_record_echoes_the_refinement_params() {
     assert_eq!(words[0], 4.0);
     assert_eq!(words[32], f64::from(record.stats.capped_basins));
     assert_eq!(words[42], p.meander_max_slope);
+}
+
+/// The bake test world with the stream floor lowered to 2 nodes: 165 reaches, 34 of them ending
+/// on another reach. `params()` gives 12 reaches and none ending on another reach (8 run to the
+/// sea, 4 to a lake), so a junction property needs this.
+fn junction_params() -> HydroParams {
+    let mut p = params();
+    p.min_stream_nodes = 2.0;
+    p
+}
+
+/// Ruling R-9 on a real bake: the routing surface never rises along a receiver edge, except
+/// into a lake member (a cut dug below the lake it runs into; Ruling R-4 handles that at a
+/// mouth). `params()` and `junction_params()` route identically (`min_stream_nodes` only
+/// changes reach extraction); both are run because both are the refined tests' populations.
+#[test]
+fn the_routing_surface_never_rises_along_a_receiver() {
+    for p in [params(), junction_params()] {
+        let stages = bake_stages(&world(), &p).expect("stages");
+        let (g, r) = (&stages.graph, &stages.routing);
+        let mut edges = 0usize;
+        for node in 0..g.len() {
+            let recv = r.receiver[node];
+            if g.ocean[node] || recv == NO_NODE || r.lake_of[recv as usize] != NO_LAKE {
+                continue;
+            }
+            assert!(r.surface_m[recv as usize] <= r.surface_m[node],
+                    "node {node} at {} drains up into node {recv} at {}",
+                    r.surface_m[node], r.surface_m[recv as usize]);
+            edges += 1;
+        }
+        assert!(edges > 0);
+    }
 }

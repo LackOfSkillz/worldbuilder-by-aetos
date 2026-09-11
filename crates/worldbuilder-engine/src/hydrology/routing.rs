@@ -25,7 +25,9 @@ pub struct Routing {
     pub parent: Vec<u32>,
     pub notches: Vec<NotchRoute>,
     /// Nodes whose receiver was set by a cut (`cut_route` or `cut_path`). A committed node's
-    /// receiver is always its `parent`, and a later cut that reaches one stops there.
+    /// receiver is always its `parent`. A later cut that reaches one stops there if it already
+    /// stands at or below the bed it would receive, and re-lowers it and carries on otherwise
+    /// (Ruling R-9).
     pub committed: Vec<bool>,
 }
 
@@ -350,8 +352,9 @@ fn steepest(graph: &LandGraph, surface: &[f64], node: u32) -> u32 {
 }
 
 /// Cut a channel from `start` along its parent chain (the flood tree) until it reaches the sea,
-/// a lake member, or a node an earlier cut committed -- and never sooner. Lower ground does not
-/// stop it. Each step sets the node's receiver to its parent and commits it. The bed grades
+/// a lake member, or a node an earlier cut committed that already stands at or below the bed it
+/// would receive -- and never sooner. Lower ground does not stop it, and nor does an earlier
+/// cut standing above that bed, which is re-lowered (Ruling R-9). Each step sets the node's receiver to its parent and commits it. The bed grades
 /// down from `start_bed_m` by `NOTCH_GRADE_M`; where the ground is already lower, the bed
 /// follows the ground and grades on from there. The node the cut stops at is never touched.
 /// The `NotchRoute` lists only the nodes whose surface the cut actually lowered. A start node
@@ -390,16 +393,21 @@ fn steepest(graph: &LandGraph, surface: &[f64], node: u32) -> u32 {
 /// **Heights.** Around a cycle the surface must come back to where it started, so a cycle with
 /// a strictly falling (steepest) edge needs an edge that rises. None of these rise:
 /// - A cut step: the next node is lowered below this one's bed, or already stood lower and the
-///   bed followed it down. A later cut that re-lowers a node also resets its receiver.
+///   bed followed it down. A later cut that re-lowers a node also resets its receiver, to the
+///   parent it already was.
+/// - A cut's last step into an earlier cut: since Ruling R-9 the cut stops there only if that
+///   node already stands at or below the bed it would receive; otherwise it re-lowers the node
+///   and walks on. Re-lowering a node only lowers the head of every edge into it, and its own
+///   step on is graded the same way, so no edge into or out of it starts to rise.
 /// - An edge inside a lake: flat.
 /// - A lake's way out, to its outlet or to a rim node at its level: never rises, because the
 ///   flood reached the lake from there, so that node's flood level (and ground) is at most the
 ///   lake's.
 ///
-/// The one edge left is a cut's *last* step, into a lake or an earlier cut that stands higher
-/// than the bed, where a notch is dug below what it runs into. That step is still a parent
-/// edge, and so is everything after it until the water leaves a lake by its way out. Every edge
-/// here is also non-increasing in the global flood's spill level. Parent edges are, by
+/// The one edge left is a cut's *last* step into a lake that stands higher than the bed, where
+/// a notch is dug below the water it runs into (Ruling R-4 sets a reach's mouth bed there). That
+/// step is still a parent edge, and so is everything after it until the water leaves a lake by
+/// its way out. Every edge here is also non-increasing in the global flood's spill level. Parent edges are, by
 /// construction. Steepest edges are too: a flood never raises a lower neighbour above its own
 /// spill. So a cycle would stay on one spill level `S`. There, a kept open lake stands exactly
 /// at `S`, and no steepest edge on the level can enter it, since that needs a node above `S`.
@@ -418,8 +426,9 @@ fn steepest(graph: &LandGraph, surface: &[f64], node: u32) -> u32 {
 /// its basin's way out), and it is *enforced*, not proved, by `drainage_check`, which `bake`
 /// runs on every routing.
 ///
-/// Stopping at committed nodes keeps the total work of all `cut_route` calls O(n): each node
-/// is walked on from at most once.
+/// Stopping at committed nodes keeps the total work of all `cut_route` calls O(n x
+/// re-lowerings): each node is walked on once when it is first cut, and again only each time a
+/// later cut re-lowers it (Ruling R-9), which is rare in practice.
 pub fn cut_route(routing: &mut Routing, graph: &LandGraph, start: u32, start_bed_m: f64) {
     let s = start as usize;
     if graph.ocean[s] || routing.lake_of[s] != NO_LAKE || routing.committed[s] {
@@ -448,7 +457,17 @@ fn grade(routing: &mut Routing, node: u32, bed_m: f64, nodes: &mut Vec<u32>, bed
 }
 
 /// Carries a cut on from `start`, already graded to `bed_m`, along its parent chain. It stops at
-/// the sea, a lake member, a committed node or the chain's end, and nowhere else.
+/// the sea, a lake member, the chain's end, or a committed node already at or below the bed it
+/// would receive, and nowhere else.
+///
+/// Ruling R-9: a committed node standing above that bed does not stop the cut. It is graded
+/// down like any other node, and the cut carries on along its chain. Otherwise the step into it
+/// would rise, where a later cut dug below an earlier one it runs into.
+///
+/// Walking through a committed node changes no drainage. A committed node's receiver is already
+/// its parent: `follow_parents` and `cut_path` set both together, and nothing else re-points a
+/// committed node that is not a lake member, which stops the walk. So setting `receiver[here]`
+/// to `parent[here]` again writes the value it already holds.
 fn follow_parents(routing: &mut Routing, graph: &LandGraph, start: u32, bed_m: f64, nodes: &mut Vec<u32>, beds: &mut Vec<f64>) {
     let mut here = start;
     let mut bed = bed_m;
@@ -458,13 +477,16 @@ fn follow_parents(routing: &mut Routing, graph: &LandGraph, start: u32, bed_m: f
             break;
         }
         let i = next as usize;
-        let stops = graph.ocean[i] || routing.lake_of[i] != NO_LAKE || routing.committed[i];
+        let target = bed - NOTCH_GRADE_M;
+        let stops = graph.ocean[i]
+            || routing.lake_of[i] != NO_LAKE
+            || (routing.committed[i] && routing.surface_m[i] <= target);
         routing.receiver[here as usize] = next;
         routing.committed[here as usize] = true;
         if stops {
             break;
         }
-        bed = grade(routing, next, bed - NOTCH_GRADE_M, nodes, beds);
+        bed = grade(routing, next, target, nodes, beds);
         here = next;
     }
 }
@@ -482,8 +504,9 @@ pub fn set_sink(routing: &mut Routing, hollow: &Hollow) {
 /// only the sea or a lake member stops the cut. A node an earlier cut committed does not stop
 /// it: it is re-pointed along the path. Inside an enclosed basin `parent` leads back down to
 /// the pocket, and `path` (the global flood's chain) leads out. Stopping at such a node would
-/// leave `entry -> ... -> node -> ... -> entry`, a cycle. After the path, committed nodes stop
-/// the cut, as in `cut_route`.
+/// leave `entry -> ... -> node -> ... -> entry`, a cycle. After the path, the cut carries on as
+/// `cut_route`'s does: a committed node at or below the bed stops it, one above is re-lowered
+/// (Ruling R-9).
 ///
 /// **`parent` stays a forest.** A cycle would have to run from the re-pointed nodes, through
 /// the node the cut stopped at, and back along its old parent chain. That stop is the sea, the
@@ -681,6 +704,44 @@ mod tests {
         assert_eq!(shore.fate, Fate::Notch);
         assert_eq!(r.lake_of[4], NO_LAKE);
         assert_eq!(terminus(&r, 4), 6, "the notched pool drains into the pocket");
+    }
+
+    /// Ruling R-9: a later cut that runs into an earlier cut standing above it re-lowers it.
+    ///
+    /// A line, node 0 the ocean and 1..6 land at 60 m, each node's parent the next one seaward.
+    /// Cut A starts at node 3 with a 50 m bed and commits 3, 2 and 1 at 50, 49.99 and 49.98. Cut B
+    /// starts at node 5 with a 20 m bed and reaches node 3. Before R-9 it stopped there, leaving
+    /// node 4 (19.99 m) draining into node 3 (50 m): the surface rose 30 m along the receiver chain.
+    #[test]
+    fn a_later_cut_re_lowers_an_earlier_cut_that_stands_above_it() {
+        let heights = [-50.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0];
+        let g = line(&heights, 1.0e6);
+        let n = heights.len();
+        let parent: Vec<u32> = (0..n).map(|i| if i == 0 { NO_NODE } else { (i - 1) as u32 }).collect(); // cast-ok: tiny fixture
+        let mut r = Routing {
+            surface_m: heights.to_vec(),
+            receiver: vec![NO_NODE; n],
+            lake_of: vec![NO_LAKE; n],
+            parent: parent.clone(),
+            notches: Vec::new(),
+            committed: vec![false; n],
+        };
+        cut_route(&mut r, &g, 3, 50.0);
+        cut_route(&mut r, &g, 5, 20.0);
+
+        for node in 0..n {
+            let recv = r.receiver[node];
+            if g.ocean[node] || recv == NO_NODE || r.lake_of[recv as usize] != NO_LAKE {
+                continue;
+            }
+            assert!(r.surface_m[recv as usize] <= r.surface_m[node],
+                    "node {node} at {} drains up into node {recv} at {}", r.surface_m[node], r.surface_m[recv as usize]);
+        }
+        // Drainage is unchanged: every committed node still drains to its parent.
+        assert_eq!(r.receiver[1..6].to_vec(), parent[1..6].to_vec());
+        assert_eq!(r.notches.len(), 2);
+        assert_eq!(r.notches[1].nodes, vec![5, 4, 3, 2, 1], "cut B carries on through cut A to the sea");
+        assert!(r.notches[1].bed_m.windows(2).all(|w| w[1] < w[0]), "cut B's bed only falls");
     }
 
     #[test]

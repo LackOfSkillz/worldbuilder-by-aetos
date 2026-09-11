@@ -366,7 +366,8 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     //
     // A point's third word is the cut surface -- the lowered ground, which is the water surface
     // through the cut -- not a bed below it (Ruling F-2). A reach point's third word is its bed,
-    // surface minus depth, so where the two coincide `notch - reach.depth == reach.bed`.
+    // surface minus depth, so where the two coincide `notch - reach.depth == reach.bed`. The
+    // surface is the final `routing.surface_m`, not the route's stored `bed_m` (Ruling R-9).
     //
     // Ruling F-3: stage 2 carves a notch line segment by segment, so a recorded line must split
     // wherever consecutive kept points are not graph neighbours.
@@ -376,7 +377,8 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     // `follow_parents`). So when the route's own last (lowered) node survives the filter above,
     // one extra point is appended: `routing.receiver` of that last node, which is one of --
     //   * the water it drains into (the ocean or a lake member);
-    //   * a node an earlier cut already committed;
+    //   * a node an earlier cut already committed, standing at or below this cut's bed (Ruling
+    //     R-9: one standing above it is re-lowered and walked through);
     //   * lower ground the cut walked over without lowering it.
     // Either way that point's third word is that node's own current water surface -- 0.0 for the
     // ocean, the lake's own `level_m` for a lake member, or `routing.surface_m` otherwise -- not
@@ -413,7 +415,11 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     let mut notches = Vec::new();
     for (idx, notch) in routing.notches.iter().enumerate() {
         let mut kept: Vec<(u32, f64, f64)> = Vec::with_capacity(notch.nodes.len() + 1);
-        for (&node, &surface_m) in notch.nodes.iter().zip(&notch.bed_m) {
+        for &node in &notch.nodes {
+            // Ruling R-9: the final surface, not the route's own `bed_m`. A later cut (or
+            // `cut_path`) can re-lower a node after this route graded it, and every route that
+            // holds a node must agree on it, as must a reach running through it (F-2).
+            let surface_m = routing.surface_m[node as usize];
             if is_outlet_notch[idx] {
                 kept.push((node, surface_m, width_m(flow[node as usize], params)));
                 continue;
