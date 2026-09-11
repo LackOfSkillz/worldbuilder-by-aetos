@@ -1034,3 +1034,51 @@ fn an_absurd_flow_threshold_is_refused() {
     q.min_stream_nodes = 1.0e300;
     assert!(matches!(crate::hydrology::bake(&world(), &q), Err(HydroError::Params(_))));
 }
+
+/// Runs the coarse pipeline on a line graph (area 1e6 and wetness 0.5 per node), the way
+/// `bake_stages` does, for stats that need a hand-built world.
+fn line_stages(heights: &[f64], params: &HydroParams) -> BakeStages {
+    let n = heights.len();
+    let positions = (0..n)
+        .map(|i| crate::sphere::SpherePoint::from_latlon(0.0, i as f64 * 0.01))
+        .collect();
+    let directed: Vec<Vec<u32>> = (0..n)
+        .map(|i| if i + 1 < n { vec![(i + 1) as u32] } else { Vec::new() }) // cast-ok: node index
+        .collect();
+    let graph = LandGraph::from_parts(6_371_000.0, positions, heights.to_vec(), vec![1.0e6; n],
+                                      &directed, vec![0.5; n]);
+    let global = flood(&graph, &ocean_seeds(&graph), &|_| true);
+    let mut hollows = find_hollows(&graph, &global);
+    let forced = hollows::forced_nodes(&graph, params);
+    judge(&mut hollows, &forced, params);
+    let mut routing = route(&graph, &global, &mut hollows, params);
+    let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, params);
+    drainage_check(&graph, &routing).expect("the fixture drains");
+    BakeStages { graph, hollows, routing, flow, closure }
+}
+
+/// Carry-forward I3: the record says how many capped basins there were and what they kept, so
+/// the owner-world bake can show whether capped basins keep their inner lakes at 1M nodes.
+#[test]
+fn the_record_counts_what_capped_basins_keep() {
+    let mut p = HydroParams::earth_like(1_000);
+    p.keep_max_area_m2 = 7.0e6;
+    // Task 4 fixture: {3} sits on the basin's way out and is notched; {7} is off it and kept.
+    let stages = line_stages(&[-50.0, 40.0, 30.0, 10.0, 25.0, 5.0, 25.0, 12.0, 28.0, 35.0, 70.0], &p);
+    let record = record_of(&stages, &p);
+    assert_eq!(record.stats.capped_basins, 1);
+    assert!(record.stats.capped_inner >= 2, "both inner hollows are counted");
+    assert_eq!(record.stats.capped_inner_kept, 1);
+}
+
+#[test]
+fn the_record_echoes_the_refinement_params() {
+    let p = params();
+    let record = crate::hydrology::bake(&world(), &p).expect("bake");
+    assert_eq!(record.stats.refine_step_m, p.refine_step_m);
+    assert_eq!(record.stats.meander_max_slope, p.meander_max_slope);
+    let words = crate::hydrology::record::encode(&record);
+    assert_eq!(words[0], 4.0);
+    assert_eq!(words[32], f64::from(record.stats.capped_basins));
+    assert_eq!(words[42], p.meander_max_slope);
+}

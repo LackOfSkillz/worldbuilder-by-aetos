@@ -14,11 +14,11 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-test("a bake comes back with a schema-3 header and counts that add up", () => {
+test("a bake comes back with a schema-4 header and counts that add up", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
   const s = engine.hydroSummary(words);
-  assert.equal(s.schema, 3);
+  assert.equal(s.schema, 4);
   assert.equal(s.nodes, 12000);
   assert.ok(s.landNodes > 0 && s.landNodes < 12000);
   assert.equal(s.kept + s.notched, s.hollows);
@@ -32,7 +32,7 @@ test("a bake comes back with a schema-3 header and counts that add up", () => {
   assert.ok(s.greatFlowM2 >= 10 * s.riverFlowM2);
 });
 
-test("hydroSummary reads the SCHEMA 3 params echo and forced-outlet match counts", () => {
+test("hydroSummary reads the SCHEMA 4 params echo and forced-outlet match counts", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const params = {
     ...PARAMS,
@@ -57,17 +57,19 @@ test("hydroSummary reads the SCHEMA 3 params echo and forced-outlet match counts
   // the count round-trips and never exceeds what was requested.
   assert.equal(s.forcedRequested, 1);
   assert.ok(s.forcedMatched >= 0 && s.forcedMatched <= s.forcedRequested);
+  // SCHEMA 4 (word 32): decodeHydro's schema-4 assertion mirrors this same word.
+  assert.equal(s.cappedBasins, words[32]);
 });
 
-test("hydroSummary throws on a schema other than 3 rather than misreading the header", () => {
+test("hydroSummary throws on a schema other than 4 rather than misreading the header", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
-  for (const schema of [2, 4, Number.NaN]) {
+  for (const schema of [2, 3, Number.NaN]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => engine.hydroSummary(tampered), /schema/);
   }
-  assert.equal(engine.hydroSummary(words).schema, 3);
+  assert.equal(engine.hydroSummary(words).schema, 4);
 });
 
 test("the same bake twice is the same words", () => {

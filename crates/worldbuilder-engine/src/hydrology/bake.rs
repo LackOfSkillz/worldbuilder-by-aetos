@@ -161,6 +161,14 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     require_finite_positive("salt_flat_share", params.salt_flat_share)?;
     require_finite_positive("min_stream_nodes", params.min_stream_nodes)?;
     require_finite_positive("keep_max_area_m2", params.keep_max_area_m2)?;
+    require_finite_positive("refine_step_m", params.refine_step_m)?;
+    require_finite_positive("refine_simplify_m", params.refine_simplify_m)?;
+    require_finite_positive("refine_vertical_m", params.refine_vertical_m)?;
+    require_finite_positive("fall_min_drop_m", params.fall_min_drop_m)?;
+    require_finite_positive("fall_max_run_m", params.fall_max_run_m)?;
+    require_finite_positive("meander_wavelength_widths", params.meander_wavelength_widths)?;
+    require_finite_positive("meander_amplitude_widths", params.meander_amplitude_widths)?;
+    require_finite_positive("meander_max_slope", params.meander_max_slope)?;
     if !(params.stream_flow_m2 <= params.river_flow_m2 && params.river_flow_m2 <= params.great_flow_m2) {
         return Err(HydroError::Params("stream_flow_m2 <= river_flow_m2 <= great_flow_m2 required"));
     }
@@ -515,6 +523,17 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         salt_flat_share: params.salt_flat_share,
         forced_requested,
         forced_matched,
+        capped_basins: hollows.iter().filter(|h| h.capped).count() as u32, // cast-ok: bounded by hollow count
+        capped_inner: hollows.iter().filter(|h| h.inner_of_capped).count() as u32, // cast-ok: bounded by hollow count
+        capped_inner_kept: hollows.iter().filter(|h| h.inner_of_capped && h.fate == Fate::Keep).count() as u32, // cast-ok: bounded by hollow count
+        refine_step_m: params.refine_step_m,
+        refine_simplify_m: params.refine_simplify_m,
+        refine_vertical_m: params.refine_vertical_m,
+        fall_min_drop_m: params.fall_min_drop_m,
+        fall_max_run_m: params.fall_max_run_m,
+        meander_wavelength_widths: params.meander_wavelength_widths,
+        meander_amplitude_widths: params.meander_amplitude_widths,
+        meander_max_slope: params.meander_max_slope,
     };
 
     HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }

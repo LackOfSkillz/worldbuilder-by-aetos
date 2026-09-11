@@ -31,12 +31,14 @@ use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
 use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, ReachLine, ReachPoint};
 
-/// 3.0 as of Task 6 (plan 1b-1): the header grew from 20 to 32 words, adding the params echo
-/// and the forced-outlet match counts (see `BakeStats`'s trailing fields); `Body` gained its
-/// `downstream` link on the wire; `ReachLine` gained `fresh`; and each notch point gained a
-/// width. Earlier schemas are refused outright -- `decode` never adapts an old record to the
-/// new shape.
-pub const SCHEMA: f64 = 3.0;
+/// 4.0 as of Task 3 (plan 1b-2): the header grew from 32 to 43 words, adding eleven words
+/// after `forced_matched` -- three counts of what capped basins keep (`capped_basins`,
+/// `capped_inner`, `capped_inner_kept`, carry-forward I3) and an echo of the eight refinement
+/// params (`refine_step_m`, `refine_simplify_m`, `refine_vertical_m`, `fall_min_drop_m`,
+/// `fall_max_run_m`, `meander_wavelength_widths`, `meander_amplitude_widths`,
+/// `meander_max_slope`). Earlier schemas are refused outright -- `decode` never adapts an old
+/// record to the new shape.
+pub const SCHEMA: f64 = 4.0;
 
 fn word_to_u32(w: f64) -> Option<u32> {
     if w.is_finite() && w >= 0.0 && w <= u32::MAX as f64 && m::floor(w) == w {
@@ -228,6 +230,17 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.salt_flat_share);
     out.push(stats.forced_requested as f64);
     out.push(stats.forced_matched as f64);
+    out.push(stats.capped_basins as f64);
+    out.push(stats.capped_inner as f64);
+    out.push(stats.capped_inner_kept as f64);
+    out.push(stats.refine_step_m);
+    out.push(stats.refine_simplify_m);
+    out.push(stats.refine_vertical_m);
+    out.push(stats.fall_min_drop_m);
+    out.push(stats.fall_max_run_m);
+    out.push(stats.meander_wavelength_widths);
+    out.push(stats.meander_amplitude_widths);
+    out.push(stats.meander_max_slope);
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -332,6 +345,17 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         salt_flat_share: r.word()?,
         forced_requested: r.u32()?,
         forced_matched: r.u32()?,
+        capped_basins: r.u32()?,
+        capped_inner: r.u32()?,
+        capped_inner_kept: r.u32()?,
+        refine_step_m: r.word()?,
+        refine_simplify_m: r.word()?,
+        refine_vertical_m: r.word()?,
+        fall_min_drop_m: r.word()?,
+        fall_max_run_m: r.word()?,
+        meander_wavelength_widths: r.word()?,
+        meander_amplitude_widths: r.word()?,
+        meander_max_slope: r.word()?,
     };
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
@@ -547,15 +571,26 @@ mod tests {
                 salt_flat_share: 0.1,
                 forced_requested: 2,
                 forced_matched: 1,
+                capped_basins: 1,
+                capped_inner: 2,
+                capped_inner_kept: 1,
+                refine_step_m: 1_500.0,
+                refine_simplify_m: 250.0,
+                refine_vertical_m: 1.0,
+                fall_min_drop_m: 10.0,
+                fall_max_run_m: 150.0,
+                meander_wavelength_widths: 11.0,
+                meander_amplitude_widths: 1.5,
+                meander_max_slope: 0.002,
             },
         }
     }
 
     #[test]
-    fn a_hand_built_record_round_trips_at_schema_3() {
+    fn a_hand_built_record_round_trips_at_schema_4() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(SCHEMA, 3.0, "Task 6 (plan 1b-1) bumped the schema for the 32-word header");
+        assert_eq!(SCHEMA, 4.0, "Task 3 (plan 1b-2) bumped the schema for the 43-word header");
         assert_eq!(words[0], SCHEMA);
         assert_eq!(decode(&words), Some(record));
     }

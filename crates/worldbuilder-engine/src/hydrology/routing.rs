@@ -141,6 +141,7 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
                 enclosed: true,
                 forced: is_forced,
                 capped: false,
+                inner_of_capped: false,
                 fate: Fate::Keep,
                 lake_entry: entry,
                 outlet_path,
@@ -237,6 +238,9 @@ pub fn route(graph: &LandGraph, global: &Flood, hollows: &mut Vec<Hollow>, param
             }
         }
         nested_ids.extend(hollows.len()..hollows.len() + inner.len());
+        for hollow in inner.iter_mut() {
+            hollow.inner_of_capped = true;
+        }
         hollows.extend(inner);
     }
 

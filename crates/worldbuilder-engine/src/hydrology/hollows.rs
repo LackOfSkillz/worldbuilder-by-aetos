@@ -28,6 +28,10 @@ pub struct Hollow {
     /// Set by `judge`: too large to keep, whatever its depth (Ruling 12b-5). `route` sub-floods
     /// a capped hollow from its floor so any real inner basin still gets judged as its own lake.
     pub capped: bool,
+    /// SCHEMA 4, carry-forward I3: `false` from `find_hollows`; `route` sets this to `true` on
+    /// every inner hollow its capped step appends (Ruling R-8's kin -- not itself echoed, but
+    /// what `BakeStats::capped_inner` and `capped_inner_kept` count).
+    pub inner_of_capped: bool,
     pub fate: Fate,
     /// Where lake water gathers to leave: the entry for a hollow above the datum; for an
     /// enclosed basin, the submerged node the flood's way in leads down to (set by `route`).
@@ -112,6 +116,7 @@ pub fn find_hollows(graph: &LandGraph, flood: &Flood) -> Vec<Hollow> {
             enclosed,
             forced: false,
             capped: false,
+            inner_of_capped: false,
             fate: Fate::Notch,
             lake_entry: entry,
             outlet_path: Vec::new(),

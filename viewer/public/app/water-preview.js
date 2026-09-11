@@ -6,9 +6,9 @@
 // `hydro.test.mjs` does; `drawPreview` is the only export that touches Cesium.
 //
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
-// pair -- schema 3, Task 6's 32-word header. This file is the JS side of that contract and
-// mirrors its field order and its refusals (a truncated record, a wrong schema, a trailing
-// word, an index or count word outside u32) rather than trusting the words blindly.
+// pair -- schema 4, Task 3 (plan 1b-2)'s 43-word header. This file is the JS side of that
+// contract and mirrors its field order and its refusals (a truncated record, a wrong schema, a
+// trailing word, an index or count word outside u32) rather than trusting the words blindly.
 //
 // Two positions share a slot and not a meaning, and two flags share a name and not a meaning,
 // exactly as `record.rs`'s module doc states:
@@ -20,7 +20,7 @@
 
 import { showLayer } from "./globe-layers.js";
 
-const SCHEMA = 3;
+const SCHEMA = 4;
 
 /// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
 const U32_MAX = 4294967295;
@@ -141,7 +141,7 @@ function readDownstream(cursor) {
   throw new Error(`hydro record: bad downstream kind ${kindWord}`);
 }
 
-/// Decode a `hydroBake` record. Throws on a schema other than 3, on a truncated array, or on
+/// Decode a `hydroBake` record. Throws on a schema other than 4, on a truncated array, or on
 /// a length mismatch (extra trailing words, or a count that does not add up) -- never returns
 /// a partial record.
 export function decodeHydro(words) {
@@ -192,6 +192,19 @@ export function decodeHydro(words) {
     saltFlatShare: cursor.word(),
     forcedRequested: cursor.u32(),
     forcedMatched: cursor.u32(),
+    // SCHEMA 4's counts of what capped basins keep (words 32-34, carry-forward I3) and the
+    // refinement params echo (words 35-42).
+    cappedBasins: cursor.u32(),
+    cappedInner: cursor.u32(),
+    cappedInnerKept: cursor.u32(),
+    refineStepM: cursor.word(),
+    refineSimplifyM: cursor.word(),
+    refineVerticalM: cursor.word(),
+    fallMinDropM: cursor.word(),
+    fallMaxRunM: cursor.word(),
+    meanderWavelengthWidths: cursor.word(),
+    meanderAmplitudeWidths: cursor.word(),
+    meanderMaxSlope: cursor.word(),
   };
 
   const bodies = [];

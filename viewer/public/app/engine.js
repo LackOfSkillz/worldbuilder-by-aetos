@@ -759,17 +759,21 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 32-word header (schema 3, Task 6) into a plain object. Words
-  /// 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`, `falls`,
-  /// `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`, `great`,
-  /// `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
+  /// Read a `hydroBake` record's 43-word header (schema 4, Task 3 of plan 1b-2) into a plain
+  /// object. Words 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`,
+  /// `falls`, `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`,
+  /// `great`, `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
   /// `greatFlowM2` -- the last three are the effective thresholds a coarse bake actually used
-  /// (Ruling 12b-1), not necessarily the ones the caller asked for. Words 20-31 are new: the
-  /// params echo (`totalNodes`, `wetnessNodes`, `keepDepthM`, `keepAreaM2`, `pondMaxAreaM2`,
+  /// (Ruling 12b-1), not necessarily the ones the caller asked for. Words 20-31 (schema 3) are
+  /// the params echo (`totalNodes`, `wetnessNodes`, `keepDepthM`, `keepAreaM2`, `pondMaxAreaM2`,
   /// `keepMaxAreaM2`, `minStreamNodes`, `notchFallM`, `evaporationFactor`, `saltFlatShare`) and
-  /// the forced-outlet match counts (`forcedRequested`, `forcedMatched`).
+  /// the forced-outlet match counts (`forcedRequested`, `forcedMatched`). Words 32-42 (schema 4)
+  /// are new: what capped basins keep (`cappedBasins`, `cappedInner`, `cappedInnerKept`,
+  /// carry-forward I3) and the refinement params echo (`refineStepM`, `refineSimplifyM`,
+  /// `refineVerticalM`, `fallMinDropM`, `fallMaxRunM`, `meanderWavelengthWidths`,
+  /// `meanderAmplitudeWidths`, `meanderMaxSlope`).
   ///
-  /// Throws on a schema other than 3: another schema's header is not these 32 words, and a
+  /// Throws on a schema other than 4: another schema's header is not these 43 words, and a
   /// summary read off it would be wrong silently.
   ///
   /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
@@ -778,8 +782,8 @@ export class Engine {
   /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
   /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
-    if (words[0] !== 3) {
-      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 3)`);
+    if (words[0] !== 4) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 4)`);
     }
     return {
       schema: words[0],
@@ -814,6 +818,9 @@ export class Engine {
       saltFlatShare: words[29],
       forcedRequested: words[30],
       forcedMatched: words[31],
+      cappedBasins: words[32],
+      cappedInner: words[33],
+      cappedInnerKept: words[34],
     };
   }
 }
