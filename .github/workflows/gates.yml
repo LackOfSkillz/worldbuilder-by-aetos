@@ -1053,7 +1053,7 @@ jobs:
           # split every prior entry in this block has had, not a new shape. The +3 on the wasm
           # rows over the uniform +49 is `tests/wasm_exports.rs`'s own hydro-channel tests
           # (`#![cfg(feature = "wasm")]` in its entirety), which the three non-wasm rows never
-          # see. None of this movement is Task 11's own: it is the accumulated `src/water.rs`
+          # see. None of this movement is Task 11's own: it is the accumulated `src/hydrology`
           # hydro-bake work (`Water: bake, measure, copy and free a hydro record from wasm`,
           # `Water: the hydro bake refuses an absurd forced-outlet count instead of
           # overflowing`, and the commits before them) landing on a branch whose count gate was
@@ -1086,25 +1086,36 @@ jobs:
           # overrides that already sit above the floor, so it never binds there). No other test
           # added or removed. Re-derived per configuration through `assert_counts.py cargo-list`
           # AFTER the last source edit.
+          # 2026-09-10, water 1a final review fix wave: 685/685/687/791/793 ->
+          # 692/692/694/798/800, 5 ignored, unchanged. +7 uniformly on every row, all in `src/`:
+          # flow.rs `a_fresh_pockets_outlet_never_closes_a_cycle_through_a_shore_lake` (the C1
+          # repro), `a_pocket_fed_by_a_fresh_pocket_is_rejudged` (C1-b) and
+          # `the_drainage_check_catches_a_hand_made_cycle` (the C1 mutation guard); routing.rs
+          # `a_shore_lake_on_a_pockets_outlet_path_is_notched` (C1-a); mod.rs
+          # `real_worlds_drain_everything_through_the_full_bake` (C1-d),
+          # `no_closed_body_has_an_outlet_reach` (I1) and `a_river_mouth_does_not_carve_the_seabed`
+          # (I4). The I7 ceiling check was added in place to an existing `tests/wasm_exports.rs`
+          # test, so the wasm rows move by the same +7. Re-derived per configuration through
+          # `assert_counts.py cargo-list` AFTER the last source edit.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 685
+            expect: 692
             expect_ignored: 5
           - name: default
             features: ""
-            expect: 685
+            expect: 692
             expect_ignored: 5
           - name: python
             features: "--features python"
-            expect: 687
+            expect: 694
             expect_ignored: 5
           - name: wasm
             features: "--features wasm"
-            expect: 791
+            expect: 798
             expect_ignored: 5
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 793
+            expect: 800
             expect_ignored: 5
     steps:
       - uses: actions/checkout@v4
@@ -1567,6 +1578,15 @@ jobs:
       # them. 0 divergent, unmoved -- the plain-run requirement to STOP on a diverging H word
       # was not triggered. Re-derived by rebuilding the wasm from current source and re-running
       # the harness.
+      #
+      # 2026-09-10, water 1a final review fix wave: 128,347 compared, 0 divergent, UNCHANGED.
+      # The drainage fix (C1), the outlet-reach and mouth-bed rules (I1, I4) and the 1.3M
+      # ceiling (I7) rebuilt the wasm (329,197 bytes). The `H plain` record is still 686 words,
+      # and only 8 of them moved against the pre-fix dump -- the beds of its 8 ocean mouths,
+      # each from the seabed under it (-7.5 m to -585 m) to the datum (I4); both sides moved
+      # together, so 0 divergent. Every non-H line of the dump is byte-identical. The second
+      # `H` record the review asked for (I6) is NOT in the corpus yet -- see the fix-wave
+      # report.
       - name: Assert the corpus -- 128,347 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
@@ -1612,12 +1632,19 @@ jobs:
       # 2026-09-10, water 1a Task 12b: 148,707/142,630 -> 128,347/122,825. All of the movement
       # is `hydro/plain` shrinking under Ruling 12b-2 (688 words now, 617 of them divergent
       # under a moved seed, down from 21,048/20,422) -- every non-hydro group is unmoved.
-      - name: Assert the control -- 122,825 of 128,347 divergent
+      # 2026-09-10, water 1a final review fix wave: 128,347/122,825 -> 128,347/122,830. All of
+      # it is `hydro/plain` (617 -> 622 of 688): the seed-moved world's bake changed under the
+      # fix wave. CAUTION, recorded rather than hidden: on the seed-moved world `wb_hydro_len`
+      # is 594 words against the 686 recorded, and the harness still compares all 686 -- the
+      # last 92 against whatever the wasm heap holds past the copied buffer. That is the length
+      # check review item I6 asks for; it is not in this commit (see the fix-wave report), so
+      # part of this pin describes heap contents, not the bake. Every other group is unmoved.
+      - name: Assert the control -- 122,830 of 128,347 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 128347 --expect-divergent 122825
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 128347 --expect-divergent 122830
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not

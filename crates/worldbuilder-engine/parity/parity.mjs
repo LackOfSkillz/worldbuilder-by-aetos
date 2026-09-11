@@ -892,7 +892,12 @@ for (const raw of lines) {
       if (n !== len) note(`hydro len ${f[1]}`, String(len), String(n));
       const out = wb.wb_alloc(n * 8);
       if (out === 0) throw new Error('wb_alloc refused the hydro output buffer');
-      wb.wb_hydro_copy(id, out, n);
+      // Final review I6: a copy that did not happen leaves `out` holding whatever the allocator
+      // had there, and comparing that is comparing noise. `out` is exactly `n` words, the length
+      // `wb_hydro_len` just gave, so anything but WB_OK (0) here is a broken export, not a
+      // divergent value -- refuse outright rather than tally.
+      const copied = wb.wb_hydro_copy(id, out, n);
+      if (copied !== 0) throw new Error(`wb_hydro_copy returned ${copied} for hydro/${f[1]}`);
       const view = mem();
       for (let i = 0; i < len; i += 1) {
         const bits = bitsOf(view.getFloat64(out + i * 8, true));

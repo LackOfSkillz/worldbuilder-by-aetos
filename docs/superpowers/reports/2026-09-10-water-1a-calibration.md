@@ -76,6 +76,11 @@ per-run stop-and-report threshold from the brief; nothing was cut short.
 
 ### Per-step time, at a glance
 
+(Final review I8: `hydro_survey` no longer re-stages the pipeline by hand. It now times the two
+halves `hydrology::bake` itself is made of, `bake_stages` and `record_of`, and prints
+`drainage_check` for every run. The per-step figures in this section come from the earlier
+hand-staged survey, before the drainage fix, and describe that code path, not the current one.)
+
 | world | n | graph | flood | hollows | routing | flow | reaches | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | plain | 250k | 9.03 s | 0.06 s | 0.00 s | 0.04 s | 0.04 s | 0.02 s | 9.19 s |
@@ -211,6 +216,19 @@ native survey's own finding above -- nowhere near the spec's old figure of 1,361
 single-node) measured on a fine, undetrended mesh, for the same reason given there: the coarse
 `LandGraph` samples the landform only, never detail noise.
 
+**Post-12b verification (the controller's, browser studio, wasm, the same owner world, after
+all five 12b rulings landed):** at 1,000,000 nodes with `earth_like` thresholds, the bake took
+**83 s**, heap **355 MB**, record **23.6 MB**. **345 bodies** (286 lakes, 59 salt), **4,931
+reaches** (3,451 streams / 1,359 rivers / 121 great), top order **5**, bifurcation **4.58-14**,
+**30,361 notches** recorded. The great lake is fresh, forced and enclosed at **41.33M km²**;
+the largest lake above the datum is **344,503 km²** -- under `keep_max_area_m2` (4.0e11 m²), so
+Ruling 12b-5 is binding as intended.
+
+**These owner-world numbers will be re-measured after the final review's fix wave** (the
+drainage-cycle fix C1, and I1/I4/I7). C1 notches nested shore lakes that sit on an enclosed
+pocket's outlet path and re-judges pockets fed by pockets, so the body and notch counts above
+can move; none of the figures in this section has been re-measured since.
+
 ## Rebuild, parity, and count check (Step 4, native parts)
 
 - **Wasm rebuild:** `cd viewer && npm run build:wasm`. `worldbuilder_engine.wasm` came out
@@ -227,7 +245,16 @@ single-node) measured on a fine, undetrended mesh, for the same reason given the
   ```
   Result: `parity: 148707 values compared through the shipped exports, 0 divergent` --
   unchanged from Task 11's own figure, as expected (this task adds a `[[bin]]`, not a new
-  export or record type). Confirmed against the gate's own assertion:
+  export or record type).
+
+  **Correction (final review, 2026-09-10).** 148,707 was the corpus at Task 12, before Task
+  12b. It is not the current figure and must not be read as one: Task 12b's Ruling 12b-2 (record
+  only the notches on a recorded river or an outlet cut) shrank the `H plain` record from
+  21,048 to 688 compared values, so the corpus is **128,347 compared, 0 divergent**, and the
+  `--mutate seed` control **122,825** divergent at 12b. After the final review's fix wave the
+  corpus is still **128,347 / 0** and the seed control is **122,830** (the seed-moved world's
+  bake changed; see `.superpowers/sdd/2026-09-10-water-1a-coarse-bake/final-fix-report.md`).
+  The other six controls are unchanged at 216 / 60 / 6,186 / 13,128 / 3,752 / 648. Confirmed against the gate's own assertion:
   `python .github/scripts/assert_counts.py parity --output parity.out --expect-label parity
   --expect-compared 148707 --expect-divergent 0` printed `count OK: the corpus is the size the
   record says it is`.
