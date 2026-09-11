@@ -724,20 +724,23 @@ for (const raw of lines) {
     }
     case 'TCTL': {
       // TCTL <elevation/ranges> <structural/ranges> <elevation/belt> <structural/belt>
-      //      <tile/belt>
+      //      <tile/belt> <hydro/ranges>
       //
-      // Prediction, not a compared value: nothing here goes through `tally`. The five counts
-      // are computed natively in `examples/parity_dump.rs` -- through the exports AND, as a
-      // second derivation, through the library's own `Surface` with blocks read from
-      // `tectonics.rs` rather than from the sixteen words that crossed the boundary -- and
-      // this script requires every one of these groups to move exactly the predicted amount
-      // and every other group to move zero.
+      // Prediction, not a compared value: nothing here goes through `tally`. The first five
+      // counts are computed natively in `examples/parity_dump.rs` -- through the exports AND,
+      // as a second derivation, through the library's own `Surface` with blocks read from
+      // `tectonics.rs` rather than from the sixteen words that crossed the boundary. The sixth,
+      // `hydro/ranges`, is I6's addition (final review of water 1a): the divergence between the
+      // forced-outlet `H ranges` record and the same bake on the warp-0 world, under rule (a)'s
+      // length-safe accounting. This script requires every one of these groups to move exactly
+      // the predicted amount and every other group to move zero.
       tectonicControl = {
         'elevation/ranges': Number(f[1]),
         'structural/ranges': Number(f[2]),
         'elevation/belt': Number(f[3]),
         'structural/belt': Number(f[4]),
         'tile/belt': Number(f[5]),
+        'hydro/ranges': Number(f[6]),
       };
       break;
     }
@@ -888,10 +891,24 @@ for (const raw of lines) {
       if (String(got) !== status) note(`hydro status ${f[1]}`, status, String(got));
       const id = mem().getUint32(idp, true);
       const n = wb.wb_hydro_len(id);
+      // Final review I6, rule (a). In a plain run `n` and the recorded `len` must be the same
+      // length by construction -- a mismatch there means the bake is not reproducible even
+      // before a single word is compared, and reading `len` words out of an `n`-word buffer
+      // would walk off the copy. Under a control, a mismatch is exactly what some mutations
+      // are supposed to produce (`--mutate seed` rebuilds a differently-sized world), so it is
+      // tallied like any other divergence instead of refused, and the word loop below never
+      // reads past the `n` words `out` actually holds.
       tally(n === len);
-      if (n !== len) note(`hydro len ${f[1]}`, String(len), String(n));
+      if (n !== len) {
+        note(`hydro len ${f[1]}`, String(len), String(n));
+        if (!mutate) {
+          throw new Error(
+            `hydro len ${f[1]}: wb_hydro_len returned ${n}, recorded length was ${len} -- a ` +
+            'plain run must reproduce the same length, and comparing past it would read noise');
+        }
+      }
       const out = wb.wb_alloc(n * 8);
-      if (out === 0) throw new Error('wb_alloc refused the hydro output buffer');
+      if (n > 0 && out === 0) throw new Error('wb_alloc refused the hydro output buffer');
       // Final review I6: a copy that did not happen leaves `out` holding whatever the allocator
       // had there, and comparing that is comparing noise. `out` is exactly `n` words, the length
       // `wb_hydro_len` just gave, so anything but WB_OK (0) here is a broken export, not a
@@ -900,9 +917,17 @@ for (const raw of lines) {
       if (copied !== 0) throw new Error(`wb_hydro_copy returned ${copied} for hydro/${f[1]}`);
       const view = mem();
       for (let i = 0; i < len; i += 1) {
-        const bits = bitsOf(view.getFloat64(out + i * 8, true));
-        tally(bits === words[i]);
-        if (bits !== words[i]) note(`hydro word ${i}`, words[i], bits);
+        if (i < n) {
+          const bits = bitsOf(view.getFloat64(out + i * 8, true));
+          tally(bits === words[i]);
+          if (bits !== words[i]) note(`hydro word ${i}`, words[i], bits);
+        } else {
+          // Rule (a): a recorded word past the copy's own length counts as divergent without
+          // reading `out` at that index -- `out` is only `n` words long, and this is exactly
+          // the over-read the final review caught.
+          tally(false);
+          note(`hydro word ${i}`, words[i], '<past the copy>');
+        }
       }
       wb.wb_hydro_free(id);
       wb.wb_dealloc(out, n * 8);

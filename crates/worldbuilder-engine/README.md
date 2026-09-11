@@ -4766,6 +4766,54 @@ would be wrong** -- a tectonic belt is a line on the planet, while the coastal w
 whole shelf. The first corpus cut was refused by the dump's own both-ends-refused guard, because a
 2-degree box on the largest mover is entirely *inside* the coastal band and moved 100%.
 
+**2026-09-10, water 1a I6 (the ruling implemented, closing the final review's one blocked item):**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **136,086** | **0** |
+| `--mutate seed` | 136,086 | **130,366** (was 122,830) |
+| `--mutate erosion-k` | 136,086 | 216 |
+| `--mutate water-pond` | 136,086 | 60 |
+| `--mutate tectonic-warp` | 136,086 | **13,590** (was 6,186) |
+| `--mutate coast-amplitude` | 136,086 | 13,128 |
+| `--mutate gully-steer` | 136,086 | 3,752 |
+| `--mutate climate-samples` | 136,086 | 648 |
+
+A second `H` record, `H ranges`, is added on the tectonic `ranges` world (as `parity_dump.rs`
+already builds it for the tectonic control) with `earth_like` thresholds at 60,000 nodes, so the
+12b-1 node-area floor binds, and one forced outlet: an unforced probe bake finds the world's first
+enclosed body and its anchor (measured: 74.42 deg N, 38.72 deg E), and the forced bake on that
+anchor gives a 7,737-word record -- both figures exactly as the ruling predicted. Corpus:
+128,347 -> 136,086 (+7,739 = 2 + 7,737), 0 divergent on the plain run.
+
+`parity.mjs` case `H` now implements the ruling's rule (a): a plain run throws if `wb_hydro_len`
+disagrees with the recorded length, before reading a single word; a control run instead tallies
+the length match (as before) and, for any recorded word at an index the fresh bake's buffer does
+not reach, counts it divergent WITHOUT reading past the copy. `compared` for a hydro group is
+still `2 + len` either way. This retires the seed control's old caution: previously the last 92 of
+`hydro/plain`'s 686 words were read past a 594-word copy (whatever the wasm heap held there); now
+they are counted divergent by construction, for the reason the ruling gives rather than by reading
+stack garbage that happened to differ.
+
+`--mutate seed` moves `hydro/ranges` by 7,536 of its 7,739 words (the `ranges` world rebuilds with
+`world_seed + 1`, same as `plain` does) and leaves `hydro/plain` at its already-pinned 622 of 688 --
+same number as before, now for the sound reason above. `--mutate tectonic-warp` is the other
+control that reaches `hydro/ranges`: turning `margin_warp_m` off changes the terrain under the
+forced-outlet bake, and the native side predicts the resulting divergence the same way the other
+four `TCTL` fields are predicted -- baking the warp-0 world natively with the identical
+forced-outlet params and comparing under rule (a). Measured: 7,404 of 7,739. `parity.mjs`'s
+tectonic-control check now holds `hydro/ranges` to that count exactly, the same discipline it
+already held the other four groups to. The other five controls (erosion-k, water-pond,
+coast-amplitude, gully-steer, climate-samples) leave both hydro groups at 0, which each control's
+own per-group check (where one exists) now enforces for `hydro/ranges` too.
+
+All eight `node parity.mjs ... [--mutate ...]` runs were re-verified against `assert_counts.py
+parity` with the exact `--expect-compared`/`--expect-divergent` pairs now committed in `gates.yml`,
+and all eight printed `count OK`. The wasm was rebuilt (329,197 bytes, byte-identical to the
+pre-I6 artifact -- only `examples/parity_dump.rs`, a fingerprinted input, moved the source
+fingerprint) and `node scripts/build-wasm.mjs check` reports it matches its manifest and the
+source that is here now. No `src/` file changed, so the five CI count pins are unmoved.
+
 ### What is still open here
 
 - **`CoastParams` is reachable and off.** `canonical()` is amplitude 0 and Ruling 1 keeps it
