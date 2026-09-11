@@ -18,6 +18,9 @@ import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
 import { enablePicking, flyFragment, markPick, pickAt } from "./pick-point.js";
 import { Route, drawRoute, saveRoute } from "./route.js";
+import {
+  PREVIEW_PARAMS, decodeHydro, drawPreview, forcedOutletsFromParams, outletPath,
+} from "./water-preview.js";
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -548,6 +551,88 @@ export function mountWorldPanel(parent, getViewer) {
   const found = el("div", "wb-note");
   wrap.append(found);
 
+  // --- water preview ---------------------------------------------------------------------
+  //
+  // **View-only.** This bakes `wb_hydro_bake` for the world on screen and draws the result;
+  // it carves nothing and saves nothing. The bake runs in the pool when there is one -- about
+  // 87 s at a million nodes on the owner's world, which is why it goes through a worker
+  // rather than the main thread wherever a worker is available.
+
+  const previewTitle = el("div", "wb-section-title", "water preview");
+  const previewRow = el("div", "wb-jump");
+  const previewButton = button("preview water");
+  previewRow.append(previewButton);
+  const previewNote = el("div", "wb-note");
+  wrap.append(previewTitle, previewRow, previewNote);
+
+  let previewLayer = null;
+
+  /// Take the preview off the globe, if it is on. Shared by the toggle-off click and by the
+  /// "the world changed under it" listener below.
+  function dropPreview(message) {
+    if (!previewLayer) return;
+    previewLayer.remove();
+    previewLayer = null;
+    previewButton.textContent = "preview water";
+    if (message) previewNote.textContent = message;
+  }
+  // **The preview is drawn against one bake of one world.** A commit that rebuilds the ground
+  // (`wb-world-rebuilt`) leaves a stale preview floating over new terrain, which looks like a
+  // river that moved on its own rather than like a picture nobody re-drew.
+  window.addEventListener("wb-world-rebuilt", () => dropPreview("water preview cleared - the world changed"));
+
+  previewButton.addEventListener("click", async () => {
+    if (previewLayer) {
+      dropPreview("water preview hidden");
+      return;
+    }
+    const viewer = getViewer();
+    const wb = window.__wb;
+    if (!viewer || typeof Cesium === "undefined" || !wb) {
+      previewNote.textContent = "the globe is not ready yet";
+      return;
+    }
+    previewButton.disabled = true;
+    previewNote.textContent = "working out the water... (about a minute and a half at a million points)";
+    try {
+      const params = {
+        ...PREVIEW_PARAMS,
+        forcedOutlets: forcedOutletsFromParams(new URLSearchParams(location.search)),
+      };
+      let words;
+      if (wb.pool) {
+        words = (await wb.pool.hydro({ params })).words;
+      } else {
+        previewNote.textContent += " - no worker pool (?workers=0), running on the main thread";
+        words = wb.engine.hydroBake({ handle: wb.world, params });
+      }
+      const decoded = decodeHydro(words);
+      previewLayer = drawPreview(viewer, Cesium, decoded);
+      const fresh = decoded.bodies.filter((b) => b.fresh).length;
+      const salt = decoded.bodies.length - fresh;
+      const byClass = { stream: 0, river: 0, great: 0 };
+      for (const reach of decoded.reaches) byClass[reach.class] = (byClass[reach.class] || 0) + 1;
+      const outlet = outletPath(decoded);
+      let outletText = "";
+      if (outlet.reachIds.length) {
+        const lastId = outlet.reachIds[outlet.reachIds.length - 1];
+        const lastReach = decoded.reaches.find((r) => r.id === lastId);
+        const lastPoint = lastReach && lastReach.points[lastReach.points.length - 1];
+        if (lastPoint) {
+          outletText = ` · great-lake outlet -> ${outlet.end} at `
+            + `${lastPoint.lat.toFixed(3)}, ${lastPoint.lon.toFixed(3)}`;
+        }
+      }
+      previewNote.textContent = `${decoded.bodies.length} lakes (${fresh} fresh, ${salt} salt), `
+        + `${decoded.reaches.length} reaches (${byClass.stream}/${byClass.river}/${byClass.great})`
+        + outletText;
+      previewButton.textContent = "hide water preview";
+    } catch (error) {
+      previewNote.textContent = `water preview failed: ${error.message}`;
+    } finally {
+      previewButton.disabled = false;
+    }
+  });
 
   // --- pick a point: the wiring. The controls are mounted at the top of the section. --------
 
