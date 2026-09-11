@@ -44,6 +44,10 @@ Measured in the branch studio (wasm), on `worlds/world-1788998299904.json` at th
 | I6 | a parity length mismatch throws in the plain run and counts as divergence under controls; a second `H` record (tectonic world, forced outlet, floor binding) with a TCTL prediction | none |
 | Residual (final re-review) | parked to plan 1b, see below | a rare world is refused with `WB_ERR_GRAPH` until plan 1b fixes the cut |
 
+## Status after plan 1b-1 (2026-09-11)
+
+Items 1-5 below and the §7 fields, the forced-miss report and the `mod.rs` split are **done in plan 1b-1**. See `2026-09-11-water-1b1-verification.md`: the record is 2.2 MB, 0 fresh lakes dead-end, and forced outlets are reported. I3 is fixed in mechanism but not counted on the owner world. What remains for plan 1b-2 is item 6, the fine layer, plus the smaller items not ticked below.
+
 ## Plan 1b must fix (load-bearing for stage 2)
 
 1. **The residual outlet-cut cycle.** `cut_path` stops on "ground already lower" (`routing.rs:~316`) even when that ground's receiver chain leads back into the source lake. A minima cut that descends to below −1 m next to a pocket can then close a cycle.
