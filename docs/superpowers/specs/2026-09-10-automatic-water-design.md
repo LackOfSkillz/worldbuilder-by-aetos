@@ -216,9 +216,10 @@ always takes `earth_like`'s value for both.
 
 ### 6.6 Refinement
 
-- **Tracing.** Each reach is re-traced on the landform at 1.5 km steps. Every step goes downhill,
-  and the path stays within a corridor of one graph spacing around the coarse route, so it cannot
-  cross into another basin. On slopes under 0.2%, a fixed meander (amplitude and wavelength
+- **Tracing.** Each reach is re-traced on the landform at 1.5 km steps. At each station the tracer
+  takes the lowest allowed ground, and the bed never rises: where the ground rises the bed holds,
+  which is a cut. The path stays within a corridor of one graph spacing around the coarse route, so
+  it cannot cross into another basin. On slopes under 0.2%, a fixed meander (amplitude and wavelength
   scaled to width, driven by the engine's deterministic noise) is applied to the carved line,
   never outside the corridor. Tributaries join at a shared vertex. Rivers end at the coast or at a
   lake shore.
@@ -234,6 +235,12 @@ always takes `earth_like`'s value for both.
     lowest-ground search along a coast cannot wander into the sea. The last segment of a reach
     into the sea or a lake ends at the first station whose ground is at or below that water:
     the shore trim (Ruling R-3).
+  - Where every candidate at a station is at or below the datum, the tracer steps back toward its
+    chord in half-spacing increments and takes the first lateral whose ground is above the datum,
+    trying the chord point itself last. It does not hold the line where it is, which used to leave
+    a station on sea ground tens of kilometres sideways on a coast. If even the chord point is at
+    or below the datum -- a coarse chord across a bay -- the chord point is kept. That is the one
+    exception to the rule above (Ruling R-3a).
   - A mouth's bed is the lower of the bed that reaches it and the water level, so the bed never
     rises, mouths included (Ruling R-4).
   - A meander is drawn only where a wavelength (11 widths) of at least four steps (6 km) can

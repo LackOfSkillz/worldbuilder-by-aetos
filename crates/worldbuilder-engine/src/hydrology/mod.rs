@@ -283,12 +283,7 @@ pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, Hydr
     let stages = bake_stages(surface, params)?;
     let mut record = record_of(&stages, params);
     let height = |p: &SpherePoint| surface.structural_m(p);
-    let ground = refine::Ground {
-        height_m: &height,
-        radius_m: surface.radius_m,
-        corridor_m: crate::stream::nominal_spacing_m(params.total_nodes, surface.radius_m),
-        seed: surface.world_seed as u64, // cast-ok: two's-complement reinterpretation, as Surface::new makes
-    };
+    let ground = refine::Ground::for_surface(surface, &height, params);
     refine::refine(&mut record, &ground, params);
     Ok(record)
 }

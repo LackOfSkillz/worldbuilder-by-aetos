@@ -5,7 +5,9 @@
 //! little to either side and takes the lowest ground, so the line settles into the valley floor
 //! the coarse graph only saw every few tens of kilometres. It never leaves the corridor (one
 //! graph spacing either side of the chord). It never steps onto ground at or below the datum
-//! before its mouth (Ruling R-3). It always arrives back on the next coarse point. Coarse points
+//! before its mouth (Ruling R-3), stepping back toward its chord where it must, and keeping the
+//! chord point where even that is water (Ruling R-3a). It always arrives back on the next coarse
+//! point. Coarse points
 //! are kept exactly, so a tributary still ends on its receiver's first vertex (Ruling R-1, spec
 //! §14.4).
 //!
@@ -20,6 +22,7 @@ use crate::detmath as m;
 use crate::hydrology::{Body, Downstream, Fall, HydroParams, HydroRecord, ReachLine, ReachPoint};
 use crate::noise::Noise;
 use crate::sphere::SpherePoint;
+use crate::surface::Surface;
 use crate::tangent::TangentFrame;
 
 /// Salt for the meander's phase, so it is independent of every other noise field on the world.
@@ -46,6 +49,20 @@ pub struct Ground<'a> {
     pub seed: u64,
 }
 
+impl<'a> Ground<'a> {
+    /// The `Ground` a bake traces on: the surface's landform (never its detail noise), its radius,
+    /// a corridor of one nominal graph spacing at this node count, and the world's own seed. The
+    /// caller owns the height closure, because it borrows the surface.
+    pub fn for_surface(surface: &Surface, height_m: &'a dyn Fn(&SpherePoint) -> f64, params: &HydroParams) -> Ground<'a> {
+        Ground {
+            height_m,
+            radius_m: surface.radius_m,
+            corridor_m: crate::stream::nominal_spacing_m(params.total_nodes, surface.radius_m),
+            seed: surface.world_seed as u64, // cast-ok: two's-complement reinterpretation, as Surface::new makes
+        }
+    }
+}
+
 /// One traced point inside a coarse segment, in the segment's own frame (metres along the chord
 /// from its start, and to its left).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +73,9 @@ pub struct Fine {
     pub bed_m: f64,
     /// Survives simplification and is never meandered (a fall's two ends).
     pub keep: bool,
+    /// A station the tracer chose, rather than an end interpolated inside a step for a fall.
+    /// Rulings R-3 and R-3a are about stations: they are what the lowest-ground search picks.
+    pub station: bool,
 }
 
 /// A fall found on one segment. Its upper end is named by position, never by coordinates, so
@@ -152,7 +172,7 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
     let floor_m = if b.bed_m < a.bed_m { b.bed_m } else { a.bed_m };
     let mut lateral = 0.0;
     let mut bed = a.bed_m;
-    let mut previous = Fine { along_m: 0.0, lateral_m: 0.0, point: start, bed_m: a.bed_m, keep: true };
+    let mut previous = Fine { along_m: 0.0, lateral_m: 0.0, point: start, bed_m: a.bed_m, keep: true, station: true };
     for i in 1..k {
         let along = spacing * i as f64; // cast-ok: i < k <= MAX_STATIONS
         let remaining = spacing * (k - i) as f64; // cast-ok: i < k <= MAX_STATIONS
@@ -181,19 +201,13 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
         }
         let (g, o, p) = match best {
             Some(found) => found,
-            None => {
-                // Nothing allowed: hold the line as close to where it was as the limit lets it be.
-                let o = if lateral > limit { limit } else if lateral < -limit { -limit } else { lateral };
-                let p = at(along, o);
-                let g = (ground.height_m)(&p);
-                (if g.is_finite() { g } else { bed + a.depth_m }, o, p)
-            }
+            None => step_back(ground, &at, along, lateral, limit, spacing, shore, bed + a.depth_m),
         };
         lateral = o;
         if let Some(level) = shore {
             if g <= level {
                 let mouth_bed = if bed < level { bed } else { level };
-                segment.mouth = Some(Fine { along_m: along, lateral_m: o, point: p, bed_m: mouth_bed, keep: false });
+                segment.mouth = Some(Fine { along_m: along, lateral_m: o, point: p, bed_m: mouth_bed, keep: false, station: true });
                 return segment;
             }
         }
@@ -204,7 +218,7 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
         if bed < floor_m {
             bed = floor_m;
         }
-        let mut here = Fine { along_m: along, lateral_m: o, point: p, bed_m: bed, keep: false };
+        let mut here = Fine { along_m: along, lateral_m: o, point: p, bed_m: bed, keep: false, station: true };
         if let Some(found) = find_fall(ground, params, &at, &previous, &here) {
             segment.insert_fall(found, &mut here);
         }
@@ -213,7 +227,7 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
     }
     // The coarse end is protected by `refine_reach` whatever happens here, so a fall that ends on
     // it needs nothing marking.
-    let mut into_end = Fine { along_m: len, lateral_m: 0.0, point: end, bed_m: b.bed_m, keep: true };
+    let mut into_end = Fine { along_m: len, lateral_m: 0.0, point: end, bed_m: b.bed_m, keep: true, station: true };
     if let Some(found) = find_fall(ground, params, &at, &previous, &into_end) {
         segment.insert_fall(found, &mut into_end);
     }
@@ -250,6 +264,43 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
         }
     }
     segment
+}
+
+/// Ruling FF-2: no candidate at this station was allowed (inland, they were all at or below the
+/// datum, or the ground there was not a number). Rather than hold the line where it is -- which
+/// left stations on sea ground up to 100 km sideways, on a coast the tracer had wandered onto --
+/// step back toward the chord in half-spacing increments and take the first lateral whose ground
+/// is allowed, trying the chord point itself last.
+///
+/// If even the chord point is at or below the datum (a coarse chord across a bay), the chord point
+/// is kept: that is Ruling R-3a, the one recorded exception to R-3. Ground that is not a number
+/// anywhere along the step back leaves the bed where it is (`hold_m`, the caller's current bed
+/// plus the channel's depth), the same fallback this arm has always used.
+fn step_back(ground: &Ground, at: &dyn Fn(f64, f64) -> SpherePoint, along: f64, lateral: f64, limit: f64, spacing: f64, shore: Option<f64>, hold_m: f64) -> (f64, f64, SpherePoint) {
+    let from = if lateral > limit { limit } else if lateral < -limit { -limit } else { lateral };
+    let inward = if from > 0.0 { -0.5 * spacing } else { 0.5 * spacing };
+    let steps = if spacing > 0.0 {
+        let wanted = (if from > 0.0 { from } else { -from }) / (0.5 * spacing);
+        if wanted > MAX_STATIONS { MAX_STATIONS } else { wanted }
+    } else {
+        0.0
+    };
+    let n = steps as usize; // cast-ok: a whole number in 0..=MAX_STATIONS
+    for i in 0..=n {
+        let o = from + inward * i as f64; // cast-ok: i <= MAX_STATIONS
+        // Past the chord: it is tried last, below.
+        if (from > 0.0 && o <= 0.0) || (from < 0.0 && o >= 0.0) {
+            break;
+        }
+        let p = at(along, o);
+        let g = (ground.height_m)(&p);
+        if g.is_finite() && (shore.is_some() || g > 0.0) {
+            return (g, o, p);
+        }
+    }
+    let p = at(along, 0.0);
+    let g = (ground.height_m)(&p);
+    (if g.is_finite() { g } else { hold_m }, 0.0, p)
 }
 
 /// Spec §6.7 on one step `from -> to` of a trace: a fall is where the bed drops at least
@@ -302,7 +353,7 @@ fn find_fall(ground: &Ground, params: &HydroParams, at: &dyn Fn(f64, f64) -> Sph
     let end = |t: f64, bed_m: f64| {
         let along_m = from.along_m + dx * t;
         let lateral_m = from.lateral_m + dy * t;
-        Fine { along_m, lateral_m, point: at(along_m, lateral_m), bed_m, keep: true }
+        Fine { along_m, lateral_m, point: at(along_m, lateral_m), bed_m, keep: true, station: false }
     };
     let upper = if w == 0 { None } else { Some(end(w as f64 / windows, from.bed_m)) };
     if w + 1 == count {
@@ -520,6 +571,51 @@ mod tests {
         let seg = trace_segment(&ground(&h), &params(), &a, &b, None);
         for f in &seg.interior {
             assert!(h(&f.point) > 0.0, "station at {} m stepped into the sea", f.along_m);
+        }
+    }
+
+    /// Ruling FF-2: when every candidate at a station is at or below the datum, the tracer steps
+    /// back toward its chord rather than holding the line where it is -- which used to leave an
+    /// inland station on sea ground tens of kilometres sideways, on a coast.
+    #[test]
+    fn a_blocked_station_steps_back_toward_the_chord() {
+        // A valley 5 km north of the chord, crossed at 14-16 km east by an arm of sea that
+        // reaches to within 600 m of the chord.
+        let h = |p: &SpherePoint| {
+            let (n, e) = north_east(p);
+            let off = if n > 5_000.0 { n - 5_000.0 } else { 5_000.0 - n };
+            if e > 14_000.0 && e < 16_000.0 && n > 600.0 { -10.0 } else { 100.0 - 0.001 * e + 0.02 * off }
+        };
+        let (a, b) = ends(99.0, 69.0);
+        let seg = trace_segment(&ground(&h), &params(), &a, &b, None);
+        let mut stepped_back = 0usize;
+        for f in seg.interior.iter().filter(|f| f.station) {
+            assert!(h(&f.point) > 0.0, "station at {} m, {} m sideways is on sea ground",
+                    f.along_m, f.lateral_m);
+            if f.along_m > 14_000.0 && f.along_m < 16_000.0 {
+                assert!(f.lateral_m < 1_000.0, "the blocked station is still {} m sideways", f.lateral_m);
+                stepped_back += 1;
+            }
+        }
+        assert!(stepped_back > 0, "at least one station is in the arm of sea");
+    }
+
+    /// Ruling R-3a, the one recorded exception to R-3: when even the chord point is at or below
+    /// the datum (a coarse chord across a bay), the tracer keeps the chord point.
+    #[test]
+    fn a_station_whose_chord_point_is_sea_keeps_the_chord_point() {
+        let h = |p: &SpherePoint| {
+            let (_, e) = north_east(p);
+            if e > 14_000.0 && e < 16_000.0 { -10.0 } else { 100.0 - 0.001 * e }
+        };
+        let (a, b) = ends(99.0, 69.0);
+        let seg = trace_segment(&ground(&h), &params(), &a, &b, None);
+        let across: Vec<&Fine> = seg.interior.iter()
+            .filter(|f| f.station && f.along_m > 14_000.0 && f.along_m < 16_000.0).collect();
+        assert!(!across.is_empty(), "at least one station is in the bay");
+        for f in across {
+            assert_eq!(f.lateral_m, 0.0, "the station at {} m is the chord point itself", f.along_m);
+            assert!(h(&f.point) <= 0.0, "sanity: the chord point is the sea here");
         }
     }
 

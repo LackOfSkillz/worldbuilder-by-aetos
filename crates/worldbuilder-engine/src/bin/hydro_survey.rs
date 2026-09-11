@@ -208,12 +208,7 @@ fn run(surface: &Surface, nodes: u32, simplify_m: Option<f64>) -> Result<RunResu
 
     let coarse_points = reach_points(&record);
     let height = |p: &SpherePoint| surface.structural_m(p);
-    let ground = refine::Ground {
-        height_m: &height,
-        radius_m: surface.radius_m,
-        corridor_m: worldbuilder_engine::stream::nominal_spacing_m(params.total_nodes, surface.radius_m),
-        seed: surface.world_seed as u64, // cast-ok: two's-complement reinterpretation, as Surface::new makes
-    };
+    let ground = refine::Ground::for_surface(surface, &height, &params);
     let t = Instant::now();
     refine::refine(&mut record, &ground, &params);
     let refine_s = t.elapsed().as_secs_f64();

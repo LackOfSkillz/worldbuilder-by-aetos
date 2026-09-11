@@ -1203,6 +1203,88 @@ fn every_fall_is_a_step_on_its_own_reach() {
     assert!(!record.falls.is_empty(), "the population has falls");
 }
 
+/// The three refined populations: the bake test world at both thresholds, and the seed 1
+/// `ranges` world at 12,000 nodes (real relief, and the one with falls).
+fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
+    [("params", world(), params()),
+     ("junction_params", world(), junction_params()),
+     ("ranges", ranges_world(), HydroParams::earth_like(12_000))]
+}
+
+/// The point on the coarse chord `a -> b` at `along_m` metres from `a`: where the tracer would
+/// have stood with no lowest-ground search at all.
+fn chord_point(a: &crate::hydrology::ReachPoint, b: &crate::hydrology::ReachPoint, along_m: f64, radius_m: f64) -> SpherePoint {
+    let frame = crate::tangent::TangentFrame::at(&SpherePoint::from_latlon(a.lat_deg, a.lon_deg), radius_m);
+    let (bx, by) = frame.sphere_to_local(&SpherePoint::from_latlon(b.lat_deg, b.lon_deg));
+    let len = crate::detmath::hypot(bx, by);
+    frame.local_to_sphere(bx / len * along_m, by / len * along_m)
+}
+
+/// Rulings R-3 and FF-2 at world scale: no station of a segment that is not a reach's last sits
+/// on ground at or below the datum. The one exception is Ruling R-3a: a station whose own chord
+/// point is at or below the datum, where the tracer has nowhere higher to step back to.
+///
+/// Traced stations are not in the record (simplification drops most of them), so this drives
+/// `trace_segment` over every coarse segment of `record_of`'s reaches, on the same `Ground` the
+/// bake builds.
+#[test]
+fn no_inland_station_stands_on_sea_ground() {
+    for (name, surface, p) in refined_populations() {
+        let stages = bake_stages(&surface, &p).expect("stages");
+        let coarse = record_of(&stages, &p);
+        let height = |q: &SpherePoint| surface.structural_m(q);
+        let ground = crate::hydrology::refine::Ground::for_surface(&surface, &height, &p);
+        let mut stations = 0usize;
+        let mut chord_exceptions = 0usize;
+        for reach in &coarse.reaches {
+            let shore = crate::hydrology::refine::terminal_level(reach, &coarse.bodies);
+            for s in 0..reach.points.len() - 1 {
+                let last = s + 2 == reach.points.len();
+                if last && shore.is_some() {
+                    // The reach's last segment is trimmed at the water it runs into, which R-3
+                    // measures against that water's level, not the datum.
+                    continue;
+                }
+                let (a, b) = (&reach.points[s], &reach.points[s + 1]);
+                let segment = crate::hydrology::refine::trace_segment(&ground, &p, a, b, None);
+                for f in segment.interior.iter().filter(|f| f.station) {
+                    stations += 1;
+                    if (ground.height_m)(&f.point) > 0.0 {
+                        continue;
+                    }
+                    let chord = chord_point(a, b, f.along_m, surface.radius_m);
+                    assert!((ground.height_m)(&chord) <= 0.0,
+                            "{name}: reach {} segment {s}, the station {} m along and {} m sideways is at {} m, and its chord point is land ({} m)",
+                            reach.id, f.along_m, f.lateral_m, (ground.height_m)(&f.point), (ground.height_m)(&chord));
+                    chord_exceptions += 1;
+                }
+            }
+        }
+        assert!(stations > 0, "{name}: the population has traced stations");
+        eprintln!("{name}: {stations} inland stations, {chord_exceptions} on a chord across water (R-3a)");
+    }
+}
+
+/// Spec §6.6 and Ruling R-4 at world scale: every refined reach that runs into the sea or a lake
+/// ends at or below that water's level.
+#[test]
+fn every_refined_mouth_is_at_or_below_its_water() {
+    for (name, surface, p) in refined_populations() {
+        let record = crate::hydrology::bake(&surface, &p).expect("bake");
+        let mut mouths = 0usize;
+        for reach in &record.reaches {
+            if let Some(level) = crate::hydrology::refine::terminal_level(reach, &record.bodies) {
+                let last = reach.points.last().expect("a reach has points");
+                assert!(last.bed_m <= level,
+                        "{name}: reach {} ends at {} m, above the {} m water it runs into",
+                        reach.id, last.bed_m, level);
+                mouths += 1;
+            }
+        }
+        assert!(mouths > 0, "{name}: the population has mouths");
+    }
+}
+
 /// Ruling R-7, Task 7 step 4: reports the size effect of simplification on both test
 /// populations. Run with `--nocapture` to see the three counts.
 #[test]
@@ -1214,12 +1296,7 @@ fn simplification_shrinks_the_refined_line() {
         let coarse_count: usize = coarse.reaches.iter().map(|r| r.points.len()).sum();
 
         let height = |pt: &SpherePoint| surface.structural_m(pt);
-        let ground = crate::hydrology::refine::Ground {
-            height_m: &height,
-            radius_m: surface.radius_m,
-            corridor_m: crate::stream::nominal_spacing_m(p.total_nodes, surface.radius_m),
-            seed: surface.world_seed as u64, // cast-ok: two's-complement reinterpretation, as Surface::new makes
-        };
+        let ground = crate::hydrology::refine::Ground::for_surface(&surface, &height, &p);
         let shores: Vec<Option<f64>> = coarse.reaches.iter()
             .map(|r| crate::hydrology::refine::terminal_level(r, &coarse.bodies)).collect();
         let refined_count: usize = coarse.reaches.iter().zip(&shores)
