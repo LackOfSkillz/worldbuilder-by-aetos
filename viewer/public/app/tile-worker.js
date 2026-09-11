@@ -231,6 +231,21 @@ function water(message) {
   };
 }
 
+/// **Bake this world's hydrology in a worker.** Mirrors `water` above: not a tile, one long
+/// job (about 87 s at a million nodes on the owner's world), and this worker's own world is
+/// what makes the answer right, for the same reason `water`'s comment gives.
+///
+/// **The reply transfers its buffer.** Unlike `water`'s manifest, `hydroBake` already copies
+/// the record off the wasm heap onto a fresh `Float64Array` (see `engine.js`'s own comment on
+/// that copy), so there is a real `ArrayBuffer` here to move instead of clone -- a schema-2
+/// record at a million nodes is not the tens of small objects `water`'s manifest is.
+function hydro(message) {
+  const started = performance.now();
+  const words = engine.hydroBake({ handle: world, params: message.request.params });
+  const fillMs = performance.now() - started;
+  return { type: "hydro", id: message.id, index, fillMs, words };
+}
+
 self.onmessage = async (event) => {
   const message = event.data;
   try {
@@ -263,6 +278,11 @@ self.onmessage = async (event) => {
     // No transfer list either: eight f64 in a plain object. See `climate` above.
     if (message.type === "climate") {
       self.postMessage(climate(message));
+      return;
+    }
+    if (message.type === "hydro") {
+      const reply = hydro(message);
+      self.postMessage(reply, [reply.words.buffer]);
       return;
     }
     // **The live swap's worker half.** Each worker holds its own world in its own linear memory,

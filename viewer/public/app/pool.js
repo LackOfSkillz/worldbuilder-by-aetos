@@ -153,6 +153,12 @@ export class TilePool {
     /// produce a median describing nothing.
     this.climateMs = [];
     this.climateWallMs = [];
+    /// And once more for the hydro bake -- the studio's view-only water preview, and the
+    /// only consumer this pool has that is neither a tile nor part of installing a world. One
+    /// sample here is tens of seconds at a million nodes, the same order as the water solve,
+    /// so pooling it into any of the samples above would produce a median describing nothing.
+    this.hydroMs = [];
+    this.hydroWallMs = [];
   }
 
   /// Start `count` workers and wait for every one to have built its world.
@@ -199,7 +205,8 @@ export class TilePool {
 
   receive(message) {
     if (message.type !== "tile" && message.type !== "relief" && message.type !== "cloud"
-      && message.type !== "water" && message.type !== "climate" && message.type !== "error") return;
+      && message.type !== "water" && message.type !== "climate" && message.type !== "hydro"
+      && message.type !== "error") return;
     const entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);
@@ -273,6 +280,12 @@ export class TilePool {
         worker: message.index,
         worldCount: message.worldCount,
       });
+      return;
+    }
+    // A hydro reply: the schema-2 record `water-preview.js` decodes, plus the same
+    // named-field rebuild every other job's reply goes through here.
+    if (message.type === "hydro") {
+      entry.resolve({ words: message.words, fillMs: message.fillMs, worker: message.index });
       return;
     }
     entry.resolve({ heights: message.heights, fillMs: message.fillMs, worker: message.index });
@@ -420,6 +433,20 @@ export class TilePool {
   /// The `rebuilt` reply carries each worker's own `wb_world_count`, and it is kept because it is
   /// the only place that figure exists: a world handle is an index into a table inside one
   /// instance's linear memory, so the main thread's count says nothing at all about the workers'.
+  /// **Bake this world's hydrology in a worker.** Resolves `{ words, fillMs, worker }`, where
+  /// `words` is the schema-2 record `water-preview.js` decodes.
+  ///
+  /// # The studio's view-only water preview, the pool's sixth consumer
+  ///
+  /// Mirrors `water()`: `wb_hydro_bake` is already an export, every worker already holds a
+  /// world built from this same spec, and the bake is deterministic. It occupies one worker
+  /// for the whole bake -- tens of seconds at a million nodes -- which is affordable for the
+  /// same reason `water()`'s is: the pool is starved rather than saturated between tile
+  /// bursts, and `pick()` sends the other seven tiles meanwhile.
+  hydro(request) {
+    return this.dispatch("hydro", request, this.hydroMs, this.hydroWallMs);
+  }
+
   rebuild(spec) {
     this.spec = spec;
     const replies = this.workers.map((worker, index) => new Promise((resolve, reject) => {
@@ -491,6 +518,9 @@ export class TilePool {
       climates: this.climateMs.length,
       climateMs: summarise(this.climateMs),
       climateWallMs: summarise(this.climateWallMs),
+      hydros: this.hydroMs.length,
+      hydroMs: summarise(this.hydroMs),
+      hydroWallMs: summarise(this.hydroWallMs),
     };
   }
 }
