@@ -1195,3 +1195,34 @@ fn every_fall_is_a_step_on_its_own_reach() {
         eprintln!("falls on the test world ({name}): {}", record.falls.len());
     }
 }
+
+/// Ruling R-7, Task 7 step 4: reports the size effect of simplification on both test
+/// populations. Run with `--nocapture` to see the three counts.
+#[test]
+fn simplification_shrinks_the_refined_line() {
+    for (name, p) in [("params", params()), ("junction_params", junction_params())] {
+        let surface = world();
+        let stages = bake_stages(&surface, &p).expect("stages");
+        let coarse = record_of(&stages, &p);
+        let coarse_count: usize = coarse.reaches.iter().map(|r| r.points.len()).sum();
+
+        let height = |pt: &SpherePoint| surface.structural_m(pt);
+        let ground = crate::hydrology::refine::Ground {
+            height_m: &height,
+            radius_m: surface.radius_m,
+            corridor_m: crate::stream::nominal_spacing_m(p.total_nodes, surface.radius_m),
+            seed: surface.world_seed as u64, // cast-ok: two's-complement reinterpretation, as Surface::new makes
+        };
+        let shores: Vec<Option<f64>> = coarse.reaches.iter()
+            .map(|r| crate::hydrology::refine::terminal_level(r, &coarse.bodies)).collect();
+        let refined_count: usize = coarse.reaches.iter().zip(&shores)
+            .map(|(r, &shore)| crate::hydrology::refine::refine_reach(r, shore, &ground, &p).points.len())
+            .sum();
+
+        let simplified = crate::hydrology::bake(&surface, &p).expect("bake");
+        let simplified_count: usize = simplified.reaches.iter().map(|r| r.points.len()).sum();
+
+        eprintln!("{name}: coarse {coarse_count}, refined {refined_count}, simplified {simplified_count}");
+        assert!(simplified_count <= refined_count, "simplification must not add points");
+    }
+}

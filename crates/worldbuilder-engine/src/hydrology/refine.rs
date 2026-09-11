@@ -290,6 +290,55 @@ fn find_fall(ground: &Ground, params: &HydroParams, at: &dyn Fn(f64, f64) -> Sph
     }
 }
 
+/// Ruling R-7: Douglas–Peucker over one refined reach. Between two kept points, the point that
+/// strays furthest -- sideways from their chord, in units of `refine_simplify_m`, or off their
+/// straight-line bed, in units of `refine_vertical_m`, whichever is worse -- is kept if it strays
+/// more than one unit, and the two halves are examined in turn. Protected points (coarse points,
+/// fall ends, the mouth) and both ends are always kept. Keeping a subset of a falling bed keeps it
+/// falling, so spec §14.5 survives. The outcome does not depend on the order spans are examined.
+pub fn simplify(points: &[ReachPoint], protected: &[bool], radius_m: f64, params: &HydroParams) -> Vec<ReachPoint> {
+    let n = points.len();
+    if n <= 2 {
+        return points.to_vec();
+    }
+    let at = |p: &ReachPoint| SpherePoint::from_latlon(p.lat_deg, p.lon_deg);
+    let mut keep: Vec<bool> = protected.to_vec();
+    keep[0] = true;
+    keep[n - 1] = true;
+    let anchors: Vec<usize> = (0..n).filter(|&i| keep[i]).collect();
+    let mut spans: Vec<(usize, usize)> = anchors.windows(2).map(|w| (w[0], w[1])).collect();
+    while let Some((lo, hi)) = spans.pop() {
+        if hi <= lo + 1 {
+            continue;
+        }
+        let frame = TangentFrame::at(&at(&points[lo]), radius_m);
+        let (bx, by) = frame.sphere_to_local(&at(&points[hi]));
+        let len2 = bx * bx + by * by;
+        let mut worst = 0.0;
+        let mut worst_at = lo;
+        for i in lo + 1..hi {
+            let (px, py) = frame.sphere_to_local(&at(&points[i]));
+            let raw = if len2 > 0.0 { (px * bx + py * by) / len2 } else { 0.0 };
+            let t = if raw < 0.0 { 0.0 } else if raw > 1.0 { 1.0 } else { raw };
+            let sideways = m::hypot(px - t * bx, py - t * by) / params.refine_simplify_m;
+            let straight_bed = points[lo].bed_m + t * (points[hi].bed_m - points[lo].bed_m);
+            let off = points[i].bed_m - straight_bed;
+            let vertical = (if off < 0.0 { -off } else { off }) / params.refine_vertical_m;
+            let err = if sideways > vertical { sideways } else { vertical };
+            if err > worst {
+                worst = err;
+                worst_at = i;
+            }
+        }
+        if worst > 1.0 {
+            keep[worst_at] = true;
+            spans.push((lo, worst_at));
+            spans.push((worst_at, hi));
+        }
+    }
+    points.iter().zip(&keep).filter(|(_, &k)| k).map(|(p, _)| p.clone()).collect()
+}
+
 fn fine_point(fine: &Fine, like: &ReachPoint) -> ReachPoint {
     let (lat_deg, lon_deg) = fine.point.to_latlon();
     ReachPoint { lat_deg, lon_deg, bed_m: fine.bed_m, width_m: like.width_m, depth_m: like.depth_m, flow_m2: like.flow_m2 }
@@ -344,7 +393,7 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
     let mut falls = Vec::new();
     for (reach, shore) in record.reaches.iter_mut().zip(shores) {
         let refined = refine_reach(reach, shore, ground, params);
-        reach.points = refined.points;
+        reach.points = simplify(&refined.points, &refined.protected, ground.radius_m, params);
         falls.extend(refined.falls);
     }
     record.falls = falls;
@@ -594,6 +643,66 @@ mod tests {
         let mut straight = params();
         straight.meander_amplitude_widths = 0.0;
         assert_eq!(trace_segment(&g, &params(), &a, &b, None), trace_segment(&g, &straight, &a, &b, None));
+    }
+
+    /// Step 3: the fall's two protected ends (Ruling R-5) survive simplification. The upper end
+    /// may be `from` itself under Ruling P-1 (already a coarse point, protected regardless), or an
+    /// inserted point at the top of the cliff; either way it is wherever `refine_reach` marked
+    /// `protected` for the point just before the fall's recorded lower end.
+    #[test]
+    fn a_falls_two_ends_survive_simplification() {
+        let (a, b) = ends(199.0, 119.0);
+        let reach = ReachLine { id: 0, class: ReachClass::Stream, order: 1,
+                                downstream: Downstream::Sink, fresh: true, points: vec![a.clone(), b.clone()] };
+        let refined = refine_reach(&reach, None, &ground(&cliff), &params());
+        assert_eq!(refined.falls.len(), 1, "one fall on this reach");
+        let (fall_lat, fall_lon) = refined.falls[0].at;
+        let upper_idx = refined.points.iter().position(|p| p.lat_deg == fall_lat && p.lon_deg == fall_lon)
+            .expect("the fall's upper end is one of the refined points");
+        assert!(refined.protected[upper_idx], "the fall's upper end is protected");
+        let lower_idx = upper_idx + 1;
+        assert!(refined.protected[lower_idx], "the fall's lower end is protected");
+        let upper = refined.points[upper_idx].clone();
+        let lower = refined.points[lower_idx].clone();
+        assert!(upper.bed_m - lower.bed_m >= 10.0, "the fall's drop survives between the two ends");
+
+        let simplified = simplify(&refined.points, &refined.protected, R, &params());
+        assert!(simplified.contains(&upper), "the fall's upper end survives simplification");
+        assert!(simplified.contains(&lower), "the fall's lower end survives simplification");
+    }
+
+    fn line_of(beds: &[f64], north_m: &[f64]) -> Vec<ReachPoint> {
+        beds.iter().zip(north_m).enumerate()
+            .map(|(i, (&bed, &n))| point(n / M_PER_DEG, (i as f64 * 1_500.0) / M_PER_DEG, bed))
+            .collect()
+    }
+
+    #[test]
+    fn a_straight_even_line_keeps_only_its_ends() {
+        let pts = line_of(&[10.0, 9.0, 8.0, 7.0, 6.0], &[0.0; 5]);
+        let out = simplify(&pts, &[true, false, false, false, true], R, &params());
+        assert_eq!(out, vec![pts[0].clone(), pts[4].clone()]);
+    }
+
+    #[test]
+    fn a_bend_wider_than_the_tolerance_is_kept_and_a_small_one_is_not() {
+        let pts = line_of(&[10.0, 9.0, 8.0], &[0.0, 400.0, 0.0]);
+        assert_eq!(simplify(&pts, &[true, false, true], R, &params()).len(), 3);
+        let small = line_of(&[10.0, 9.0, 8.0], &[0.0, 100.0, 0.0]);
+        assert_eq!(simplify(&small, &[true, false, true], R, &params()).len(), 2);
+    }
+
+    #[test]
+    fn a_bed_step_over_a_metre_is_kept() {
+        let pts = line_of(&[10.0, 7.0, 6.5], &[0.0; 3]);
+        assert_eq!(simplify(&pts, &[true, false, true], R, &params()).len(), 3);
+    }
+
+    #[test]
+    fn protected_points_are_always_kept() {
+        let pts = line_of(&[10.0, 9.0, 8.0, 7.0, 6.0], &[0.0; 5]);
+        let out = simplify(&pts, &[true, false, true, false, true], R, &params());
+        assert_eq!(out, vec![pts[0].clone(), pts[2].clone(), pts[4].clone()]);
     }
 
     #[test]
