@@ -1,0 +1,371 @@
+//! Refinement (spec §6.6): every coarse reach re-traced on the landform at fine steps.
+//!
+//! A coarse segment runs from one reach point to the next, about one graph spacing long. Each
+//! is walked in `refine_step_m` stations along its chord. At each station the tracer looks a
+//! little to either side and takes the lowest ground, so the line settles into the valley floor
+//! the coarse graph only saw every few tens of kilometres. It never leaves the corridor (one
+//! graph spacing either side of the chord). It never steps onto ground at or below the datum
+//! before its mouth (Ruling R-3). It always arrives back on the next coarse point. Coarse points
+//! are kept exactly, so a tributary still ends on its receiver's first vertex (Ruling R-1, spec
+//! §14.4).
+//!
+//! The bed never rises (spec §14.5). Inside a segment it follows the ground down, less the
+//! channel's depth, but never below the segment's lower end. Where the ground rises, the bed
+//! holds, which is a cut. A fine dip met on the way is not judged as a new lake: the bed stays
+//! level across it (Ruling R-2), and plan 1b-3's pond search owns fine lakes. The last segment of
+//! a reach into the sea or a lake ends at the first station on the shore, and the mouth's bed is
+//! the lower of the bed so far and the water level (Rulings R-3, R-4).
+
+use crate::detmath as m;
+use crate::hydrology::{Body, Downstream, Fall, HydroParams, HydroRecord, ReachLine, ReachPoint};
+use crate::sphere::SpherePoint;
+use crate::tangent::TangentFrame;
+
+/// A tracer never plans more stations (or fall windows) than this on one segment, whatever the
+/// params ask.
+const MAX_STATIONS: f64 = 100_000.0;
+
+/// Lateral candidates at each station, as fractions of the station spacing, in tie-break order:
+/// straight on first, then the nearer sides, left before right.
+const CANDIDATES: [f64; 5] = [0.0, -0.5, 0.5, -1.0, 1.0];
+
+/// The ground and the geometry a trace needs, apart from the reach itself. A closure rather than
+/// a `Surface`, so the tests can trace over ground written by hand.
+pub struct Ground<'a> {
+    pub height_m: &'a dyn Fn(&SpherePoint) -> f64,
+    pub radius_m: f64,
+    /// One graph spacing: how far either side of a coarse chord the line may wander.
+    pub corridor_m: f64,
+    /// The world seed, for the meander's phase.
+    pub seed: u64,
+}
+
+/// One traced point inside a coarse segment, in the segment's own frame (metres along the chord
+/// from its start, and to its left).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fine {
+    pub along_m: f64,
+    pub lateral_m: f64,
+    pub point: SpherePoint,
+    pub bed_m: f64,
+    /// Survives simplification and is never meandered (a fall's two ends).
+    pub keep: bool,
+}
+
+/// What one segment traced to: its interior points; the mouth that replaces the coarse end, on a
+/// last segment that reached the shore first; and any falls, as (upper end, height).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+    pub interior: Vec<Fine>,
+    pub mouth: Option<Fine>,
+    pub falls: Vec<(SpherePoint, f64)>,
+}
+
+/// One refined reach: its points, which of them simplification must keep, and its falls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Refined {
+    pub points: Vec<ReachPoint>,
+    pub protected: Vec<bool>,
+    pub falls: Vec<Fall>,
+}
+
+/// The water level a reach runs into at its end: the datum for the ocean, a lake's own level.
+/// `None` for a reach that ends on another reach or nowhere.
+pub fn terminal_level(reach: &ReachLine, bodies: &[Body]) -> Option<f64> {
+    match reach.downstream {
+        Downstream::Ocean => Some(0.0),
+        Downstream::Body(id) => bodies.get(id as usize).map(|b| b.level_m),
+        Downstream::Reach(_) | Downstream::Sink => None,
+    }
+}
+
+/// Spec §14.5 on one reach: the bed never rises from one point to the next.
+pub fn beds_never_rise(reach: &ReachLine) -> bool {
+    reach.points.windows(2).all(|w| w[1].bed_m <= w[0].bed_m)
+}
+
+/// Traces the coarse segment `a -> b`. `shore` is the level of the water the reach runs into,
+/// given only for its last segment.
+pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &ReachPoint, shore: Option<f64>) -> Segment {
+    let mut segment = Segment { interior: Vec::new(), mouth: None, falls: Vec::new() };
+    let start = SpherePoint::from_latlon(a.lat_deg, a.lon_deg);
+    let end = SpherePoint::from_latlon(b.lat_deg, b.lon_deg);
+    let frame = TangentFrame::at(&start, ground.radius_m);
+    let (bx, by) = frame.sphere_to_local(&end);
+    let len = m::hypot(bx, by);
+    if !(len > params.refine_step_m) {
+        return segment;
+    }
+    let wanted = -m::floor(-(len / params.refine_step_m));
+    let stations = if wanted > MAX_STATIONS { MAX_STATIONS } else { wanted };
+    let k = stations as usize; // cast-ok: a whole number in 2..=MAX_STATIONS
+    let spacing = len / stations;
+    let (ux, uy) = (bx / len, by / len);
+    let (vx, vy) = (-uy, ux);
+    let at = |along: f64, lateral: f64| frame.local_to_sphere(ux * along + vx * lateral, uy * along + vy * lateral);
+
+    // The bed may fall to the segment's lower end and no further.
+    let floor_m = if b.bed_m < a.bed_m { b.bed_m } else { a.bed_m };
+    let mut lateral = 0.0;
+    let mut bed = a.bed_m;
+    for i in 1..k {
+        let along = spacing * i as f64; // cast-ok: i < k <= MAX_STATIONS
+        let remaining = spacing * (k - i) as f64; // cast-ok: i < k <= MAX_STATIONS
+        let limit = if remaining < ground.corridor_m { remaining } else { ground.corridor_m };
+        let mut best: Option<(f64, f64, SpherePoint)> = None;
+        for &j in CANDIDATES.iter() {
+            let o = lateral + j * spacing;
+            if o > limit || o < -limit {
+                continue;
+            }
+            let p = at(along, o);
+            let g = (ground.height_m)(&p);
+            if !g.is_finite() {
+                continue;
+            }
+            if shore.is_none() && g <= 0.0 {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((best_g, _, _)) => g < best_g,
+            };
+            if better {
+                best = Some((g, o, p));
+            }
+        }
+        let (g, o, p) = match best {
+            Some(found) => found,
+            None => {
+                // Nothing allowed: hold the line as close to where it was as the limit lets it be.
+                let o = if lateral > limit { limit } else if lateral < -limit { -limit } else { lateral };
+                let p = at(along, o);
+                let g = (ground.height_m)(&p);
+                (if g.is_finite() { g } else { bed + a.depth_m }, o, p)
+            }
+        };
+        lateral = o;
+        if let Some(level) = shore {
+            if g <= level {
+                let mouth_bed = if bed < level { bed } else { level };
+                segment.mouth = Some(Fine { along_m: along, lateral_m: o, point: p, bed_m: mouth_bed, keep: false });
+                return segment;
+            }
+        }
+        let want = g - a.depth_m;
+        if want < bed {
+            bed = want;
+        }
+        if bed < floor_m {
+            bed = floor_m;
+        }
+        segment.interior.push(Fine { along_m: along, lateral_m: o, point: p, bed_m: bed, keep: false });
+    }
+    segment
+}
+
+fn fine_point(fine: &Fine, like: &ReachPoint) -> ReachPoint {
+    let (lat_deg, lon_deg) = fine.point.to_latlon();
+    ReachPoint { lat_deg, lon_deg, bed_m: fine.bed_m, width_m: like.width_m, depth_m: like.depth_m, flow_m2: like.flow_m2 }
+}
+
+/// Refines one reach: coarse points kept exactly, fine points between them, trimmed at the shore
+/// on its last segment. Interior points carry their segment's upstream width, depth and flow.
+/// Flow only steps at a coarse point, where a tributary joins.
+pub fn refine_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, params: &HydroParams) -> Refined {
+    let coarse = &reach.points;
+    let mut refined = Refined { points: Vec::new(), protected: Vec::new(), falls: Vec::new() };
+    if coarse.is_empty() {
+        return refined;
+    }
+    refined.points.push(coarse[0].clone());
+    refined.protected.push(true);
+    for s in 0..coarse.len() - 1 {
+        let a = &coarse[s];
+        let b = &coarse[s + 1];
+        let last = s + 2 == coarse.len();
+        let here_shore = if last { shore } else { None };
+        let segment = trace_segment(ground, params, a, b, here_shore);
+        for fine in &segment.interior {
+            refined.points.push(fine_point(fine, a));
+            refined.protected.push(fine.keep);
+        }
+        for &(at, height_m) in &segment.falls {
+            refined.falls.push(Fall { reach: reach.id, at: at.to_latlon(), height_m });
+        }
+        if let Some(mouth) = segment.mouth {
+            refined.points.push(fine_point(&mouth, b));
+            refined.protected.push(true);
+            break;
+        }
+        let mut end = b.clone();
+        if last && here_shore.is_some() {
+            // Ruling R-4: a mouth's bed never rises above the bed that reaches it.
+            let before = refined.points.last().expect("at least the first point").bed_m;
+            if before < end.bed_m {
+                end.bed_m = before;
+            }
+        }
+        refined.points.push(end);
+        refined.protected.push(true);
+    }
+    refined
+}
+
+/// Refines every reach in the record, in reach order, and records the falls in the same order.
+pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
+    let shores: Vec<Option<f64>> = record.reaches.iter().map(|r| terminal_level(r, &record.bodies)).collect();
+    let mut falls = Vec::new();
+    for (reach, shore) in record.reaches.iter_mut().zip(shores) {
+        let refined = refine_reach(reach, shore, ground, params);
+        reach.points = refined.points;
+        falls.extend(refined.falls);
+    }
+    record.falls = falls;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hydrology::reaches::ReachClass;
+
+    const R: f64 = 6_371_000.0;
+    /// Metres per degree on this test radius.
+    const M_PER_DEG: f64 = R * std::f64::consts::PI / 180.0;
+
+    fn point(lat_deg: f64, lon_deg: f64, bed_m: f64) -> ReachPoint {
+        ReachPoint { lat_deg, lon_deg, bed_m, width_m: 10.0, depth_m: 1.0, flow_m2: 1.0e9 }
+    }
+
+    /// A 30 km segment due east along the equator: a at 0 E, b at 30 km east.
+    fn ends(bed_a: f64, bed_b: f64) -> (ReachPoint, ReachPoint) {
+        (point(0.0, 0.0, bed_a), point(0.0, 30_000.0 / M_PER_DEG, bed_b))
+    }
+
+    /// North of the equator in metres, and east of 0 E in metres (small-angle, test only).
+    fn north_east(p: &SpherePoint) -> (f64, f64) {
+        let (lat, lon) = p.to_latlon();
+        (lat * M_PER_DEG, lon * M_PER_DEG)
+    }
+
+    fn ground<'a>(height: &'a dyn Fn(&SpherePoint) -> f64) -> Ground<'a> {
+        Ground { height_m: height, radius_m: R, corridor_m: 20_000.0, seed: 7 }
+    }
+
+    fn params() -> HydroParams {
+        HydroParams::earth_like(1_000)
+    }
+
+    #[test]
+    fn a_trace_settles_into_the_valley_floor() {
+        // A straight valley 5 km north of the chord, falling gently east.
+        let h = |p: &SpherePoint| {
+            let (n, e) = north_east(p);
+            let off = if n > 5_000.0 { n - 5_000.0 } else { 5_000.0 - n };
+            100.0 - 0.001 * e + 0.02 * off
+        };
+        let (a, b) = ends(99.0, 69.0);
+        let seg = trace_segment(&ground(&h), &params(), &a, &b, None);
+        let n = seg.interior.len();
+        assert!(n == 19 || n == 20, "30 km at 1.5 km: 20 steps (21 if the chord rounds just over), got {n} interior stations");
+        let middle: Vec<&Fine> = seg.interior.iter()
+            .filter(|f| f.along_m >= 8_000.0 && f.along_m <= 20_000.0).collect();
+        assert!(!middle.is_empty());
+        for f in middle {
+            let off = f.lateral_m - 5_000.0;
+            assert!(off <= 750.0 && off >= -750.0, "station at {} m is {} m off the valley", f.along_m, off);
+        }
+    }
+
+    #[test]
+    fn the_bed_never_rises_and_never_drops_below_the_segment_end() {
+        let h = |p: &SpherePoint| {
+            let (_, e) = north_east(p);
+            50.0 - 0.001 * e + 30.0 * crate::detmath::sin(e / 2_000.0)
+        };
+        let (a, b) = ends(49.0, 19.0);
+        let seg = trace_segment(&ground(&h), &params(), &a, &b, None);
+        let mut prev = a.bed_m;
+        for f in &seg.interior {
+            assert!(f.bed_m <= prev, "bed rose from {prev} to {}", f.bed_m);
+            assert!(f.bed_m >= b.bed_m, "bed {} fell below the segment end {}", f.bed_m, b.bed_m);
+            prev = f.bed_m;
+        }
+    }
+
+    #[test]
+    fn a_trace_stays_in_its_corridor_and_returns_to_the_next_point() {
+        // Ground falling to the north without end: the tracer goes as far as it may, and comes back.
+        let h = |p: &SpherePoint| { let (n, _) = north_east(p); 100.0 - 0.01 * n };
+        let (a, b) = ends(99.0, 90.0);
+        let g = ground(&h);
+        let seg = trace_segment(&g, &params(), &a, &b, None);
+        let spacing = 30_000.0 / 20.0;
+        for f in &seg.interior {
+            assert!(f.lateral_m <= g.corridor_m && f.lateral_m >= -g.corridor_m);
+            let remaining = 30_000.0 - f.along_m;
+            assert!(f.lateral_m <= remaining + 1e-6 && f.lateral_m >= -remaining - 1e-6,
+                    "station at {} m cannot get back to the chord", f.along_m);
+            let _ = spacing;
+        }
+        let last = seg.interior.last().expect("stations");
+        assert!(last.lateral_m <= spacing + 1e-6 && last.lateral_m >= -spacing - 1e-6);
+    }
+
+    #[test]
+    fn an_inland_segment_never_steps_into_the_sea() {
+        // Sea south of 2 km south; the land just north of it is the lowest land.
+        let h = |p: &SpherePoint| { let (n, _) = north_east(p); if n < -2_000.0 { -10.0 } else { 10.0 + 0.001 * n } };
+        let (a, b) = ends(9.0, 8.0);
+        let seg = trace_segment(&ground(&h), &params(), &a, &b, None);
+        for f in &seg.interior {
+            assert!(h(&f.point) > 0.0, "station at {} m stepped into the sea", f.along_m);
+        }
+    }
+
+    #[test]
+    fn a_river_ends_at_the_shore() {
+        // Land falling east to the sea at 20 km: the last segment stops there, not at its coarse end.
+        let h = |p: &SpherePoint| { let (_, e) = north_east(p); 100.0 - 0.005 * e };
+        let (a, b) = ends(99.0, 0.0);
+        let seg = trace_segment(&ground(&h), &params(), &a, &b, Some(0.0));
+        let mouth = seg.mouth.expect("the trace reaches the shore before b");
+        assert!(h(&mouth.point) <= 0.0);
+        assert!(mouth.along_m >= 19_500.0 && mouth.along_m <= 21_600.0, "mouth at {} m", mouth.along_m);
+        for f in &seg.interior {
+            assert!(h(&f.point) > 0.0 && f.along_m < mouth.along_m);
+        }
+        assert!(mouth.bed_m <= 0.0);
+    }
+
+    #[test]
+    fn coarse_points_are_kept_exactly_and_the_mouth_bed_never_rises() {
+        let h = |p: &SpherePoint| { let (_, e) = north_east(p); 100.0 - 0.001 * e };
+        let pts = vec![point(0.0, 0.0, 99.0), point(0.0, 30_000.0 / M_PER_DEG, 69.0),
+                       point(0.0, 60_000.0 / M_PER_DEG, 5.0)];
+        let reach = ReachLine { id: 0, class: ReachClass::Stream, order: 1,
+                                downstream: Downstream::Ocean, fresh: true, points: pts.clone() };
+        let refined = refine_reach(&reach, Some(20.0), &ground(&h), &params());
+        assert_eq!(refined.points.len(), refined.protected.len());
+        assert_eq!(refined.points[0], pts[0]);
+        assert!(refined.points.iter().any(|p| p == &pts[1]), "the middle coarse point is kept");
+        let line = ReachLine { points: refined.points.clone(), ..reach.clone() };
+        assert!(beds_never_rise(&line));
+    }
+
+    #[test]
+    fn beds_never_rise_catches_a_rising_bed() {
+        let reach = ReachLine { id: 0, class: ReachClass::Stream, order: 1, downstream: Downstream::Ocean,
+                                fresh: true, points: vec![point(0.0, 0.0, 10.0), point(0.0, 0.1, 11.0)] };
+        assert!(!beds_never_rise(&reach));
+    }
+
+    #[test]
+    fn terminal_levels() {
+        let reach = |d| ReachLine { id: 0, class: ReachClass::Stream, order: 1, downstream: d,
+                                    fresh: true, points: Vec::new() };
+        assert_eq!(terminal_level(&reach(Downstream::Ocean), &[]), Some(0.0));
+        assert_eq!(terminal_level(&reach(Downstream::Reach(3)), &[]), None);
+        assert_eq!(terminal_level(&reach(Downstream::Sink), &[]), None);
+    }
+}

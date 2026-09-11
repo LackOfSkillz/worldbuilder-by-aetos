@@ -218,10 +218,31 @@ always takes `earth_like`'s value for both.
 
 - **Tracing.** Each reach is re-traced on the landform at 1.5 km steps. Every step goes downhill,
   and the path stays within a corridor of one graph spacing around the coarse route, so it cannot
-  cross into another basin. A hollow met on the way is judged by Section 6.3. On slopes under
-  0.2%, a fixed meander (amplitude and wavelength scaled to width, driven by the engine's
-  deterministic noise) is applied to the carved line, never outside the corridor. Tributaries
-  join at a shared vertex. Rivers end at the coast or at a lake shore.
+  cross into another basin. On slopes under 0.2%, a fixed meander (amplitude and wavelength
+  scaled to width, driven by the engine's deterministic noise) is applied to the carved line,
+  never outside the corridor. Tributaries join at a shared vertex. Rivers end at the coast or at a
+  lake shore.
+  - The coarse reach points are kept exactly, and tracing runs between each consecutive pair.
+    That is what makes the shared junction vertex free. The coarse beds already fall, because a
+    later notch cut that runs into an earlier one standing above it re-lowers it (Rulings R-1 and
+    R-9).
+  - The bed follows the ground down, less the channel's depth, and never falls below the coarse
+    segment's lower end. Where the ground rises, the bed holds, which is a cut. A fine dip met on
+    the way is not judged as a new lake: the bed stays level across it. A new body mid-reach
+    would change routing after the drainage check (Ruling R-2).
+  - A segment that is not the reach's last never steps onto ground at or below the datum, so a
+    lowest-ground search along a coast cannot wander into the sea. The last segment of a reach
+    into the sea or a lake ends at the first station whose ground is at or below that water:
+    the shore trim (Ruling R-3).
+  - A mouth's bed is the lower of the bed that reaches it and the water level, so the bed never
+    rises, mouths included (Ruling R-4).
+
+**Scope of plan 1b-2.** Lake outlines and small lakes and ponds, below, are plan 1b-3 (shores),
+which starts with a spike. A 250 m fill of the owner's 41.33M km² great lake would be about
+6.6×10⁸ cells, and its 250 m outline alone would break the 8 MB record target. So the outline
+method must be decided on measurements first. Plan 1b-2 does the channels, which stage 2's
+carving needs.
+
 - **Lake outlines.** Each kept lake is filled at 250 m resolution from its lowest point up to its
   level, within its coarse basin. The outline is traced and then simplified to 250 m tolerance.
 - **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined

@@ -14,6 +14,7 @@ pub mod flow;
 pub mod reaches;
 pub mod record;
 pub mod bake;
+pub mod refine;
 #[cfg(test)]
 mod bake_tests;
 
@@ -275,10 +276,19 @@ pub enum HydroError {
     Drainage(u32),
 }
 
-/// The bake, end to end: `bake_stages` then `record_of`.
+/// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine` (spec §6.6).
 pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, HydroError> {
     let stages = bake_stages(surface, params)?;
-    Ok(record_of(&stages, params))
+    let mut record = record_of(&stages, params);
+    let height = |p: &SpherePoint| surface.structural_m(p);
+    let ground = refine::Ground {
+        height_m: &height,
+        radius_m: surface.radius_m,
+        corridor_m: crate::stream::nominal_spacing_m(params.total_nodes, surface.radius_m),
+        seed: surface.world_seed as u64, // cast-ok: two's-complement reinterpretation, as Surface::new makes
+    };
+    refine::refine(&mut record, &ground, params);
+    Ok(record)
 }
 
 /// Walks downstream from every reach and fails on a revisit. `mod.rs` owns it (rather than

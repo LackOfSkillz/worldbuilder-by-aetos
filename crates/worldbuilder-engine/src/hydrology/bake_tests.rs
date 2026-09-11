@@ -619,8 +619,11 @@ fn a_river_mouth_does_not_carve_the_seabed() {
     assert_eq!(points[2].bed_m, 0.0, "the mouth stands at the datum, not the -50 m seabed");
     assert!(points[1].bed_m < routing.surface_m[1], "an inland point still sits below its ground");
 
-    // End to end: every ocean mouth at the datum, every lake mouth at its lake's level.
-    let record = crate::hydrology::bake(&world(), &params_for_world()).expect("bake");
+    // End to end on the coarse record: every ocean mouth at the datum, every lake mouth at its
+    // lake's level. Coarse, not `bake()`: refinement's shore trim sets a mouth's bed to the lower
+    // of the bed that reaches it and the water (Ruling R-4), which is at or below the level.
+    let p = params_for_world();
+    let record = record_of(&bake_stages(&world(), &p).expect("stages"), &p);
     let mut ocean_mouths = 0;
     for reach in &record.reaches {
         let last = reach.points.last().expect("a reach has points");
@@ -1117,4 +1120,58 @@ fn the_routing_surface_never_rises_along_a_receiver() {
         }
         assert!(edges > 0);
     }
+}
+
+/// Spec §14.5 on a real bake: after refinement, no reach's bed rises anywhere, mouths included.
+/// Also on `junction_params`, so a coarse junction is in the population too.
+#[test]
+fn refined_beds_never_rise() {
+    for p in [params(), junction_params()] {
+        let record = crate::hydrology::bake(&world(), &p).expect("bake");
+        for reach in &record.reaches {
+            assert!(crate::hydrology::refine::beds_never_rise(reach), "reach {} has a rising bed", reach.id);
+        }
+    }
+}
+
+/// Spec §14.4: every tributary's last point is its receiver's first point, bit for bit. On
+/// `junction_params`, because `params()` has no reach that ends on another.
+#[test]
+fn refined_tributaries_share_their_junction_vertex() {
+    let record = crate::hydrology::bake(&world(), &junction_params()).expect("bake");
+    let mut junctions = 0usize;
+    for reach in &record.reaches {
+        if let Downstream::Reach(next) = reach.downstream {
+            let last = reach.points.last().expect("points");
+            let first = &record.reaches[next as usize].points[0];
+            assert_eq!((last.lat_deg.to_bits(), last.lon_deg.to_bits()),
+                       (first.lat_deg.to_bits(), first.lon_deg.to_bits()));
+            junctions += 1;
+        }
+    }
+    assert!(junctions > 0);
+}
+
+/// Ruling R-1: refinement adds points and never moves a coarse one (except the water node a
+/// trimmed mouth replaces).
+#[test]
+fn refinement_keeps_every_coarse_point_in_order() {
+    let p = params();
+    let stages = bake_stages(&world(), &p).expect("stages");
+    let coarse = record_of(&stages, &p);
+    let refined = crate::hydrology::bake(&world(), &p).expect("bake");
+    let mut added = 0usize;
+    for (c, r) in coarse.reaches.iter().zip(&refined.reaches) {
+        let mut at = 0usize;
+        let keep = if matches!(c.downstream, Downstream::Ocean | Downstream::Body(_)) { c.points.len() - 1 } else { c.points.len() };
+        for cp in &c.points[..keep] {
+            while at < r.points.len()
+                && (r.points[at].lat_deg.to_bits(), r.points[at].lon_deg.to_bits()) != (cp.lat_deg.to_bits(), cp.lon_deg.to_bits()) {
+                at += 1;
+            }
+            assert!(at < r.points.len(), "reach {} lost a coarse point", c.id);
+        }
+        added += r.points.len().saturating_sub(c.points.len());
+    }
+    assert!(added > 0, "refinement added fine points");
 }
