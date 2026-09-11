@@ -3,7 +3,7 @@ use crate::hydrology::flood::{flood, ocean_seeds, NO_NODE};
 use crate::hydrology::flow::{close_lakes, drainage_check};
 use crate::hydrology::hollows::{self, find_hollows, judge, Fate};
 use crate::hydrology::landgraph::LandGraph;
-use crate::hydrology::routing::route;
+use crate::hydrology::routing::{route, NO_LAKE};
 use crate::hydrology::{Downstream, HydroError, HydroParams, HydroRecord};
 use crate::hydrology::record::{decode, encode};
 use crate::sphere::SpherePoint;
@@ -89,12 +89,15 @@ fn the_node_floor_binds_on_a_coarse_graph() {
     assert!(record.stats.stream_flow_m2 > 2.5e8);
 }
 
-/// Task 6's notch filter: every recorded point is either on an outlet cut, or off every
-/// recorded reach's channel nodes with a cut depth of at least
-/// `NOTCH_RECORD_MIN_CUT_M` (2.0 m). Reruns the same pipeline `bake()` folds together, so it
-/// can see `closure.outlet_notch` and the raw `routing.notches` the filter runs against, and
-/// maps a recorded point back to its node by lat/lon (both a notch's points and a reach's
-/// points come from the same node positions, so the map is exact).
+/// Task 6's notch filter: every recorded point is either on an outlet cut, off every
+/// recorded reach's channel nodes with a cut depth of at least `NOTCH_RECORD_MIN_CUT_M`
+/// (2.0 m), or (Ruling F-3) the water a route's last kept node drains into -- a point this
+/// test excludes by node, the same way it already excludes outlet-cut nodes, since that
+/// point is never a cut and so is not bound by the depth floor. Reruns the same pipeline
+/// `bake()` folds together, so it can see `closure.outlet_notch` and the raw `routing.notches`
+/// the filter runs against, and maps a recorded point back to its node by lat/lon (both a
+/// notch's points and a reach's points come from the same node positions, so the map is
+/// exact).
 #[test]
 fn the_record_keeps_only_notches_that_matter() {
     let surface = world();
@@ -138,11 +141,40 @@ fn the_record_keeps_only_notches_that_matter() {
         }
     }
 
+    // Ruling F-3: the node each route appends when its own last node survives the filter --
+    // the water it drains into, not a cut -- mirroring `record_of`'s own "was the last node
+    // kept" test rather than re-deriving it from scratch.
+    let mut is_outlet_notch = vec![false; stages.routing.notches.len()];
+    for opt in &stages.closure.outlet_notch {
+        if let Some(idx) = *opt {
+            is_outlet_notch[idx] = true;
+        }
+    }
+    let mut water_stop_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (idx, notch) in stages.routing.notches.iter().enumerate() {
+        let (Some(&last), Some(&last_bed_m)) = (notch.nodes.last(), notch.bed_m.last()) else {
+            continue;
+        };
+        let last_kept = if is_outlet_notch[idx] {
+            true
+        } else {
+            !is_river_node[last as usize]
+                && stages.graph.height_m[last as usize] - last_bed_m >= 2.0
+        };
+        if !last_kept {
+            continue;
+        }
+        let stop = stages.routing.receiver[last as usize];
+        if stop != NO_NODE {
+            water_stop_nodes.insert(stop);
+        }
+    }
+
     for notch in &record.notches {
         for &(lat, lon, bed_m, _width_m) in &notch.points {
             let node = *position_to_node.get(&(lat.to_bits(), lon.to_bits()))
                 .expect("a recorded point matches a graph node");
-            if outlet_nodes.contains(&node) {
+            if outlet_nodes.contains(&node) || water_stop_nodes.contains(&node) {
                 continue;
             }
             assert!(!is_river_node[node as usize],
@@ -163,6 +195,10 @@ fn the_record_keeps_only_notches_that_matter() {
 /// On the bake test world the node floor binds (effective stream threshold about 4.2e11
 /// against the 3.0e10 asked for), so a notch width sized on the effective thresholds parts
 /// from the reach's by a factor of about 3.8 -- which is what this catches.
+///
+/// Ruling F-3: an outlet line's last point may be the water it stops in (the ocean, or a lake
+/// member), not a cut -- excluded here by node, since such a point can coincidentally share a
+/// position with a reach point (a mouth) without the two describing the same channel.
 #[test]
 fn an_outlet_cut_agrees_with_the_reach_it_runs_along() {
     let p = params();
@@ -182,11 +218,16 @@ fn an_outlet_cut_agrees_with_the_reach_it_runs_along() {
         }
     }
     outlet_positions.sort_unstable();
+    let lookup = node_at(&stages.graph);
 
     let mut compared = 0usize;
     for notch in &record.notches {
         for &(lat, lon, surface_m, notch_width_m) in &notch.points {
             if outlet_positions.binary_search(&(lat.to_bits(), lon.to_bits())).is_err() {
+                continue;
+            }
+            let node = lookup[&(lat.to_bits(), lon.to_bits())];
+            if stages.graph.ocean[node as usize] || stages.routing.lake_of[node as usize] != NO_LAKE {
                 continue;
             }
             for reach in &record.reaches {
@@ -206,6 +247,66 @@ fn an_outlet_cut_agrees_with_the_reach_it_runs_along() {
         }
     }
     assert!(compared > 0, "sanity: at least one outlet-cut point is also a reach point");
+}
+
+/// Maps a record point back to its graph node by exact position.
+fn node_at(graph: &LandGraph) -> std::collections::BTreeMap<(u64, u64), u32> {
+    let mut map = std::collections::BTreeMap::new();
+    for (i, p) in graph.positions.iter().enumerate() {
+        let (lat, lon) = p.to_latlon();
+        map.insert((lat.to_bits(), lon.to_bits()), i as u32); // cast-ok: node index
+    }
+    map
+}
+
+/// Ruling F-3: stage 2 carves a notch line segment by segment, so consecutive points must be
+/// graph neighbours, never two nodes a gap apart.
+#[test]
+fn every_notch_segment_joins_graph_neighbours() {
+    let p = params();
+    let stages = bake_stages(&world(), &p).expect("stages");
+    let record = record_of(&stages, &p);
+    let lookup = node_at(&stages.graph);
+    let mut segments = 0usize;
+    for line in &record.notches {
+        for pair in line.points.windows(2) {
+            let a = lookup[&(pair[0].0.to_bits(), pair[0].1.to_bits())];
+            let b = lookup[&(pair[1].0.to_bits(), pair[1].1.to_bits())];
+            assert!(stages.graph.neighbours(a).binary_search(&b).is_ok(),
+                    "notch points {a} and {b} are not neighbours");
+            segments += 1;
+        }
+    }
+    assert!(segments > 0, "the test world must record at least one notch segment");
+}
+
+/// Ruling F-3: an outlet cut ends in the water it drains into, not one node short of it.
+#[test]
+fn every_outlet_cut_ends_in_the_water_it_drains_into() {
+    let p = params();
+    let stages = bake_stages(&world(), &p).expect("stages");
+    let record = record_of(&stages, &p);
+    let mut checked = 0usize;
+    for idx in stages.closure.outlet_notch.iter().flatten() {
+        let route = &stages.routing.notches[*idx];
+        let last = *route.nodes.last().expect("an outlet cut has nodes");
+        let stop = stages.routing.receiver[last as usize];
+        let i = stop as usize;
+        assert!(stages.graph.ocean[i] || stages.routing.lake_of[i] != NO_LAKE,
+                "an outlet cut stops at the ocean or a lake");
+        let level = if stages.graph.ocean[i] {
+            0.0
+        } else {
+            stages.hollows[stages.routing.lake_of[i] as usize].level_m
+        };
+        let (lat, lon) = stages.graph.positions[i].to_latlon();
+        assert!(record.notches.iter().any(|line| {
+            let end = line.points.last().expect("a recorded line has points");
+            end.0 == lat && end.1 == lon && end.2 == level
+        }), "outlet cut {idx} has no recorded line ending at its stop node");
+        checked += 1;
+    }
+    assert!(checked > 0, "the test world must have at least one outlet cut");
 }
 
 #[test]

@@ -359,6 +359,14 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     // A point's third word is the cut surface -- the lowered ground, which is the water surface
     // through the cut -- not a bed below it (Ruling F-2). A reach point's third word is its bed,
     // surface minus depth, so where the two coincide `notch - reach.depth == reach.bed`.
+    //
+    // Ruling F-3: stage 2 carves a notch line segment by segment, so a recorded line must reach
+    // the water it drains into, and must split wherever consecutive kept points are not graph
+    // neighbours. When the route's own last node survives the filter above, one extra point is
+    // appended: the node the cut stopped at (`routing.receiver` of that last node). That point's
+    // third word is the water level there -- 0.0 for the ocean, the lake's own `level_m` for a
+    // lake member, or `routing.surface_m` for a node an earlier cut already committed -- never a
+    // cut surface, since nothing was cut there by this route.
     const NOTCH_RECORD_MIN_CUT_M: f64 = 2.0;
 
     let mut is_river_node = vec![false; graph.len()];
@@ -374,35 +382,63 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         }
     }
 
+    let is_adjacent = |a: u32, b: u32| graph.neighbours(a).binary_search(&b).is_ok();
+    // The level of the water a cut stops in -- the datum for the ocean, a lake's own level, or
+    // the committed bed of an earlier cut.
+    let level_at = |node: u32| -> f64 {
+        let i = node as usize;
+        if graph.ocean[i] {
+            0.0
+        } else if routing.lake_of[i] != NO_LAKE {
+            hollows[routing.lake_of[i] as usize].level_m
+        } else {
+            routing.surface_m[i]
+        }
+    };
+
     let mut notches = Vec::new();
     for (idx, notch) in routing.notches.iter().enumerate() {
-        let mut points = Vec::with_capacity(notch.nodes.len());
-        if is_outlet_notch[idx] {
-            for (&node, &surface_m) in notch.nodes.iter().zip(&notch.bed_m) {
-                let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-                let width_m = width_m(flow[node as usize], params);
-                points.push((lat_deg, lon_deg, surface_m, width_m));
+        let mut kept: Vec<(u32, f64, f64)> = Vec::with_capacity(notch.nodes.len() + 1);
+        for (&node, &surface_m) in notch.nodes.iter().zip(&notch.bed_m) {
+            if is_outlet_notch[idx] {
+                kept.push((node, surface_m, width_m(flow[node as usize], params)));
+                continue;
             }
-        } else {
-            for (&node, &surface_m) in notch.nodes.iter().zip(&notch.bed_m) {
-                if is_river_node[node as usize] {
-                    continue;
-                }
-                let cut_depth_m = graph.height_m[node as usize] - surface_m;
-                if cut_depth_m < NOTCH_RECORD_MIN_CUT_M {
-                    continue;
-                }
-                let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
-                let q = flow[node as usize];
-                let q_for_width = if q > effective_stream_flow_m2 { q } else { effective_stream_flow_m2 };
-                let width_m = width_m(q_for_width, params);
-                points.push((lat_deg, lon_deg, surface_m, width_m));
+            if is_river_node[node as usize] {
+                continue;
+            }
+            let cut_depth_m = graph.height_m[node as usize] - surface_m;
+            if cut_depth_m < NOTCH_RECORD_MIN_CUT_M {
+                continue;
+            }
+            let q = flow[node as usize];
+            let q_for_width = if q > effective_stream_flow_m2 { q } else { effective_stream_flow_m2 };
+            kept.push((node, surface_m, width_m(q_for_width, params)));
+        }
+        // The node the cut stopped at: appended when the route's own last node was kept, so the
+        // line reaches the water (or the earlier cut) it drains into.
+        if let (Some(&last), Some(&(kept_last, _, kept_width))) = (notch.nodes.last(), kept.last()) {
+            let stop = routing.receiver[last as usize];
+            if kept_last == last && stop != NO_NODE {
+                kept.push((stop, level_at(stop), kept_width));
             }
         }
-        if points.is_empty() {
-            continue;
+        // Split wherever two consecutive kept nodes are not graph neighbours.
+        let mut line: Vec<(f64, f64, f64, f64)> = Vec::new();
+        let mut previous: Option<u32> = None;
+        for &(node, third, width) in &kept {
+            if let Some(prev) = previous {
+                if !is_adjacent(prev, node) && !line.is_empty() {
+                    notches.push(NotchLine { points: std::mem::take(&mut line) });
+                }
+            }
+            let (lat_deg, lon_deg) = graph.positions[node as usize].to_latlon();
+            line.push((lat_deg, lon_deg, third, width));
+            previous = Some(node);
         }
-        notches.push(NotchLine { points });
+        if !line.is_empty() {
+            notches.push(NotchLine { points: line });
+        }
     }
 
     // Task 6's forced-outlet accounting: how many forced-outlet points `params` asked for, and
