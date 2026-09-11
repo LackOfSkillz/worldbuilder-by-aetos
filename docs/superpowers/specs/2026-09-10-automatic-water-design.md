@@ -236,6 +236,10 @@ always takes `earth_like`'s value for both.
     the shore trim (Ruling R-3).
   - A mouth's bed is the lower of the bed that reaches it and the water level, so the bed never
     rises, mouths included (Ruling R-4).
+  - A meander is drawn only where a wavelength (11 widths) of at least four steps (6 km) can
+    represent it, the segment's bed slope is under 0.2%, and the segment carries no fall. Its
+    amplitude is 1.5 widths, tapered to zero at both coarse points, and clamped inside the
+    corridor. It moves the line, never the bed (Ruling R-6).
 
 **Scope of plan 1b-2.** Lake outlines and small lakes and ponds, below, are plan 1b-3 (shores),
 which starts with a spike. A 250 m fill of the owner's 41.33M km² great lake would be about
