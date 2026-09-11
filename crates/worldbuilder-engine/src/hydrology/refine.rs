@@ -108,6 +108,7 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
     let floor_m = if b.bed_m < a.bed_m { b.bed_m } else { a.bed_m };
     let mut lateral = 0.0;
     let mut bed = a.bed_m;
+    let mut previous = Fine { along_m: 0.0, lateral_m: 0.0, point: start, bed_m: a.bed_m, keep: true };
     for i in 1..k {
         let along = spacing * i as f64; // cast-ok: i < k <= MAX_STATIONS
         let remaining = spacing * (k - i) as f64; // cast-ok: i < k <= MAX_STATIONS
@@ -159,9 +160,96 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
         if bed < floor_m {
             bed = floor_m;
         }
-        segment.interior.push(Fine { along_m: along, lateral_m: o, point: p, bed_m: bed, keep: false });
+        let here = Fine { along_m: along, lateral_m: o, point: p, bed_m: bed, keep: false };
+        if let Some((upper, lower, height)) = find_fall(ground, params, &at, &previous, &here) {
+            match upper {
+                Some(u) => {
+                    segment.falls.push((u.point, height));
+                    segment.interior.push(u);
+                }
+                None => {
+                    segment.falls.push((previous.point, height));
+                    if let Some(last) = segment.interior.last_mut() {
+                        last.keep = true;
+                    }
+                }
+            }
+            segment.interior.push(lower);
+        }
+        segment.interior.push(here);
+        previous = here;
+    }
+    let into_end = Fine { along_m: len, lateral_m: 0.0, point: end, bed_m: b.bed_m, keep: true };
+    if let Some((upper, lower, height)) = find_fall(ground, params, &at, &previous, &into_end) {
+        match upper {
+            Some(u) => {
+                segment.falls.push((u.point, height));
+                segment.interior.push(u);
+            }
+            None => {
+                segment.falls.push((previous.point, height));
+                if let Some(last) = segment.interior.last_mut() {
+                    last.keep = true;
+                }
+            }
+        }
+        segment.interior.push(lower);
     }
     segment
+}
+
+/// Spec §6.7 on one step `from -> to` of a trace: a fall is where the bed drops at least
+/// `fall_min_drop_m` across the step, and the ground drops at least that much inside one window
+/// of at most `fall_max_run_m`. Returns the fall's lower end and its height (Ruling R-5), and the
+/// upper end to insert into `segment.interior` -- or `None` when the fall's best window starts
+/// right at `from` (Ruling P-1): then `from` is the upper end already (either the segment's
+/// coarse start, already protected, or the last `Fine` pushed into `segment.interior`, which the
+/// caller must mark `keep = true`). Inserting a separate upper end in that case would duplicate
+/// `from`'s position, and the "step" after it would be zero. The height is the smaller of the
+/// bed's drop and the window's, so the bed after the lower end still never rises.
+fn find_fall(ground: &Ground, params: &HydroParams, at: &dyn Fn(f64, f64) -> SpherePoint, from: &Fine, to: &Fine) -> Option<(Option<Fine>, Fine, f64)> {
+    let bed_drop = from.bed_m - to.bed_m;
+    if !(bed_drop >= params.fall_min_drop_m) {
+        return None;
+    }
+    let dx = to.along_m - from.along_m;
+    let dy = to.lateral_m - from.lateral_m;
+    let run = m::hypot(dx, dy);
+    let wanted = -m::floor(-(run / params.fall_max_run_m));
+    let windows = if wanted < 1.0 { 1.0 } else if wanted > MAX_STATIONS { MAX_STATIONS } else { wanted };
+    let count = windows as usize; // cast-ok: a whole number in 1..=MAX_STATIONS
+    let mut best: Option<(usize, f64)> = None;
+    let mut upper = (ground.height_m)(&from.point);
+    for w in 0..count {
+        let t = (w + 1) as f64 / windows;
+        let lower = (ground.height_m)(&at(from.along_m + dx * t, from.lateral_m + dy * t));
+        let drop = upper - lower;
+        if drop.is_finite() {
+            let better = match best { None => true, Some((_, d)) => drop > d };
+            if better {
+                best = Some((w, drop));
+            }
+        }
+        upper = lower;
+    }
+    let (w, drop) = best?;
+    if !(drop >= params.fall_min_drop_m) {
+        return None;
+    }
+    let height = if drop < bed_drop { drop } else { bed_drop };
+    let end = |t: f64, bed_m: f64| {
+        let along_m = from.along_m + dx * t;
+        let lateral_m = from.lateral_m + dy * t;
+        Fine { along_m, lateral_m, point: at(along_m, lateral_m), bed_m, keep: true }
+    };
+    let t1 = (w + 1) as f64 / windows;
+    let lower = end(t1, from.bed_m - height);
+    if w == 0 {
+        Some((None, lower, height))
+    } else {
+        let t0 = w as f64 / windows;
+        Some((Some(end(t0, from.bed_m)), lower, height))
+    }
 }
 
 fn fine_point(fine: &Fine, like: &ReachPoint) -> ReachPoint {
@@ -358,6 +446,52 @@ mod tests {
         let reach = ReachLine { id: 0, class: ReachClass::Stream, order: 1, downstream: Downstream::Ocean,
                                 fresh: true, points: vec![point(0.0, 0.0, 10.0), point(0.0, 0.1, 11.0)] };
         assert!(!beds_never_rise(&reach));
+    }
+
+    /// A cliff 50 m high and 100 m wide at 15 km along an otherwise gentle segment.
+    fn cliff(p: &SpherePoint) -> f64 {
+        let (_, e) = north_east(p);
+        let base = 200.0 - 0.001 * e;
+        if e < 15_000.0 { base } else if e > 15_100.0 { base - 50.0 } else { base - 50.0 * (e - 15_000.0) / 100.0 }
+    }
+
+    #[test]
+    fn a_cliff_on_the_line_is_a_waterfall() {
+        let (a, b) = ends(199.0, 119.0);
+        let seg = trace_segment(&ground(&cliff), &params(), &a, &b, None);
+        assert_eq!(seg.falls.len(), 1, "one fall");
+        let (at, height) = seg.falls[0];
+        assert!(height >= 10.0 && height <= 51.0, "height {height} (the cliff plus at most 150 m of the base slope)");
+        let (_, e) = north_east(&at);
+        assert!(e >= 14_800.0 && e <= 15_100.0, "fall's upper end at {e} m east");
+        let kept: Vec<&Fine> = seg.interior.iter().filter(|f| f.keep).collect();
+        assert_eq!(kept.len(), 2, "the fall's two protected points: from (marked keep) plus the lower end, or the inserted upper end plus the lower end");
+        let d = kept[0].bed_m - kept[1].bed_m - height;
+        assert!(d < 1e-9 && d > -1e-9, "the bed drops by the fall's height between them");
+        let mut prev = a.bed_m;
+        for f in &seg.interior {
+            assert!(f.bed_m <= prev);
+            prev = f.bed_m;
+        }
+    }
+
+    #[test]
+    fn a_steep_but_even_slope_has_no_waterfall() {
+        // 60 m over 30 km: steep, but never 10 m in 150 m.
+        let h = |p: &SpherePoint| { let (_, e) = north_east(p); 200.0 - 0.002 * e };
+        let (a, b) = ends(199.0, 139.0);
+        assert!(trace_segment(&ground(&h), &params(), &a, &b, None).falls.is_empty());
+    }
+
+    #[test]
+    fn a_step_just_under_ten_metres_is_not_a_waterfall() {
+        let h = |p: &SpherePoint| {
+            let (_, e) = north_east(p);
+            let base = 200.0 - 0.0001 * e;
+            if e < 15_000.0 { base } else if e > 15_100.0 { base - 9.0 } else { base - 9.0 * (e - 15_000.0) / 100.0 }
+        };
+        let (a, b) = ends(199.0, 185.0);
+        assert!(trace_segment(&ground(&h), &params(), &a, &b, None).falls.is_empty());
     }
 
     #[test]

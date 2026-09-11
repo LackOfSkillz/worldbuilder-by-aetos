@@ -258,6 +258,10 @@ Wherever a refined reach falls at least 10 m over at most 150 m of its length, a
 recorded with its height and its two ends (Mark 2 section 13.3). Maritime reads it as the
 upstream limit of navigation.
 
+- A fall is recorded as its upper end (`falls[].at`) and height. Both ends are inserted as reach
+  points, protected from simplification, so stage 2 later carves a real step there instead of
+  smoothing it into a ramp. The lower end is the next point on the reach (Ruling R-5).
+
 ## 7. The hydro record
 
 Stored in the worldfile as a `hydrology` block:
@@ -278,6 +282,8 @@ hydrology: {
 }
 ```
 
+- **A fall's `at` is its upper end**; the lower end is the next point on that reach, and the bed
+  drops by `height_m` between them (Ruling R-5, §6.7).
 - **A reach point's third value is the bed**: the water surface there minus the channel's depth.
   **A notch point's third value is the cut surface**: the lowered ground, which is the water
   surface through the cut. Where a notch point and a reach point sit on the same place, the notch

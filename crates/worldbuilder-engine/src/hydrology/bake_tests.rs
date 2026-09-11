@@ -1175,3 +1175,23 @@ fn refinement_keeps_every_coarse_point_in_order() {
     }
     assert!(added > 0, "refinement added fine points");
 }
+
+/// Spec §6.7: every recorded fall sits on its own reach, at a point of that reach, and the next
+/// point is lower by the fall's height. Run on both populations: `params()` and, because a
+/// coarse junction is a different reach shape, `junction_params()`.
+#[test]
+fn every_fall_is_a_step_on_its_own_reach() {
+    for (name, p) in [("params", params()), ("junction_params", junction_params())] {
+        let record = crate::hydrology::bake(&world(), &p).expect("bake");
+        for fall in &record.falls {
+            let reach = &record.reaches[fall.reach as usize];
+            let i = reach.points.iter().position(|p| (p.lat_deg, p.lon_deg) == fall.at)
+                .expect("a fall's upper end is a point of its reach");
+            let drop = reach.points[i].bed_m - reach.points[i + 1].bed_m;
+            let d = drop - fall.height_m;
+            assert!(d < 1e-6 && d > -1e-6, "fall height {} but the bed drops {}", fall.height_m, drop);
+            assert!(fall.height_m >= 10.0);
+        }
+        eprintln!("falls on the test world ({name}): {}", record.falls.len());
+    }
+}
