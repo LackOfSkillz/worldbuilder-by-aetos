@@ -19,6 +19,10 @@ pub mod refine;
 pub mod ponds;
 #[cfg(test)]
 mod bake_tests;
+/// Ruling E-2's trim on trial (the design note's §5.7). Its own file because `bake_tests` is
+/// already past the plan's 1,500-line mark.
+#[cfg(test)]
+mod extent_tests;
 
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
