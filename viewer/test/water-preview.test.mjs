@@ -183,3 +183,81 @@ test("drawPreview draws every waterfall as a white point, labelled with its heig
   assert.equal(points[0].description, "waterfall, 12.3 m");
   assert.equal(points[1].description, "waterfall, 40.0 m");
 });
+
+function fakeCesium() {
+  return {
+    CustomDataSource: class {
+      constructor(name) {
+        this.name = name;
+        this.entities = { list: [], add(e) { this.list.push(e); return e; } };
+      }
+    },
+    Cartesian3: {
+      fromDegrees: (lon, lat) => ({ lon, lat }),
+      fromDegreesArray: (flat) => flat,
+    },
+    Color: {
+      WHITE: "white",
+      fromCssColorString: (css) => ({ css, withAlpha: () => css }),
+    },
+    HeightReference: { CLAMP_TO_GROUND: "clamp" },
+  };
+}
+
+test("drawPreview draws every body as a true-size ring, a point only for the small ones, and counts rings", () => {
+  const Cesium = fakeCesium();
+  const viewer = { dataSources: { contains: () => false, add: (source) => source } };
+  // radius = sqrt(area / pi): 4e6 m2 -> ~1,128 m (small); 4e12 m2 -> ~1,128 km (big).
+  const small = {
+    id: 0, kind: "lake", fresh: true, levelM: 1, areaM2: 4e6, outletReach: null, anchor: [0, 0],
+  };
+  const big = {
+    id: 1, kind: "lake", fresh: true, levelM: 1, areaM2: 4e12, outletReach: null, anchor: [1, 1],
+  };
+  const decoded = { bodies: [small, big], reaches: [], notches: 0, falls: [] };
+  const drawn = drawPreview(viewer, Cesium, decoded);
+
+  const rings = drawn.source.entities.list.filter((e) => e.ellipse);
+  assert.equal(rings.length, 2);
+  assert.equal(drawn.counts.rings, 2);
+  assert.equal(drawn.counts.bodies, 2);
+
+  const smallRadius = Math.sqrt(4e6 / Math.PI);
+  const bigRadius = Math.sqrt(4e12 / Math.PI);
+  const smallRing = rings.find((e) => e.position.lat === 0);
+  const bigRing = rings.find((e) => e.position.lat === 1);
+  assert.ok(smallRing && bigRing, "both bodies got a ring");
+  assert.ok(Math.abs(smallRing.ellipse.semiMajorAxis - smallRadius) < 1);
+  assert.ok(Math.abs(smallRing.ellipse.semiMinorAxis - smallRadius) < 1);
+  assert.ok(Math.abs(bigRing.ellipse.semiMajorAxis - bigRadius) < 1);
+  assert.ok(Math.abs(bigRing.ellipse.semiMinorAxis - bigRadius) < 1);
+  assert.equal(smallRing.ellipse.fill, false);
+  assert.equal(smallRing.ellipse.outline, true);
+  assert.equal(smallRing.ellipse.outlineWidth, 2);
+  assert.equal(smallRing.ellipse.height, undefined);
+  assert.equal(smallRing.ellipse.heightReference, "clamp");
+
+  const points = drawn.source.entities.list.filter((e) => e.point);
+  assert.equal(points.length, 1, "only the small body also gets a point");
+  assert.equal(points[0].position.lat, 0);
+  assert.equal(points[0].point.pixelSize, 5);
+});
+
+test("drawPreview outlines a salt body in the salt colour and a fresh body in the fresh colour", () => {
+  const Cesium = fakeCesium();
+  const viewer = { dataSources: { contains: () => false, add: (source) => source } };
+  const fresh = {
+    id: 0, kind: "lake", fresh: true, levelM: 1, areaM2: 4e6, outletReach: null, anchor: [0, 0],
+  };
+  const salt = {
+    id: 1, kind: "saltLake", fresh: false, levelM: 1, areaM2: 4e6, outletReach: null, anchor: [1, 1],
+  };
+  const decoded = { bodies: [fresh, salt], reaches: [], notches: 0, falls: [] };
+  const drawn = drawPreview(viewer, Cesium, decoded);
+
+  const rings = drawn.source.entities.list.filter((e) => e.ellipse);
+  const freshRing = rings.find((e) => e.position.lat === 0);
+  const saltRing = rings.find((e) => e.position.lat === 1);
+  assert.equal(freshRing.ellipse.outlineColor.css, "#3aa7e0");
+  assert.equal(saltRing.ellipse.outlineColor.css, "#ffffff");
+});
