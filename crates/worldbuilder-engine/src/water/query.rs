@@ -21,15 +21,28 @@
 //! # The order the clauses run in, which is not the order §8.3's table lists them
 //!
 //! The table reads *ocean, body, river, none*, and Ruling Q-5 keeps that precedence. But **the
-//! ocean is decided after the bodies are tested**, because Ruling Q-4 says a recorded body's claim
-//! beats it: recorded bodies are exactly what carve lakes out of the below-datum set, and the
-//! query has no graph to re-run connectivity on. So the shape is
+//! ocean is decided after the bodies are tested**, because Ruling Q-4 says a recorded body beats
+//! it: recorded bodies are exactly what carve lakes out of the below-datum set, and the query has
+//! no graph to re-run connectivity on. So the shape is
 //!
-//! > a body claimed it, **else if** the landform is at or below the datum, ocean, **else** a
-//! > reach, **else** none
+//! > a body claimed it, **else if** the landform is at or below the datum **and no body's extent
+//! > held it**, ocean, **else** a reach, **else** none
 //!
 //! which yields the table's precedence while letting a body at or under the datum -- the owner's
 //! inland sea, every enclosed basin -- answer as itself rather than as sea.
+//!
+//! # A claim and an extent are two different questions (Ruling Q-12)
+//!
+//! Ruling Q-4 suppresses the ocean where the point is "inside no recorded body's **extent**".
+//! Ruling Q-10 makes a **claim** extent *and* level. They are not the same test, and the query
+//! tracks them separately: **extent decides whether the ocean is suppressed; claim decides which
+//! body answers.**
+//!
+//! Where they part company is the dry shore of a body recorded below the datum. A salt flat at
+//! level −400 m has a shore band in which the landform stands at −100 m: inside the extent, above
+//! the body's level, and still under the sea's. Gating the ocean on the claim would answer `Ocean`
+//! 100 m deep there and flood an enclosed basin's dry shore with sea. It is inside the salt flat's
+//! extent, so it is not sea; it is above the salt flat's level, so it is not water. It is `none`.
 //!
 //! # Where each clause of §8.3 lives
 //!
@@ -48,11 +61,12 @@
 //! Ruling T1-3 settles more than one claim: the smaller `dm` wins, ties to the lower body id. A
 //! pond's `dm` for that purpose is its distance to its own nearest outline point.
 //!
-//! **A "claim" is both halves of §8.3's row**, extent *and* level: every body row in the table
-//! reads "inside ... **and** at or below its level", so a body whose extent holds the point but
-//! whose level is under the landform there does not claim it, and does not stand in the way of a
-//! body that does. Ranking by `dm` alone, before the level test, would let a dry extent shadow a
-//! wet one wherever two overlap -- which is exactly the ridge case Ruling T1-3 exists for.
+//! **A "claim" is both halves of §8.3's row**, extent *and* level (Ruling Q-10): every body row in
+//! the table reads "inside ... **and** at or below its level", so a body whose extent holds the
+//! point but whose level is under the landform there does not claim it, and does not stand in the
+//! way of a body that does. Ranking by `dm` alone, before the level test, would let a dry extent
+//! shadow a wet one wherever two overlap -- which is exactly the ridge case Ruling T1-3 exists
+//! for. It still counts as an extent for the ocean's purposes; see Ruling Q-12 below.
 //!
 //! # Notches are not a kind
 //!
@@ -114,20 +128,32 @@ pub fn water_at(
     let ground = ground_m(point);
     let candidates = index.candidates(point);
 
-    // Bodies first, though the table lists the ocean first: Ruling Q-4, a recorded body's claim
+    // Bodies first, though the table lists the ocean first: Ruling Q-4, a recorded body's extent
     // beats the ocean's. Ruling T1-3 picks between claimants -- smaller `dm`, ties to lower id.
+    //
+    // Ruling Q-12: **two different questions, tracked separately.** `in_an_extent` is "some
+    // candidate body's extent held this point", which is what suppresses the ocean (Q-4's own
+    // words: "at or below the datum AND inside no recorded body's extent"). `best` is "some body
+    // claimed it", which is extent AND level (Q-10), and is what decides which body answers. Where
+    // the two part company -- the dry shore of a body recorded below the datum, where the landform
+    // is above the body's level and still under the sea's -- gating the ocean on the *claim* would
+    // flood an enclosed basin's dry shore. It is inside the salt flat's extent, so it is not sea;
+    // it is above the salt flat's level, so it is not water either. It is `none`.
+    let mut in_an_extent = false;
     let mut best: Option<(f64, &Body)> = None;
     for &id in candidates.bodies {
         let Some(body) = body_by_id(record, id) else {
             continue; // an index built over a different record; refuse it, never index blindly
         };
-        // "and at or below its level" -- the table's own second half, for every body row.
-        if ground > body.level_m {
-            continue;
-        }
         let Some(dm) = extent_claim(body, point, radius_m) else {
             continue;
         };
+        in_an_extent = true;
+        // "and at or below its level" -- the table's own second half, for every body row. A body
+        // that fails it is still an extent for Q-4's purposes, and simply does not claim.
+        if ground > body.level_m {
+            continue;
+        }
         best = Some(match best {
             None => (dm, body),
             Some((best_dm, held)) => {
@@ -143,8 +169,9 @@ pub fn water_at(
         return body_answer(body, ground);
     }
 
-    // "a body claimed it, else if the landform is at or below the datum, ocean".
-    if ground <= DATUM_M {
+    // "a body claimed it, else if the landform is at or below the datum AND no body's extent held
+    // it, ocean" (Rulings Q-4 and Q-12).
+    if ground <= DATUM_M && !in_an_extent {
         return WaterAt {
             kind: WaterKind::Ocean,
             level_m: DATUM_M,
@@ -554,12 +581,19 @@ mod tests {
         vec![(10.00, 10.00), (10.04, 10.00), (10.04, 10.04), (10.00, 10.04), (10.02, 10.02)]
     }
 
-    /// Body 0's shore-point extent: two members on the equator, a collar 0.2 deg (22,239 m)
-    /// north of each. The band is 25,000 m, which is just past that step -- the shape Ruling
-    /// E-3 produces.
+    /// Body 0's shore-point extent: two members on the equator, and a collar 0.4 deg (44,478 m)
+    /// north of each, against a 25,000 m band.
+    ///
+    /// **The collar sits beyond the band on purpose.** Ruling E-3 measures the band from steps
+    /// whose collar end stands *above* the level, and a body has plenty of steps that do not
+    /// qualify, so a collar point further out than `shore_reach_m` is the ordinary case rather
+    /// than a contrived one. It is also the only shape in which a probe can be **outside the
+    /// extent and still a candidate**: the index dilates members by the band and lists collar
+    /// points in their own cells alone, so with a collar inside the band every candidate cell is
+    /// inside the extent too, and brief case 3 has nowhere to stand.
     fn shore_body() -> Body {
         body(0, BodyKind::Lake, true, 100.0, 2, BAND_M,
-             vec![(0.0, 0.0), (0.0, 0.1), (0.2, 0.0), (0.2, 0.1)])
+             vec![(0.0, 0.0), (0.0, 0.1), (0.4, 0.0), (0.4, 0.1)])
     }
 
     /// The whole fixture. Nine bodies and two reaches, each far enough from the rest that no
@@ -587,6 +621,11 @@ mod tests {
             body(8, BodyKind::Lake, true, 100.0, 1, WIDE_BAND_M, vec![(50.0, 0.0), (50.5, 0.0)]),
             // 9: an enclosed body AT the datum -- test 10. Ruling Q-4: its claim beats the ocean.
             body(9, BodyKind::Lake, false, 0.0, 1, BAND_M, vec![(80.0, 0.0), (80.3, 0.0)]),
+            // 10: an enclosed salt flat recorded 400 m BELOW the datum -- Ruling Q-12. Its shore
+            // band holds landform that is above its own level and still under the sea's, which is
+            // the one place "inside an extent" and "claimed by a body" part company.
+            body(10, BodyKind::SaltFlat, false, -400.0, 1, BAND_M,
+                 vec![(-60.0, 0.0), (-60.3, 0.0)]),
         ];
         let reaches = vec![
             // Reach 0: 1,000 m wide, so the band is 500 m either side of the line.
@@ -604,6 +643,22 @@ mod tests {
                 fresh: false,
                 points: vec![reach_point(-20.0, 130.0, 5.0, 200.0, 1.0),
                              reach_point(-20.0, 130.1, 4.0, 200.0, 1.0)],
+            },
+            // Reaches 2 and 3: two 2,000 m channels whose bands overlap, so one point is inside
+            // both. Reach 3 -- the HIGHER id -- runs the nearer of the two to the shared probe on
+            // purpose, so "lower id wins" is not the same answer as "nearest centre line wins".
+            // Their beds differ, so which one answered is legible in `level_m` alone.
+            ReachLine {
+                id: 2, class: ReachClass::River, order: 2, downstream: Downstream::Ocean,
+                fresh: true,
+                points: vec![reach_point(800.0 / M_PER_DEG, 140.0, 50.0, 2_000.0, 4.0),
+                             reach_point(800.0 / M_PER_DEG, 140.2, 50.0, 2_000.0, 4.0)],
+            },
+            ReachLine {
+                id: 3, class: ReachClass::River, order: 2, downstream: Downstream::Sink,
+                fresh: false,
+                points: vec![reach_point(-200.0 / M_PER_DEG, 140.0, 60.0, 2_000.0, 5.0),
+                             reach_point(-200.0 / M_PER_DEG, 140.2, 60.0, 2_000.0, 5.0)],
             },
         ];
         HydroRecord { bodies, reaches, notches: Vec::new(), falls: Vec::new(), stats: stats() }
@@ -651,8 +706,22 @@ mod tests {
 
     #[test]
     fn nearer_a_collar_than_a_member_and_past_the_band_is_none() {
-        // 0.5 deg north: dm 55,597 m, dc 33,358 m. dm > dc, and dm is past the 25,000 m band.
-        let got = ask(0.5, 0.0, 40.0);
+        // Standing on body 0's own collar point: dm 44,478 m, dc 0 m. dm > dc, and dm is well
+        // past the 25,000 m band. The premises are asserted, not merely commented -- the first
+        // draft of this test probed a point the index does not offer body 0 at all, so its
+        // `none` said nothing about the extent clause and it passed against a stub query.
+        let probe = at(0.4, 0.0);
+        let record = fixture();
+        let index = built(&record);
+        assert!(index.candidates(&probe).bodies.contains(&0),
+                "fixture is wrong: body 0 is not even a candidate here, so `none` proves nothing");
+        let dm = probe.distance_to(&at(0.0, 0.0), R);
+        let dc = probe.distance_to(&at(0.4, 0.0), R);
+        assert!(dm > dc, "fixture is wrong: dm {dm} m is not past the collar at dc {dc} m");
+        assert!(dm > record.bodies[0].shore_reach_m,
+                "fixture is wrong: dm {dm} m is inside the band, so clause 2 would admit it");
+
+        let got = water_at(&record, &index, &ground(40.0), &probe);
         assert_eq!(got, WaterAt::none(), "outside the extent, even though 40 m is below 100 m");
     }
 
@@ -660,12 +729,12 @@ mod tests {
 
     #[test]
     fn nearer_a_collar_than_a_member_but_inside_the_band_is_the_body() {
-        // 0.21 deg north: dm 23,351 m -- past the collar (dc 1,112 m) but inside the 25,000 m
+        // 0.21 deg north: dm 23,351 m -- past the collar (dc 21,127 m) but inside the 25,000 m
         // band. Clause 1 refuses it; clause 2 is the only thing that can admit it.
         let probe = at(0.21, 0.0);
         let record = fixture();
         let dm = probe.distance_to(&at(0.0, 0.0), R);
-        let dc = probe.distance_to(&at(0.2, 0.0), R);
+        let dc = probe.distance_to(&at(0.4, 0.0), R);
         assert!(dm > dc, "fixture is wrong: the probe is nearer a member ({dm} m) than a collar ({dc} m)");
         assert!(dm <= record.bodies[0].shore_reach_m, "fixture is wrong: {dm} m is past the band");
 
@@ -787,6 +856,51 @@ mod tests {
                    "700 m from the centre line of a 1,000 m channel");
     }
 
+    /// Ruling Q-11: where two reaches both hold a point, the nearer centre line wins. §8.3 fixes
+    /// an order for bodies and says nothing about reaches, so this pins the rule the query chose
+    /// -- and pins it *discriminatingly*, because reach 3 runs 200 m from the probe and reach 2
+    /// runs 800 m, so the nearer channel is the **higher** id and "lower id wins" answers reach 2.
+    #[test]
+    fn where_two_reaches_hold_a_point_the_nearer_centre_line_wins() {
+        let probe = at(0.0, 140.1);
+        let record = fixture();
+        let index = built(&record);
+        let candidates = index.candidates(&probe);
+        assert!(candidates.reaches.contains(&2) && candidates.reaches.contains(&3),
+                "fixture is wrong: the index must offer both reaches, got {:?}", candidates.reaches);
+
+        let got = water_at(&record, &index, &ground(40.0), &probe);
+        assert_eq!(got.kind, WaterKind::River);
+        assert_eq!(got.level_m.to_bits(), 65.0f64.to_bits(),
+                   "reach 3's bed 60 m plus depth 5 m -- reach 2 would read 54 m");
+        assert_eq!(got.depth_m.to_bits(), 5.0f64.to_bits());
+        assert!(!got.fresh, "reach 3 ends in a sink");
+    }
+
+    /// A reach's influence stops at its last recorded point, not at the end of the line it lies
+    /// on. Past the end the distance is measured to the endpoint, which is the branch every
+    /// probe beside the middle of a leg leaves untouched.
+    #[test]
+    fn a_reachs_influence_stops_at_its_last_recorded_point() {
+        let record = fixture();
+        let index = built(&record);
+        let g = ground(40.0);
+
+        // Reach 0 starts at lon 120.0. 334 m short of it, along the very line it runs on: inside
+        // the 500 m half width of the endpoint, so still river.
+        let near_end = at(0.0, 120.0 - 334.0 / M_PER_DEG);
+        assert_eq!(water_at(&record, &index, &g, &near_end).kind, WaterKind::River);
+
+        // 556 m short of it, on the same line. The cross-track distance to that line is zero, so
+        // a query that measured to the infinite great circle instead of to the arc would answer
+        // `River` here. It must not.
+        let past_end = at(0.0, 120.0 - 556.0 / M_PER_DEG);
+        assert!(index.candidates(&past_end).reaches.contains(&0),
+                "fixture is wrong: reach 0 is not a candidate, so `none` proves nothing");
+        assert_eq!(water_at(&record, &index, &g, &past_end), WaterAt::none(),
+                   "556 m beyond the last recorded point of a 1,000 m channel");
+    }
+
     // ---- 9. Ocean --------------------------------------------------------------------------------
 
     #[test]
@@ -820,6 +934,53 @@ mod tests {
         let away = ask(85.0, 0.0, -50.0);
         assert_eq!(away.kind, WaterKind::Ocean);
         assert_eq!(away.body_id, NO_BODY);
+    }
+
+    /// **Ruling Q-12.** The ocean is suppressed by a body's *extent*, not by its *claim*: the two
+    /// part company on the dry shore of a body recorded below the datum, and gating the ocean on
+    /// the claim floods that shore with sea.
+    ///
+    /// Body 10 is a salt flat at level −400 m. Its shore band holds a probe where the landform is
+    /// −100 m: inside the extent, 300 m **above** the flat's own level, and 100 m **below** the
+    /// sea's. Neither clause should answer it.
+    #[test]
+    fn a_bodys_extent_suppresses_the_ocean_even_where_the_body_does_not_claim() {
+        let record = fixture();
+        let index = built(&record);
+        let flat = &record.bodies[10];
+        assert_eq!(flat.id, 10);
+        assert!(flat.level_m < DATUM_M, "fixture is wrong: this body is not below the datum");
+
+        // In the band: dm 23,351 m (inside the 25,000 m band), dc 1,112 m. Clause 2's case.
+        let band = at(-60.21, 0.0);
+        let dm = band.distance_to(&at(-60.0, 0.0), R);
+        let dc = band.distance_to(&at(-60.3, 0.0), R);
+        assert!(dm > dc && dm <= flat.shore_reach_m,
+                "fixture is wrong: dm {dm} m, dc {dc} m, band {} m", flat.shore_reach_m);
+        assert!(index.candidates(&band).bodies.contains(&10), "fixture is wrong: not a candidate");
+
+        // The landform is above the flat's level and below the datum. This is dry ground.
+        let dry = water_at(&record, &index, &ground(-100.0), &band);
+        assert_eq!(dry, WaterAt::none(),
+                   "an enclosed basin's dry shore is not sea, however far under the datum it lies");
+
+        // Drop the landform under the flat's own level and the same probe is the flat.
+        let wet = water_at(&record, &index, &ground(-500.0), &band);
+        assert_eq!(wet.kind, WaterKind::SaltFlat);
+        assert_eq!(wet.body_id, 10);
+        assert_eq!(wet.level_m.to_bits(), (-400.0f64).to_bits());
+        assert_eq!(wet.depth_m.to_bits(), 100.0f64.to_bits());
+        assert!(!wet.fresh);
+
+        // And the same dry landform outside every extent is the ocean, so the suppression above
+        // is the extent's doing and not the landform's.
+        let outside = at(-61.0, 0.0);
+        let dm_out = outside.distance_to(&at(-60.0, 0.0), R);
+        let dc_out = outside.distance_to(&at(-60.3, 0.0), R);
+        assert!(dm_out > dc_out && dm_out > flat.shore_reach_m, "fixture is wrong: still inside");
+        let sea = water_at(&record, &index, &ground(-100.0), &outside);
+        assert_eq!(sea.kind, WaterKind::Ocean);
+        assert_eq!(sea.depth_m.to_bits(), 100.0f64.to_bits());
     }
 
     // ---- 11. A salt body ---------------------------------------------------------------------------
