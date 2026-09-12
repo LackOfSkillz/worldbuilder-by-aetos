@@ -1331,3 +1331,21 @@ fn simplification_shrinks_the_refined_line() {
         assert!(simplified_count <= refined_count, "simplification must not add points");
     }
 }
+
+/// Ruling S-2: the coarse record crosses itself a little, and that stays. This test reports both
+/// counts, so the crossing pass (Task 3) can be judged against the coarse number rather than
+/// against zero.
+#[test]
+fn crossings_are_counted_coarse_and_refined() {
+    for (name, p) in [("params", params()), ("junction", junction_params())] {
+        let stages = bake_stages(&world(), &p).expect("stages");
+        let coarse = record_of(&stages, &p);
+        let coarse_lines: Vec<Vec<crate::hydrology::ReachPoint>> = coarse.reaches.iter().map(|r| r.points.clone()).collect();
+        let down: Vec<Downstream> = coarse.reaches.iter().map(|r| r.downstream).collect();
+        let before = crate::hydrology::refine::crossings(&coarse_lines, &down, world().radius_m).len();
+        let refined = crate::hydrology::bake(&world(), &p).expect("bake");
+        let lines: Vec<Vec<crate::hydrology::ReachPoint>> = refined.reaches.iter().map(|r| r.points.clone()).collect();
+        let after = crate::hydrology::refine::crossings(&lines, &down, world().radius_m).len();
+        eprintln!("{name}: coarse {before} refined {after}");
+    }
+}
