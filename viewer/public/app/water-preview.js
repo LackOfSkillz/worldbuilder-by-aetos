@@ -347,17 +347,19 @@ const REACH_STYLE = {
   great: { width: 5, color: "#1c4e80" },
 };
 
-/// **Own scaling choice, not from the brief or the engine**: `sqrt(areaM2)` is metres, and
-/// mapping it straight to pixels would put every lake at the clamp. Divided by 500 so the
-/// 1 km2 keep-area floor sits near the small end and a lake two orders of magnitude bigger
-/// sits near the large end, then clamped to 6..22 px either way.
-function bodyPixelSize(areaM2) {
-  return Math.max(6, Math.min(22, Math.sqrt(Math.max(0, areaM2)) / 500));
+/// A dot still marks a body under this radius, so it does not vanish at global zoom once the
+/// ring around it is too small to see; at or above it the ring alone reads fine.
+const SMALL_BODY_RADIUS_M = 20000;
+
+/// A circle of the same area as the body, in metres: `area = pi * r^2`.
+function bodyRadiusM(areaM2) {
+  return Math.sqrt(Math.max(0, areaM2) / Math.PI);
 }
 
 /// Draw a decoded hydro-bake record over the globe: every reach as a polyline, the outlet
 /// path from the largest (or forced) fresh body drawn again on top in amber, every body as a
-/// point sized by its area, and every waterfall as a small white point.
+/// ring at its true size (plus a fixed-size point for the small ones, so they do not vanish
+/// at global zoom), and every waterfall as a small white point.
 ///
 /// Never depth-tested and always clamped to ground, the same rules `hydrology.js` draws
 /// carved courses by -- a preview line that sinks into the terrain it has not carved is worse
@@ -402,23 +404,54 @@ export function drawPreview(viewer, Cesium, decoded) {
   }
 
   let bodiesDrawn = 0;
+  let ringsDrawn = 0;
   for (const body of decoded.bodies) {
     const salt = body.kind === "saltLake" || body.kind === "saltFlat";
+    const colour = Cesium.Color.fromCssColorString(salt ? "#ffffff" : "#3aa7e0");
+    const radiusM = bodyRadiusM(body.areaM2);
+    const position = Cesium.Cartesian3.fromDegrees(body.anchor[1], body.anchor[0]);
+    const description = [
+      body.kind,
+      `${(body.areaM2 / 1e6).toFixed(2)} km2`,
+      `radius ${(radiusM / 1000).toFixed(1)} km`,
+      `level ${body.levelM.toFixed(1)} m`,
+      body.fresh ? "fresh" : "salt",
+      `outlet reach ${body.outletReach === null ? "none" : body.outletReach}`,
+    ].join("\n");
+
+    // A ring at the body's true size, so a pond and an ocean-sized lake read as the sizes
+    // they are instead of both being the same fixed dot. Unfilled so it does not paint over
+    // the terrain or the reaches under it; clamped so it follows the ground rather than
+    // floating at sea level over hills.
     source.entities.add({
-      position: Cesium.Cartesian3.fromDegrees(body.anchor[1], body.anchor[0]),
-      point: {
-        pixelSize: bodyPixelSize(body.areaM2),
-        color: Cesium.Color.fromCssColorString(salt ? "#ffffff" : "#3aa7e0"),
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      position,
+      ellipse: {
+        semiMajorAxis: radiusM,
+        semiMinorAxis: radiusM,
+        fill: false,
+        outline: true,
+        outlineColor: colour,
+        outlineWidth: 2,
+        height: undefined,
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
       },
-      description: [
-        body.kind,
-        `${(body.areaM2 / 1e6).toFixed(2)} km2`,
-        `level ${body.levelM.toFixed(1)} m`,
-        body.fresh ? "fresh" : "salt",
-        `outlet reach ${body.outletReach === null ? "none" : body.outletReach}`,
-      ].join("\n"),
+      description,
     });
+    ringsDrawn += 1;
+
+    // A small body's ring can shrink past visibility at global zoom, so it keeps today's dot
+    // too; a body at or above the threshold is legible as a ring alone.
+    if (radiusM < SMALL_BODY_RADIUS_M) {
+      source.entities.add({
+        position,
+        point: {
+          pixelSize: 5,
+          color: colour,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+        description,
+      });
+    }
     bodiesDrawn += 1;
   }
 
@@ -442,7 +475,11 @@ export function drawPreview(viewer, Cesium, decoded) {
   return {
     source,
     counts: {
-      reaches: reachesDrawn, bodies: bodiesDrawn, falls: fallsDrawn, outletReaches: outlet.reachIds.length,
+      reaches: reachesDrawn,
+      bodies: bodiesDrawn,
+      rings: ringsDrawn,
+      falls: fallsDrawn,
+      outletReaches: outlet.reachIds.length,
     },
     remove: () => layer.remove(true),
   };
