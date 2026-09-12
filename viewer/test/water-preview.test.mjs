@@ -63,12 +63,30 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.header.pondWetnessShare, words[51]);
   assert.equal(decoded.header.pondMaxSlope, words[52]);
   assert.equal(decoded.header.pondDensityAreaM2, words[53]);
-  // SCHEMA 6, plan 1b-4 Task 1 (words 54-55): the extent totals across all bodies. Every body
-  // ships a zeroed extent in this task, so both are 0 on any bake this schema can produce so far.
+  // SCHEMA 6, plan 1b-4 Task 2 (words 54-55): the extent totals across all bodies. This world's
+  // 12,000-node bake keeps only coarse bodies (Ruling E-2's shore-point set, never a pond), so
+  // both totals are the sum of every body's own extent and must be positive, not the zeroed
+  // stub Task 1 shipped before Task 2 filled a real extent in.
   assert.equal(decoded.header.shoreMembers, words[54]);
   assert.equal(decoded.header.collarPoints, words[55]);
-  assert.equal(decoded.header.shoreMembers, 0);
-  assert.equal(decoded.header.collarPoints, 0);
+  assert.ok(decoded.header.shoreMembers > 0, "sanity: this world's coarse bodies carry shore points");
+  assert.ok(decoded.header.collarPoints > 0, "sanity: this world's coarse bodies carry a collar");
+  const shoreMemberTotal = decoded.bodies.reduce((sum, b) => sum + b.shoreMemberCount, 0);
+  const collarTotal = decoded.bodies.reduce((sum, b) => sum + (b.outline.length - b.shoreMemberCount), 0);
+  assert.equal(decoded.header.shoreMembers, shoreMemberTotal,
+               "the header total is the sum of every decoded body's own shoreMemberCount");
+  assert.equal(decoded.header.collarPoints, collarTotal,
+               "the header total is the sum of every decoded body's own collar (outline.length - shoreMemberCount)");
+  // Ruling E-1: a coarse body's outline is shore members first, then collar -- so a body with
+  // any shore members at all must have MORE outline points than shore members, i.e. a collar
+  // too. This is the shape `water_at` will depend on; only the Rust side asserted it before.
+  for (const body of decoded.bodies) {
+    if (body.shoreMemberCount > 0) {
+      assert.ok(body.outline.length > body.shoreMemberCount,
+                 `body ${body.id} has ${body.shoreMemberCount} shore members but only ` +
+                 `${body.outline.length} outline points -- no collar`);
+    }
+  }
   // The header is 56 words, so word 56 is the first body's id.
   assert.equal(words[56], decoded.bodies[0].id);
 });

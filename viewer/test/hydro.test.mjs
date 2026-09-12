@@ -79,13 +79,17 @@ test("hydroSummary reads the SCHEMA 5/6 params echo, forced-outlet matches, cros
   // The seven pond params are in the record (words 47-53) but deliberately not in this summary:
   // like the refinement params, they are not wasm params.
   assert.equal(s.pondCellM, undefined);
-  // SCHEMA 6 (words 54-55), plan 1b-4 Task 1: the extent totals across all bodies. Every body
-  // ships a zeroed extent in this task, so both are pinned to 0 here -- Task 2 stops pinning
-  // this to a literal once bodies can carry a real extent.
+  // SCHEMA 6 (words 54-55), plan 1b-4 Task 2: the extent totals across all bodies. This world's
+  // bake keeps only coarse bodies (a shore-point set per Ruling E-2, never a pond), so both
+  // totals are the sum of every body's own extent and must be positive -- not the zeroed stub
+  // Task 1 shipped before Task 2 filled a real extent in. `hydroSummary` is header-only and
+  // carries no per-body data, so the per-body sum-and-shape invariant these two totals must
+  // satisfy is asserted where the bodies are actually decoded:
+  // `water-preview.test.mjs`'s "decodeHydro's body and reach counts match hydroSummary's".
   assert.equal(s.shoreMembers, words[54]);
   assert.equal(s.collarPoints, words[55]);
-  assert.equal(s.shoreMembers, 0);
-  assert.equal(s.collarPoints, 0);
+  assert.ok(s.shoreMembers > 0, "sanity: this world's coarse bodies carry shore points");
+  assert.ok(s.collarPoints > 0, "sanity: this world's coarse bodies carry a collar");
 });
 
 test("hydroSummary throws on a schema other than 6 rather than misreading the header", () => {
