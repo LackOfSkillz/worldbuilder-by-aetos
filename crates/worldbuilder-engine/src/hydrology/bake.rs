@@ -329,6 +329,15 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
             Some(reach_of_first_node[leaves_to as usize])
         };
         let (anchor_lat, anchor_lon) = graph.positions[hollow.floor as usize].to_latlon();
+        // Plan 1b-4, Task 2: the body's extent -- its shore members, then its collar (Rulings E-1
+        // and E-2) -- and the shore band that holds its level contour (Ruling E-3).
+        let extent = crate::hydrology::extent::extent_of(
+            graph,
+            &routing.lake_of,
+            i as u32, // cast-ok: hollow index, bounded by hollows.len()
+            &hollow.members,
+            hollow.level_m,
+        );
         // A closed lake has nowhere to go; an open lake follows its receiver chain past its own
         // shore (Ruling: Task 5).
         let downstream = if closed {
@@ -356,12 +365,10 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
             depth_m: hollow.depth_m,
             outlet_reach,
             anchor: (anchor_lat, anchor_lon),
-            outline: Vec::new(),
+            outline: extent.points,
             downstream,
-            // Plan 1b-4, Task 1: every coarse body ships the extent's discriminator zeroed until
-            // Task 2 fills it in.
-            shore_member_count: 0,
-            shore_reach_m: 0.0,
+            shore_member_count: extent.shore_member_count,
+            shore_reach_m: extent.shore_reach_m,
         });
     }
 
@@ -533,6 +540,14 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     let great = reach_lines.iter().filter(|r| r.class == ReachClass::Great).count();
     let max_order = reach_lines.iter().map(|r| r.order).fold(0u32, |top, o| if o > top { o } else { top });
 
+    // SCHEMA 6, plan 1b-4: what the extents cost, totalled over the bodies that carry one. Every
+    // body here is coarse; a pond is appended later by `ponds::search` with both halves zero
+    // (Ruling E-6), so neither total moves after this point.
+    let shore_members: u32 = bodies.iter().map(|b| b.shore_member_count).sum();
+    let collar_points: u32 = bodies.iter()
+        .map(|b| b.outline.len() as u32 - b.shore_member_count) // cast-ok: at most one point per node
+        .sum();
+
     let ratios = bifurcation_ratios(&reaches);
     let (bifurcation_min, bifurcation_max) = if ratios.is_empty() {
         (0.0, 0.0)
@@ -605,10 +620,8 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         pond_wetness_share: params.pond_wetness_share,
         pond_max_slope: params.pond_max_slope,
         pond_density_area_m2: params.pond_density_area_m2,
-        // SCHEMA 6, plan 1b-4: every body ships a zeroed extent in this task, so both totals are
-        // zero at `record_of` too. Task 2 fills them in alongside the extents themselves.
-        shore_members: 0,
-        collar_points: 0,
+        shore_members,
+        collar_points,
     };
 
     HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }

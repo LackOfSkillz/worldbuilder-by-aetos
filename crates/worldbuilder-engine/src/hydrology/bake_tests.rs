@@ -1698,3 +1698,98 @@ fn the_record_echoes_the_pond_params() {
     assert_eq!(words[53], p.pond_density_area_m2);
     assert_eq!(decode(&words).as_ref(), Some(&record), "words 45-53 of the 56-word SCHEMA 6 header");
 }
+
+/// Rulings E-1, E-2 and E-3 on a real bake: every coarse body carries a shore-point set, every
+/// pond carries a traced curve, and the two are told apart by `shore_member_count` alone.
+#[test]
+fn every_coarse_body_carries_an_extent() {
+    for (name, surface, p) in refined_populations() {
+        let record = crate::hydrology::bake(&surface, &p).expect("bake");
+        let coarse = record_of(&bake_stages(&surface, &p).expect("stages"), &p);
+        let mut with_extent = 0usize;
+        for body in &record.bodies[..coarse.bodies.len()] {
+            assert!(body.shore_member_count > 0, "{name}: coarse body {} has no shore members", body.id);
+            assert!(body.outline.len() as u32 > body.shore_member_count, // cast-ok: at most one point per node
+                    "{name}: body {} has shore members but no collar", body.id);
+            assert!(body.shore_reach_m >= 0.0 && body.shore_reach_m.is_finite());
+            with_extent += 1;
+        }
+        for body in &record.bodies[coarse.bodies.len()..] {
+            assert_eq!(body.shore_member_count, 0, "{name}: a pond carries a traced curve");
+            assert_eq!(body.shore_reach_m, 0.0);
+        }
+        assert!(with_extent > 0);
+        let shore: u32 = record.bodies.iter().map(|b| b.shore_member_count).sum();
+        assert_eq!(record.stats.shore_members, shore);
+        eprintln!("{name}: {with_extent} coarse bodies, {} shore members, {} collar points",
+                  record.stats.shore_members, record.stats.collar_points);
+    }
+}
+
+/// Ruling E-3: a body's band never counts a step down to ground at or below its own level.
+///
+/// The brief matched a hollow to its body on the anchor's float pair; the body id is the exact
+/// handle instead, and it is the one `record_of` itself uses -- body ids are one per kept hollow,
+/// numbered 0.. in hollow order, so the nth kept hollow is `record.bodies[n]`. The anchor is
+/// asserted rather than searched, so a change to that numbering is caught here too.
+///
+/// **The 200,000-node population is not decoration.** On all three 12,000-node populations the
+/// below-level steps exist (9, 9 and 10 of 162, 162 and 328 member-collar steps) but not one of
+/// them is the longest step of its own body -- so dropping the usability check entirely leaves
+/// every band unchanged and this property reads green against a broken rule. It takes the seed 1
+/// `ranges` world at 200,000 nodes for the exclusion to bite: 112 below-level steps of 3,359, on
+/// 4 bodies whose longest step is one of them. The last assertion is that at least one body in
+/// the population is like that, so the property cannot go back to comparing a maximum with
+/// itself.
+#[test]
+fn no_bodys_band_counts_a_step_below_its_level() {
+    let mut bands_the_exclusion_narrows = 0usize;
+    for (name, surface, p) in [("params", world(), params()),
+                               ("ranges 200k", ranges_world(), HydroParams::earth_like(200_000))] {
+        let stages = bake_stages(&surface, &p).expect("stages");
+        let record = record_of(&stages, &p);
+        let graph = &stages.graph;
+        let mut checked = 0usize;
+        let mut next_body_id = 0usize;
+        for (i, hollow) in stages.hollows.iter().enumerate() {
+            if hollow.fate != Fate::Keep {
+                continue;
+            }
+            let body = &record.bodies[next_body_id];
+            next_body_id += 1;
+            assert_eq!(body.anchor, graph.positions[hollow.floor as usize].to_latlon(),
+                       "{name}: body {} is the body of hollow {i}", body.id);
+            let mut longest_usable = 0.0;
+            let mut longest_step = 0.0;
+            for &member in &hollow.members {
+                if stages.routing.lake_of[member as usize] != i as u32 { // cast-ok: hollow index
+                    continue;
+                }
+                for &next in graph.neighbours(member) {
+                    if stages.routing.lake_of[next as usize] == i as u32 { // cast-ok: hollow index
+                        continue;
+                    }
+                    let step = graph.positions[member as usize].distance_to(&graph.positions[next as usize], graph.radius_m);
+                    if step > longest_step { longest_step = step; }
+                    if graph.height_m[next as usize] <= hollow.level_m {
+                        continue;
+                    }
+                    if step > longest_usable { longest_usable = step; }
+                }
+            }
+            let gap = body.shore_reach_m - longest_usable;
+            assert!(gap < 1e-6 && gap > -1e-6,
+                    "{name}: body {} band {} against longest usable {}", body.id, body.shore_reach_m, longest_usable);
+            if longest_step > longest_usable {
+                bands_the_exclusion_narrows += 1;
+            }
+            checked += 1;
+        }
+        assert_eq!(next_body_id, record.bodies.len(), "{name}: every body is a kept hollow's");
+        assert!(checked > 0, "{name}: the population has kept hollows");
+    }
+    assert!(bands_the_exclusion_narrows > 0,
+            "no body's longest step was an unusable one: this property is asserting nothing");
+}
+
+

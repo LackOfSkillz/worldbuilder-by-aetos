@@ -13,6 +13,7 @@ pub mod routing;
 pub mod flow;
 pub mod reaches;
 pub mod record;
+pub mod extent;
 pub mod bake;
 pub mod refine;
 pub mod ponds;
