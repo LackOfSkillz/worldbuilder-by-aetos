@@ -5321,9 +5321,12 @@ bake was clean (4,876 reaches over 114,941 points; crossings 43 coarse → 37 sh
 corridor, **32× spec §6.6's 500 km²**. Two doublings rather than one, because one lands near
 8.6 MB with no margin and the owner's world is the world that must fit. The other levers were
 refused on measured grounds: Ruling S-13 shows a coarser outline breaks containment, and the keep
-rule is not the limiter (the owner world's median pond is 4.38 km² against a 0.05 km² floor; its
+rule is not the limiter (that bake's median pond is 4.38 km² against a 0.05 km² floor — on the
+bake that finally ships, at Ruling S-17's 1.5 km corridor, the median is 1.81 km²; its
 area p10/p50/p90 are 1.69 / 4.38 / 10.19 km² and its depths 2.7 / 7.0 / 22.6 m). The consequence,
-stated plainly: roughly 2,900 ponds on the owner's world instead of 11,578.
+stated plainly: fewer ponds on the owner's world, and at the time this section was written the
+prediction was roughly 2,900 against 11,578. **The measured answer, once Ruling S-17 also halved
+the corridor, is 3,719** — see the S-17 section below.
 
 ### The three stand-ins at 1.6e10
 
@@ -5494,4 +5497,56 @@ would get noticeably sparse — on these stand-ins the kept counts would likely 
 hundreds. `pond_cell_m` should stay the last resort.
 
 The reproduction commands are the ones above, with `--expect-passed <783|783|785|889|891>` and
+`--expect-ignored 7`.
+
+## 2026-09-12, water 1b-3 Task 7 review fix wave: one value pin, and the pins with it
+
+The review of Task 7 found no defect in the pins or the fixtures — it checked both by arithmetic
+and by reading — and three things wrong in prose, plus one missing test. The test is the only
+behaviour change.
+
+**`bake_tests::earth_like_ships_the_tuned_pond_corridor_and_density`.** After Ruling S-17, every
+other pond test in the tree pins spec §6.6's 3 km corridor on purpose — six `ponds::tests` cases
+through their own `params()`, and `ponds_obey_their_keep_rule_and_name_a_river` locally — because
+their bowls and cell counts were laid out against it and what they assert is the search's
+mechanism. Each is right on its own; in aggregate they meant **no Rust test baked at the values
+that ship**, and a drift in `pond_search_radius_m` or `pond_density_area_m2` would have been
+caught only by a parity count moving. The new test pins all three constants (1,500 m, 1.6e10 and
+the untuned 250 m cell) and names S-17 and S-16 in its messages. It pins the constants, not what
+they do; the behavioural gap is recorded in the carry-forward for plan 1b-4.
+
+**Engine, +1 uniformly** — re-derived per configuration through `cargo test -p worldbuilder-engine
+<cfg> -- --list` (and `--ignored`) and `assert_counts.py cargo-list`; all five printed `count OK`:
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 791 | 7 | **784** (was 783) |
+| default | 791 | 7 | **784** (was 783) |
+| `--features python` | 793 | 7 | **786** (was 785) |
+| `--features wasm` | 897 | 7 | **890** (was 889) |
+| `--features python,wasm` | 899 | 7 | **892** (was 891) |
+
+The suite was run: 765 + 4 + 9 + 6 = **784 passed, 0 failed, 7 ignored**. The drain sweep passed
+in 66.31 s.
+
+**Parity — unmoved, and re-derived rather than assumed:** 147,553 compared / 0 divergent; seed
+141,765; erosion-k 216; water-pond 60; tectonic-warp 21,783 (again *"exactly as the native side
+predicted"*); coast 13,128; gully 3,752; climate 648. A test changes no record. **Python** 565 /
+157 and the **viewer's** 337 are unmoved.
+
+**Wasm rebuilt:** 427,667 bytes; artifact-sha256
+`e590b3b9c2fe9273272d140c1b85aab2877748282b58e2350f4563dfc8660454` — **identical**, since a test
+is not compiled into it — and source-fingerprint
+`f9e351a4e94c53bbdda5f1e811382b1b60238434f2114550165422ef2670392d` (58 inputs). `check:wasm`
+reports it matches.
+
+**Prose corrected in the same wave.** The "roughly twenty times as many ponds" figure was not
+measured and is replaced, in both the verification report and the carry-forward, by **about ten
+times (roughly 39,000 against 3,719)**, stated as an extrapolation and showing the two numbers it
+rests on: one measured bake (5,184 ponds at the spec's 3 km corridor with the shipped cap) and one
+extrapolated ratio (×0.669 a cap doubling, measured over two doublings and applied over five).
+The median pond area now says which bake it came from — **4.38 km² at the 3 km corridor, 1.81 km²
+at the 1.5 km corridor that ships** — in `mod.rs`, here, and in the verification report.
+
+The reproduction commands are the ones above, with `--expect-passed <784|784|786|890|892>` and
 `--expect-ignored 7`.

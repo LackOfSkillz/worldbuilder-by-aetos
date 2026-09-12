@@ -1490,6 +1490,32 @@ fn ponds_obey_their_keep_rule_and_name_a_river() {
     assert!(ponds > 0, "this world must find ponds, or the assertions above prove nothing");
 }
 
+/// **A value pin, and the only test that names what `earth_like` actually ships for the fine
+/// search.** Rulings S-16 and S-17 moved two of spec §6.6's own numbers to meet the owner world's
+/// 8 MB and 300 s gates: the density cap from 500 km² (5.0e8) to 16,000 km² (1.6e10), because
+/// that world recorded 11,146,072 bytes at 4.0e9; and the corridor from 3 km to 1.5 km, because
+/// at 3 km its bake took 432-441 s.
+///
+/// **Why this test exists.** Every other pond test in the tree pins spec §6.6's 3 km corridor
+/// deliberately -- `ponds::tests::params` for all six of its cases and
+/// `ponds_obey_their_keep_rule_and_name_a_river` locally -- because their bowls and cell counts
+/// were laid out against it and what they assert is the search's mechanism. That is right for
+/// each of them and wrong in aggregate: after S-17 **no other test bakes at the values that
+/// ship**. Without this pin, a drift in either number would be caught only by a parity count
+/// moving, which says a number changed but not which one or that anybody meant it to.
+#[test]
+fn earth_like_ships_the_tuned_pond_corridor_and_density() {
+    let p = HydroParams::earth_like(1_000_000);
+    assert_eq!(p.pond_search_radius_m, 1_500.0,
+               "Ruling S-17: the fine search's corridor, half spec §6.6's 3 km");
+    assert_eq!(p.pond_density_area_m2, 1.6e10,
+               "Ruling S-16: the density cap, 32x spec §6.6's 500 km^2");
+    // Not tuned, and the reason the two above could be: the trace stays at the spec's 250 m, so
+    // no recorded outline is coarser and Ruling S-13's containment result still holds for what
+    // ships. If this ever moves, that result has to be re-established before it does.
+    assert_eq!(p.pond_cell_m, 250.0, "spec §6.6's trace, untouched by S-16 and S-17");
+}
+
 /// The record echoes the seven pond params and the two pond counts, in header words 45-53.
 #[test]
 fn the_record_echoes_the_pond_params() {

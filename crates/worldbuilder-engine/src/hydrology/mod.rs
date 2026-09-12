@@ -158,9 +158,16 @@ impl HydroParams {
             // NOT a weak lever, and one more doubling lands near 8.6 MB with no margin. Two
             // doublings, to 1.6e10, is Ruling S-16. The other levers were refused on measured
             // grounds: Ruling S-13 shows a coarser outline breaks containment, and the keep rule
-            // is not the limiter (the owner world's median pond is 4.38 km^2 against a 0.05 km^2
-            // floor). The consequence, stated plainly: roughly 2,900 ponds on the owner's world
-            // where the spec's cap would have put tens of thousands.
+            // is not the limiter (that bake's median pond is 4.38 km^2 against a 0.05 km^2 floor;
+            // on the bake that finally ships, at S-17's 1.5 km corridor, the median is 1.81 km^2,
+            // still 36x the floor).
+            //
+            // What ships, and it is BOTH numbers: `pond_search_radius_m` 1,500 m and this cap at
+            // 1.6e10. 1.6e10 alone was not enough -- at 3 km the owner's world still recorded
+            // 8,430,792 bytes and took 432-441 s -- so read this constant together with Ruling
+            // S-17 at `pond_search_radius_m`. At the pair, that world records 7,019,992 bytes in
+            // 242 s with 3,719 ponds. See `docs/superpowers/reports/
+            // 2026-09-12-water-1b3-verification.md` for both departures and their consequence.
             pond_density_area_m2: 1.6e10,
         }
     }

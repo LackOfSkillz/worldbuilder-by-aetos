@@ -1191,25 +1191,39 @@ jobs:
           # -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) and `assert_counts.py
           # cargo-list` AFTER the last source edit; all five printed `count OK`. The viewer stays
           # at 337 passing and the parity pins below did move.
+          # 2026-09-12, water 1b-3 Task 7 review fix wave: 783/783/785/889/891 ->
+          # 784/784/786/890/892, 7 ignored unchanged, `listed` 790/790/792/896/898 ->
+          # 791/791/793/897/899. **+1 uniformly, one new test**:
+          # `bake_tests::earth_like_ships_the_tuned_pond_corridor_and_density`, a value pin on
+          # `earth_like`'s `pond_search_radius_m` (1,500 m, Ruling S-17),
+          # `pond_density_area_m2` (1.6e10, Ruling S-16) and `pond_cell_m` (250 m, deliberately
+          # NOT tuned). The review's finding it answers: after S-17 every other pond test pins
+          # spec 6.6's 3 km corridor on purpose, so nothing exercised the values that ship, and a
+          # drift in either would have been caught only by a parity count moving. No
+          # `tests/wasm_exports.rs` test was added, so the wasm rows move by the same +1, and the
+          # parity pins below did NOT move -- a test changes no record. Re-derived per
+          # configuration through `cargo test -p worldbuilder-engine <cfg> -- --list` (and
+          # `--ignored`) and `assert_counts.py cargo-list` AFTER the last source edit; all five
+          # printed `count OK`.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 783
+            expect: 784
             expect_ignored: 7
           - name: default
             features: ""
-            expect: 783
+            expect: 784
             expect_ignored: 7
           - name: python
             features: "--features python"
-            expect: 785
+            expect: 786
             expect_ignored: 7
           - name: wasm
             features: "--features wasm"
-            expect: 889
+            expect: 890
             expect_ignored: 7
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 891
+            expect: 892
             expect_ignored: 7
     steps:
       - uses: actions/checkout@v4
