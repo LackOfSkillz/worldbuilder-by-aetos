@@ -1438,7 +1438,13 @@ fn refinement_adds_no_crossings_at_1m() {
 /// km^2 against a 1 km^2 `pond_max_area_m2`, so dropping them would have dropped most of them.
 #[test]
 fn ponds_obey_their_keep_rule_and_name_a_river() {
-    let p = params();
+    // Spec §6.6's 3 km corridor, not `earth_like`'s post-S-17 1.5 km: this world is 12,000 nodes,
+    // and at 1.5 km its rivers find no hollow that passes the keep rule, so every assertion below
+    // would run over an empty set and the closing `ponds > 0` would say so. What is under test
+    // here is the keep rule and Rulings S-5, S-7, S-11 and S-13, none of which is about how wide
+    // the corridor is.
+    let mut p = params();
+    p.pond_search_radius_m = 3_000.0;
     let record = crate::hydrology::bake(&world(), &p).expect("bake");
     let coarse = record_of(&bake_stages(&world(), &p).expect("stages"), &p);
     assert!(record.bodies.len() >= coarse.bodies.len(), "ponds are appended, never inserted");

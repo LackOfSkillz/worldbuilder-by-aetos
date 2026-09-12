@@ -24,10 +24,18 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-function bake() {
+function bake(totalNodes = PARAMS.totalNodes) {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
-  return engine.hydroBake({ handle, params: PARAMS });
+  return engine.hydroBake({ handle, params: { ...PARAMS, totalNodes } });
 }
+
+// Ruling S-17 halved `earth_like`'s pond corridor to 1.5 km, and a wasm bake always takes
+// `earth_like`'s pond params -- they are not on the wire, so this side cannot widen it back the
+// way the Rust fixtures do. At 12,000 nodes the plain world's rivers now find 5 candidates and
+// keep 0, which would leave the pond test below asserting over an empty set. 50,000 nodes on the
+// SAME world keeps 19 in about two seconds, so the pond test bakes at that and everything else
+// stays on the 12,000-node bake `hydro.test.mjs` shares.
+const POND_NODES = 50000;
 
 test("decodeHydro's body and reach counts match hydroSummary's, and it consumes the whole array", () => {
   const words = bake();
@@ -60,7 +68,7 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
 });
 
 test("every pond the record kept is a traced ring at the end of bodies", () => {
-  const decoded = decodeHydro(bake());
+  const decoded = decodeHydro(bake(POND_NODES));
   const kept = decoded.header.pondsKept;
   assert.ok(kept > 0, "sanity: this world's fine search keeps ponds");
   for (const body of decoded.bodies.slice(decoded.bodies.length - kept)) {

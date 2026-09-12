@@ -73,7 +73,9 @@ pub struct HydroParams {
     pub meander_max_slope: f64,
     /// Spec §6.6: the fine search's cell.
     pub pond_cell_m: f64,
-    /// How far either side of a refined reach the fine search looks.
+    /// How far either side of a refined reach the fine search looks. Spec §6.6 says 3 km;
+    /// `earth_like` ships 1.5 km after Ruling S-17 -- see `earth_like` for the measurement. The
+    /// search's cost is linear in this, and so is roughly the candidate count.
     pub pond_search_radius_m: f64,
     /// The pond keep rule's depth.
     pub pond_keep_depth_m: f64,
@@ -121,7 +123,18 @@ impl HydroParams {
             meander_amplitude_widths: 1.5,
             meander_max_slope: 0.002,
             pond_cell_m: 250.0,
-            pond_search_radius_m: 3_000.0,
+            // RULING S-17, and the only lever in this plan that addresses both gates at once.
+            // Spec §6.6's corridor is 3 km either side. At 3 km, with the cap already at 1.6e10,
+            // the owner's world baked in **441 s and 432 s** (two runs, the second on a settled
+            // page) against a 300 s gate, and recorded 8,430,792 bytes against 8,000,000. The
+            // search samples a lane `2 * radius` wide, so its cost is LINEAR in this number and
+            // so, roughly, is the candidate count: halving it halves the work and drops about
+            // half the candidates. It is preferred over `pond_cell_m` because the cell is the
+            // spec's 250 m trace -- coarsening it would make every recorded outline coarser and
+            // would put Ruling S-13's containment result back in question -- and over another
+            // density doubling because thinning what the search already found is worse than not
+            // looking as far.
+            pond_search_radius_m: 1_500.0,
             pond_keep_depth_m: 2.0,
             pond_keep_area_m2: 50_000.0,
             pond_wetness_share: 0.6,

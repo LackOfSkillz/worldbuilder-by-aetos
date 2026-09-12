@@ -139,7 +139,8 @@ fn clipped_at(cells: &[(usize, usize)], steps: usize, cells_across: usize) -> (b
 /// * The drainage network is still derived from the landform alone, so 1a's pit-lake failure
 ///   cannot come back through the rivers.
 /// * The speckle risk is held off by four gates that all remain: the keep rule (>= 2 m deep,
-///   >= 0.05 km^2), the 3 km corridor along the refined rivers, Ruling S-6's wetness and slope
+///   >= 0.05 km^2), the corridor along the refined rivers (the spec's 3 km; `earth_like` ships
+///   1.5 km after Ruling S-17), Ruling S-6's wetness and slope
 ///   gates, and Ruling S-8's density cap (the spec's 500 km^2; `earth_like` ships 16,000 km^2
 ///   after plan 1b-3's Task 7 size gate and Ruling S-16).
 ///
@@ -179,7 +180,7 @@ pub fn strips_with_skips(reach: &ReachLine, ground: &Ground,
 ///
 /// The gate's granularity is the point. Ruling S-6 calls the wetness and slope tests "coarse gates
 /// on where to look", and until this ruling they were applied to a candidate *after* its whole
-/// 3 km corridor had been sampled off `Surface::elevation_m` at 250 m -- which is where a bake's
+/// whole corridor had been sampled off `Surface::elevation_m` at 250 m -- which is where a bake's
 /// time goes, so gating afterwards saved none of it. Asking the same question of the segment's
 /// midpoint, before the sampling loop, is the gate doing what it was written to do.
 ///
@@ -935,8 +936,17 @@ mod tests {
     const R: f64 = 6_371_000.0;
     const M_PER_DEG: f64 = R * std::f64::consts::PI / 180.0;
 
+    /// Ruling S-17 took `earth_like`'s corridor to 1.5 km for the owner world's size and time
+    /// gates. **These fixtures pin 3 km on purpose**: their bowls, offsets and expected cell
+    /// counts were laid out against spec §6.6's corridor, and what they assert is the search's
+    /// mechanism -- that a bowl is found, that a side clip is flagged, that Rulings S-6, S-7,
+    /// S-8 and S-10 do what they say -- not which corridor width ships. Inheriting a number the
+    /// gates tune would break every one of them the next time it is tuned, and would say nothing
+    /// about the mechanism when it did.
     fn params() -> HydroParams {
-        HydroParams::earth_like(1_000)
+        let mut p = HydroParams::earth_like(1_000);
+        p.pond_search_radius_m = 3_000.0;
+        p
     }
 
     fn reach_along_the_equator(km: f64) -> ReachLine {
@@ -956,7 +966,8 @@ mod tests {
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let p = params();
         let strip = &strips(&reach_along_the_equator(10.0), &ground, &h, &p)[0];
-        // 3 km either side at 250 m: 12 cells each way plus the middle.
+        // 3 km either side at 250 m (this fixture's own corridor, see `params`): 12 cells each
+        // way plus the middle.
         assert_eq!(strip.cells_across, 25);
         assert_eq!(strip.steps, 40, "10 km at 250 m");
         assert_eq!(strip.ground_m.len(), 25 * 40);

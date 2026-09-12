@@ -5387,3 +5387,111 @@ five belt groups are unchanged at 6,186.
 
 The reproduction commands are the ones above, with `--expect-passed <783|783|785|889|891>` and
 `--expect-ignored 7`.
+
+## 2026-09-12, water 1b-3 Ruling S-17: the corridor halves, and the pins with it
+
+At 3 km with the cap already at 1.6e10, the owner's world **missed both gates**: 8,430,792 bytes
+against 8,000,000, and **441 s then 432 s** (two runs, the second on a settled page) against 300 s.
+The earlier 124 s reading did not reproduce and is discarded as an outlier. Ponds were 5,184 kept
+of 131,386 found. Everything else on that bake was clean and unchanged.
+
+**Ruling S-17: `pond_search_radius_m` 3,000 → 1,500 m.** It is the only lever that moves both
+gates at once. The search samples a lane `2 × radius` wide, so its cost is **linear** in this
+number; and because a hollow must sit wholly inside the strip to survive Ruling S-10's side clip,
+a narrower lane drops candidates **faster** than it drops time. It was preferred over
+`pond_cell_m`, which is the spec's 250 m trace — coarsening it would make every recorded outline
+coarser and put Ruling S-13's containment result back in question — and over another density
+doubling, because thinning what the search already found is worse than not looking as far.
+`pond_density_area_m2` stays at 1.6e10.
+
+### The three stand-ins at 1,500 m
+
+`./target/release/hydro_survey.exe 1000000`, no flags. `drainage_check` is `Ok` on all three.
+
+| world | bake | (stages / record_of / refine / **ponds**) | record | ponds found / kept |
+|---|---|---|---|---|
+| plain | **39.99 s** (was 70.26) | 8.88 / 0.03 / 1.56 / **29.53** (was 59.56) | **4,241,672** (was 4,934,968) | **1,993 / 273** (was 9,358 / 1,496) |
+| owner_survey | **24.66 s** (was 37.73) | 9.92 / 0.02 / 0.75 / **13.97** (was 26.91) | **2,461,400** (was 2,650,888) | **409 / 57** (was 2,083 / 409) |
+| seed1_ranges | **53.14 s** (was 91.23) | 9.71 / 0.06 / 2.47 / **40.90** (was 79.02) | **5,974,160** (was 6,966,736) | **3,752 / 504** (was 15,683 / 2,237) |
+
+**The lever behaves exactly as predicted on time and better than predicted on count.** The pond
+part scales 0.496 / 0.519 / 0.518 — linear in the radius, to within 4%. The candidate count
+scales 0.213 / 0.196 / 0.239 — about a **fifth**, not a half, because the narrower lane side-clips
+far more hollows. Reaches, reach points, crossings (33/28, 4/3, 54/50), notches, capped basins and
+drainage are bit-identical to the 3 km run: the corridor decides where the search looks, and
+nothing else.
+
+Both gates hold with room: the worst record clears 8,000,000 by **2,025,840 bytes (25.3%)** and
+the worst pond search is **40.90 s of 120 s (34%)**.
+
+### Pins, re-derived by running them
+
+**Wasm rebuilt:** 427,667 bytes, 31 exports, 0 imports; artifact-sha256
+`e590b3b9c2fe9273272d140c1b85aab2877748282b58e2350f4563dfc8660454`, source-fingerprint
+`7669d18aa7962c27e370b2ceabc22c9086efbbe9f01f412f30e232f782a79dea` (58 inputs). `npm run
+check:wasm` reports it matches. (Superseded: `3c6cb37b…` / `2f327438…`.)
+
+**Engine — unchanged.** 783 / 783 / 785 / 889 / 891 run, 7 ignored, `listed`
+790 / 790 / 792 / 896 / 898. Seven fixtures had to be *adapted*, none added or removed:
+`ponds::tests::params` and `bake_tests::ponds_obey_their_keep_rule_and_name_a_river` now pin spec
+§6.6's 3 km corridor explicitly — their bowls, offsets and expected cell counts were laid out
+against it, and what they assert is the search's mechanism rather than which width ships — and
+`viewer/test/water-preview.test.mjs` bakes its pond test at 50,000 nodes instead of 12,000,
+because a wasm bake always takes `earth_like`'s pond params and at 1.5 km the 12,000-node plain
+world keeps none. All five printed `count OK`; the suite ran 783 passed / 0 failed / 7 ignored.
+
+**Both ignored sweeps pass.** `every_small_world_drains` in 65.10 s;
+`refinement_adds_no_crossings_at_1m` in 114.81 s, printing the same `ranges 1M: … coarse 54
+shipped 50` and `default 1M: … coarse 33 shipped 28`.
+
+**Python:** 565 / 157 — unchanged. **Viewer:** 337 pass, 0 fail — unchanged.
+
+**Parity — moved:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **147,553** (was 155,919) | **0** |
+| `--mutate seed` | 147,553 | **141,765** (was 150,097) |
+| `--mutate erosion-k` | 147,553 | 216 |
+| `--mutate water-pond` | 147,553 | 60 |
+| `--mutate tectonic-warp` | 147,553 | **21,783** (was 29,068) |
+| `--mutate coast-amplitude` | 147,553 | 13,128 |
+| `--mutate gully-steer` | 147,553 | 3,752 |
+| `--mutate climate-samples` | 147,553 | 648 |
+
+The −8,366 is both hydro records: `hydro/ranges` 23,259 → **15,945** and `hydro/plain`
+5,001 → **3,949**. **3,949 is 3,938 + 11** — the pre-pond record plus SCHEMA 5's eleven header
+words — so that world now keeps **no pond at all** at 1.5 km. Every non-H group is byte-for-byte
+unmoved in the plain run and in all seven controls. Under the seed control `hydro/plain` is
+3,859 of 3,949, which is exactly the 3,857-of-3,938 this control reported before ponds existed
+plus the two header words a moved seed moves. The tectonic control's `hydro/ranges` goes
+22,882 → **15,597 of 15,945**, its native TCTL prediction moved with it, and it again printed
+*"exactly as the native side predicted"*; the five belt groups are unchanged at 6,186.
+
+### What these numbers predict for the owner's world
+
+Two fitted models, both stated with their assumptions so they can be checked rather than trusted.
+
+**Size — a linear fit on the owner world's own two bakes.** It recorded 11,146,072 bytes with
+11,578 ponds (cap 4.0e9) and 8,430,792 with 5,184 (cap 1.6e10). Two points give **424.7 bytes a
+pond** and a **6,228,495-byte base**; that base plus 5,184 × 424.7 reproduces the second bake to
+within 652 bytes, so the fit is sound. The pond budget under an 8,000,000 gate is therefore
+1,771,505 bytes, or **about 4,170 ponds**. Applying the stand-ins' measured kept ratio for this
+same 3,000 → 1,500 m step (0.18 / 0.14 / 0.23) to 5,184 gives **730–1,190 ponds** and a record of
+**6.54–6.73 MB**. **Size should pass with roughly 16–18% of margin.**
+
+**Time — a share model on the split the nearest stand-in shows.** `seed1_ranges` is the closest
+stand-in by reach points (113,840 against the owner world's 114,941) and its bake was 86.6% pond
+search at 3 km. Only the pond part halves. At 432 s that gives 187 s + 58 s = **245 s**; at an
+80% share, 259 s; at 90%, 237 s. **Time should pass, but only by 14–21%**, and that is the gate
+to watch.
+
+**If the re-bake still misses 300 s, the next lever is `pond_search_radius_m` 1,500 → 1,000 m**,
+not `pond_cell_m` and not the density. It is linear again (×0.667 on the pond part), it keeps the
+250 m trace and Ruling S-13's result intact, and it would take the prediction to about 183 s. The
+cost to name: at 1,000 m a strip is 9 cells across, side-clipping bites harder still, and ponds
+would get noticeably sparse — on these stand-ins the kept counts would likely fall into the low
+hundreds. `pond_cell_m` should stay the last resort.
+
+The reproduction commands are the ones above, with `--expect-passed <783|783|785|889|891>` and
+`--expect-ignored 7`.
