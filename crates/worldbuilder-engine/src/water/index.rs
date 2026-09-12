@@ -13,17 +13,33 @@
 //!
 //! # What each cell lists, and why it is more than the items with a point in it
 //!
-//! - **A body with shore members** (`shore_member_count > 0`) is listed in every cell within
-//!   `shore_reach_m` of any of its **shore members**, and in the cells its collar points fall
-//!   in. Spec §8.2 is explicit that the band is the point of the exercise: §8.3 puts a sample
-//!   inside a body when it is within `shore_reach_m` of a member, that distance is tens of
-//!   kilometres against 50 km cells, and a cell that skipped the dilation would answer `none`
-//!   over exactly the water the band exists to hold. The **collar is not dilated** -- the band
-//!   is measured from members.
-//! - **A body with a traced ring** (`shore_member_count == 0`) dilates by nothing: its
-//!   `shore_reach_m` is zero and its cells are the cells the curve's points fall in. So is a
-//!   shore-point body whose band is exactly zero -- 26 of 1,042 measured bodies -- which §8.3
-//!   answers by the nearest-point clause alone.
+//! - **A body** is listed in every cell within its **bounding circle**: the greatest distance
+//!   from its `anchor` to any of its own recorded outline points, plus `shore_reach_m`. Ruling
+//!   Q-13. One rule for all four kinds -- a shore-point set, a traced ring, and a band of zero
+//!   are all covered by it, so there is nothing to branch on.
+//!
+//!   > **Guarantee.** Every point the query could answer for a body is in a cell that lists it.
+//!
+//!   Spec §8.3 admits a point three ways, and the circle covers all three. Clause 2 (within
+//!   `shore_reach_m` of a **member**) reaches at most `span + band` from the anchor, because a
+//!   member is one of the recorded points the span is measured over. The ring test (a traced
+//!   curve) admits only points inside the curve, whose vertices are recorded points. Clause 1
+//!   (the nearest **member** at least as near as the nearest **collar** point) is the one with
+//!   no distance in it at all -- it is what holds a wide body's interior, arbitrarily far from
+//!   anything recorded -- and what bounds it is that the **collar encloses the members**: it is
+//!   built as the above-level neighbours of the member set, so from any point outside the
+//!   outline the collar on that side is nearer than the members behind it and clause 1 fails.
+//!   Everything clause 1 admits therefore lies within the outline, and so within the circle.
+//!
+//!   That last step is a property of what the bake records, not of arithmetic: a hand-written
+//!   record whose collar did not enclose its members could admit a point outside the circle.
+//!   No bake produces one.
+//!
+//!   **Why not a band around each shore member**, which is what spec §8.2 describes and what
+//!   this index shipped with first: it satisfies clause 2 and nothing else. A body wider than
+//!   about twice its band has interior cells that list it nowhere, and the query answers `Ocean`
+//!   there. The owner's great lake is 3,627 km across with a 58 km band, so a query in the
+//!   middle of it answered `Ocean` over a region 1,700 km wide. Task 6 corrects §8.2's text.
 //! - **A reach or a notch** is listed in every cell within half its width of its centre line,
 //!   along every recorded leg. Ruling Q-7: the width of a leg is the **larger** of its two
 //!   endpoints', because a leg tapers between recorded points and the smaller value would put
@@ -103,14 +119,21 @@ impl WaterIndex {
         let mut notches = vec![Vec::new(); cells];
 
         for body in &record.bodies {
-            let members = body.shore_member_count as usize; // cast-ok: a count, not a float
-            let banded = members > 0 && body.shore_reach_m > 0.0;
-            for (i, &(lat, lon)) in body.outline.iter().enumerate() {
-                let point = SpherePoint::from_latlon(lat, lon);
-                // The collar's band is not dilated; the band is measured from members.
-                let reach_m = if banded && i < members { body.shore_reach_m } else { 0.0 };
-                add_point(&grid, &mut bodies, body.id, &point, reach_m);
+            if body.outline.is_empty() {
+                continue;
             }
+            // Ruling Q-13: the bounding circle, not a band around each shore member. See the
+            // module doc for why the query can be answered outside every band.
+            let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
+            let mut span_m = 0.0;
+            for &(lat, lon) in &body.outline {
+                let d = anchor.distance_to(&SpherePoint::from_latlon(lat, lon), radius_m);
+                if d > span_m {
+                    span_m = d;
+                }
+            }
+            let band_m = if body.shore_reach_m > 0.0 { body.shore_reach_m } else { 0.0 };
+            add_point(&grid, &mut bodies, body.id, &anchor, span_m + band_m);
         }
 
         for reach in &record.reaches {
@@ -200,7 +223,8 @@ fn push_once(cell: &mut Vec<u32>, id: u32) {
 }
 
 /// List `id` in every cell within `reach_m` of `point` -- or just the point's own cell when the
-/// reach is zero, which is what a collar point, a traced ring's point and a bandless body get.
+/// reach is zero, which is what a body whose recorded points all sit on its anchor gets, and a
+/// zero-width, zero-length leg.
 fn add_point(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, point: &SpherePoint,
              reach_m: f64) {
     if reach_m > 0.0 {
@@ -297,6 +321,10 @@ mod tests {
     /// Metres per degree of latitude on `R`: one cell is 0.4497 deg of it.
     const M_PER_DEG: f64 = core::f64::consts::PI * R / 180.0;
 
+    /// The middle of body 3, the wide lake: 333 km from its nearest recorded point, and so
+    /// listed by nothing at all under a rule that only dilates each shore member by the band.
+    const WIDE_ANCHOR: (f64, f64) = (-50.0, -30.0);
+
     /// The lake's band. Wider than a cell on purpose -- spec 8.2's point is that the dilation
     /// "can add a ring of cells all the way round a body", not that it is a rounding allowance.
     const BAND_M: f64 = 60_000.0;
@@ -374,6 +402,14 @@ mod tests {
                         vec![(10.0, 10.0), (10.02, 10.0), (10.02, 10.02), (10.0, 10.02)]);
         // Body 2: a shore-point body with a band of exactly zero -- 26 of 1,042 real bodies.
         let bandless = body(2, BodyKind::SaltFlat, 1, 0.0, vec![(20.0, 20.0), (20.1, 20.0)]);
+        // Body 3: a lake far wider than its band. Four members on a 3-degree cross -- 333 km,
+        // more than six cells out from the anchor -- with a collar half a degree beyond each.
+        // The owner's great lake is this shape at ten times the size: 3,627 km across against a
+        // 58 km band, and nothing within 1,750 km of its middle is a recorded point.
+        let mut wide = body(3, BodyKind::Lake, 4, BAND_M,
+                            vec![(-53.0, -30.0), (-47.0, -30.0), (-50.0, -34.67), (-50.0, -25.33),
+                                 (-53.5, -30.0), (-46.5, -30.0), (-50.0, -35.45), (-50.0, -24.55)]);
+        wide.anchor = WIDE_ANCHOR;
 
         // Reach 0: three points, each leg well under a cell.
         let short = ReachLine {
@@ -396,7 +432,7 @@ mod tests {
             points: vec![(-30.0, 50.0, 20.0, 300.0), (-30.0, 50.3, 10.0, 300.0)],
         };
         HydroRecord {
-            bodies: vec![lake, pond, bandless],
+            bodies: vec![lake, pond, bandless, wide],
             reaches: vec![short, long, seam],
             notches: vec![notch],
             falls: Vec::new(),
@@ -415,11 +451,12 @@ mod tests {
         assert!(index.candidates(&at(0.0, 0.05)).bodies.contains(&0), "the other member's cell");
     }
 
-    /// Spec 8.2's whole point: a cell must list every body whose shore points come within
-    /// `shore_reach_m` OF THE CELL, not only the bodies with a point in it. The probe is
-    /// 0.9 of the band north of the nearest member, and the assertion first proves that the
-    /// body has no outline point in that cell at all -- otherwise the test would pass
-    /// without any dilation.
+    /// Spec 8.2's clause: a cell must list every body whose shore points come within
+    /// `shore_reach_m` OF THE CELL, not only the bodies with a point in it -- which under Ruling
+    /// Q-13 is the `+ shore_reach_m` term of the bounding circle. The probe is 0.9 of the band
+    /// north of the nearest member and beyond body 0's whole span, so a circle that forgot to add
+    /// the band would miss it; and the assertion first proves the body has no outline point in
+    /// that cell, so nothing but the reach can put it there.
     fn dilation_probe() -> SpherePoint {
         at(0.9 * BAND_M / M_PER_DEG, 0.0)
     }
@@ -438,6 +475,53 @@ mod tests {
         assert!(index.candidates(&probe).bodies.contains(&0),
                 "a point {} m from a shore member, inside the {BAND_M} m band, missed the body",
                 0.9 * BAND_M);
+    }
+
+    /// Ruling Q-13, and the hole it closes. Spec §8.3's first clause admits a point whenever its
+    /// nearest **member** is at least as near as its nearest **collar** point, which is true
+    /// throughout a body's interior however far that is from any recorded point. A rule that only
+    /// dilated each member by `shore_reach_m` therefore listed a body nowhere in the middle of
+    /// anything wider than about twice its band, and the query answered `Ocean` there -- on the
+    /// owner's great lake, 3,627 km across with a 58 km band, over a region 1,700 km wide.
+    ///
+    /// The index's job is to offer a superset; the query is what decides. So the body is listed
+    /// in every cell within its **bounding circle**: the greatest distance from its anchor to any
+    /// of its own recorded points, plus the band.
+    #[test]
+    fn a_body_is_listed_in_the_middle_of_itself_however_far_that_is_from_a_recorded_point() {
+        let record = fixture();
+        let grid = BucketIndex::new(R, CELL);
+        let wide = &record.bodies[3];
+        let middle = at(WIDE_ANCHOR.0, WIDE_ANCHOR.1);
+
+        // The premise: the middle is many cells from every one of the body's recorded points, so
+        // nothing but the bounding circle can put the body there.
+        let mut nearest_m = f64::INFINITY;
+        for &(lat, lon) in &wide.outline {
+            let d = middle.distance_to(&at(lat, lon), R);
+            if d < nearest_m {
+                nearest_m = d;
+            }
+            assert_ne!(grid.cell_of(&at(lat, lon)), grid.cell_of(&middle),
+                       "fixture is wrong: {lat},{lon} shares the middle's cell");
+        }
+        assert!(nearest_m > 6.0 * CELL,
+                "fixture is wrong: the middle is only {nearest_m} m from a recorded point");
+        assert!(nearest_m > 4.0 * wide.shore_reach_m,
+                "fixture is wrong: the {} m band alone would reach {nearest_m} m",
+                wide.shore_reach_m);
+
+        let index = WaterIndex::build(&record, R, CELL);
+        assert!(index.candidates(&middle).bodies.contains(&3),
+                "the middle of the body, {nearest_m} m from its nearest recorded point, lists it \
+                 nowhere");
+        // And so does everywhere else inside it.
+        for (lat, lon) in [(-51.0, -31.0), (-49.5, -29.0), (-52.0, -30.0), (-50.0, -33.0)] {
+            assert!(index.candidates(&at(lat, lon)).bodies.contains(&3), "{lat},{lon}");
+        }
+        // The circle is a bound, not a licence: ten degrees out is not offered.
+        assert!(!index.candidates(&at(-40.0, -30.0)).bodies.contains(&3),
+                "the bounding circle is 449 km, and this is 1,112 km out");
     }
 
     #[test]
@@ -535,9 +619,9 @@ mod tests {
         assert!(occupied > 0 && largest > 0, "{occupied} cells, largest holds {largest}");
         assert!(bodies > 0 && reaches > 0 && notches > 0,
                 "{bodies} body, {reaches} reach and {notches} notch entries");
-        // The band dilates body 0 over a ring of cells, so there are more body entries than
-        // the three outline points a bare per-point index would have stored.
-        assert!(bodies > 3, "the dilation stores more than one entry per outline point: {bodies}");
+        // The four bodies' bounding circles cover far more cells than the fifteen outline points
+        // a bare per-point index would have stored one entry each for.
+        assert!(bodies > 15, "the bounding circles store more than one entry per point: {bodies}");
     }
 
     #[test]

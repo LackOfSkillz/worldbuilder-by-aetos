@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn a_lake_interior_answers_the_body_its_level_and_the_landform_depth() {
-        // Midway between body 0's two members: dm is 5,560 m, dc 22,927 m, so clause 1 admits
+        // Midway between body 0's two members: dm is 5,560 m, dc 44,824 m, so clause 1 admits
         // it without the band being consulted at all.
         let got = ask(0.0, 0.05, 40.0);
         assert_eq!(got.kind, WaterKind::Lake);
