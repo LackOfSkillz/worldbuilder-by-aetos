@@ -735,11 +735,12 @@ fresh / 52 salt split has the large ones already here:
 
 **The untrimmed fallback's headroom is about 0.11 MB, not 0.22.** An earlier draft of this note
 said 0.78 MB by scaling the whole measured figure rather than its tail; that was wrong. The
-corrected figure is 0.890 MB by the same method the trimmed row uses, or 0.849 MB if the tail is
-taken straight from the table's own untrimmed total rather than from a per-body mean. Either way
-the fallback is inside the budget with roughly a tenth of it to spare — enough, but not
-comfortable, which is exactly why the trim is the ruling and the untrimmed form is only the
-fallback.
+corrected figure is **0.890 MB**, by the same method the trimmed row uses and shown in full in the
+table above. A second draft offered "0.849 MB" as an alternative route; **no method produces it**
+and it has been removed rather than dressed up — taking the tail straight from the table's own
+untrimmed total gives 0.890 MB too, which is the only figure here. The fallback is inside the
+budget with roughly a tenth of it to spare — enough, but not comfortable, which is exactly why the
+trim is the ruling and the untrimmed form is only the fallback.
 
 **These are estimates, not measurements.** Task 7 measures the real figure on the painted bake in
 the browser, and must not inherit these.

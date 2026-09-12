@@ -272,7 +272,7 @@ carving needs.
     cannot be built: a minimum-turn edge walk closes on a 3-cycle covering 0.3–4.1% of the collar
     on 11 of 12 bodies, and the one substantial ring it produced self-crossed 6 times; an angular
     sort about the centroid closes but leaves up to 24.5% of a body's own members outside its
-    ring. A **250 m contour** costs 3.0–8.3 MB a world, and the owner world's great lake alone
+    ring. A **250 m contour** costs 2.4–8.3 MB a world, and the owner world's great lake alone
     costs 1.5–3.3 MB against a 1 MB budget. The shore-point set costs 0.073 MB on the owner world.
   - **Ponds keep the 250 m trace.** A pond's surface is under 1 km² by definition, so its outline
     is a few dozen points. A pond is filled at 250 m resolution from its lowest point up to its
@@ -313,7 +313,7 @@ hydrology: {
   land_fingerprint: <hash of planet params + features + engine version>,
   params: { thresholds, keep rule, pond limit, meander, search limits },
   adjustments: [ ...owner tweaks, section 9.2... ],
-  bodies: [ { id, kind: lake|pond, fresh, level_m,
+  bodies: [ { id, kind: lake|salt_lake|salt_flat|pond, fresh, level_m,
               outline: [[lat, lon], ...], shore_member_count, shore_reach_m,
               outlet: reach id | null, override: null|"forced"|"closed" } ],
   reaches: [ { id, class, fresh, downstream: reach id | body id | "ocean",
@@ -325,7 +325,9 @@ hydrology: {
 
 - **`kind` says what `outline` is** (Ruling S-1 as replaced, and Ruling T1-2, both plan 1b-3's
   Task 1). The field carries one of two geometries and **`kind` is the discriminator** — never
-  `shore_member_count`, and never any other sentinel value:
+  `shore_member_count`, and never any other sentinel value. `kind` is one of the four
+  `BodyKind` variants (`hydrology/mod.rs`), and **three of them take the shore-point branch and
+  one takes the traced curve**:
   - **`lake`, `salt_lake`, `salt_flat`: `outline` is a set, not a curve.** Its first
     `shore_member_count` points are the body's shore members and the rest are its collar (§6.6).
     Within each half the points are in ascending graph-node order; that order is fixed only so the
@@ -385,7 +387,8 @@ This is a new stage in `Surface`, after features and before detail:
 | kind | when |
 |---|---|
 | `ocean` | below the datum and connected to the ocean (Ruling W1) |
-| `lake` / `pond` | inside a body's extent and at or below its level (Ruling S-1, as replaced) |
+| `lake` / `salt_lake` / `salt_flat` | inside a body of that kind's extent — the **shore-point** test — and at or below its level (Ruling S-1, as replaced) |
+| `pond` | inside a pond's **traced 250 m curve** and at or below its level |
 | `river` | within half a reach's width of its centre line; the level is the bed plus depth |
 | `none` | anything else |
 
