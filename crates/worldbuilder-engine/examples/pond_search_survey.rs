@@ -54,10 +54,10 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
 
     for reach in &record.reaches {
         let (made, skips) = ponds::strips_with_skips(reach, &ground, &detail, p);
-        strips_made += made.len() as u64;
-        over += skips.over_budget as u64;
-        degen += skips.degenerate as u64;
-        gated += skips.gated as u64;
+        strips_made += made.len() as u64; // cast-ok: a count of strips, already an integer
+        over += skips.over_budget as u64; // cast-ok: widening a u32 count
+        degen += skips.degenerate as u64; // cast-ok: widening a u32 count
+        gated += skips.gated as u64; // cast-ok: widening a u32 count
         for (i, s) in made.iter().enumerate() {
             searched_m2 += (s.steps * s.cells_across) as f64 * p.pond_cell_m * p.pond_cell_m;
             let found = ponds::hollows_in(s, i, p);
@@ -83,15 +83,15 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
                         continue;
                     }
                     rings += 1;
-                    ring_points += ring.len() as u64;
+                    ring_points += ring.len() as u64; // cast-ok: a count of ring points, already an integer
                     if !ponds::ring_is_simple(&ring, ground.radius_m) {
                         crossing += 1;
                     }
                     let outside = c.cells.iter().filter(|&&(row, column)| {
                         !ponds::ring_contains(&ring, ground.radius_m,
                                               &s.point_at(row, column, p.pond_cell_m))
-                    }).count() as u64;
-                    cells_in += c.cells.len() as u64;
+                    }).count() as u64; // cast-ok: a count of cells, already an integer
+                    cells_in += c.cells.len() as u64; // cast-ok: a count of cells, already an integer
                     cells_out += outside;
                     if outside > 0 {
                         leaking += 1;
@@ -105,7 +105,7 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
     areas.sort_by(|a, b| a.total_cmp(b));
     kept_depths.sort_by(|a, b| a.total_cmp(b));
     kept_areas.sort_by(|a, b| a.total_cmp(b));
-    let total = depths.len() as u64;
+    let total = depths.len() as u64; // cast-ok: a count of candidates, already an integer
 
     println!("{label}: nodes {}, reaches {}, strips {strips_made} (skipped {over} over budget, \
               {degen} degenerate, {gated} gated), searched {:.0} km2",
