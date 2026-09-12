@@ -1721,6 +1721,20 @@ fn every_coarse_body_carries_an_extent() {
         assert!(with_extent > 0);
         let shore: u32 = record.bodies.iter().map(|b| b.shore_member_count).sum();
         assert_eq!(record.stats.shore_members, shore);
+        // The collar total is a DIFFERENT expression in `bake.rs` -- the outline's length less
+        // the members -- so asserting only the shore half leaves the `collar_points` printed
+        // below unchecked against the bodies it claims to total.
+        //
+        // It totals the COARSE bodies only, and it has to: `bake.rs` sums it before
+        // `ponds::search` appends a pond, and "outline length less the members" on a pond is
+        // its whole traced ring, which is not a collar at all. Summing over every body reads
+        // 269 against the stat's 101 on the `params` population -- the 168 ring points of its
+        // ponds. The shore half above needs no such restriction: Ruling E-6 zeroes a pond's
+        // `shore_member_count`, so a pond adds nothing to that sum however it is taken.
+        let collar: u32 = record.bodies[..coarse.bodies.len()].iter()
+            .map(|b| b.outline.len() as u32 - b.shore_member_count) // cast-ok: at most one point per node
+            .sum();
+        assert_eq!(record.stats.collar_points, collar);
         eprintln!("{name}: {with_extent} coarse bodies, {} shore members, {} collar points",
                   record.stats.shore_members, record.stats.collar_points);
     }

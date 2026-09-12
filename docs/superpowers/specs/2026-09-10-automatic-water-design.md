@@ -356,11 +356,14 @@ hydrology: {
 }
 ```
 
-- **`kind` says what `outline` is** (Ruling S-1 as replaced, and Ruling T1-2, both plan 1b-3's
-  Task 1). The field carries one of two geometries and **`kind` is the discriminator** — never
-  `shore_member_count`, and never any other sentinel value. `kind` is one of the four
-  `BodyKind` variants (`hydrology/mod.rs`), and **three of them take the shore-point branch and
-  one takes the traced curve**:
+- **`shore_member_count` says what `outline` is** (Ruling E-8, plan 1b-4). The field carries one
+  of two geometries and **`shore_member_count` is the discriminator, and nothing else is**: zero
+  means the outline is a traced curve, any other value means it is a shore-point set. **`kind`
+  says what the water *is*** — fresh or salt, pond-sized or lake-sized (Ruling S-1 as replaced,
+  and Ruling T1-2, both plan 1b-3's Task 1) — **not what shape its extent is written in.** The
+  two agree on most bodies and Ruling S-11 below is why they do not always. `kind` is one of the
+  four `BodyKind` variants (`hydrology/mod.rs`), and on the bodies where the two do agree,
+  **three of them take the shore-point branch and one takes the traced curve**:
   - **Ruling S-11's exception, and why it is not a hole in the discriminator.** The fine search
     of §6.6 records an oversized find as a `lake` carrying a **traced curve**, not a shore-point
     set, so on that one path `kind` alone does not settle it. What does settle it is
@@ -370,7 +373,9 @@ hydrology: {
     is therefore: **a pond, or any body with no shore members, is a ring; everything else is a
     set.** No consumer may treat `kind == lake` alone as proof of a shore-point set.
   - **`lake`, `salt_lake`, `salt_flat`: `outline` is a set, not a curve.** Its first
-    `shore_member_count` points are the body's shore members and the rest are its collar (§6.6).
+    `shore_member_count` points are the body's shore members and the rest are its collar (§6.6),
+    so **`shore_member_count` never exceeds `outline`'s length** — a decoder refuses a record
+    where it does, because every consumer slices the outline on it.
     Within each half the points are in ascending graph-node order; that order is fixed only so the
     record is deterministic and carries no geometric meaning. **No consumer may join consecutive
     points into an edge.** `shore_reach_m` is the greatest length of a member-to-collar step whose

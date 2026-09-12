@@ -26,8 +26,10 @@
 //!   closed lake downstream rather than the sea.
 //! - **A body's `shore_member_count`** (SCHEMA 6, plan 1b-4) is the wire discriminator spec §8.3
 //!   needs: `0` means `outline` is a traced curve, not a shore-point set (Ruling T1-2), and that
-//!   is how a pond, and a fine-search lake, are told apart from a coarse body. Every coarse body
-//!   ships `0` and an empty outline until plan 1b-4's Task 2 fills them in.
+//!   is how a pond, and a fine-search lake, are told apart from a coarse body. A coarse body
+//!   ships a positive count and an outline of shore members then collar (Ruling E-1); the count
+//!   never exceeds that outline's length, and `decode` refuses a record where it does, because
+//!   every consumer slices the outline on it.
 //! - **Reach `fresh`** means "its chain reaches the ocean": following its `downstream` through
 //!   reaches and bodies ends at `Ocean`, not at a closed lake's `Sink`.
 
@@ -206,7 +208,7 @@ impl<'a> Reader<'a> {
 /// exceeding what remains means the count is bogus, so the whole record is refused instead of
 /// allocating on it.
 ///
-/// Unchecked: each call site's `min_words` literal (14 for a body, 7 for a reach, 1 for a
+/// Unchecked: each call site's `min_words` literal (16 for a body, 7 for a reach, 1 for a
 /// notch, 4 for a fall, and the nested per-point minimums) is not tied to the fixed reads its
 /// own loop performs below it by anything the compiler enforces -- it holds only because the
 /// comment above each call site is kept in sync by hand with that loop's field list. Widening a
@@ -436,7 +438,28 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let downstream = words_to_downstream(downstream_kind, downstream_id)?;
         let shore_member_count = r.u32()?;
         let shore_reach_m = r.word()?;
+        // `shore_reach_m` is the one float on the wire a consumer uses as a distance: §8.3's
+        // second clause puts a point inside the body when it is within `shore_reach_m` of a
+        // shore member. A NaN makes every comparison false and a body vanish; an infinity (or
+        // any negative value, which is not a length at all) makes the test meaningless in the
+        // other direction -- an infinite band admits the whole planet as inside one lake, and
+        // reports it as a fact rather than a decode failure. Refuse it here, at the trust
+        // boundary, where the failure is still a `None`.
+        if !(shore_reach_m.is_finite() && shore_reach_m >= 0.0) {
+            return None;
+        }
         let outline_len = r.u32()? as usize;
+        // The extent invariant (Ruling E-1): the outline's first `shore_member_count` points
+        // are the shore members and the rest are the collar, so the count can never exceed the
+        // outline's length. It is not enough that it is a valid u32 -- every consumer slices on
+        // it (`body.outline[..shore_member_count]` for the members, the remainder for the
+        // collar, and `outline.len() - shore_member_count` for the collar's size), so a count
+        // past the end panics the first reader in debug and wraps the collar size to about 4
+        // billion in release. Refused here, in the same guard family as `count_fits`, so no
+        // consumer downstream has to re-check it.
+        if shore_member_count as usize > outline_len {
+            return None;
+        }
         // Outline pair: lat, lon -- 2 words per point.
         if !count_fits(outline_len, 2, r.remaining()) {
             return None;
@@ -770,6 +793,9 @@ mod tests {
             bodies: vec![sample().bodies[0].clone()], reaches: Vec::new(), notches: Vec::new(),
             falls: Vec::new(), stats: sample().stats,
         };
+        // Three shore members and one collar point: the count must not exceed the outline it
+        // indexes into, so a body carrying an extent carries the points to go with it.
+        record.bodies[0].outline = vec![(1.0, 2.0), (1.0, 2.5), (1.5, 2.5), (1.5, 2.0)];
         record.bodies[0].shore_member_count = 3;
         record.bodies[0].shore_reach_m = 41_000.5;
         let words = encode(&record);
@@ -788,6 +814,61 @@ mod tests {
         });
         words[0] = 5.0;
         assert_eq!(decode(&words), None);
+    }
+
+    /// A one-body record whose outline is `points` long and whose extent words are set by hand,
+    /// so a decode guard can be aimed at exactly one word.
+    fn one_body_with_extent(points: usize, shore_member_count: u32, shore_reach_m: f64) -> Vec<f64> {
+        let mut body = sample().bodies[0].clone();
+        body.outline = (0..points).map(|i| (i as f64, i as f64)).collect();
+        body.shore_member_count = shore_member_count;
+        body.shore_reach_m = shore_reach_m;
+        encode(&HydroRecord {
+            bodies: vec![body], reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
+            stats: sample().stats,
+        })
+    }
+
+    /// Ruling E-1 makes the shore members a prefix of the outline, and every consumer slices on
+    /// the count -- `body.outline[..shore_member_count]` for the members, the remainder for the
+    /// collar. A count past the outline's end is not a bad number to be carried around: it is a
+    /// panic in the first reader, and a collar size that wraps to about 4 billion in release. It
+    /// is a valid u32, so nothing but this guard refuses it.
+    #[test]
+    fn decode_refuses_a_body_claiming_more_shore_members_than_it_has_outline_points() {
+        // The boundary itself is legal: every outline point may be a shore member.
+        let all_members = one_body_with_extent(4, 4, 1_000.0);
+        assert!(decode(&all_members).is_some(), "count == outline_len is a legal extent");
+
+        // One past it is not. The extent words sit at 13 and 14 of a body's 16 fixed words,
+        // after the 56-word header; `outline_len` is word 15.
+        let outline_len_word = 56 + 15;
+        for bogus in [5.0, 4.0e9, f64::from(u32::MAX)] {
+            let mut words = one_body_with_extent(4, 4, 1_000.0);
+            assert_eq!(words[outline_len_word], 4.0, "sanity: this world's body has 4 outline points");
+            words[56 + 13] = bogus;
+            assert_eq!(decode(&words), None, "shore_member_count {bogus} exceeds the 4-point outline");
+        }
+    }
+
+    /// §8.3's second clause tests a point against `shore_reach_m` as a distance. A NaN makes
+    /// every such comparison false; an infinity admits the whole planet as inside one lake; a
+    /// negative value is not a length. All three are valid `f64` words, so only this guard
+    /// refuses them.
+    #[test]
+    fn decode_refuses_a_non_finite_or_negative_shore_reach() {
+        for bogus in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.5] {
+            let mut words = one_body_with_extent(4, 2, 1_000.0);
+            words[56 + 14] = bogus;
+            assert_eq!(decode(&words), None, "shore_reach_m {bogus} is not a usable distance");
+        }
+        // Zero is legal -- it is what a pond and a body with no usable edge both write -- and so
+        // is any finite positive length, however large.
+        for fine in [0.0, 1.0e300] {
+            let mut words = one_body_with_extent(4, 2, 1_000.0);
+            words[56 + 14] = fine;
+            assert_eq!(decode(&words).expect("decode").bodies[0].shore_reach_m, fine);
+        }
     }
 
     #[test]

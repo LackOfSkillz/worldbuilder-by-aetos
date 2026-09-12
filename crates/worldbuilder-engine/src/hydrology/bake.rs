@@ -543,6 +543,11 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     // SCHEMA 6, plan 1b-4: what the extents cost, totalled over the bodies that carry one. Every
     // body here is coarse; a pond is appended later by `ponds::search` with both halves zero
     // (Ruling E-6), so neither total moves after this point.
+    //
+    // The collar subtraction cannot wrap. Ruling E-1 records the shore members as a PREFIX of
+    // the outline, so `shore_member_count <= outline.len()` holds on every body the extent pass
+    // builds, and `record::decode` refuses any record whose body claims a count past its own
+    // outline before a `Body` is ever constructed from the wire.
     let shore_members: u32 = bodies.iter().map(|b| b.shore_member_count).sum();
     let collar_points: u32 = bodies.iter()
         .map(|b| b.outline.len() as u32 - b.shore_member_count) // cast-ok: at most one point per node

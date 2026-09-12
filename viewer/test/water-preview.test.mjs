@@ -75,8 +75,15 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   const collarTotal = decoded.bodies.reduce((sum, b) => sum + (b.outline.length - b.shoreMemberCount), 0);
   assert.equal(decoded.header.shoreMembers, shoreMemberTotal,
                "the header total is the sum of every decoded body's own shoreMemberCount");
+  // The collar identity below holds over EVERY body only because this bake keeps no pond. Both
+  // header totals count the coarse bodies only; a pond's whole traced ring would land in
+  // `collarTotal` and in neither header word, so the guard is asserted, not assumed. On the
+  // Rust side's `params` population, which does keep ponds, the all-body sum reads 269 against
+  // the header's 101 -- the 168 ring points of its ponds.
+  assert.equal(decoded.header.pondsKept, 0,
+               "this world's 12,000-node bake keeps no pond, which is what makes the collar identity below total-body");
   assert.equal(decoded.header.collarPoints, collarTotal,
-               "the header total is the sum of every decoded body's own collar (outline.length - shoreMemberCount)");
+               "the header total is the sum of every coarse body's own collar (outline.length - shoreMemberCount)");
   // Ruling E-1: a coarse body's outline is shore members first, then collar -- so a body with
   // any shore members at all must have MORE outline points than shore members, i.e. a collar
   // too. This is the shape `water_at` will depend on; only the Rust side asserted it before.
@@ -164,6 +171,49 @@ test("decodeHydro refuses an index or count word above 4294967295, as record.rs'
   downstream[HEADER + 11] = 1;
   downstream[HEADER + 12] = U32_MAX + 1;
   assert.throws(() => decodeHydro(downstream), /bad downstream body id/);
+});
+
+// A body's 16 fixed words start after the 56-word header: `shoreMemberCount` is word 13 of
+// them, `shoreReachM` word 14 and `outlineLen` word 15.
+const BODY_0 = 56;
+const SHORE_MEMBER_COUNT = BODY_0 + 13;
+const SHORE_REACH_M = BODY_0 + 14;
+const OUTLINE_LEN = BODY_0 + 15;
+
+test("decodeHydro refuses a body claiming more shore members than it has outline points, as record.rs's decode does", () => {
+  const words = bake();
+  const outlineLen = words[OUTLINE_LEN];
+  assert.ok(outlineLen > 0, "sanity: this world's first body carries an outline");
+
+  // The boundary is legal: every outline point may be a shore member.
+  const atLen = words.slice();
+  atLen[SHORE_MEMBER_COUNT] = outlineLen;
+  assert.equal(decodeHydro(atLen).bodies[0].shoreMemberCount, outlineLen);
+
+  // One past it is not, and neither is any larger count. All are valid u32 words, so nothing
+  // else refuses them, and `outline.slice(0, shoreMemberCount)` on any of them hands a reader a
+  // short member set and a negative collar size instead of a decode failure.
+  for (const bogus of [outlineLen + 1, 4e9, 4294967295]) {
+    const tampered = words.slice();
+    tampered[SHORE_MEMBER_COUNT] = bogus;
+    assert.throws(() => decodeHydro(tampered), /shore members of a/);
+  }
+});
+
+test("decodeHydro refuses a non-finite or negative shoreReachM, as record.rs's decode does", () => {
+  const words = bake();
+  for (const bogus of [NaN, Infinity, -Infinity, -1, -0.5]) {
+    const tampered = words.slice();
+    tampered[SHORE_REACH_M] = bogus;
+    assert.throws(() => decodeHydro(tampered), /bad shore reach/);
+  }
+  // Zero is legal -- it is what a pond and a body with no usable edge both write -- and so is
+  // any finite positive length, however large.
+  for (const fine of [0, 1e300]) {
+    const tampered = words.slice();
+    tampered[SHORE_REACH_M] = fine;
+    assert.equal(decodeHydro(tampered).bodies[0].shoreReachM, fine);
+  }
 });
 
 test("decodeHydro throws on a trailing word", () => {

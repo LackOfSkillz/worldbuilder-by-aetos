@@ -779,9 +779,13 @@ export class Engine {
   /// `pondsKept`, then its seven params (`pondCellM`, `pondSearchRadiusM`, `pondKeepDepthM`,
   /// `pondKeepAreaM2`, `pondWetnessShare`, `pondMaxSlope`, `pondDensityAreaM2`). Words 54-55
   /// (schema 6, Task 1 of plan 1b-4) are the extent totals across all bodies, `shoreMembers` and
-  /// `collarPoints` -- the record's own account of what the extent trim cost. Every body ships a
-  /// zeroed extent in this task, so both are 0 on any bake this schema can produce so far; Task 2
-  /// fills them in.
+  /// `collarPoints` -- the record's own account of what the extent trim cost. Both total the
+  /// COARSE bodies only: `shoreMembers` is the sum of their `shoreMemberCount` and
+  /// `collarPoints` the sum of their outline length less that count. A pond contributes to
+  /// neither -- Ruling E-6 zeroes its count, and its outline is a traced ring, not a collar -- so
+  /// `collarPoints` is NOT the sum over every body of `outline.length - shoreMemberCount`. A
+  /// schema 6 bake with any coarse body in it reports both above zero.
+  ///
   /// **`pondsFound` counts hollows in the corridors the search sampled, not in every corridor.**
   /// Ruling S-12 skips a coarse segment whose midpoint is drier than the wetness floor or inside
   /// a coarse body before its corridor is sampled at all, so those hollows are never found and

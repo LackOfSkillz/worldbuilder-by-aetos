@@ -232,8 +232,12 @@ export function decodeHydro(words) {
     pondMaxSlope: cursor.word(),
     pondDensityAreaM2: cursor.word(),
     // SCHEMA 6, plan 1b-4, Task 1 (words 54-55): the extent totals across all bodies -- the
-    // record's own account of what the extent trim cost. Every body ships a zeroed extent in
-    // this task, so both are 0 until Task 2 fills them in.
+    // record's own account of what the extent trim cost. Both total the COARSE bodies only:
+    // `shoreMembers` is the sum of their `shoreMemberCount` and `collarPoints` the sum of their
+    // `outline.length` less that count. A pond contributes to neither -- Ruling E-6 zeroes its
+    // count, and its outline is a traced ring, not a collar -- so `collarPoints` is NOT the sum
+    // over every decoded body of `outline.length - shoreMemberCount`. On a SCHEMA 6 bake with
+    // any coarse body in it both are positive.
     shoreMembers: cursor.u32(),
     collarPoints: cursor.u32(),
   };
@@ -258,7 +262,23 @@ export function decodeHydro(words) {
     const downstream = readDownstream(cursor);
     const shoreMemberCount = cursor.u32();
     const shoreReachM = cursor.word();
+    // The twin of `record.rs`'s guard. §8.3's second clause tests a point against
+    // `shoreReachM` as a distance: a NaN makes every such comparison false and the body
+    // vanish, an infinity admits the whole planet as inside that one lake, and a negative
+    // value is not a length at all. All three are valid words, so only this refuses them.
+    if (!(Number.isFinite(shoreReachM) && shoreReachM >= 0)) {
+      throw new Error(`hydro record: bad shore reach ${shoreReachM}`);
+    }
     const outlineLen = cursor.u32();
+    // The twin of `record.rs`'s guard. Ruling E-1 makes the shore members a PREFIX of the
+    // outline, and every consumer slices on the count -- the first `shoreMemberCount` points
+    // are the members and the rest the collar. A count past the outline's end yields a short
+    // member set and a negative collar size, silently; refuse it at the trust boundary.
+    if (shoreMemberCount > outlineLen) {
+      throw new Error(
+        `hydro record: body claims ${shoreMemberCount} shore members of a ` +
+        `${outlineLen}-point outline`);
+    }
     const outline = [];
     for (let j = 0; j < outlineLen; j += 1) {
       outline.push([cursor.word(), cursor.word()]);
