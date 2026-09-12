@@ -436,9 +436,17 @@ fn find_fall(ground: &Ground, params: &HydroParams, at: &dyn Fn(f64, f64) -> Sph
 /// protects nothing past its end. Keeping a subset of a falling bed keeps it
 /// falling, so spec §14.5 survives. The outcome does not depend on the order spans are examined.
 pub fn simplify(points: &[ReachPoint], protected: &[bool], radius_m: f64, params: &HydroParams) -> Vec<ReachPoint> {
+    let keep = simplify_mask(points, protected, radius_m, params);
+    points.iter().zip(&keep).filter(|(_, &k)| k).map(|(p, _)| p.clone()).collect()
+}
+
+/// `simplify`'s decision, as a mask parallel to `points`, for a caller with more than one array
+/// to cut down. Ruling S-14 gave `refine` a second one: `Refined::segment_of` has to survive
+/// simplification, because the crossing pass reads it off the *shipped* line.
+fn simplify_mask(points: &[ReachPoint], protected: &[bool], radius_m: f64, params: &HydroParams) -> Vec<bool> {
     let n = points.len();
     if n <= 2 {
-        return points.to_vec();
+        return vec![true; n];
     }
     let at = |p: &ReachPoint| SpherePoint::from_latlon(p.lat_deg, p.lon_deg);
     // Ruling FF-5: `protected` is a parallel array, but a short one is not an error -- entries it
@@ -477,7 +485,7 @@ pub fn simplify(points: &[ReachPoint], protected: &[bool], radius_m: f64, params
             spans.push((worst_at, hi));
         }
     }
-    points.iter().zip(&keep).filter(|(_, &k)| k).map(|(p, _)| p.clone()).collect()
+    keep
 }
 
 use crate::hydrology::buckets::BucketIndex;
@@ -667,18 +675,70 @@ pub fn refine_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, para
 /// -- and the pass repeats until nothing crosses or `MAX_CROSSING_PASSES` is done. Ties go to the
 /// larger reach id. Ruling S-2: a crossing the coarse record already had cannot be straightened
 /// away, which is why the count that is left is recorded rather than asserted to be zero.
-const MAX_CROSSING_PASSES: usize = 3;
+///
+/// **Four, not S-4's three, and that is a measurement.** Once Ruling S-14 moved the check on to
+/// the shipped lines, the pass has the meander's own crossings to clear as well, and the descent
+/// on the 1M-node stand-ins is 2,909 -> 1,204 -> 118 -> 55 -> 50 (seed 1 `ranges`) and
+/// 1,493 -> 606 -> 54 -> 32 -> 28 (the bake test world). Three passes stop at 55 against 54
+/// coarse -- over by one, and the guarantee broken. The fourth is where both converge: a fifth
+/// straightening round moves nothing at all, so the loop would break on its own.
+const MAX_CROSSING_PASSES: usize = 4;
+
+/// One reach's line as the record would ship it: its traced segments meandered where Ruling S-4a
+/// allows, strung together, and simplified. `segment_of` is cut down with the points, because
+/// Ruling S-14 has the crossing pass read it off this line and not off the unsimplified one.
+///
+/// The traced segments are borrowed, never meandered in place: a later pass builds its line from
+/// the same trace rather than compounding a second meander on the last pass's.
+fn ship(reach: &ReachLine, segments: &[Segment], yielded: &[bool], shore: Option<f64>, ground: &Ground, params: &HydroParams) -> Refined {
+    let mut shaped: Vec<Segment> = Vec::with_capacity(segments.len());
+    for (s, segment) in segments.iter().enumerate() {
+        let mut shape = segment.clone();
+        // Ruling S-4a: a segment that yielded is not meandered. The meander is worth up to
+        // `meander_amplitude_widths` channel widths of lateral shift, which on a wide reach is
+        // the same order as what the pass straightened away -- so meandering a yielded segment
+        // would make Ruling S-3's "every interior station's lateral set to 0" true of the pass
+        // and false of the record. The crossing fix outranks a cosmetic meander on one segment.
+        // The cost: a yielded flat wide segment ships dead straight, for about one graph spacing.
+        if !yielded[s] {
+            meander(&mut shape, ground, params, &reach.points[s], &reach.points[s + 1]);
+        }
+        shaped.push(shape);
+    }
+    let mut refined = assemble(reach, &shaped, shore);
+    let keep = simplify_mask(&refined.points, &refined.protected, ground.radius_m, params);
+    let mut points = Vec::new();
+    let mut protected = Vec::new();
+    let mut segment_of = Vec::new();
+    for (i, &k) in keep.iter().enumerate() {
+        if k {
+            points.push(refined.points[i].clone());
+            protected.push(refined.protected[i]);
+            segment_of.push(refined.segment_of[i]);
+        }
+    }
+    refined.points = points;
+    refined.protected = protected;
+    refined.segment_of = segment_of;
+    refined
+}
 
 /// Refines every reach in the record, in reach order, and records the falls in the same order.
 ///
-/// Ruling S-4 sets the order: trace with the meander suppressed, run the crossing pass, then
-/// meander and simplify. A meander is cosmetic, and straightening one away where it is not the
-/// cause of a crossing would cost a river its shape for nothing.
+/// **Ruling S-14: the crossing guarantee is about the lines the record ships.** The pass sits at
+/// the end of the pipeline -- trace, meander, simplify, then check -- and repeats up to
+/// `MAX_CROSSING_PASSES`. It used to sit between tracing and the meander (Ruling S-4), which left
+/// two stages free to move a line after the last check had passed: a meander of up to 1.5 channel
+/// widths, and Douglas-Peucker at `refine_simplify_m`. On the 1M-node stand-ins that put the
+/// shipped record ABOVE the coarse record it came from -- 36 against 33, 5 against 4, 57 against
+/// 54 -- which is the opposite of what the pass exists to promise. Ruling S-4a still stands
+/// inside the loop: a segment that yields is straightened, skips the meander, and is simplified
+/// like any other.
 ///
 /// Two counts go into the record. `crossings_coarse` is measured on the coarse lines before
 /// anything is traced: those are graph artifacts refinement did not make and does not fix
-/// (Ruling S-2). `crossings_left` is measured on the lines as they ship, after the meander and
-/// simplification, so it is the record's own honest count and not a mid-pass number.
+/// (Ruling S-2). `crossings_left` is the count over the shipped lines -- the very
+/// `record.reaches` this function leaves behind.
 pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
     let shores: Vec<Option<f64>> = record.reaches.iter().map(|r| terminal_level(r, &record.bodies)).collect();
     let downstream: Vec<Downstream> = record.reaches.iter().map(|r| r.downstream).collect();
@@ -692,16 +752,20 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
         yielded.push(vec![false; segments.len()]);
         traced.push(segments);
     }
-    let mut refineds: Vec<Refined> = record.reaches.iter().zip(&traced).zip(&shores)
-        .map(|((reach, segments), &shore)| assemble(reach, segments, shore))
+    let mut shipped: Vec<Refined> = (0..record.reaches.len())
+        .map(|r| ship(&record.reaches[r], &traced[r], &yielded[r], shores[r], ground, params))
         .collect();
 
-    for _ in 0..MAX_CROSSING_PASSES {
-        let lines: Vec<Vec<ReachPoint>> = refineds.iter().map(|r| r.points.clone()).collect();
+    let mut crossings_left;
+    let mut pass = 0usize;
+    loop {
+        let lines: Vec<Vec<ReachPoint>> = shipped.iter().map(|r| r.points.clone()).collect();
         let found = crossings(&lines, &downstream, ground.radius_m);
-        if found.is_empty() {
+        crossings_left = found.len();
+        if found.is_empty() || pass == MAX_CROSSING_PASSES {
             break;
         }
+        pass += 1;
         // `(reach, coarse segment)` pairs to straighten. `crossings` is already in a fixed order
         // and this sort is total, so the set and the order it is applied in are the same run to
         // run.
@@ -709,9 +773,9 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
         for c in &found {
             let (ra, rb) = (c.reach_a as usize, c.reach_b as usize);
             // cast-ok: a coarse segment index, bounded by the reach's own point count
-            let (sa, sb) = (refineds[ra].segment_of[c.index_a] as usize, refineds[rb].segment_of[c.index_b] as usize);
-            let flow_a = refineds[ra].points[c.index_a].flow_m2;
-            let flow_b = refineds[rb].points[c.index_b].flow_m2;
+            let (sa, sb) = (shipped[ra].segment_of[c.index_a] as usize, shipped[rb].segment_of[c.index_b] as usize);
+            let flow_a = shipped[ra].points[c.index_a].flow_m2;
+            let flow_b = shipped[rb].points[c.index_b].flow_m2;
             // Ruling S-3: the smaller flow gives way. On a tie the larger reach id keeps its
             // valley, and `reach_a` is always the smaller id, so it is the one that yields.
             let (yielder, other) = if flow_b < flow_a { ((rb, sb), (ra, sa)) } else { ((ra, sa), (rb, sb)) };
@@ -742,33 +806,16 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
         }
         moved.dedup();
         for r in moved {
-            refineds[r] = assemble(&record.reaches[r], &traced[r], shores[r]);
+            shipped[r] = ship(&record.reaches[r], &traced[r], &yielded[r], shores[r], ground, params);
         }
     }
 
     let mut falls = Vec::new();
-    for (r, reach) in record.reaches.iter_mut().enumerate() {
-        for (s, segment) in traced[r].iter_mut().enumerate() {
-            // Ruling S-4a: a segment that yielded is not meandered. The meander is worth up to
-            // `meander_amplitude_widths` channel widths of lateral shift, which on a wide reach
-            // is the same order as what the pass just straightened away -- so meandering a
-            // yielded segment would make Ruling S-3's "every interior station's lateral set to
-            // 0" true at the end of the pass and false of the record as it ships. The crossing
-            // fix outranks a cosmetic meander on one segment. The cost: a yielded flat wide
-            // segment ships dead straight, for about one graph spacing.
-            if yielded[r][s] {
-                continue;
-            }
-            meander(segment, ground, params, &reach.points[s], &reach.points[s + 1]);
-        }
-        let refined = assemble(reach, &traced[r], shores[r]);
-        reach.points = simplify(&refined.points, &refined.protected, ground.radius_m, params);
+    for (reach, refined) in record.reaches.iter_mut().zip(shipped) {
+        reach.points = refined.points;
         falls.extend(refined.falls);
     }
     record.falls = falls;
-
-    let lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
-    let crossings_left = crossings(&lines, &downstream, ground.radius_m).len();
     record.stats.crossings_coarse = crossings_coarse as u32; // cast-ok: bounded by the segment count, which is bounded by the record's point count
     record.stats.crossings_left = crossings_left as u32; // cast-ok: as above
 }

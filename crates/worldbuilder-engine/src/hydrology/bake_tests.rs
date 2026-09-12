@@ -1358,15 +1358,26 @@ fn simplification_shrinks_the_refined_line() {
     }
 }
 
-/// Rulings S-2 and S-3: after the pass, the refined lines cross no more often than the coarse
+/// Rulings S-2, S-3 and S-14: the lines the record SHIPS cross no more often than the coarse
 /// ones they came from, and the record says so.
 ///
-/// `params()` has no crossings at all -- neither coarse nor refined -- so it is a control, not a
-/// population. The junction threshold on the bake test world and the seed 1 `ranges` world are
-/// where this is measured.
+/// The three 12,000-node populations are controls: `params` and `ranges` have no crossings at
+/// all, coarse or refined, and `junction_params` has 0 coarse against 14 refined before the pass
+/// and 0 after. A property whose every population reads 0 against 0 asserts nothing, and that is
+/// how the first version of this test read green while the 1M-node record shipped 36 crossings
+/// against 33 coarse. So the seed 1 `ranges` world at **200,000 nodes** is in the population too
+/// -- the one Tasks 4 and 5 used -- where the coarse record really does cross itself (9) and the
+/// shipped record must not cross more (8). The last assertion is that at least one population is
+/// like that, so the property cannot quietly go back to comparing zero with zero.
+///
+/// It costs about 105 s of the debug profile. `refinement_adds_no_crossings_at_1m` below is the
+/// one that reproduces the finding itself; 200k does not, and says so there.
 #[test]
 fn refinement_adds_no_crossings() {
-    for (name, surface, p) in refined_populations() {
+    let mut populations: Vec<(&'static str, Surface, HydroParams)> = refined_populations().into_iter().collect();
+    populations.push(("ranges 200k", ranges_world(), HydroParams::earth_like(200_000)));
+    let mut with_coarse_crossings = 0usize;
+    for (name, surface, p) in populations {
         let stages = bake_stages(&surface, &p).expect("stages");
         let coarse = record_of(&stages, &p);
         let coarse_lines: Vec<Vec<crate::hydrology::ReachPoint>> = coarse.reaches.iter().map(|r| r.points.clone()).collect();
@@ -1375,7 +1386,43 @@ fn refinement_adds_no_crossings() {
         let refined = crate::hydrology::bake(&surface, &p).expect("bake");
         let lines: Vec<Vec<crate::hydrology::ReachPoint>> = refined.reaches.iter().map(|r| r.points.clone()).collect();
         let after = crate::hydrology::refine::crossings(&lines, &down, surface.radius_m).len();
-        eprintln!("{name}: coarse {before} refined {after}");
+        eprintln!("{name}: coarse {before} shipped {after}");
+        assert!(after <= before, "{name}: refinement left {after} crossings against {before} coarse");
+        assert_eq!(refined.stats.crossings_coarse as usize, before);
+        assert_eq!(refined.stats.crossings_left as usize, after);
+        if before > 0 {
+            with_coarse_crossings += 1;
+        }
+    }
+    assert!(with_coarse_crossings > 0,
+            "every population read 0 against 0: this property is asserting nothing");
+}
+
+/// Ruling S-14 at the resolution that found it. **This is the test that would have caught the
+/// bug, and the 200,000-node population above would not have: at 200k the shipped record crossed
+/// 8 times against 9 coarse under the old order too.** It takes a 1M-node bake on each of the two
+/// stand-ins to make what the meander and Douglas-Peucker add cost more than the pass recovers,
+/// which is where Task 7 measured 36 against 33 coarse and 57 against 54.
+///
+/// `#[ignore]`d for its cost -- about 90 s and 75 s of the release profile per bake, and several
+/// minutes each in debug -- the same bargain `every_small_world_drains` strikes. Run it with
+/// `cargo test --release -p worldbuilder-engine --lib refinement_adds_no_crossings_at_1m --
+/// --ignored --nocapture` whenever the refinement pipeline's ORDER changes.
+#[test]
+#[ignore]
+fn refinement_adds_no_crossings_at_1m() {
+    for (name, surface) in [("ranges 1M", ranges_world()), ("default 1M", world())] {
+        let p = HydroParams::earth_like(1_000_000);
+        let stages = bake_stages(&surface, &p).expect("stages");
+        let coarse = record_of(&stages, &p);
+        let coarse_lines: Vec<Vec<crate::hydrology::ReachPoint>> = coarse.reaches.iter().map(|r| r.points.clone()).collect();
+        let down: Vec<Downstream> = coarse.reaches.iter().map(|r| r.downstream).collect();
+        let before = crate::hydrology::refine::crossings(&coarse_lines, &down, surface.radius_m).len();
+        let refined = crate::hydrology::bake(&surface, &p).expect("bake");
+        let lines: Vec<Vec<crate::hydrology::ReachPoint>> = refined.reaches.iter().map(|r| r.points.clone()).collect();
+        let after = crate::hydrology::refine::crossings(&lines, &down, surface.radius_m).len();
+        eprintln!("{name}: {} reaches, coarse {before} shipped {after}", refined.reaches.len());
+        assert!(before > 0, "{name}: a 1M coarse record crosses itself; this population is not a control");
         assert!(after <= before, "{name}: refinement left {after} crossings against {before} coarse");
         assert_eq!(refined.stats.crossings_coarse as usize, before);
         assert_eq!(refined.stats.crossings_left as usize, after);
