@@ -375,9 +375,11 @@ function bodyRadiusM(areaM2) {
 }
 
 /// Draw a decoded hydro-bake record over the globe: every reach as a polyline, the outlet
-/// path from the largest (or forced) fresh body drawn again on top in amber, every body as a
-/// ring at its true size (plus a fixed-size point for the small ones, so they do not vanish
-/// at global zoom), and every waterfall as a small white point.
+/// path from the largest (or forced) fresh body drawn again on top in amber, every waterfall
+/// as a small white point, and every body either as its traced outline (a fine-search body: a
+/// pond or a small lake, Ruling S-11) drawn as a filled polygon, or -- when it has no traced
+/// outline -- as a ring at its true size (plus a fixed-size point for the small ones, so they
+/// do not vanish at global zoom).
 ///
 /// Never depth-tested and always clamped to ground, the same rules `hydrology.js` draws
 /// carved courses by -- a preview line that sinks into the terrain it has not carved is worse
@@ -423,11 +425,57 @@ export function drawPreview(viewer, Cesium, decoded) {
 
   let bodiesDrawn = 0;
   let ringsDrawn = 0;
+  let pondsDrawn = 0;
+  let pondOutlinesDrawn = 0;
   for (const body of decoded.bodies) {
     const salt = body.kind === "saltLake" || body.kind === "saltFlat";
     const colour = Cesium.Color.fromCssColorString(salt ? "#ffffff" : "#3aa7e0");
     const radiusM = bodyRadiusM(body.areaM2);
     const position = Cesium.Cartesian3.fromDegrees(body.anchor[1], body.anchor[0]);
+
+    // Non-empty today means "a fine-search body's traced 250 m ring" (Ruling S-11): 2,220 of
+    // 2,222 fine bodies are `kind: lake`, not `kind: pond`, so this is keyed on the outline,
+    // never on `kind`. Plan 1b-4 gives coarse bodies shore points too, so "non-empty" will stop
+    // meaning "traced ring" then -- this file will need to tell the two apart at that point.
+    const outline = body.outline || [];
+    const traced = outline.length > 0;
+
+    if (traced) {
+      pondsDrawn += 1;
+      const downstreamText = body.downstream && body.downstream.kind === "reach"
+        ? `reach ${body.downstream.id}`
+        : body.downstream
+          ? body.downstream.kind
+          : "unknown";
+      const description = [
+        body.kind,
+        `depth ${body.depthM.toFixed(1)} m`,
+        `${(body.areaM2 / 1e4).toFixed(2)} ha`,
+        `level ${body.levelM.toFixed(1)} m`,
+        body.fresh ? "fresh" : "salt",
+        `drains to ${downstreamText}`,
+      ].join("\n");
+
+      // A traced pond/small lake is drawn as its real shape, not the true-size circle: the
+      // ring approximates every body's footprint as a disc, but a traced outline is the
+      // body's actual boundary, so it earns a filled polygon instead.
+      const positions = [];
+      for (const [lat, lon] of outline) positions.push(lon, lat);
+      source.entities.add({
+        polygon: {
+          hierarchy: Cesium.Cartesian3.fromDegreesArray(positions),
+          clampToGround: true,
+          material: colour.withAlpha(0.6),
+          outline: true,
+          outlineColor: colour,
+        },
+        description,
+      });
+      pondOutlinesDrawn += 1;
+      bodiesDrawn += 1;
+      continue;
+    }
+
     const description = [
       body.kind,
       `${(body.areaM2 / 1e6).toFixed(2)} km2`,
@@ -498,6 +546,8 @@ export function drawPreview(viewer, Cesium, decoded) {
       rings: ringsDrawn,
       falls: fallsDrawn,
       outletReaches: outlet.reachIds.length,
+      ponds: pondsDrawn,
+      pondOutlines: pondOutlinesDrawn,
     },
     remove: () => layer.remove(true),
   };

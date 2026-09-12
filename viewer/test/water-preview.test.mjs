@@ -279,6 +279,55 @@ test("drawPreview draws every body as a true-size ring, a point only for the sma
   assert.equal(points[0].point.pixelSize, 5);
 });
 
+test("drawPreview draws a pond's outline as a polygon and counts it, instead of a true-size ring", () => {
+  const Cesium = fakeCesium();
+  const viewer = { dataSources: { contains: () => false, add: (source) => source } };
+  const decoded = {
+    header: { schema: 5, pondsKept: 1, crossingsLeft: 0 },
+    bodies: [
+      {
+        id: 0, kind: "lake", fresh: true, levelM: 100, areaM2: 4e6, depthM: 9,
+        anchor: [1, 1], outline: [], downstream: { kind: "ocean" }, outletReach: null,
+      },
+      {
+        id: 1, kind: "pond", fresh: true, levelM: 90, areaM2: 6e4, depthM: 3,
+        anchor: [2, 2],
+        outline: [[2, 2], [2.001, 2], [2.001, 2.001], [2, 2.001]],
+        downstream: { kind: "reach", id: 0 }, outletReach: null,
+      },
+    ],
+    reaches: [], notches: 0, falls: [],
+  };
+  const drawn = drawPreview(viewer, Cesium, decoded);
+
+  assert.equal(drawn.counts.ponds, 1);
+  assert.equal(drawn.counts.pondOutlines, 1);
+  // Body count still counts both bodies; the ring count only counts the one drawn as a ring.
+  assert.equal(drawn.counts.bodies, 2);
+  assert.equal(drawn.counts.rings, 1);
+
+  const polygons = drawn.source.entities.list.filter((e) => e.polygon);
+  assert.equal(polygons.length, 1, "only the pond is drawn as a polygon");
+  const [pondEntity] = polygons;
+  // fakeCesium's fromDegreesArray is the identity, so the hierarchy is the flat lon/lat array
+  // built from the outline's [lat, lon] points, same order the reach polylines use.
+  const expectedFlat = decoded.bodies[1].outline.flatMap(([lat, lon]) => [lon, lat]);
+  assert.deepEqual(pondEntity.polygon.hierarchy, expectedFlat);
+  assert.equal(pondEntity.polygon.clampToGround, true);
+  // fakeCesium's withAlpha ignores its argument and returns the underlying css string.
+  assert.equal(pondEntity.polygon.material, "#3aa7e0");
+  assert.equal(pondEntity.polygon.outline, true);
+  assert.equal(pondEntity.polygon.outlineColor.css, "#3aa7e0");
+  assert.match(pondEntity.description, /3\.0 m/); // depth
+  assert.match(pondEntity.description, /6\.00 ha/); // 6e4 m2 -> 6.00 ha
+  assert.match(pondEntity.description, /reach 0/); // downstream reach it drains to
+
+  // The lake with an empty outline still gets its usual true-size ring, no polygon.
+  const rings = drawn.source.entities.list.filter((e) => e.ellipse);
+  assert.equal(rings.length, 1);
+  assert.equal(rings[0].position.lat, 1);
+});
+
 test("drawPreview outlines a salt body in the salt colour and a fresh body in the fresh colour", () => {
   const Cesium = fakeCesium();
   const viewer = { dataSources: { contains: () => false, add: (source) => source } };
