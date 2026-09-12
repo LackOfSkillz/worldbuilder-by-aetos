@@ -18,9 +18,12 @@
 //! flagging rather than filtering keeps the count visible.
 
 use crate::detmath as m;
+use crate::hydrology::buckets::BucketIndex;
 use crate::hydrology::heap::FloodQueue;
+use crate::hydrology::landgraph::LandGraph;
 use crate::hydrology::refine::Ground;
-use crate::hydrology::{HydroParams, ReachLine};
+use crate::hydrology::routing::NO_LAKE;
+use crate::hydrology::{Body, BodyKind, Downstream, HydroParams, HydroRecord, ReachLine};
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 use crate::tangent::TangentFrame;
@@ -349,11 +352,413 @@ pub fn hollows_in(strip: &Strip, strip_index: usize, params: &HydroParams) -> Ve
     kept.into_iter().map(|(_, _, _, c)| c).collect()
 }
 
+/// Ruling S-6's wetness floor: the `pond_wetness_share` quantile of the graph's **land** nodes'
+/// wetness, at index `floor(share * (len - 1))` of the sorted values. `None` on a graph with no
+/// land node at all, which is a graph with no reaches and so no candidates either.
+fn wetness_floor(graph: &LandGraph, params: &HydroParams) -> Option<f64> {
+    let mut wet: Vec<f64> = (0..graph.len())
+        .filter(|&i| !graph.ocean[i])
+        .map(|i| graph.wetness[i])
+        .collect();
+    if wet.is_empty() {
+        return None;
+    }
+    wet.sort_unstable_by(|a, b| a.total_cmp(b));
+    // `bake_stages` holds `0 < pond_wetness_share <= 1`, so the product is in `0..=len-1`.
+    let at = m::floor(params.pond_wetness_share * (wet.len() - 1) as f64);
+    Some(wet[at as usize]) // cast-ok: floor of a value held to 0..=len-1 above
+}
+
+/// The candidate's lowest cell, ties to the lower row then column -- the same rule `hollows_in`
+/// used to place the anchor, recomputed here because a `Candidate` carries the anchor's *point*
+/// and not its cell.
+fn anchor_cell(strip: &Strip, cells: &[(usize, usize)]) -> (usize, usize) {
+    let w = strip.cells_across;
+    let mut best = cells[0];
+    let mut lowest = strip.ground_m[best.0 * w + best.1];
+    for &(row, column) in &cells[1..] {
+        let own = strip.ground_m[row * w + column];
+        if own < lowest {
+            lowest = own;
+            best = (row, column);
+        }
+    }
+    best
+}
+
+/// Ruling S-6's slope gate, read off the strip the candidate was found in: does the ground rise
+/// by more than `pond_max_slope` over one cell in any of the four directions at the anchor?
+///
+/// The anchor is the hollow's lowest cell, so every neighbour rises; the question is by how much.
+/// A cell against the strip's edge simply has fewer neighbours to ask.
+fn too_steep(strip: &Strip, anchor: (usize, usize), params: &HydroParams) -> bool {
+    let w = strip.cells_across;
+    let (row, column) = anchor;
+    let own = strip.ground_m[row * w + column];
+    let rise_m = params.pond_max_slope * params.pond_cell_m;
+    let steep = |r: usize, c: usize| strip.ground_m[r * w + c] - own > rise_m;
+    (row > 0 && steep(row - 1, column))
+        || (row + 1 < strip.steps && steep(row + 1, column))
+        || (column > 0 && steep(row, column - 1))
+        || (column + 1 < w && steep(row, column + 1))
+}
+
+/// Douglas–Peucker over a closed ring of `(lat, lon)` points, keeping both ends (which are the
+/// same point) and anything further than `tolerance_m` from the chord it would be dropped onto.
+/// `refine::simplify`'s method, on a bare ring rather than on `ReachPoint`s: there is no bed here
+/// to hold a vertical tolerance against, and no protected point but the closure itself.
+fn simplify_ring(points: &[(f64, f64)], radius_m: f64, tolerance_m: f64) -> Vec<(f64, f64)> {
+    let n = points.len();
+    if n <= 3 {
+        return points.to_vec();
+    }
+    let at = |p: &(f64, f64)| SpherePoint::from_latlon(p.0, p.1);
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut spans: Vec<(usize, usize)> = vec![(0, n - 1)];
+    while let Some((lo, hi)) = spans.pop() {
+        if hi <= lo + 1 {
+            continue;
+        }
+        let frame = TangentFrame::at(&at(&points[lo]), radius_m);
+        let (bx, by) = frame.sphere_to_local(&at(&points[hi]));
+        let len2 = bx * bx + by * by;
+        let mut worst = 0.0;
+        let mut worst_at = lo;
+        for i in lo + 1..hi {
+            let (px, py) = frame.sphere_to_local(&at(&points[i]));
+            // A ring's first and last point are the same, so the very first chord has no length
+            // and every point is measured from that single point instead. That is the right
+            // question to ask: the furthest point from the start is the one the ring cannot lose.
+            let raw = if len2 > 0.0 { (px * bx + py * by) / len2 } else { 0.0 };
+            let t = if raw < 0.0 { 0.0 } else if raw > 1.0 { 1.0 } else { raw };
+            let off = m::hypot(px - t * bx, py - t * by);
+            if off > worst {
+                worst = off;
+                worst_at = i;
+            }
+        }
+        if worst > tolerance_m {
+            keep[worst_at] = true;
+            spans.push((lo, worst_at));
+            spans.push((worst_at, hi));
+        }
+    }
+    points.iter().zip(&keep).filter(|(_, &k)| k).map(|(p, _)| *p).collect()
+}
+
+/// The candidate's outline: a marching walk round the boundary of its cells at `pond_cell_m`,
+/// through the strip's frame, simplified to a `pond_cell_m` tolerance.
+///
+/// **The ring closes implicitly.** The first point is not repeated at the end, so a ring of three
+/// points is a triangle, and a consumer joins `outline[i]` to `outline[(i + 1) % len]`.
+///
+/// **The winding is fixed**, by the four-edge convention below rather than by any test of the
+/// ring afterwards: for each cell of the set, in row-major order, a side whose neighbour is
+/// outside the set contributes one directed edge -- the low-row side runs toward higher columns,
+/// the high-column side toward higher rows, the high-row side toward lower columns, and the
+/// low-column side toward lower rows. Chained from the lowest boundary corner (lowest row, then
+/// lowest column), that is a clockwise walk in the strip's own `(along, lateral)` frame, which is
+/// right-handed about the outward normal -- so clockwise seen from outside the sphere.
+///
+/// A hollow is one 4-connected component, so the walk from the lowest corner is its outer
+/// boundary. A hole inside it (dry ground the water surrounds) is a second loop the walk does not
+/// visit, and is not recorded: the outline is the body's extent, and its interior is not part of
+/// the record's question.
+fn outline(strip: &Strip, cells: &[(usize, usize)], params: &HydroParams) -> Vec<(f64, f64)> {
+    let (mut first_row, mut last_row) = (cells[0].0, cells[0].0);
+    let (mut first_column, mut last_column) = (cells[0].1, cells[0].1);
+    for &(row, column) in cells {
+        if row < first_row { first_row = row; }
+        if row > last_row { last_row = row; }
+        if column < first_column { first_column = column; }
+        if column > last_column { last_column = column; }
+    }
+    let width = last_column - first_column + 1;
+    let height = last_row - first_row + 1;
+    let mut inside = vec![false; width * height];
+    for &(row, column) in cells {
+        inside[(row - first_row) * width + (column - first_column)] = true;
+    }
+
+    // Corner (r, c) of the local grid is the low-row, low-column corner of cell (r, c), so there
+    // is one more corner than cell in each direction.
+    let corner = |r: usize, c: usize| r * (width + 1) + c;
+    let mut out_of: Vec<Vec<u32>> = vec![Vec::new(); (width + 1) * (height + 1)];
+    for row in 0..height {
+        for column in 0..width {
+            if !inside[row * width + column] {
+                continue;
+            }
+            let mut edge = |from: usize, to: usize| out_of[from].push(to as u32); // cast-ok: a corner index of this candidate's own bounding box
+            if row == 0 || !inside[(row - 1) * width + column] {
+                edge(corner(row, column), corner(row, column + 1));
+            }
+            if column + 1 == width || !inside[row * width + column + 1] {
+                edge(corner(row, column + 1), corner(row + 1, column + 1));
+            }
+            if row + 1 == height || !inside[(row + 1) * width + column] {
+                edge(corner(row + 1, column + 1), corner(row + 1, column));
+            }
+            if column == 0 || !inside[row * width + column - 1] {
+                edge(corner(row + 1, column), corner(row, column));
+            }
+        }
+    }
+
+    // Corner ids ascend by row and then by column, so the first with an outgoing edge is the
+    // lowest-row, lowest-column boundary corner the brief asks the walk to start from.
+    let start = match out_of.iter().position(|edges| !edges.is_empty()) {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let edge_count: usize = out_of.iter().map(|edges| edges.len()).sum();
+    let mut taken = vec![0usize; out_of.len()];
+    let mut ring: Vec<usize> = Vec::new();
+    let mut here = start;
+    // A corner two cells meet at diagonally has two outgoing edges; taking them in the order they
+    // were emitted keeps the walk total, and the bound keeps it finite whatever the set's shape.
+    for _ in 0..edge_count {
+        ring.push(here);
+        let next = match out_of[here].get(taken[here]) {
+            Some(&next) => next as usize, // cast-ok: the corner index this walk itself pushed
+            None => break,
+        };
+        taken[here] += 1;
+        if next == start {
+            break;
+        }
+        here = next;
+    }
+
+    let cell = params.pond_cell_m;
+    let middle = strip.middle_column() as f64;
+    let traced: Vec<(f64, f64)> = ring
+        .iter()
+        .map(|&id| {
+            let row = id / (width + 1);
+            let column = id % (width + 1);
+            // A cell is sampled at its centre, so its low corner is half a cell back in each
+            // direction.
+            let along_m = ((first_row + row) as f64 - 0.5) * cell;
+            let lateral_m = ((first_column + column) as f64 - 0.5 - middle) * cell;
+            strip.frame.local_to_sphere(along_m, lateral_m).to_latlon()
+        })
+        .collect();
+    if traced.len() < 3 {
+        return traced;
+    }
+    let mut closed = traced.clone();
+    closed.push(traced[0]);
+    let mut simplified = simplify_ring(&closed, strip.frame.radius_m, cell);
+    simplified.pop(); // the repeated first point: the ring closes implicitly
+    if simplified.len() >= 3 { simplified } else { traced }
+}
+
+/// A helper index's cell: about one entry per cell for a population of `count`, with `count`
+/// held inside the range `nominal_spacing_m` is defined on.
+///
+/// **A `BucketIndex` allocates one bucket per cell of the whole planet**, so its cell must be
+/// sized to what it holds and not to the distance a caller happens to be asking about. A 500 m
+/// grid on Earth is 21 million buckets -- half a gigabyte of empty `Vec`s -- and `candidates` and
+/// `nearest` are both correct at any cell size, so nothing is lost by choosing a coarse one.
+fn index_cell_m(count: usize, radius_m: f64) -> f64 {
+    let count = if count < 1 { 1 } else if count > 100_000_000 { 100_000_000 } else { count };
+    crate::stream::nominal_spacing_m(count as u32, radius_m) // cast-ok: held to 1..=100,000,000 above
+}
+
+/// One candidate that survived every gate, with everything the record needs, so the density cap
+/// can sort and drop without holding on to its (very large) strip.
+struct Survivor {
+    anchor: SpherePoint,
+    lat_deg: f64,
+    lon_deg: f64,
+    level_m: f64,
+    depth_m: f64,
+    area_m2: f64,
+    outline: Vec<(f64, f64)>,
+}
+
+/// Spec §6.6's fine search, end to end: strips along every refined reach, the hollows in them,
+/// Rulings S-6, S-7, S-8, S-10 and S-11, and the bodies that survive, appended to `record.bodies`.
+///
+/// **Appended, never inserted** (Ruling S-7): a body's id is its index on the wire, and stage 2
+/// keys on it, so every coarse body keeps the id it had. A pond's id continues from the last
+/// coarse one.
+///
+/// **`pond_ground_m` is not `ground.height_m`** (Ruling S-9, argued at [`pond_ground`]). `ground`
+/// gives the geometry -- the radius the strips' frames are laid out on -- and `pond_ground_m`
+/// gives every cell's height. On a bake the first is the landform and the second is the landform
+/// with its detail field; passing the landform for both compiles and finds nothing.
+///
+/// The order of the work is the order of the rulings, and it is what makes the result the same
+/// run to run: reaches in id order, each reach's strips in order, each strip's hollows deepest
+/// first. Every gate below is a drop, so it cannot reorder what is left.
+pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], ground: &Ground,
+              pond_ground_m: &dyn Fn(&SpherePoint) -> f64, params: &HydroParams) {
+    let floor = match wetness_floor(graph, params) {
+        Some(floor) => floor,
+        None => return,
+    };
+    // `lake_of` is `Routing::lake_of`, one entry per node. A caller that pairs it with a different
+    // graph gets nothing rather than an out-of-bounds panic: `wb_hydro_bake` reaches this code
+    // through `bake`, and nothing reachable from `extern "C"` may panic.
+    if record.reaches.is_empty() || graph.positions.is_empty() || lake_of.len() != graph.len() {
+        return;
+    }
+
+    // The nearest refined reach line, for Ruling S-5's `downstream`. Every point of every reach,
+    // so "nearest line" is nearest point on it rather than nearest of its ends.
+    let mut line_points: Vec<SpherePoint> = Vec::new();
+    let mut line_reach: Vec<u32> = Vec::new();
+    for reach in &record.reaches {
+        for point in &reach.points {
+            line_points.push(SpherePoint::from_latlon(point.lat_deg, point.lon_deg));
+            line_reach.push(reach.id);
+        }
+    }
+    if line_points.is_empty() {
+        return;
+    }
+    let mut lines = BucketIndex::new(ground.radius_m, index_cell_m(line_points.len(), ground.radius_m));
+    for (i, at) in line_points.iter().enumerate() {
+        lines.insert(at, i as u32); // cast-ok: a point index, bounded by the record's own size
+    }
+
+    let mut found = 0usize;
+    // `nodes` and the dedup index are wanted only while the strips are walked, and each holds a
+    // bucket per cell of a whole planet; the block drops them before the density grid is built.
+    let mut survivors: Vec<Survivor> = {
+        // The nearest graph node, for Ruling S-6's wetness and Ruling S-7's coarse-lake test.
+        let mut nodes = BucketIndex::new(graph.radius_m, index_cell_m(graph.len(), graph.radius_m));
+        for (i, position) in graph.positions.iter().enumerate() {
+            nodes.insert(position, i as u32); // cast-ok: a node index, bounded by stream::MAX_NODES
+        }
+        // The dedup partner: kept anchors, so a pond two strips both saw is one pond. Sized to
+        // the reach points rather than to the 500 m dedup distance -- a 500 m grid over a planet
+        // is 21 million buckets, and there are never more anchors than there are river points.
+        let dedup_m = params.pond_cell_m * 2.0;
+        let mut anchors = BucketIndex::new(ground.radius_m, index_cell_m(line_points.len(), ground.radius_m));
+        let mut anchor_points: Vec<SpherePoint> = Vec::new();
+
+        let mut survivors: Vec<Survivor> = Vec::new();
+        for reach in &record.reaches {
+            for (index, strip) in strips(reach, ground, pond_ground_m, params).iter().enumerate() {
+                for candidate in hollows_in(strip, index, params) {
+                    found += 1;
+                    // Ruling S-10: past the corridor the terrain may keep descending, so a
+                    // side-clipped hollow's level, area and existence are all window numbers.
+                    if candidate.touches_side {
+                        continue;
+                    }
+                    if too_steep(strip, anchor_cell(strip, &candidate.cells), params) {
+                        continue;
+                    }
+                    // Ruling S-7, the datum half: the *landform* at the anchor, not the detail
+                    // field the hollow was found in. Water at or below the datum is the sea's.
+                    if !((ground.height_m)(&candidate.anchor) > 0.0) {
+                        continue;
+                    }
+                    let node = match nodes.nearest(&candidate.anchor, &graph.positions) {
+                        Some(node) => node as usize, // cast-ok: the node index the index was built with
+                        None => continue,
+                    };
+                    // Ruling S-7, the lake half, and Ruling S-6's wetness gate.
+                    if lake_of[node] != NO_LAKE || graph.wetness[node] < floor {
+                        continue;
+                    }
+                    // Two strips of one reach share an end, so the same water is seen twice; the
+                    // first to see it is the one that keeps it.
+                    let near = anchors.candidates(&candidate.anchor, dedup_m);
+                    if near.iter().any(|&id| {
+                        candidate.anchor.distance_to(&anchor_points[id as usize], ground.radius_m) <= dedup_m
+                    }) {
+                        continue;
+                    }
+                    anchors.insert(&candidate.anchor, anchor_points.len() as u32); // cast-ok: bounded by the candidate count
+                    anchor_points.push(candidate.anchor);
+                    let (lat_deg, lon_deg) = candidate.anchor.to_latlon();
+                    survivors.push(Survivor {
+                        anchor: candidate.anchor,
+                        lat_deg,
+                        lon_deg,
+                        level_m: candidate.level_m,
+                        depth_m: candidate.level_m - candidate.floor_m,
+                        area_m2: candidate.area_m2,
+                        outline: outline(strip, &candidate.cells, params),
+                    });
+                }
+            }
+        }
+        survivors
+    };
+
+    // Ruling S-8: deepest first, ties by latitude then longitude bits -- total, and independent
+    // of the order the strips happened to find them in.
+    survivors.sort_by(|a, b| {
+        b.depth_m.total_cmp(&a.depth_m)
+            .then(a.lat_deg.to_bits().cmp(&b.lat_deg.to_bits()))
+            .then(a.lon_deg.to_bits().cmp(&b.lon_deg.to_bits()))
+    });
+    // Ruling S-8's grid, and the one index here whose cell is not sized to its population: the
+    // cell *is* the rule. At the spec's 500 km^2 that is about 22.4 km, a million buckets on an
+    // Earth-sized planet, and it is built only after the two indexes above have been dropped.
+    let density = BucketIndex::new(ground.radius_m, m::sqrt(params.pond_density_area_m2));
+    // The cells already spoken for, sorted so membership is a binary search rather than a hash
+    // set: a few thousand entries at most, and nothing here may depend on a hash order.
+    let mut taken: Vec<usize> = Vec::new();
+    let mut kept = 0usize;
+    for survivor in &survivors {
+        // Both of these are defensive -- a hollow of one cell already traces four corners, and
+        // `line_points` was checked non-empty above -- but a survivor that cannot be recorded
+        // must not claim the cell a later one could have used, so they come first.
+        if survivor.outline.len() < 3 {
+            continue;
+        }
+        // Ruling S-5: a pond beside a river drains to that river, and no channel is traced for it.
+        let downstream = match lines.nearest(&survivor.anchor, &line_points) {
+            Some(point) => Downstream::Reach(line_reach[point as usize]),
+            None => continue,
+        };
+        let cell = density.cell_of(&survivor.anchor);
+        match taken.binary_search(&cell) {
+            Ok(_) => continue,
+            Err(at) => taken.insert(at, cell),
+        }
+        let id = record.bodies.len() as u32; // cast-ok: a body index, bounded by the candidate count
+        record.bodies.push(Body {
+            id,
+            // Ruling S-11: the area picks the kind and neither kind is dropped. Both carry the
+            // traced ring; spec §7 makes `kind` the discriminator between a ring and a lake's
+            // shore-point set, and a fine find has no shore points either way.
+            kind: if survivor.area_m2 < params.pond_max_area_m2 { BodyKind::Pond } else { BodyKind::Lake },
+            fresh: true,
+            enclosed: false,
+            forced: false,
+            level_m: survivor.level_m,
+            area_m2: survivor.area_m2,
+            depth_m: survivor.depth_m,
+            outlet_reach: None,
+            anchor: (survivor.lat_deg, survivor.lon_deg),
+            outline: survivor.outline.clone(),
+            downstream,
+        });
+        kept += 1;
+    }
+
+    record.stats.ponds_found = found as u32; // cast-ok: at most one candidate per strip cell
+    record.stats.ponds_kept = kept as u32; // cast-ok: bounded by `found`
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hydrology::landgraph::LandGraph;
     use crate::hydrology::refine::Ground;
-    use crate::hydrology::{Downstream, HydroParams, ReachClass, ReachLine, ReachPoint};
+    use crate::hydrology::routing::NO_LAKE;
+    use crate::hydrology::{BakeStats, Downstream, HydroParams, HydroRecord, ReachClass, ReachLine,
+                           ReachPoint};
     use crate::sphere::SpherePoint;
 
     const R: f64 = 6_371_000.0;
@@ -589,6 +994,152 @@ mod tests {
         let (made, skips) = strips_with_skips(&reach, &ground, &h, &params());
         assert_eq!(made.len(), 1);
         assert_eq!(skips, StripSkips { over_budget: 0, degenerate: 1 });
+    }
+
+    /// A line of equally-wet land nodes along the equator, under the strip: every candidate's
+    /// nearest node has wetness 0.5, which is the 60th percentile of a uniform 0.5, so Ruling
+    /// S-6's wetness gate passes and the tests below are about the gate they name.
+    fn graph_under_the_line() -> LandGraph {
+        const N: usize = 11;
+        let positions: Vec<SpherePoint> = (0..N)
+            .map(|i| SpherePoint::from_latlon(0.0, i as f64 * 1_000.0 / M_PER_DEG))
+            .collect();
+        let directed: Vec<Vec<u32>> = (0..N)
+            .map(|i| if i + 1 < N { vec![i as u32 + 1] } else { Vec::new() }) // cast-ok: node index, 11 of them
+            .collect();
+        LandGraph::from_parts(R, positions, vec![100.0; N], vec![1.0e6; N], &directed,
+                              vec![0.5; N])
+    }
+
+    /// A record holding one reach and nothing else, for `search` to append ponds to. The stats
+    /// are a zeroed fixture: `search` writes only the nine pond words, and the tests read only
+    /// those.
+    fn record_for(reach: ReachLine) -> HydroRecord {
+        HydroRecord {
+            bodies: Vec::new(),
+            reaches: vec![reach],
+            notches: Vec::new(),
+            falls: Vec::new(),
+            stats: BakeStats {
+                nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
+                streams: 0, rivers: 0, great: 0, max_order: 0,
+                bifurcation_min: 0.0, bifurcation_max: 0.0,
+                stream_flow_m2: 0.0, river_flow_m2: 0.0, great_flow_m2: 0.0,
+                total_nodes: 0, wetness_nodes: 0, keep_depth_m: 0.0, keep_area_m2: 0.0,
+                pond_max_area_m2: 0.0, keep_max_area_m2: 0.0, min_stream_nodes: 0.0,
+                notch_fall_m: 0.0, evaporation_factor: 0.0, salt_flat_share: 0.0,
+                forced_requested: 0, forced_matched: 0,
+                capped_basins: 0, capped_inner: 0, capped_inner_kept: 0,
+                refine_step_m: 0.0, refine_simplify_m: 0.0, refine_vertical_m: 0.0,
+                fall_min_drop_m: 0.0, fall_max_run_m: 0.0,
+                meander_wavelength_widths: 0.0, meander_amplitude_widths: 0.0,
+                meander_max_slope: 0.0,
+                crossings_coarse: 0, crossings_left: 0,
+                ponds_found: 0, ponds_kept: 0,
+                pond_cell_m: 0.0, pond_search_radius_m: 0.0, pond_keep_depth_m: 0.0,
+                pond_keep_area_m2: 0.0, pond_wetness_share: 0.0, pond_max_slope: 0.0,
+                pond_density_area_m2: 0.0,
+            },
+        }
+    }
+
+    /// Ruling S-8: the density cap keeps the deepest first, one per cell of about 22.4 km.
+    #[test]
+    fn the_density_cap_keeps_the_deepest() {
+        // Two bowls 2 km apart, 5 m and 3 m deep, both on the line and clear of the window's
+        // edges: the same 500 km^2 cell, so only the deeper stays.
+        let deep = bowl(0.0, 3_000.0, 600.0, 5.0);
+        let shallow = bowl(0.0, 5_000.0, 600.0, 3.0);
+        let h = move |p: &SpherePoint| {
+            let (a, b) = (deep(p), shallow(p));
+            if a < b { a } else { b }
+        };
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let graph = graph_under_the_line();
+        let lake_of = vec![NO_LAKE; graph.len()];
+        // Both bowls are candidates before the cap.
+        let found: Vec<Candidate> = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
+            .iter().enumerate().flat_map(|(i, s)| hollows_in(s, i, &p)).collect();
+        assert_eq!(found.len(), 2, "two bowls, two candidates");
+        assert!(found.iter().all(|c| !c.touches_side && !c.touches_end),
+                "neither bowl is clipped, so Ruling S-10 is not what this test measures");
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &lake_of, &ground, &h, &p);
+        assert_eq!(record.stats.ponds_found, 2);
+        assert_eq!(record.stats.ponds_kept, 1, "one 500 km^2 cell holds one body");
+        assert_eq!(record.bodies.len(), 1);
+        let body = &record.bodies[0];
+        assert!(body.depth_m > 4.5 && body.depth_m < 5.5,
+                "the deeper bowl is the one kept, not the shallower: {} m", body.depth_m);
+        // And it is the deep bowl's place, 3 km along the line rather than 5.
+        let (_, lon) = (body.anchor.0, body.anchor.1);
+        assert!(lon * M_PER_DEG > 2_400.0 && lon * M_PER_DEG < 3_600.0,
+                "kept body at {} m along", lon * M_PER_DEG);
+    }
+
+    /// Ruling S-7: a candidate inside a coarse lake, or on ground at or below the datum, is
+    /// dropped. Run twice off one bowl, so the difference is the ruling and nothing else.
+    #[test]
+    fn a_candidate_inside_a_coarse_lake_is_dropped() {
+        let h = bowl(0.0, 5_000.0, 600.0, 5.0);
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let graph = graph_under_the_line();
+
+        let mut open = record_for(reach_along_the_equator(10.0));
+        search(&mut open, &graph, &vec![NO_LAKE; graph.len()], &ground, &h, &p);
+        assert_eq!(open.stats.ponds_found, 1);
+        assert_eq!(open.stats.ponds_kept, 1, "on open ground the bowl is a body");
+
+        // The same bowl, with every node of the graph a member of coarse lake 0.
+        let mut drowned = record_for(reach_along_the_equator(10.0));
+        search(&mut drowned, &graph, &vec![0u32; graph.len()], &ground, &h, &p);
+        assert_eq!(drowned.stats.ponds_found, 1, "it is still found");
+        assert_eq!(drowned.stats.ponds_kept, 0, "and dropped: it is inside a coarse lake");
+        assert!(drowned.bodies.is_empty());
+
+        // And the datum half of the ruling: the same bowl on ground 100 m lower is under the sea.
+        let sunk = |q: &SpherePoint| h(q) - 100.0;
+        let below = Ground { height_m: &sunk, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let mut drowned = record_for(reach_along_the_equator(10.0));
+        search(&mut drowned, &graph, &vec![NO_LAKE; graph.len()], &below, &sunk, &p);
+        assert_eq!(drowned.stats.ponds_found, 1);
+        assert_eq!(drowned.stats.ponds_kept, 0, "the landform there is at the datum");
+    }
+
+    /// The outline is a closed ring of at least 3 points, in one fixed winding, and the same
+    /// ring bit for bit on a second run.
+    #[test]
+    fn a_ponds_outline_is_a_closed_ring_in_a_fixed_winding() {
+        let h = bowl(0.0, 5_000.0, 600.0, 5.0);
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let graph = graph_under_the_line();
+        let lake_of = vec![NO_LAKE; graph.len()];
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &lake_of, &ground, &h, &p);
+        assert_eq!(record.bodies.len(), 1);
+        let ring = &record.bodies[0].outline;
+        assert!(ring.len() >= 3, "a traced outline is a ring, not {} points", ring.len());
+        assert_ne!(ring[0], ring[ring.len() - 1],
+                   "the ring closes implicitly: the first point is not repeated at the end");
+        // Signed area on the equator, in degrees squared: the sign is the winding, and the
+        // magnitude says the ring encloses something rather than doubling back on itself.
+        let mut twice_area = 0.0;
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            twice_area += a.1 * b.0 - b.1 * a.0;
+        }
+        // The reach here runs east along the equator, so the strip's `along` is east and its
+        // `lateral` is north: the ring's clockwise-from-outside winding is clockwise in
+        // (lon, lat) too, which is a negative shoelace.
+        assert!(twice_area < 0.0,
+                "the winding is fixed by the trace's four-edge convention: {twice_area}");
+
+        let mut again = record_for(reach_along_the_equator(10.0));
+        search(&mut again, &graph, &lake_of, &ground, &h, &p);
+        assert_eq!(record.bodies, again.bodies, "the same ring, twice");
     }
 
     #[test]

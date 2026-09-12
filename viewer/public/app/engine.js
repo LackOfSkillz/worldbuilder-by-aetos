@@ -759,7 +759,7 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 45-word header (schema 5, Task 3 of plan 1b-3) into a plain
+  /// Read a `hydroBake` record's 54-word header (schema 5, Task 5 of plan 1b-3) into a plain
   /// object. Words 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`,
   /// `falls`, `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`,
   /// `great`, `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
@@ -774,16 +774,20 @@ export class Engine {
   /// `meanderAmplitudeWidths`, `meanderMaxSlope`). Words 43-44 (schema 5) are the crossing
   /// pass's two counts: `crossingsCoarse`, how many crossings the coarse record already had
   /// (Ruling S-2 keeps those -- they are graph artifacts refinement did not make), and
-  /// `crossingsLeft`, how many are left in the record as it ships.
+  /// `crossingsLeft`, how many are left in the record as it ships. Words 45-53 (Task 5 of the
+  /// same plan, still schema 5) are the fine pond search's two counts, `pondsFound` and
+  /// `pondsKept`, then its seven params (`pondCellM`, `pondSearchRadiusM`, `pondKeepDepthM`,
+  /// `pondKeepAreaM2`, `pondWetnessShare`, `pondMaxSlope`, `pondDensityAreaM2`).
   ///
   /// Of the schema 4 words this returns ONLY 32-34, the three capped-basin counts. The
   /// refinement params echo in words 35-42 is in the record and read by `water-preview.js`'s
   /// `decodeHydro`; it is not a field of this summary. Nothing here is a params echo the studio
   /// can set: by Ruling R-8 the refinement params are not wasm params, so a wasm bake always
-  /// used `earth_like`'s values for them. Both schema 5 words ARE returned: they are counts a
-  /// bake produced, not params.
+  /// used `earth_like`'s values for them. The pond params in words 47-53 are the same story and
+  /// are left out for the same reason. The four counts -- both crossing words and both pond
+  /// words -- ARE returned: they are counts a bake produced, not params.
   ///
-  /// Throws on a schema other than 5: another schema's header is not these 45 words, and a
+  /// Throws on a schema other than 5: another schema's header is not these 54 words, and a
   /// summary read off it would be wrong silently.
   ///
   /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
@@ -833,6 +837,8 @@ export class Engine {
       cappedInnerKept: words[34],
       crossingsCoarse: words[43],
       crossingsLeft: words[44],
+      pondsFound: words[45],
+      pondsKept: words[46],
     };
   }
 }

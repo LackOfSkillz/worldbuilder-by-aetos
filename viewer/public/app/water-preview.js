@@ -209,6 +209,20 @@ export function decodeHydro(words) {
     // Ruling S-2 keeps, and what is left after the crossing pass, the meander and simplification.
     crossingsCoarse: cursor.u32(),
     crossingsLeft: cursor.u32(),
+    // Task 5 of the same plan, still SCHEMA 5 (words 45-53): the fine pond search's two counts
+    // and the seven params it ran with. `pondsFound` is every hollow that passed the pond keep
+    // rule; `pondsKept` is what reached `bodies`, after the side-clip, wetness, slope, coarse-lake
+    // and density rules. The kept ones are the LAST `pondsKept` entries of `bodies`, appended
+    // after every coarse body so the coarse ids never move.
+    pondsFound: cursor.u32(),
+    pondsKept: cursor.u32(),
+    pondCellM: cursor.word(),
+    pondSearchRadiusM: cursor.word(),
+    pondKeepDepthM: cursor.word(),
+    pondKeepAreaM2: cursor.word(),
+    pondWetnessShare: cursor.word(),
+    pondMaxSlope: cursor.word(),
+    pondDensityAreaM2: cursor.word(),
   };
 
   const bodies = [];

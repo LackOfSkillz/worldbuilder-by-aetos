@@ -579,6 +579,18 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         // refinement. `refine::refine` fills them in.
         crossings_coarse: 0,
         crossings_left: 0,
+        // SCHEMA 5, spec §6.6: the fine pond search runs after refinement, so its two counts are
+        // `ponds::search`'s to fill in. The seven params it will run with are echoed here, where
+        // every other params echo is written.
+        ponds_found: 0,
+        ponds_kept: 0,
+        pond_cell_m: params.pond_cell_m,
+        pond_search_radius_m: params.pond_search_radius_m,
+        pond_keep_depth_m: params.pond_keep_depth_m,
+        pond_keep_area_m2: params.pond_keep_area_m2,
+        pond_wetness_share: params.pond_wetness_share,
+        pond_max_slope: params.pond_max_slope,
+        pond_density_area_m2: params.pond_density_area_m2,
     };
 
     HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }

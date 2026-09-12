@@ -67,6 +67,18 @@ test("hydroSummary reads the SCHEMA 5 params echo, forced-outlet matches and cro
   assert.ok(Number.isInteger(s.crossingsCoarse) && s.crossingsCoarse >= 0);
   assert.ok(Number.isInteger(s.crossingsLeft) && s.crossingsLeft >= 0);
   assert.ok(s.crossingsLeft <= s.crossingsCoarse);
+  // SCHEMA 5 (words 45-46), Task 5: the fine pond search's two counts. Neither is pinned to a
+  // number -- the terrain decides that -- only that both are counts, that nothing can be kept
+  // that was not found, and that the kept ones fit inside the bodies the record carries.
+  assert.equal(s.pondsFound, words[45]);
+  assert.equal(s.pondsKept, words[46]);
+  assert.ok(Number.isInteger(s.pondsFound) && s.pondsFound >= 0);
+  assert.ok(Number.isInteger(s.pondsKept) && s.pondsKept >= 0);
+  assert.ok(s.pondsKept <= s.pondsFound);
+  assert.ok(s.pondsKept <= s.bodies);
+  // The seven pond params are in the record (words 47-53) but deliberately not in this summary:
+  // like the refinement params, they are not wasm params.
+  assert.equal(s.pondCellM, undefined);
 });
 
 test("hydroSummary throws on a schema other than 5 rather than misreading the header", () => {

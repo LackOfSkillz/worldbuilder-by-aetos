@@ -60,6 +60,19 @@ impl BucketIndex {
         if column >= count { count - 1 } else { column }
     }
 
+    /// Which cell a point falls in, as a stable index into this index's own grid.
+    ///
+    /// For a caller that wants "one per cell" rather than "what is near here": Ruling S-8's
+    /// density cap walks candidates deepest-first and keeps the first one it sees in each cell.
+    /// The value means nothing beyond "the same cell or not" -- two points with the same index
+    /// are in the same roughly-`cell_m`-square bucket, and neighbouring indices are not
+    /// neighbouring cells at a row boundary.
+    pub fn cell_of(&self, point: &SpherePoint) -> usize {
+        let (lat, lon) = point.to_latlon();
+        let row = self.row_of(lat);
+        self.first[row] + self.column_of(row, lon)
+    }
+
     pub fn insert(&mut self, point: &SpherePoint, id: u32) {
         let (lat, lon) = point.to_latlon();
         let row = self.row_of(lat);
@@ -211,6 +224,24 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(found, sorted, "candidates are sorted and unique");
+    }
+
+    /// `cell_of` is the density cap's "same cell or not" test: two points a small fraction of a
+    /// cell apart share one, two points several cells apart do not, and it needs no `insert`.
+    #[test]
+    fn cell_of_agrees_with_itself_and_separates_distant_points() {
+        let index = BucketIndex::new(R, 22_360.0); // 500 km^2, Ruling S-8's cell
+        let here = SpherePoint::from_latlon(10.0, 20.0);
+        assert_eq!(index.cell_of(&here), index.cell_of(&here));
+        // 2 km north-east: well inside one 22.4 km cell unless it straddles a boundary, so the
+        // assertion that matters is the far one below.
+        let far = SpherePoint::from_latlon(10.5, 20.5);
+        assert_ne!(index.cell_of(&here), index.cell_of(&far), "55 km apart is not one cell");
+        // The poles and the seam are cells like any other, not a panic.
+        for (lat, lon) in [(90.0, 0.0), (-90.0, 0.0), (0.0, 180.0), (0.0, -180.0)] {
+            let cell = index.cell_of(&SpherePoint::from_latlon(lat, lon));
+            assert!(cell < index.buckets.len(), "{lat},{lon} landed outside the grid");
+        }
     }
 
     #[test]

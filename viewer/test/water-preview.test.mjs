@@ -44,6 +44,34 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.header.cappedBasins, words[32]);
   assert.equal(decoded.header.crossingsCoarse, words[43]);
   assert.equal(decoded.header.crossingsLeft, words[44]);
+  // Task 5's nine words: both pond counts, then the seven pond params, closing the 54-word
+  // header. `decodeHydro` reads all nine, where `hydroSummary` returns only the two counts.
+  assert.equal(decoded.header.pondsFound, words[45]);
+  assert.equal(decoded.header.pondsKept, words[46]);
+  assert.equal(decoded.header.pondCellM, words[47]);
+  assert.equal(decoded.header.pondSearchRadiusM, words[48]);
+  assert.equal(decoded.header.pondKeepDepthM, words[49]);
+  assert.equal(decoded.header.pondKeepAreaM2, words[50]);
+  assert.equal(decoded.header.pondWetnessShare, words[51]);
+  assert.equal(decoded.header.pondMaxSlope, words[52]);
+  assert.equal(decoded.header.pondDensityAreaM2, words[53]);
+  // The header is 54 words, so word 54 is the first body's id.
+  assert.equal(words[54], decoded.bodies[0].id);
+});
+
+test("every pond the record kept is a traced ring at the end of bodies", () => {
+  const decoded = decodeHydro(bake());
+  const kept = decoded.header.pondsKept;
+  assert.ok(kept > 0, "sanity: this world's fine search keeps ponds");
+  for (const body of decoded.bodies.slice(decoded.bodies.length - kept)) {
+    // Ruling S-11: the area picks `pond` or `lake`, and both carry the traced 250 m ring.
+    assert.ok(["pond", "lake"].includes(body.kind));
+    assert.ok(body.outline.length >= 3, "a traced ring, not a shore-point set");
+    assert.equal(body.downstream.kind, "reach", "Ruling S-5");
+    assert.equal(body.outletReach, null, "Ruling S-5");
+    assert.ok(body.depthM >= decoded.header.pondKeepDepthM);
+    assert.ok(body.areaM2 >= decoded.header.pondKeepAreaM2);
+  }
 });
 
 test("decodeHydro consumes a real SCHEMA 5 bake exactly, reach fresh and body downstream included", () => {
@@ -66,8 +94,8 @@ test("decodeHydro throws on a truncated array", () => {
 
 test("decodeHydro throws on a schema-2 or schema-4 header", () => {
   const words = bake();
-  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 45, so a decoder that adapted rather
-  // than refused would read a body's first two words as the two crossing counts.
+  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, so a decoder that adapted rather
+  // than refused would read a body's first eleven words as the crossing and pond words.
   for (const schema of [2, 4]) {
     const tampered = words.slice();
     tampered[0] = schema;
@@ -78,6 +106,8 @@ test("decodeHydro throws on a schema-2 or schema-4 header", () => {
 test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {
   const words = bake();
   const U32_MAX = 4294967295;
+  // The header's length, which Task 5 of plan 1b-3 took from 45 words to 54.
+  const HEADER = 54;
 
   // The boundary itself is a valid u32: word 5 (`nodes`) at exactly u32::MAX still decodes.
   const atMax = words.slice();
@@ -89,16 +119,16 @@ test("decodeHydro refuses an index or count word above 4294967295, as record.rs'
   header[5] = U32_MAX + 1;
   assert.throws(() => decodeHydro(header), /bad count\/index word/);
 
-  // ...in a body's optional outlet reach (body 0's word 8, record word 53)...
+  // ...in a body's optional outlet reach (body 0's word 8, record word 62)...
   assert.ok(words[1] > 0, "sanity: this world has a body to tamper with");
   const outlet = words.slice();
-  outlet[45 + 8] = U32_MAX + 1;
+  outlet[HEADER + 8] = U32_MAX + 1;
   assert.throws(() => decodeHydro(outlet), /bad optional index word/);
 
-  // ...and in a downstream id (body 0's words 11-12, record words 56-57, made a body link).
+  // ...and in a downstream id (body 0's words 11-12, record words 65-66, made a body link).
   const downstream = words.slice();
-  downstream[45 + 11] = 1;
-  downstream[45 + 12] = U32_MAX + 1;
+  downstream[HEADER + 11] = 1;
+  downstream[HEADER + 12] = U32_MAX + 1;
   assert.throws(() => decodeHydro(downstream), /bad downstream body id/);
 });
 

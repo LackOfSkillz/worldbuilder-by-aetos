@@ -36,6 +36,13 @@ use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, 
 /// coarse record already had, which Ruling S-2 keeps) and `crossings_left` (word 44, how many are
 /// left in the record as it ships, after the pass, the meander and simplification).
 ///
+/// Task 5 of the same plan grew it again, from 45 to **54**, without a schema bump: the nine
+/// words 45-53 are the fine pond search's two counts (`ponds_found`, `ponds_kept`) and its seven
+/// params (`pond_cell_m`, `pond_search_radius_m`, `pond_keep_depth_m`, `pond_keep_area_m2`,
+/// `pond_wetness_share`, `pond_max_slope`, `pond_density_area_m2`). The 45-word SCHEMA 5 existed
+/// only between two tasks of one unmerged plan branch, so no record of that shape was ever
+/// written anywhere a reader could find it, and there is nothing for `decode` to refuse.
+///
 /// SCHEMA 4 (Task 3 of plan 1b-2) grew the header from 32 to 43 words, adding eleven words after
 /// `forced_matched` -- three counts of what capped basins keep (`capped_basins`, `capped_inner`,
 /// `capped_inner_kept`, carry-forward I3) and an echo of the eight refinement params
@@ -248,6 +255,15 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.meander_max_slope);
     out.push(stats.crossings_coarse as f64);
     out.push(stats.crossings_left as f64);
+    out.push(stats.ponds_found as f64);
+    out.push(stats.ponds_kept as f64);
+    out.push(stats.pond_cell_m);
+    out.push(stats.pond_search_radius_m);
+    out.push(stats.pond_keep_depth_m);
+    out.push(stats.pond_keep_area_m2);
+    out.push(stats.pond_wetness_share);
+    out.push(stats.pond_max_slope);
+    out.push(stats.pond_density_area_m2);
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -365,6 +381,15 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         meander_max_slope: r.word()?,
         crossings_coarse: r.u32()?,
         crossings_left: r.u32()?,
+        ponds_found: r.u32()?,
+        ponds_kept: r.u32()?,
+        pond_cell_m: r.word()?,
+        pond_search_radius_m: r.word()?,
+        pond_keep_depth_m: r.word()?,
+        pond_keep_area_m2: r.word()?,
+        pond_wetness_share: r.word()?,
+        pond_max_slope: r.word()?,
+        pond_density_area_m2: r.word()?,
     };
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
@@ -593,6 +618,15 @@ mod tests {
                 meander_max_slope: 0.002,
                 crossings_coarse: 7,
                 crossings_left: 2,
+                ponds_found: 19,
+                ponds_kept: 4,
+                pond_cell_m: 250.0,
+                pond_search_radius_m: 3_000.0,
+                pond_keep_depth_m: 2.0,
+                pond_keep_area_m2: 50_000.0,
+                pond_wetness_share: 0.6,
+                pond_max_slope: 0.03,
+                pond_density_area_m2: 5.0e8,
             },
         }
     }
@@ -605,7 +639,41 @@ mod tests {
         assert_eq!(words[0], SCHEMA);
         assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
         assert_eq!(words[44], f64::from(record.stats.crossings_left));
+        // Task 5's nine: the two pond counts, then the seven pond params, in that order.
+        assert_eq!(words[45], f64::from(record.stats.ponds_found));
+        assert_eq!(words[46], f64::from(record.stats.ponds_kept));
+        assert_eq!(words[47], record.stats.pond_cell_m);
+        assert_eq!(words[48], record.stats.pond_search_radius_m);
+        assert_eq!(words[49], record.stats.pond_keep_depth_m);
+        assert_eq!(words[50], record.stats.pond_keep_area_m2);
+        assert_eq!(words[51], record.stats.pond_wetness_share);
+        assert_eq!(words[52], record.stats.pond_max_slope);
+        assert_eq!(words[53], record.stats.pond_density_area_m2);
         assert_eq!(decode(&words), Some(record));
+    }
+
+    /// The header is 54 words: everything after word 53 is the first body's first word.
+    #[test]
+    fn the_header_is_fifty_four_words() {
+        let record = sample();
+        let words = encode(&record);
+        assert_eq!(words[54], f64::from(record.bodies[0].id));
+        let empty = HydroRecord { bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(),
+                                  falls: Vec::new(), stats: record.stats.clone() };
+        assert_eq!(encode(&empty).len(), 54);
+    }
+
+    /// A pond's outline is a traced ring and a lake's is a shore-point set (spec §7, Ruling
+    /// T1-2): the encoder writes both the same way, and `kind` is the only thing that says which
+    /// it is. A ring round-trips point for point.
+    #[test]
+    fn a_ponds_traced_outline_round_trips() {
+        let mut record = sample();
+        record.bodies[0].kind = BodyKind::Pond;
+        record.bodies[0].outline = vec![(1.0, 2.0), (1.0, 2.5), (1.5, 2.5)];
+        let decoded = decode(&encode(&record)).expect("round trip");
+        assert_eq!(decoded.bodies[0].outline, record.bodies[0].outline);
+        assert_eq!(decoded.bodies[0].kind, BodyKind::Pond);
     }
 
     /// SCHEMA 4 is the schema this one replaced, and its 43-word header is a prefix of this

@@ -284,6 +284,23 @@ pub struct BakeStats {
     /// crossing pass, the meander and simplification. Recorded rather than asserted to be zero,
     /// because a coarse crossing cannot be straightened away.
     pub crossings_left: u32,
+    /// SCHEMA 5, spec §6.6: every hollow the fine search found that passed the pond keep rule,
+    /// before Ruling S-10's side clip, Ruling S-6's wetness and slope gates, Ruling S-7's drops,
+    /// the cross-strip dedup and Ruling S-8's density cap.
+    pub ponds_found: u32,
+    /// Of those, how many reached the record as bodies. The gap between the two is what the
+    /// gates and the cap removed, and it is a large gap by design: about half of all candidates
+    /// are side-clipped alone.
+    pub ponds_kept: u32,
+    /// SCHEMA 5: the fine search's seven params, echoed the way the refinement params are (and
+    /// not wasm params either -- a wasm bake always uses `earth_like`'s values).
+    pub pond_cell_m: f64,
+    pub pond_search_radius_m: f64,
+    pub pond_keep_depth_m: f64,
+    pub pond_keep_area_m2: f64,
+    pub pond_wetness_share: f64,
+    pub pond_max_slope: f64,
+    pub pond_density_area_m2: f64,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the
@@ -309,13 +326,21 @@ pub enum HydroError {
     Drainage(u32),
 }
 
-/// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine` (spec §6.6).
+/// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine`, then
+/// `ponds::search` (spec §6.6).
+///
+/// The fine pond search runs **last**, and it must: it walks strips along the *refined* lines, so
+/// it cannot run before they exist, and by Ruling S-5 what it adds changes no routing, no reach
+/// and no notch. The two grounds it is handed are deliberately different (Ruling S-9) -- the
+/// landform for the geometry, the landform with its detail field for the cells it searches.
 pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, HydroError> {
     let stages = bake_stages(surface, params)?;
     let mut record = record_of(&stages, params);
     let height = |p: &SpherePoint| surface.structural_m(p);
     let ground = refine::Ground::for_surface(surface, &height, params);
     refine::refine(&mut record, &ground, params);
+    let detail = ponds::pond_ground(surface, params);
+    ponds::search(&mut record, &stages.graph, &stages.routing.lake_of, &ground, &detail, params);
     Ok(record)
 }
 

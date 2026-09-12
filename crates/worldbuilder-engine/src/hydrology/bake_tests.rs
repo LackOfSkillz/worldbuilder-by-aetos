@@ -480,11 +480,16 @@ fn a_reach_into_a_closed_lake_is_not_fresh() {
     assert!(!feeding_reach.fresh, "a reach into a closed lake must not report fresh");
 }
 
+/// The **coarse** keep rule, over the coarse bodies. The fine search's finds are appended after
+/// them and have their own, much smaller rule (spec §6.6: §6.3's 1 km^2 could never keep a pond),
+/// so they are excluded by count -- `ponds_obey_their_keep_rule_and_name_a_river` is their
+/// equivalent of this test.
 #[test]
 fn no_kept_body_is_below_the_keep_rule_unless_forced_or_enclosed() {
     let p = params();
     let record = crate::hydrology::bake(&world(), &p).expect("bake");
-    for body in &record.bodies {
+    let coarse = record.bodies.len() - record.stats.ponds_kept as usize;
+    for body in &record.bodies[..coarse] {
         if !body.forced && !body.enclosed {
             assert!(body.depth_m >= p.keep_depth_m && body.area_m2 >= p.keep_area_m2,
                     "body {} depth {} area {}", body.id, body.depth_m, body.area_m2);
@@ -1375,4 +1380,65 @@ fn refinement_adds_no_crossings() {
         assert_eq!(refined.stats.crossings_coarse as usize, before);
         assert_eq!(refined.stats.crossings_left as usize, after);
     }
+}
+
+/// Spec §6.6 on a real bake: every pond obeys its own keep rule, sits on its own ground, and
+/// names the river it drains to (Ruling S-5).
+///
+/// Ruling S-11 is the `kind` assertion: a surviving fine find is recorded whatever its area --
+/// `Pond` below `pond_max_area_m2` and `Lake` at or above it -- and both carry a traced 250 m
+/// ring. Task 1's spec text dropped an oversized find; the measured median survivor is 4.0-4.7
+/// km^2 against a 1 km^2 `pond_max_area_m2`, so dropping them would have dropped most of them.
+#[test]
+fn ponds_obey_their_keep_rule_and_name_a_river() {
+    let p = params();
+    let record = crate::hydrology::bake(&world(), &p).expect("bake");
+    let coarse = record_of(&bake_stages(&world(), &p).expect("stages"), &p);
+    assert!(record.bodies.len() >= coarse.bodies.len(), "ponds are appended, never inserted");
+    for (id, body) in record.bodies.iter().enumerate() {
+        assert_eq!(body.id as usize, id, "body ids stay the wire index");
+    }
+    assert_eq!(record.stats.ponds_kept as usize, record.bodies.len() - coarse.bodies.len());
+    assert!(record.stats.ponds_found >= record.stats.ponds_kept);
+    let mut rings = 0usize;
+    for body in &record.bodies[coarse.bodies.len()..] {
+        assert!(body.depth_m >= p.pond_keep_depth_m, "pond {} is {} m deep", body.id, body.depth_m);
+        assert!(body.area_m2 >= p.pond_keep_area_m2);
+        assert!(body.fresh);
+        assert!(!body.enclosed && !body.forced);
+        assert!(matches!(body.downstream, Downstream::Reach(_)), "Ruling S-5");
+        assert!(body.outlet_reach.is_none(), "Ruling S-5");
+        assert!(body.outline.len() >= 3, "a pond has a traced outline");
+        assert_eq!(body.kind,
+                   if body.area_m2 < p.pond_max_area_m2 { crate::hydrology::BodyKind::Pond }
+                   else { crate::hydrology::BodyKind::Lake },
+                   "Ruling S-11: the area picks the kind, and neither is dropped");
+        if let Downstream::Reach(r) = body.downstream {
+            assert!((r as usize) < record.reaches.len(), "a real reach id");
+        }
+        rings += body.outline.len();
+    }
+    let ponds = record.bodies.len() - coarse.bodies.len();
+    eprintln!("coarse bodies {} ponds {ponds} (found {}), outline points {rings}{}",
+              coarse.bodies.len(), record.stats.ponds_found,
+              if ponds == 0 { String::new() } else { format!(", {} per ring", rings / ponds) });
+    assert!(ponds > 0, "this world must find ponds, or the assertions above prove nothing");
+}
+
+/// The record echoes the seven pond params and the two pond counts, in header words 45-53.
+#[test]
+fn the_record_echoes_the_pond_params() {
+    let p = params();
+    let record = crate::hydrology::bake(&world(), &p).expect("bake");
+    let words = crate::hydrology::record::encode(&record);
+    assert_eq!(words[45], f64::from(record.stats.ponds_found));
+    assert_eq!(words[46], f64::from(record.stats.ponds_kept));
+    assert_eq!(words[47], p.pond_cell_m);
+    assert_eq!(words[48], p.pond_search_radius_m);
+    assert_eq!(words[49], p.pond_keep_depth_m);
+    assert_eq!(words[50], p.pond_keep_area_m2);
+    assert_eq!(words[51], p.pond_wetness_share);
+    assert_eq!(words[52], p.pond_max_slope);
+    assert_eq!(words[53], p.pond_density_area_m2);
+    assert_eq!(decode(&words).as_ref(), Some(&record), "54 words of header, still SCHEMA 5");
 }

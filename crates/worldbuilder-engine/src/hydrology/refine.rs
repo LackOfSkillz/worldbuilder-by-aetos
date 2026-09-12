@@ -1290,6 +1290,11 @@ mod tests {
             meander_amplitude_widths: p.meander_amplitude_widths,
             meander_max_slope: p.meander_max_slope,
             crossings_coarse: 0, crossings_left: 0,
+            ponds_found: 0, ponds_kept: 0,
+            pond_cell_m: p.pond_cell_m, pond_search_radius_m: p.pond_search_radius_m,
+            pond_keep_depth_m: p.pond_keep_depth_m, pond_keep_area_m2: p.pond_keep_area_m2,
+            pond_wetness_share: p.pond_wetness_share, pond_max_slope: p.pond_max_slope,
+            pond_density_area_m2: p.pond_density_area_m2,
         }
     }
 
