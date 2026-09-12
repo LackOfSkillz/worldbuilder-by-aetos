@@ -2,8 +2,10 @@
 //!
 //! Refinement traced the channel; this finds the standing water beside it. A refined reach is
 //! walked segment by segment, and each segment becomes a **strip**: a lane of `pond_cell_m`
-//! cells running the segment's length and reaching `pond_search_radius_m` either side, sampled
-//! off the same landform the tracer read. Inside one strip a priority flood from every edge cell
+//! cells running the segment's length and reaching `pond_search_radius_m` either side. It is
+//! sampled off `Surface::elevation_m` -- the landform **with** its detail field -- and that is
+//! the one place in `hydrology` that reads texture; Ruling S-9 and the argument for it are at
+//! [`pond_ground`]. Inside one strip a priority flood from every edge cell
 //! gives each cell the level water would stand at, exactly as `flood.rs` does on the graph, and
 //! a run of cells whose spill stands above their own ground is a **hollow**. The ones deep
 //! enough and wide enough to be worth a body are this module's `Candidate`s.
@@ -19,6 +21,7 @@ use crate::hydrology::heap::FloodQueue;
 use crate::hydrology::refine::Ground;
 use crate::hydrology::{HydroParams, ReachLine};
 use crate::sphere::SpherePoint;
+use crate::surface::Surface;
 use crate::tangent::TangentFrame;
 
 /// No strip is ever larger than this, whatever the params and the reach ask for. A pathological
@@ -80,14 +83,51 @@ pub struct Candidate {
     pub strip: usize,
 }
 
+/// Ruling S-9: the ground the fine pond search reads, and the *only* thing in `hydrology` that
+/// reads it -- `Surface::elevation_m` at the search's own cell size, which is the landform **plus
+/// the detail field**, where everything else in the bake reads `structural_m` and never sees
+/// texture at all.
+///
+/// The ruling, because a reader will reach for spec §5.1 and think this is forbidden:
+///
+/// * §5.1 bars texture from deciding **where water goes**. A pond decides nothing about where
+///   water goes. It changes no routing, no receiver, no reach and no notch; by Ruling S-5 it is
+///   recorded with `downstream = Reach(r)` and stage 2 draws no outflow from it.
+/// * §6.6 itself calls small lakes and ponds texture, and says a found hollow that fails the keep
+///   rule is "simply not recorded; at this scale they are texture and need no notch".
+/// * The drainage network is still derived from the landform alone, so 1a's pit-lake failure
+///   cannot come back through the rivers.
+/// * The speckle risk is held off by four gates that all remain: the keep rule (>= 2 m deep,
+///   >= 0.05 km^2), the 3 km corridor along the refined rivers, Ruling S-6's wetness and slope
+///   gates, and Ruling S-8's one-per-500 km^2 cap.
+///
+/// The cost, stated plainly: **ponds move when the detail field moves.** Any slider that changes
+/// detail -- its amplitude, its seed, the roughness a feature authorises -- changes where the
+/// ponds are, and re-baking is what moves them. The rivers stay put.
+pub fn pond_ground<'a>(surface: &'a Surface, params: &HydroParams)
+                       -> impl Fn(&SpherePoint) -> f64 + 'a {
+    let cell_m = params.pond_cell_m;
+    move |point: &SpherePoint| surface.elevation_m(point, Some(cell_m))
+}
+
 /// One strip per segment of `reach`, sampled at `pond_cell_m` and reaching
 /// `pond_search_radius_m` either side. See [`strips_with_skips`] for what a missing strip means.
-pub fn strips(reach: &ReachLine, ground: &Ground, params: &HydroParams) -> Vec<Strip> {
-    strips_with_skips(reach, ground, params).0
+///
+/// **`ground` and `pond_ground_m` are deliberately different sources** (Ruling S-9, argued at
+/// [`pond_ground`]). `ground` supplies the geometry only -- the planet's radius, so a strip's
+/// frame matches the one the tracer laid the refined line down in -- and its own `height_m` is
+/// the landform, which this search does not read. Every cell's height comes from
+/// `pond_ground_m`, which on a real bake is [`pond_ground`]: the landform *with* detail. Passing
+/// `ground.height_m` here would compile and would find nothing (measured: 0 candidates in 8,277
+/// strips on two populations, the deepest hollow anywhere 0.018 m against a 2 m rule).
+pub fn strips(reach: &ReachLine, ground: &Ground, pond_ground_m: &dyn Fn(&SpherePoint) -> f64,
+              params: &HydroParams) -> Vec<Strip> {
+    strips_with_skips(reach, ground, pond_ground_m, params).0
 }
 
 /// [`strips`], and the count of segments it could not sample.
-pub fn strips_with_skips(reach: &ReachLine, ground: &Ground, params: &HydroParams)
+pub fn strips_with_skips(reach: &ReachLine, ground: &Ground,
+                         pond_ground_m: &dyn Fn(&SpherePoint) -> f64, params: &HydroParams)
                          -> (Vec<Strip>, StripSkips) {
     let cell = params.pond_cell_m;
     let half = -m::floor(-(params.pond_search_radius_m / cell));
@@ -132,7 +172,7 @@ pub fn strips_with_skips(reach: &ReachLine, ground: &Ground, params: &HydroParam
             for column in 0..cells_across {
                 let lateral = (column as f64 - k as f64) * cell;
                 let point = frame.local_to_sphere(row as f64 * cell, lateral);
-                ground_m.push((ground.height_m)(&point));
+                ground_m.push(pond_ground_m(&point));
             }
         }
         out.push(Strip { frame, along_m: len_m, cells_across, steps, ground_m });
@@ -297,7 +337,7 @@ mod tests {
         let h = |_: &SpherePoint| 100.0;
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let p = params();
-        let strip = &strips(&reach_along_the_equator(10.0), &ground, &p)[0];
+        let strip = &strips(&reach_along_the_equator(10.0), &ground, &h, &p)[0];
         // 3 km either side at 250 m: 12 cells each way plus the middle.
         assert_eq!(strip.cells_across, 25);
         assert_eq!(strip.steps, 40, "10 km at 250 m");
@@ -317,7 +357,7 @@ mod tests {
         };
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let p = params();
-        let found: Vec<Candidate> = strips(&reach_along_the_equator(10.0), &ground, &p)
+        let found: Vec<Candidate> = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
             .iter().enumerate().flat_map(|(i, s)| hollows_in(s, i, &p)).collect();
         assert_eq!(found.len(), 1, "one bowl, one candidate");
         let c = &found[0];
@@ -340,7 +380,7 @@ mod tests {
         };
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let p = params();
-        let found: usize = strips(&reach_along_the_equator(10.0), &ground, &p)
+        let found: usize = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
             .iter().enumerate().map(|(i, s)| hollows_in(s, i, &p).len()).sum();
         assert_eq!(found, 0);
     }
@@ -367,8 +407,8 @@ mod tests {
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let p = params();
         let reach = reach_along_the_equator(10.0);
-        let first = strips(&reach, &ground, &p);
-        let second = strips(&reach, &ground, &p);
+        let first = strips(&reach, &ground, &h, &p);
+        let second = strips(&reach, &ground, &h, &p);
         assert_eq!(first.len(), second.len());
         for (a, b) in first.iter().zip(&second) {
             assert_eq!(a.steps, b.steps);
@@ -395,14 +435,52 @@ mod tests {
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let mut p = params();
         p.pond_cell_m = 10.0;
-        let (made, skips) = strips_with_skips(&reach_along_the_equator(10_000.0), &ground, &p);
+        let (made, skips) = strips_with_skips(&reach_along_the_equator(10_000.0), &ground, &h, &p);
         assert!(made.is_empty(), "no strip is made for a segment over the bound");
         assert_eq!(skips, StripSkips { over_budget: 1, degenerate: 0 });
         // And the same reach at the Earth-like cell is inside the bound, so the bound is a
         // bound on the work and not a refusal to search at all.
-        let (made, skips) = strips_with_skips(&reach_along_the_equator(10_000.0), &ground, &params());
+        let (made, skips) = strips_with_skips(&reach_along_the_equator(10_000.0), &ground, &h, &params());
         assert_eq!(made.len(), 1);
         assert_eq!(skips, StripSkips::default());
+    }
+
+    /// Ruling S-9: the pond ground and the routing ground are different sources, and must stay
+    /// so. If somebody quietly unifies them -- `pond_ground` reduced to `structural_m`, or the
+    /// strips fed `Ground::height_m` again -- this goes red. The measurement behind the ruling is
+    /// that the landform alone finds nothing: 0 candidates in 8,277 strips across two
+    /// populations, the deepest hollow anywhere 0.018 m against a 2 m keep rule.
+    #[test]
+    fn the_pond_ground_is_not_the_routing_ground() {
+        let world = crate::surface::Surface::new(20_260_904, R, 12, 0.29, None, None, None);
+        let p = params();
+        let detail = pond_ground(&world, &p);
+        // Along a degree of the equator at the search's own cell size: the two fields must
+        // disagree somewhere, and by more than a rounding.
+        let mut differ = 0;
+        let mut widest: f64 = 0.0;
+        for i in 0..400 {
+            let q = SpherePoint::from_latlon(11.0, i as f64 * 0.0025);
+            let landform = world.structural_m(&q);
+            let gap = detail(&q) - landform;
+            let gap = if gap < 0.0 { -gap } else { gap };
+            if gap > 0.0 {
+                differ += 1;
+            }
+            if gap > widest {
+                widest = gap;
+            }
+        }
+        assert!(differ > 200, "the two grounds agreed at {} of 400 probes", 400 - differ);
+        assert!(widest > 1.0, "widest disagreement only {widest} m -- is detail still there?");
+        // And a strip sampled off each is not the same strip.
+        let ground = Ground { height_m: &|q: &SpherePoint| world.structural_m(q),
+                              radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let reach = reach_along_the_equator(10.0);
+        let on_detail = &strips(&reach, &ground, &detail, &p)[0];
+        let on_landform = &strips(&reach, &ground, ground.height_m, &p)[0];
+        assert_ne!(on_detail.ground_m, on_landform.ground_m,
+                   "the fine search must not be reading the landform");
     }
 
     /// A segment with no length is not sampled, and that too is counted.
@@ -412,7 +490,7 @@ mod tests {
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let mut reach = reach_along_the_equator(10.0);
         reach.points.push(reach.points[1].clone());
-        let (made, skips) = strips_with_skips(&reach, &ground, &params());
+        let (made, skips) = strips_with_skips(&reach, &ground, &h, &params());
         assert_eq!(made.len(), 1);
         assert_eq!(skips, StripSkips { over_budget: 0, degenerate: 1 });
     }
@@ -422,7 +500,7 @@ mod tests {
         let h = |p: &SpherePoint| { let (_, lon) = p.to_latlon(); 100.0 - 0.002 * lon * M_PER_DEG };
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let p = params();
-        let found: usize = strips(&reach_along_the_equator(10.0), &ground, &p)
+        let found: usize = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
             .iter().enumerate().map(|(i, s)| hollows_in(s, i, &p).len()).sum();
         assert_eq!(found, 0);
     }
