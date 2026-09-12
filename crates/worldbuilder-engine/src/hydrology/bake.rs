@@ -169,6 +169,13 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     require_finite_positive("meander_wavelength_widths", params.meander_wavelength_widths)?;
     require_finite_positive("meander_amplitude_widths", params.meander_amplitude_widths)?;
     require_finite_positive("meander_max_slope", params.meander_max_slope)?;
+    require_finite_positive("pond_cell_m", params.pond_cell_m)?;
+    require_finite_positive("pond_search_radius_m", params.pond_search_radius_m)?;
+    require_finite_positive("pond_keep_depth_m", params.pond_keep_depth_m)?;
+    require_finite_positive("pond_keep_area_m2", params.pond_keep_area_m2)?;
+    require_finite_positive("pond_wetness_share", params.pond_wetness_share)?;
+    require_finite_positive("pond_max_slope", params.pond_max_slope)?;
+    require_finite_positive("pond_density_area_m2", params.pond_density_area_m2)?;
     if !(params.stream_flow_m2 <= params.river_flow_m2 && params.river_flow_m2 <= params.great_flow_m2) {
         return Err(HydroError::Params("stream_flow_m2 <= river_flow_m2 <= great_flow_m2 required"));
     }
@@ -198,6 +205,18 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     }
     if !(params.refine_vertical_m >= 0.01) {
         return Err(HydroError::Params("refine_vertical_m must be >= 0.01 m"));
+    }
+    // The same argument for the fine search: a cell far below the landform's own resolution
+    // makes a strip no machine will finish, a search radius under one cell has no strip to
+    // sample, and a wetness *share* above 1 can never be met.
+    if !(params.pond_cell_m >= 10.0) {
+        return Err(HydroError::Params("pond_cell_m must be >= 10 m"));
+    }
+    if !(params.pond_search_radius_m >= params.pond_cell_m) {
+        return Err(HydroError::Params("pond_search_radius_m must be >= pond_cell_m"));
+    }
+    if !(params.pond_wetness_share <= 1.0) {
+        return Err(HydroError::Params("pond_wetness_share must be <= 1"));
     }
 
     let graph = LandGraph::sample(surface, params.total_nodes, params.wetness_nodes)

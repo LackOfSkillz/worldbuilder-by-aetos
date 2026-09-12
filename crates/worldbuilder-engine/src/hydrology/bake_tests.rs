@@ -536,6 +536,24 @@ fn refinement_params_below_their_floors_are_refused() {
     assert!(bake_stages(&world(), &params()).is_ok(), "sanity: the test params are accepted");
 }
 
+/// The fine search's params have floors of the same kind: a cell far below the landform's own
+/// resolution, a search radius with no strip in it, or a *share* above 1.
+#[test]
+fn pond_params_below_their_floors_are_refused() {
+    let mut cell = params();
+    cell.pond_cell_m = 9.9;
+    let mut radius = params();
+    radius.pond_search_radius_m = radius.pond_cell_m - 1.0;
+    let mut share = params();
+    share.pond_wetness_share = 1.1;
+    for (name, p) in [("pond_cell_m", cell), ("pond_search_radius_m", radius),
+                      ("pond_wetness_share", share)] {
+        assert!(matches!(crate::hydrology::bake(&world(), &p), Err(HydroError::Params(_))),
+                "{name} outside its floor is refused");
+    }
+    assert!(bake_stages(&world(), &params()).is_ok(), "sanity: the test params are accepted");
+}
+
 /// Sanity check only -- it does not discriminate. Flow only ever accumulates downstream, so
 /// the old (wrong) terminal-point value, the ocean/lake's total inflow, is structurally
 /// always `>=` the fixed, channel-only value on this bake world's topology (one land

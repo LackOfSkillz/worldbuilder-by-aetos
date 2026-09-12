@@ -15,6 +15,7 @@ pub mod reaches;
 pub mod record;
 pub mod bake;
 pub mod refine;
+pub mod ponds;
 #[cfg(test)]
 mod bake_tests;
 
@@ -70,6 +71,21 @@ pub struct HydroParams {
     pub meander_amplitude_widths: f64,
     /// Ruling R-6: a segment meanders only if its bed falls less steeply than this.
     pub meander_max_slope: f64,
+    /// Spec §6.6: the fine search's cell.
+    pub pond_cell_m: f64,
+    /// How far either side of a refined reach the fine search looks.
+    pub pond_search_radius_m: f64,
+    /// The pond keep rule's depth.
+    pub pond_keep_depth_m: f64,
+    /// The pond keep rule's area.
+    pub pond_keep_area_m2: f64,
+    /// Ruling S-6: a candidate's terrain must be wetter than this share of the graph's land
+    /// nodes, measured at the nearest node.
+    pub pond_wetness_share: f64,
+    /// Ruling S-6: and flatter than this, over one pond cell.
+    pub pond_max_slope: f64,
+    /// Ruling S-8: at most one kept body per this much searched area.
+    pub pond_density_area_m2: f64,
 }
 
 impl HydroParams {
@@ -101,6 +117,13 @@ impl HydroParams {
             meander_wavelength_widths: 11.0,
             meander_amplitude_widths: 1.5,
             meander_max_slope: 0.002,
+            pond_cell_m: 250.0,
+            pond_search_radius_m: 3_000.0,
+            pond_keep_depth_m: 2.0,
+            pond_keep_area_m2: 50_000.0,
+            pond_wetness_share: 0.6,
+            pond_max_slope: 0.03,
+            pond_density_area_m2: 5.0e8,
         }
     }
 }
