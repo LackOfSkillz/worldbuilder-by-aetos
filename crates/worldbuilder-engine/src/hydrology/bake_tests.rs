@@ -9,7 +9,7 @@ use crate::hydrology::record::{decode, encode};
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 
-fn world() -> Surface {
+pub(super) fn world() -> Surface {
     Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None)
 }
 
@@ -1138,10 +1138,10 @@ fn the_record_echoes_the_refinement_params() {
     assert_eq!(record.stats.refine_step_m, p.refine_step_m);
     assert_eq!(record.stats.meander_max_slope, p.meander_max_slope);
     let words = crate::hydrology::record::encode(&record);
-    assert_eq!(words[0], 5.0);
+    assert_eq!(words[0], 6.0);
     assert_eq!(words[32], f64::from(record.stats.capped_basins));
     assert_eq!(words[42], p.meander_max_slope);
-    // SCHEMA 5's two crossing counts close the 45-word header.
+    // SCHEMA 5's two crossing counts, still at the same offsets under SCHEMA 6.
     assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
     assert_eq!(words[44], f64::from(record.stats.crossings_left));
 }
@@ -1149,7 +1149,7 @@ fn the_record_echoes_the_refinement_params() {
 /// The bake test world with the stream floor lowered to 2 nodes: 165 reaches, 34 of them ending
 /// on another reach. `params()` gives 12 reaches and none ending on another reach (8 run to the
 /// sea, 4 to a lake), so a junction property needs this.
-fn ranges_world() -> Surface {
+pub(super) fn ranges_world() -> Surface {
     Surface::new(1, 6.371e6, 12, 0.40, None, None, Some(crate::tectonics::TectonicParams::ranges()))
 }
 
@@ -1262,7 +1262,7 @@ fn every_fall_is_a_step_on_its_own_reach() {
 
 /// The three refined populations: the bake test world at both thresholds, and the seed 1
 /// `ranges` world at 12,000 nodes (real relief, and the one with falls).
-fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
+pub(super) fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
     [("params", world(), params()),
      ("junction_params", world(), junction_params()),
      ("ranges", ranges_world(), HydroParams::earth_like(12_000))]
@@ -1696,5 +1696,132 @@ fn the_record_echoes_the_pond_params() {
     assert_eq!(words[51], p.pond_wetness_share);
     assert_eq!(words[52], p.pond_max_slope);
     assert_eq!(words[53], p.pond_density_area_m2);
-    assert_eq!(decode(&words).as_ref(), Some(&record), "54 words of header, still SCHEMA 5");
+    assert_eq!(decode(&words).as_ref(), Some(&record), "words 45-53 of the 56-word SCHEMA 6 header");
 }
+
+/// Rulings E-1, E-2 and E-3 on a real bake: every coarse body carries a shore-point set, every
+/// pond carries a traced curve, and the two are told apart by `shore_member_count` alone.
+#[test]
+fn every_coarse_body_carries_an_extent() {
+    for (name, surface, p) in refined_populations() {
+        let record = crate::hydrology::bake(&surface, &p).expect("bake");
+        let coarse = record_of(&bake_stages(&surface, &p).expect("stages"), &p);
+        let mut with_extent = 0usize;
+        for body in &record.bodies[..coarse.bodies.len()] {
+            assert!(body.shore_member_count > 0, "{name}: coarse body {} has no shore members", body.id);
+            assert!(body.outline.len() as u32 > body.shore_member_count, // cast-ok: at most one point per node
+                    "{name}: body {} has shore members but no collar", body.id);
+            assert!(body.shore_reach_m >= 0.0 && body.shore_reach_m.is_finite());
+            with_extent += 1;
+        }
+        for body in &record.bodies[coarse.bodies.len()..] {
+            assert_eq!(body.shore_member_count, 0, "{name}: a pond carries a traced curve");
+            assert_eq!(body.shore_reach_m, 0.0);
+        }
+        assert!(with_extent > 0);
+        let shore: u32 = record.bodies.iter().map(|b| b.shore_member_count).sum();
+        assert_eq!(record.stats.shore_members, shore);
+        // The collar total is a DIFFERENT expression in `bake.rs` -- the outline's length less
+        // the members -- so asserting only the shore half leaves the `collar_points` printed
+        // below unchecked against the bodies it claims to total.
+        //
+        // It totals the COARSE bodies only, and it has to: `bake.rs` sums it before
+        // `ponds::search` appends a pond, and "outline length less the members" on a pond is
+        // its whole traced ring, which is not a collar at all. Summing over every body reads
+        // 269 against the stat's 101 on the `params` population -- the 168 ring points of its
+        // ponds. The shore half above needs no such restriction: Ruling E-6 zeroes a pond's
+        // `shore_member_count`, so a pond adds nothing to that sum however it is taken.
+        let collar: u32 = record.bodies[..coarse.bodies.len()].iter()
+            .map(|b| b.outline.len() as u32 - b.shore_member_count) // cast-ok: at most one point per node
+            .sum();
+        assert_eq!(record.stats.collar_points, collar);
+        eprintln!("{name}: {with_extent} coarse bodies, {} shore members, {} collar points",
+                  record.stats.shore_members, record.stats.collar_points);
+    }
+}
+
+/// Ruling E-3: a body's band never counts a step down to ground at or below its own level.
+///
+/// The brief matched a hollow to its body on the anchor's float pair; the body id is the exact
+/// handle instead, and it is the one `record_of` itself uses -- body ids are one per kept hollow,
+/// numbered 0.. in hollow order, so the nth kept hollow is `record.bodies[n]`. The anchor is
+/// asserted rather than searched, so a change to that numbering is caught here too.
+///
+/// **The 200,000-node population is not decoration.** On all three 12,000-node populations the
+/// below-level steps exist (9, 9 and 10 of 162, 162 and 328 member-collar steps) but not one of
+/// them is the longest step of its own body -- so dropping the usability check entirely leaves
+/// every band unchanged and this property reads green against a broken rule. It takes the seed 1
+/// `ranges` world at 200,000 nodes for the exclusion to bite: 112 below-level steps of 3,359, on
+/// 4 bodies whose longest step is one of them. The last assertion is that at least one body in
+/// the population is like that, so the property cannot go back to comparing a maximum with
+/// itself.
+#[test]
+fn no_bodys_band_counts_a_step_below_its_level() {
+    let mut bands_the_exclusion_narrows = 0usize;
+    for (name, surface, p) in [("params", world(), params()),
+                               ("ranges 200k", ranges_world(), HydroParams::earth_like(200_000))] {
+        let stages = bake_stages(&surface, &p).expect("stages");
+        let record = record_of(&stages, &p);
+        let graph = &stages.graph;
+        let mut checked = 0usize;
+        let mut next_body_id = 0usize;
+        for (i, hollow) in stages.hollows.iter().enumerate() {
+            if hollow.fate != Fate::Keep {
+                continue;
+            }
+            let body = &record.bodies[next_body_id];
+            next_body_id += 1;
+            assert_eq!(body.anchor, graph.positions[hollow.floor as usize].to_latlon(),
+                       "{name}: body {} is the body of hollow {i}", body.id);
+            let mut longest_usable = 0.0;
+            let mut longest_step = 0.0;
+            for &member in &hollow.members {
+                if stages.routing.lake_of[member as usize] != i as u32 { // cast-ok: hollow index
+                    continue;
+                }
+                for &next in graph.neighbours(member) {
+                    if stages.routing.lake_of[next as usize] == i as u32 { // cast-ok: hollow index
+                        continue;
+                    }
+                    let step = graph.positions[member as usize].distance_to(&graph.positions[next as usize], graph.radius_m);
+                    if step > longest_step { longest_step = step; }
+                    if graph.height_m[next as usize] <= hollow.level_m {
+                        continue;
+                    }
+                    if step > longest_usable { longest_usable = step; }
+                }
+            }
+            let gap = body.shore_reach_m - longest_usable;
+            assert!(gap < 1e-6 && gap > -1e-6,
+                    "{name}: body {} band {} against longest usable {}", body.id, body.shore_reach_m, longest_usable);
+            if longest_step > longest_usable {
+                bands_the_exclusion_narrows += 1;
+            }
+            checked += 1;
+        }
+        assert_eq!(next_body_id, record.bodies.len(), "{name}: every body is a kept hollow's");
+        assert!(checked > 0, "{name}: the population has kept hollows");
+    }
+    assert!(bands_the_exclusion_narrows > 0,
+            "no body's longest step was an unusable one: this property is asserting nothing");
+}
+
+/// Rulings S-16 and S-17 shipped a 1,500 m corridor and a 1.6e10 density, and plan 1b-3's value
+/// pin only checks the constants. This bakes at them, so a change in behaviour at the shipped
+/// parameters is caught by something other than a parity count.
+#[test]
+fn a_bake_at_the_shipped_pond_params_keeps_ponds() {
+    let mut p = params();
+    p.pond_search_radius_m = HydroParams::earth_like(1_000).pond_search_radius_m;
+    p.pond_density_area_m2 = HydroParams::earth_like(1_000).pond_density_area_m2;
+    let record = crate::hydrology::bake(&ranges_world(), &p).expect("bake");
+    let ponds = record.bodies.iter().filter(|b| b.shore_member_count == 0).count();
+    eprintln!("shipped pond params on the ranges world: {ponds} ponds of {} found", record.stats.ponds_found);
+    assert!(ponds > 0, "the shipped parameters keep no pond on this world");
+    for body in record.bodies.iter().filter(|b| b.shore_member_count == 0) {
+        assert!(body.outline.len() >= 3);
+        assert!(matches!(body.downstream, Downstream::Reach(_)));
+    }
+}
+
+

@@ -76,7 +76,7 @@ It closed:
 
 Two parts of item 6 remain:
 
-- [x] ~~**Lake outlines, and small lakes and ponds**, go to **plan 1b-3 (shores)**, which starts with a spike.~~ **Superseded:** small lakes and ponds were done in 1b-3; **lake outlines go to plan 1b-4**, ruled in 1b-3's Task 1 as Candidate B.
+- [x] ~~**Lake outlines, and small lakes and ponds**, go to **plan 1b-3 (shores)**, which starts with a spike.~~ **Superseded, and now closed:** small lakes and ponds were done in 1b-3; **lake outlines were done in 1b-4**, ruled in 1b-3's Task 1 as Candidate B and measured on the owner's world in 1b-4. **Item 6 is complete, and it was the last open entry in "Plan 1b must fix (load-bearing for stage 2)" below — the six items plan 1a routed there are all closed.** What remains in this file is the smaller items and the stage 2 list, gathered under "Routed to stage 2" at the end.
 - [x] **Done in 1b-3** (Tasks 2 and 3, and Ruling S-14). **Reaches still cross one another** inside their corridors (Ruling FF-3 of the 1b-2 final review). The pass now runs on the lines the record **ships** — trace, meander, simplify, then check, repeating up to four times — so the shipped count is at or under the coarse count everywhere measured: **43 coarse against 37 shipped** on the owner's world, 54 → 50 and 33 → 28 on the 1M stand-ins. **Coarse crossings stay** (Ruling S-2): a coarse crossing is a graph artifact and fixing it means re-routing, which is out of scope.
   - **These figures are not the 61 and 95 published above, and the counting changed.** 1b-2 counted a crossing once per intersecting pair of *node paths* over the whole coarse graph; 1b-3's `crossings_coarse` counts intersecting *coarse segment* pairs among the reaches the record keeps, which is the population the shipped count has to be judged against. Same worlds, same populations (`plain` and `seed 1 ranges` at 1M) — 61 and 95 under the old counting, 33 and 54 under the new. Neither is wrong; they are different questions, and only the second can be compared with a shipped count.
 - **Falls** work (4 on a native `ranges()` stand-in, and analytic cliff tests), but there are **0 on the owner world**. Its landform has no 10 m drop within 150 m along any reach at these resolutions. Falls await the mountains project's steeper relief.
@@ -95,15 +95,15 @@ Plan 1b-3 (shores) stops the refinement introducing river crossings, adds spec �
 
 **Ruling S-15 is deferred as ruled:** at 1M the crossing pass's first round sees **2,909 crossings**, so that many segments ship straightened and unmeandered under Ruling S-4a. Re-tuning `meander_amplitude_widths` waits for the mountains project's erosion.
 
-### Routed to plan 1b-4 by plan 1b-3
+### Routed to plan 1b-4 by plan 1b-3 (all five closed in 1b-4 — see "Status after plan 1b-4")
 
 Task 1 ruled **Candidate B** for a body's extent (see item 6 above) and rewrote spec §6.6, §7 and §8.3 to match. Three places in the spec still describe the ring that ruling replaced, and 1b-4 owns all three; two coverage gaps that Rulings S-16 and S-17 opened go with them.
 
-- [ ] **Spec §8.2's spatial index must list a body whose shore points come within `shore_reach_m` of a cell.** A nearest-point test is only as good as the candidate set the index hands it; an index built for polygon containment will not return the right bodies.
-- [ ] **Spec §9 still names `dilateBodyExtents` and the box-and-level rule.** Both are polygon-era; §9 has to be rewritten against the shore-point set.
-- [ ] **Spec §14's two uses of "outline" are still curve-sense.** They read as a closed curve and must be restated for an unordered point set, or scoped explicitly to ponds, which do keep the 250 m trace.
-- [ ] **The parity corpus must always compare a pond body.** After Ruling S-17 the `hydro/plain` record keeps **no pond at all** (3,949 words = its pre-pond 3,938 plus SCHEMA 5's eleven header words), so of the corpus's two hydro records only `hydro/ranges` carries pond bodies across the wasm boundary. Not a defect today, but a future tuning that also emptied `hydro/ranges` would leave the pond body layout crossing the boundary with nothing comparing it, and **no gate would say so**. Either raise `examples/parity_dump.rs`'s hydro populations, or add a third record chosen so it keeps ponds at whatever params ship.
-- [ ] **No Rust test bakes at the shipped pond parameters.** All six `ponds::tests` cases and `bake_tests::ponds_obey_their_keep_rule_and_name_a_river` pin spec §6.6's 3 km corridor deliberately, because what they assert is the search's mechanism; each is right on its own, and together they leave `earth_like`'s 1,500 m and 1.6e10 unexercised in Rust. 1b-3's fix wave added the cheap half — `bake_tests::earth_like_ships_the_tuned_pond_corridor_and_density`, a value pin naming S-16 and S-17 — but that pins the constants, not what they do. The viewer's `water-preview.test.mjs` pond test (50,000 nodes) is the only behavioural test at the shipped values, and it is on the wasm side.
+- [x] **Done in 1b-4 (Task 5), as spec text; the implementation is stage 2's.** **Spec §8.2's spatial index must list a body whose shore points come within `shore_reach_m` of a cell.** §8.2 now states the dilation, its measured size (58,083 m median and 62,586 m max on the owner's world, against 50 km cells — a whole ring of cells, not a rounding allowance), and that a pond's traced curve dilates by nothing. A nearest-point test is only as good as the candidate set the index hands it; an index built for polygon containment will not return the right bodies. **Building it is item 1 of "Routed to stage 2" below** (Ruling E-7).
+- [x] **Done in 1b-4 (Task 5).** **Spec §9 named `dilateBodyExtents` and the box-and-level rule**, both polygon-era. §9's drawing path is rewritten against the shore-point set.
+- [x] **Done in 1b-4 (Task 5).** **Spec §14's uses of "outline" were curve-sense.** §14.3, §14.6 and §14.9 are restated for an unordered point set, or scoped explicitly to ponds, which do keep the 250 m trace.
+- [x] **Done in 1b-4 (Task 4).** **The parity corpus must always compare a pond body.** After Ruling S-17 the `hydro/plain` record kept **no pond at all**, so of the corpus's two hydro records only `hydro/ranges` carried pond bodies across the wasm boundary — and a future tuning that also emptied `hydro/ranges` would have left the pond body layout crossing the boundary with nothing comparing it, and **no gate would say so**. Task 4 raised `examples/parity_dump.rs`'s `HYDRO_PARAMS[0]` from 12,000 to **20,000 nodes** (`examples/parity_dump.rs:1949`), chosen as the smallest of {20,000; 30,000; 50,000} that keeps ponds and closest to the original; `hydro/plain` now bakes 13 bodies — **4 ponds and 9 coarse** — so it carries a `shore_member_count == 0` body across the boundary. The corpus grew by **1,849 words** in that record and the parity job's wall time did not measurably move.
+- [x] **Done in 1b-4 (Task 4).** **No Rust test baked at the shipped pond parameters.** All six `ponds::tests` cases and `bake_tests::ponds_obey_their_keep_rule_and_name_a_river` pin spec §6.6's 3 km corridor deliberately, because what they assert is the search's mechanism; each is right on its own, and together they left `earth_like`'s 1,500 m and 1.6e10 unexercised in Rust, with 1b-3's `earth_like_ships_the_tuned_pond_corridor_and_density` pinning the constants but not what they do. Task 4 added the behavioural half: **`bake_tests::a_bake_at_the_shipped_pond_params_keeps_ponds`** (`src/hydrology/bake_tests.rs:1799`), which derives both parameters from `earth_like` rather than transcribing them, bakes `ranges_world()`, and asserts a pond survives with a ring of at least 3 points and a `Downstream::Reach`. It keeps 2 ponds of 14 found and runs in about 0.5 s, so it is an ordinary test rather than a sweep.
 
 ## Plan 1b must fix (load-bearing for stage 2)
 
@@ -118,7 +118,7 @@ Task 1 ruled **Candidate B** for a body's extent (see item 6 above) and rewrote 
 6. **Tracing and waterfalls done in 1b-2; small lakes and ponds done in 1b-3; outlines are plan 1b-4.** **The fine layer itself:** tracing at 1.5 km, lake outlines, small lakes and ponds (which have their own keep rule), and waterfalls.
    - [x] **Tracing and waterfalls — done in 1b-2.**
    - [x] **Small lakes and ponds — done in 1b-3.** 3,719 ponds on the owner's world, each with a traced 250 m ring and each naming a river by Ruling S-5. **Two of spec §6.6's parameters ship changed** to meet the gates: the density cap is 1.6e10 m² against the spec's 5.0e8 (32×), and the search corridor is 1,500 m against the spec's 3,000 m. See `2026-09-12-water-1b3-verification.md`.
-   - [ ] **Lake outlines — plan 1b-4.** Ruled in 1b-3's Task 1 as **Candidate B**, replacing Ruling S-1: a body's extent is an unordered set of shore points (its shore members then its collar) plus `shore_member_count`, `shore_reach_m` and its level, and `water_at` decides by a nearest-point test rather than a polygon. Ponds keep the 250 m trace. The argument is in `2026-09-12-water-1b3-outlines-design.md`.
+   - [x] **Lake outlines — DONE in 1b-4.** Ruled in 1b-3's Task 1 as **Candidate B**, replacing Ruling S-1, and **now measured and recorded**: a body's extent is an unordered set of shore points (its shore members then its collar) plus `shore_member_count`, `shore_reach_m` and its level, and `water_at` will decide by a nearest-point test rather than a polygon. Ponds keep the 250 m trace. On the owner's world all **348 coarse bodies carry an extent and none is missing a collar** — 5,800 shore members and 9,261 collar points, **240,976 bytes** against the design note's 228,976 estimate. The trim ships; **Ruling E-5 did not fire**. The argument is in `2026-09-12-water-1b3-outlines-design.md`, the measurement in `2026-09-12-water-1b4-verification.md`. **`water_at` itself is stage 2's (Ruling E-7)** — see "Routed to stage 2" below.
    - Falls are 0 on the owner world and await steeper relief (see the 1b-2 status above).
 
 ## Smaller items (plan 1b or stage 2)
@@ -164,3 +164,55 @@ Task 1 ruled **Candidate B** for a body's extent (see item 6 above) and rewrote 
 
 - **F-1:** notch widths use the caller's params, the same as reaches.
 - **F-2:** notch point word 3 is the cut surface; reach point word 3 is the bed (surface − depth). A test holds the two consistent wherever they meet.
+
+## Status after plan 1b-4 (2026-09-12)
+
+Plan 1b-4 (body extents) puts a **body extent** on the wire and moves the record to **SCHEMA 6** (a 56-word header, a 16-word body prefix). See `2026-09-12-water-1b4-verification.md`. On the owner's world at 1M nodes, forced outlet 0°N 0°E, measured in the branch studio (wasm) on the owner's laptop at `27e0420`:
+
+- the record is **7,326,056 bytes** (gate 8,000,000) and the bake takes **80 s** (gate 300 s);
+- **348 of 348 coarse bodies carry an extent, and none is missing a collar** — 5,800 shore members and 9,261 collar points;
+- the extent costs **240,976 bytes** of points, **306,064 bytes** with SCHEMA 6's fixed words, against the design note's 228,976-byte estimate — **5.2% low, and an estimate of the right thing**;
+- `shore_reach_m` is **58,083 m median, 62,586 m max** — about one to two graph spacings;
+- 4,067 bodies, 3,719 ponds of 55,742 found, crossings 43 → 37, capped 7 / 60 / 9, forced outlets 1 of 1, falls 0 — **every one identical to 1b-3**;
+- 0 bed rises, 3,268 junctions all shared bit for bit, 0 mouths above their water, 0 fresh dead-ends;
+- the great lake still runs 63 → 316 → 317 → 318 → 322 → 319 to the ocean at 25.938°S 30.106°W.
+
+**The 80 s is not a speedup and must not be reported as one.** This host has measured the same world's wasm bake at 124 s, 242 s, 432 s and 441 s across plans 1b-2 and 1b-3. Bake time here is host-variable; the only thing to read from the 80 s is that the gate holds. The extent's own cost is under 0.05 s, measured natively where the readings are comparable.
+
+**Ruling E-5 did not fire: the trim ships.** Task 3's trial held Ruling E-2's interior trim to account and it passed, so a body records only its shore members and its collar and no interior member at all. The untrimmed fallback would have cost roughly 890 KB against the 306 KB that shipped. **Task 3's result is the most interesting in the plan and is recorded in full in the verification report**: the trial first read **284 clause-1 misses of 74,904 samples**, and the re-run — filtered to samples genuinely over their own body's water — read **0**. The correction went to the design note's **§5.7 sample set**, not to §5.6's containment argument and not to Ruling E-2 (Ruling E-9 as revised).
+
+**Ruling E-10:** `shore_reach_m` may not be narrowed to a percentile of the usable edges without re-running Task 3's trial first — not because the band holds interior points (clause 1 does) but because the trial samples the continuum only at graph-derived points, so a narrower band's effect on the shore contour between them is unmeasured.
+
+### What plan 1b-3 routed here — all five closed
+
+| Item | Status |
+|---|---|
+| Spec §8.2's index must list a body whose shore points come within `shore_reach_m` of a cell | **Spec written in 1b-4 (Task 5).** The dilation, its measured size against 50 km cells and why it is not a rounding allowance are all stated. **Building the index is stage 2's** (Ruling E-7) — item 1 below. |
+| Spec §9 named `dilateBodyExtents` and the box-and-level rule | **Done in 1b-4 (Task 5).** §9's drawing path is rewritten against the shore-point set. |
+| Spec §14's uses of "outline" were curve-sense | **Done in 1b-4 (Task 5).** §14.3, §14.6 and §14.9 restated for an unordered point set, or scoped explicitly to ponds. |
+| The parity corpus must always compare a pond body | **Done in 1b-4 (Task 4).** `examples/parity_dump.rs:1949` — `HYDRO_PARAMS[0]` raised 12,000 → **20,000 nodes**, the smallest of three tried that keeps ponds. `hydro/plain` now bakes 13 bodies (**4 ponds, 9 coarse**) and carries a `shore_member_count == 0` body across the boundary; the record grew 4,223 → 6,072 words. |
+| No Rust test bakes at the shipped pond parameters | **Done in 1b-4 (Task 4).** `src/hydrology/bake_tests.rs:1799` — `a_bake_at_the_shipped_pond_params_keeps_ponds`, deriving both parameters from `earth_like` and asserting a pond survives with a ring of at least 3 points and a `Downstream::Reach`. 2 ponds of 14 found, about 0.5 s. |
+
+## Routed to stage 2
+
+All six of plan 1a's "Plan 1b must fix (load-bearing for stage 2)" items are now closed, and plan 1b's four sub-plans are complete. What follows is everything still open anywhere in this file, gathered into one list so stage 2 has one place to read; the sections above are kept as the history of how each item was closed.
+
+**Stage 2 must do these three first, in this order — nothing else in stage 2's water work can be built on top of a missing one:**
+
+1. **Build spec §8.2's index with the `shore_reach_m` dilation.** A body must be listed in every cell its shore points come within `shore_reach_m` **of**, not only the cells they fall in. Measured, that distance is **58,083 m median and 62,586 m max** on the owner's world against 50 km cells — a whole ring of cells, not a rounding allowance. A cell that skips the dilation answers `none` over the shore band, which is exactly the water the band exists to hold. A pond's traced curve dilates by nothing (`shore_member_count == 0`, `shore_reach_m == 0`).
+2. **Implement spec §8.3's test, including the tie-break.** Both clauses — `dm <= dc` (the interior, which Task 3 measured at 0 misses of 74,904 samples over their own water) **or** `dm <= shore_reach_m` (the shore band) — with the branch decided by `shore_member_count` and by nothing else (Ruling E-8), and **Ruling T1-3's tie-break: where more than one body claims a point the smaller `dm` wins, ties to the lower body id.** Without T1-3 the answer depends on the order §8.2's cell happens to list bodies in, because `shore_reach_m` is a per-body maximum and a ridge narrower than it can put a point inside two extents at once. `ocean` is decided first. **`water_at` itself is stage 2's to build (Ruling E-7)** — 1b-4 recorded the extent and tested the geometry that makes it answerable, and stopped there.
+3. **Carve from the record, not from a re-bake.** The record is the artefact; a second bake is a second answer. Expect a mouth's bed to be able to rise at the last step (Ruling R-4's I4 side effect).
+
+**Also routed to stage 2:**
+
+- **A tie-break question Task 3 raised and 1b-4 deliberately did not pre-decide.** A point inside body A only via the band, and inside body B via clause 1, goes to whichever has the smaller `dm`; T1-3 does not distinguish the two clauses. Some band-only cases are dry ground below a perched lake's surface, which §8.3 already excludes by also requiring the point to be at or below the level — the extent is load-bearing, not a permissive gate around a level test. Whether the tie-break should prefer a clause-1 claim is stage 2's call.
+- **`decode` accepts dangling links.** Add a validation pass before stage 2 reads records from disk.
+- **The hydro half of `wasm.rs`** still waits for stage 2; `reaches.rs`'s invariants still want debug_asserts or doc comments.
+- **A width-anchor ruling.** Spec §6.5 over-determines it: 3 m at the stream threshold and 1,000 m at the great threshold cannot both hold with a fixed exponent. The code anchors the stream end.
+- **C1-b never takes back a fresh verdict** when a later cut reduces a pocket's inflow (monotone by design).
+
+**Deferred to other projects, not to stage 2:**
+
+- **Ruling S-15, the meander on yielded segments.** At 1M the crossing pass's first round sees 2,909 crossings, so that many segments ship straightened and unmeandered. Re-tuning `meander_amplitude_widths` waits for the mountains project's erosion — tuning an amplitude against terrain with no erosional valley to follow is tuning against the wrong ground.
+- **Waterfalls.** Still 0 on the owner's world; its landform has no 10 m drop within 150 m along any reach at these resolutions. Falls await the mountains project's steeper relief. They work: 4 on the native `owner_survey` stand-in, plus analytic cliff tests.
+- **Spec §6.6's two departures.** The density cap ships at 1.6e10 m² against the spec's 5.0e8, and the search corridor at 1,500 m against 3,000 m, both for the 1b-3 gates and both measured; the consequence is about ten times fewer ponds than §6.6's own parameters would place. A single bake at 5.0e8 and 3 km would replace that extrapolation with a count. 1b-4 did not revisit either, and its own gates left 673,944 bytes of the 8 MB record unspent.

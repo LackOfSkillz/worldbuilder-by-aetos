@@ -24,6 +24,12 @@
 //!   for a lake member, or `routing.surface_m` otherwise.
 //! - **Body `fresh`** means "not closed": the lake has an outlet. Its water may still end in a
 //!   closed lake downstream rather than the sea.
+//! - **A body's `shore_member_count`** (SCHEMA 6, plan 1b-4) is the wire discriminator spec §8.3
+//!   needs: `0` means `outline` is a traced curve, not a shore-point set (Ruling T1-2), and that
+//!   is how a pond, and a fine-search lake, are told apart from a coarse body. A coarse body
+//!   ships a positive count and an outline of shore members then collar (Ruling E-1); the count
+//!   never exceeds that outline's length, and `decode` refuses a record where it does, because
+//!   every consumer slices the outline on it.
 //! - **Reach `fresh`** means "its chain reaches the ocean": following its `downstream` through
 //!   reaches and bodies ends at `Ocean`, not at a closed lake's `Sink`.
 
@@ -31,6 +37,16 @@ use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
 use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, ReachLine, ReachPoint};
 
+/// 6.0 as of Task 1 (plan 1b-4): the discriminator that spec §8.3 already needs -- a body with
+/// `shore_member_count == 0` carries a traced curve, everything else a shore-point set -- had to
+/// reach the wire before Task 2 could put any points behind it. Doing it the other way round
+/// would ship a record whose lakes are silently readable as polygons the moment a coarse outline
+/// stopped being empty, which is exactly what spec §7 forbids (see the plan's "one hard ordering
+/// constraint"). The header grows from 54 to 56 words, adding `shore_members` and
+/// `collar_points` after `pond_density_area_m2`; the body grows from 14 to 16 fixed words,
+/// adding `shore_member_count` and `shore_reach_m` after `downstream_id` and before
+/// `outline_len`. Every body ships both new fields as zero until Task 2 fills them.
+///
 /// 5.0 as of Task 3 (plan 1b-3): the header grew from 43 to 45 words, adding the crossing pass's
 /// two counts after `meander_max_slope` -- `crossings_coarse` (word 43, how many crossings the
 /// coarse record already had, which Ruling S-2 keeps) and `crossings_left` (word 44, how many are
@@ -50,7 +66,7 @@ use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, 
 /// `fall_max_run_m`, `meander_wavelength_widths`, `meander_amplitude_widths`,
 /// `meander_max_slope`). Earlier schemas are refused outright -- `decode` never adapts an old
 /// record to the new shape.
-pub const SCHEMA: f64 = 5.0;
+pub const SCHEMA: f64 = 6.0;
 
 fn word_to_u32(w: f64) -> Option<u32> {
     if w.is_finite() && w >= 0.0 && w <= u32::MAX as f64 && m::floor(w) == w {
@@ -192,7 +208,7 @@ impl<'a> Reader<'a> {
 /// exceeding what remains means the count is bogus, so the whole record is refused instead of
 /// allocating on it.
 ///
-/// Unchecked: each call site's `min_words` literal (14 for a body, 7 for a reach, 1 for a
+/// Unchecked: each call site's `min_words` literal (16 for a body, 7 for a reach, 1 for a
 /// notch, 4 for a fall, and the nested per-point minimums) is not tied to the fixed reads its
 /// own loop performs below it by anything the compiler enforces -- it holds only because the
 /// comment above each call site is kept in sync by hand with that loop's field list. Widening a
@@ -264,6 +280,8 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.pond_wetness_share);
     out.push(stats.pond_max_slope);
     out.push(stats.pond_density_area_m2);
+    out.push(stats.shore_members as f64);
+    out.push(stats.collar_points as f64);
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -283,6 +301,8 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
         let (downstream_kind, downstream_id) = downstream_words(body.downstream);
         out.push(downstream_kind);
         out.push(downstream_id);
+        out.push(body.shore_member_count as f64);
+        out.push(body.shore_reach_m);
         out.push(body.outline.len() as f64);
         for &(lat, lon) in &body.outline {
             out.push(lat);
@@ -390,12 +410,14 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         pond_wetness_share: r.word()?,
         pond_max_slope: r.word()?,
         pond_density_area_m2: r.word()?,
+        shore_members: r.u32()?,
+        collar_points: r.u32()?,
     };
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
-    // anchor_lat, anchor_lon, downstream_kind, downstream_id, outline_len -- 14 words, plus its
-    // outline.
-    if !count_fits(body_count, 14, r.remaining()) {
+    // anchor_lat, anchor_lon, downstream_kind, downstream_id, shore_member_count, shore_reach_m,
+    // outline_len -- 16 words, plus its outline.
+    if !count_fits(body_count, 16, r.remaining()) {
         return None;
     }
     let mut bodies = Vec::with_capacity(body_count);
@@ -414,7 +436,30 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         let downstream_kind = r.word()?;
         let downstream_id = r.word()?;
         let downstream = words_to_downstream(downstream_kind, downstream_id)?;
+        let shore_member_count = r.u32()?;
+        let shore_reach_m = r.word()?;
+        // `shore_reach_m` is the one float on the wire a consumer uses as a distance: §8.3's
+        // second clause puts a point inside the body when it is within `shore_reach_m` of a
+        // shore member. A NaN makes every comparison false and a body vanish; an infinity (or
+        // any negative value, which is not a length at all) makes the test meaningless in the
+        // other direction -- an infinite band admits the whole planet as inside one lake, and
+        // reports it as a fact rather than a decode failure. Refuse it here, at the trust
+        // boundary, where the failure is still a `None`.
+        if !(shore_reach_m.is_finite() && shore_reach_m >= 0.0) {
+            return None;
+        }
         let outline_len = r.u32()? as usize;
+        // The extent invariant (Ruling E-1): the outline's first `shore_member_count` points
+        // are the shore members and the rest are the collar, so the count can never exceed the
+        // outline's length. It is not enough that it is a valid u32 -- every consumer slices on
+        // it (`body.outline[..shore_member_count]` for the members, the remainder for the
+        // collar, and `outline.len() - shore_member_count` for the collar's size), so a count
+        // past the end panics the first reader in debug and wraps the collar size to about 4
+        // billion in release. Refused here, in the same guard family as `count_fits`, so no
+        // consumer downstream has to re-check it.
+        if shore_member_count as usize > outline_len {
+            return None;
+        }
         // Outline pair: lat, lon -- 2 words per point.
         if !count_fits(outline_len, 2, r.remaining()) {
             return None;
@@ -438,6 +483,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
             anchor: (anchor_lat, anchor_lon),
             outline,
             downstream,
+            shore_member_count,
+            shore_reach_m,
         });
     }
 
@@ -538,6 +585,8 @@ mod tests {
                     anchor: (10.0, 20.0),
                     outline: Vec::new(),
                     downstream: Downstream::Reach(1),
+                    shore_member_count: 0,
+                    shore_reach_m: 0.0,
                 },
                 Body {
                     id: 1,
@@ -552,6 +601,8 @@ mod tests {
                     anchor: (-5.0, 40.0),
                     outline: Vec::new(),
                     downstream: Downstream::Sink,
+                    shore_member_count: 0,
+                    shore_reach_m: 0.0,
                 },
             ],
             reaches: vec![
@@ -627,19 +678,21 @@ mod tests {
                 pond_wetness_share: 0.6,
                 pond_max_slope: 0.03,
                 pond_density_area_m2: 5.0e8,
+                shore_members: 0,
+                collar_points: 0,
             },
         }
     }
 
     #[test]
-    fn a_hand_built_record_round_trips_at_schema_5() {
+    fn a_hand_built_record_round_trips_at_schema_6() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(SCHEMA, 5.0, "Task 3 (plan 1b-3) bumped the schema for the 45-word header");
+        assert_eq!(SCHEMA, 6.0, "Task 1 (plan 1b-4) bumped the schema for the extent discriminator");
         assert_eq!(words[0], SCHEMA);
         assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
         assert_eq!(words[44], f64::from(record.stats.crossings_left));
-        // Task 5's nine: the two pond counts, then the seven pond params, in that order.
+        // Task 5 of plan 1b-3's nine: the two pond counts, then the seven pond params, in order.
         assert_eq!(words[45], f64::from(record.stats.ponds_found));
         assert_eq!(words[46], f64::from(record.stats.ponds_kept));
         assert_eq!(words[47], record.stats.pond_cell_m);
@@ -649,18 +702,21 @@ mod tests {
         assert_eq!(words[51], record.stats.pond_wetness_share);
         assert_eq!(words[52], record.stats.pond_max_slope);
         assert_eq!(words[53], record.stats.pond_density_area_m2);
+        // Task 1 of plan 1b-4's two, closing the 56-word header.
+        assert_eq!(words[54], f64::from(record.stats.shore_members));
+        assert_eq!(words[55], f64::from(record.stats.collar_points));
         assert_eq!(decode(&words), Some(record));
     }
 
-    /// The header is 54 words: everything after word 53 is the first body's first word.
+    /// The header is 56 words: everything after word 55 is the first body's first word.
     #[test]
-    fn the_header_is_fifty_four_words() {
+    fn sample_bodies_start_after_the_fifty_six_word_header() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(words[54], f64::from(record.bodies[0].id));
+        assert_eq!(words[56], f64::from(record.bodies[0].id));
         let empty = HydroRecord { bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(),
                                   falls: Vec::new(), stats: record.stats.clone() };
-        assert_eq!(encode(&empty).len(), 54);
+        assert_eq!(encode(&empty).len(), 56);
     }
 
     /// A pond's outline is a traced ring and a lake's is a shore-point set (spec §7, Ruling
@@ -676,9 +732,9 @@ mod tests {
         assert_eq!(decoded.bodies[0].kind, BodyKind::Pond);
     }
 
-    /// SCHEMA 4 is the schema this one replaced, and its 43-word header is a prefix of this
-    /// one's 45: a decoder that adapted rather than refused would read a body's first two words
-    /// as the two new counts and go wrong quietly.
+    /// SCHEMA 4's 43-word header is a prefix of both SCHEMA 5's 45 and SCHEMA 6's 56: a decoder
+    /// that adapted rather than refused would read a body's first words as later header words
+    /// and go wrong quietly.
     #[test]
     fn a_schema_4_record_is_refused() {
         let mut words = encode(&sample());
@@ -719,6 +775,100 @@ mod tests {
         let mut words = encode(&sample());
         words[2] = 4.0e9; // reach_count, absurd
         assert_eq!(decode(&words), None, "absurd reach_count must be refused, not allocated");
+    }
+
+    #[test]
+    fn the_header_is_fifty_six_words() {
+        let record = HydroRecord {
+            bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
+            stats: sample().stats,
+        };
+        assert_eq!(encode(&record).len(), 56);
+        assert_eq!(encode(&record)[0], 6.0);
+    }
+
+    #[test]
+    fn a_body_carries_its_extent_words() {
+        let mut record = HydroRecord {
+            bodies: vec![sample().bodies[0].clone()], reaches: Vec::new(), notches: Vec::new(),
+            falls: Vec::new(), stats: sample().stats,
+        };
+        // Three shore members and one collar point: the count must not exceed the outline it
+        // indexes into, so a body carrying an extent carries the points to go with it.
+        record.bodies[0].outline = vec![(1.0, 2.0), (1.0, 2.5), (1.5, 2.5), (1.5, 2.0)];
+        record.bodies[0].shore_member_count = 3;
+        record.bodies[0].shore_reach_m = 41_000.5;
+        let words = encode(&record);
+        assert_eq!(decode(&words).as_ref(), Some(&record));
+        // 16 fixed words, then the outline pairs: shore_member_count and shore_reach_m sit
+        // after downstream_id (word 12) and before outline_len (word 15).
+        assert_eq!(words[56 + 13], 3.0);
+        assert_eq!(words[56 + 14], 41_000.5);
+    }
+
+    #[test]
+    fn a_schema_five_record_is_refused() {
+        let mut words = encode(&HydroRecord {
+            bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
+            stats: sample().stats,
+        });
+        words[0] = 5.0;
+        assert_eq!(decode(&words), None);
+    }
+
+    /// A one-body record whose outline is `points` long and whose extent words are set by hand,
+    /// so a decode guard can be aimed at exactly one word.
+    fn one_body_with_extent(points: usize, shore_member_count: u32, shore_reach_m: f64) -> Vec<f64> {
+        let mut body = sample().bodies[0].clone();
+        body.outline = (0..points).map(|i| (i as f64, i as f64)).collect();
+        body.shore_member_count = shore_member_count;
+        body.shore_reach_m = shore_reach_m;
+        encode(&HydroRecord {
+            bodies: vec![body], reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
+            stats: sample().stats,
+        })
+    }
+
+    /// Ruling E-1 makes the shore members a prefix of the outline, and every consumer slices on
+    /// the count -- `body.outline[..shore_member_count]` for the members, the remainder for the
+    /// collar. A count past the outline's end is not a bad number to be carried around: it is a
+    /// panic in the first reader, and a collar size that wraps to about 4 billion in release. It
+    /// is a valid u32, so nothing but this guard refuses it.
+    #[test]
+    fn decode_refuses_a_body_claiming_more_shore_members_than_it_has_outline_points() {
+        // The boundary itself is legal: every outline point may be a shore member.
+        let all_members = one_body_with_extent(4, 4, 1_000.0);
+        assert!(decode(&all_members).is_some(), "count == outline_len is a legal extent");
+
+        // One past it is not. The extent words sit at 13 and 14 of a body's 16 fixed words,
+        // after the 56-word header; `outline_len` is word 15.
+        let outline_len_word = 56 + 15;
+        for bogus in [5.0, 4.0e9, f64::from(u32::MAX)] {
+            let mut words = one_body_with_extent(4, 4, 1_000.0);
+            assert_eq!(words[outline_len_word], 4.0, "sanity: this world's body has 4 outline points");
+            words[56 + 13] = bogus;
+            assert_eq!(decode(&words), None, "shore_member_count {bogus} exceeds the 4-point outline");
+        }
+    }
+
+    /// §8.3's second clause tests a point against `shore_reach_m` as a distance. A NaN makes
+    /// every such comparison false; an infinity admits the whole planet as inside one lake; a
+    /// negative value is not a length. All three are valid `f64` words, so only this guard
+    /// refuses them.
+    #[test]
+    fn decode_refuses_a_non_finite_or_negative_shore_reach() {
+        for bogus in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.5] {
+            let mut words = one_body_with_extent(4, 2, 1_000.0);
+            words[56 + 14] = bogus;
+            assert_eq!(decode(&words), None, "shore_reach_m {bogus} is not a usable distance");
+        }
+        // Zero is legal -- it is what a pond and a body with no usable edge both write -- and so
+        // is any finite positive length, however large.
+        for fine in [0.0, 1.0e300] {
+            let mut words = one_body_with_extent(4, 2, 1_000.0);
+            words[56 + 14] = fine;
+            assert_eq!(decode(&words).expect("decode").bodies[0].shore_reach_m, fine);
+        }
     }
 
     #[test]

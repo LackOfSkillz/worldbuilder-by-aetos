@@ -14,11 +14,11 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-test("a bake comes back with a schema-5 header and counts that add up", () => {
+test("a bake comes back with a schema-6 header and counts that add up", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
   const s = engine.hydroSummary(words);
-  assert.equal(s.schema, 5);
+  assert.equal(s.schema, 6);
   assert.equal(s.nodes, 12000);
   assert.ok(s.landNodes > 0 && s.landNodes < 12000);
   assert.equal(s.kept + s.notched, s.hollows);
@@ -32,7 +32,7 @@ test("a bake comes back with a schema-5 header and counts that add up", () => {
   assert.ok(s.greatFlowM2 >= 10 * s.riverFlowM2);
 });
 
-test("hydroSummary reads the SCHEMA 5 params echo, forced-outlet matches and crossing counts", () => {
+test("hydroSummary reads the SCHEMA 5/6 params echo, forced-outlet matches, crossing counts and extent totals", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const params = {
     ...PARAMS,
@@ -79,17 +79,28 @@ test("hydroSummary reads the SCHEMA 5 params echo, forced-outlet matches and cro
   // The seven pond params are in the record (words 47-53) but deliberately not in this summary:
   // like the refinement params, they are not wasm params.
   assert.equal(s.pondCellM, undefined);
+  // SCHEMA 6 (words 54-55), plan 1b-4 Task 2: the extent totals across all bodies. This world's
+  // bake keeps only coarse bodies (a shore-point set per Ruling E-2, never a pond), so both
+  // totals are the sum of every body's own extent and must be positive -- not the zeroed stub
+  // Task 1 shipped before Task 2 filled a real extent in. `hydroSummary` is header-only and
+  // carries no per-body data, so the per-body sum-and-shape invariant these two totals must
+  // satisfy is asserted where the bodies are actually decoded:
+  // `water-preview.test.mjs`'s "decodeHydro's body and reach counts match hydroSummary's".
+  assert.equal(s.shoreMembers, words[54]);
+  assert.equal(s.collarPoints, words[55]);
+  assert.ok(s.shoreMembers > 0, "sanity: this world's coarse bodies carry shore points");
+  assert.ok(s.collarPoints > 0, "sanity: this world's coarse bodies carry a collar");
 });
 
-test("hydroSummary throws on a schema other than 5 rather than misreading the header", () => {
+test("hydroSummary throws on a schema other than 6 rather than misreading the header", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
-  for (const schema of [2, 3, 4, Number.NaN]) {
+  for (const schema of [2, 3, 4, 5, Number.NaN]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => engine.hydroSummary(tampered), /schema/);
   }
-  assert.equal(engine.hydroSummary(words).schema, 5);
+  assert.equal(engine.hydroSummary(words).schema, 6);
 });
 
 test("the same bake twice is the same words", () => {

@@ -1929,9 +1929,24 @@ fn main() {
     // test module's helpers, so the corpus and that export's own parameter-validation tests
     // each carry their own copy of the fixture. Keep the two equal by inspection if either
     // changes; a silent drift between them would mean the corpus and the unit tests are no
-    // longer describing the same bake.
+    // longer describing the same bake. Word 0 (the node count) is the one field this array
+    // is free to differ from `hydro_params()`'s own -- see the node-count note below.
+    //
+    // Plan 1b-4 Task 4: raised from 12,000 to 20,000. At 12,000 nodes this world's `H plain`
+    // record kept 8 coarse bodies and, after Ruling S-16 raised `earth_like`'s pond density
+    // cap, zero ponds -- so `hydro/ranges` was the only parity group ever comparing a body
+    // with `shore_member_count == 0` across the native/WASM boundary. `earth_like`'s pond
+    // parameters are not wasm params (`hydro_params_from` never sets `pond_search_radius_m`
+    // or `pond_density_area_m2`), so every `wb_hydro_bake` call, at any node count, already
+    // bakes at the shipped 1,500 m / 1.6e10 pair; only the node count was left to raise.
+    // Measured natively at this world's seed (20260904) and land fraction (0.29), same 12
+    // middle words: 12,000 nodes -> 8 bodies, 0 ponds, 362 ms; 20,000 -> 13 bodies, 4 ponds,
+    // 9 coarse, 526 ms. 20,000 was taken as the smallest of {20,000; 30,000; 50,000} tried
+    // (all three keep ponds) because it is closest to the original and the ~164 ms native
+    // delta is immaterial against this job's multi-second wall time. See task-4-report.md
+    // for the parity job's wall time before and after.
     const HYDRO_PARAMS: [f64; 12] =
-        [12_000.0, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0];
+        [20_000.0, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0];
 
     let mut hydro_id: u32 = 0;
     let hydro_status =

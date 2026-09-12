@@ -749,6 +749,61 @@ struct Survivor {
     outline: Vec<(f64, f64)>,
 }
 
+/// The anchors of the candidates that have been **recorded**, and the dedup distance around each:
+/// two strips of one reach share an end, so the same water is seen twice, and the first candidate
+/// to be recorded keeps it.
+///
+/// **A candidate claims its anchor only once its ring is in hand.** [`outline`] refuses a
+/// candidate whose ring cannot be verified -- a pinched cell set, measured at about 1 in 6,243 --
+/// and such a candidate is not recorded. It must therefore suppress nothing: a neighbour within
+/// the dedup distance would then be the only body that water gets, and dropping it too leaves the
+/// water with no body at all. That is the whole reason `record` builds the outline before it
+/// inserts, and not after.
+struct Anchors {
+    index: BucketIndex,
+    points: Vec<SpherePoint>,
+    dedup_m: f64,
+    radius_m: f64,
+}
+
+impl Anchors {
+    /// `cell_m` sizes the index's buckets and `dedup_m` is the distance the rule is about; the two
+    /// are independent, because `candidates` is correct at any cell size. Sized to the reach
+    /// points rather than to the dedup distance -- a 500 m grid over a planet is 21 million
+    /// buckets, and there are never more anchors than there are river points.
+    fn new(radius_m: f64, cell_m: f64, dedup_m: f64) -> Anchors {
+        Anchors { index: BucketIndex::new(radius_m, cell_m), points: Vec::new(), dedup_m, radius_m }
+    }
+
+    /// The survivor this candidate becomes, with its anchor claimed -- or `None` where the anchor
+    /// is already within `dedup_m` of one that is claimed, or where `outline` refuses its ring.
+    /// Only the first of those two outcomes leaves a claim behind, and it was not this call's.
+    fn record(&mut self, strip: &Strip, candidate: &Candidate, params: &HydroParams) -> Option<Survivor> {
+        let near = self.index.candidates(&candidate.anchor, self.dedup_m);
+        if near.iter().any(|&id| {
+            candidate.anchor.distance_to(&self.points[id as usize], self.radius_m) <= self.dedup_m
+        }) {
+            return None;
+        }
+        let outline = outline(strip, &candidate.cells, params);
+        if outline.len() < 3 {
+            return None;
+        }
+        self.index.insert(&candidate.anchor, self.points.len() as u32); // cast-ok: bounded by the candidate count
+        self.points.push(candidate.anchor);
+        let (lat_deg, lon_deg) = candidate.anchor.to_latlon();
+        Some(Survivor {
+            anchor: candidate.anchor,
+            lat_deg,
+            lon_deg,
+            level_m: candidate.level_m,
+            depth_m: candidate.level_m - candidate.floor_m,
+            area_m2: candidate.area_m2,
+            outline,
+        })
+    }
+}
+
 /// Spec §6.6's fine search, end to end: strips along every refined reach, the hollows in them,
 /// Rulings S-6, S-7, S-8, S-10 and S-11, and the bodies that survive, appended to `record.bodies`.
 ///
@@ -804,12 +859,10 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
         for (i, position) in graph.positions.iter().enumerate() {
             nodes.insert(position, i as u32); // cast-ok: a node index, bounded by stream::MAX_NODES
         }
-        // The dedup partner: kept anchors, so a pond two strips both saw is one pond. Sized to
-        // the reach points rather than to the 500 m dedup distance -- a 500 m grid over a planet
-        // is 21 million buckets, and there are never more anchors than there are river points.
-        let dedup_m = params.pond_cell_m * 2.0;
-        let mut anchors = BucketIndex::new(ground.radius_m, index_cell_m(line_points.len(), ground.radius_m));
-        let mut anchor_points: Vec<SpherePoint> = Vec::new();
+        // The dedup partner: recorded anchors, so a pond two strips both saw is one pond.
+        let mut anchors = Anchors::new(ground.radius_m,
+                                       index_cell_m(line_points.len(), ground.radius_m),
+                                       params.pond_cell_m * 2.0);
 
         // Ruling S-6's wetness and Ruling S-7's coarse-lake test, at one point. Ruling S-12 asks it
         // of a segment's midpoint before the corridor is sampled at all; the loop below asks it
@@ -848,25 +901,12 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
                         continue;
                     }
                     // Two strips of one reach share an end, so the same water is seen twice; the
-                    // first to see it is the one that keeps it.
-                    let near = anchors.candidates(&candidate.anchor, dedup_m);
-                    if near.iter().any(|&id| {
-                        candidate.anchor.distance_to(&anchor_points[id as usize], ground.radius_m) <= dedup_m
-                    }) {
-                        continue;
+                    // first to be RECORDED is the one that keeps it. `Anchors::record` traces the
+                    // ring before it claims the anchor, so a candidate `outline` refuses leaves
+                    // the next one along free.
+                    if let Some(survivor) = anchors.record(strip, &candidate, params) {
+                        survivors.push(survivor);
                     }
-                    anchors.insert(&candidate.anchor, anchor_points.len() as u32); // cast-ok: bounded by the candidate count
-                    anchor_points.push(candidate.anchor);
-                    let (lat_deg, lon_deg) = candidate.anchor.to_latlon();
-                    survivors.push(Survivor {
-                        anchor: candidate.anchor,
-                        lat_deg,
-                        lon_deg,
-                        level_m: candidate.level_m,
-                        depth_m: candidate.level_m - candidate.floor_m,
-                        area_m2: candidate.area_m2,
-                        outline: outline(strip, &candidate.cells, params),
-                    });
                 }
             }
         }
@@ -891,12 +931,12 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
     let mut taken: Vec<usize> = Vec::new();
     let mut kept = 0usize;
     for survivor in &survivors {
-        // Both of these are defensive -- a hollow of one cell already traces four corners, and
-        // `line_points` was checked non-empty above -- but a survivor that cannot be recorded
-        // must not claim the cell a later one could have used, so they come first.
-        if survivor.outline.len() < 3 {
-            continue;
-        }
+        // Every survivor already has a verified ring -- `Anchors::record` is what makes that true
+        // -- so the only thing left that can refuse one here is the nearest-line lookup, and
+        // `line_points` was checked non-empty above. It is defensive, but a survivor that cannot
+        // be recorded must not claim the density cell a later one could have used, so it comes
+        // before the claim.
+        //
         // Ruling S-5: a pond beside a river drains to that river, and no channel is traced for it.
         let downstream = match lines.nearest(&survivor.anchor, &line_points) {
             Some(point) => Downstream::Reach(line_reach[point as usize]),
@@ -924,6 +964,10 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
             anchor: (survivor.lat_deg, survivor.lon_deg),
             outline: survivor.outline.clone(),
             downstream,
+            // Ruling T1-2: a fine-search body's outline is always a traced ring, never a
+            // shore-point set, so the discriminator stays zero regardless of plan 1b-4's task.
+            shore_member_count: 0,
+            shore_reach_m: 0.0,
         });
         kept += 1;
     }
@@ -1230,8 +1274,81 @@ mod tests {
                 pond_cell_m: 0.0, pond_search_radius_m: 0.0, pond_keep_depth_m: 0.0,
                 pond_keep_area_m2: 0.0, pond_wetness_share: 0.0, pond_max_slope: 0.0,
                 pond_density_area_m2: 0.0,
+                shore_members: 0, collar_points: 0,
             },
         }
+    }
+
+    /// A candidate `outline` refuses claims no dedup anchor, so the neighbour it used to suppress
+    /// is recorded.
+    ///
+    /// **Driven through `Candidate` fixtures, not through terrain, and deliberately so.** The only
+    /// cell set `outline` refuses is a pinched one -- two cells of the hollow meeting at a corner
+    /// and nowhere else -- measured on real bakes at about 1 in 6,243. Writing ground that floods
+    /// to exactly that shape at exactly `pond_cell_m` would pin the test to the cell grid's
+    /// alignment rather than to the rule, so the two candidates are built here.
+    ///
+    /// The refused one is a ring of water one cell thick whose two ends meet corner to corner: the
+    /// boundary walk visits that corner twice, so the traced ring is not simple, and its arms are
+    /// six cells long, so simplification cannot smooth the pinch away either. (A three-by-three
+    /// version of the same shape *is* smoothed into a usable hexagon at Ruling S-13's half-cell
+    /// tolerance, which is the ruling working rather than a hole in it.) The block beside it is a
+    /// separate 4-connected component whose anchor is one cell diagonally away -- 354 m, inside
+    /// the 500 m `pond_cell_m * 2.0` dedup distance.
+    #[test]
+    fn a_candidate_with_no_ring_leaves_the_next_one_free() {
+        let h = |_: &SpherePoint| 100.0;
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let strip = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
+            .into_iter().next().expect("one strip");
+        let dedup_m = p.pond_cell_m * 2.0;
+
+        //  rows 15..21, columns 5..11 of the strip:
+        //      X X X X X X .
+        //      X . . . . . X   -- (15, 10) and (16, 11) meet at one corner and nowhere else
+        //      X . . . . . X
+        //      X . . . . . X
+        //      X . . . . . X
+        //      X . . . . . X
+        //      X X X X X X X
+        let mut pinch: Vec<(usize, usize)> = (5..=10).map(|k| (15, k)).collect();
+        for row in 16..=20 {
+            pinch.push((row, 5));
+            pinch.push((row, 11));
+        }
+        pinch.extend((5..=11).map(|k| (21, k)));
+        // A 2x2 block at rows 14..15, columns 12..13: 4-connected to nothing in the ring.
+        let block: Vec<(usize, usize)> = vec![(14, 12), (14, 13), (15, 12), (15, 13)];
+
+        let candidate = |cells: Vec<(usize, usize)>, at: (usize, usize)| Candidate {
+            anchor: strip.point_at(at.0, at.1, p.pond_cell_m),
+            level_m: 100.0, floor_m: 95.0, area_m2: 1.0e5,
+            cells, strip: 0, touches_side: false, touches_end: false,
+        };
+        let pinched = candidate(pinch.clone(), (16, 11));
+        let neighbour = candidate(block.clone(), (15, 12));
+
+        // The fixtures are what they claim: one ring is refused, the other is not, and the two
+        // anchors are inside the dedup distance of each other.
+        assert!(outline(&strip, &pinch, &p).is_empty(), "the pinched ring cannot be verified");
+        assert!(outline(&strip, &block, &p).len() >= 3, "the block's ring can");
+        let apart = pinched.anchor.distance_to(&neighbour.anchor, R);
+        assert!(apart < dedup_m, "{apart} m apart, inside the {dedup_m} m dedup distance");
+
+        // The refused candidate is not recorded and claims nothing, so the neighbour is recorded.
+        let mut anchors = Anchors::new(R, 1_000.0, dedup_m);
+        assert!(anchors.record(&strip, &pinched, &p).is_none(), "no ring, no body");
+        assert!(anchors.record(&strip, &neighbour, &p).is_some(),
+                "the neighbour within the dedup distance is recorded");
+
+        // The control, which is what says the distance above really does suppress: put a
+        // candidate with a usable ring at the very same anchor, and the neighbour is dropped.
+        let usable_there = candidate(block.clone(), (16, 11));
+        let mut anchors = Anchors::new(R, 1_000.0, dedup_m);
+        assert!(anchors.record(&strip, &usable_there, &p).is_some());
+        assert!(anchors.record(&strip, &neighbour, &p).is_none(),
+                "a recorded anchor does suppress its neighbour");
     }
 
     /// Ruling S-8: the density cap keeps the deepest first, one per cell of about 22.4 km.

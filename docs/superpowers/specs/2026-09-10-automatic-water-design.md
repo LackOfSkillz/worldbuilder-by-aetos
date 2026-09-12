@@ -356,11 +356,14 @@ hydrology: {
 }
 ```
 
-- **`kind` says what `outline` is** (Ruling S-1 as replaced, and Ruling T1-2, both plan 1b-3's
-  Task 1). The field carries one of two geometries and **`kind` is the discriminator** — never
-  `shore_member_count`, and never any other sentinel value. `kind` is one of the four
-  `BodyKind` variants (`hydrology/mod.rs`), and **three of them take the shore-point branch and
-  one takes the traced curve**:
+- **`shore_member_count` says what `outline` is** (Ruling E-8, plan 1b-4). The field carries one
+  of two geometries and **`shore_member_count` is the discriminator, and nothing else is**: zero
+  means the outline is a traced curve, any other value means it is a shore-point set. **`kind`
+  says what the water *is*** — fresh or salt, pond-sized or lake-sized (Ruling S-1 as replaced,
+  and Ruling T1-2, both plan 1b-3's Task 1) — **not what shape its extent is written in.** The
+  two agree on most bodies and Ruling S-11 below is why they do not always. `kind` is one of the
+  four `BodyKind` variants (`hydrology/mod.rs`), and on the bodies where the two do agree,
+  **three of them take the shore-point branch and one takes the traced curve**:
   - **Ruling S-11's exception, and why it is not a hole in the discriminator.** The fine search
     of §6.6 records an oversized find as a `lake` carrying a **traced curve**, not a shore-point
     set, so on that one path `kind` alone does not settle it. What does settle it is
@@ -370,7 +373,9 @@ hydrology: {
     is therefore: **a pond, or any body with no shore members, is a ring; everything else is a
     set.** No consumer may treat `kind == lake` alone as proof of a shore-point set.
   - **`lake`, `salt_lake`, `salt_flat`: `outline` is a set, not a curve.** Its first
-    `shore_member_count` points are the body's shore members and the rest are its collar (§6.6).
+    `shore_member_count` points are the body's shore members and the rest are its collar (§6.6),
+    so **`shore_member_count` never exceeds `outline`'s length** — a decoder refuses a record
+    where it does, because every consumer slices the outline on it.
     Within each half the points are in ascending graph-node order; that order is fixed only so the
     record is deterministic and carries no geometric meaning. **No consumer may join consecutive
     points into an edge.** `shore_reach_m` is the greatest length of a member-to-collar step whose
@@ -420,6 +425,15 @@ This is a new stage in `Surface`, after features and before detail:
 - **Structure:** a fixed cube-sphere cell grid of about 50 km cells, built once per record. Each
   cell lists the reach segments, notch segments, lake outlines and **painted features** whose
   influence reaches it.
+- **A body's shore points are dilated by its `shore_reach_m` before it is assigned to cells.**
+  §8.3's test puts a point inside a body when it is within `shore_reach_m` of a shore member, so a
+  cell must list every body whose shore points come within `shore_reach_m` **of the cell**, not
+  only the bodies with a point in it. That distance is about one graph spacing — tens of
+  kilometres on a planetary bake, against 50 km cells — so this is not a rounding allowance: it
+  can add a ring of cells all the way round a body. A cell that skips the dilation answers `none`
+  over the shore band, which is exactly the water the band exists to hold.
+- **A pond's traced curve dilates by nothing.** A body with `shore_member_count == 0` carries a
+  250 m curve and its `shore_reach_m` is 0, so its cells are the cells that curve passes through.
 - **Use:** a sample looks up its cell and tests only what the cell lists.
 - **Performance target:** on the owner's world with its full record, the median cost of
   `elevation_m` rises by no more than 20% over the same world with no water. With 1,000 painted
@@ -439,18 +453,23 @@ This is a new stage in `Surface`, after features and before detail:
 
 - **Inside a body's extent** (Ruling S-1, as replaced by plan 1b-3's Task 1) is decided from the
   body's recorded shore points (§7), in one pass over them, for each body §8.2's cell lists as
-  reaching the point. **Which branch is taken is decided by `kind`** (Ruling T1-2), not by any
-  sentinel in the data — with Ruling S-11's one exception, restated here because this is where it
-  bites: a `lake` the §6.6 fine search recorded carries a **traced curve**, and it is told apart
-  by `shore_member_count == 0`. A body with no shore members takes the `pond` branch below
-  whatever its `kind`:
+  reaching the point. **Which branch is taken is decided by `shore_member_count`, and by nothing
+  else** (Ruling E-8): zero means the outline is a traced curve, any other value means it is a
+  shore-point set. `kind` says what the water is — fresh or salt, pond-sized or lake-sized — and
+  not how its extent is written down; the two agree on most bodies and Ruling S-11 is why they do
+  not always, because a `lake` the §6.6 fine search recorded carries a traced curve like a pond.
+  A body with no shore members takes the `pond` branch below whatever its `kind`:
   - **`lake`, `salt_lake`, `salt_flat`.** Let `dm` be the great-circle distance to the nearest
     **member** point of that body and `dc` the distance to its nearest **collar** point (ties to
     the lower outline index; no collar point means `dc` is infinite). The point is inside if
     `dm <= dc` **or** `dm <= shore_reach_m`. The first clause holds the body's interior, the second
     the shore band the level contour crosses — and because the contour crosses each member-to-collar
     step whose collar end is above the level somewhere along that step, and `shore_reach_m` is the
-    longest such step, every point of the contour is inside.
+    longest such step, every point of the contour is inside. **`shore_reach_m` must stay the
+    longest usable edge, and may not be narrowed to a percentile of them without re-running plan
+    1b-4's Task 3 trial first** (Ruling E-10) — not because the band holds interior points, which
+    it does not (clause 1 does), but because the trial samples the continuum only at graph-derived
+    points, so what a narrower band would do to the shore contour between them is unmeasured.
   - **`pond`, and any body with `shore_member_count == 0`.** Its outline is a traced curve, its
     points are joined in order, and **the ring closes implicitly** (join the last point back to
     the first); the point is inside if it is inside that curve. `shore_reach_m` is not consulted.
@@ -473,10 +492,15 @@ This is a new stage in `Surface`, after features and before detail:
 - **"Work out the water"** runs the bake in a pool worker. A progress line names the step:
   flooding, judging hollows, tracing rivers, outlining lakes, finding ponds. Terrain edits queue
   behind it. Slider changes mark the water out of date instead of re-running it.
-- **Drawing:** relief tiles colour water texels from the batch query. Lakes and ponds use
-  `LAKE_STOPS` at their true depth, rivers are tinted by class and drawn from their lines, and
-  salt water is tinted distinctly from fresh. `dilateBodyExtents`, the box-and-level rule and the
-  square point bodies are removed.
+- **Drawing:** every water texel is coloured from `water_at`, through §8.3's per-tile batch form,
+  and from nothing else. The query answers the kind, the level and the depth at that texel, so a
+  lake's edge is where the query stops saying `lake` — the shoreline is read, never reconstructed
+  in the studio. Lakes and ponds use `LAKE_STOPS` at the depth the query returns, rivers are
+  tinted by class and drawn from their lines, and salt water is tinted distinctly from fresh.
+  **The old drawing path goes with it:** `water.js::lakeLevelAt`, `dilateBodyExtents` and the
+  box-and-level rule of section 3 — flood every texel below the level inside a bounding box of
+  node centres dilated by one node cell — are deleted, and the square point bodies they produced
+  go with them. This stage is where that removal happens.
 - **A water panel:** counts by class, lakes, ponds, salt bodies, waterfalls, the bifurcation
   ratios, the record size, and the bake time.
 
@@ -555,12 +579,18 @@ These are properties, not a Python twin. Water has no Python oracle, by the slic
 4. **Connected rivers:** every reach's `downstream` exists, the network is acyclic, and every
    tributary shares its junction vertex with its receiver.
 5. **Downhill:** along a reach the bed never rises except at a recorded notch, where it holds.
-6. **Lakes drain:** every non-closed lake has exactly one outlet reach, starting on its outline.
+6. **Lakes drain:** every non-closed lake has exactly one outlet reach, and it starts on the
+   body's own edge — at one of its recorded shore points for a body with shore members, on its
+   traced curve for a body without.
 7. **Earth-like:** the bifurcation ratio is between 3 and 5 on the owner's world at the
    calibrated thresholds, reported alongside the counts.
 8. **Coastline lock:** baking never changes land-or-water classification at the million-point
    scatter, except inside recorded river channels and notches.
-9. **The query agrees with the record** at every sampled point of every body outline and reach.
+9. **The query agrees with the record** at every sampled point of every reach, and, for every
+   body, at every one of the extent's own recorded points and along the member-to-collar lines
+   between them — the shore band `shore_reach_m` measures is between those points, not at them, so
+   sampling the points alone would not test it. A body with no shore members contributes the
+   points of its traced curve instead, which is the whole of what it records.
 10. **Mutation guards:** each property test is shown to fail against a deliberately broken input
     (a cyclic reach, an undrained hollow, a moved coast). A property that cannot fail proves
     nothing.

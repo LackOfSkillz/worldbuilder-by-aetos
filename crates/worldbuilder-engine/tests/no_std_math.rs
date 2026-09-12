@@ -11,9 +11,14 @@
 //! legitimate, so a line carrying the marker `// cast-ok: <reason>` is exempted -- use it
 //! only when the cast genuinely is not a float truncation.
 //!
-//! The scan walks `src/` recursively, so a submodule directory added by a later slice
-//! (`src/terrain/`, `src/plates/`, ...) is covered without anyone remembering to update
-//! this file, and it skips `detmath.rs` wherever it appears in that tree.
+//! The scan walks `src/` and `examples/` recursively, so a submodule directory added by a
+//! later slice (`src/terrain/`, `src/plates/`, ...) is covered without anyone remembering to
+//! update this file, and it skips `detmath.rs` wherever it appears in either tree.
+//!
+//! `examples/` is in because it stopped being scaffolding. `examples/parity_dump.rs` writes the
+//! corpus the parity gate compares bit for bit, and `examples/pond_search_survey.rs` is an
+//! instrument whose numbers go into plan reports. A float truncation in either is a wrong number
+//! reported as a measurement, which is the same failure this guard exists for.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -80,9 +85,11 @@ fn scan_text(label: &str, text: &str) -> Vec<String> {
 
 #[test]
 fn no_std_float_maths_outside_detmath() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    rust_files_recursive(&src, &mut files);
+    for tree in ["src", "examples"] {
+        rust_files_recursive(&crate_root.join(tree), &mut files);
+    }
 
     let mut offences = Vec::new();
     for path in files {
