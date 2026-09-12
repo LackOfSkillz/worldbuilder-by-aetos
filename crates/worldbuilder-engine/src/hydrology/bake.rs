@@ -218,6 +218,16 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     if !(params.pond_wetness_share <= 1.0) {
         return Err(HydroError::Params("pond_wetness_share must be <= 1"));
     }
+    // Ruling S-8's density cap is applied on a `BucketIndex` whose cell is the square root of
+    // this area, so an area under one search cell asks for a grid finer than the search that
+    // fills it -- and `BucketIndex::new` clamps at 4,096 rows by 8,192 columns without saying so,
+    // handing back a far coarser cell than was asked for. At 1.0e4 m^2 the unclamped index would
+    // want about 800 MB of buckets and the clamped one realises a 4,886.50 m cell (23.88 km^2),
+    // 2,388 times the area requested. One search cell is the natural bound: no cap can separate two
+    // candidates by less than the resolution they were found at.
+    if !(params.pond_density_area_m2 >= params.pond_cell_m * params.pond_cell_m) {
+        return Err(HydroError::Params("pond_density_area_m2 must be >= pond_cell_m squared"));
+    }
 
     let graph = LandGraph::sample(surface, params.total_nodes, params.wetness_nodes)
         .ok_or(HydroError::Sampling)?;

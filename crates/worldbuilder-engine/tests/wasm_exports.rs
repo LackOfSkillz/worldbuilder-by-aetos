@@ -5364,7 +5364,7 @@ fn a_hydro_bake_is_held_copied_and_freed() {
     let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: a 12-word buffer
     assert_eq!(status, WB_OK);
     let len = wb_hydro_len(id);
-    assert!(len >= 45, "at least the header (plan 1b-3 Task 3: 45 words at schema 5)");
+    assert!(len >= 54, "at least the header (plan 1b-3 Task 5: 54 words at schema 5)");
     let mut words = vec![0.0f64; len as usize];
     assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
     assert_eq!(words[0], 5.0, "schema 5");

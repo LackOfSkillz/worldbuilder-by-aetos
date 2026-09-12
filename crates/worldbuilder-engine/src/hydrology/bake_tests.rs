@@ -542,7 +542,15 @@ fn refinement_params_below_their_floors_are_refused() {
 }
 
 /// The fine search's params have floors of the same kind: a cell far below the landform's own
-/// resolution, a search radius with no strip in it, or a *share* above 1.
+/// resolution, a search radius with no strip in it, a *share* above 1, or a density cell smaller
+/// than the search cell itself.
+///
+/// The last is Ruling S-8's `BucketIndex`, and it is a memory floor, not a taste one. The index
+/// is built with a cell of `sqrt(pond_density_area_m2)`, so a density area under one
+/// `pond_cell_m` square asks for more rows and columns than the world has cells to put in them:
+/// at 1.0e4 m² against the shipped 250 m cell the index wants about 800 MB of buckets, and
+/// `BucketIndex::new`'s own 4,096 × 8,192 clamp silently hands back a **4,886.50 m** cell instead —
+/// so the caller neither gets the density it asked for nor hears that it did not.
 #[test]
 fn pond_params_below_their_floors_are_refused() {
     let mut cell = params();
@@ -551,8 +559,10 @@ fn pond_params_below_their_floors_are_refused() {
     radius.pond_search_radius_m = radius.pond_cell_m - 1.0;
     let mut share = params();
     share.pond_wetness_share = 1.1;
+    let mut density = params();
+    density.pond_density_area_m2 = density.pond_cell_m * density.pond_cell_m - 1.0;
     for (name, p) in [("pond_cell_m", cell), ("pond_search_radius_m", radius),
-                      ("pond_wetness_share", share)] {
+                      ("pond_wetness_share", share), ("pond_density_area_m2", density)] {
         assert!(matches!(crate::hydrology::bake(&world(), &p), Err(HydroError::Params(_))),
                 "{name} outside its floor is refused");
     }
@@ -1427,6 +1437,161 @@ fn refinement_adds_no_crossings_at_1m() {
         assert_eq!(refined.stats.crossings_coarse as usize, before);
         assert_eq!(refined.stats.crossings_left as usize, after);
     }
+}
+
+/// Where a reach's coarse points sit in its shipped line. Ruling R-1 keeps them exactly, so they
+/// are found by position, in order. A line trimmed at a mouth stops early, so this can be shorter
+/// than `coarse`.
+fn coarse_positions(coarse: &[crate::hydrology::ReachPoint], line: &[crate::hydrology::ReachPoint]) -> Vec<usize> {
+    let mut at: Vec<usize> = Vec::with_capacity(coarse.len());
+    for (j, p) in line.iter().enumerate() {
+        if at.len() < coarse.len()
+            && p.lat_deg == coarse[at.len()].lat_deg
+            && p.lon_deg == coarse[at.len()].lon_deg
+        {
+            at.push(j);
+        }
+    }
+    at
+}
+
+/// Which coarse segment the polyline edge leaving `index` belongs to: the last coarse point at or
+/// before it. `assemble` gives a coarse point the segment it *starts*, and the reach's final
+/// coarse point starts none of its own, so it takes the one that ends there. The bound is
+/// `coarse_len`, not `positions.len()`: a line trimmed at a mouth is missing its far coarse
+/// points, and clamping on what is present would put the mouth's own segment back at 0.
+fn segment_at(positions: &[usize], coarse_len: usize, index: usize) -> usize {
+    let mut s = 0usize;
+    for (k, &pos) in positions.iter().enumerate() {
+        if pos <= index {
+            s = k;
+        }
+    }
+    let last = coarse_len.saturating_sub(2);
+    if s > last { last } else { s }
+}
+
+/// How far `point` stands off the straight line from `a` to `b`, in metres, on a tangent plane at
+/// `a`: the sign-free `lateral_m` the tracer works in.
+fn off_chord_m(a: &crate::hydrology::ReachPoint, b: &crate::hydrology::ReachPoint,
+               point: &crate::hydrology::ReachPoint, radius_m: f64) -> f64 {
+    let frame = crate::tangent::TangentFrame::at(&SpherePoint::from_latlon(a.lat_deg, a.lon_deg), radius_m);
+    let (bx, by) = frame.sphere_to_local(&SpherePoint::from_latlon(b.lat_deg, b.lon_deg));
+    let len = crate::detmath::hypot(bx, by);
+    let (ux, uy) = (bx / len, by / len);
+    let (px, py) = frame.sphere_to_local(&SpherePoint::from_latlon(point.lat_deg, point.lon_deg));
+    let off = px * -uy + py * ux;
+    if off < 0.0 { -off } else { off }
+}
+
+/// Ruling S-14's **order**, pinned by a test that runs.
+///
+/// `refinement_adds_no_crossings` above compares an outcome, and Task 7 measured that at 200,000
+/// nodes that outcome reads 8 against 9 under the old, wrong order too -- so it cannot tell the
+/// two pipelines apart. The one that can, `refinement_adds_no_crossings_at_1m`, is `#[ignore]`d
+/// for its cost, which left the branch's headline property with no gate that runs. This is that
+/// gate, and it costs one 12,000-node bake.
+///
+/// It asserts the one thing that is true only of the new order: a segment the pass made yield
+/// **ships** on its chord. Ruling S-3 sets every interior station's lateral to 0 and Ruling S-4a
+/// keeps the meander off it afterwards, so in `record.reaches` -- after `ship`'s meander and its
+/// Douglas-Peucker -- that segment's interior points are still on the straight line between its
+/// two coarse endpoints. Move the pass back before the meander and the same segment is meandered
+/// *after* it yields, by up to `meander_amplitude_widths` channel widths, and this fails.
+///
+/// The yielding segments are re-derived here rather than read out of `refine`, which exposes no
+/// such thing: the first round's lines are `refine_reach` plus `simplify`, which is exactly what
+/// `ship` is with nothing yielded yet, and Ruling S-3's smaller-flow rule picks the yielder off
+/// their crossings. The nine it names on this population are the nine `refine`'s own first round
+/// straightens.
+///
+/// **Two meander params are widened for this population, and they are the discriminator.**
+/// `earth_like`'s meander needs `meander_wavelength_widths * width_m >= 4 * refine_step_m`, which
+/// at 11 widths and a 1,500 m step means a channel over about 545 m wide, and a bed slope under
+/// 0.002. Nothing that yields on a 12,000-node world is a river that large, so under the old
+/// order the meander declined to move the yielded segments at all and this test read green on
+/// both pipelines -- measured, not assumed. At 2,000 widths and no slope gate the meander bites
+/// on the streams that do yield, and the old order moves them 3.57 m off their chords against a
+/// 1 mm bar. Nothing else about the population changes: the same trace, the same crossings, the
+/// same Ruling S-3 decision.
+#[test]
+fn a_yielded_segment_ships_on_its_chord() {
+    let surface = world();
+    let mut p = junction_params();
+    p.meander_wavelength_widths = 2_000.0;
+    p.meander_max_slope = 1.0;
+    let p = p;
+    let stages = bake_stages(&surface, &p).expect("stages");
+    let coarse = record_of(&stages, &p);
+    let height = |q: &SpherePoint| surface.structural_m(q);
+    let ground = crate::hydrology::refine::Ground::for_surface(&surface, &height, &p);
+
+    // The pass's first round, reproduced: nothing has yielded, so every segment is traced and
+    // meandered, assembled and simplified.
+    let first_pass: Vec<Vec<crate::hydrology::ReachPoint>> = coarse.reaches.iter().map(|r| {
+        let shore = crate::hydrology::refine::terminal_level(r, &coarse.bodies);
+        let refined = crate::hydrology::refine::refine_reach(r, shore, &ground, &p);
+        crate::hydrology::refine::simplify(&refined.points, &refined.protected, surface.radius_m, &p)
+    }).collect();
+    let positions: Vec<Vec<usize>> = coarse.reaches.iter().zip(&first_pass)
+        .map(|(r, line)| coarse_positions(&r.points, line)).collect();
+    let downstream: Vec<Downstream> = coarse.reaches.iter().map(|r| r.downstream).collect();
+    let found = crate::hydrology::refine::crossings(&first_pass, &downstream, surface.radius_m);
+    assert!(!found.is_empty(),
+            "junction_params (meander widened): the first round must cross somewhere, or the pass never yields and \
+             this test asserts nothing");
+
+    // Ruling S-3 on those lines: the smaller flow at the crossing yields. `reach_a` is the
+    // smaller id, so it also takes the tie.
+    let mut yielders: Vec<(usize, usize)> = Vec::with_capacity(found.len());
+    for c in &found {
+        let (ra, rb) = (c.reach_a as usize, c.reach_b as usize); // cast-ok: a reach index, bounded by the record's reach count
+        let flow_a = first_pass[ra][c.index_a].flow_m2;
+        let flow_b = first_pass[rb][c.index_b].flow_m2;
+        yielders.push(if flow_b < flow_a {
+            (rb, segment_at(&positions[rb], coarse.reaches[rb].points.len(), c.index_b))
+        } else {
+            (ra, segment_at(&positions[ra], coarse.reaches[ra].points.len(), c.index_a))
+        });
+    }
+    yielders.sort_unstable();
+    yielders.dedup();
+
+    let record = crate::hydrology::bake(&surface, &p).expect("bake");
+    let mut checked = 0usize;
+    let mut worst = 0.0f64;
+    for (r, s) in &yielders {
+        let (r, s) = (*r, *s);
+        assert_eq!(record.reaches[r].id, coarse.reaches[r].id, "the bake kept reach order");
+        let coarse_points = &coarse.reaches[r].points;
+        let line = &record.reaches[r].points;
+        let at = coarse_positions(coarse_points, line);
+        if at.len() < s + 2 {
+            // The shipped line stops at a mouth before this segment's far end; there is nothing
+            // between two coarse points to measure.
+            continue;
+        }
+        let (a, b) = (&coarse_points[s], &coarse_points[s + 1]);
+        for i in at[s] + 1..at[s + 1] {
+            let off = off_chord_m(a, b, &line[i], surface.radius_m);
+            if off > worst {
+                worst = off;
+            }
+            // A straight trace puts the station at lateral 0 exactly; all that is left is the
+            // round trip through the tangent frame, measured at 1.3e-9 m. The old order's
+            // meander on the same segments measured 3.57 m.
+            assert!(off < 1.0e-3,
+                    "reach {} segment {s} yielded, yet its shipped point {i} stands {off} m off \
+                     its chord: the crossing pass is not running after the meander (Ruling S-14)",
+                    coarse.reaches[r].id);
+            checked += 1;
+        }
+    }
+    eprintln!("junction_params (meander widened): {} first-round crossings, {} yielding segments, {checked} shipped \
+               interior points, worst {worst} m off chord", found.len(), yielders.len());
+    assert!(checked > 0,
+            "no yielding segment kept an interior point in the shipped record: this test asserted \
+             nothing");
 }
 
 /// Spec §6.6 on a real bake: every pond obeys its own keep rule, sits on its own ground, and

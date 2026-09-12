@@ -655,8 +655,17 @@ fn ring_local(ring: &[(f64, f64)], radius_m: f64, at: &SpherePoint) -> Vec<(f64,
         .collect()
 }
 
-/// Does `ring` cross itself anywhere? A closed ring with the implicit closure of [`outline`], so
-/// segment `i` runs from `ring[i]` to `ring[(i + 1) % len]`.
+/// Does `ring` cross itself **transversally** anywhere? A closed ring with the implicit closure of
+/// [`outline`], so segment `i` runs from `ring[i]` to `ring[(i + 1) % len]`.
+///
+/// **"Transversally" is the whole of the promise.** Two non-adjacent segments fail this only when
+/// each has an endpoint strictly on either side of the other -- the sign tests below are all
+/// strict, and a zero is read as a touch. A repeated vertex is caught separately, as an exact
+/// equality. Everything else degenerate passes: a vertex lying *on* another segment's interior,
+/// two collinear segments overlapping along a stretch, a segment grazing a vertex. That is the
+/// same convention `refine::segments_cross` uses for reaches, and it is enough for the property
+/// this is here to protect -- a simplified ring that folds through a facing wall -- but it is not
+/// "the ring is a simple closed curve" in the topological sense, and a caller must not read it so.
 ///
 /// **This exists because simplification can break it.** [`outline`]'s walk is simple by
 /// construction -- it is the boundary of a set of cells -- but the Douglas–Peucker that follows

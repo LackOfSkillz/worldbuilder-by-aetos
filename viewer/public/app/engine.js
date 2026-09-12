@@ -778,6 +778,11 @@ export class Engine {
   /// same plan, still schema 5) are the fine pond search's two counts, `pondsFound` and
   /// `pondsKept`, then its seven params (`pondCellM`, `pondSearchRadiusM`, `pondKeepDepthM`,
   /// `pondKeepAreaM2`, `pondWetnessShare`, `pondMaxSlope`, `pondDensityAreaM2`).
+  /// **`pondsFound` counts hollows in the corridors the search sampled, not in every corridor.**
+  /// Ruling S-12 skips a coarse segment whose midpoint is drier than the wetness floor or inside
+  /// a coarse body before its corridor is sampled at all, so those hollows are never found and
+  /// never counted -- a 65% step down from the old meaning, measured in Task 5. A consumer that
+  /// reads it as "every hollow the world has near a river" will read it 3x too small.
   ///
   /// Of the schema 4 words this returns ONLY 32-34, the three capped-basin counts. The
   /// refinement params echo in words 35-42 is in the record and read by `water-preview.js`'s

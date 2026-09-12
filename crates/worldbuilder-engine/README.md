@@ -5550,3 +5550,90 @@ at the 1.5 km corridor that ships** — in `mod.rs`, here, and in the verificati
 
 The reproduction commands are the ones above, with `--expect-passed <784|784|786|890|892>` and
 `--expect-ignored 7`.
+
+## 2026-09-12, water 1b-3 whole-branch review fix wave: an order pin, a params floor, and the pins with them
+
+The whole-branch review ran 34 real bakes and found **no correctness defect in the shipped
+geometry**. What it found was three gaps in what the branch *pins* and *says*, and five smaller
+things. Two of the fixes are behaviour or test-count changes; the rest is prose.
+
+**`bake_tests::a_yielded_segment_ships_on_its_chord` — the order pin Ruling S-14 never had.**
+`refinement_adds_no_crossings` compares an outcome, and Task 7 measured that at 200,000 nodes that
+outcome reads 8 against 9 **under the old, wrong pipeline order too**, so it cannot tell the two
+apart; the one that can, `refinement_adds_no_crossings_at_1m`, is `#[ignore]`d for its cost. The
+branch's headline property therefore shipped with no gate that runs. The new test asserts the one
+thing true only of the new order: a segment the pass made yield is still on its chord in
+`record.reaches`, i.e. *after* `ship`'s meander and Douglas–Peucker. It re-derives the yielding
+segments rather than reading them out of `refine` — the first round's lines are `refine_reach`
+plus `simplify`, which is exactly `ship` with nothing yielded yet — and the nine it names on the
+`junction_params` world are the nine `refine`'s own first round straightens.
+
+*Shown RED and GREEN.* With the pass moved back before the meander and the simplification (a
+temporary patch to `refine::refine`, reverted), it fails: `reach 2 segment 0 yielded, yet its
+shipped point 1 stands 3.5730507806474634 m off its chord`. On the shipped order it passes with
+**14 shipped interior points, worst 1.28e-9 m off chord**, against a 1 mm bar. Two meander params
+are widened for this population and **they are the discriminator**: `earth_like`'s meander needs a
+channel over about 545 m wide, and nothing that yields on a 12,000-node world is a river that
+large — measured, not assumed, because the first version of this test read green on both
+pipelines. One 12k bake, about 2 s in release.
+
+**`bake` refuses `pond_density_area_m2 < pond_cell_m²`.** Ruling S-8's cap is applied on a
+`BucketIndex` of `sqrt(pond_density_area_m2)`, and `bake` required only finite-positive: `1.0e4`
+asks for about **800 MB of buckets**, which the reviewer reproduced. `BucketIndex::new` clamps at
+4,096 rows by 8,192 columns **and says nothing**, so the request also silently realises a
+**4,886.50 m** cell — 23.88 km², 2,388 times the area asked for. RED first
+(`pond_params_below_their_floors_are_refused` gained a `pond_density_area_m2` row and failed with
+*"pond_density_area_m2 outside its floor is refused"*), then GREEN. `buckets` gained
+`finest_cell_m(radius_m)` and `BucketIndex::cell_m()` so a caller whose cell *is* the thing it
+means can tell.
+
+**The Task 5 density-cap figures, corrected.** `pond_search_survey`'s "uncapped" baseline was that
+same `1.0e4`, so every *"the cap removes N%"* figure was measured against a 23.88 km² baseline,
+not against no cap. The numbers themselves stand — the clamp lands on **exactly** the cell
+`finest_cell_m` names, which the new `buckets` test asserts as an equality, so the honest request
+realises the identical grid — but the reading changes: **8–12% is a lower bound on what the cap
+removes, not the figure.** Re-run at Task 5's own shipped values with the explicit baseline, as
+found/kept/baseline/removes: 41/14/14/**0**; 644/286/314/**28 (8.9%)**; 79/33/34/**1 (2.9%)**;
+1,401/603/683/**80 (11.7%)**; 2,783/1,249/1,402/**153 (10.9%)** — the *kept* and *removes* columns
+reproduce Task 5's table, and the survey now asserts its own baseline is realised.
+
+**Engine, +2 uniformly** — re-derived per configuration through `cargo test -p worldbuilder-engine
+<cfg> -- --list` (and `--ignored`) and `assert_counts.py cargo-list`; all five printed `count OK`:
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 793 | 7 | **786** (was 784) |
+| default | 793 | 7 | **786** (was 784) |
+| `--features python` | 795 | 7 | **788** (was 786) |
+| `--features wasm` | 899 | 7 | **892** (was 890) |
+| `--features python,wasm` | 901 | 7 | **894** (was 892) |
+
+The suite was run: 767 + 4 + 9 + 6 = **786 passed, 0 failed, 7 ignored** (769 + 4 + 9 + 6 = 788
+with `python`; + 106 `wasm_exports` for the wasm rows). `no_std_math` 6/6. The drain sweep passed
+in 66.91 s. The **viewer's 337** are unmoved.
+
+**Parity — unmoved, and not re-derived, with the reason stated:** a test changes no record, and
+this wave's one behaviour change is a *rejected-params* floor that no shipped population comes
+near (`earth_like` ships 1.6e10 against a 62,500 m² floor). The wasm's 12-word param buffer sets
+no pond param at all.
+
+**Wasm rebuilt:** 427,770 bytes; artifact-sha256
+`a8f3114803c632cb4efc0bbb40a1e1909b764bfad7eb384cbe56a45b5250baf6`; source-fingerprint
+`972836ed8ba672668fab057293b528301f522c907562bb5a138992bccf601792` (58 inputs). `check:wasm`
+reports it matches its manifest and the source that is here now.
+
+**The prose, corrected in the same wave.** Spec §6.6 now states both departures where it states
+the parameters — the 3 km corridor (`earth_like` ships 1,500 m, Ruling S-17) and the 500 km²
+density cap (`earth_like` ships 1.6e10 m², 16,000 km², Ruling S-16) — each pointing at the
+verification report's departures section; and §6.6's Ruling S-12 cost sentence now says the
+pre-check answers **both** the wetness and the coarse-body question from one midpoint, so its
+granularity is a whole coarse segment. `tests/wasm_exports.rs` asserted `len >= 45` with a comment
+naming schema 4; the header has been **54** words since Task 5, so the assertion pinned nothing —
+and it is the only header assertion that crosses the `extern "C"` boundary, which is why the
+constraints file now lists **four** record-layout twins, not three. `water-preview.js` and
+`engine.js` now say that `ponds_found` counts hollows in the corridors the search sampled, a 65%
+step under Ruling S-12. `ponds::ring_is_simple`'s doc now says **transversal**: a vertex on a
+segment, or a collinear overlap, passes it.
+
+The reproduction commands are the ones above, with `--expect-passed <786|786|788|892|894>` and
+`--expect-ignored 7`.

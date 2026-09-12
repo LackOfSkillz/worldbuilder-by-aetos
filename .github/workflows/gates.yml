@@ -1205,25 +1205,46 @@ jobs:
           # configuration through `cargo test -p worldbuilder-engine <cfg> -- --list` (and
           # `--ignored`) and `assert_counts.py cargo-list` AFTER the last source edit; all five
           # printed `count OK`.
+          # 2026-09-12, water 1b-3 final fix wave: 784/784/786/890/892 ->
+          # 786/786/788/892/894, 7 ignored unchanged, `listed` 791/791/793/897/899 ->
+          # 793/793/795/899/901. **+2 uniformly, two new tests**:
+          # `bake_tests::a_yielded_segment_ships_on_its_chord`, which pins the ORDER of Ruling
+          # S-14's crossing pass -- a segment the pass made yield must still be on its chord in
+          # `record.reaches`, after `ship`'s meander and Douglas-Peucker -- because the property
+          # test that compares outcomes (`refinement_adds_no_crossings`) reads 8 against 9 at
+          # 200,000 nodes under the OLD order too and so cannot discriminate, and the one that can
+          # is `#[ignore]`d; and
+          # `buckets::tests::the_realised_cell_matches_the_request_only_at_or_above_the_finest`,
+          # which pins that `BucketIndex::new`'s silent 4,096 x 8,192 clamp lands on exactly
+          # `finest_cell_m`, the equality a correction to Task 5's density-cap baseline rests on.
+          # No `tests/wasm_exports.rs` test was added -- its one edit is the header assertion,
+          # `len >= 45` -> `len >= 54` (the header has been 54 words since Task 5, so the old
+          # number pinned nothing) -- so the wasm rows move by the same +2. The parity pins below
+          # did NOT move: a test changes no record, and the wave's one behaviour change is a
+          # rejected-params floor (`pond_density_area_m2 >= pond_cell_m^2`) that no shipped
+          # population comes near. Re-derived per configuration through `cargo test -p
+          # worldbuilder-engine <cfg> -- --list` (and `--ignored`) and `assert_counts.py
+          # cargo-list` AFTER the last source edit; all five printed `count OK`. The viewer stays
+          # at 337 passing.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 784
+            expect: 786
             expect_ignored: 7
           - name: default
             features: ""
-            expect: 784
+            expect: 786
             expect_ignored: 7
           - name: python
             features: "--features python"
-            expect: 786
+            expect: 788
             expect_ignored: 7
           - name: wasm
             features: "--features wasm"
-            expect: 890
+            expect: 892
             expect_ignored: 7
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 892
+            expect: 894
             expect_ignored: 7
     steps:
       - uses: actions/checkout@v4

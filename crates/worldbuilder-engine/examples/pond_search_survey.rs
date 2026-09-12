@@ -21,7 +21,7 @@
 //! pinned survey stops being a measurement.
 
 use worldbuilder_engine::hydrology::refine::Ground;
-use worldbuilder_engine::hydrology::{self, ponds, HydroParams};
+use worldbuilder_engine::hydrology::{self, buckets, ponds, HydroParams};
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::Surface;
 use worldbuilder_engine::tectonics::TectonicParams;
@@ -107,7 +107,8 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
     kept_areas.sort_by(|a, b| a.total_cmp(b));
     let total = depths.len() as u64;
 
-    println!("{label}: nodes {}, reaches {}, strips {strips_made} (skipped {over} over budget,               {degen} degenerate, {gated} gated), searched {:.0} km2",
+    println!("{label}: nodes {}, reaches {}, strips {strips_made} (skipped {over} over budget, \
+              {degen} degenerate, {gated} gated), searched {:.0} km2",
              p.total_nodes, record.reaches.len(), searched_m2 / 1.0e6);
     if total == 0 {
         println!("{label}: NO CANDIDATES");
@@ -135,17 +136,36 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
              p.pond_density_area_m2 / 1.0e6, searched_m2 / p.pond_density_area_m2);
 }
 
-/// What Task 5's `ponds::search` actually put in the record, and what Ruling S-8's density cap
-/// cost: the same world baked twice, once at the caller's cap and once with the cap effectively
-/// removed (one cell per 10,000 m², finer than the search's own 250 m cell, so no two candidates
-/// can share one). The caller's cap is `earth_like`'s, which plan 1b-3's Task 7 size gate raised
-/// from spec §6.6's 500 km² to 4,000 km²; the printed line names whatever it is.
+/// What `ponds::search` actually put in the record, and what Ruling S-8's density cap cost: the
+/// same world baked twice, once at the caller's cap and once at the loosest baseline the cap's
+/// own grid can represent. The caller's cap is `earth_like`'s, which plan 1b-3's Task 7 size gate
+/// raised from spec §6.6's 500 km² to 16,000 km² (Ruling S-16); the printed line names whatever
+/// it is.
+///
+/// **The baseline is `buckets::finest_cell_m` squared, and that is a correction.** Task 5's
+/// version asked for `1.0e4` m² -- a 100 m cell, finer than the search's own 250 m -- and called
+/// it uncapped. It was not: `BucketIndex::new` clamps at 4,096 rows by 8,192 columns and says
+/// nothing, so the realised cell was **4,886.50 m — 23.88 km², not 0.01**.
+///
+/// What this changes is the *label*, not the numbers. The clamp lands on exactly the cell
+/// `finest_cell_m` names -- `buckets`'s own test asserts that equality exactly, not to a
+/// tolerance -- so every figure the old baseline produced stands as a measurement against a
+/// 23.88 km² baseline. What it is not is a measurement against no cap at all: this index cannot
+/// represent one, so "the cap removes N" is a **lower bound**, and saying so is the whole of the
+/// fix. The assertion below is the part that would have caught the mislabelling; `bake` now
+/// refuses a request under one search cell outright.
 fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
     let started = std::time::Instant::now();
     let record = hydrology::bake(surface, p).expect("bake");
     let bake_s = started.elapsed().as_secs_f64();
     let mut uncapped = p.clone();
-    uncapped.pond_density_area_m2 = 1.0e4;
+    let baseline_cell_m = buckets::finest_cell_m(surface.radius_m);
+    uncapped.pond_density_area_m2 = baseline_cell_m * baseline_cell_m;
+    let realised = buckets::BucketIndex::new(surface.radius_m, baseline_cell_m).cell_m();
+    let off = if realised > baseline_cell_m { realised - baseline_cell_m } else { baseline_cell_m - realised };
+    assert!(off < baseline_cell_m * 1.0e-3,
+            "{label}: the baseline asked for a {baseline_cell_m} m cell and the index realised \
+             {realised} m -- it is not a baseline, it is another cap");
     let without = hydrology::bake(surface, &uncapped).expect("bake");
     let kept = record.stats.ponds_kept as usize;
     let ponds = &record.bodies[record.bodies.len() - kept..];
@@ -155,9 +175,11 @@ fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
     let mut without_ponds = record.clone();
     without_ponds.bodies.truncate(record.bodies.len() - kept);
     let bare = hydrology::record::encode(&without_ponds).len();
-    println!("{label}: found {} kept {kept}; uncapped {} -- the {:.0} km2 cap removes {}; \
-              coarse bodies {}; record {words} words ({} of them ponds, {} bytes);               bake {bake_s:.2} s",
-             record.stats.ponds_found, without.stats.ponds_kept,
+    println!("{label}: found {} kept {kept}; baseline ({:.1} km2 cell) {} -- the {:.0} km2 cap \
+              removes {}; coarse bodies {}; record {words} words ({} of them ponds, {} bytes); \
+              bake {bake_s:.2} s",
+             record.stats.ponds_found,
+             uncapped.pond_density_area_m2 / 1.0e6, without.stats.ponds_kept,
              p.pond_density_area_m2 / 1.0e6,
              without.stats.ponds_kept as usize - kept, record.bodies.len() - kept,
              words - bare, (words - bare) * 8);

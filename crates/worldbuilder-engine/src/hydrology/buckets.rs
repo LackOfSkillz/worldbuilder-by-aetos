@@ -21,7 +21,27 @@ pub struct BucketIndex {
     buckets: Vec<Vec<u32>>,
 }
 
+/// The finest cell a `BucketIndex` can actually realise on a sphere of `radius_m`.
+///
+/// [`BucketIndex::new`] clamps at `MAX_ROWS` rows and `MAX_COLUMNS` columns **and says nothing**,
+/// so a caller that asks for a finer cell than this silently gets a coarser index than it asked
+/// for. That is harmless for a caller that only wants "what is near here" -- the query still
+/// finds everything, it just looks at more of it -- and wrong for a caller whose cell *is* the
+/// thing it means, such as Ruling S-8's density cap or a survey baseline meant to be no cap at
+/// all. On Earth's radius it is 4,886.50 m, so 23.88 km² per cell.
+pub fn finest_cell_m(radius_m: f64) -> f64 {
+    let by_rows = core::f64::consts::PI * radius_m / MAX_ROWS as f64;
+    let by_columns = 2.0 * core::f64::consts::PI * radius_m / MAX_COLUMNS as f64;
+    if by_columns > by_rows { by_columns } else { by_rows }
+}
+
 impl BucketIndex {
+    /// The cell this index **realised**, in metres, which is the cell it was asked for only when
+    /// that was at or above [`finest_cell_m`]. See there for why the difference matters.
+    pub fn cell_m(&self) -> f64 {
+        core::f64::consts::PI * self.radius_m / self.rows as f64
+    }
+
     pub fn new(radius_m: f64, cell_m: f64) -> Self {
         let span = core::f64::consts::PI * radius_m / cell_m;
         let mut rows = if span >= 1.0 { m::floor(span) as usize } else { 1 };
@@ -169,6 +189,26 @@ mod tests {
     use crate::sphere::SpherePoint;
 
     const R: f64 = 6_371_000.0;
+
+    /// `new`'s clamp is silent, so the only way a caller can tell it happened is to compare what
+    /// it asked for against [`BucketIndex::cell_m`]. At and above [`finest_cell_m`] the two agree;
+    /// below it, they do not, however small the request gets.
+    #[test]
+    fn the_realised_cell_matches_the_request_only_at_or_above_the_finest() {
+        let finest = finest_cell_m(R);
+        assert!(finest > 4_886.0 && finest < 4_887.0, "about 4,886.5 m on Earth's radius: {finest}");
+        for &asked in &[finest, 10_000.0, 100_000.0] {
+            let got = BucketIndex::new(R, asked).cell_m();
+            let off = if got > asked { got - asked } else { asked - got };
+            assert!(off < asked * 1.0e-3, "asked {asked} m, realised {got} m");
+        }
+        // The survey's old baseline, and the floor `bake` now refuses: 100 m asked, 23.88 km^2 of
+        // cell delivered. Exact equality, not a tolerance, because a correction rests on it --
+        // `pond_search_survey`'s old `1.0e4` baseline realised the very grid the honest baseline
+        // asks for, so the figures it produced stand and only their label was wrong.
+        assert_eq!(BucketIndex::new(R, 100.0).cell_m(), BucketIndex::new(R, finest).cell_m(),
+                   "a request below the finest is clamped to exactly the finest, silently");
+    }
 
     fn brute_nearest(p: &SpherePoint, positions: &[SpherePoint]) -> u32 {
         let mut best = 0u32;

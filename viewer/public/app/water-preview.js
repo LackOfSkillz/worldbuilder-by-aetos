@@ -210,10 +210,18 @@ export function decodeHydro(words) {
     crossingsCoarse: cursor.u32(),
     crossingsLeft: cursor.u32(),
     // Task 5 of the same plan, still SCHEMA 5 (words 45-53): the fine pond search's two counts
-    // and the seven params it ran with. `pondsFound` is every hollow that passed the pond keep
-    // rule; `pondsKept` is what reached `bodies`, after the side-clip, wetness, slope, coarse-lake
-    // and density rules. The kept ones are the LAST `pondsKept` entries of `bodies`, appended
-    // after every coarse body so the coarse ids never move.
+    // and the seven params it ran with.
+    //
+    // `pondsFound` is every hollow that passed the pond keep rule **in the corridors the search
+    // actually sampled**. Under Ruling S-12 a coarse segment whose midpoint is drier than the
+    // wetness floor, or inside a coarse body, is skipped before its corridor is sampled at all,
+    // so the hollows along it are never found and never counted -- a 65% step down from the old
+    // meaning (every corridor), measured in Task 5. It is a change of meaning, not of terrain:
+    // the denominator is the corridors that passed, not the world.
+    //
+    // `pondsKept` is what reached `bodies`, after the side-clip, wetness, slope, coarse-lake and
+    // density rules. The kept ones are the LAST `pondsKept` entries of `bodies`, appended after
+    // every coarse body so the coarse ids never move.
     pondsFound: cursor.u32(),
     pondsKept: cursor.u32(),
     pondCellM: cursor.word(),
