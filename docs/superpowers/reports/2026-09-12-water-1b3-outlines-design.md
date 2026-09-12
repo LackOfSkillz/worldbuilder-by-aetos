@@ -18,11 +18,24 @@ Every figure below names its population, its method with parameters, and its hos
 
 **Host.** This developer machine, `cargo run --release --no-default-features`,
 `cargo 1.98.0 (797e8a9bc 2026-08-05)`, `rustc 1.98.0 (88d9e12ae 2026-08-18)`, from
-`crates/worldbuilder-engine` on branch `water-shores` at `e37214a`.
+`crates/worldbuilder-engine` on branch `water-shores`.
 
-**Instrument.** `src/bin/shore_probe.rs`, written for this task and deleted again in Step 5 (the
-brief's instruction — its numbers live here). It calls `hydrology::bake_stages(&surface,
-&params)` and reads its output; it re-implements no stage and changes no engine behaviour.
+**Which run each figure comes from.** **Every table, totals block and ring-walk block in this
+note comes from one run of one build**: the probe as it stands in the tree at the commit that
+carries this note, built once with `cargo build --release --no-default-features --bin
+shore_probe`, then invoked once per world with no rebuild in between. An earlier draft of this
+note carried an `owner` per-body table that did not sum to its own totals block; that table was
+not produced by any run and has been replaced with the real output (Task 1 review, critical 1).
+The reconciliation is now checkable by hand and holds exactly: summing the 65 `owner` rows gives
+39,469 members, 1,945 shore members, 2,620 collar nodes, 5,608 member-collar edges, 76 of them
+with the collar end not above the level, and 2,260 with `f > 0.5` — each equal to its totals-block
+figure. The other three worlds reconcile the same way.
+
+**Instrument.** `crates/worldbuilder-engine/src/bin/shore_probe.rs`. It calls
+`hydrology::bake_stages(&surface, &params)` and reads its output; it re-implements no stage and
+changes no engine behaviour. **It stays in the tree** (Ruling T1-1, from this task's review): the
+plan's Step 5 delete is overridden, because these numbers must stay re-runnable until plan 1b-4
+implements the extent.
 
 **Worlds.** Each is `Surface::new(seed, radius_m, plate_count, land_fraction, None, None,
 tectonics)`, with `tectonics = Some(TectonicParams::ranges())` where the row says `ranges`.
@@ -45,7 +58,7 @@ painted features and one forced outlet**; this probe bakes the same planet param
 `FeatureInput = None` and an empty `forced_outlets`, because the probe is native and the painted
 features live in the studio's worldfile, not in `Surface::new`'s arguments. The consequence is
 visible in the counts: **65 kept bodies here against the 348 that plan 1b-2 measured on the
-painted bake.** Where that matters — the budget arithmetic — §5 scales the figure up explicitly
+painted bake.** Where that matters — the budget arithmetic — §5.2 scales the figure up explicitly
 and says how. The one owner-world figure that does *not* need scaling is the great lake's area:
 plan 1b-2 measured it at 41.33M km² (body 63, fresh, forced, enclosed), and this probe's
 unpainted bake finds the same lake at **41.38M km² (body 2, enclosed, level 0 m)** — a 0.1%
@@ -57,6 +70,9 @@ it.
 
 - A **body** is a hollow whose `fate == Fate::Keep`, numbered 0.. in hollow order — exactly how
   `record_of` numbers `Body::id`.
+- **`area_km2`** is the hollow's own `Hollow::area_m2` divided by 1e6 — the flooded area
+  `find_hollows` computed by summing `LandGraph::area_m2` over the hollow's members. This probe
+  re-derives nothing: it is the same number `record_of` puts on the wire as `Body::area_m2`.
 - A body's **members** are the nodes `i` with `routing.lake_of[i]` equal to that hollow's index
   (`routing::NO_LAKE` means none).
 - Its **collar** is the distinct non-member nodes adjacent to a member through
@@ -64,19 +80,29 @@ it.
   no triangulation and no face to walk; that is the whole reason this task exists.
 - A **shore member** is a member with at least one collar neighbour. An **interior member** is one
   whose every graph neighbour is also a member.
+- A body's **centroid**, which every tangent projection and both edge walks are built on, is the
+  **area-weighted centroid of its members**: the sum of each member's unit position vector scaled
+  by that member's `LandGraph::area_m2`, renormalised back onto the sphere. Collar nodes do not
+  enter it. A body whose member vectors cancel to zero falls back to its first member's position —
+  a fixed answer, not a failure.
 - `collar_span_km` is the greatest great-circle distance between any two collar nodes; at most
   2,000 collar nodes, taken evenly by index, enter the pairwise search. **No body on any of the
   four worlds exceeded 2,000 collar nodes, so no span on any table below was sampled.**
 - `perim_graph_km` is the sum over collar nodes of the mean great-circle distance from that collar
   node to its own adjacent members — a graph-resolution stand-in for the shoreline.
   `perim_circle_km` is `2 * sqrt(pi * area)`, a plainly separate second estimate, not a correction
-  of the first. `pts250_*` is that perimeter in km times 4.
+  of the first. `pts250_*` is that perimeter in km times 4, rounded once to a whole number before
+  words and bytes are derived from it.
 - `mc_edges` is the body's member-collar graph edges. `collar_not_above` counts those whose collar
-  end is **at or below** the body's level. Over the rest,
-  `f = (level_m - h_member) / (h_collar - h_member)` is the fraction of the way from the member to
-  the collar at which the level contour crosses that edge, on the `LandGraph` landform heights
-  (`Surface::structural_m`, linear along the edge); `mean_f` is the body's mean and `f>0.5` the
-  count past halfway.
+  end is **at or below** the body's level; §5.4 breaks them down. **Usable edges** are the rest.
+  Over the usable ones, `f = (level_m - h_member) / (h_collar - h_member)` is the fraction of the
+  way from the member to the collar at which the level contour crosses that edge, on the
+  `LandGraph` landform heights (`Surface::structural_m`, linear along the edge); a row's `mean_f`
+  is that body's mean over its own usable edges and `f>0.5` its past-halfway count. **Every
+  `f > 0.5` percentage in this note has usable edges as its denominator**, in the totals blocks and
+  in §5 alike. The totals block's mean `f` is the mean **over usable edges** — each body's mean
+  weighted by its usable-edge count — not an unweighted mean of per-body means, which would let the
+  long tail of one- and two-member hollows outvote the great lake.
 - A record outline point costs **2 words** (`record.rs` writes `outline_len`, then `lat, lon` per
   point) and a word is 8 bytes.
 
@@ -89,70 +115,70 @@ it.
 ```
 id  hollow  area_km2  level_m  encl  members  shore_members  collar  collar_parts/largest  collar_span_km  perim_graph_km  perim_circle_km  pts250_graph  pts250_circle  mc_edges  collar_not_above  mean_f  f>0.5
 0  0  149077.575  389.70  n  137  54  68  1/68  642.138  3103.458  1368.709  12414  5475  152  2  0.512  77
-1  3  63707.776  148.62  n  59  31  39  1/39  411.956  1749.456  894.749  6998  3579  85  0  0.428  36
+1  3  63707.776  148.62  n  59  30  39  1/39  411.956  1749.456  894.749  6998  3579  92  3  0.459  39
 2  4  41382726.720  0.00  y  37844  1178  1183  1/1183  10809.413  52068.423  22804.181  208274  91217  2804  0  0.474  1302
-3  5  156712.206  517.17  n  143  55  67  1/67  736.196  2921.435  1403.319  11686  5613  156  1  0.502  76
-4  6  135184.016  500.26  n  124  53  67  1/67  717.090  2917.654  1303.370  11671  5213  153  2  0.436  62
-5  7  2333.310  629.83  n  2  2  10  1/10  127.082  420.830  171.234  1683  685  10  1  0.235  1
-6  8  5350.679  733.10  n  5  5  15  1/15  184.281  656.646  259.311  2627  1037  20  0  0.283  4
-7  9  20250.281  649.05  n  19  15  27  1/27  323.564  1160.190  504.599  4641  2018  44  0  0.328  15
-8  11  8757.185  850.44  n  8  8  19  1/19  243.744  830.129  331.803  3321  1327  27  0  0.318  8
-9  12  3193.512  885.68  n  3  3  12  1/12  164.848  526.632  200.324  2107  801  13  0  0.294  3
-10  14  15022.480  709.15  n  14  12  25  1/25  312.437  1082.128  434.554  4329  1738  38  0  0.311  11
-11  16  1108.464  1017.06  n  1  1  8  1/8  106.545  350.240  118.031  1401  472  8  0  0.181  0
-12  17  25661.253  437.60  n  24  19  34  1/34  407.898  1467.855  567.937  5871  2272  56  0  0.397  20
-13  18  4266.437  873.07  n  4  4  13  1/13  173.100  568.049  231.606  2272  926  17  0  0.240  2
-14  19  9905.281  753.13  n  9  9  20  1/20  256.399  874.298  352.827  3497  1411  30  0  0.290  8
-15  20  1121.239  1030.10  n  1  1  8  1/8  109.478  356.888  118.710  1428  475  8  0  0.216  0
-16  21  33395.836  333.16  n  31  22  40  1/40  452.216  1683.913  647.870  6736  2591  67  0  0.401  25
-17  25  2205.503  902.15  n  2  2  10  1/10  128.905  427.093  166.480  1708  666  10  0  0.253  1
-18  26  6491.320  822.36  n  6  6  16  1/16  200.373  704.588  285.567  2818  1142  22  0  0.316  6
-19  29  1094.373  1043.13  n  1  1  8  1/8  105.947  348.006  117.279  1392  469  8  0  0.190  0
-20  33  57217.874  268.77  n  53  30  38  1/38  400.196  1690.303  847.895  6761  3392  81  0  0.427  33
+3  5  156712.206  517.17  n  143  56  67  1/67  736.196  2921.435  1403.319  11686  5613  153  1  0.474  73
+4  6  135184.016  500.26  n  124  56  67  1/67  717.090  2917.654  1303.370  11671  5213  142  2  0.518  75
+5  7  2333.310  629.83  n  2  2  10  1/10  127.082  420.830  171.234  1683  685  14  1  0.116  1
+6  8  4572.785  737.99  n  4  4  14  1/14  176.417  582.510  239.715  2330  959  26  1  0.223  4
+7  12  4223.396  1204.66  n  4  4  14  1/14  184.257  597.051  230.375  2388  922  26  1  0.106  2
+8  14  2274.163  1260.69  n  2  2  10  1/10  129.450  421.458  169.050  1686  676  14  1  0.092  0
+9  16  2217.760  1254.80  n  2  2  10  1/10  124.976  410.730  166.941  1643  668  14  1  0.061  0
+10  18  2167.584  1242.38  n  2  2  10  1/10  123.155  397.532  165.041  1590  660  14  1  0.110  1
+11  19  4427.449  1235.79  n  4  4  14  1/14  174.037  601.025  235.875  2404  943  26  1  0.087  1
+12  20  136829.995  570.14  n  125  55  63  1/63  696.352  2733.328  1311.280  10933  5245  140  1  0.495  71
+13  22  4398.926  1117.91  n  4  4  14  1/14  178.283  597.015  235.114  2388  940  26  1  0.071  0
+14  23  995.788  1087.45  n  1  1  8  1/8  91.373  305.769  111.864  1223  447  8  1  0.175  1
+15  24  9903.774  1086.28  n  9  9  24  1/24  338.169  1035.691  352.781  4143  1411  56  1  0.172  1
+16  29  2169.043  918.89  n  2  2  10  1/10  123.674  427.389  165.097  1710  660  14  1  0.238  2
+17  34  5547.680  359.29  n  5  5  16  1/16  217.837  686.159  264.034  2745  1056  32  1  0.207  5
+18  35  2244.009  325.83  n  2  2  10  1/10  126.856  427.368  167.926  1709  672  14  1  0.185  2
+19  36  2178.597  254.07  n  2  2  10  1/10  132.755  434.985  165.460  1740  662  14  1  0.155  1
+20  37  27021.972  205.61  n  25  25  46  1/46  570.045  2017.223  582.725  8069  2331  110  4  0.415  38
 21  39  328578.058  226.92  n  302  102  114  1/114  1326.518  5077.773  2032.002  20311  8128  287  1  0.553  163
-22  41  2118.026  931.36  n  2  2  10  1/10  126.463  418.061  163.147  1672  653  10  0  0.221  1
-23  43  12470.269  742.32  n  12  11  23  1/23  292.011  1000.480  395.833  4002  1583  34  0  0.317  10
-24  45  1084.919  1057.87  n  1  1  8  1/8  105.489  346.500  116.771  1386  467  8  0  0.185  0
-25  47  4192.152  886.13  n  4  4  13  1/13  171.585  563.076  229.585  2252  918  17  0  0.244  2
-26  50  18930.108  678.79  n  18  14  26  1/26  318.199  1131.001  487.694  4524  1951  42  0  0.328  14
-27  52  7692.396  808.05  n  7  7  18  1/18  228.911  786.319  310.905  3145  1244  25  0  0.303  7
-28  54  2010.269  953.99  n  2  2  10  1/10  123.766  409.150  158.943  1637  636  10  0  0.211  1
-29  56  1058.483  1074.85  n  1  1  8  1/8  104.201  342.276  115.343  1369  461  8  0  0.176  0
-30  58  9223.230  784.31  n  9  9  20  1/20  253.279  863.660  340.398  3455  1362  30  0  0.271  7
-31  61  1046.100  1090.06  n  1  1  8  1/8  103.590  340.269  114.667  1361  459  8  0  0.171  0
-32  63  3663.940  912.75  n  4  4  13  1/13  169.129  554.417  214.585  2218  858  17  0  0.211  1
-33  65  1975.320  967.15  n  2  2  10  1/10  122.681  405.567  157.559  1622  630  10  0  0.203  1
-34  67  27600.869  423.87  n  26  20  35  1/35  418.437  1509.146  588.983  6037  2356  59  0  0.383  20
-35  70  1024.560  1102.35  n  1  1  8  1/8  102.520  336.752  113.481  1347  454  8  0  0.166  0
-36  72  6018.417  841.98  n  6  6  16  1/16  197.049  692.393  274.998  2770  1100  22  0  0.283  5
-37  74  1949.078  978.43  n  2  2  10  1/10  121.856  402.845  156.508  1611  626  10  0  0.198  1
-38  77  11396.318  760.19  n  11  10  22  1/22  281.396  963.856  378.421  3855  1514  32  0  0.294  9
-39  79  1005.312  1116.14  n  1  1  8  1/8  101.554  333.578  112.412  1334  450  8  0  0.161  0
-40  82  3345.062  931.79  n  3  3  12  1/12  166.925  537.075  205.043  2148  820  13  0  0.238  2
-41  84  1917.836  989.65  n  2  2  10  1/10  120.879  399.617  155.251  1598  621  10  0  0.192  1
-42  86  4993.512  865.98  n  5  5  15  1/15  185.940  644.598  250.503  2578  1002  20  0  0.253  3
-43  89  1889.472  999.79  n  2  2  10  1/10  119.982  396.653  154.098  1587  616  10  0  0.187  1
-44  91  8329.484  801.16  n  8  8  19  1/19  240.520  818.132  323.575  3273  1294  27  0  0.271  6
-45  93  1865.148  1008.43  n  2  2  10  1/10  119.207  394.094  153.102  1576  612  10  0  0.183  1
-46  95  1000.135  1123.55  n  1  1  8  1/8  101.292  332.716  112.122  1331  448  8  0  0.158  0
-47  97  2882.480  953.83  n  3  3  12  1/12  163.045  524.271  190.352  2097  761  13  0  0.207  1
-48  100  1840.279  1017.36  n  2  2  10  1/10  118.408  391.457  152.078  1566  608  10  0  0.178  1
-49  102  6893.905  827.20  n  7  7  18  1/18  225.043  772.827  294.399  3091  1178  25  0  0.256  5
-50  105  1817.936  1025.55  n  2  2  10  1/10  117.685  389.070  151.152  1556  605  10  0  0.174  1
-51  107  4498.234  879.86  n  5  5  15  1/15  183.470  636.043  237.762  2544  951  20  0  0.230  2
-52  110  1795.184  1034.03  n  2  2  10  1/10  116.945  386.628  150.204  1545  601  10  0  0.170  1
-53  112  1775.098  1041.66  n  2  2  10  1/10  116.288  384.459  149.362  1538  597  10  0  0.166  1
-54  115  5721.036  849.75  n  6  6  16  1/16  195.180  685.529  268.174  2742  1073  22  0  0.246  4
-55  117  1755.001  1049.44  n  2  2  10  1/10  115.628  382.281  148.514  1529  594  10  0  0.163  1
-56  120  3053.938  946.31  n  3  3  12  1/12  164.310  528.404  195.917  2114  784  13  0  0.198  1
-57  122  1737.290  1056.42  n  2  2  10  1/10  115.043  380.348  147.762  1521  591  10  0  0.159  1
-58  125  1719.109  1063.68  n  2  2  10  1/10  114.440  378.359  146.987  1513  588  10  0  0.156  1
-59  128  1702.404  1070.45  n  2  2  10  1/10  113.883  376.518  146.272  1506  585  10  0  0.153  1
-60  131  1685.024  1077.62  n  2  2  10  1/10  113.301  374.594  145.524  1498  582  10  0  0.150  1
-61  134  1669.303  1084.19  n  2  2  10  1/10  112.771  372.845  144.844  1491  579  10  0  0.147  1
-62  137  1652.902  1091.15  n  2  2  10  1/10  112.216  371.010  144.132  1484  577  10  0  0.144  1
+22  40  1193.036  239.05  n  1  1  8  1/8  105.019  330.310  122.442  1321  490  8  1  0.180  0
+23  41  2051.242  701.03  n  2  2  11  1/11  129.302  465.645  160.551  1863  642  15  1  0.315  2
+24  42  2211.402  757.76  n  2  2  12  1/12  143.910  509.644  166.701  2039  667  16  1  0.273  3
+25  43  2367.686  815.71  n  2  2  10  1/10  125.634  410.646  172.491  1643  690  14  1  0.134  1
+26  44  2047.594  865.55  n  2  2  10  1/10  135.984  416.738  160.408  1667  642  14  1  0.059  0
+27  46  2211.430  1016.60  n  2  2  10  1/10  136.579  442.357  166.702  1769  667  15  1  0.341  3
+28  48  2012.045  1063.48  n  2  2  10  1/10  135.512  403.906  159.010  1616  636  14  1  0.147  0
+29  50  2277.088  1127.33  n  2  2  9  1/9  108.950  401.656  169.159  1607  677  15  2  0.204  1
+30  51  2207.136  1147.74  n  2  2  10  1/10  137.070  428.264  166.540  1713  666  14  1  0.190  1
+31  52  5287.425  1184.47  n  5  5  17  1/17  190.731  708.096  257.767  2832  1031  33  1  0.148  3
+32  53  2254.732  1199.52  n  2  2  10  1/10  127.256  424.089  168.326  1696  673  14  1  0.194  2
+33  54  2430.565  1216.58  n  2  2  11  1/11  135.883  462.623  174.767  1850  699  14  1  0.268  2
+34  55  9620.094  1203.93  n  9  9  23  1/23  279.969  997.256  347.692  3989  1391  49  1  0.163  3
+35  56  2182.019  1181.05  n  2  2  11  1/11  142.956  482.644  165.590  1931  662  16  1  0.162  0
+36  57  2125.766  1180.88  n  2  2  10  1/10  138.978  402.063  163.442  1608  654  14  1  0.268  2
+37  58  5027.278  1170.87  n  5  5  17  1/17  195.057  759.166  251.346  3037  1005  33  1  0.242  5
+38  59  4303.199  1162.10  n  4  4  16  1/16  177.294  683.471  232.542  2734  930  26  1  0.216  3
+39  60  6524.554  1155.12  n  6  6  17  1/17  201.936  751.302  286.339  3005  1145  35  1  0.193  2
+40  61  4704.333  1154.62  n  4  4  17  1/17  183.581  773.306  243.139  3093  973  27  1  0.373  6
+41  62  6925.313  1119.15  n  6  6  24  1/24  296.046  1058.149  295.002  4233  1180  41  1  0.213  4
+42  63  66427.705  632.37  n  62  44  56  1/56  641.933  2484.088  913.649  9936  3655  131  1  0.543  72
+43  64  3203.341  1103.37  n  3  3  14  1/14  164.075  577.917  200.635  2312  803  21  1  0.270  2
+44  65  5486.213  1088.23  n  5  5  20  1/20  218.493  854.353  262.568  3417  1050  33  2  0.244  5
+45  66  4343.015  1069.93  n  4  4  15  1/15  164.013  656.254  233.615  2625  934  26  1  0.170  0
+46  67  4183.762  1058.15  n  4  4  15  1/15  162.141  651.694  229.292  2607  917  25  1  0.110  0
+47  68  2282.739  1046.06  n  2  2  12  1/12  139.401  486.246  169.369  1945  677  14  1  0.232  0
+48  69  4269.933  1035.95  n  4  4  16  1/16  184.412  684.196  231.641  2737  927  26  1  0.165  1
+49  70  1120.888  1031.12  n  1  1  9  1/9  105.714  381.658  118.682  1527  475  9  1  0.328  2
+50  71  4359.489  1011.67  n  4  4  20  1/20  227.441  838.101  234.058  3352  936  28  1  0.181  4
+51  72  2235.819  1008.82  n  2  2  12  1/12  144.813  476.913  167.619  1908  670  14  1  0.470  6
+52  73  3127.447  989.95  n  3  3  13  1/13  158.526  516.271  198.244  2065  793  21  2  0.225  3
+53  74  2146.228  976.84  n  2  2  11  1/11  139.156  433.823  164.226  1735  657  14  1  0.178  0
+54  75  2125.173  972.90  n  2  2  14  1/14  141.955  585.569  163.419  2342  654  16  1  0.374  4
+55  76  2365.512  963.89  n  2  2  13  1/13  135.053  551.197  172.412  2205  690  16  1  0.320  3
+56  77  2224.107  953.74  n  2  2  12  1/12  129.739  467.592  167.179  1870  669  14  1  0.348  4
+57  78  1158.698  943.01  n  1  1  8  1/8  90.998  329.319  120.667  1317  483  8  1  0.285  1
+58  79  2406.065  935.85  n  2  2  12  1/12  130.731  489.861  173.884  1959  696  14  1  0.290  2
+59  80  1136.939  934.70  n  1  1  8  1/8  97.108  341.252  119.529  1365  478  8  1  0.437  2
+60  81  5654.774  911.74  n  5  5  23  1/23  258.192  986.717  266.571  3947  1066  35  1  0.199  4
+61  84  2046.044  870.25  n  2  2  14  1/14  151.706  579.728  160.348  2319  641  16  1  0.400  7
+62  90  150400.757  543.93  n  138  58  71  1/71  825.998  3187.657  1374.770  12751  5499  167  1  0.451  65
 63  96  197232.231  202.61  n  180  62  74  1/74  757.228  3176.459  1574.323  12706  6297  164  2  0.500  82
-64  140  1638.155  1097.51  n  2  2  10  1/10  111.715  369.354  143.489  1477  574  10  0  0.141  1
+64  97  186322.070  305.47  n  170  65  74  1/74  888.104  3178.254  1530.161  12713  6121  183  2  0.475  89
 ```
 
 ```
@@ -169,10 +195,12 @@ shore members (a member touching the collar), all bodies: 1945
 B trimmed to shore members + collar: 9130 words = 73040 bytes = 0.073 MB
 member-collar edges, all bodies: 5608
   of those, collar end NOT above the body's level: 76 (1.355%)
-  of the rest, contour crosses past halfway (f > 0.5): 2260 (40.853%)
-  mean of the per-body mean contour fraction f: 0.2673
-C, 250 m contour of perim_graph: 456643 points = 913285 words = 7.306 MB
-C, 250 m contour of perim_circle: 190071 points = 380141 words = 3.041 MB
+    of those, the collar node is a member of another kept body: 0; an ocean node: 0; plain land at or below the level: 76
+      of that plain land, in a hollow the judgement did not keep: 4; in no hollow at all: 72
+  usable edges (collar end above the level): 5532; of those, contour crosses past halfway (f > 0.5): 2260 (40.853%)
+  mean contour fraction f over usable edges: 0.4312
+C, 250 m contour of perim_graph: 456643 points = 913286 words = 7.306 MB
+C, 250 m contour of perim_circle: 190071 points = 380142 words = 3.041 MB
 ```
 
 ### 2.2 `owner_survey` — seed 562,423,712, radius 4,500,000 m, 28 plates, land 0.16, `ranges()`
@@ -266,12 +294,13 @@ shore members (a member touching the collar), all bodies: 1159
 B trimmed to shore members + collar: 6058 words = 48464 bytes = 0.048 MB
 member-collar edges, all bodies: 3717
   of those, collar end NOT above the body's level: 100 (2.690%)
-  of the rest, contour crosses past halfway (f > 0.5): 1433 (39.618%)
-  mean of the per-body mean contour fraction f: 0.3559
+    of those, the collar node is a member of another kept body: 0; an ocean node: 0; plain land at or below the level: 100
+      of that plain land, in a hollow the judgement did not keep: 0; in no hollow at all: 100
+  usable edges (collar end above the level): 3617; of those, contour crosses past halfway (f > 0.5): 1433 (39.618%)
+  mean contour fraction f over usable edges: 0.4334
 C, 250 m contour of perim_graph: 155690 points = 311380 words = 2.491 MB
-C, 250 m contour of perim_circle: 63422 points = 126843 words = 1.015 MB
+C, 250 m contour of perim_circle: 63422 points = 126844 words = 1.015 MB
 ```
-
 
 ### 2.3 `plain` — seed 20,260,904, radius 6,371,000 m, 12 plates, land 0.29
 
@@ -316,10 +345,12 @@ shore members (a member touching the collar), all bodies: 968
 B trimmed to shore members + collar: 4430 words = 35440 bytes = 0.035 MB
 member-collar edges, all bodies: 2864
   of those, collar end NOT above the body's level: 30 (1.047%)
-  of the rest, contour crosses past halfway (f > 0.5): 1187 (41.884%)
-  mean of the per-body mean contour fraction f: 0.3569
+    of those, the collar node is a member of another kept body: 0; an ocean node: 0; plain land at or below the level: 30
+      of that plain land, in a hollow the judgement did not keep: 0; in no hollow at all: 30
+  usable edges (collar end above the level): 2834; of those, contour crosses past halfway (f > 0.5): 1187 (41.884%)
+  mean contour fraction f over usable edges: 0.4481
 C, 250 m contour of perim_graph: 148095 points = 296190 words = 2.370 MB
-C, 250 m contour of perim_circle: 59749 points = 119497 words = 0.956 MB
+C, 250 m contour of perim_circle: 59749 points = 119498 words = 0.956 MB
 ```
 
 ### 2.4 `seed1_ranges` — seed 1, radius 6,371,000 m, 12 plates, land 0.40, `ranges()`
@@ -502,12 +533,13 @@ shore members (a member touching the collar), all bodies: 2764
 B trimmed to shore members + collar: 14264 words = 114112 bytes = 0.114 MB
 member-collar edges, all bodies: 9061
   of those, collar end NOT above the body's level: 231 (2.549%)
-  of the rest, contour crosses past halfway (f > 0.5): 3473 (39.332%)
-  mean of the per-body mean contour fraction f: 0.3363
+    of those, the collar node is a member of another kept body: 0; an ocean node: 0; plain land at or below the level: 231
+      of that plain land, in a hollow the judgement did not keep: 5; in no hollow at all: 226
+  usable edges (collar end above the level): 8830; of those, contour crosses past halfway (f > 0.5): 3473 (39.332%)
+  mean contour fraction f over usable edges: 0.4269
 C, 250 m contour of perim_graph: 519949 points = 1039898 words = 8.319 MB
-C, 250 m contour of perim_circle: 205648 points = 411295 words = 3.290 MB
+C, 250 m contour of perim_circle: 205648 points = 411296 words = 3.290 MB
 ```
-
 
 ---
 
@@ -515,13 +547,14 @@ C, 250 m contour of perim_circle: 205648 points = 411295 words = 3.290 MB
 
 This is the deciding measurement, and it kills A.
 
-Two walks were implemented, because "does the ring close", "are consecutive steps adjacent in the
-graph" and "do any two ring edges cross" are not all non-trivial for the same walk.
+Two rules were implemented, in three walks, because "does the ring close", "are consecutive steps
+adjacent in the graph" and "do any two ring edges cross" are not all non-trivial for the same
+walk.
 
 - **Walks L and R, the minimum-turn edge walk** — the angular rule Ruling S-1 names. Start at the
-  collar node furthest from the body's area-weighted centroid (ties to the lower node id), with
-  the incoming direction taken as the bearing from that node toward the centroid, so the body
-  lies on one consistent side. At each step, project the current node's collar neighbours into
+  collar node furthest from the body's centroid (ties to the lower node id), with the incoming
+  direction taken as the bearing from that node toward the centroid, so the body lies on one
+  consistent side. At each step, project the current node's collar neighbours into
   `TangentFrame::at` that node, take each bearing by `atan2`, and step to the smallest positive
   turn from the reverse of the incoming direction. `L` measures that turn anticlockwise, `R`
   clockwise; both are run rather than assuming which side the body is on. Adjacency holds by
@@ -529,6 +562,15 @@ graph" and "do any two ring edges cross" are not all non-trivial for the same wa
 - **Walk A, the angular sort** — project every collar node into `TangentFrame::at` the body's
   centroid, sort by `atan2(y, x)`, ties by radius then node id. Closure holds by construction.
   Adjacency does not.
+
+**Termination and revisits, for the edge walks.** The walk stops on exactly three conditions: the
+chosen next node **is the start** (reported `closed`; the start is not pushed twice, so a closed
+ring of n points has n steps); the current node has **no collar neighbour at all** (reported
+`stuck`); or **`4 * collar` steps** have been taken (reported neither closed nor stuck — it did
+not close). **Revisiting a node other than the start is allowed and is not detected**: the walk
+may retrace or loop, and that shows up as `ring_pts` exceeding the collar or as the step bound
+being hit, not as its own outcome. That is deliberate — suppressing revisits would be a repair of
+the walk, and what is being measured is the plain angular rule.
 
 A fourth column, **`members_outside_ring`**, measures criterion 1 directly: how many of the body's
 own member nodes fall outside the ring polygon, by a ray-crossing test in the tangent plane at the
@@ -549,8 +591,8 @@ A  21  328578.058  302  114  1/114  114  yes  no  100.0%  99/114  0  0 of 302
 L  63  197232.231  180  74  1/74  3  yes  no  4.1%  3/3  0  180 of 180
 R  63  197232.231  180  74  1/74  3  yes  no  4.1%  3/3  0  180 of 180
 A  63  197232.231  180  74  1/74  74  yes  no  100.0%  71/74  0  0 of 180
-
 ### owner_survey
+walk  body  area_km2  members  collar  collar_parts/largest  ring_pts  closed  stuck  covers_collar  adjacent_steps/steps  crossings  members_outside_ring
 L  30  180532.843  708  150  1/150  3  yes  no  2.0%  3/3  0  708 of 708
 R  30  180532.843  708  150  1/150  3  yes  no  2.0%  3/3  0  708 of 708
 A  30  180532.843  708  150  1/150  150  yes  no  100.0%  142/150  0  0 of 708
@@ -560,8 +602,8 @@ A  26  133991.754  526  132  1/132  132  yes  no  100.0%  126/132  0  0 of 526
 L  70  101032.313  397  96  1/96  3  yes  no  3.1%  3/3  0  397 of 397
 R  70  101032.313  397  96  1/96  3  yes  no  3.1%  3/3  0  397 of 397
 A  70  101032.313  397  96  1/96  96  yes  no  100.0%  96/96  0  0 of 397
-
 ### plain
+walk  body  area_km2  members  collar  collar_parts/largest  ring_pts  closed  stuck  covers_collar  adjacent_steps/steps  crossings  members_outside_ring
 L  2  216858.672  428  135  1/135  101  yes  no  74.8%  101/101  6  0 of 428
 R  2  216858.672  428  135  1/135  3  yes  no  2.2%  3/3  0  428 of 428
 A  2  216858.672  428  135  1/135  135  yes  no  100.0%  101/135  0  32 of 428
@@ -571,8 +613,8 @@ A  20  212632.259  417  176  1/176  176  yes  no  100.0%  124/176  0  0 of 417
 L  19  207563.517  406  105  1/105  3  yes  no  2.9%  3/3  0  406 of 406
 R  19  207563.517  406  105  1/105  3  yes  no  2.9%  3/3  0  406 of 406
 A  19  207563.517  406  105  1/105  105  yes  no  100.0%  105/105  0  0 of 406
-
 ### seed1_ranges
+walk  body  area_km2  members  collar  collar_parts/largest  ring_pts  closed  stuck  covers_collar  adjacent_steps/steps  crossings  members_outside_ring
 L  67  1509499.454  2965  487  1/487  3  yes  no  0.6%  3/3  0  2965 of 2965
 R  67  1509499.454  2965  487  1/487  3  yes  no  0.6%  3/3  0  2965 of 2965
 A  67  1509499.454  2965  487  1/487  487  yes  no  100.0%  242/487  0  726 of 2965
@@ -615,8 +657,8 @@ body's level, so the level contour lies between the members and the collar" hold
 but not all: **76 of 5,608 member-collar edges on `owner` (1.36%)**, 100 of 3,717 on
 `owner_survey` (2.69%), 30 of 2,864 on `plain` (1.05%) and 231 of 9,061 on `seed1` (2.55%) have
 their collar end **at or below** the body's level. On those edges the contour is not bracketed at
-all. (These are collar nodes that are members of an adjacent body, or ocean nodes beside a coastal
-lake.) A ring drawn through the collar would cut *inside* the water there.
+all, and a ring drawn through the collar would cut *inside* the water. §5.4 says what those edges
+actually are — it is not what an earlier draft of this note guessed — and what absorbs them.
 
 **One thing A was expected to struggle with, and did not.** No body on any of the four worlds has
 a collar in more than one connected piece (`collar_parts` is 1 for all 319 bodies). At 1,000,000
@@ -636,17 +678,17 @@ Refused on cost, as the plan expected. The number:
 
 | world | contour points (graph perimeter) | MB | contour points (circle perimeter) | MB |
 |---|---:|---:|---:|---:|
-| `owner` | 456,643 | 7.31 | 190,071 | 3.04 |
-| `owner_survey` | 155,690 | 2.49 | 63,422 | 1.02 |
-| `plain` | 148,095 | 2.37 | 59,749 | 0.96 |
-| `seed1_ranges` | 519,949 | 8.32 | 205,648 | 3.29 |
+| `owner` | 456,643 | 7.306 | 190,071 | 3.041 |
+| `owner_survey` | 155,690 | 2.491 | 63,422 | 1.015 |
+| `plain` | 148,095 | 2.370 | 59,749 | 0.956 |
+| `seed1_ranges` | 519,949 | 8.319 | 205,648 | 3.290 |
 
 The budget is **1 MB of record added on the owner's world**, leaving 1 MB for ponds, out of this
 plan's ~2 MB. The owner world's great lake **on its own** costs 208,274 contour points (3.33 MB)
 by the graph perimeter and 91,217 (1.46 MB) by the circle perimeter. Either estimate is over
 budget for one body, and the circle figure corroborates the plan's own "about 1.5 MB" estimate to
-within 3%. Over all 65 bodies of the unpainted bake, C costs 3.0 MB to 7.3 MB depending on which
-perimeter estimate you believe, before the painted bake's extra 283 bodies are added.
+within 3%. Across the four worlds C costs 2.4 MB to 8.3 MB depending on which perimeter estimate
+you believe and which world, before the painted bake's extra 283 bodies are added.
 
 C is refused. **The 250 m trace is kept for ponds**, where it is affordable: a pond's surface is
 under 1 km² by definition (spec §6.6), so its 250 m outline is a few dozen points.
@@ -655,7 +697,7 @@ under 1 km² by definition (spec §6.6), so its 250 m outline is a few dozen poi
 
 ## 5. Candidate B, and the ruling
 
-### The numbers
+### 5.1 The numbers
 
 | world | A: collar | B: members + collar | B trimmed: shore members + collar | C (circle est.) |
 |---|---:|---:|---:|---:|
@@ -665,31 +707,51 @@ under 1 km² by definition (spec §6.6), so its 250 m outline is a few dozen poi
 | `seed1_ranges` | 0.070 MB | 0.250 MB | 0.114 MB | 3.290 MB |
 
 **The trim.** A member with no collar neighbour is an *interior* member: every one of its graph
-neighbours is also water. Dropping interior members cannot move the extent's boundary, because the
-boundary is decided by which recorded point is nearest, and an interior point of the lake is
-nearer to some shore member than to any collar node — the shore members surround it. The saving is
-large: the great lake has **37,844 members but only 1,178 shore members**, a 32× reduction, and
-across the owner world 39,469 members become 1,945. B trimmed costs **0.073 MB**, nine times less
-than untrimmed B and only 1.7× more than the ring that cannot be built.
+neighbours is also water. Dropping interior members should not move the extent's boundary, because
+the boundary is decided by which recorded point is nearest, and an interior point of the lake is
+nearer to some shore member than to any collar node — the shore members surround it. §5.7 says
+what plan 1b-4 must do to hold that claim to account, and why sampling member positions cannot.
+The saving is large: the great lake has **37,844 members but only 1,178 shore members**, a 32×
+reduction, and across the owner world 39,469 members become 1,945. B trimmed costs **0.073 MB**,
+nine times less than untrimmed B and only 1.7× more than the ring that cannot be built.
 
-**Scaling to the painted owner bake.** This probe finds 65 bodies; plan 1b-2 measured **348** on
-the painted bake with its forced outlet. Excluding the great lake, this probe's other 64 bodies
-carry 767 shore members and 1,437 collar nodes — 2,204 points, about 34 per body. Assuming the
-painted bake's extra 283 bodies resemble that tail (they are small: 1b-2 reports 296 fresh and 52
-salt, and the large ones are already here), the trimmed record is roughly
-2,361 + 347 × 34 ≈ 14,200 points = 28,400 words ≈ **0.23 MB**, well inside the 1 MB budget.
-Untrimmed B scales the same way to roughly **0.78 MB** — inside the budget, but with little room.
-**This is an estimate, not a measurement**; Task 7 measures the real figure on the painted bake in
-the browser, and the trim is what gives it headroom.
+### 5.2 Scaling to the painted owner bake
 
-### The ruling
+This probe finds 65 bodies; plan 1b-2 measured **348** on the painted bake with its forced outlet.
+Excluding the great lake, this probe's other 64 bodies carry:
+
+| | great lake (body 2) | the other 64 bodies | per body |
+|---|---:|---:|---:|
+| trimmed points (shore members + collar) | 2,361 | 2,204 | 34.44 |
+| untrimmed points (members + collar) | 39,027 | 3,062 | 47.84 |
+
+Assuming the painted bake's extra 283 bodies resemble that tail — they are small, and 1b-2's 296
+fresh / 52 salt split has the large ones already here:
+
+| | 348-body estimate | words | MB | headroom against 1 MB |
+|---|---:|---:|---:|---:|
+| **trimmed** | 2,361 + 347 × 34.44 = **14,311 points** | 28,622 | **0.229 MB** | 0.77 MB |
+| **untrimmed (the fallback)** | 39,027 + 347 × 47.84 = **55,629 points** | 111,258 | **0.890 MB** | **0.11 MB** |
+
+**The untrimmed fallback's headroom is about 0.11 MB, not 0.22.** An earlier draft of this note
+said 0.78 MB by scaling the whole measured figure rather than its tail; that was wrong. The
+corrected figure is 0.890 MB by the same method the trimmed row uses, or 0.849 MB if the tail is
+taken straight from the table's own untrimmed total rather than from a per-body mean. Either way
+the fallback is inside the budget with roughly a tenth of it to spare — enough, but not
+comfortable, which is exactly why the trim is the ruling and the untrimmed form is only the
+fallback.
+
+**These are estimates, not measurements.** Task 7 measures the real figure on the painted bake in
+the browser, and must not inherit these.
+
+### 5.3 The ruling
 
 **Candidate B.** A body's extent is an unordered set of recorded shore points, and `water_at`
 decides by a nearest-point test. It satisfies all three criteria:
 
-1. **Containment** — see the exact test below, which is designed so the level contour is always
-   inside. A's rings are not.
-2. **Budget** — 0.073 MB measured on the unpainted owner bake, an estimated 0.23 MB on the painted
+1. **Containment** — see §5.4 and the exact test in §5.6, which is built so the level contour is
+   always inside. A's rings are not.
+2. **Budget** — 0.073 MB measured on the unpainted owner bake, an estimated 0.229 MB on the painted
    one, against 1 MB.
 3. **Buildable without a triangulation** — it needs no ordering at all. The members and the collar
    fall straight out of `routing.lake_of` and `LandGraph::neighbours`. No walk, no angular rule, no
@@ -698,7 +760,63 @@ decides by a nearest-point test. It satisfies all three criteria:
 **Plan Ruling S-1 is replaced.** Its row in `constraints.md` has been corrected in this task, and
 the spec has been rewritten to describe B (§6.6, §7, §8.3).
 
-### The exact record shape plan 1b-4 will write
+### 5.4 The edges where the collar is not above the level, and what absorbs them
+
+The measurement that killed S-1 also constrains B, so it is followed through here rather than left
+in a parenthesis. On a member-collar edge whose collar end is **at or below** the body's level, the
+level contour does not cross that edge at all: both ends are at or below the level, and the level
+surface continues *past* the collar node, where no recorded point bounds it.
+
+The probe classifies every such edge by what the collar node is, in a fixed precedence — a member
+of another kept body, then an ocean node, then plain land at or below the level — and then splits
+that last category again by whether the node belongs to any hollow the judgement threw away:
+
+| world | not above | another body's member | ocean node | plain land | …in a notched hollow | …in no hollow |
+|---|---:|---:|---:|---:|---:|---:|
+| `owner` | 76 of 5,608 (1.36%) | 0 | 0 | 76 | 4 | 72 |
+| `owner_survey` | 100 of 3,717 (2.69%) | 0 | 0 | 100 | 0 | 100 |
+| `plain` | 30 of 2,864 (1.05%) | 0 | 0 | 30 | 0 | 30 |
+| `seed1_ranges` | 231 of 9,061 (2.55%) | 0 | 0 | 231 | 5 | 226 |
+
+**An earlier draft of this note guessed wrong.** It said these were "collar nodes that are another
+body's members, or ocean nodes beside a coastal lake". **Both counts are zero on all four
+worlds.** Every one of these edges is plain land, and the overwhelming majority of it belongs to no
+hollow at all — 72 of 76 on `owner`, 226 of 231 on `seed1`, all of them on the other two worlds.
+
+What it actually is: **ground downhill of the rim of a perched lake.** A lake standing at level L
+behind a rim has neighbours on the outward side whose ground falls away below L without being any
+part of the lake — the priority flood never pooled there, and `routing` never assigned them.
+
+**What absorbs each category.**
+
+- **Plain land in no hollow (96–100% of the cases).** Nothing needs to absorb it, because the level
+  test alone is the thing that is wrong there, not the extent. Those points are dry ground below a
+  perched lake's surface. §8.3 answers `lake` only for a point **inside the extent and** at or
+  below the level, and the extent correctly excludes them. This is the clearest demonstration in
+  the whole task that the extent is load-bearing: it is not a permissive gate around a level test,
+  it is what stops a lake from claiming the valley it sits above.
+- **Plain land in a notched hollow (4 on `owner`, 5 on `seed1`, 0 elsewhere).** A hollow the
+  judgement refused to keep. Spec §6.3 records it as a notch, not a body, so it is deliberately not
+  water; the extent excludes it for the same reason, and the notch record already describes it.
+- **Another body's member, and ocean node.** Zero occurrences measured, but both are absorbed by
+  §8.3's order if they ever appear: `ocean` is decided first (below the datum and connected to the
+  ocean, Ruling W1), and where two bodies both claim a point the tie-break in §5.6 settles it.
+- **A category the probe did not anticipate.** None appeared. The three counts partition
+  `collar_not_above` exactly on all four worlds, and the split of the third partitions it exactly
+  again, so nothing fell through.
+
+**The residual, stated plainly.** Clause 2 of the test in §5.6 lets the extent reach up to
+`shore_reach_m` past a shore member. On these 1.0%–2.7% of shore edges it can therefore reach past
+the rim into ground genuinely below the lake's level, and `water_at` will call that strip `lake`.
+The strip is at most one member-collar edge wide — about one graph spacing, tens of kilometres on
+the owner world — on at most 2.7% of a lake's shore. It is a deliberate trade against the
+alternative, which is under-claiming by up to half a graph spacing on the **39%–42% of usable
+shore edges** where the contour crosses past halfway. Trading a 2% over-claim for a 40%
+under-claim is the wrong way round. Plan 1b-4 may narrow the band by taking a lower percentile of
+the usable member-collar edge lengths instead of the maximum, at the cost of losing containment on
+the longest edges; that is a measured knob, not a correction, and this task does not turn it.
+
+### 5.5 The exact record shape plan 1b-4 will write
 
 `Body.outline` holds the body's **shore points**: first its **shore members**, then its
 **collar**, so a single count separates the two halves.
@@ -712,59 +830,82 @@ the spec has been rewritten to describe B (§6.6, §7, §8.3).
   (`viewer/public/app/engine.js::hydroSummary`, `viewer/public/app/water-preview.js::decodeHydro`,
   and their tests):
   - `shore_member_count` — how many of the outline's points are members. The rest are collar.
-  - `shore_reach_m` — the greatest distance from any shore member to a collar neighbour of that
-    member. One number per body; it is what bounds the extent.
-- A pond keeps its **250 m traced outline** (spec §6.6 unchanged for ponds), written into the same
-  `outline` field with `shore_member_count = 0`, which is how a consumer tells a traced pond
-  outline from a coarse body's shore points.
+  - `shore_reach_m` — the greatest length of a member-collar edge **whose collar end is above the
+    body's level**. Restricting it to usable edges is deliberate: those are the only edges a
+    contour crosses, so they are the only ones the band has to reach, and §5.4's edges do not get
+    to widen it.
+- **`kind` is the discriminator, not a sentinel** (Ruling T1-2). A `lake`, `salt_lake` or
+  `salt_flat` carries a shore-point set, and **no consumer may join its points into an edge**. A
+  `pond` carries a traced 250 m curve, and **its points are joined in order**. A pond writes
+  `shore_member_count = 0` and `shore_reach_m = 0.0`, both **unused on that branch** and written
+  only so `record.rs` and the two wire twins have something definite to encode. A reader chooses
+  the geometry from `kind` and never from those two values.
+- **A fine-search find at or above `pond_max_area_m2` is not recorded** (Ruling T1-2). §6.6's fine
+  search exists to find *small* lakes and ponds; a find that large has no coarse basin, so it has
+  no shore points, and recording it as a `lake` with a traced curve would destroy `kind` as the
+  discriminator the previous bullet just established. It is dropped, and counted in the record's
+  stats so the drop is visible. The cost if wrong: a rare fine find over 1 km² is lost, which the
+  coarse bake would have kept had the graph resolved it.
 
-### The test `water_at` performs
+### 5.6 The test `water_at` performs
 
-For a point `p` and a candidate body `b` that spec §8.2's cell lists as reaching `p`, in one pass
-over `b.outline`:
+For a point `p` and a candidate body `b` of kind `lake`, `salt_lake` or `salt_flat` that spec
+§8.2's cell lists as reaching `p`, in one pass over `b.outline`:
 
 1. Let `dm` be the great-circle distance from `p` to the nearest of `b`'s **member** points and
    `dc` the distance to the nearest of its **collar** points (ties to the lower outline index; a
    body with no collar point has `dc = infinity`).
 2. `p` is **inside `b`'s extent** if `dm <= dc` **or** `dm <= b.shore_reach_m`.
-3. `p` is `lake`/`pond` of `b` if it is inside the extent **and** the landform at `p` is at or
-   below `b.level_m`. `ocean` still wins first, per §8.3's existing order (below the datum and
-   connected to the ocean, Ruling W1).
+3. `p` is `lake` of `b` if it is inside the extent **and** the landform at `p` is at or below
+   `b.level_m`.
+4. **Where more than one body claims `p`, the smaller `dm` wins; ties to the lower body id**
+   (Ruling T1-3). Clause 2's band is a per-body maximum, so a ridge narrower than `shore_reach_m`
+   really can put a point inside two extents at once, and without this the answer would depend on
+   the order §8.2's cell happens to list them in.
+5. A `pond` is not tested this way at all: its outline is a traced curve, and `p` is inside it if
+   it is inside that curve.
+6. `ocean` is still decided first, per §8.3's existing order.
 
-Why it contains. The lake's **interior** is covered by the first clause: an interior point's
-nearest recorded point is a shore member, because the shore members surround it, so `dm <= dc`.
-The **shore band** is covered by the second: the level contour crosses each member-collar graph
+Why it contains. The lake's **interior** is covered by clause 1: an interior point's nearest
+recorded point is a shore member, because the shore members surround it, so `dm <= dc`. The
+**shore band** is covered by clause 2: the level contour crosses each *usable* member-collar graph
 edge somewhere along it, at a distance from the member of at most that edge's length, and
-`shore_reach_m` is the longest such edge — so every point of the contour has `dm <= shore_reach_m`.
-Between them the two clauses cover everything the level test would call wet, at every zoom,
-because both are continuous distance tests and neither is resolution-dependent.
+`shore_reach_m` is the longest usable edge — so every point of the contour has
+`dm <= shore_reach_m`. §5.4 covers the edges that are not usable and says what absorbs them.
 
-Why the plain "nearest recorded point is a member" test is **not** enough on its own, and this is
-the measurement that forced the second clause: the halfway boundary between a member and a collar
-node is *not* where the contour is. Across the four worlds, **39% to 42% of member-collar edges
-have the contour past halfway** (`f > 0.5`): 2,260 of 5,532 usable edges on `owner`, 1,433 of
-3,617 on `owner_survey`, 1,187 of 2,834 on `plain`, 3,473 of 8,830 on `seed1`. On the great lake
-alone it is 1,302 of 2,804 edges, mean `f` 0.474. A halfway boundary would pull the shoreline in
-by up to half a graph spacing — on the owner world, tens of kilometres — on two fifths of the
-shore. `shore_reach_m` costs one word per body and removes that error entirely.
+Two things this argument does **not** establish, and neither should be read into it. It does not
+establish coverage of the interior from resolution-independence: being a continuous distance test
+says nothing about *which* region the test selects, and clause 1's interior claim rests entirely on
+the shore members surrounding the interior — a geometric claim §5.7 hands to plan 1b-4 to test. And
+it does not establish that the extent is *tight*; §5.4 bounds how far past the shore it can reach.
 
-### What it costs if the ruling is wrong
+### 5.7 What plan 1b-4 must test, and what it costs if wrong
 
-- **If the trim is wrong** — that is, if some body's interior point turns out nearer to a collar
-  node than to any shore member (a shape this probe did not produce, but a narrow strait between
-  two wide lobes is the case to fear) — that point is still inside by the `shore_reach_m` clause
-  unless it is also further than `shore_reach_m` from every shore member, which needs a lobe wider
-  than the shore spacing *and* a nearer collar. Plan 1b-4 must assert this rather than assume it:
-  **every member node's own position must test inside its body's extent**, on every body of a
-  1M-node bake. If it fails, the fix is to keep the interior members too — untrimmed B, 0.673 MB
-  measured, an estimated 0.78 MB painted, still inside the budget. That is the fallback, and it is
-  already paid for.
-- **If the extent is too generous** — the second clause claims a band up to `shore_reach_m` beyond
-  the shore members. Everything in that band is then filtered by the level test, so the only way a
-  dry point is called wet is if the landform there is genuinely at or below the lake's level and
-  the point is within one graph spacing of the lake. That is a valley floor continuous with the
-  lake at lake level, which is arguably wet anyway; the shoreline stage 2 carves is unaffected.
-- **If the budget estimate is wrong** — the painted-bake figure is scaled from 65 bodies, not
+The trim's correctness is a claim about Voronoi cells, and **sampling member positions cannot see
+it fail**: a member's own position is trivially nearest to itself. The failure mode is a point
+*between* two interior members falling into a collar node's cell, which happens exactly when the
+shore members are too sparse to shield the interior.
+
+- **The invariant, stated:** for every body and every point of its interior water, the nearest
+  shore member is nearer than any collar point. Equivalently, in the Delaunay sense: **no collar
+  point falls inside the circumcircle of a triangle of neighbouring shore members that covers
+  interior water.**
+- **The test plan 1b-4 must write**, since the invariant is expensive to check directly: sample the
+  interior *between* members, not at them. For every body of a 1,000,000-node bake, take each graph
+  edge whose two ends are both members, sample its midpoint, and — for bodies that have interior
+  members — also sample the centroid of each member together with its member neighbours. Assert
+  every sample tests inside its own body's extent. **Sampling member node positions alone is not
+  sufficient evidence and must not be substituted for this.**
+- **If it fails:** keep the interior members too — untrimmed B, **0.673 MB measured**, an estimated
+  **0.890 MB** on the painted bake, still inside the 1 MB budget with about 0.11 MB to spare. That
+  is the fallback, and it is already paid for.
+
+Other costs if the ruling is wrong:
+
+- **If the extent is too generous** — bounded and quantified in §5.4: at most one graph spacing, on
+  at most 2.7% of a lake's shore, and only where the ground there is genuinely at or below the
+  lake's level. The shoreline stage 2 carves is unaffected.
+- **If the budget estimate is wrong** — the painted-bake figures are scaled from 65 bodies, not
   measured on 348. If Task 7 finds the trimmed record over 1 MB, the ponds' half of the budget is
   the first place to look, not the bodies'.
 - **What is lost against A** — nothing that was ever available: A's polygon does not exist on this
@@ -777,12 +918,14 @@ shore. `shore_reach_m` costs one word per body and removes that error entirely.
 
 - **The painted owner bake is not measured here.** The two painted features and the forced outlet
   at 0°N 0°E are studio state, not `Surface::new` arguments, so no native probe can carry them.
-  Everything in §5's scaling paragraph marked "estimate" is exactly that. The great lake's area
-  (41.38M km² unpainted against 1b-2's 41.33M km² painted) is the one cross-check available, and
-  it agrees to 0.1%.
+  Everything in §5.2 marked "estimate" is exactly that. The great lake's area (41.38M km²
+  unpainted against 1b-2's 41.33M km² painted) is the one cross-check available, and it agrees to
+  0.1%.
 - **No body on any world resolved an island** at 1,000,000 nodes, so the multi-piece collar case is
   untested by measurement. B is immune to it by construction — an island's collar is just more
   collar points, and the island's own land is above the level, so the level test carves it out —
   but that is an argument, not a measurement.
-- **`shore_reach_m` is a new per-body word.** It touches the record layout's twins. Plan 1b-4 owns
-  that change; this task only writes the spec text for it.
+- **`shore_member_count` and `shore_reach_m` are new per-body words.** They touch the record
+  layout's twins. Plan 1b-4 owns that change; this task only writes the spec text for it.
+- **The interior-sampling test of §5.7 is specified, not written.** It belongs to plan 1b-4, and
+  until it runs, the trim is an argument with a paid-for fallback rather than a measured fact.

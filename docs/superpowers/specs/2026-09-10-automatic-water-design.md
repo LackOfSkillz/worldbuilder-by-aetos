@@ -277,12 +277,20 @@ carving needs.
   - **Ponds keep the 250 m trace.** A pond's surface is under 1 km² by definition, so its outline
     is a few dozen points. A pond is filled at 250 m resolution from its lowest point up to its
     level, within its coarse basin, and the outline is traced and simplified to 250 m tolerance.
+    **`kind` says which of the two geometries a body carries** (§7): a lake's outline is a
+    shore-point set, a pond's is a traced curve.
 - **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined
   river lines, and in terrain with wetness above the 60th percentile and slopes under 3%. It has
   **its own keep rule: depth ≥ 2 m and area ≥ 0.05 km²**. Section 6.3's rule (area ≥ 1 km²)
   could never keep a pond, whose surface is under 1 km² by definition. Found hollows that fail
   are simply not recorded; at this scale they are texture and need no notch. At most one small
   lake or pond per 500 km² of searched area is kept, the deepest first.
+  - **A find at or above `pond_max_area_m2` is not recorded** (Ruling T1-2, plan 1b-3's Task 1).
+    This search finds *small* lakes and ponds. A find that large has no coarse basin and therefore
+    no shore points, so it could only be recorded as a traced curve — which would break `kind` as
+    the discriminator between the two geometries. It is dropped and counted in the record's stats,
+    rather than recorded as a `lake` whose outline is a curve. A body that large which the coarse
+    graph *did* resolve is a coarse body already and is unaffected.
 
 ### 6.7 Waterfalls
 
@@ -315,14 +323,19 @@ hydrology: {
 }
 ```
 
-- **A body's `outline` is a set, not a curve** (Ruling S-1, as replaced by plan 1b-3's Task 1).
-  Its first `shore_member_count` points are the body's shore members and the rest are its collar
-  (§6.6). Within each half the points are in ascending graph-node order; that order is fixed only
-  so the record is deterministic and carries no geometric meaning — no consumer may join
-  consecutive points into an edge. `shore_reach_m` is the greatest distance from a shore member to
-  a collar neighbour of it, and it is what bounds the extent in §8.3's test. A **pond** carries its
-  traced 250 m outline in the same field with `shore_member_count = 0`, which is how a consumer
-  tells a traced pond outline from a coarse body's shore points.
+- **`kind` says what `outline` is** (Ruling S-1 as replaced, and Ruling T1-2, both plan 1b-3's
+  Task 1). The field carries one of two geometries and **`kind` is the discriminator** — never
+  `shore_member_count`, and never any other sentinel value:
+  - **`lake`, `salt_lake`, `salt_flat`: `outline` is a set, not a curve.** Its first
+    `shore_member_count` points are the body's shore members and the rest are its collar (§6.6).
+    Within each half the points are in ascending graph-node order; that order is fixed only so the
+    record is deterministic and carries no geometric meaning. **No consumer may join consecutive
+    points into an edge.** `shore_reach_m` is the greatest length of a member-to-collar step whose
+    collar end stands above the body's level, and it is what bounds the extent in §8.3's test.
+  - **`pond`: `outline` is a traced 250 m curve** (§6.6), and **its points are joined in order.**
+    A pond writes `shore_member_count = 0` and `shore_reach_m = 0.0`. **Both are unused on this
+    branch** and are written only so the encoder and its wire twins have a definite value; a reader
+    that consults them instead of `kind` is reading the record wrong.
 - **A fall's `at` is its upper end**; the lower end is the next point on that reach, and the bed
   drops by `height_m` between them (Ruling R-5, §6.7).
 - **A reach point's third value is the bed**: the water surface there minus the channel's depth.
@@ -378,14 +391,23 @@ This is a new stage in `Surface`, after features and before detail:
 
 - **Inside a body's extent** (Ruling S-1, as replaced by plan 1b-3's Task 1) is decided from the
   body's recorded shore points (§7), in one pass over them, for each body §8.2's cell lists as
-  reaching the point. Let `dm` be the great-circle distance to the nearest **member** point of that
-  body and `dc` the distance to its nearest **collar** point (ties to the lower outline index; no
-  collar point means `dc` is infinite). The point is inside if `dm <= dc` **or**
-  `dm <= shore_reach_m`. The first clause holds the body's interior, the second the shore band the
-  level contour crosses — and because the contour crosses each member-to-collar step somewhere
-  along it, and `shore_reach_m` is the longest such step, every point the level test would call
-  wet is inside. A **pond**, whose outline is a traced 250 m curve with `shore_member_count = 0`,
-  is tested against that curve instead. `ocean` is still decided first.
+  reaching the point. **Which branch is taken is decided by `kind`** (Ruling T1-2), not by any
+  sentinel in the data:
+  - **`lake`, `salt_lake`, `salt_flat`.** Let `dm` be the great-circle distance to the nearest
+    **member** point of that body and `dc` the distance to its nearest **collar** point (ties to
+    the lower outline index; no collar point means `dc` is infinite). The point is inside if
+    `dm <= dc` **or** `dm <= shore_reach_m`. The first clause holds the body's interior, the second
+    the shore band the level contour crosses — and because the contour crosses each member-to-collar
+    step whose collar end is above the level somewhere along that step, and `shore_reach_m` is the
+    longest such step, every point of the contour is inside.
+  - **`pond`.** Its outline is a traced curve and its points are joined in order; the point is
+    inside if it is inside that curve. `shore_member_count` and `shore_reach_m` are not consulted.
+  - **Where more than one body claims the point, the smaller `dm` wins; ties go to the lower body
+    id** (Ruling T1-3). `shore_reach_m` is a per-body maximum, so a ridge narrower than it really
+    can put a point inside two extents at once, and without this rule the answer would depend on
+    the order §8.2's cell happens to list the bodies in. A pond's curve test yields to a lake only
+    through this same rule, taking the pond's distance to its own nearest outline point as its `dm`.
+  - `ocean` is still decided first.
 - **Exposed as:** a wasm export (and a per-tile batch form for the relief workers) and a PyO3
   binding. The PyO3 work adds the missing `surface_open` family the Python oracle already calls.
 - **Maritime:** the manifest of Mark 2 section 13.2 is produced from the record. Bodies become

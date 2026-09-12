@@ -35,11 +35,17 @@
 //! - **`collar`:** the distinct non-member nodes adjacent to a member through
 //!   `LandGraph::neighbours` (the k-nearest graph, k = 8, `stream.rs::node_neighbours`), sorted
 //!   and deduplicated.
+//! - **`area_km2`:** the hollow's own `Hollow::area_m2` divided by 1e6. It is the flooded area
+//!   `find_hollows` computed by summing `LandGraph::area_m2` over the hollow's members, not
+//!   anything this probe re-derives, so a body's area here is the area `record_of` puts on the
+//!   wire as `Body::area_m2`.
 //! - **`shore_members`:** members with at least one collar neighbour. An interior member is one
 //!   whose every graph neighbour is also a member.
 //! - **`mc_edges` / `collar_not_above` / `mean_f` / `f>0.5`:** the member-collar graph edges of
 //!   the body; how many of them have the collar end at or *below* the body's level (where Ruling
-//!   S-1's premise "collar nodes stand above the body's level" fails outright); and, over the
+//!   S-1's premise "collar nodes stand above the body's level" fails outright -- the totals block
+//!   splits those edges by what the collar node is, in a fixed precedence: a member of another
+//!   kept body, an ocean node, or plain land at or below the level); and, over the
 //!   rest, the mean and the past-halfway count of
 //!   `f = (level_m - h_member) / (h_collar - h_member)` -- the fraction of the way from the
 //!   member to the collar node at which the level contour crosses that edge, on the landform
@@ -63,6 +69,12 @@
 //!   `area_m2` (ties to the lower body id) of each world. Two walks, because "does the ring
 //!   close", "are consecutive steps adjacent in the graph" and "do any two ring edges cross" are
 //!   not all non-trivial for the same walk:
+//!   - **The body's centroid**, which both walks and every tangent projection here are built on,
+//!     is the **area-weighted centroid of the body's members**: the sum of each member's unit
+//!     position vector scaled by that member's `LandGraph::area_m2`, renormalised back onto the
+//!     sphere. Collar nodes do not enter it. A body whose member vectors cancel to zero has no
+//!     centroid and falls back to its first member's position, a fixed answer rather than a
+//!     failure.
 //!   - **Walks L and R, the minimum-turn edge walk.** Start at the collar node furthest from the body's
 //!     area-weighted centroid (ties to the lower node id), with the incoming direction taken as
 //!     the bearing from that node toward the centroid, so the body lies on one consistent side.
@@ -73,8 +85,16 @@
 //!     are mirror images, and only one of them turns toward the side the body is on, so both are
 //!     run rather than assuming which. The step back to where we came from is taken
 //!     only when it is the only collar neighbour. Adjacency holds by construction; closure and
-//!     coverage do not. The walk stops when it returns to its start (closed), when it has no
-//!     collar neighbour at all (stuck), or after `4 * collar` steps (did not close).
+//!     coverage do not.
+//!   - **Termination and revisits.** The walk stops on exactly three conditions: the chosen next
+//!     node **is the start** (reported `closed`, and the start is not pushed a second time, so a
+//!     closed ring of n points has n steps); the current node has **no collar neighbour at all**
+//!     (reported `stuck`); or **`4 * collar` steps** have been taken (reported neither closed nor
+//!     stuck -- it did not close). **Revisiting a node that is not the start is allowed and is
+//!     not detected**: the walk may retrace or loop, and such a ring shows up as `ring_pts`
+//!     exceeding the collar or as the step bound being hit rather than as its own outcome. That
+//!     is deliberate -- suppressing revisits would be a repair of the walk, and the measurement
+//!     is of the plain angular rule.
 //!   - **Walk A, the angular sort.** Project every collar node into `TangentFrame::at` the
 //!     body's centroid and sort by `atan2(y, x)`, ties by radius then node id. Closure holds by
 //!     construction; adjacency does not.
@@ -133,6 +153,16 @@ struct Body {
     /// body's level (where Ruling S-1's containment premise fails outright).
     edges: usize,
     edges_collar_not_above: usize,
+    /// The `edges_collar_not_above` edges split by what the collar node is, in the fixed
+    /// precedence stated where they are counted: a member of another kept body, an ocean node,
+    /// or plain land at or below the level. The three sum to `edges_collar_not_above`.
+    not_above_other_body: usize,
+    not_above_ocean: usize,
+    not_above_land: usize,
+    /// `not_above_land` split again: the collar node belongs to some hollow the judgement did
+    /// **not** keep (a notched neighbour), or it belongs to no hollow at all.
+    not_above_land_notched: usize,
+    not_above_land_no_hollow: usize,
     /// Over the member-collar edges whose collar end *is* above the level: the mean of
     /// `f = (level - h_member) / (h_collar - h_member)`, the fraction of the way from the member
     /// to the collar at which the level contour crosses, and how many of those edges have
@@ -206,8 +236,22 @@ fn main() {
             members_by_hollow[lake as usize].push(i as u32); // cast-ok: a node index, bounded by stream::MAX_NODES
         }
     }
+    // node -> a hollow that holds it, whatever that hollow's fate, so a collar node can be
+    // asked "were you a hollow the judgement threw away?". A node can appear in more than one
+    // hollow (`route` sub-floods a capped hollow and appends inner ones), and this map keeps the
+    // FIRST in hollow order -- the count it feeds is "belongs to some hollow", not "belongs to
+    // exactly this one", so which one is kept does not change it.
+    let mut hollow_of_node: Vec<u32> = vec![u32::MAX; graph.len()];
+    for (index, hollow) in hollows.iter().enumerate() {
+        for &member in &hollow.members {
+            if hollow_of_node[member as usize] == u32::MAX {
+                hollow_of_node[member as usize] = index as u32; // cast-ok: a hollow index, bounded by hollows.len()
+            }
+        }
+    }
+
     // Membership by node, so the collar test is a lookup rather than a search.
-    let bodies = build_bodies(graph, hollows, lake_of, members_by_hollow);
+    let bodies = build_bodies(graph, hollows, lake_of, members_by_hollow, &hollow_of_node);
 
     print_table(&bodies);
     print_totals(graph, &bodies);
@@ -219,6 +263,7 @@ fn build_bodies(
     hollows: &[worldbuilder_engine::hydrology::hollows::Hollow],
     lake_of: &[u32],
     members_by_hollow: Vec<Vec<u32>>,
+    hollow_of_node: &[u32],
 ) -> Vec<Body> {
     let mut bodies: Vec<Body> = Vec::new();
     let mut next_id = 0usize;
@@ -265,6 +310,11 @@ fn build_bodies(
         let mut shore_members = 0usize;
         let mut edges = 0usize;
         let mut edges_collar_not_above = 0usize;
+        let mut not_above_other_body = 0usize;
+        let mut not_above_ocean = 0usize;
+        let mut not_above_land = 0usize;
+        let mut not_above_land_notched = 0usize;
+        let mut not_above_land_no_hollow = 0usize;
         let mut fraction_sum = 0.0;
         let mut fraction_count = 0usize;
         let mut edges_contour_past_half = 0usize;
@@ -280,6 +330,23 @@ fn build_bodies(
                 let h_collar = graph.height_m[next as usize];
                 if !(h_collar > hollow.level_m) {
                     edges_collar_not_above += 1;
+                    // Which kind of collar node sits at or below the body's level, in this
+                    // fixed precedence so the three counts partition the edges exactly: a
+                    // member of another kept body first, then an ocean node, then anything
+                    // else -- plain land at or below the level, the category that exists only
+                    // if it shows up.
+                    if lake_of[next as usize] != NO_LAKE {
+                        not_above_other_body += 1;
+                    } else if graph.ocean[next as usize] {
+                        not_above_ocean += 1;
+                    } else {
+                        not_above_land += 1;
+                        if hollow_of_node[next as usize] != u32::MAX {
+                            not_above_land_notched += 1;
+                        } else {
+                            not_above_land_no_hollow += 1;
+                        }
+                    }
                     continue;
                 }
                 // h_collar > level, and a member is at or below its lake's level, so the
@@ -324,6 +391,11 @@ fn build_bodies(
             shore_members,
             edges,
             edges_collar_not_above,
+            not_above_other_body,
+            not_above_ocean,
+            not_above_land,
+            not_above_land_notched,
+            not_above_land_no_hollow,
             mean_contour_fraction,
             edges_contour_past_half,
         });
@@ -410,22 +482,30 @@ fn print_totals(graph: &LandGraph, bodies: &[Body]) {
     let sampled = bodies.iter().filter(|b| b.span_sampled).count();
     let perim_graph_km: f64 = bodies.iter().map(|b| b.perim_graph_m / 1_000.0).sum();
     let perim_circle_km: f64 = bodies.iter().map(|b| circle_perimeter_m(b.area_m2) / 1_000.0).sum();
-    let pts_graph = contour_points(perim_graph_km);
-    let pts_circle = contour_points(perim_circle_km);
+    // Round the point count to a whole number ONCE, then derive words and bytes from that
+    // integer. Printing a rounded count beside `count * 2` computed on the unrounded float
+    // produced an odd word count for an even number of words per point, which read like two
+    // different runs (Task 1 review, critical 1).
+    let pts_graph = round_to_usize(contour_points(perim_graph_km));
+    let pts_circle = round_to_usize(contour_points(perim_circle_km));
 
     let total_shore: usize = bodies.iter().map(|b| b.shore_members).sum();
     let total_edges: usize = bodies.iter().map(|b| b.edges).sum();
     let total_not_above: usize = bodies.iter().map(|b| b.edges_collar_not_above).sum();
     let total_past_half: usize = bodies.iter().map(|b| b.edges_contour_past_half).sum();
-    // The mean of f over the bodies that have a usable edge, not over edges: each body's own
-    // mean is the figure its row carries, and this is their mean, stated as such.
-    let usable: Vec<f64> = bodies
+    let total_other_body: usize = bodies.iter().map(|b| b.not_above_other_body).sum();
+    let total_ocean: usize = bodies.iter().map(|b| b.not_above_ocean).sum();
+    let total_land: usize = bodies.iter().map(|b| b.not_above_land).sum();
+    // The mean of f weighted by each body's usable edge count, so it is the mean over EDGES and
+    // not over bodies -- an unweighted mean of per-body means lets the long tail of one- and
+    // two-member hollows outvote the great lake (Task 1 review, minors).
+    let usable_edges = total_edges - total_not_above;
+    let weighted_f_sum: f64 = bodies
         .iter()
-        .filter(|b| b.edges > b.edges_collar_not_above)
-        .map(|b| b.mean_contour_fraction)
-        .collect();
-    let mean_of_body_means =
-        if usable.is_empty() { 0.0 } else { usable.iter().sum::<f64>() / usable.len() as f64 };
+        .map(|b| b.mean_contour_fraction * (b.edges - b.edges_collar_not_above) as f64)
+        .sum();
+    let mean_f_over_edges =
+        if usable_edges == 0 { 0.0 } else { weighted_f_sum / usable_edges as f64 };
 
     // An outline point is 2 words; a word is 8 bytes.
     let collar_words = 2 * total_collar;
@@ -466,20 +546,38 @@ fn print_totals(graph: &LandGraph, bodies: &[Body]) {
         100.0 * total_not_above as f64 / total_edges as f64
     );
     println!(
-        "  of the rest, contour crosses past halfway (f > 0.5): {total_past_half} ({:.3}%)",
-        100.0 * total_past_half as f64 / (total_edges - total_not_above) as f64
-    );
-    println!("  mean of the per-body mean contour fraction f: {mean_of_body_means:.4}");
-    println!(
-        "C, 250 m contour of perim_graph: {pts_graph:.0} points = {} words = {:.3} MB",
-        (pts_graph * 2.0) as u64, // cast-ok: a point count rounded for reporting, never negative
-        pts_graph * 2.0 * 8.0 / 1.0e6
+        "    of those, the collar node is a member of another kept body: {total_other_body}; \
+         an ocean node: {total_ocean}; plain land at or below the level: {total_land}"
     );
     println!(
-        "C, 250 m contour of perim_circle: {pts_circle:.0} points = {} words = {:.3} MB",
-        (pts_circle * 2.0) as u64, // cast-ok: a point count rounded for reporting, never negative
-        pts_circle * 2.0 * 8.0 / 1.0e6
+        "      of that plain land, in a hollow the judgement did not keep: {}; in no hollow at \
+         all: {}",
+        bodies.iter().map(|b| b.not_above_land_notched).sum::<usize>(),
+        bodies.iter().map(|b| b.not_above_land_no_hollow).sum::<usize>()
     );
+    println!(
+        "  usable edges (collar end above the level): {usable_edges}; of those, contour crosses \
+         past halfway (f > 0.5): {total_past_half} ({:.3}%)",
+        100.0 * total_past_half as f64 / usable_edges as f64
+    );
+    println!("  mean contour fraction f over usable edges: {mean_f_over_edges:.4}");
+    println!(
+        "C, 250 m contour of perim_graph: {pts_graph} points = {} words = {:.3} MB",
+        pts_graph * 2,
+        (pts_graph * 2 * 8) as f64 / 1.0e6
+    );
+    println!(
+        "C, 250 m contour of perim_circle: {pts_circle} points = {} words = {:.3} MB",
+        pts_circle * 2,
+        (pts_circle * 2 * 8) as f64 / 1.0e6
+    );
+}
+
+/// Nearest whole number, for a count that is reported and then multiplied. There is no `round`
+/// in `detmath` and `.round(` is banned, so this is `floor(x + 0.5)` on a value the caller has
+/// already established is a non-negative count.
+fn round_to_usize(x: f64) -> usize {
+    m::floor(x + 0.5) as usize // cast-ok: a non-negative point count, floored to a whole number
 }
 
 /// The area-weighted centroid of a body's members, back on the sphere.
