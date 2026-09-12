@@ -276,7 +276,13 @@ carving needs.
     costs 1.5–3.3 MB against a 1 MB budget. The shore-point set costs 0.073 MB on the owner world.
   - **Ponds keep the 250 m trace.** A pond's surface is under 1 km² by definition, so its outline
     is a few dozen points. A pond is filled at 250 m resolution from its lowest point up to its
-    level, within its coarse basin, and the outline is traced and simplified to 250 m tolerance.
+    level, within its coarse basin, and the outline is traced and simplified to **half a cell**
+    (125 m — Ruling S-13, plan 1b-3's Task 5). A whole cell was the first choice and was measured
+    to leave **5,717 of 6,243 rings with some of their own water outside their own outline**: a
+    single staircase corner stands 176.8 m off the chord across it, so a 250 m tolerance drops it
+    and the replacing chord runs through the corner cell's own centre. A simplified ring is used
+    only if it is simple and still contains every cell it was traced from; otherwise the untouched
+    trace is used, and a candidate for which neither holds is not recorded at all.
     **`kind` says which of the two geometries a body carries** (§7): a lake's outline is a
     shore-point set, a pond's is a traced curve.
 - **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined
@@ -301,7 +307,12 @@ carving needs.
     `pond_wetness_share` quantile of the graph's land nodes and rise by no more than
     `pond_max_slope` over one cell at its lowest point (Ruling S-6, both read from the coarse
     graph, not from a new climate sampling), and be more than two cells from a hollow an earlier
-    strip already kept. The survivors are then sorted deepest first and thinned to one per 500 km²
+    strip already kept. **Ruling S-12** asks the wetness and coarse-body questions *twice*: once of
+    a segment's midpoint before its corridor is sampled at all, which is where a bake's time goes
+    and is the granularity §6.6 means by "coarse gates on where to look", and again of each
+    candidate's own anchor. The cost is that the pre-check takes or skips a corridor whole, so a
+    few ponds near a wetness boundary appear or vanish, and `ponds_found` counts hollows in the
+    corridors that passed rather than in every corridor. The survivors are then sorted deepest first and thinned to one per 500 km²
     (Ruling S-8). Each body that survives is **appended after the coarse bodies**, so no coarse id
     moves (Ruling S-7); it drains to the reach whose refined line is nearest its anchor and has no
     `outlet` of its own (Ruling S-5); and the record says how many hollows passed the keep rule

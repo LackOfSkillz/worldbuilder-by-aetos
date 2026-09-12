@@ -33,8 +33,15 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
     let ground = Ground::for_surface(surface, &height, p);
     let detail = ponds::pond_ground(surface, p);
 
-    let (mut strips_made, mut over, mut degen) = (0u64, 0u64, 0u64);
+    let (mut strips_made, mut over, mut degen, mut gated) = (0u64, 0u64, 0u64, 0u64);
     let (mut with_one, mut side, mut end) = (0u64, 0u64, 0u64);
+    // Ruling S-13's measurement: every S-10 survivor's ring, held to the two properties
+    // simplification can break. `rings` is the population; `crossing` is how many cross
+    // themselves; `leaking` is how many leave at least one of their own cells outside, and
+    // `cells_out` of `cells_in` is how many cells that is.
+    let (mut rings, mut crossing, mut leaking, mut refused) = (0u64, 0u64, 0u64, 0u64);
+    let (mut cells_in, mut cells_out) = (0u64, 0u64);
+    let mut ring_points = 0u64;
     let mut searched_m2 = 0.0f64;
     let (mut depths, mut areas) = (Vec::new(), Vec::new());
     let (mut kept_depths, mut kept_areas) = (Vec::new(), Vec::new());
@@ -44,6 +51,7 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
         strips_made += made.len() as u64;
         over += skips.over_budget as u64;
         degen += skips.degenerate as u64;
+        gated += skips.gated as u64;
         for (i, s) in made.iter().enumerate() {
             searched_m2 += (s.steps * s.cells_across) as f64 * p.pond_cell_m * p.pond_cell_m;
             let found = ponds::hollows_in(s, i, p);
@@ -61,6 +69,27 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
                 if !c.touches_side {
                     kept_depths.push(depth);
                     kept_areas.push(c.area_m2);
+                    let ring = ponds::outline(s, &c.cells, p);
+                    if ring.is_empty() {
+                        // Neither the simplified ring nor the raw walk was usable, so `search`
+                        // records nothing for this candidate.
+                        refused += 1;
+                        continue;
+                    }
+                    rings += 1;
+                    ring_points += ring.len() as u64;
+                    if !ponds::ring_is_simple(&ring, ground.radius_m) {
+                        crossing += 1;
+                    }
+                    let outside = c.cells.iter().filter(|&&(row, column)| {
+                        !ponds::ring_contains(&ring, ground.radius_m,
+                                              &s.point_at(row, column, p.pond_cell_m))
+                    }).count() as u64;
+                    cells_in += c.cells.len() as u64;
+                    cells_out += outside;
+                    if outside > 0 {
+                        leaking += 1;
+                    }
                 }
             }
         }
@@ -72,7 +101,7 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
     kept_areas.sort_by(|a, b| a.total_cmp(b));
     let total = depths.len() as u64;
 
-    println!("{label}: nodes {}, reaches {}, strips {strips_made} (skipped {over} over budget, {degen} degenerate), searched {:.0} km2",
+    println!("{label}: nodes {}, reaches {}, strips {strips_made} (skipped {over} over budget,               {degen} degenerate, {gated} gated), searched {:.0} km2",
              p.total_nodes, record.reaches.len(), searched_m2 / 1.0e6);
     if total == 0 {
         println!("{label}: NO CANDIDATES");
@@ -93,6 +122,8 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
         println!("{label}: S-10 survivors {} ({:.1}% of candidates)",
                  kept_depths.len(), 100.0 * kept_depths.len() as f64 / total as f64);
         println!("{label}:   depth min {dlo:.2} median {dmid:.2} max {dhi:.2} m; area min {alo:.0} median {amid:.0} max {ahi:.0} m2");
+        println!("{label}: RINGS {rings} ({:.1} points each), self-crossing {crossing}, leaking {leaking}, refused {refused}; cells outside their own ring {cells_out} of {cells_in}",
+                 ring_points as f64 / rings as f64);
     }
     println!("{label}: Ruling S-8 ceiling, one per {:.0} km2 of searched area = {:.0} bodies",
              p.pond_density_area_m2 / 1.0e6, searched_m2 / p.pond_density_area_m2);
@@ -103,7 +134,9 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
 /// effectively removed (one cell per 10,000 m², finer than the search's own 250 m cell, so no two
 /// candidates can share one).
 fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
+    let started = std::time::Instant::now();
     let record = hydrology::bake(surface, p).expect("bake");
+    let bake_s = started.elapsed().as_secs_f64();
     let mut uncapped = p.clone();
     uncapped.pond_density_area_m2 = 1.0e4;
     let without = hydrology::bake(surface, &uncapped).expect("bake");
@@ -116,7 +149,7 @@ fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
     without_ponds.bodies.truncate(record.bodies.len() - kept);
     let bare = hydrology::record::encode(&without_ponds).len();
     println!("{label}: found {} kept {kept}; uncapped {} -- the 500 km2 cap removes {}; \
-              coarse bodies {}; record {words} words ({} of them ponds, {} bytes)",
+              coarse bodies {}; record {words} words ({} of them ponds, {} bytes);               bake {bake_s:.2} s",
              record.stats.ponds_found, without.stats.ponds_kept,
              without.stats.ponds_kept as usize - kept, record.bodies.len() - kept,
              words - bare, (words - bare) * 8);
@@ -154,7 +187,7 @@ fn main() {
 
     recorded("RECORD default 12k (params)", &default_world, &small);
     recorded("RECORD default 12k (junction_params)", &default_world, &junction);
-    recorded("RECORD ranges 12k", &ranges_world, &HydroParams::earth_like(12_000));
+    recorded("RECORD ranges 12k", &ranges_world, &small);
     recorded("RECORD default 200k", &default_world, &large);
     recorded("RECORD ranges 200k", &ranges_world, &large);
 }

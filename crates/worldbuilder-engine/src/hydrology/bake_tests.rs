@@ -1409,6 +1409,18 @@ fn ponds_obey_their_keep_rule_and_name_a_river() {
         assert!(matches!(body.downstream, Downstream::Reach(_)), "Ruling S-5");
         assert!(body.outlet_reach.is_none(), "Ruling S-5");
         assert!(body.outline.len() >= 3, "a pond has a traced outline");
+        // The two properties simplification can break and nothing else would notice. A ring that
+        // crosses itself makes §8.3's point-in-polygon test silently wrong; a corner cut by a
+        // whole cell can put the body's own water outside its own outline, and `area_m2` comes
+        // from the candidate's cell count rather than from the ring, so the two would disagree in
+        // silence. The anchor is the candidate's lowest cell's centre -- the one cell centre the
+        // record still names. `pond_search_survey` runs the same two checks over every cell of
+        // every candidate on five populations.
+        assert!(crate::hydrology::ponds::ring_is_simple(&body.outline, world().radius_m),
+                "body {} traced a ring that crosses itself", body.id);
+        let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
+        assert!(crate::hydrology::ponds::ring_contains(&body.outline, world().radius_m, &anchor),
+                "body {} is not inside its own outline", body.id);
         assert_eq!(body.kind,
                    if body.area_m2 < p.pond_max_area_m2 { crate::hydrology::BodyKind::Pond }
                    else { crate::hydrology::BodyKind::Lake },

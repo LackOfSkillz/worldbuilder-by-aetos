@@ -73,6 +73,9 @@ pub struct StripSkips {
     pub over_budget: u32,
     /// Segments with no length to sample: the two ends are the same point.
     pub degenerate: u32,
+    /// **Ruling S-12:** segments whose corridor the coarse gate refused at the midpoint, before a
+    /// single cell was sampled. See [`strips_where`].
+    pub gated: u32,
 }
 
 /// One hollow the fine search found, before any of Task 5's gates.
@@ -167,6 +170,29 @@ pub fn strips(reach: &ReachLine, ground: &Ground, pond_ground_m: &dyn Fn(&Sphere
 pub fn strips_with_skips(reach: &ReachLine, ground: &Ground,
                          pond_ground_m: &dyn Fn(&SpherePoint) -> f64, params: &HydroParams)
                          -> (Vec<Strip>, StripSkips) {
+    strips_where(reach, ground, pond_ground_m, params, &|_| true)
+}
+
+/// **Ruling S-12:** [`strips_with_skips`], with a coarse gate on *where to look at all*. A segment
+/// whose midpoint `look_here` refuses is never sampled, and is counted in [`StripSkips::gated`].
+///
+/// The gate's granularity is the point. Ruling S-6 calls the wetness and slope tests "coarse gates
+/// on where to look", and until this ruling they were applied to a candidate *after* its whole
+/// 3 km corridor had been sampled off `Surface::elevation_m` at 250 m -- which is where a bake's
+/// time goes, so gating afterwards saved none of it. Asking the same question of the segment's
+/// midpoint, before the sampling loop, is the gate doing what it was written to do.
+///
+/// **The cost, stated plainly: the gate now takes or skips a corridor whole.** A segment whose
+/// midpoint sits just below the wetness floor loses every pond along its whole length, including
+/// ones 3 km away in wetter ground that the per-candidate test would have kept; a segment whose
+/// midpoint is just above it keeps looking through ground the per-candidate test would have
+/// refused. So a few ponds near a wetness boundary appear or vanish against the per-candidate
+/// answer, and `ponds_found` now counts hollows in the corridors that passed rather than hollows
+/// in every corridor. Nothing false is recorded: `search` still applies Ruling S-6's and S-7's
+/// tests to each surviving candidate's own anchor, and this gate only removes work.
+pub fn strips_where(reach: &ReachLine, ground: &Ground,
+                    pond_ground_m: &dyn Fn(&SpherePoint) -> f64, params: &HydroParams,
+                    look_here: &dyn Fn(&SpherePoint) -> bool) -> (Vec<Strip>, StripSkips) {
     let cell = params.pond_cell_m;
     let half = -m::floor(-(params.pond_search_radius_m / cell));
     let k = half as usize; // cast-ok: a whole number, and bake_stages holds radius >= cell >= 10 m
@@ -208,6 +234,11 @@ pub fn strips_with_skips(reach: &ReachLine, ground: &Ground,
             up: base.up,
             radius_m: ground.radius_m,
         };
+        // Ruling S-12's gate, the last thing before the only expensive part of this function.
+        if !look_here(&frame.local_to_sphere(len_m * 0.5, 0.0)) {
+            skips.gated += 1;
+            continue;
+        }
         let mut ground_m = Vec::with_capacity(steps * cells_across);
         for row in 0..steps {
             for column in 0..cells_across {
@@ -466,7 +497,21 @@ fn simplify_ring(points: &[(f64, f64)], radius_m: f64, tolerance_m: f64) -> Vec<
 /// boundary. A hole inside it (dry ground the water surrounds) is a second loop the walk does not
 /// visit, and is not recorded: the outline is the body's extent, and its interior is not part of
 /// the record's question.
-fn outline(strip: &Strip, cells: &[(usize, usize)], params: &HydroParams) -> Vec<(f64, f64)> {
+///
+/// **A ring is checked before it is returned, and an unusable candidate gets no ring at all.** It
+/// must be simple ([`ring_is_simple`]) and must still contain every one of the candidate's own cell
+/// centres ([`ring_contains`]). The simplified ring is tried first, then the untouched corner walk;
+/// if neither holds, **this returns an empty `Vec` and `search` does not record the candidate**. A
+/// body whose recorded shape does not contain its own recorded water is worse than no body: §8.3
+/// answers `water_at` from the ring, and `area_m2` comes from the cell count, so the two would
+/// disagree in silence. Ruling S-13 sets the tolerance that makes the fallback rare rather than
+/// routine, but the check is what makes the property hold -- a tolerance that happens to work on
+/// four worlds is not a guarantee.
+///
+/// The raw walk fails only where the cell set pinches: two cells meeting at a corner and nowhere
+/// else make the boundary visit that corner twice, and a ring with a repeated vertex is not simple.
+/// Measured at 1 candidate in 6,243.
+pub fn outline(strip: &Strip, cells: &[(usize, usize)], params: &HydroParams) -> Vec<(f64, f64)> {
     let (mut first_row, mut last_row) = (cells[0].0, cells[0].0);
     let (mut first_column, mut last_column) = (cells[0].1, cells[0].1);
     for &(row, column) in cells {
@@ -551,9 +596,24 @@ fn outline(strip: &Strip, cells: &[(usize, usize)], params: &HydroParams) -> Vec
     }
     let mut closed = traced.clone();
     closed.push(traced[0]);
-    let mut simplified = simplify_ring(&closed, strip.frame.radius_m, cell);
+    let mut simplified = simplify_ring(&closed, strip.frame.radius_m, cell * SIMPLIFY_CELLS);
     simplified.pop(); // the repeated first point: the ring closes implicitly
-    if simplified.len() >= 3 { simplified } else { traced }
+    // The two properties simplification can break, checked rather than assumed.
+    let radius_m = strip.frame.radius_m;
+    let usable = |ring: &[(f64, f64)]| {
+        ring.len() >= 3
+            && ring_is_simple(ring, radius_m)
+            && cells.iter().all(|&(row, column)| {
+                ring_contains(ring, radius_m, &strip.point_at(row, column, cell))
+            })
+    };
+    if usable(&simplified) {
+        simplified
+    } else if usable(&traced) {
+        traced
+    } else {
+        Vec::new()
+    }
 }
 
 /// A helper index's cell: about one entry per cell for a population of `count`, with `count`
@@ -566,6 +626,104 @@ fn outline(strip: &Strip, cells: &[(usize, usize)], params: &HydroParams) -> Vec
 fn index_cell_m(count: usize, radius_m: f64) -> f64 {
     let count = if count < 1 { 1 } else if count > 100_000_000 { 100_000_000 } else { count };
     crate::stream::nominal_spacing_m(count as u32, radius_m) // cast-ok: held to 1..=100,000,000 above
+}
+
+/// **Ruling S-13:** the Douglas–Peucker tolerance [`outline`] simplifies a traced ring at, as a
+/// multiple of `pond_cell_m`.
+///
+/// A whole cell was the first choice and it was wrong, measured rather than argued: on 6,243 rings
+/// across four populations no ring self-crossed, but **5,717 of them left at least one of their own
+/// cells outside their own outline** (20,877 cells of 514,821). The reason is exact. A single
+/// staircase corner has its middle vertex 250/sqrt(2) = 176.8 m off the chord across it, which a
+/// 250 m tolerance drops; the chord that replaces it then passes through the corner cell's own
+/// centre, and whether that centre reads as inside is a coin flip. At half a cell, 176.8 m is over
+/// the tolerance and the corner is kept.
+///
+/// This matters because `area_m2` comes from the candidate's cell count and not from the ring, so a
+/// body that leaks its own water out of its own outline is a body whose recorded area and recorded
+/// shape disagree and nothing in the record says so. §8.3 answers `water_at` from the ring.
+const SIMPLIFY_CELLS: f64 = 0.5;
+
+/// A ring's points in a tangent plane at `at`, for the two tests below. A pond is a few kilometres
+/// across at most, so one plane is exact enough to answer both questions about it.
+fn ring_local(ring: &[(f64, f64)], radius_m: f64, at: &SpherePoint) -> Vec<(f64, f64)> {
+    let frame = TangentFrame::at(at, radius_m);
+    ring.iter()
+        .map(|&(lat, lon)| frame.sphere_to_local(&SpherePoint::from_latlon(lat, lon)))
+        .collect()
+}
+
+/// Does `ring` cross itself anywhere? A closed ring with the implicit closure of [`outline`], so
+/// segment `i` runs from `ring[i]` to `ring[(i + 1) % len]`.
+///
+/// **This exists because simplification can break it.** [`outline`]'s walk is simple by
+/// construction -- it is the boundary of a set of cells -- but the Douglas–Peucker that follows
+/// cuts corners by up to a whole cell, and on a concave rectilinear ring a cut corner can be made
+/// to cross a facing wall. Ruling S-1's own history is the argument for measuring rather than
+/// assuming: the ring it rejected self-crossed six times and nothing but a measurement found it.
+/// §8.3's point-in-polygon test is silently wrong on a ring that crosses itself.
+pub fn ring_is_simple(ring: &[(f64, f64)], radius_m: f64) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let local = ring_local(ring, radius_m, &SpherePoint::from_latlon(ring[0].0, ring[0].1));
+    // A repeated vertex is a degenerate crossing the segment test below cannot see.
+    for i in 0..n {
+        for j in i + 1..n {
+            if local[i] == local[j] {
+                return false;
+            }
+        }
+    }
+    let side = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    for i in 0..n {
+        let (a, b) = (local[i], local[(i + 1) % n]);
+        for j in i + 1..n {
+            // Segments that share an endpoint meet there by construction and are not crossings.
+            if j == (i + 1) % n || i == (j + 1) % n {
+                continue;
+            }
+            let (c, d) = (local[j], local[(j + 1) % n]);
+            let (d1, d2) = (side(a, b, c), side(a, b, d));
+            let (d3, d4) = (side(c, d, a), side(c, d, b));
+            let opposite = |p: f64, q: f64| (p > 0.0 && q < 0.0) || (p < 0.0 && q > 0.0);
+            if opposite(d1, d2) && opposite(d3, d4) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Is `point` inside `ring`? Even-odd crossings of a ray from the point, in a tangent plane at the
+/// point itself, with the ring closed implicitly.
+///
+/// This is the test §8.3 will make of a pond, brought forward so the trace can be held to it:
+/// `area_m2` comes from the candidate's cell count and not from the ring, so a simplification that
+/// cut a cell out of its own outline would leave a body whose recorded area and recorded shape
+/// disagree and nothing would notice.
+pub fn ring_contains(ring: &[(f64, f64)], radius_m: f64, point: &SpherePoint) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let local = ring_local(ring, radius_m, point);
+    let n = local.len();
+    let mut inside = false;
+    for i in 0..n {
+        let (xi, yi) = local[i];
+        let (xj, yj) = local[(i + 1) % n];
+        // Half-open in y, so a vertex exactly level with the ray counts once and not twice.
+        if (yi > 0.0) != (yj > 0.0) {
+            let t = -yi / (yj - yi);
+            if xi + t * (xj - xi) > 0.0 {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 /// One candidate that survived every gate, with everything the record needs, so the density cap
@@ -642,9 +800,23 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
         let mut anchors = BucketIndex::new(ground.radius_m, index_cell_m(line_points.len(), ground.radius_m));
         let mut anchor_points: Vec<SpherePoint> = Vec::new();
 
+        // Ruling S-6's wetness and Ruling S-7's coarse-lake test, at one point. Ruling S-12 asks it
+        // of a segment's midpoint before the corridor is sampled at all; the loop below asks it
+        // again of each surviving candidate's own anchor, which can be 3 km away and is the point
+        // the two rulings are actually written about. The pre-check does not subsume it and is not
+        // meant to: it removes work, and the per-candidate test is what decides a body.
+        let coarse_ok = |at: &SpherePoint| match nodes.nearest(at, &graph.positions) {
+            Some(node) => {
+                let node = node as usize; // cast-ok: the node index the index was built with
+                lake_of[node] == NO_LAKE && graph.wetness[node] >= floor
+            }
+            None => false,
+        };
+
         let mut survivors: Vec<Survivor> = Vec::new();
         for reach in &record.reaches {
-            for (index, strip) in strips(reach, ground, pond_ground_m, params).iter().enumerate() {
+            let (made, _) = strips_where(reach, ground, pond_ground_m, params, &coarse_ok);
+            for (index, strip) in made.iter().enumerate() {
                 for candidate in hollows_in(strip, index, params) {
                     found += 1;
                     // Ruling S-10: past the corridor the terrain may keep descending, so a
@@ -660,12 +832,8 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
                     if !((ground.height_m)(&candidate.anchor) > 0.0) {
                         continue;
                     }
-                    let node = match nodes.nearest(&candidate.anchor, &graph.positions) {
-                        Some(node) => node as usize, // cast-ok: the node index the index was built with
-                        None => continue,
-                    };
-                    // Ruling S-7, the lake half, and Ruling S-6's wetness gate.
-                    if lake_of[node] != NO_LAKE || graph.wetness[node] < floor {
+                    // Ruling S-7's lake half and Ruling S-6's wetness gate, at the anchor itself.
+                    if !coarse_ok(&candidate.anchor) {
                         continue;
                     }
                     // Two strips of one reach share an end, so the same water is seen twice; the
@@ -884,7 +1052,7 @@ mod tests {
         p.pond_cell_m = 10.0;
         let (made, skips) = strips_with_skips(&reach_along_the_equator(10_000.0), &ground, &h, &p);
         assert!(made.is_empty(), "no strip is made for a segment over the bound");
-        assert_eq!(skips, StripSkips { over_budget: 1, degenerate: 0 });
+        assert_eq!(skips, StripSkips { over_budget: 1, degenerate: 0, gated: 0 });
         // And the same reach at the Earth-like cell is inside the bound, so the bound is a
         // bound on the work and not a refusal to search at all.
         let (made, skips) = strips_with_skips(&reach_along_the_equator(10_000.0), &ground, &h, &params());
@@ -993,7 +1161,7 @@ mod tests {
         reach.points.push(reach.points[1].clone());
         let (made, skips) = strips_with_skips(&reach, &ground, &h, &params());
         assert_eq!(made.len(), 1);
-        assert_eq!(skips, StripSkips { over_budget: 0, degenerate: 1 });
+        assert_eq!(skips, StripSkips { over_budget: 0, degenerate: 1, gated: 0 });
     }
 
     /// A line of equally-wet land nodes along the equator, under the strip: every candidate's
@@ -1078,8 +1246,26 @@ mod tests {
                 "kept body at {} m along", lon * M_PER_DEG);
     }
 
+    /// The line graph with one extra node `north_m` metres off the line at 5,000 m along it. A
+    /// bowl centred there has a **different** nearest node from the segment's midpoint, so Ruling
+    /// S-6's and S-7's *per-candidate* tests can be driven without Ruling S-12's *per-strip* gate
+    /// answering first. The extra node is the last one, so a test names it by `graph.len() - 1`.
+    fn graph_with_an_off_line_node(north_m: f64) -> LandGraph {
+        let mut positions: Vec<SpherePoint> = (0..11)
+            .map(|i| SpherePoint::from_latlon(0.0, i as f64 * 1_000.0 / M_PER_DEG))
+            .collect();
+        positions.push(SpherePoint::from_latlon(north_m / M_PER_DEG, 5_000.0 / M_PER_DEG));
+        let n = positions.len();
+        let directed: Vec<Vec<u32>> = (0..n)
+            .map(|i| if i + 1 < n { vec![i as u32 + 1] } else { Vec::new() }) // cast-ok: node index, 12 of them
+            .collect();
+        LandGraph::from_parts(R, positions, vec![100.0; n], vec![1.0e6; n], &directed,
+                              vec![0.5; n])
+    }
+
     /// Ruling S-7: a candidate inside a coarse lake, or on ground at or below the datum, is
-    /// dropped. Run twice off one bowl, so the difference is the ruling and nothing else.
+    /// dropped. Every run below is the same bowl on the same ground, so the difference between
+    /// them is the ruling and nothing else.
     #[test]
     fn a_candidate_inside_a_coarse_lake_is_dropped() {
         let h = bowl(0.0, 5_000.0, 600.0, 5.0);
@@ -1092,20 +1278,130 @@ mod tests {
         assert_eq!(open.stats.ponds_found, 1);
         assert_eq!(open.stats.ponds_kept, 1, "on open ground the bowl is a body");
 
-        // The same bowl, with every node of the graph a member of coarse lake 0.
+        // Every node a member of coarse lake 0. Ruling S-12 answers first here: the segment's
+        // own midpoint is inside the lake, so the corridor is never sampled and the hollow is
+        // never even found. That is the ruling's stated cost, and this is what it looks like.
         let mut drowned = record_for(reach_along_the_equator(10.0));
         search(&mut drowned, &graph, &vec![0u32; graph.len()], &ground, &h, &p);
-        assert_eq!(drowned.stats.ponds_found, 1, "it is still found");
-        assert_eq!(drowned.stats.ponds_kept, 0, "and dropped: it is inside a coarse lake");
+        assert_eq!(drowned.stats.ponds_found, 0, "Ruling S-12 skipped the whole corridor");
+        assert_eq!(drowned.stats.ponds_kept, 0);
         assert!(drowned.bodies.is_empty());
 
-        // And the datum half of the ruling: the same bowl on ground 100 m lower is under the sea.
+        // The per-candidate half of the same ruling, with the strip gate deliberately passing:
+        // the bowl sits 1.5 km off the line beside its own graph node, which is a lake member,
+        // while the midpoint's node on the line is not. The corridor IS sampled, the hollow IS
+        // found, and the candidate is dropped at its own anchor.
+        let off_line = bowl(1_500.0, 5_000.0, 600.0, 5.0);
+        let ground = Ground { height_m: &off_line, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let graph = graph_with_an_off_line_node(1_500.0);
+        let mut lake_of = vec![NO_LAKE; graph.len()];
+        let last = graph.len() - 1;
+        lake_of[last] = 0;
+        let mut beside = record_for(reach_along_the_equator(10.0));
+        search(&mut beside, &graph, &lake_of, &ground, &off_line, &p);
+        assert_eq!(beside.stats.ponds_found, 1, "the corridor passed the strip gate");
+        assert_eq!(beside.stats.ponds_kept, 0, "and the candidate's own node is a lake member");
+        // The control: the same bowl and graph with that node out of the lake is kept.
+        let mut control = record_for(reach_along_the_equator(10.0));
+        search(&mut control, &graph, &vec![NO_LAKE; graph.len()], &ground, &off_line, &p);
+        assert_eq!(control.stats.ponds_kept, 1);
+
+        // And the datum half of the ruling, which no strip gate tests: the same bowl on ground
+        // 100 m lower is under the sea.
         let sunk = |q: &SpherePoint| h(q) - 100.0;
         let below = Ground { height_m: &sunk, radius_m: R, corridor_m: 20_000.0, seed: 1 };
         let mut drowned = record_for(reach_along_the_equator(10.0));
-        search(&mut drowned, &graph, &vec![NO_LAKE; graph.len()], &below, &sunk, &p);
+        search(&mut drowned, &graph_under_the_line(), &vec![NO_LAKE; 11], &below, &sunk, &p);
         assert_eq!(drowned.stats.ponds_found, 1);
         assert_eq!(drowned.stats.ponds_kept, 0, "the landform there is at the datum");
+    }
+
+    /// Ruling S-10 at the `search` level: a side-clipped hollow is **counted** in `ponds_found`
+    /// and kept out of `bodies`. `the_density_cap_keeps_the_deepest` asserts the opposite case --
+    /// that an unclipped bowl is recorded -- so without this nothing holds the ruling itself.
+    #[test]
+    fn a_side_clipped_candidate_is_counted_and_not_recorded() {
+        // The `a_bowl_against_the_corridors_side_is_flagged_as_side_clipped` fixture: 2.75 km
+        // north of the line, one cell inside the +3 km edge.
+        let h = bowl(2_750.0, 5_000.0, 600.0, 30.0);
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let graph = graph_under_the_line();
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &h, &p);
+        assert_eq!(record.stats.ponds_found, 1, "the hollow is found and counted");
+        assert_eq!(record.stats.ponds_kept, 0, "Ruling S-10: and not recorded");
+        assert!(record.bodies.is_empty());
+        // The control: the same bowl moved onto the line, clear of both sides, IS recorded -- so
+        // what the assertions above measure is the clip and not the bowl.
+        let clear = bowl(0.0, 5_000.0, 600.0, 30.0);
+        let ground = Ground { height_m: &clear, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &clear, &p);
+        assert_eq!(record.stats.ponds_kept, 1);
+    }
+
+    /// Ruling S-6's slope gate at the `search` level. `graph_under_the_line` makes every node
+    /// equally wet, so nothing else in this run can be what drops the candidate.
+    #[test]
+    fn a_candidate_in_steep_ground_is_counted_and_not_recorded() {
+        // A bowl 80 m deep over a 600 m radius: one 250 m cell from its floor the ground stands
+        // about 13.9 m higher, against the 7.5 m that `pond_max_slope` 0.03 allows over a cell.
+        let steep = bowl(0.0, 5_000.0, 600.0, 80.0);
+        let ground = Ground { height_m: &steep, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let graph = graph_under_the_line();
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &steep, &p);
+        assert_eq!(record.stats.ponds_found, 1, "the hollow is found and counted");
+        assert_eq!(record.stats.ponds_kept, 0, "Ruling S-6: and too steep to record");
+        // The control: the same bowl at 5 m deep is gentle enough and is recorded.
+        let gentle = bowl(0.0, 5_000.0, 600.0, 5.0);
+        let ground = Ground { height_m: &gentle, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &gentle, &p);
+        assert_eq!(record.stats.ponds_kept, 1);
+    }
+
+    /// Ruling S-6's wetness gate, both halves: Ruling S-12's per-strip pre-check, which skips a
+    /// dry corridor whole, and the per-candidate test at the anchor, driven here with the strip
+    /// gate deliberately passing.
+    #[test]
+    fn a_candidate_in_dry_ground_is_not_recorded() {
+        let off_line = bowl(1_500.0, 5_000.0, 600.0, 5.0);
+        let ground = Ground { height_m: &off_line, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+
+        // The bowl's own node is dry and every other node is wet. With 12 nodes and a 0.6 share
+        // the floor is the 7th of the sorted values, which is 0.5, and the dry node's 0.0 is
+        // below it -- while the midpoint's node on the line is not.
+        let mut graph = graph_with_an_off_line_node(1_500.0);
+        let last = graph.len() - 1;
+        graph.wetness[last] = 0.0;
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &off_line, &p);
+        assert_eq!(record.stats.ponds_found, 1, "the corridor passed the strip gate");
+        assert_eq!(record.stats.ponds_kept, 0, "and the candidate's own node is too dry");
+
+        // The control: the same bowl and graph with that node as wet as the rest is kept.
+        let graph = graph_with_an_off_line_node(1_500.0);
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &off_line, &p);
+        assert_eq!(record.stats.ponds_kept, 1);
+
+        // Ruling S-12's half: node 5 on the line, at 5,000 m along, is the one the segment's
+        // midpoint lands on, and it alone is dry against eleven wet ones -- so the floor is 1.0,
+        // the midpoint is below it, and the corridor is never sampled. The bowl's own node is
+        // still wet, so the per-candidate test would have kept it. Nothing is even found.
+        let mut graph = graph_with_an_off_line_node(1_500.0);
+        for w in graph.wetness.iter_mut() {
+            *w = 1.0;
+        }
+        graph.wetness[5] = 0.0;
+        let mut record = record_for(reach_along_the_equator(10.0));
+        search(&mut record, &graph, &vec![NO_LAKE; graph.len()], &ground, &off_line, &p);
+        assert_eq!(record.stats.ponds_found, 0, "Ruling S-12 skipped the whole corridor");
+        assert_eq!(record.stats.ponds_kept, 0);
     }
 
     /// The outline is a closed ring of at least 3 points, in one fixed winding, and the same
