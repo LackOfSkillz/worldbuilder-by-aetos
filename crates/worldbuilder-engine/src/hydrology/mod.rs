@@ -84,7 +84,9 @@ pub struct HydroParams {
     pub pond_wetness_share: f64,
     /// Ruling S-6: and flatter than this, over one pond cell.
     pub pond_max_slope: f64,
-    /// Ruling S-8: at most one kept body per this much searched area.
+    /// Ruling S-8: at most one kept body per this much searched area. Spec §6.6 says 500 km^2
+    /// (5.0e8); `earth_like` ships 4.0e9 because 5.0e8 put a 1,000,000-node stand-in's record
+    /// over the 8 MB target -- see `earth_like` for the measurement.
     pub pond_density_area_m2: f64,
 }
 
@@ -123,7 +125,16 @@ impl HydroParams {
             pond_keep_area_m2: 50_000.0,
             pond_wetness_share: 0.6,
             pond_max_slope: 0.03,
-            pond_density_area_m2: 5.0e8,
+            // Plan 1b-3, Task 7's size gate. Spec §6.6's own number is 500 km^2 (5.0e8), and at
+            // that value the `seed1_ranges` stand-in's record was 9,020,112 bytes at 1,000,000
+            // nodes, over the 8,000,000-byte target. Raised in x2 steps and measured at each
+            // (`hydro_survey --pond-density D 1000000`, native release, one host): 5.0e8 ->
+            // 9,020,112; 1.0e9 -> 8,746,368; 2.0e9 -> 8,357,824; 4.0e9 -> 7,896,992, the first
+            // that fits, and the value here. The cap is a weak lever -- each doubling removes
+            // only about a tenth of the kept bodies (6,952 -> 6,280 -> 5,355 -> 4,270) because
+            // the 3 km corridors rarely put two candidates in one cell -- so the next step,
+            // 8.0e9, was measured too and gives 7,407,872 bytes if more headroom is ever needed.
+            pond_density_area_m2: 4.0e9,
         }
     }
 }
