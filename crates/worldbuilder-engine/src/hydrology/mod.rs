@@ -253,6 +253,14 @@ pub struct BakeStats {
     pub meander_wavelength_widths: f64,
     pub meander_amplitude_widths: f64,
     pub meander_max_slope: f64,
+    /// SCHEMA 5, Rulings S-2 and S-3: how many crossings the *coarse* record already had, before
+    /// refinement traced anything. These are graph artifacts the crossing pass does not try to
+    /// fix (Ruling S-2), so they are the number the refined count is judged against.
+    pub crossings_coarse: u32,
+    /// SCHEMA 5, Ruling S-4: how many crossings are left in the record as it ships, after the
+    /// crossing pass, the meander and simplification. Recorded rather than asserted to be zero,
+    /// because a coarse crossing cannot be straightened away.
+    pub crossings_left: u32,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the

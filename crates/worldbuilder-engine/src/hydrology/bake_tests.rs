@@ -1105,9 +1105,12 @@ fn the_record_echoes_the_refinement_params() {
     assert_eq!(record.stats.refine_step_m, p.refine_step_m);
     assert_eq!(record.stats.meander_max_slope, p.meander_max_slope);
     let words = crate::hydrology::record::encode(&record);
-    assert_eq!(words[0], 4.0);
+    assert_eq!(words[0], 5.0);
     assert_eq!(words[32], f64::from(record.stats.capped_basins));
     assert_eq!(words[42], p.meander_max_slope);
+    // SCHEMA 5's two crossing counts close the 45-word header.
+    assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
+    assert_eq!(words[44], f64::from(record.stats.crossings_left));
 }
 
 /// The bake test world with the stream floor lowered to 2 nodes: 165 reaches, 34 of them ending
@@ -1332,20 +1335,26 @@ fn simplification_shrinks_the_refined_line() {
     }
 }
 
-/// Ruling S-2: the coarse record crosses itself a little, and that stays. This test reports both
-/// counts, so the crossing pass (Task 3) can be judged against the coarse number rather than
-/// against zero.
+/// Rulings S-2 and S-3: after the pass, the refined lines cross no more often than the coarse
+/// ones they came from, and the record says so.
+///
+/// `params()` has no crossings at all -- neither coarse nor refined -- so it is a control, not a
+/// population. The junction threshold on the bake test world and the seed 1 `ranges` world are
+/// where this is measured.
 #[test]
-fn crossings_are_counted_coarse_and_refined() {
-    for (name, p) in [("params", params()), ("junction", junction_params())] {
-        let stages = bake_stages(&world(), &p).expect("stages");
+fn refinement_adds_no_crossings() {
+    for (name, surface, p) in refined_populations() {
+        let stages = bake_stages(&surface, &p).expect("stages");
         let coarse = record_of(&stages, &p);
         let coarse_lines: Vec<Vec<crate::hydrology::ReachPoint>> = coarse.reaches.iter().map(|r| r.points.clone()).collect();
         let down: Vec<Downstream> = coarse.reaches.iter().map(|r| r.downstream).collect();
-        let before = crate::hydrology::refine::crossings(&coarse_lines, &down, world().radius_m).len();
-        let refined = crate::hydrology::bake(&world(), &p).expect("bake");
+        let before = crate::hydrology::refine::crossings(&coarse_lines, &down, surface.radius_m).len();
+        let refined = crate::hydrology::bake(&surface, &p).expect("bake");
         let lines: Vec<Vec<crate::hydrology::ReachPoint>> = refined.reaches.iter().map(|r| r.points.clone()).collect();
-        let after = crate::hydrology::refine::crossings(&lines, &down, world().radius_m).len();
+        let after = crate::hydrology::refine::crossings(&lines, &down, surface.radius_m).len();
         eprintln!("{name}: coarse {before} refined {after}");
+        assert!(after <= before, "{name}: refinement left {after} crossings against {before} coarse");
+        assert_eq!(refined.stats.crossings_coarse as usize, before);
+        assert_eq!(refined.stats.crossings_left as usize, after);
     }
 }

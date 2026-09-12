@@ -556,6 +556,10 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         meander_wavelength_widths: params.meander_wavelength_widths,
         meander_amplitude_widths: params.meander_amplitude_widths,
         meander_max_slope: params.meander_max_slope,
+        // SCHEMA 5: both are refinement's own counts, and `record_of` is the record *before*
+        // refinement. `refine::refine` fills them in.
+        crossings_coarse: 0,
+        crossings_left: 0,
     };
 
     HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }

@@ -37,14 +37,16 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.reaches.length, summary.reaches);
   assert.equal(decoded.notches, summary.notches);
   assert.equal(decoded.falls.length, summary.falls);
-  assert.equal(decoded.header.schema, 4);
+  assert.equal(decoded.header.schema, 5);
   assert.equal(decoded.header.nodes, summary.nodes);
   assert.equal(decoded.header.forcedRequested, summary.forcedRequested);
   assert.equal(decoded.header.forcedMatched, summary.forcedMatched);
   assert.equal(decoded.header.cappedBasins, words[32]);
+  assert.equal(decoded.header.crossingsCoarse, words[43]);
+  assert.equal(decoded.header.crossingsLeft, words[44]);
 });
 
-test("decodeHydro consumes a real SCHEMA 4 bake exactly, reach fresh and body downstream included", () => {
+test("decodeHydro consumes a real SCHEMA 5 bake exactly, reach fresh and body downstream included", () => {
   const decoded = decodeHydro(bake());
   assert.ok(decoded.reaches.length > 0, "sanity: this world has reaches");
   for (const reach of decoded.reaches) {
@@ -62,11 +64,15 @@ test("decodeHydro throws on a truncated array", () => {
   assert.throws(() => decodeHydro(new Float64Array(0)), /truncated|ran out of words/);
 });
 
-test("decodeHydro throws on a schema-2 header", () => {
+test("decodeHydro throws on a schema-2 or schema-4 header", () => {
   const words = bake();
-  const tampered = words.slice();
-  tampered[0] = 2;
-  assert.throws(() => decodeHydro(tampered), /unsupported schema/);
+  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 45, so a decoder that adapted rather
+  // than refused would read a body's first two words as the two crossing counts.
+  for (const schema of [2, 4]) {
+    const tampered = words.slice();
+    tampered[0] = schema;
+    assert.throws(() => decodeHydro(tampered), /unsupported schema/);
+  }
 });
 
 test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {
@@ -83,16 +89,16 @@ test("decodeHydro refuses an index or count word above 4294967295, as record.rs'
   header[5] = U32_MAX + 1;
   assert.throws(() => decodeHydro(header), /bad count\/index word/);
 
-  // ...in a body's optional outlet reach (body 0's word 8, record word 51)...
+  // ...in a body's optional outlet reach (body 0's word 8, record word 53)...
   assert.ok(words[1] > 0, "sanity: this world has a body to tamper with");
   const outlet = words.slice();
-  outlet[43 + 8] = U32_MAX + 1;
+  outlet[45 + 8] = U32_MAX + 1;
   assert.throws(() => decodeHydro(outlet), /bad optional index word/);
 
-  // ...and in a downstream id (body 0's words 11-12, record words 54-55, made a body link).
+  // ...and in a downstream id (body 0's words 11-12, record words 56-57, made a body link).
   const downstream = words.slice();
-  downstream[43 + 11] = 1;
-  downstream[43 + 12] = U32_MAX + 1;
+  downstream[45 + 11] = 1;
+  downstream[45 + 12] = U32_MAX + 1;
   assert.throws(() => decodeHydro(downstream), /bad downstream body id/);
 });
 

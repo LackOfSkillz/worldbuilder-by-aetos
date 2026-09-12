@@ -31,14 +31,19 @@ use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
 use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, ReachLine, ReachPoint};
 
-/// 4.0 as of Task 3 (plan 1b-2): the header grew from 32 to 43 words, adding eleven words
-/// after `forced_matched` -- three counts of what capped basins keep (`capped_basins`,
-/// `capped_inner`, `capped_inner_kept`, carry-forward I3) and an echo of the eight refinement
-/// params (`refine_step_m`, `refine_simplify_m`, `refine_vertical_m`, `fall_min_drop_m`,
+/// 5.0 as of Task 3 (plan 1b-3): the header grew from 43 to 45 words, adding the crossing pass's
+/// two counts after `meander_max_slope` -- `crossings_coarse` (word 43, how many crossings the
+/// coarse record already had, which Ruling S-2 keeps) and `crossings_left` (word 44, how many are
+/// left in the record as it ships, after the pass, the meander and simplification).
+///
+/// SCHEMA 4 (Task 3 of plan 1b-2) grew the header from 32 to 43 words, adding eleven words after
+/// `forced_matched` -- three counts of what capped basins keep (`capped_basins`, `capped_inner`,
+/// `capped_inner_kept`, carry-forward I3) and an echo of the eight refinement params
+/// (`refine_step_m`, `refine_simplify_m`, `refine_vertical_m`, `fall_min_drop_m`,
 /// `fall_max_run_m`, `meander_wavelength_widths`, `meander_amplitude_widths`,
 /// `meander_max_slope`). Earlier schemas are refused outright -- `decode` never adapts an old
 /// record to the new shape.
-pub const SCHEMA: f64 = 4.0;
+pub const SCHEMA: f64 = 5.0;
 
 fn word_to_u32(w: f64) -> Option<u32> {
     if w.is_finite() && w >= 0.0 && w <= u32::MAX as f64 && m::floor(w) == w {
@@ -241,6 +246,8 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.meander_wavelength_widths);
     out.push(stats.meander_amplitude_widths);
     out.push(stats.meander_max_slope);
+    out.push(stats.crossings_coarse as f64);
+    out.push(stats.crossings_left as f64);
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -356,6 +363,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         meander_wavelength_widths: r.word()?,
         meander_amplitude_widths: r.word()?,
         meander_max_slope: r.word()?,
+        crossings_coarse: r.u32()?,
+        crossings_left: r.u32()?,
     };
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
@@ -582,17 +591,31 @@ mod tests {
                 meander_wavelength_widths: 11.0,
                 meander_amplitude_widths: 1.5,
                 meander_max_slope: 0.002,
+                crossings_coarse: 7,
+                crossings_left: 2,
             },
         }
     }
 
     #[test]
-    fn a_hand_built_record_round_trips_at_schema_4() {
+    fn a_hand_built_record_round_trips_at_schema_5() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(SCHEMA, 4.0, "Task 3 (plan 1b-2) bumped the schema for the 43-word header");
+        assert_eq!(SCHEMA, 5.0, "Task 3 (plan 1b-3) bumped the schema for the 45-word header");
         assert_eq!(words[0], SCHEMA);
+        assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
+        assert_eq!(words[44], f64::from(record.stats.crossings_left));
         assert_eq!(decode(&words), Some(record));
+    }
+
+    /// SCHEMA 4 is the schema this one replaced, and its 43-word header is a prefix of this
+    /// one's 45: a decoder that adapted rather than refused would read a body's first two words
+    /// as the two new counts and go wrong quietly.
+    #[test]
+    fn a_schema_4_record_is_refused() {
+        let mut words = encode(&sample());
+        words[0] = 4.0;
+        assert_eq!(decode(&words), None, "SCHEMA 4 input must be refused outright, not adapted");
     }
 
     #[test]

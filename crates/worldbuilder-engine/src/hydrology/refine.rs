@@ -124,11 +124,18 @@ impl Segment {
     }
 }
 
-/// One refined reach: its points, which of them simplification must keep, and its falls.
+/// One refined reach: its points, which of them simplification must keep, which coarse segment
+/// each came from, and its falls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Refined {
     pub points: Vec<ReachPoint>,
     pub protected: Vec<bool>,
+    /// Parallel to `points`: the coarse segment the polyline segment *leaving* that point lies
+    /// in. That is what the crossing pass needs -- a `Crossing` names the first point of a
+    /// crossing polyline segment, and Ruling S-3 straightens the whole coarse segment it is
+    /// inside. A coarse point therefore names the segment it starts, not the one it ends, and
+    /// the very last point (which leaves nothing) names the segment it ends.
+    pub segment_of: Vec<u32>,
     pub falls: Vec<Fall>,
 }
 
@@ -147,15 +154,56 @@ pub fn beds_never_rise(reach: &ReachLine) -> bool {
     reach.points.windows(2).all(|w| w[1].bed_m <= w[0].bed_m)
 }
 
+/// One coarse segment's chord, and the map from a station's `(along, lateral)` in metres to a
+/// point on the sphere. `trace` and `meander` both need it, and neither should build it twice.
+struct Chord {
+    start: SpherePoint,
+    end: SpherePoint,
+    frame: TangentFrame,
+    ux: f64,
+    uy: f64,
+    vx: f64,
+    vy: f64,
+    len_m: f64,
+}
+
+impl Chord {
+    fn new(ground: &Ground, a: &ReachPoint, b: &ReachPoint) -> Chord {
+        let start = SpherePoint::from_latlon(a.lat_deg, a.lon_deg);
+        let end = SpherePoint::from_latlon(b.lat_deg, b.lon_deg);
+        let frame = TangentFrame::at(&start, ground.radius_m);
+        let (bx, by) = frame.sphere_to_local(&end);
+        let len_m = m::hypot(bx, by);
+        let (ux, uy) = (bx / len_m, by / len_m);
+        Chord { start, end, frame, ux, uy, vx: -uy, vy: ux, len_m }
+    }
+
+    fn at(&self, along_m: f64, lateral_m: f64) -> SpherePoint {
+        self.frame.local_to_sphere(self.ux * along_m + self.vx * lateral_m,
+                                   self.uy * along_m + self.vy * lateral_m)
+    }
+}
+
 /// Traces the coarse segment `a -> b`. `shore` is the level of the water the reach runs into,
 /// given only for its last segment.
 pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &ReachPoint, shore: Option<f64>) -> Segment {
+    let mut segment = trace(ground, params, a, b, shore, false);
+    meander(&mut segment, ground, params, a, b);
+    segment
+}
+
+/// The lowest-ground trace of `a -> b`, with no meander: `refine` runs the crossing pass between
+/// the two (Ruling S-4), so the meander is a separate step there. `trace_segment` is this
+/// followed by `meander`, which is what every caller outside `refine` wants.
+///
+/// `straight` is Ruling S-3's yielding segment: the lateral search is cut down to its first
+/// candidate, which is the chord itself, so every interior station stands on the chord. Nothing
+/// else changes -- the bed rule, the fall search, the shore trim and Ruling R-3a's step back
+/// (which, with no other candidate to reach, simply keeps the chord point) are the same code.
+fn trace(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &ReachPoint, shore: Option<f64>, straight: bool) -> Segment {
     let mut segment = Segment { interior: Vec::new(), mouth: None, falls: Vec::new() };
-    let start = SpherePoint::from_latlon(a.lat_deg, a.lon_deg);
-    let end = SpherePoint::from_latlon(b.lat_deg, b.lon_deg);
-    let frame = TangentFrame::at(&start, ground.radius_m);
-    let (bx, by) = frame.sphere_to_local(&end);
-    let len = m::hypot(bx, by);
+    let chord = Chord::new(ground, a, b);
+    let len = chord.len_m;
     if !(len > params.refine_step_m) {
         return segment;
     }
@@ -163,21 +211,21 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
     let stations = if wanted > MAX_STATIONS { MAX_STATIONS } else { wanted };
     let k = stations as usize; // cast-ok: a whole number in 2..=MAX_STATIONS
     let spacing = len / stations;
-    let (ux, uy) = (bx / len, by / len);
-    let (vx, vy) = (-uy, ux);
-    let at = |along: f64, lateral: f64| frame.local_to_sphere(ux * along + vx * lateral, uy * along + vy * lateral);
+    let at = |along: f64, lateral: f64| chord.at(along, lateral);
+    // CANDIDATES[0] is the chord itself, so a straight trace is the same search over just it.
+    let candidates: &[f64] = if straight { &CANDIDATES[..1] } else { &CANDIDATES };
 
     // The bed may fall to the segment's lower end and no further.
     let floor_m = if b.bed_m < a.bed_m { b.bed_m } else { a.bed_m };
     let mut lateral = 0.0;
     let mut bed = a.bed_m;
-    let mut previous = Fine { along_m: 0.0, lateral_m: 0.0, point: start, bed_m: a.bed_m, keep: true, station: true };
+    let mut previous = Fine { along_m: 0.0, lateral_m: 0.0, point: chord.start, bed_m: a.bed_m, keep: true, station: true };
     for i in 1..k {
         let along = spacing * i as f64; // cast-ok: i < k <= MAX_STATIONS
         let remaining = spacing * (k - i) as f64; // cast-ok: i < k <= MAX_STATIONS
         let limit = if remaining < ground.corridor_m { remaining } else { ground.corridor_m };
         let mut best: Option<(f64, f64, SpherePoint)> = None;
-        for &j in CANDIDATES.iter() {
+        for &j in candidates.iter() {
             let o = lateral + j * spacing;
             if o > limit || o < -limit {
                 continue;
@@ -226,43 +274,55 @@ pub fn trace_segment(ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &
     }
     // The coarse end is protected by `refine_reach` whatever happens here, so a fall that ends on
     // it needs nothing marking.
-    let mut into_end = Fine { along_m: len, lateral_m: 0.0, point: end, bed_m: b.bed_m, keep: true, station: true };
+    let mut into_end = Fine { along_m: len, lateral_m: 0.0, point: chord.end, bed_m: b.bed_m, keep: true, station: true };
     if let Some(found) = find_fall(ground, params, &at, &previous, &into_end) {
         segment.insert_fall(found, &mut into_end);
     }
+    segment
+}
 
-    // Ruling R-6: a meander only where it can be drawn at this step (a wavelength of at least
-    // four steps), where the river is flat (bed slope under `meander_max_slope`), and where no
-    // fall was found. It is tapered to zero at both coarse points and kept inside the corridor.
-    // It moves the line, never the bed.
+/// Ruling R-6: a meander only where it can be drawn at this step (a wavelength of at least
+/// four steps), where the river is flat (bed slope under `meander_max_slope`), and where no
+/// fall was found. It is tapered to zero at both coarse points and kept inside the corridor.
+/// It moves the line, never the bed.
+///
+/// A segment trimmed at the shore is left alone: `trace` returns at its mouth, and a mouth is a
+/// position on the water's edge, not a line to be decorated.
+fn meander(segment: &mut Segment, ground: &Ground, params: &HydroParams, a: &ReachPoint, b: &ReachPoint) {
+    if segment.mouth.is_some() || !segment.falls.is_empty() || segment.interior.is_empty() {
+        return;
+    }
+    let chord = Chord::new(ground, a, b);
+    let len = chord.len_m;
+    let floor_m = if b.bed_m < a.bed_m { b.bed_m } else { a.bed_m };
     let wavelength = params.meander_wavelength_widths * a.width_m;
     let slope = (a.bed_m - floor_m) / len;
     let amplitude = params.meander_amplitude_widths * a.width_m;
-    if segment.falls.is_empty() && slope < params.meander_max_slope
-        && wavelength >= 4.0 * params.refine_step_m && amplitude > 0.0 {
-        let v = start.vector;
-        let n = Noise::new(ground.seed, MEANDER_SALT)
-            .at(v.x * MEANDER_FREQUENCY, v.y * MEANDER_FREQUENCY, v.z * MEANDER_FREQUENCY);
-        if n.is_finite() {
-            let pi = std::f64::consts::PI;
-            let phase = pi * (1.0 + n);
-            for fine in segment.interior.iter_mut() {
-                let envelope = m::sin(pi * fine.along_m / len);
-                let mut shift = amplitude * envelope * m::sin(2.0 * pi * fine.along_m / wavelength + phase);
-                let room_left = ground.corridor_m - fine.lateral_m;
-                let room_right = ground.corridor_m + fine.lateral_m;
-                if shift > room_left {
-                    shift = room_left;
-                }
-                if shift < -room_right {
-                    shift = -room_right;
-                }
-                fine.lateral_m += shift;
-                fine.point = at(fine.along_m, fine.lateral_m);
-            }
-        }
+    if !(slope < params.meander_max_slope && wavelength >= 4.0 * params.refine_step_m && amplitude > 0.0) {
+        return;
     }
-    segment
+    let v = chord.start.vector;
+    let n = Noise::new(ground.seed, MEANDER_SALT)
+        .at(v.x * MEANDER_FREQUENCY, v.y * MEANDER_FREQUENCY, v.z * MEANDER_FREQUENCY);
+    if !n.is_finite() {
+        return;
+    }
+    let pi = std::f64::consts::PI;
+    let phase = pi * (1.0 + n);
+    for fine in segment.interior.iter_mut() {
+        let envelope = m::sin(pi * fine.along_m / len);
+        let mut shift = amplitude * envelope * m::sin(2.0 * pi * fine.along_m / wavelength + phase);
+        let room_left = ground.corridor_m - fine.lateral_m;
+        let room_right = ground.corridor_m + fine.lateral_m;
+        if shift > room_left {
+            shift = room_left;
+        }
+        if shift < -room_right {
+            shift = -room_right;
+        }
+        fine.lateral_m += shift;
+        fine.point = chord.at(fine.along_m, fine.lateral_m);
+    }
 }
 
 /// Ruling FF-2: no candidate at this station was allowed (inland, they were all at or below the
@@ -523,28 +583,41 @@ fn fine_point(fine: &Fine, like: &ReachPoint) -> ReachPoint {
     ReachPoint { lat_deg, lon_deg, bed_m: fine.bed_m, width_m: like.width_m, depth_m: like.depth_m, flow_m2: like.flow_m2 }
 }
 
-/// Refines one reach: coarse points kept exactly, fine points between them, trimmed at the shore
-/// on its last segment. Interior points carry their segment's upstream width, depth and flow.
-/// Flow only steps at a coarse point, where a tributary joins.
-pub fn refine_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, params: &HydroParams) -> Refined {
+/// Every coarse segment of one reach, traced with the meander suppressed. Always one entry per
+/// coarse segment: only a reach's *last* segment is given a `shore`, so only it can end at a
+/// mouth, and the count never depends on what the ground turned out to be.
+fn trace_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, params: &HydroParams) -> Vec<Segment> {
     let coarse = &reach.points;
-    let mut refined = Refined { points: Vec::new(), protected: Vec::new(), falls: Vec::new() };
+    (0..coarse.len().saturating_sub(1))
+        .map(|s| {
+            let here_shore = if s + 2 == coarse.len() { shore } else { None };
+            trace(ground, params, &coarse[s], &coarse[s + 1], here_shore, false)
+        })
+        .collect()
+}
+
+/// Strings one reach's traced segments into a line: coarse points kept exactly, fine points
+/// between them, trimmed at the shore on its last segment. Interior points carry their segment's
+/// upstream width, depth and flow. Flow only steps at a coarse point, where a tributary joins.
+fn assemble(reach: &ReachLine, segments: &[Segment], shore: Option<f64>) -> Refined {
+    let coarse = &reach.points;
+    let mut refined = Refined { points: Vec::new(), protected: Vec::new(), segment_of: Vec::new(), falls: Vec::new() };
     if coarse.is_empty() {
         return refined;
     }
     refined.points.push(coarse[0].clone());
     refined.protected.push(true);
-    for s in 0..coarse.len() - 1 {
+    refined.segment_of.push(0);
+    for (s, segment) in segments.iter().enumerate() {
         let a = &coarse[s];
         let b = &coarse[s + 1];
         let last = s + 2 == coarse.len();
-        let here_shore = if last { shore } else { None };
-        let segment = trace_segment(ground, params, a, b, here_shore);
         // `a` is the point pushed last; the segment's interior follows it.
         let start = refined.points.len() - 1;
         for fine in &segment.interior {
             refined.points.push(fine_point(fine, a));
             refined.protected.push(fine.keep);
+            refined.segment_of.push(s as u32); // cast-ok: a coarse segment index, bounded by the reach's point count
         }
         for fall in &segment.falls {
             let upper = &refined.points[fall.upper.map_or(start, |i| start + 1 + i)];
@@ -553,10 +626,11 @@ pub fn refine_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, para
         if let Some(mouth) = segment.mouth {
             refined.points.push(fine_point(&mouth, b));
             refined.protected.push(true);
+            refined.segment_of.push(s as u32); // cast-ok: as above
             break;
         }
         let mut end = b.clone();
-        if last && here_shore.is_some() {
+        if last && shore.is_some() {
             // Ruling R-4: a mouth's bed never rises above the bed that reaches it.
             let before = refined.points.last().expect("at least the first point").bed_m;
             if before < end.bed_m {
@@ -565,26 +639,129 @@ pub fn refine_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, para
         }
         refined.points.push(end);
         refined.protected.push(true);
+        // A coarse point's outgoing polyline segment is the start of the *next* coarse segment.
+        let next = if s + 1 < segments.len() { s + 1 } else { s };
+        refined.segment_of.push(next as u32); // cast-ok: as above
     }
     refined
 }
 
+/// Refines one reach: traced, meandered and strung together. The crossing pass does not run
+/// here -- it is between reaches, and `refine` owns it.
+pub fn refine_reach(reach: &ReachLine, shore: Option<f64>, ground: &Ground, params: &HydroParams) -> Refined {
+    let mut segments = trace_reach(reach, shore, ground, params);
+    for (s, segment) in segments.iter_mut().enumerate() {
+        meander(segment, ground, params, &reach.points[s], &reach.points[s + 1]);
+    }
+    assemble(reach, &segments, shore)
+}
+
+/// Rulings S-3 and S-4: where two reaches cross, the one carrying less flow at the crossing
+/// yields -- its whole coarse segment goes back to its chord, so it cannot bend into anything new
+/// -- and the pass repeats until nothing crosses or `MAX_CROSSING_PASSES` is done. Ties go to the
+/// larger reach id. Ruling S-2: a crossing the coarse record already had cannot be straightened
+/// away, which is why the count that is left is recorded rather than asserted to be zero.
+const MAX_CROSSING_PASSES: usize = 3;
+
 /// Refines every reach in the record, in reach order, and records the falls in the same order.
+///
+/// Ruling S-4 sets the order: trace with the meander suppressed, run the crossing pass, then
+/// meander and simplify. A meander is cosmetic, and straightening one away where it is not the
+/// cause of a crossing would cost a river its shape for nothing.
+///
+/// Two counts go into the record. `crossings_coarse` is measured on the coarse lines before
+/// anything is traced: those are graph artifacts refinement did not make and does not fix
+/// (Ruling S-2). `crossings_left` is measured on the lines as they ship, after the meander and
+/// simplification, so it is the record's own honest count and not a mid-pass number.
 pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
     let shores: Vec<Option<f64>> = record.reaches.iter().map(|r| terminal_level(r, &record.bodies)).collect();
+    let downstream: Vec<Downstream> = record.reaches.iter().map(|r| r.downstream).collect();
+    let coarse_lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
+    let crossings_coarse = crossings(&coarse_lines, &downstream, ground.radius_m).len();
+
+    let mut traced: Vec<Vec<Segment>> = Vec::with_capacity(record.reaches.len());
+    let mut yielded: Vec<Vec<bool>> = Vec::with_capacity(record.reaches.len());
+    for (reach, &shore) in record.reaches.iter().zip(&shores) {
+        let segments = trace_reach(reach, shore, ground, params);
+        yielded.push(vec![false; segments.len()]);
+        traced.push(segments);
+    }
+    let mut refineds: Vec<Refined> = record.reaches.iter().zip(&traced).zip(&shores)
+        .map(|((reach, segments), &shore)| assemble(reach, segments, shore))
+        .collect();
+
+    for _ in 0..MAX_CROSSING_PASSES {
+        let lines: Vec<Vec<ReachPoint>> = refineds.iter().map(|r| r.points.clone()).collect();
+        let found = crossings(&lines, &downstream, ground.radius_m);
+        if found.is_empty() {
+            break;
+        }
+        // `(reach, coarse segment)` pairs to straighten. `crossings` is already in a fixed order
+        // and this sort is total, so the set and the order it is applied in are the same run to
+        // run.
+        let mut giving: Vec<(usize, usize)> = Vec::with_capacity(found.len());
+        for c in &found {
+            let (ra, rb) = (c.reach_a as usize, c.reach_b as usize);
+            // cast-ok: a coarse segment index, bounded by the reach's own point count
+            let (sa, sb) = (refineds[ra].segment_of[c.index_a] as usize, refineds[rb].segment_of[c.index_b] as usize);
+            let flow_a = refineds[ra].points[c.index_a].flow_m2;
+            let flow_b = refineds[rb].points[c.index_b].flow_m2;
+            // Ruling S-3: the smaller flow gives way. On a tie the larger reach id keeps its
+            // valley, and `reach_a` is always the smaller id, so it is the one that yields.
+            let (yielder, other) = if flow_b < flow_a { ((rb, sb), (ra, sa)) } else { ((ra, sa), (rb, sb)) };
+            // Ruling S-4's repeat only means anything if a later pass can decide differently. A
+            // segment already on its chord has nothing left to give, so where the smaller flow
+            // has yielded and the two still cross, the larger one yields next. Without this the
+            // second and third passes re-take the first pass's decision and the crossing stands:
+            // 2 of the junction world's 14 survived that way, and none survive this.
+            giving.push(if yielded[yielder.0][yielder.1] { other } else { yielder });
+        }
+        giving.sort_unstable();
+        giving.dedup();
+        let mut moved: Vec<usize> = Vec::new();
+        for (r, s) in giving {
+            if yielded[r][s] {
+                // Already on its chord: it has nothing more to give, and re-tracing it would
+                // only spend the pass budget.
+                continue;
+            }
+            yielded[r][s] = true;
+            let coarse = &record.reaches[r].points;
+            let here_shore = if s + 2 == coarse.len() { shores[r] } else { None };
+            traced[r][s] = trace(ground, params, &coarse[s], &coarse[s + 1], here_shore, true);
+            moved.push(r);
+        }
+        if moved.is_empty() {
+            break;
+        }
+        moved.dedup();
+        for r in moved {
+            refineds[r] = assemble(&record.reaches[r], &traced[r], shores[r]);
+        }
+    }
+
     let mut falls = Vec::new();
-    for (reach, shore) in record.reaches.iter_mut().zip(shores) {
-        let refined = refine_reach(reach, shore, ground, params);
+    for (r, reach) in record.reaches.iter_mut().enumerate() {
+        for (s, segment) in traced[r].iter_mut().enumerate() {
+            meander(segment, ground, params, &reach.points[s], &reach.points[s + 1]);
+        }
+        let refined = assemble(reach, &traced[r], shores[r]);
         reach.points = simplify(&refined.points, &refined.protected, ground.radius_m, params);
         falls.extend(refined.falls);
     }
     record.falls = falls;
+
+    let lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
+    let crossings_left = crossings(&lines, &downstream, ground.radius_m).len();
+    record.stats.crossings_coarse = crossings_coarse as u32; // cast-ok: bounded by the segment count, which is bounded by the record's point count
+    record.stats.crossings_left = crossings_left as u32; // cast-ok: as above
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hydrology::reaches::ReachClass;
+    use crate::hydrology::BakeStats;
 
     const R: f64 = 6_371_000.0;
     /// Metres per degree on this test radius.
@@ -1073,6 +1250,90 @@ mod tests {
         // Self-crossings are a separate question; this pass is about unrelated reaches.
         let a = line(&[(-0.2, 0.0), (0.2, 0.1), (-0.2, 0.1), (0.2, 0.2)]);
         assert!(crossings(&[a], &[Downstream::Ocean], R).is_empty());
+    }
+
+    /// A `BakeStats` with every count zero and `p`'s numbers echoed: enough for a `HydroRecord`
+    /// a refinement test drives directly, with no bake behind it.
+    fn stats_for(p: &HydroParams) -> BakeStats {
+        BakeStats {
+            nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
+            streams: 0, rivers: 0, great: 0, max_order: 0,
+            bifurcation_min: 0.0, bifurcation_max: 0.0,
+            stream_flow_m2: p.stream_flow_m2, river_flow_m2: p.river_flow_m2, great_flow_m2: p.great_flow_m2,
+            total_nodes: p.total_nodes, wetness_nodes: p.wetness_nodes,
+            keep_depth_m: p.keep_depth_m, keep_area_m2: p.keep_area_m2,
+            pond_max_area_m2: p.pond_max_area_m2, keep_max_area_m2: p.keep_max_area_m2,
+            min_stream_nodes: p.min_stream_nodes, notch_fall_m: p.notch_fall_m,
+            evaporation_factor: p.evaporation_factor, salt_flat_share: p.salt_flat_share,
+            forced_requested: 0, forced_matched: 0,
+            capped_basins: 0, capped_inner: 0, capped_inner_kept: 0,
+            refine_step_m: p.refine_step_m, refine_simplify_m: p.refine_simplify_m,
+            refine_vertical_m: p.refine_vertical_m,
+            fall_min_drop_m: p.fall_min_drop_m, fall_max_run_m: p.fall_max_run_m,
+            meander_wavelength_widths: p.meander_wavelength_widths,
+            meander_amplitude_widths: p.meander_amplitude_widths,
+            meander_max_slope: p.meander_max_slope,
+            crossings_coarse: 0, crossings_left: 0,
+        }
+    }
+
+    /// Rulings S-3 and S-4: where two reaches cross, the smaller flow yields its whole coarse
+    /// segment back to its chord, and the pass repeats until nothing crosses or three passes are
+    /// done.
+    #[test]
+    fn the_smaller_river_yields_its_segment() {
+        // Ground with a valley that pulls both reaches north of their chords, so their traced
+        // lines cross even though their chords do not.
+        let h = |p: &SpherePoint| {
+            let (n, e) = north_east(p);
+            let off = if n > 6_000.0 { n - 6_000.0 } else { 6_000.0 - n };
+            200.0 - 0.001 * e + 0.02 * off
+        };
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 3 };
+        let big = ReachLine {
+            id: 0, class: ReachClass::Great, order: 3, downstream: Downstream::Ocean, fresh: true,
+            points: vec![wide(0.0, 0.0, 199.0, 900.0), wide(0.0, 30_000.0 / M_PER_DEG, 169.0, 900.0)],
+        };
+        // The brief's own chords (0.1 N to 0.1 S) cross each other, which Ruling S-2 keeps and no
+        // straightening can remove. These two are PARALLEL -- the great river along the equator,
+        // the stream 11,200 m north of it -- so the only crossing is the one the valley makes.
+        // The valley is 6,000 m north: the great river climbs 750 m a station and lands on it
+        // exactly, the stream comes down from 11,200 m and overshoots to 5,950 m (11,200 is
+        // 5,200 past the valley, and 5,200 is 700 past seven whole steps, so the eighth step is
+        // worth taking). That 50 m is the great river passing the stream.
+        let small = ReachLine {
+            id: 1, class: ReachClass::Stream, order: 1, downstream: Downstream::Ocean, fresh: true,
+            points: vec![point(11_200.0 / M_PER_DEG, 0.0, 199.0),
+                         point(11_200.0 / M_PER_DEG, 30_000.0 / M_PER_DEG, 169.0)],
+        };
+        let mut record = HydroRecord {
+            bodies: Vec::new(),
+            reaches: vec![big.clone(), small.clone()],
+            notches: Vec::new(),
+            falls: Vec::new(),
+            stats: stats_for(&params()),
+        };
+        refine(&mut record, &ground, &params());
+        let lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
+        let down: Vec<Downstream> = record.reaches.iter().map(|r| r.downstream).collect();
+        assert!(crossings(&lines, &down, R).is_empty(), "the pass left a crossing");
+        assert_eq!(record.stats.crossings_left, 0);
+        // The brief's `crossings_coarse >= 0` is always true of a `u32` and warns; the fixture's
+        // two chords do not cross, so the count it should have is nailed down instead.
+        assert_eq!(record.stats.crossings_coarse, 0, "the two coarse chords do not cross");
+        // The great river kept its valley; the stream was straightened to its chord. The brief's
+        // 0.01 deg is not a threshold this fixture can use: the great river's own meander is 1.5
+        // widths, 1,350 m, or 0.0121 deg, so a river that HAD been straightened would still clear
+        // it and the mutation guard would pass. 0.03 deg is 3,336 m -- above anything the meander
+        // alone can reach and well below the 6,000 m valley. Measured: 0.044, 0.052, 0.046.
+        let great_offsets = record.reaches[0].points.iter().skip(1).take(3)
+            .map(|p| p.lat_deg).any(|lat| lat > 0.03);
+        assert!(great_offsets, "the larger river keeps its valley");
+        // And the stream is on its chord, to within the chord's own great-circle sagitta.
+        for p in &record.reaches[1].points {
+            let off = (p.lat_deg - 11_200.0 / M_PER_DEG) * M_PER_DEG;
+            assert!(off < 10.0 && off > -10.0, "the stream is {off} m off its chord");
+        }
     }
 
     #[test]

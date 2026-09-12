@@ -6,7 +6,7 @@
 // `hydro.test.mjs` does; `drawPreview` is the only export that touches Cesium.
 //
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
-// pair -- schema 4, Task 3 (plan 1b-2)'s 43-word header. This file is the JS side of that
+// pair -- schema 5, Task 3 (plan 1b-3)'s 45-word header. This file is the JS side of that
 // contract and mirrors its field order and its refusals (a truncated record, a wrong schema, a
 // trailing word, an index or count word outside u32) rather than trusting the words blindly.
 //
@@ -20,7 +20,7 @@
 
 import { showLayer } from "./globe-layers.js";
 
-const SCHEMA = 4;
+const SCHEMA = 5;
 
 /// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
 const U32_MAX = 4294967295;
@@ -205,6 +205,10 @@ export function decodeHydro(words) {
     meanderWavelengthWidths: cursor.word(),
     meanderAmplitudeWidths: cursor.word(),
     meanderMaxSlope: cursor.word(),
+    // SCHEMA 5's crossing counts (words 43-44): what the coarse record already crossed, which
+    // Ruling S-2 keeps, and what is left after the crossing pass, the meander and simplification.
+    crossingsCoarse: cursor.u32(),
+    crossingsLeft: cursor.u32(),
   };
 
   const bodies = [];
