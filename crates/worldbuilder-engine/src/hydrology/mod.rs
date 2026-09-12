@@ -85,8 +85,9 @@ pub struct HydroParams {
     /// Ruling S-6: and flatter than this, over one pond cell.
     pub pond_max_slope: f64,
     /// Ruling S-8: at most one kept body per this much searched area. Spec §6.6 says 500 km^2
-    /// (5.0e8); `earth_like` ships 4.0e9 because 5.0e8 put a 1,000,000-node stand-in's record
-    /// over the 8 MB target -- see `earth_like` for the measurement.
+    /// (5.0e8); `earth_like` ships 1.6e10, **32x the spec's number**, because the owner's world
+    /// recorded 11,146,072 bytes against an 8 MB gate at the intermediate 4.0e9 -- see
+    /// `earth_like` for the measurements and Ruling S-16.
     pub pond_density_area_m2: f64,
 }
 
@@ -125,16 +126,29 @@ impl HydroParams {
             pond_keep_area_m2: 50_000.0,
             pond_wetness_share: 0.6,
             pond_max_slope: 0.03,
-            // Plan 1b-3, Task 7's size gate. Spec §6.6's own number is 500 km^2 (5.0e8), and at
-            // that value the `seed1_ranges` stand-in's record was 9,020,112 bytes at 1,000,000
-            // nodes, over the 8,000,000-byte target. Raised in x2 steps and measured at each
-            // (`hydro_survey --pond-density D 1000000`, native release, one host): 5.0e8 ->
-            // 9,020,112; 1.0e9 -> 8,746,368; 2.0e9 -> 8,357,824; 4.0e9 -> 7,896,992, the first
-            // that fits, and the value here. The cap is a weak lever -- each doubling removes
-            // only about a tenth of the kept bodies (6,952 -> 6,280 -> 5,355 -> 4,270) because
-            // the 3 km corridors rarely put two candidates in one cell -- so the next step,
-            // 8.0e9, was measured too and gives 7,407,872 bytes if more headroom is ever needed.
-            pond_density_area_m2: 4.0e9,
+            // Plan 1b-3, Task 7's size gate, and RULING S-16. Spec §6.6's own number is 500 km^2
+            // (5.0e8); this is 16,000 km^2, **32x the spec's**, and that is a measurement, not a
+            // preference.
+            //
+            // Step one, the stand-ins. At 5.0e8 the `seed1_ranges` stand-in's record was
+            // 9,020,112 bytes at 1,000,000 nodes, over the 8,000,000-byte target. Raised in x2
+            // steps, measured at each (`hydro_survey --pond-density D 1000000`, native release,
+            // one host): 5.0e8 -> 9,020,112; 1.0e9 -> 8,746,368; 2.0e9 -> 8,357,824; 4.0e9 ->
+            // 7,896,992, the first that fits; 8.0e9 -> 7,407,872. The cap is a weak lever on
+            // these worlds -- each doubling removes about a tenth of the kept bodies -- because
+            // their 3 km corridors rarely put two candidates in one cell.
+            //
+            // Step two, the world that actually has to fit. The owner's saved studio world, baked
+            // in the branch studio at 1,000,000 nodes through the wasm pool with its two painted
+            // features and one forced outlet, recorded **11,146,072 bytes at 4.0e9** -- 11,578
+            // ponds kept of 131,386 found, about 5.2 MB of the record. On that world the cap is
+            // NOT a weak lever, and one more doubling lands near 8.6 MB with no margin. Two
+            // doublings, to 1.6e10, is Ruling S-16. The other levers were refused on measured
+            // grounds: Ruling S-13 shows a coarser outline breaks containment, and the keep rule
+            // is not the limiter (the owner world's median pond is 4.38 km^2 against a 0.05 km^2
+            // floor). The consequence, stated plainly: roughly 2,900 ponds on the owner's world
+            // where the spec's cap would have put tens of thousands.
+            pond_density_area_m2: 1.6e10,
         }
     }
 }

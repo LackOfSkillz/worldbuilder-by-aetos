@@ -5305,3 +5305,85 @@ Shipped is now at or under coarse on every stand-in, and the record grew by 960 
 bytes, which is the straightened segments' own points surviving simplification differently.
 
 The reproduction commands are the ones above, with `--expect-passed <783|783|785|889|891>`.
+
+## 2026-09-12, water 1b-3 Ruling S-16: the density cap again, and the pins with it
+
+The section above took `pond_density_area_m2` to 4.0e9 because the three 1,000,000-node stand-ins
+fit at that value. **The owner's world did not.** Baked in the branch studio through the wasm
+pool at 1,000,000 nodes, with its two painted features and one forced outlet at 0°N 0°E, it
+recorded **11,146,072 bytes against the 8,000,000-byte gate** — 11,926 bodies, of which 348 are
+coarse and **11,578 are traced ponds** out of 131,386 found, about **5.2 MB of the record**. Time
+was never the problem: 124 s against the 300 s gate, pond search included. Everything else on that
+bake was clean (4,876 reaches over 114,941 points; crossings 43 coarse → 37 shipped; 0 bed rises;
+3,268 junctions all shared; 0 mouths above their water; 0 ponds breaking Ruling S-5).
+
+**Ruling S-16: `pond_density_area_m2` 4.0e9 → 1.6e10** — one kept body per 16,000 km² of searched
+corridor, **32× spec §6.6's 500 km²**. Two doublings rather than one, because one lands near
+8.6 MB with no margin and the owner's world is the world that must fit. The other levers were
+refused on measured grounds: Ruling S-13 shows a coarser outline breaks containment, and the keep
+rule is not the limiter (the owner world's median pond is 4.38 km² against a 0.05 km² floor; its
+area p10/p50/p90 are 1.69 / 4.38 / 10.19 km² and its depths 2.7 / 7.0 / 22.6 m). The consequence,
+stated plainly: roughly 2,900 ponds on the owner's world instead of 11,578.
+
+### The three stand-ins at 1.6e10
+
+`./target/release/hydro_survey.exe 1000000`, no flags. `drainage_check` is `Ok` on all three.
+
+| world | bake | (stages / record_of / refine / ponds) | record | crossings coarse / shipped | ponds found / kept |
+|---|---|---|---|---|---|
+| plain | 70.26 s | 9.11 / 0.03 / 1.57 / **59.56** | **4,934,968** (was 5,521,624) | 33 / 28 | 9,358 / **1,496** (was 2,780) |
+| owner_survey | 37.73 s | 10.06 / 0.01 / 0.75 / **26.91** | **2,650,888** (was 2,781,080) | 4 / 3 | 2,083 / **409** (was 691) |
+| seed1_ranges | 91.23 s | 9.54 / 0.04 / 2.63 / **79.02** | **6,966,736** (was 7,898,992) | 54 / 50 | 15,683 / **2,237** (was 4,270) |
+
+**Both gates hold, and the size margin is no longer thin.** The worst record clears 8,000,000 by
+**1,033,264 bytes, 12.9%**, where at 4.0e9 it cleared by 101,008 bytes and 1.26%. The pond search
+is 59.56 / 26.91 / 79.02 s against its 120 s gate; the reach geometry, crossings and drainage are
+untouched, because the cap changes only which found candidates are kept.
+
+### Pins, re-derived by running them
+
+**Wasm rebuilt:** 427,667 bytes, 31 exports, 0 imports; artifact-sha256
+`3c6cb37bfba267966ec13f1a3c8977bf7d5b4b7d92e1fc890c98298b9c646e99`, source-fingerprint
+`2f327438c6fb9b83ab044e0c191e50d8b58cf7e29aaba621fd9dc0bbab6c93db` (58 inputs). `npm run
+check:wasm` reports it matches its manifest and the source here. (Superseded: 427,667 bytes /
+`fcc0439e...` / `cc474270...`.)
+
+**Engine — unchanged.** 783 / 783 / 785 / 889 / 891 run, 7 ignored, `listed`
+790 / 790 / 792 / 896 / 898, over seventeen binaries. A tuning value is not a test. Re-derived per
+configuration anyway through `cargo test -p worldbuilder-engine <cfg> -- --list` (and
+`--ignored`) and `assert_counts.py cargo-list`; all five printed `count OK`, and the suite was
+run: 764 + 4 + 9 + 6 = **783 passed, 0 failed, 7 ignored**.
+
+**Both ignored sweeps pass.** `every_small_world_drains` in 64.61 s;
+`refinement_adds_no_crossings_at_1m` in 183.02 s, printing `ranges 1M: 5545 reaches, coarse 54
+shipped 50` and `default 1M: 4285 reaches, coarse 33 shipped 28` — unchanged, as expected, since
+the cap touches no reach.
+
+**Python:** 565 collected, 157 conformance — unchanged. **Viewer:** `npm test` 337 pass, 0 fail —
+unchanged.
+
+**Parity — moved:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **155,919** (was 158,733) | **0** |
+| `--mutate seed` | 155,919 | **150,097** (was 152,886) |
+| `--mutate erosion-k` | 155,919 | 216 |
+| `--mutate water-pond` | 155,919 | 60 |
+| `--mutate tectonic-warp` | 155,919 | **29,068** (was 31,857) |
+| `--mutate coast-amplitude` | 155,919 | 13,128 |
+| `--mutate gully-steer` | 155,919 | 3,752 |
+| `--mutate climate-samples` | 155,919 | 648 |
+
+The whole **−2,814** is `hydro/ranges`, 26,073 → 23,259 words: two doublings of the cap keep fewer
+ponds, and a pond that is not kept is not recorded. `hydro/plain` stays at **5,001** — that
+world's kept ponds were already inside the wider cell. Every non-H group is byte-for-byte unmoved
+in the plain run and in all seven controls. Under the seed control `hydro/ranges` goes 25,778 of
+26,073 → **22,988 of 23,259** and `hydro/plain` 4,900 → **4,901 of 5,001** (one more word of an
+unchanged record now differs under a moved seed); non-hydro is 122,208, unmoved. The tectonic
+control's `hydro/ranges` goes 25,671 → **22,882 of 23,259** and the native TCTL prediction's sixth
+field moved with it, so the control still printed *"exactly as the native side predicted"*; the
+five belt groups are unchanged at 6,186.
+
+The reproduction commands are the ones above, with `--expect-passed <783|783|785|889|891>` and
+`--expect-ignored 7`.

@@ -140,8 +140,8 @@ fn clipped_at(cells: &[(usize, usize)], steps: usize, cells_across: usize) -> (b
 ///   cannot come back through the rivers.
 /// * The speckle risk is held off by four gates that all remain: the keep rule (>= 2 m deep,
 ///   >= 0.05 km^2), the 3 km corridor along the refined rivers, Ruling S-6's wetness and slope
-///   gates, and Ruling S-8's density cap (the spec's 500 km^2; `earth_like` ships 4,000 km^2
-///   after plan 1b-3's Task 7 size gate).
+///   gates, and Ruling S-8's density cap (the spec's 500 km^2; `earth_like` ships 16,000 km^2
+///   after plan 1b-3's Task 7 size gate and Ruling S-16).
 ///
 /// The cost, stated plainly: **ponds move when the detail field moves.** Any slider that changes
 /// detail -- its amplitude, its seed, the roughness a feature authorises -- changes where the
@@ -872,8 +872,9 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
     });
     // Ruling S-8's grid, and the one index here whose cell is not sized to its population: the
     // cell *is* the rule. At the spec's 500 km^2 that is about 22.4 km, a million buckets on an
-    // Earth-sized planet; at the 4,000 km^2 `earth_like` ships after plan 1b-3's Task 7 size
-    // gate, about 63.2 km. It is built only after the two indexes above have been dropped.
+    // Earth-sized planet; at the 16,000 km^2 `earth_like` ships after plan 1b-3's Task 7 size
+    // gate and Ruling S-16, about 126.5 km. It is built only after the two indexes above have
+    // been dropped.
     let density = BucketIndex::new(ground.radius_m, m::sqrt(params.pond_density_area_m2));
     // The cells already spoken for, sorted so membership is a binary search rather than a hash
     // set: a few thousand entries at most, and nothing here may depend on a hash order.
