@@ -310,8 +310,10 @@ fn ship(reach: &ReachLine, segments: &[Segment], yielded: &[bool], shore: Option
 pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
     let shores: Vec<Option<f64>> = record.reaches.iter().map(|r| terminal_level(r, &record.bodies)).collect();
     let downstream: Vec<Downstream> = record.reaches.iter().map(|r| r.downstream).collect();
-    let coarse_lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
-    let crossings_coarse = crossings(&coarse_lines, &downstream, ground.radius_m).len();
+    let crossings_coarse = {
+        let coarse_lines: Vec<&[ReachPoint]> = record.reaches.iter().map(|r| r.points.as_slice()).collect();
+        crossings(&coarse_lines, &downstream, ground.radius_m).len()
+    };
 
     let mut traced: Vec<Vec<Segment>> = Vec::with_capacity(record.reaches.len());
     let mut yielded: Vec<Vec<bool>> = Vec::with_capacity(record.reaches.len());
@@ -327,8 +329,13 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
     let mut crossings_left;
     let mut pass = 0usize;
     loop {
-        let lines: Vec<Vec<ReachPoint>> = shipped.iter().map(|r| r.points.clone()).collect();
-        let found = crossings(&lines, &downstream, ground.radius_m);
+        // The shipped points are borrowed, never copied: this loop runs up to five times and a
+        // copy of every point each time is the pass's largest avoidable cost. The borrow ends
+        // with the block, so `shipped` is free to be read and re-shipped below.
+        let found = {
+            let lines: Vec<&[ReachPoint]> = shipped.iter().map(|r| r.points.as_slice()).collect();
+            crossings(&lines, &downstream, ground.radius_m)
+        };
         crossings_left = found.len();
         if found.is_empty() || pass == MAX_CROSSING_PASSES {
             break;
@@ -370,6 +377,9 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
             moved.push(r);
         }
         if moved.is_empty() {
+            // Nothing was straightened, so the next pass would index and test the very same
+            // lines and find the very same crossings. `crossings_left` above already counts
+            // them, so the loop stops here rather than paying for that call.
             break;
         }
         moved.dedup();

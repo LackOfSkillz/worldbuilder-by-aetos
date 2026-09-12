@@ -43,13 +43,19 @@ fn segments_cross(radius_m: f64, p0: &SpherePoint, p1: &SpherePoint, q0: &Sphere
 ///
 /// The index is a `BucketIndex` over segment midpoints, at a cell of one refinement step, so the
 /// work is proportional to the segments, not to their square.
-pub fn crossings(lines: &[Vec<ReachPoint>], downstream: &[Downstream], radius_m: f64) -> Vec<Crossing> {
+///
+/// `lines` is anything that lends out a slice of points per reach, because the refinement pass
+/// calls this up to five times over the same shipped reaches and has no reason to copy their
+/// points each time: it hands over `&[&[ReachPoint]]`, a fat pointer per reach. A caller that
+/// already owns its lines (`Vec<Vec<ReachPoint>>`) still passes them directly.
+pub fn crossings<L: AsRef<[ReachPoint]>>(lines: &[L], downstream: &[Downstream], radius_m: f64) -> Vec<Crossing> {
     // Segment id -> (reach index, point index), and the midpoint that indexes it.
     let mut owner: Vec<(u32, usize)> = Vec::new();
     let mut mid: Vec<SpherePoint> = Vec::new();
     let mut ends: Vec<(SpherePoint, SpherePoint)> = Vec::new();
     let mut longest_m = 0.0;
-    for (r, points) in lines.iter().enumerate() {
+    for (r, line) in lines.iter().enumerate() {
+        let points = line.as_ref();
         for i in 0..points.len().saturating_sub(1) {
             let a = SpherePoint::from_latlon(points[i].lat_deg, points[i].lon_deg);
             let b = SpherePoint::from_latlon(points[i + 1].lat_deg, points[i + 1].lon_deg);
