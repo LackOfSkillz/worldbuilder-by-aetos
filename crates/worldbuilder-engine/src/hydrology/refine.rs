@@ -155,7 +155,13 @@ pub fn beds_never_rise(reach: &ReachLine) -> bool {
 }
 
 /// One coarse segment's chord, and the map from a station's `(along, lateral)` in metres to a
-/// point on the sphere. `trace` and `meander` both need it, and neither should build it twice.
+/// point on the sphere.
+///
+/// `trace` and `meander` each build their own rather than sharing one. That is a second
+/// `TangentFrame::at` per segment, and it is deliberate: threading the chord out of `trace` would
+/// put it in the return type of a function whose result is a `Segment`, for a saving of one frame
+/// construction on the segments that actually meander -- which, after Rulings R-6 and S-4a, is
+/// neither the ones with falls, nor the ones trimmed at a shore, nor the ones that yielded.
 struct Chord {
     start: SpherePoint,
     end: SpherePoint,
@@ -743,6 +749,16 @@ pub fn refine(record: &mut HydroRecord, ground: &Ground, params: &HydroParams) {
     let mut falls = Vec::new();
     for (r, reach) in record.reaches.iter_mut().enumerate() {
         for (s, segment) in traced[r].iter_mut().enumerate() {
+            // Ruling S-4a: a segment that yielded is not meandered. The meander is worth up to
+            // `meander_amplitude_widths` channel widths of lateral shift, which on a wide reach
+            // is the same order as what the pass just straightened away -- so meandering a
+            // yielded segment would make Ruling S-3's "every interior station's lateral set to
+            // 0" true at the end of the pass and false of the record as it ships. The crossing
+            // fix outranks a cosmetic meander on one segment. The cost: a yielded flat wide
+            // segment ships dead straight, for about one graph spacing.
+            if yielded[r][s] {
+                continue;
+            }
             meander(segment, ground, params, &reach.points[s], &reach.points[s + 1]);
         }
         let refined = assemble(reach, &traced[r], shores[r]);
@@ -1277,35 +1293,52 @@ mod tests {
         }
     }
 
+    /// Ground with a valley 6,000 m north of the equator, falling gently east. The brief's own
+    /// ground for the crossing tests: it pulls two parallel reaches toward the same line, so
+    /// their traced lines cross even though their chords do not.
+    fn valley_6km(p: &SpherePoint) -> f64 {
+        let (n, e) = north_east(p);
+        let off = if n > 6_000.0 { n - 6_000.0 } else { 6_000.0 - n };
+        200.0 - 0.001 * e + 0.02 * off
+    }
+
+    /// The great river of the crossing fixture: along the equator, 900 m wide, and by far the
+    /// larger flow, so it is never the one that yields.
+    fn great_along_the_equator() -> ReachLine {
+        ReachLine {
+            id: 0, class: ReachClass::Great, order: 3, downstream: Downstream::Ocean, fresh: true,
+            points: vec![wide(0.0, 0.0, 199.0, 900.0), wide(0.0, 30_000.0 / M_PER_DEG, 169.0, 900.0)],
+        }
+    }
+
+    /// The crossing fixture's second reach: PARALLEL to the great river, 11,200 m north of it, so
+    /// the chords never cross and the only crossing is the one the valley makes.
+    ///
+    /// The brief's own chords (0.1 N to 0.1 S) cross each other, which Ruling S-2 keeps and no
+    /// straightening can remove. With the valley 6,000 m north: the great river climbs 750 m a
+    /// station and lands on it exactly, while this one comes down from 11,200 m and overshoots to
+    /// 5,950 m (11,200 is 5,200 past the valley, and 5,200 is 700 past seven whole steps, so the
+    /// eighth step is worth taking). That 50 m is the great river passing it.
+    fn lesser_flow_north_of_it(width_m: f64) -> ReachLine {
+        let at = |lon_deg: f64, bed_m: f64| ReachPoint {
+            lat_deg: 11_200.0 / M_PER_DEG, lon_deg, bed_m, width_m, depth_m: 1.0, flow_m2: 1.0e9,
+        };
+        ReachLine {
+            id: 1, class: ReachClass::Stream, order: 1, downstream: Downstream::Ocean, fresh: true,
+            points: vec![at(0.0, 199.0), at(30_000.0 / M_PER_DEG, 169.0)],
+        }
+    }
+
+    const LESSER_CHORD_LAT: f64 = 11_200.0 / M_PER_DEG;
+
     /// Rulings S-3 and S-4: where two reaches cross, the smaller flow yields its whole coarse
     /// segment back to its chord, and the pass repeats until nothing crosses or three passes are
     /// done.
     #[test]
     fn the_smaller_river_yields_its_segment() {
-        // Ground with a valley that pulls both reaches north of their chords, so their traced
-        // lines cross even though their chords do not.
-        let h = |p: &SpherePoint| {
-            let (n, e) = north_east(p);
-            let off = if n > 6_000.0 { n - 6_000.0 } else { 6_000.0 - n };
-            200.0 - 0.001 * e + 0.02 * off
-        };
-        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 3 };
-        let big = ReachLine {
-            id: 0, class: ReachClass::Great, order: 3, downstream: Downstream::Ocean, fresh: true,
-            points: vec![wide(0.0, 0.0, 199.0, 900.0), wide(0.0, 30_000.0 / M_PER_DEG, 169.0, 900.0)],
-        };
-        // The brief's own chords (0.1 N to 0.1 S) cross each other, which Ruling S-2 keeps and no
-        // straightening can remove. These two are PARALLEL -- the great river along the equator,
-        // the stream 11,200 m north of it -- so the only crossing is the one the valley makes.
-        // The valley is 6,000 m north: the great river climbs 750 m a station and lands on it
-        // exactly, the stream comes down from 11,200 m and overshoots to 5,950 m (11,200 is
-        // 5,200 past the valley, and 5,200 is 700 past seven whole steps, so the eighth step is
-        // worth taking). That 50 m is the great river passing the stream.
-        let small = ReachLine {
-            id: 1, class: ReachClass::Stream, order: 1, downstream: Downstream::Ocean, fresh: true,
-            points: vec![point(11_200.0 / M_PER_DEG, 0.0, 199.0),
-                         point(11_200.0 / M_PER_DEG, 30_000.0 / M_PER_DEG, 169.0)],
-        };
+        let ground = Ground { height_m: &valley_6km, radius_m: R, corridor_m: 20_000.0, seed: 3 };
+        let big = great_along_the_equator();
+        let small = lesser_flow_north_of_it(10.0);
         let mut record = HydroRecord {
             bodies: Vec::new(),
             reaches: vec![big.clone(), small.clone()],
@@ -1331,8 +1364,50 @@ mod tests {
         assert!(great_offsets, "the larger river keeps its valley");
         // And the stream is on its chord, to within the chord's own great-circle sagitta.
         for p in &record.reaches[1].points {
-            let off = (p.lat_deg - 11_200.0 / M_PER_DEG) * M_PER_DEG;
+            let off = (p.lat_deg - LESSER_CHORD_LAT) * M_PER_DEG;
             assert!(off < 10.0 && off > -10.0, "the stream is {off} m off its chord");
+        }
+    }
+
+    /// Ruling S-4a: a segment that yielded is not meandered. The meander is worth up to
+    /// `meander_amplitude_widths` channel widths of lateral shift -- 1,500 m on this fixture --
+    /// which is the same order as what the pass straightened away. Put it back and Ruling S-3's
+    /// "every interior station's lateral set to 0" would be true at the end of the pass and false
+    /// of the record as it ships.
+    ///
+    /// The yielding reach here is 1,000 m wide and flat, so it qualifies for a meander on every
+    /// count, and carries a thousandth of the great river's flow, so it is still the one that
+    /// gives way.
+    #[test]
+    fn a_yielded_segment_is_not_meandered() {
+        let ground = Ground { height_m: &valley_6km, radius_m: R, corridor_m: 20_000.0, seed: 3 };
+        let calm = lesser_flow_north_of_it(1_000.0);
+
+        // Sanity: traced on its own, this reach really does meander -- some station is hundreds
+        // of metres from where the same trace with the amplitude turned off would put it.
+        let (a, b) = (&calm.points[0], &calm.points[1]);
+        let mut no_meander = params();
+        no_meander.meander_amplitude_widths = 0.0;
+        let meandered = trace_segment(&ground, &params(), a, b, Some(0.0));
+        let plain = trace_segment(&ground, &no_meander, a, b, Some(0.0));
+        assert!(meandered.interior.iter().zip(&plain.interior).any(|(f, q)| {
+            let d = f.lateral_m - q.lateral_m;
+            d > 500.0 || d < -500.0
+        }), "sanity: this reach qualifies for a meander");
+
+        let mut record = HydroRecord {
+            bodies: Vec::new(),
+            reaches: vec![great_along_the_equator(), calm],
+            notches: Vec::new(),
+            falls: Vec::new(),
+            stats: stats_for(&params()),
+        };
+        refine(&mut record, &ground, &params());
+        assert_eq!(record.stats.crossings_left, 0, "the pass still clears the crossing");
+        for p in &record.reaches[1].points {
+            let off = (p.lat_deg - LESSER_CHORD_LAT) * M_PER_DEG;
+            assert!(off < 10.0 && off > -10.0,
+                    "a yielded segment shipped {off} m off its chord: the meander was put back");
         }
     }
 
