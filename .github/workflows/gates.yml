@@ -1235,7 +1235,7 @@ jobs:
           # only edit is the header assertion, which SCHEMA 6 moves from 54 to 56 words -- which
           # is why the two wasm rows move by the same +13 as the other three rather than more.
           #
-          # The fourteen are the extent: `src/hydrology/extent.rs` is new (`Extent`,
+          # THIRTEEN of the fourteen are the extent: `src/hydrology/extent.rs` is new (`Extent`,
           # `extent_of`, Rulings E-1 to E-4) and carries its own unit tests -- shore members
           # then collar in ascending node index, the interior trim, `shore_reach_m` as the
           # longest USABLE member-to-collar step with the below-level edges excluded, and the
@@ -1243,6 +1243,15 @@ jobs:
           # SCHEMA 6 round trip, the `kind`/`shore_member_count` discriminator, the band
           # property and Ruling E-6's pond invariant; and `src/hydrology/extent_tests.rs`
           # carries Task 3's trial.
+          #
+          # **THE FOURTEENTH IS NOT AN EXTENT TEST AND IS NAMED SO IT IS NOT MISREAD AS ONE:**
+          # `bake_tests::a_bake_at_the_shipped_pond_params_keeps_ponds` (Task 4) is a POND test.
+          # It closes a hole plan 1b-3 left open and routed here -- after Ruling S-17 no Rust
+          # test baked at `earth_like`'s shipped pond parameters, so 1b-3 could pin the
+          # constants but nothing exercised them. It derives `pond_search_radius_m` and
+          # `pond_density_area_m2` from `earth_like` rather than transcribing them, bakes
+          # `ranges_world()`, and asserts a pond survives with a ring of at least 3 points and
+          # a `Downstream::Reach`. 2 ponds of 14 found, about 0.5 s.
           #
           # **`expect_ignored` moves 7 -> 8, the first time that has happened in this block.**
           # The eighth is `hydrology::extent_tests::the_trim_holds_at_a_million_nodes`, the
@@ -1822,15 +1831,32 @@ jobs:
       # the pre-pond record plus SCHEMA 5's eleven header words -- that world now keeps NO pond at
       # all at 1.5 km. Every non-H group is unmoved. Wasm rebuilt: 427,667 bytes, artifact-sha256
       # e590b3b9..., source-fingerprint 7669d18a... (58 inputs); `check:wasm` reports it matches.
-      # 2026-09-12, WATER 1b-4 Task 6 (automatic water, body extents): 147,553 -> **150,830
-      # compared, 0 divergent**. The whole +3,277 is SCHEMA 6's extent, and it is both hydro
-      # records: `hydro/ranges` 15,945 -> **17,099** (+1,154) and `hydro/plain` 3,949 ->
-      # **6,072** (+2,123). Each delta is exactly `2 + 2 x bodies + 2 x (shore members +
-      # collar points)` -- the two new header words, the two new fixed words on every body
-      # (`shore_member_count`, `shore_reach_m`), and the `(lat, lon)` pair of every recorded
-      # extent point. Every non-H group is byte-for-byte unmoved. 0 divergent is UNCHANGED,
-      # which is the claim that matters: the extent is computed identically native and in the
-      # browser, so `extent_of` carries no platform libm and no map iteration order.
+      # 2026-09-12, WATER 1b-4 (automatic water, body extents): 147,553 -> **150,830 compared,
+      # 0 divergent**. **The +3,277 is TWO separate changes and must not be read as one.** Both
+      # land in the hydro records and nothing else moves, which is why an earlier draft of this
+      # note ran them together and got the arithmetic wrong; the split is recorded here because
+      # this block is the history a later plan reads.
+      #
+      #   * **+1,428 is SCHEMA 6's extent** (Tasks 1 and 2), and it took the branch from 147,553
+      #     to **148,981**: `hydro/ranges` 15,945 -> **17,099** (+1,154) and `hydro/plain`
+      #     3,949 -> **4,223** (+274). On `hydro/ranges`, which Task 4 does not touch, that
+      #     delta is the whole of what SCHEMA 6 added and has the form `2 + 2 x bodies +
+      #     2 x (shore members + collar points)` -- the two new header words, the two new fixed
+      #     words on every body (`shore_member_count`, `shore_reach_m`), and the `(lat, lon)`
+      #     pair of every recorded extent point.
+      #   * **+1,849 is Task 4's corpus change**, all of it in `hydro/plain`: 4,223 -> **6,072**,
+      #     from raising `parity_dump.rs`'s `HYDRO_PARAMS[0]` from 12,000 to 20,000 nodes so
+      #     that record keeps ponds again (see the pond-body gap Task 4 closed). It is a bigger
+      #     bake, not a bigger body layout.
+      #
+      # **The identity above applies to `hydro/ranges` only.** `2 + 2 x bodies + 2 x points` is
+      # always EVEN, and `hydro/plain`'s total delta is **+2,123, which is odd** -- because it
+      # is +274 of extent plus +1,849 of extra bake. Any future note that applies the identity
+      # to `hydro/plain`'s total is wrong on parity alone, before anything is measured.
+      #
+      # Every non-H group is byte-for-byte unmoved. 0 divergent is UNCHANGED, which is the claim
+      # that matters: the extent is computed identically native and in the browser, so
+      # `extent_of` carries no platform libm and no map iteration order.
       - name: Assert the corpus -- 150,830 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity

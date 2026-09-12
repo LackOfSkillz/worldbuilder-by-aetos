@@ -93,6 +93,12 @@
 //! - **Bodies with no collar:** coarse bodies whose `outline.len() == shore_member_count`, i.e.
 //!   a shore with nothing outside it. There should be none; the count is printed so a zero is a
 //!   measured zero.
+//! - **Kept with no extent:** `BakeStats::kept` minus the coarse bodies counted above. The
+//!   no-collar figure is **blind to the failure nearest it** -- a kept hollow that recorded no
+//!   extent at all has `shore_member_count == 0`, so it never enters the coarse population and
+//!   the no-collar count prints a reassuring 0 for exactly the case it exists to catch. This
+//!   difference is the thing that would be non-zero, so it is printed rather than argued. It is
+//!   signed: a surprise in either direction shows instead of wrapping.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -256,6 +262,7 @@ struct RunResult {
     shore_reach_max_m: f64,
     shore_reach_median_m: f64,
     coarse_bodies_without_collar: u32,
+    kept_with_no_extent: i64,
 }
 
 fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult, HydroError> {
@@ -343,6 +350,11 @@ fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult,
         .iter()
         .filter(|b| b.outline.len() as u32 == b.shore_member_count) // cast-ok: at most one point per node
         .count() as u32; // cast-ok: bounded by body count
+    // A kept hollow that recorded no extent at all falls out of `coarse` entirely, so it is
+    // invisible to `coarse_bodies_without_collar` -- which would then print a reassuring 0 for
+    // the very failure it is there to catch. This is the difference the no-collar figure cannot
+    // see. Signed, so a surprise in either direction shows rather than wrapping.
+    let kept_with_no_extent = record.stats.kept as i64 - coarse_bodies as i64; // cast-ok: two body counts, each bounded by the body count
     let mut reaches_m: Vec<f64> = coarse.iter().map(|b| b.shore_reach_m).collect();
     reaches_m.sort_unstable_by(|a, b| a.total_cmp(b));
     let shore_reach_max_m = if reaches_m.is_empty() { 0.0 } else { reaches_m[reaches_m.len() - 1] };
@@ -399,6 +411,7 @@ fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult,
         shore_reach_max_m,
         shore_reach_median_m,
         coarse_bodies_without_collar,
+        kept_with_no_extent,
     })
 }
 
@@ -459,8 +472,12 @@ fn print_result(r: &RunResult) {
     );
     println!(
         "    extent: coarse bodies {:>5}  shore members {:>7}  collar points {:>7}  \
-         no collar {:>4}",
-        r.coarse_bodies, r.shore_members, r.collar_points, r.coarse_bodies_without_collar,
+         no collar {:>4}  kept with no extent {:>4}",
+        r.coarse_bodies,
+        r.shore_members,
+        r.collar_points,
+        r.coarse_bodies_without_collar,
+        r.kept_with_no_extent,
     );
     println!(
         "      share of the record: points {:>9} bytes ({:.1} KB)  total {:>9} bytes ({:.1} KB, \
@@ -469,8 +486,7 @@ fn print_result(r: &RunResult) {
         (r.extent_point_bytes as f64) / 1.0e3, // cast-ok: a byte count to f64 for a printed KB figure
         r.extent_total_bytes,
         (r.extent_total_bytes as f64) / 1.0e3, // cast-ok: a byte count to f64 for a printed KB figure
-        // cast-ok: two byte counts to f64 for a printed percentage
-        100.0 * (r.extent_total_bytes as f64) / (r.record_bytes as f64),
+        100.0 * (r.extent_total_bytes as f64) / (r.record_bytes as f64), // cast-ok: two byte counts to f64 for a printed percentage
     );
     println!(
         "      shore_reach_m over the coarse bodies: largest {:>10.1} m  median {:>10.1} m",

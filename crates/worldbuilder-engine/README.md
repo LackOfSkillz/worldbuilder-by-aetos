@@ -5659,13 +5659,13 @@ including them would only measure how many ponds a bake found.
 ### The three stand-ins at 1,000,000 nodes
 
 `./target/release/hydro_survey.exe`, no flags, `HydroParams::earth_like(1_000_000)`.
-`drainage_check` is `Ok` on all three. **No body on any stand-in is missing a collar.**
+`drainage_check` is `Ok` on all three. **No body on any stand-in is missing a collar, and no kept hollow recorded no extent at all** — the second figure is the one the first is blind to (a kept hollow with no extent has `shore_member_count == 0`, never enters the coarse population, and would leave the no-collar count printing a reassuring 0), so `BakeStats::kept` minus the coarse bodies is printed beside it.
 
-| world | bake | (stages / record_of / refine / ponds) | record | coarse bodies | shore members | collar points | extent: points / total | share | `shore_reach_m` largest / median | no collar |
-|---|---|---|---|---|---|---|---|---|---|---|
-| plain | 46.05 s | 9.82 / 0.03 / 1.83 / 34.37 | **4,281,864** (was 4,241,672) | 23 | 968 | 1,247 | 35,440 / **40,192** | 0.94% | 43,908.3 / 39,402.6 m | **0** |
-| owner_survey | 26.95 s | 10.87 / 0.02 / 0.80 / 15.25 | **2,511,928** (was 2,461,400) | 71 | 1,159 | 1,870 | 48,464 / **50,528** | 2.01% | 30,129.4 / 27,186.9 m | **0** |
-| seed1_ranges | 56.87 s | 10.30 / 0.04 / 2.84 / 43.69 | **6,098,912** (was 5,974,160) | 160 | 2,764 | 4,368 | 114,112 / **124,752** | 2.05% | 43,397.7 / 39,549.3 m | **0** |
+| world | bake | (stages / record_of / refine / ponds) | record | coarse bodies | shore members | collar points | extent: points / total | share | `shore_reach_m` largest / median | no collar | kept with no extent |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| plain | 46.05 s | 9.82 / 0.03 / 1.83 / 34.37 | **4,281,864** (was 4,241,672) | 23 | 968 | 1,247 | 35,440 / **40,192** | 0.94% | 43,908.3 / 39,402.6 m | **0** | **0** |
+| owner_survey | 26.95 s | 10.87 / 0.02 / 0.80 / 15.25 | **2,511,928** (was 2,461,400) | 71 | 1,159 | 1,870 | 48,464 / **50,528** | 2.01% | 30,129.4 / 27,186.9 m | **0** | **0** |
+| seed1_ranges | 56.87 s | 10.30 / 0.04 / 2.84 / 43.69 | **6,098,912** (was 5,974,160) | 160 | 2,764 | 4,368 | 114,112 / **124,752** | 2.05% | 43,397.7 / 39,549.3 m | **0** | **0** |
 
 **Each record grew by exactly its own extent total** — +40,192, +50,528, +124,752 against the
 1b-3 figures — so the accounting above is not a model fitted to the growth, it *is* the growth.
@@ -5683,7 +5683,10 @@ quantity from 65 bodies to 348.
 **The extent costs no measurable time.** `extent_of` runs inside `record_of`, which is
 0.03 / 0.02 / 0.04 s — unmoved from 1b-3's 0.03 / 0.02 / 0.06. The whole-bake times are 6.1 / 2.3
 / 3.7 s above 1b-3's, and the movement is in `ponds` and `bake_stages`, which this plan does not
-touch (the pond part alone moved +4.84 s on `plain`); it is host variance, not the extent.
+touch (the pond part alone moved +4.84 s on `plain`); it is host variance, not the extent. A
+second run of the same binary on the same worlds, minutes later, measured **49.34 / 28.80 /
+61.95 s** — up to 9% above the first run — with every recorded quantity **bit-identical**. On this
+host the timings wander and the record does not.
 
 **Task 5's pond dedup fix moved no pond count on the stand-ins.** Found/kept are 1,993 / 273,
 409 / 57 and 3,752 / 504 — byte-for-byte the 1b-3 figures. The owner's world may still move; Task
@@ -5694,8 +5697,8 @@ touch (the pond part alone moved +4.84 s on `plain`); it is host variance, not t
 **Wasm rebuilt:** 431,385 bytes, 31 exports, 0 imports; artifact-sha256
 `ab858cd2dfe0627f2725f3f0bc6bf302b79e15769c6fc23ea5741bdb56dac93a` — **identical**, because a
 `[[bin]]` is not compiled into the artifact — and source-fingerprint
-`11e0aba0e1388e9bc47258e9aa8ac412105d1341e150dbc16bf97ab24adfff20` (66 inputs, was
-`5efa9073…`). The CRLF guard (`git ls-files --eol crates/worldbuilder-engine | grep -v "w/lf"`)
+`3eb47b9b74f1df1f1d905f49aaddaddff6e398df39161e6df74d5f5b66202d6d` (66 inputs, was
+`5efa9073…`, then `11e0aba0…` before the review fix wave's two survey edits). The CRLF guard (`git ls-files --eol crates/worldbuilder-engine | grep -v "w/lf"`)
 printed nothing before the rebuild. `npm run check:wasm` reports it matches its manifest and the
 source that is here now.
 
@@ -5732,7 +5735,11 @@ no line. The third `#[ignore]`d test, `extent_tests::the_trim_holds_at_a_million
 **Python:** 565 collected, 157 of them conformance — **unchanged** (`pytest --collect-only -q
 tests` and the same over `tests/test_conformance.py`; the plan touched no Python).
 
-**Viewer:** `npm test` — **338 pass, 0 fail** (was 337).
+**Viewer:** `npm test` (Node's test runner, `viewer/`, this host) — **338 pass, 0 fail**, run
+here as a gate. The 337 → 338 is **not this task's**: Task 1 added it at `2b579aa`, when SCHEMA 6
+put the discriminator on the wire, and `68b9a50` later fixed two of the file's assertions that
+Task 2's extent fill had made stale. Task 6 only re-ran the suite to confirm it is green at the
+pins above.
 
 **Parity — moved:**
 
@@ -5747,15 +5754,29 @@ tests` and the same over `tests/test_conformance.py`; the plan touched no Python
 | `--mutate gully-steer` | 150,830 | 3,752 |
 | `--mutate climate-samples` | 150,830 | 648 |
 
-The whole +3,277 is the extent, and it is both hydro records: `hydro/ranges` 15,945 → **17,099**
-(+1,154) and `hydro/plain` 3,949 → **6,072** (+2,123). Every non-H group is byte-for-byte unmoved
-in the plain run and in all seven controls. **0 divergent is the claim that matters here:** the
+**The +3,277 is two separate changes and must not be read as one.** Both land in the hydro
+records and nothing else moves, which is what made it easy to run them together:
+
+- **+1,428 is SCHEMA 6's extent** (Tasks 1 and 2), taking the branch 147,553 → **148,981**:
+  `hydro/ranges` 15,945 → **17,099** (+1,154) and `hydro/plain` 3,949 → **4,223** (+274).
+- **+1,849 is Task 4's corpus change**, all in `hydro/plain`: 4,223 → **6,072**, from raising
+  `parity_dump.rs`'s `HYDRO_PARAMS[0]` from 12,000 to 20,000 nodes so that record keeps ponds
+  again. A bigger bake, not a bigger body layout.
+
+**The `2 + 2 × bodies + 2 × (shore members + collar points)` identity applies to `hydro/ranges`
+alone**, the record Task 4 does not touch. It is always even, and `hydro/plain`'s total delta is
+**+2,123, odd** — because it is +274 of extent plus +1,849 of extra bake. Any reading that applies
+the identity to `hydro/plain`'s total is wrong on parity before anything is measured.
+
+Every non-H group is byte-for-byte unmoved in the plain run and in all seven controls. **0 divergent is the claim that matters here:** the
 extent is computed identically natively and in the browser, so `extent_of` carries no platform
 libm and no map iteration order — which is what §14.1's determinism requirement asks of it.
 
-Under the seed control `hydro/ranges` is 17,047 of 17,099 and `hydro/plain` 6,019 of 6,072; the
-extent's new words are almost all seed-sensitive, as they must be, and the shortfall in each is
-the params echo a moved seed cannot move. The tectonic control's `hydro/ranges` goes 15,597 →
+Under the seed control `hydro/ranges` is 17,047 of 17,099 and `hydro/plain` 6,019 of 6,072, and
+the shortfall in each is the params echo a moved seed cannot move. The control's own +3,509 spans
+both causes above, not the extent alone; what it says about the extent is that its new words are
+seed-sensitive, as they must be — a different seed puts a different lake in a different place, so
+every shore point moves. The tectonic control's `hydro/ranges` goes 15,597 →
 **16,807 of 17,099**, its native `TCTL` prediction moved with it, and it again printed *"exactly
 as the native side predicted"*; the five belt groups are unchanged at 6,186, which says the extent
 adds no coupling of its own.

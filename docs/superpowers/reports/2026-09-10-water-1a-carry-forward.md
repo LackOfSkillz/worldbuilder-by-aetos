@@ -95,15 +95,15 @@ Plan 1b-3 (shores) stops the refinement introducing river crossings, adds spec �
 
 **Ruling S-15 is deferred as ruled:** at 1M the crossing pass's first round sees **2,909 crossings**, so that many segments ship straightened and unmeandered under Ruling S-4a. Re-tuning `meander_amplitude_widths` waits for the mountains project's erosion.
 
-### Routed to plan 1b-4 by plan 1b-3 (three closed, two still open — see "Status after plan 1b-4")
+### Routed to plan 1b-4 by plan 1b-3 (all five closed in 1b-4 — see "Status after plan 1b-4")
 
 Task 1 ruled **Candidate B** for a body's extent (see item 6 above) and rewrote spec §6.6, §7 and §8.3 to match. Three places in the spec still describe the ring that ruling replaced, and 1b-4 owns all three; two coverage gaps that Rulings S-16 and S-17 opened go with them.
 
-- [ ] **Spec §8.2's spatial index must list a body whose shore points come within `shore_reach_m` of a cell.** A nearest-point test is only as good as the candidate set the index hands it; an index built for polygon containment will not return the right bodies.
-- [ ] **Spec §9 still names `dilateBodyExtents` and the box-and-level rule.** Both are polygon-era; §9 has to be rewritten against the shore-point set.
-- [ ] **Spec §14's two uses of "outline" are still curve-sense.** They read as a closed curve and must be restated for an unordered point set, or scoped explicitly to ponds, which do keep the 250 m trace.
-- [ ] **The parity corpus must always compare a pond body.** After Ruling S-17 the `hydro/plain` record keeps **no pond at all** (3,949 words = its pre-pond 3,938 plus SCHEMA 5's eleven header words), so of the corpus's two hydro records only `hydro/ranges` carries pond bodies across the wasm boundary. Not a defect today, but a future tuning that also emptied `hydro/ranges` would leave the pond body layout crossing the boundary with nothing comparing it, and **no gate would say so**. Either raise `examples/parity_dump.rs`'s hydro populations, or add a third record chosen so it keeps ponds at whatever params ship.
-- [ ] **No Rust test bakes at the shipped pond parameters.** All six `ponds::tests` cases and `bake_tests::ponds_obey_their_keep_rule_and_name_a_river` pin spec §6.6's 3 km corridor deliberately, because what they assert is the search's mechanism; each is right on its own, and together they leave `earth_like`'s 1,500 m and 1.6e10 unexercised in Rust. 1b-3's fix wave added the cheap half — `bake_tests::earth_like_ships_the_tuned_pond_corridor_and_density`, a value pin naming S-16 and S-17 — but that pins the constants, not what they do. The viewer's `water-preview.test.mjs` pond test (50,000 nodes) is the only behavioural test at the shipped values, and it is on the wasm side.
+- [x] **Done in 1b-4 (Task 5), as spec text; the implementation is stage 2's.** **Spec §8.2's spatial index must list a body whose shore points come within `shore_reach_m` of a cell.** §8.2 now states the dilation, its measured size (58,083 m median and 62,586 m max on the owner's world, against 50 km cells — a whole ring of cells, not a rounding allowance), and that a pond's traced curve dilates by nothing. A nearest-point test is only as good as the candidate set the index hands it; an index built for polygon containment will not return the right bodies. **Building it is item 1 of "Routed to stage 2" below** (Ruling E-7).
+- [x] **Done in 1b-4 (Task 5).** **Spec §9 named `dilateBodyExtents` and the box-and-level rule**, both polygon-era. §9's drawing path is rewritten against the shore-point set.
+- [x] **Done in 1b-4 (Task 5).** **Spec §14's uses of "outline" were curve-sense.** §14.3, §14.6 and §14.9 are restated for an unordered point set, or scoped explicitly to ponds, which do keep the 250 m trace.
+- [x] **Done in 1b-4 (Task 4).** **The parity corpus must always compare a pond body.** After Ruling S-17 the `hydro/plain` record kept **no pond at all**, so of the corpus's two hydro records only `hydro/ranges` carried pond bodies across the wasm boundary — and a future tuning that also emptied `hydro/ranges` would have left the pond body layout crossing the boundary with nothing comparing it, and **no gate would say so**. Task 4 raised `examples/parity_dump.rs`'s `HYDRO_PARAMS[0]` from 12,000 to **20,000 nodes** (`examples/parity_dump.rs:1949`), chosen as the smallest of {20,000; 30,000; 50,000} that keeps ponds and closest to the original; `hydro/plain` now bakes 13 bodies — **4 ponds and 9 coarse** — so it carries a `shore_member_count == 0` body across the boundary. The corpus grew by **1,849 words** in that record and the parity job's wall time did not measurably move.
+- [x] **Done in 1b-4 (Task 4).** **No Rust test baked at the shipped pond parameters.** All six `ponds::tests` cases and `bake_tests::ponds_obey_their_keep_rule_and_name_a_river` pin spec §6.6's 3 km corridor deliberately, because what they assert is the search's mechanism; each is right on its own, and together they left `earth_like`'s 1,500 m and 1.6e10 unexercised in Rust, with 1b-3's `earth_like_ships_the_tuned_pond_corridor_and_density` pinning the constants but not what they do. Task 4 added the behavioural half: **`bake_tests::a_bake_at_the_shipped_pond_params_keeps_ponds`** (`src/hydrology/bake_tests.rs:1799`), which derives both parameters from `earth_like` rather than transcribing them, bakes `ranges_world()`, and asserts a pond survives with a ring of at least 3 points and a `Downstream::Reach`. It keeps 2 ponds of 14 found and runs in about 0.5 s, so it is an ordinary test rather than a sweep.
 
 ## Plan 1b must fix (load-bearing for stage 2)
 
@@ -183,15 +183,15 @@ Plan 1b-4 (body extents) puts a **body extent** on the wire and moves the record
 
 **Ruling E-10:** `shore_reach_m` may not be narrowed to a percentile of the usable edges without re-running Task 3's trial first — not because the band holds interior points (clause 1 does) but because the trial samples the continuum only at graph-derived points, so a narrower band's effect on the shore contour between them is unmeasured.
 
-### What plan 1b-3 routed here
+### What plan 1b-3 routed here — all five closed
 
 | Item | Status |
 |---|---|
-| Spec §8.2's index must list a body whose shore points come within `shore_reach_m` of a cell | **Spec written** (Task 5). The dilation, its size against 50 km cells and why it is not a rounding allowance are all stated. **Implementation is stage 2's** — routed below. |
-| Spec §9 still names `dilateBodyExtents` and the box-and-level rule | **Done** (Task 5). §9's drawing path is rewritten against the shore-point set. |
-| Spec §14's two uses of "outline" are curve-sense | **Done** (Task 5): §14.3, §14.6 and §14.9 restated for an unordered point set, or scoped explicitly to ponds. |
-| The parity corpus must always compare a pond body | **Still open.** `hydro/plain` keeps no pond at the shipped 1,500 m corridor, so `hydro/ranges` is still the only record carrying pond bodies across the wasm boundary. 1b-4 did not change the corpus's hydro populations. Routed below. |
-| No Rust test bakes at the shipped pond parameters | **Still open.** 1b-3's fix wave added the value pin (`bake_tests::earth_like_ships_the_tuned_pond_corridor_and_density`); the behavioural half is still only the viewer's `water-preview.test.mjs`, on the wasm side. Routed below. |
+| Spec §8.2's index must list a body whose shore points come within `shore_reach_m` of a cell | **Spec written in 1b-4 (Task 5).** The dilation, its measured size against 50 km cells and why it is not a rounding allowance are all stated. **Building the index is stage 2's** (Ruling E-7) — item 1 below. |
+| Spec §9 named `dilateBodyExtents` and the box-and-level rule | **Done in 1b-4 (Task 5).** §9's drawing path is rewritten against the shore-point set. |
+| Spec §14's uses of "outline" were curve-sense | **Done in 1b-4 (Task 5).** §14.3, §14.6 and §14.9 restated for an unordered point set, or scoped explicitly to ponds. |
+| The parity corpus must always compare a pond body | **Done in 1b-4 (Task 4).** `examples/parity_dump.rs:1949` — `HYDRO_PARAMS[0]` raised 12,000 → **20,000 nodes**, the smallest of three tried that keeps ponds. `hydro/plain` now bakes 13 bodies (**4 ponds, 9 coarse**) and carries a `shore_member_count == 0` body across the boundary; the record grew 4,223 → 6,072 words. |
+| No Rust test bakes at the shipped pond parameters | **Done in 1b-4 (Task 4).** `src/hydrology/bake_tests.rs:1799` — `a_bake_at_the_shipped_pond_params_keeps_ponds`, deriving both parameters from `earth_like` and asserting a pond survives with a ring of at least 3 points and a `Downstream::Reach`. 2 ponds of 14 found, about 0.5 s. |
 
 ## Routed to stage 2
 
@@ -205,8 +205,6 @@ All six of plan 1a's "Plan 1b must fix (load-bearing for stage 2)" items are now
 
 **Also routed to stage 2:**
 
-- **The parity corpus must always compare a pond body.** `hydro/plain` keeps no pond at the shipped 1,500 m corridor, so of the corpus's two hydro records only `hydro/ranges` carries pond bodies across the wasm boundary. Not a defect today, but a tuning that also emptied `hydro/ranges` would leave the pond body layout crossing the boundary with **nothing comparing it, and no gate would say so**. Either raise `examples/parity_dump.rs`'s hydro populations or add a third record chosen to keep ponds at whatever params ship.
-- **No Rust test bakes at the shipped pond parameters.** The value pin exists; the behavioural test does not, and the only one at the shipped values is the viewer's, on the wasm side.
 - **A tie-break question Task 3 raised and 1b-4 deliberately did not pre-decide.** A point inside body A only via the band, and inside body B via clause 1, goes to whichever has the smaller `dm`; T1-3 does not distinguish the two clauses. Some band-only cases are dry ground below a perched lake's surface, which §8.3 already excludes by also requiring the point to be at or below the level — the extent is load-bearing, not a permissive gate around a level test. Whether the tie-break should prefer a clause-1 claim is stage 2's call.
 - **`decode` accepts dangling links.** Add a validation pass before stage 2 reads records from disk.
 - **The hydro half of `wasm.rs`** still waits for stage 2; `reaches.rs`'s invariants still want debug_asserts or doc comments.
