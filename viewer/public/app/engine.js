@@ -759,7 +759,7 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 54-word header (schema 5, Task 5 of plan 1b-3) into a plain
+  /// Read a `hydroBake` record's 56-word header (schema 6, Task 1 of plan 1b-4) into a plain
   /// object. Words 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`,
   /// `falls`, `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`,
   /// `great`, `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
@@ -777,7 +777,11 @@ export class Engine {
   /// `crossingsLeft`, how many are left in the record as it ships. Words 45-53 (Task 5 of the
   /// same plan, still schema 5) are the fine pond search's two counts, `pondsFound` and
   /// `pondsKept`, then its seven params (`pondCellM`, `pondSearchRadiusM`, `pondKeepDepthM`,
-  /// `pondKeepAreaM2`, `pondWetnessShare`, `pondMaxSlope`, `pondDensityAreaM2`).
+  /// `pondKeepAreaM2`, `pondWetnessShare`, `pondMaxSlope`, `pondDensityAreaM2`). Words 54-55
+  /// (schema 6, Task 1 of plan 1b-4) are the extent totals across all bodies, `shoreMembers` and
+  /// `collarPoints` -- the record's own account of what the extent trim cost. Every body ships a
+  /// zeroed extent in this task, so both are 0 on any bake this schema can produce so far; Task 2
+  /// fills them in.
   /// **`pondsFound` counts hollows in the corridors the search sampled, not in every corridor.**
   /// Ruling S-12 skips a coarse segment whose midpoint is drier than the wetness floor or inside
   /// a coarse body before its corridor is sampled at all, so those hollows are never found and
@@ -792,7 +796,7 @@ export class Engine {
   /// are left out for the same reason. The four counts -- both crossing words and both pond
   /// words -- ARE returned: they are counts a bake produced, not params.
   ///
-  /// Throws on a schema other than 5: another schema's header is not these 54 words, and a
+  /// Throws on a schema other than 6: another schema's header is not these 56 words, and a
   /// summary read off it would be wrong silently.
   ///
   /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
@@ -801,8 +805,8 @@ export class Engine {
   /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
   /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
-    if (words[0] !== 5) {
-      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 5)`);
+    if (words[0] !== 6) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 6)`);
     }
     return {
       schema: words[0],
@@ -844,6 +848,8 @@ export class Engine {
       crossingsLeft: words[44],
       pondsFound: words[45],
       pondsKept: words[46],
+      shoreMembers: words[54],
+      collarPoints: words[55],
     };
   }
 }

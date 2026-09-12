@@ -1138,10 +1138,10 @@ fn the_record_echoes_the_refinement_params() {
     assert_eq!(record.stats.refine_step_m, p.refine_step_m);
     assert_eq!(record.stats.meander_max_slope, p.meander_max_slope);
     let words = crate::hydrology::record::encode(&record);
-    assert_eq!(words[0], 5.0);
+    assert_eq!(words[0], 6.0);
     assert_eq!(words[32], f64::from(record.stats.capped_basins));
     assert_eq!(words[42], p.meander_max_slope);
-    // SCHEMA 5's two crossing counts close the 45-word header.
+    // SCHEMA 5's two crossing counts, still at the same offsets under SCHEMA 6.
     assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
     assert_eq!(words[44], f64::from(record.stats.crossings_left));
 }
@@ -1696,5 +1696,5 @@ fn the_record_echoes_the_pond_params() {
     assert_eq!(words[51], p.pond_wetness_share);
     assert_eq!(words[52], p.pond_max_slope);
     assert_eq!(words[53], p.pond_density_area_m2);
-    assert_eq!(decode(&words).as_ref(), Some(&record), "54 words of header, still SCHEMA 5");
+    assert_eq!(decode(&words).as_ref(), Some(&record), "words 45-53 of the 56-word SCHEMA 6 header");
 }

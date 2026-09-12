@@ -1342,6 +1342,7 @@ mod tests {
             pond_keep_depth_m: p.pond_keep_depth_m, pond_keep_area_m2: p.pond_keep_area_m2,
             pond_wetness_share: p.pond_wetness_share, pond_max_slope: p.pond_max_slope,
             pond_density_area_m2: p.pond_density_area_m2,
+            shore_members: 0, collar_points: 0,
         }
     }
 

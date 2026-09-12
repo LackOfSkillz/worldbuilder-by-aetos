@@ -6,7 +6,7 @@
 // `hydro.test.mjs` does; `drawPreview` is the only export that touches Cesium.
 //
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
-// pair -- schema 5, Task 3 (plan 1b-3)'s 45-word header. This file is the JS side of that
+// pair -- schema 6, Task 1 (plan 1b-4)'s 56-word header. This file is the JS side of that
 // contract and mirrors its field order and its refusals (a truncated record, a wrong schema, a
 // trailing word, an index or count word outside u32) rather than trusting the words blindly.
 //
@@ -20,7 +20,7 @@
 
 import { showLayer } from "./globe-layers.js";
 
-const SCHEMA = 5;
+const SCHEMA = 6;
 
 /// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
 const U32_MAX = 4294967295;
@@ -141,7 +141,7 @@ function readDownstream(cursor) {
   throw new Error(`hydro record: bad downstream kind ${kindWord}`);
 }
 
-/// Decode a `hydroBake` record. Throws on a schema other than 4, on a truncated array, or on
+/// Decode a `hydroBake` record. Throws on a schema other than 6, on a truncated array, or on
 /// a length mismatch (extra trailing words, or a count that does not add up) -- never returns
 /// a partial record.
 export function decodeHydro(words) {
@@ -231,6 +231,11 @@ export function decodeHydro(words) {
     pondWetnessShare: cursor.word(),
     pondMaxSlope: cursor.word(),
     pondDensityAreaM2: cursor.word(),
+    // SCHEMA 6, plan 1b-4, Task 1 (words 54-55): the extent totals across all bodies -- the
+    // record's own account of what the extent trim cost. Every body ships a zeroed extent in
+    // this task, so both are 0 until Task 2 fills them in.
+    shoreMembers: cursor.u32(),
+    collarPoints: cursor.u32(),
   };
 
   const bodies = [];
@@ -251,6 +256,8 @@ export function decodeHydro(words) {
     const anchorLat = cursor.word();
     const anchorLon = cursor.word();
     const downstream = readDownstream(cursor);
+    const shoreMemberCount = cursor.u32();
+    const shoreReachM = cursor.word();
     const outlineLen = cursor.u32();
     const outline = [];
     for (let j = 0; j < outlineLen; j += 1) {
@@ -258,7 +265,7 @@ export function decodeHydro(words) {
     }
     bodies.push({
       id, kind, fresh, enclosed, forced, levelM, areaM2, depthM, outletReach,
-      anchor: [anchorLat, anchorLon], downstream, outline,
+      anchor: [anchorLat, anchorLon], downstream, shoreMemberCount, shoreReachM, outline,
     });
   }
 
@@ -441,12 +448,15 @@ export function drawPreview(viewer, Cesium, decoded) {
     const radiusM = bodyRadiusM(body.areaM2);
     const position = Cesium.Cartesian3.fromDegrees(body.anchor[1], body.anchor[0]);
 
-    // Non-empty today means "a fine-search body's traced 250 m ring" (Ruling S-11): 2,220 of
-    // 2,222 fine bodies are `kind: lake`, not `kind: pond`, so this is keyed on the outline,
-    // never on `kind`. Plan 1b-4 gives coarse bodies shore points too, so "non-empty" will stop
-    // meaning "traced ring" then -- this file will need to tell the two apart at that point.
+    // SCHEMA 6, plan 1b-4, Task 1: the discriminator spec §8.3 needs is now on the wire --
+    // `shoreMemberCount === 0` means `outline` is a traced curve, not a shore-point set (Ruling
+    // T1-2), exactly the test `record.rs`'s decoder applies. Outline-length-alone stopped being
+    // enough the moment a coarse body could ship a non-empty outline: from Task 2 onward, a
+    // non-empty outline with `shoreMemberCount > 0` is a shore-point set and must NOT be drawn as
+    // a polygon.
     const outline = body.outline || [];
-    const traced = outline.length > 0;
+    const shoreMemberCount = body.shoreMemberCount || 0;
+    const traced = shoreMemberCount === 0 && outline.length > 0;
 
     if (traced) {
       pondsDrawn += 1;

@@ -45,7 +45,7 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.reaches.length, summary.reaches);
   assert.equal(decoded.notches, summary.notches);
   assert.equal(decoded.falls.length, summary.falls);
-  assert.equal(decoded.header.schema, 5);
+  assert.equal(decoded.header.schema, 6);
   assert.equal(decoded.header.nodes, summary.nodes);
   assert.equal(decoded.header.forcedRequested, summary.forcedRequested);
   assert.equal(decoded.header.forcedMatched, summary.forcedMatched);
@@ -63,8 +63,14 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.header.pondWetnessShare, words[51]);
   assert.equal(decoded.header.pondMaxSlope, words[52]);
   assert.equal(decoded.header.pondDensityAreaM2, words[53]);
-  // The header is 54 words, so word 54 is the first body's id.
-  assert.equal(words[54], decoded.bodies[0].id);
+  // SCHEMA 6, plan 1b-4 Task 1 (words 54-55): the extent totals across all bodies. Every body
+  // ships a zeroed extent in this task, so both are 0 on any bake this schema can produce so far.
+  assert.equal(decoded.header.shoreMembers, words[54]);
+  assert.equal(decoded.header.collarPoints, words[55]);
+  assert.equal(decoded.header.shoreMembers, 0);
+  assert.equal(decoded.header.collarPoints, 0);
+  // The header is 56 words, so word 56 is the first body's id.
+  assert.equal(words[56], decoded.bodies[0].id);
 });
 
 test("every pond the record kept is a traced ring at the end of bodies", () => {
@@ -75,6 +81,7 @@ test("every pond the record kept is a traced ring at the end of bodies", () => {
     // Ruling S-11: the area picks `pond` or `lake`, and both carry the traced 250 m ring.
     assert.ok(["pond", "lake"].includes(body.kind));
     assert.ok(body.outline.length >= 3, "a traced ring, not a shore-point set");
+    assert.equal(body.shoreMemberCount, 0, "Ruling T1-2: a fine-search body is always a traced ring");
     assert.equal(body.downstream.kind, "reach", "Ruling S-5");
     assert.equal(body.outletReach, null, "Ruling S-5");
     assert.ok(body.depthM >= decoded.header.pondKeepDepthM);
@@ -82,7 +89,7 @@ test("every pond the record kept is a traced ring at the end of bodies", () => {
   }
 });
 
-test("decodeHydro consumes a real SCHEMA 5 bake exactly, reach fresh and body downstream included", () => {
+test("decodeHydro consumes a real SCHEMA 6 bake exactly, reach fresh and body downstream included", () => {
   const decoded = decodeHydro(bake());
   assert.ok(decoded.reaches.length > 0, "sanity: this world has reaches");
   for (const reach of decoded.reaches) {
@@ -100,11 +107,12 @@ test("decodeHydro throws on a truncated array", () => {
   assert.throws(() => decodeHydro(new Float64Array(0)), /truncated|ran out of words/);
 });
 
-test("decodeHydro throws on a schema-2 or schema-4 header", () => {
+test("decodeHydro throws on a schema-2, schema-4 or schema-5 header", () => {
   const words = bake();
-  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, so a decoder that adapted rather
-  // than refused would read a body's first eleven words as the crossing and pond words.
-  for (const schema of [2, 4]) {
+  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, which is itself a prefix of SCHEMA
+  // 6's 56, so a decoder that adapted rather than refused would read a body's first words as
+  // later header words.
+  for (const schema of [2, 4, 5]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => decodeHydro(tampered), /unsupported schema/);
@@ -114,8 +122,8 @@ test("decodeHydro throws on a schema-2 or schema-4 header", () => {
 test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {
   const words = bake();
   const U32_MAX = 4294967295;
-  // The header's length, which Task 5 of plan 1b-3 took from 45 words to 54.
-  const HEADER = 54;
+  // The header's length, which Task 1 of plan 1b-4 took from 54 words to 56.
+  const HEADER = 56;
 
   // The boundary itself is a valid u32: word 5 (`nodes`) at exactly u32::MAX still decodes.
   const atMax = words.slice();
@@ -127,13 +135,13 @@ test("decodeHydro refuses an index or count word above 4294967295, as record.rs'
   header[5] = U32_MAX + 1;
   assert.throws(() => decodeHydro(header), /bad count\/index word/);
 
-  // ...in a body's optional outlet reach (body 0's word 8, record word 62)...
+  // ...in a body's optional outlet reach (body 0's word 8, record word 64)...
   assert.ok(words[1] > 0, "sanity: this world has a body to tamper with");
   const outlet = words.slice();
   outlet[HEADER + 8] = U32_MAX + 1;
   assert.throws(() => decodeHydro(outlet), /bad optional index word/);
 
-  // ...and in a downstream id (body 0's words 11-12, record words 65-66, made a body link).
+  // ...and in a downstream id (body 0's words 11-12, record words 67-68, made a body link).
   const downstream = words.slice();
   downstream[HEADER + 11] = 1;
   downstream[HEADER + 12] = U32_MAX + 1;
@@ -295,12 +303,13 @@ test("drawPreview draws a pond's outline as a polygon and counts it, instead of 
     bodies: [
       {
         id: 0, kind: "lake", fresh: true, levelM: 100, areaM2: 4e6, depthM: 9,
-        anchor: [1, 1], outline: [], downstream: { kind: "ocean" }, outletReach: null,
+        anchor: [1, 1], outline: [], shoreMemberCount: 0, downstream: { kind: "ocean" }, outletReach: null,
       },
       {
         id: 1, kind: "pond", fresh: true, levelM: 90, areaM2: 6e4, depthM: 3,
         anchor: [2, 2],
         outline: [[2, 2], [2.001, 2], [2.001, 2.001], [2, 2.001]],
+        shoreMemberCount: 0,
         downstream: { kind: "reach", id: 0 }, outletReach: null,
       },
     ],
@@ -334,6 +343,40 @@ test("drawPreview draws a pond's outline as a polygon and counts it, instead of 
   const rings = drawn.source.entities.list.filter((e) => e.ellipse);
   assert.equal(rings.length, 1);
   assert.equal(rings[0].position.lat, 1);
+});
+
+test("drawPreview draws a coarse body with shore points (a non-empty outline, shoreMemberCount > 0) as a ring, not a polygon", () => {
+  // SCHEMA 6, plan 1b-4, Task 1: the discriminator is on the wire but every coarse extent is
+  // still empty in this task -- Task 2 is what actually gives a coarse body a non-empty
+  // outline. This is the forward-looking case the hard ordering constraint exists for: a body
+  // whose outline is non-empty AND whose shoreMemberCount is > 0 is a shore-point set, and must
+  // never be drawn as the traced-ring polygon `outline.length > 0` alone would have drawn.
+  const Cesium = fakeCesium();
+  const viewer = { dataSources: { contains: () => false, add: (source) => source } };
+  const decoded = {
+    header: { schema: 6, pondsKept: 0, crossingsLeft: 0 },
+    bodies: [
+      {
+        id: 0, kind: "lake", fresh: true, levelM: 100, areaM2: 4e6, depthM: 9,
+        anchor: [1, 1],
+        outline: [[1, 1], [1.001, 1], [1.001, 1.001], [1, 1.001]],
+        shoreMemberCount: 3,
+        downstream: { kind: "ocean" }, outletReach: null,
+      },
+    ],
+    reaches: [], notches: 0, falls: [],
+  };
+  const drawn = drawPreview(viewer, Cesium, decoded);
+
+  assert.equal(drawn.counts.ponds, 0);
+  assert.equal(drawn.counts.pondOutlines, 0);
+  assert.equal(drawn.counts.bodies, 1);
+  assert.equal(drawn.counts.rings, 1);
+
+  const polygons = drawn.source.entities.list.filter((e) => e.polygon);
+  assert.equal(polygons.length, 0, "a shore-point set is never drawn as a polygon");
+  const rings = drawn.source.entities.list.filter((e) => e.ellipse);
+  assert.equal(rings.length, 1, "it gets the usual true-size ring instead");
 });
 
 test("drawPreview outlines a salt body in the salt colour and a fresh body in the fresh colour", () => {

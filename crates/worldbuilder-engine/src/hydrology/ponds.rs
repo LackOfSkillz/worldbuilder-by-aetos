@@ -924,6 +924,10 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
             anchor: (survivor.lat_deg, survivor.lon_deg),
             outline: survivor.outline.clone(),
             downstream,
+            // Ruling T1-2: a fine-search body's outline is always a traced ring, never a
+            // shore-point set, so the discriminator stays zero regardless of plan 1b-4's task.
+            shore_member_count: 0,
+            shore_reach_m: 0.0,
         });
         kept += 1;
     }
@@ -1230,6 +1234,7 @@ mod tests {
                 pond_cell_m: 0.0, pond_search_radius_m: 0.0, pond_keep_depth_m: 0.0,
                 pond_keep_area_m2: 0.0, pond_wetness_share: 0.0, pond_max_slope: 0.0,
                 pond_density_area_m2: 0.0,
+                shore_members: 0, collar_points: 0,
             },
         }
     }

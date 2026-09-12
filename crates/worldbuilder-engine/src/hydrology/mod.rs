@@ -210,6 +210,16 @@ pub struct Body {
     /// straight into (no reach between them), the ocean, or nowhere (a closed lake). On the wire
     /// as of SCHEMA 3.
     pub downstream: Downstream,
+    /// Ruling E-1: how many of `outline`'s points are the body's own shore members. The rest are
+    /// its collar. Zero means the outline is a traced curve, not a shore-point set (Ruling T1-2
+    /// and spec §8.3): that is how a pond, and a fine-search lake, are told apart from a coarse
+    /// body. Plan 1b-4 fills this; before it, every coarse body shipped an empty outline.
+    pub shore_member_count: u32,
+    /// Ruling E-3: the longest usable member-to-collar step of this body, in metres -- usable
+    /// meaning the collar end's landform stands above `level_m`. Spec §8.3's second clause uses
+    /// it as the width of the shore band, which is what holds the level contour inside the
+    /// extent. Zero for a traced curve.
+    pub shore_reach_m: f64,
 }
 
 /// One node along a reach's course.
@@ -346,6 +356,12 @@ pub struct BakeStats {
     pub pond_wetness_share: f64,
     pub pond_max_slope: f64,
     pub pond_density_area_m2: f64,
+    /// SCHEMA 6, plan 1b-4: the total of every body's `shore_member_count` -- the record's own
+    /// account of what the extent trim cost, across all bodies at once.
+    pub shore_members: u32,
+    /// SCHEMA 6, plan 1b-4: the total of every body's collar points (`outline.len() -
+    /// shore_member_count`, summed) -- the other half of what the extent cost.
+    pub collar_points: u32,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the

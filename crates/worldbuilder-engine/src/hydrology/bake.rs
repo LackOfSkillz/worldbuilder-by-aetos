@@ -358,6 +358,10 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
             anchor: (anchor_lat, anchor_lon),
             outline: Vec::new(),
             downstream,
+            // Plan 1b-4, Task 1: every coarse body ships the extent's discriminator zeroed until
+            // Task 2 fills it in.
+            shore_member_count: 0,
+            shore_reach_m: 0.0,
         });
     }
 
@@ -601,6 +605,10 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         pond_wetness_share: params.pond_wetness_share,
         pond_max_slope: params.pond_max_slope,
         pond_density_area_m2: params.pond_density_area_m2,
+        // SCHEMA 6, plan 1b-4: every body ships a zeroed extent in this task, so both totals are
+        // zero at `record_of` too. Task 2 fills them in alongside the extents themselves.
+        shore_members: 0,
+        collar_points: 0,
     };
 
     HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }
