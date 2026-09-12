@@ -140,22 +140,29 @@ impl BucketIndex {
         for row in low..=high {
             let south = -90.0 + row as f64 * 180.0 / self.rows as f64;
             let north = south + 180.0 / self.rows as f64;
-            // The widest point of the row decides how far the longitude reach stretches.
+            // The widest point of the row decides how far the LINEAR longitude reach stretches.
             let widest = if south.abs() > north.abs() { south.abs() } else { north.abs() };
             let cos = m::cos(m::to_radians(widest));
             let count = self.columns[row];
+            // The linear form alone is not a bound (see `half_extent_deg`), so the stretch is the
+            // larger of it and the exact half-extent. Taking the larger rather than replacing the
+            // linear form is deliberate: no caller's candidate set can shrink, so nothing already
+            // measured against this grid moves, and the exact term alone already makes it a
+            // superset.
+            let linear = if cos <= 1.0e-9 { 180.0 } else { reach_deg / cos };
+            let exact = half_extent_deg(lat, reach_deg, south, north);
+            let stretch = if exact > linear { exact } else { linear };
             // Third disjunct: a reach that carries the query past a pole (its latitude band
             // running off the top or bottom of the grid) covers every longitude at that row
-            // regardless of `cos` or `reach_deg / cos` -- the row's whole circle is within
-            // reach once the cap itself is, so there is no narrower column range to compute.
-            let everything = cos <= 1.0e-9 || reach_deg / cos >= 180.0 || lat.abs() + reach_deg >= 90.0;
+            // regardless of the stretch -- the row's whole circle is within reach once the cap
+            // itself is, so there is no narrower column range to compute.
+            let everything = stretch >= 180.0 || lat.abs() + reach_deg >= 90.0;
             if everything {
                 for column in 0..count {
                     visit(self.first[row] + column);
                 }
                 continue;
             }
-            let stretch = reach_deg / cos;
             let west = self.column_of(row, wrap(lon - stretch));
             let east = self.column_of(row, wrap(lon + stretch));
             let mut column = west;
@@ -197,6 +204,77 @@ impl BucketIndex {
             reach *= 2.0;
         }
     }
+}
+
+/// How far east or west of its own meridian a circle of angular radius `reach_deg` about
+/// `centre_lat_deg` reaches, anywhere in the latitude row `[south_deg, north_deg]`, in degrees.
+///
+/// The exact half-extent at one latitude φ, for a circle of radius `r` about latitude `φ₀`, is
+///
+/// ```text
+/// Δλ(φ) = acos( (cos r − sin φ₀ sin φ) / (cos φ₀ cos φ) )
+/// ```
+///
+/// which is what the linear `r / cos φ` approximates. The approximation is not a bound: it
+/// over-covers while `r` is small -- which is why the linear form served every caller correctly
+/// until plan 2a's index started asking for megametres -- and under-covers once `r` is a fair
+/// fraction of a radian, by 66 km at latitude 70 on a 2,061 km circle.
+///
+/// `Δλ` is unimodal in φ with its maximum at the tangency latitude `sin φₜ = sin φ₀ / cos r`
+/// (where a meridian touches the circle), so the largest value the row can hold is at one of its
+/// two edges or at `φₜ` if that falls between them: three evaluations, and no search.
+///
+/// `acos`, which `detmath` does not carry, is written `atan2(sqrt(1 − x²), x)`.
+fn half_extent_deg(centre_lat_deg: f64, reach_deg: f64, south_deg: f64, north_deg: f64) -> f64 {
+    let r = m::to_radians(reach_deg);
+    let centre = m::to_radians(centre_lat_deg);
+    let cos_r = m::cos(r);
+    let sin_centre = m::sin(centre);
+    let cos_centre = m::cos(centre);
+    // A circle about a pole covers every longitude of every row it reaches at all.
+    if cos_centre <= 1.0e-12 {
+        return 180.0;
+    }
+    let sin_tangency = sin_centre / cos_r;
+    let tangency_deg = if sin_tangency >= 1.0 {
+        90.0
+    } else if sin_tangency <= -1.0 {
+        -90.0
+    } else {
+        m::to_degrees(m::asin(sin_tangency))
+    };
+    let inside = if tangency_deg < south_deg {
+        south_deg
+    } else if tangency_deg > north_deg {
+        north_deg
+    } else {
+        tangency_deg
+    };
+    let mut widest = 0.0;
+    for latitude_deg in [south_deg, north_deg, inside] {
+        let latitude = m::to_radians(latitude_deg);
+        let cos_lat = m::cos(latitude);
+        // A row edge sitting exactly on a pole: a circle that reached the pole took the caller's
+        // `everything` branch, so one that did not reaches nothing at this latitude.
+        if cos_lat <= 1.0e-12 {
+            continue;
+        }
+        let x = (cos_r - sin_centre * m::sin(latitude)) / (cos_centre * cos_lat);
+        let here = if x <= -1.0 {
+            180.0
+        } else if x >= 1.0 {
+            // The circle does not reach this latitude at all.
+            0.0
+        } else {
+            m::to_degrees(m::atan2(m::sqrt(1.0 - x * x), x))
+        };
+        if here > widest {
+            widest = here;
+        }
+    }
+    // A tenth of a millimetre of slack, so a cell edge that the exact value lands on is swept
+    // rather than decided by the last bit of an `atan2`.
+    widest + 1.0e-9
 }
 
 /// A longitude in (-180, 180].
@@ -309,6 +387,39 @@ mod tests {
         for (lat, lon) in [(90.0, 0.0), (-90.0, 0.0), (0.0, 180.0), (0.0, -180.0)] {
             let cell = index.cell_of(&SpherePoint::from_latlon(lat, lon));
             assert!(cell < index.buckets.len(), "{lat},{lon} landed outside the grid");
+        }
+    }
+
+    /// The superset guarantee at the radii `water::index`'s bounding circles actually use.
+    ///
+    /// `candidates_include_every_point_within_reach` checks 900 km at one place. The longitude
+    /// stretch used to be the linear `reach_deg / cos(row's widest latitude)`, which over-covers
+    /// while the reach is small -- every caller before plan 2a's index -- and **under**-covers
+    /// once the reach is a fair fraction of a radian. On this grid a 2,061 km circle fell short
+    /// by 0.5 km at latitude 45, 18.8 km at 60 and 66.1 km at 70, which is more than a body's
+    /// whole shore band: real cells on the circle's east and west flanks went unlisted. This is
+    /// the brute-force check across the latitudes and radii where that bites.
+    #[test]
+    fn candidates_include_every_point_within_reach_at_megametre_radii_and_high_latitude() {
+        let positions = scatter(20_000);
+        let mut index = BucketIndex::new(R, 50_000.0);
+        for (i, p) in positions.iter().enumerate() {
+            index.insert(p, i as u32); // cast-ok: test fixture
+        }
+        for lat in [0.0, 30.0, 45.0, 60.0, 70.0, 80.0, -70.0] {
+            for lon in [0.0, 179.5, -120.0] {
+                let centre = SpherePoint::from_latlon(lat, lon);
+                for reach in [500_000.0, 1_054_219.0, 2_060_743.0] {
+                    let found = index.candidates(&centre, reach);
+                    for (i, q) in positions.iter().enumerate() {
+                        let d = centre.distance_to(q, R);
+                        if d <= reach {
+                            assert!(found.contains(&(i as u32)), // cast-ok: test fixture
+                                    "missed point {i} at {d} m from {lat},{lon}, reach {reach}");
+                        }
+                    }
+                }
+            }
         }
     }
 

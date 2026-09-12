@@ -279,6 +279,17 @@ export function decodeHydro(words) {
         `hydro record: body claims ${shoreMemberCount} shore members of a ` +
         `${outlineLen}-point outline`);
     }
+    // The twin of `record.rs`'s Ruling Q-15 guard. A shore-point set with no collar leaves
+    // §8.3's first clause -- nearest member at least as near as nearest *collar* point -- with
+    // an infinite `dc`, so the clause is true everywhere and that one body claims the whole
+    // planet. `extent.rs` cannot write one; refuse it at the trust boundary rather than draw it.
+    // A pond is untouched: its count is zero, the traced-ring discriminator, not a collarless
+    // shore-point set.
+    if (shoreMemberCount > 0 && shoreMemberCount === outlineLen) {
+      throw new Error(
+        `hydro record: body claims all ${outlineLen} outline points as shore members, ` +
+        `leaving no collar`);
+    }
     const outline = [];
     for (let j = 0; j < outlineLen; j += 1) {
       outline.push([cursor.word(), cursor.word()]);

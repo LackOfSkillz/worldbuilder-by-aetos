@@ -587,10 +587,10 @@ mod tests {
     /// **The collar sits beyond the band on purpose.** Ruling E-3 measures the band from steps
     /// whose collar end stands *above* the level, and a body has plenty of steps that do not
     /// qualify, so a collar point further out than `shore_reach_m` is the ordinary case rather
-    /// than a contrived one. It is also the only shape in which a probe can be **outside the
-    /// extent and still a candidate**: the index dilates members by the band and lists collar
-    /// points in their own cells alone, so with a collar inside the band every candidate cell is
-    /// inside the extent too, and brief case 3 has nowhere to stand.
+    /// than a contrived one. It also keeps the extent narrower than the candidate set, so a probe can
+    /// be **outside the extent and still a candidate** and brief case 3 has somewhere to stand --
+    /// the index offers every body whose bounding circle reaches the cell (Ruling Q-13), and that
+    /// circle is the whole outline plus the band, wider than the extent by construction.
     fn shore_body() -> Body {
         body(0, BodyKind::Lake, true, 100.0, 2, BAND_M,
              vec![(0.0, 0.0), (0.0, 0.1), (0.4, 0.0), (0.4, 0.1)])

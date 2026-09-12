@@ -9,7 +9,7 @@
 use crate::hydrology::bake_tests::refined_populations;
 use crate::hydrology::buckets::BucketIndex;
 use crate::sphere::SpherePoint;
-use crate::water::index::{WaterIndex, DEFAULT_CELL_M};
+use crate::water::index::{body_circle_m, WaterIndex, DEFAULT_CELL_M};
 
 /// What Ruling Q-13's bounding circle costs, measured rather than argued. Reports, per
 /// population: cells occupied, entries stored per family, the largest cell's item count, and the
@@ -68,14 +68,9 @@ fn the_index_costs_what_it_costs_at_a_million_nodes() {
         let mut worst_body = (0u32, 0.0f64, 0usize);
         for body in &record.bodies {
             let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
-            let mut span_m = 0.0;
-            for &(lat, lon) in &body.outline {
-                let d = anchor.distance_to(&SpherePoint::from_latlon(lat, lon), surface.radius_m);
-                if d > span_m {
-                    span_m = d;
-                }
-            }
-            let circle_m = span_m + body.shore_reach_m;
+            // `build`'s own rule, called rather than restated: a later change to Q-13 moves this
+            // measurement with it instead of leaving it reporting the superseded one.
+            let circle_m = body_circle_m(body, surface.radius_m);
             let cells = grid.cells_within(&anchor, circle_m).len();
             if cells > worst_body.2 {
                 worst_body = (body.id, circle_m, cells);

@@ -185,12 +185,13 @@ test("decodeHydro refuses a body claiming more shore members than it has outline
   const outlineLen = words[OUTLINE_LEN];
   assert.ok(outlineLen > 0, "sanity: this world's first body carries an outline");
 
-  // The boundary is legal: every outline point may be a shore member.
-  const atLen = words.slice();
-  atLen[SHORE_MEMBER_COUNT] = outlineLen;
-  assert.equal(decodeHydro(atLen).bodies[0].shoreMemberCount, outlineLen);
+  // One short of the outline's length is legal: the last point is the collar. (Equalling it is
+  // refused too, by Ruling Q-15 -- its own test below.)
+  const belowLen = words.slice();
+  belowLen[SHORE_MEMBER_COUNT] = outlineLen - 1;
+  assert.equal(decodeHydro(belowLen).bodies[0].shoreMemberCount, outlineLen - 1);
 
-  // One past it is not, and neither is any larger count. All are valid u32 words, so nothing
+  // Past it is not, and neither is any larger count. All are valid u32 words, so nothing
   // else refuses them, and `outline.slice(0, shoreMemberCount)` on any of them hands a reader a
   // short member set and a negative collar size instead of a decode failure.
   for (const bogus of [outlineLen + 1, 4e9, 4294967295]) {
@@ -198,6 +199,23 @@ test("decodeHydro refuses a body claiming more shore members than it has outline
     tampered[SHORE_MEMBER_COUNT] = bogus;
     assert.throws(() => decodeHydro(tampered), /shore members of a/);
   }
+});
+
+test("decodeHydro refuses a shore-point body with no collar, as record.rs's decode does", () => {
+  const words = bake();
+  const outlineLen = words[OUTLINE_LEN];
+  assert.ok(outlineLen > 1, "sanity: this world's first body has an outline to take a collar off");
+
+  // Ruling Q-15. Every outline point a shore member leaves no collar, so §8.3's first clause
+  // has an infinite `dc` and admits the whole planet as inside this one body.
+  const noCollar = words.slice();
+  noCollar[SHORE_MEMBER_COUNT] = outlineLen;
+  assert.throws(() => decodeHydro(noCollar), /leaving no collar/);
+
+  // A pond is untouched: zero is the traced-ring discriminator, not a collarless extent.
+  const pond = words.slice();
+  pond[SHORE_MEMBER_COUNT] = 0;
+  assert.equal(decodeHydro(pond).bodies[0].shoreMemberCount, 0);
 });
 
 test("decodeHydro refuses a non-finite or negative shoreReachM, as record.rs's decode does", () => {

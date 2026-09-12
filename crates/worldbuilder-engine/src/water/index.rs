@@ -20,20 +20,32 @@
 //!
 //!   > **Guarantee.** Every point the query could answer for a body is in a cell that lists it.
 //!
+//!   **`span` is measured over the whole outline, members and collar alike**, and that is the
+//!   step the rest of the argument stands on. The collar points *are* `outline` -- Ruling E-1
+//!   makes the members its prefix and the collar the remainder -- so the circle already contains
+//!   every collar point before the band is added. It is also what saves the 26 bodies in 1,042
+//!   whose band is exactly zero: their circle is not a point, it is their outline's own span.
+//!
 //!   Spec §8.3 admits a point three ways, and the circle covers all three. Clause 2 (within
 //!   `shore_reach_m` of a **member**) reaches at most `span + band` from the anchor, because a
 //!   member is one of the recorded points the span is measured over. The ring test (a traced
-//!   curve) admits only points inside the curve, whose vertices are recorded points. Clause 1
-//!   (the nearest **member** at least as near as the nearest **collar** point) is the one with
-//!   no distance in it at all -- it is what holds a wide body's interior, arbitrarily far from
-//!   anything recorded -- and what bounds it is that the **collar encloses the members**: it is
-//!   built as the above-level neighbours of the member set, so from any point outside the
-//!   outline the collar on that side is nearer than the members behind it and clause 1 fails.
-//!   Everything clause 1 admits therefore lies within the outline, and so within the circle.
+//!   curve) admits only points inside the curve, whose vertices are recorded points, hence
+//!   inside the span. Clause 1 (the nearest **member** at least as near as the nearest **collar**
+//!   point) is the one with no distance in it at all -- it is what holds a wide body's interior,
+//!   arbitrarily far from anything recorded -- and what bounds it is that the **collar encloses
+//!   the members**: the collar is built as the above-level neighbours of the member set, so from
+//!   any point outside the outline the collar on that side is nearer than the members behind it
+//!   and clause 1 fails. Everything clause 1 admits therefore lies inside the outline, every
+//!   point of the outline is inside the span, and the span is inside the circle.
 //!
-//!   That last step is a property of what the bake records, not of arithmetic: a hand-written
-//!   record whose collar did not enclose its members could admit a point outside the circle.
-//!   No bake produces one.
+//!   Two things that argument rests on, said out loud. The collar enclosing the members is a
+//!   property of what the bake records, not of arithmetic -- a hand-written record whose collar
+//!   did not enclose its members could admit a point outside the circle, which is why Ruling
+//!   Q-15 has `record.rs::decode` refuse the degenerate case of no collar at all. And the sweep
+//!   underneath must be honest at these radii: `BucketIndex`'s longitude stretch used the linear
+//!   `reach / cos(latitude)`, which is not a bound once the reach is a fair fraction of a radian,
+//!   and lost 66 km of a 2,061 km circle's flank at latitude 70 until it was given the exact
+//!   half-extent.
 //!
 //!   **Why not a band around each shore member**, which is what spec §8.2 describes and what
 //!   this index shipped with first: it satisfies clause 2 and nothing else. A body wider than
@@ -80,7 +92,7 @@
 
 use crate::detmath as m;
 use crate::hydrology::buckets::BucketIndex;
-use crate::hydrology::HydroRecord;
+use crate::hydrology::{Body, HydroRecord};
 use crate::sphere::SpherePoint;
 
 /// About 50 km, spec §8.2. A cell holds every item whose influence reaches it.
@@ -122,18 +134,8 @@ impl WaterIndex {
             if body.outline.is_empty() {
                 continue;
             }
-            // Ruling Q-13: the bounding circle, not a band around each shore member. See the
-            // module doc for why the query can be answered outside every band.
             let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
-            let mut span_m = 0.0;
-            for &(lat, lon) in &body.outline {
-                let d = anchor.distance_to(&SpherePoint::from_latlon(lat, lon), radius_m);
-                if d > span_m {
-                    span_m = d;
-                }
-            }
-            let band_m = if body.shore_reach_m > 0.0 { body.shore_reach_m } else { 0.0 };
-            add_point(&grid, &mut bodies, body.id, &anchor, span_m + band_m);
+            add_point(&grid, &mut bodies, body.id, &anchor, body_circle_m(body, radius_m));
         }
 
         for reach in &record.reaches {
@@ -211,6 +213,31 @@ impl WaterIndex {
          self.reaches.iter().map(Vec::len).sum(),
          self.notches.iter().map(Vec::len).sum())
     }
+}
+
+/// Ruling Q-13's bounding circle for one body, in metres about its `anchor`: the greatest
+/// distance from the anchor to any of its own recorded outline points, plus `shore_reach_m`.
+/// Zero for a body with no outline. See the module doc for what it guarantees and why.
+///
+/// Public because it is the *only* statement of the rule: a survey that wants to know which body
+/// costs the index most calls this rather than writing the formula out again, so a later change
+/// to the rule cannot leave a measurement reporting the old one.
+pub fn body_circle_m(body: &Body, radius_m: f64) -> f64 {
+    if body.outline.is_empty() {
+        return 0.0;
+    }
+    let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
+    let mut span_m = 0.0;
+    // Over the WHOLE outline, collar included -- see the module doc; it is the step that makes
+    // the guarantee close, and what gives a zero-band body a circle at all.
+    for &(lat, lon) in &body.outline {
+        let d = anchor.distance_to(&SpherePoint::from_latlon(lat, lon), radius_m);
+        if d > span_m {
+            span_m = d;
+        }
+    }
+    let band_m = if body.shore_reach_m > 0.0 { body.shore_reach_m } else { 0.0 };
+    span_m + band_m
 }
 
 /// Push `id` unless the cell already ends with it. Every item is added in one contiguous run, so
@@ -325,6 +352,10 @@ mod tests {
     /// listed by nothing at all under a rule that only dilates each shore member by the band.
     const WIDE_ANCHOR: (f64, f64) = (-50.0, -30.0);
 
+    /// The middle of body 4, the wide lake at high latitude: the flanks of its bounding circle
+    /// are where the sweep's longitude arithmetic used to fall short.
+    const POLAR_ANCHOR: (f64, f64) = (70.0, 20.0);
+
     /// The lake's band. Wider than a cell on purpose -- spec 8.2's point is that the dilation
     /// "can add a ring of cells all the way round a body", not that it is a rounding allowance.
     const BAND_M: f64 = 60_000.0;
@@ -397,7 +428,8 @@ mod tests {
         // Body 0: two shore members on the equator at lon 0, one collar south of them.
         let lake = body(0, BodyKind::Lake, 2, BAND_M,
                         vec![(0.0, 0.0), (0.0, 0.05), (-0.1, 0.0)]);
-        // Body 1: a pond's traced ring. `shore_member_count == 0`, so nothing dilates.
+        // Body 1: a pond's traced ring. `shore_member_count == 0`, so its circle is the ring's
+        // own span with no band added -- about 2.2 km.
         let pond = body(1, BodyKind::Pond, 0, 0.0,
                         vec![(10.0, 10.0), (10.02, 10.0), (10.02, 10.02), (10.0, 10.02)]);
         // Body 2: a shore-point body with a band of exactly zero -- 26 of 1,042 real bodies.
@@ -410,6 +442,13 @@ mod tests {
                             vec![(-53.0, -30.0), (-47.0, -30.0), (-50.0, -34.67), (-50.0, -25.33),
                                  (-53.5, -30.0), (-46.5, -30.0), (-50.0, -35.45), (-50.0, -24.55)]);
         wide.anchor = WIDE_ANCHOR;
+        // Body 4: the same shape at latitude 70, where a circle 2,061 km across needs 56.1
+        // degrees of longitude at its widest and the linear `r / cos(lat)` offered only 54.2.
+        // Members 18 degrees out along the meridian and the parallel, collar beyond each.
+        let mut polar = body(4, BodyKind::Lake, 4, BAND_M,
+                             vec![(52.0, 20.0), (88.0, 20.0), (70.0, -32.63), (70.0, 72.63),
+                                  (51.6, 20.0), (88.4, 20.0), (70.0, -33.8), (70.0, 73.8)]);
+        polar.anchor = POLAR_ANCHOR;
 
         // Reach 0: three points, each leg well under a cell.
         let short = ReachLine {
@@ -432,7 +471,7 @@ mod tests {
             points: vec![(-30.0, 50.0, 20.0, 300.0), (-30.0, 50.3, 10.0, 300.0)],
         };
         HydroRecord {
-            bodies: vec![lake, pond, bandless, wide],
+            bodies: vec![lake, pond, bandless, wide, polar],
             reaches: vec![short, long, seam],
             notches: vec![notch],
             falls: Vec::new(),
@@ -505,6 +544,8 @@ mod tests {
             assert_ne!(grid.cell_of(&at(lat, lon)), grid.cell_of(&middle),
                        "fixture is wrong: {lat},{lon} shares the middle's cell");
         }
+        assert!(body_circle_m(wide, R) > nearest_m,
+                "sanity: the circle is what reaches the middle, not the band");
         assert!(nearest_m > 6.0 * CELL,
                 "fixture is wrong: the middle is only {nearest_m} m from a recorded point");
         assert!(nearest_m > 4.0 * wide.shore_reach_m,
@@ -524,12 +565,50 @@ mod tests {
                 "the bounding circle is 449 km, and this is 1,112 km out");
     }
 
+    /// The bounding circle only works if the grid sweep it rides on is honest at that radius, and
+    /// at megametre radii it was not: `BucketIndex`'s longitude stretch was the linear
+    /// `reach / cos(latitude)`, which under-covers once the reach is a fair fraction of a radian.
+    /// Body 4's circle is 2,106 km at latitude 70, where the exact half-extent is 57.7 degrees of
+    /// longitude and the linear form offered 55.9 -- so a band of real interior about 68 km wide
+    /// down each flank went unlisted, which is Q-13's own failure moved to high latitude.
+    ///
+    /// The probes are not named longitudes. The flank is **swept**, and every probe that measures
+    /// as inside the circle must be listed: a hand-picked longitude can land in the last column
+    /// the short stretch happened to reach and pass while the flank beside it is broken, which is
+    /// exactly what the first draft of this test did.
+    #[test]
+    fn a_wide_body_at_high_latitude_is_listed_on_the_flanks_of_its_own_circle() {
+        let record = fixture();
+        let polar = &record.bodies[4];
+        let anchor = at(POLAR_ANCHOR.0, POLAR_ANCHOR.1);
+        // `build`'s own rule, called rather than restated.
+        let circle_m = body_circle_m(polar, R);
+        let index = WaterIndex::build(&record, R, CELL);
+        // Every twentieth of a degree of longitude east and west of the anchor, at three
+        // latitudes across it: whichever of them the circle contains must be listed.
+        let mut inside = 0usize;
+        for latitude in [69.8, 70.0, 70.2] {
+            for step in -1_400i32..=1_400 {
+                let lon = POLAR_ANCHOR.1 + f64::from(step) * 0.05;
+                let probe = at(latitude, lon);
+                if anchor.distance_to(&probe, R) >= circle_m {
+                    continue;
+                }
+                inside += 1;
+                assert!(index.candidates(&probe).bodies.contains(&4),
+                        "inside the {circle_m} m circle at {latitude},{lon} and not listed");
+            }
+        }
+        assert!(inside > 3_000, "fixture is wrong: only {inside} probes fell inside the circle");
+    }
+
     #[test]
     fn two_cells_beyond_the_band_does_not_list_the_body() {
         let index = built();
         let probe = at((BAND_M + 2.0 * CELL) / M_PER_DEG, 0.0);
         assert!(!index.candidates(&probe).bodies.contains(&0),
-                "the band is {BAND_M} m and the probe is two cells past it");
+                "body 0's circle is its 11 km span plus the {BAND_M} m band, and the probe is
+                 two cells past even that");
     }
 
     /// 26 of 1,042 real bodies carry a band of exactly zero. They are answered by the
@@ -540,7 +619,7 @@ mod tests {
         for (lat, lon) in [(20.0, 20.0), (20.1, 20.0)] {
             assert!(index.candidates(&at(lat, lon)).bodies.contains(&2), "{lat},{lon}");
         }
-        // And a pond's traced ring dilates by nothing either.
+        // And a pond's ring, whose circle is its own 2.2 km span and no band.
         for (lat, lon) in [(10.0, 10.0), (10.02, 10.02)] {
             assert!(index.candidates(&at(lat, lon)).bodies.contains(&1), "{lat},{lon}");
         }
@@ -619,7 +698,7 @@ mod tests {
         assert!(occupied > 0 && largest > 0, "{occupied} cells, largest holds {largest}");
         assert!(bodies > 0 && reaches > 0 && notches > 0,
                 "{bodies} body, {reaches} reach and {notches} notch entries");
-        // The four bodies' bounding circles cover far more cells than the fifteen outline points
+        // The five bodies' bounding circles cover far more cells than the twenty-five outline points
         // a bare per-point index would have stored one entry each for.
         assert!(bodies > 15, "the bounding circles store more than one entry per point: {bodies}");
     }

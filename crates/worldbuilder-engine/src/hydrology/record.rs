@@ -460,6 +460,17 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         if shore_member_count as usize > outline_len {
             return None;
         }
+        // Ruling Q-15: a shore-point set with **no collar** is refused, not merely improbable.
+        // §8.3's first clause admits a point when its nearest member is at least as near as its
+        // nearest *collar* point; with no collar `dc` is infinite, the clause is vacuously true
+        // everywhere, and that one body claims the whole planet -- with nothing but the index's
+        // bounding circle left to bound the answer. `extent.rs` cannot write one (a shore member
+        // is a member precisely because it has a non-member neighbour), so this refuses a record
+        // no bake produces and every consumer downstream may assume a collar exists. A pond is
+        // untouched: its count is zero, not equal to its outline's length.
+        if shore_member_count > 0 && shore_member_count as usize == outline_len {
+            return None;
+        }
         // Outline pair: lat, lon -- 2 words per point.
         if !count_fits(outline_len, 2, r.remaining()) {
             return None;
@@ -836,18 +847,47 @@ mod tests {
     /// is a valid u32, so nothing but this guard refuses it.
     #[test]
     fn decode_refuses_a_body_claiming_more_shore_members_than_it_has_outline_points() {
-        // The boundary itself is legal: every outline point may be a shore member.
-        let all_members = one_body_with_extent(4, 4, 1_000.0);
-        assert!(decode(&all_members).is_some(), "count == outline_len is a legal extent");
+        // Three of four is a legal extent: three members and one collar point.
+        let some_members = one_body_with_extent(4, 3, 1_000.0);
+        assert!(decode(&some_members).is_some(), "count < outline_len is a legal extent");
 
-        // One past it is not. The extent words sit at 13 and 14 of a body's 16 fixed words,
-        // after the 56-word header; `outline_len` is word 15.
+        // Past the outline's end is not. The extent words sit at 13 and 14 of a body's 16 fixed
+        // words, after the 56-word header; `outline_len` is word 15. (Equalling it is refused
+        // too, by Ruling Q-15 -- its own test below.)
         let outline_len_word = 56 + 15;
         for bogus in [5.0, 4.0e9, f64::from(u32::MAX)] {
-            let mut words = one_body_with_extent(4, 4, 1_000.0);
+            let mut words = one_body_with_extent(4, 3, 1_000.0);
             assert_eq!(words[outline_len_word], 4.0, "sanity: this world's body has 4 outline points");
             words[56 + 13] = bogus;
             assert_eq!(decode(&words), None, "shore_member_count {bogus} exceeds the 4-point outline");
+        }
+    }
+
+    /// Ruling Q-15: a shore-point set with no collar at all. §8.3's first clause admits a point
+    /// when its nearest member is at least as near as its nearest *collar* point, and with no
+    /// collar `dc` is infinite -- so that one body claims every point on the planet, and nothing
+    /// but the index's bounding circle bounds the answer. `extent.rs` cannot write one, and now
+    /// the decoder will not accept one either.
+    #[test]
+    fn decode_refuses_a_shore_point_body_with_no_collar() {
+        for points in [1u32, 2, 3, 4, 9] {
+            let length = points as usize; // cast-ok: a point count, not a float
+            let all_members = one_body_with_extent(length, points, 1_000.0);
+            assert_eq!(decode(&all_members), None,
+                       "{points} members of a {points}-point outline leaves no collar");
+            if points < 2 {
+                continue;
+            }
+            // One fewer member is the same record with a collar, and it decodes.
+            let with_collar = one_body_with_extent(length, points - 1, 1_000.0);
+            assert!(decode(&with_collar).is_some(),
+                    "{} members of a {points}-point outline is a legal extent", points - 1);
+        }
+        // A pond is untouched: its count is zero, which is the traced-ring discriminator and not
+        // a collarless shore-point set, however few points its ring has.
+        for points in [3usize, 4, 12] {
+            assert!(decode(&one_body_with_extent(points, 0, 0.0)).is_some(),
+                    "a {points}-point traced ring is not a collarless extent");
         }
     }
 
