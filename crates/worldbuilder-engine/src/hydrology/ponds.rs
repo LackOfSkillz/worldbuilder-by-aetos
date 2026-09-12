@@ -12,9 +12,10 @@
 //!
 //! This module only *finds* them. Ruling S-6's wetness and slope gates, Ruling S-7's drops,
 //! Ruling S-8's density cap and the dedup between strips that both saw the same water are Task
-//! 5's, which turns the survivors into bodies in the record. A hollow that touches its strip's
-//! edge is kept here for exactly that reason: the strip is a window on the world, not a
-//! boundary in it, and the neighbouring strip's view of the same water is the dedup's problem.
+//! 5's, which turns the survivors into bodies in the record. A hollow the strip's window clipped
+//! is returned here rather than dropped, flagged with [`Candidate::touches_side`] and
+//! [`Candidate::touches_end`]: Ruling S-10 says Task 5 must not record a side-clipped one, and
+//! flagging rather than filtering keeps the count visible.
 
 use crate::detmath as m;
 use crate::hydrology::heap::FloodQueue;
@@ -81,6 +82,40 @@ pub struct Candidate {
     /// Every cell in the hollow, as `(row, column)` in its strip, in row-major order.
     pub cells: Vec<(usize, usize)>,
     pub strip: usize,
+    /// **Ruling S-10: Task 5 must not record this candidate.** The hollow ran up against one of
+    /// the corridor's long sides, `pond_search_radius_m` from the refined line, and what stopped
+    /// it was the window, not the terrain.
+    ///
+    /// For a side-clipped hollow it is not only the area and the level that are window numbers --
+    /// its *existence* is. The flood seeds every edge cell at its own ground, so a hollow bounded
+    /// by the window is a hollow whose water leaves through the window; whether it stands at all
+    /// depends on ground the search never looked at. If the real terrain keeps descending past
+    /// 3 km, that water drains away and there is no body there.
+    ///
+    /// The cost of the ruling, stated: a genuine pond more than 6 km across beside a river is
+    /// lost. Nothing false is recorded, which is the trade. On the measured bakes this is about
+    /// half of all candidates -- see the task 4 report -- so it is not a rare case, and the
+    /// number is visible rather than silently absent because `hollows_in` flags and does not
+    /// filter.
+    pub touches_side: bool,
+    /// The hollow ran up against the *upstream or downstream end* of the strip. This one is
+    /// kept: an end is where the next segment's strip carries on, so the same water is seen by
+    /// two strips of the same reach, and Task 5's cross-strip dedup is exactly what resolves it.
+    /// Measured at 3.9-6.3% of candidates.
+    pub touches_end: bool,
+}
+
+/// The clip test behind [`Candidate::touches_side`] and [`Candidate::touches_end`]: the first
+/// *interior* ring, not the outer one.
+///
+/// An edge cell is a flood seed, so its spill equals its own ground and `spill > ground` is false
+/// for it by construction -- a hollow can never contain one, and asking whether it does always
+/// answers no. A hollow that reaches the ring one cell inside the edge is a hollow whose
+/// neighbour is a seed: it stopped because the window stopped, which is the thing worth knowing.
+fn clipped_at(cells: &[(usize, usize)], steps: usize, cells_across: usize) -> (bool, bool) {
+    let side = cells.iter().any(|&(_, column)| column <= 1 || column + 2 >= cells_across);
+    let end = cells.iter().any(|&(row, _)| row <= 1 || row + 2 >= steps);
+    (side, end)
 }
 
 /// Ruling S-9: the ground the fine pond search reads, and the *only* thing in `hydrology` that
@@ -145,8 +180,11 @@ pub fn strips_with_skips(reach: &ReachLine, ground: &Ground,
             skips.degenerate += 1;
             continue;
         }
+        // `wanted` is a whole number and at least 1: `len_m > 0` and this is a ceiling. An absurd
+        // one saturates at `usize::MAX` rather than wrapping, and the `checked_mul` below then
+        // refuses the segment, so the cast needs no guard of its own.
         let wanted = -m::floor(-(len_m / cell));
-        let steps = if wanted > 1.0 { wanted as usize } else { 1 }; // cast-ok: a whole number, bounded below by the MAX_STRIP_CELLS check
+        let steps = wanted as usize; // cast-ok: whole, >= 1, and saturating rather than wrapping
         let too_big = match steps.checked_mul(cells_across) {
             Some(cells) => cells > MAX_STRIP_CELLS,
             None => true,
@@ -300,8 +338,12 @@ pub fn hollows_in(strip: &Strip, strip_index: usize, params: &HydroParams) -> Ve
             continue;
         }
         let anchor = strip.point_at(anchor_row, anchor_column, cell);
+        // Ruling S-10 flags here and drops in Task 5, so a side-clipped candidate stays in the
+        // count and can be reported rather than quietly never existing.
+        let (touches_side, touches_end) = clipped_at(&cells, h, w);
         kept.push((depth_m, anchor_row, anchor_column,
-                   Candidate { anchor, level_m, floor_m, area_m2, cells, strip: strip_index }));
+                   Candidate { anchor, level_m, floor_m, area_m2, cells, strip: strip_index,
+                               touches_side, touches_end }));
     }
     kept.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     kept.into_iter().map(|(_, _, _, c)| c).collect()
@@ -445,6 +487,60 @@ mod tests {
         assert_eq!(skips, StripSkips::default());
     }
 
+    /// A round bowl `deep` metres deep and `radius` across, centred `north` metres from the line
+    /// and `east` metres along it, on ground otherwise flat at 100 m.
+    fn bowl(north: f64, east: f64, radius: f64, deep: f64) -> impl Fn(&SpherePoint) -> f64 {
+        move |p: &SpherePoint| {
+            let (lat, lon) = p.to_latlon();
+            let (dn, de) = (lat * M_PER_DEG - north, lon * M_PER_DEG - east);
+            let r2 = dn * dn + de * de;
+            if r2 < radius * radius { 100.0 - deep * (1.0 - r2 / (radius * radius)) } else { 100.0 }
+        }
+    }
+
+    /// Ruling S-10: a hollow that runs up against a long side of the corridor is flagged
+    /// `touches_side`, because what stopped it was the window and not the terrain.
+    #[test]
+    fn a_bowl_against_the_corridors_side_is_flagged_as_side_clipped() {
+        // Centred 2.75 km north of the line -- one cell inside the +3 km edge -- and 5 km along.
+        let h = bowl(2_750.0, 5_000.0, 600.0, 30.0);
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let found: Vec<Candidate> = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
+            .iter().enumerate().flat_map(|(i, s)| hollows_in(s, i, &p)).collect();
+        assert_eq!(found.len(), 1, "one bowl, one candidate");
+        assert!(found[0].touches_side, "the bowl reaches the corridor's northern side");
+        assert!(!found[0].touches_end, "and is nowhere near either end");
+    }
+
+    /// And one against the strip's upstream end is flagged `touches_end` only: that is the case
+    /// Task 5's cross-strip dedup resolves, so it survives S-10.
+    #[test]
+    fn a_bowl_against_the_strips_end_is_flagged_as_end_clipped() {
+        // Centred on the line, 250 m along -- the strip's second row.
+        let h = bowl(0.0, 250.0, 600.0, 30.0);
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let found: Vec<Candidate> = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
+            .iter().enumerate().flat_map(|(i, s)| hollows_in(s, i, &p)).collect();
+        assert_eq!(found.len(), 1, "one bowl, one candidate");
+        assert!(found[0].touches_end, "the bowl reaches the strip's upstream end");
+        assert!(!found[0].touches_side, "and neither of the corridor's sides");
+    }
+
+    /// The bowl the other tests use sits well inside the window, and neither flag is set --
+    /// otherwise the two above would prove nothing.
+    #[test]
+    fn a_bowl_in_open_ground_is_flagged_neither_way() {
+        let h = bowl(1_000.0, 5_000.0, 500.0, 4.0);
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let found: Vec<Candidate> = strips(&reach_along_the_equator(10.0), &ground, &h, &p)
+            .iter().enumerate().flat_map(|(i, s)| hollows_in(s, i, &p)).collect();
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].touches_side && !found[0].touches_end);
+    }
+
     /// Ruling S-9: the pond ground and the routing ground are different sources, and must stay
     /// so. If somebody quietly unifies them -- `pond_ground` reduced to `structural_m`, or the
     /// strips fed `Ground::height_m` again -- this goes red. The measurement behind the ruling is
@@ -455,8 +551,8 @@ mod tests {
         let world = crate::surface::Surface::new(20_260_904, R, 12, 0.29, None, None, None);
         let p = params();
         let detail = pond_ground(&world, &p);
-        // Along a degree of the equator at the search's own cell size: the two fields must
-        // disagree somewhere, and by more than a rounding.
+        // Along a degree of longitude at latitude 11, at the search's own cell size: the two
+        // fields must disagree somewhere, and by more than a rounding.
         let mut differ = 0;
         let mut widest: f64 = 0.0;
         for i in 0..400 {
