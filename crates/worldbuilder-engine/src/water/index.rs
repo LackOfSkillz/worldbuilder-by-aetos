@@ -88,6 +88,7 @@ pub struct Candidates<'a> {
 #[derive(Debug, Clone)]
 pub struct WaterIndex {
     grid: BucketIndex,
+    radius_m: f64,
     bodies: Vec<Vec<u32>>,
     reaches: Vec<Vec<u32>>,
     notches: Vec<Vec<u32>>,
@@ -133,7 +134,7 @@ impl WaterIndex {
                 cell.dedup();
             }
         }
-        WaterIndex { grid, bodies, reaches, notches }
+        WaterIndex { grid, radius_m, bodies, reaches, notches }
     }
 
     /// Every item whose influence may reach `point`, ascending by id, deduplicated.
@@ -150,6 +151,17 @@ impl WaterIndex {
     /// or above `buckets::finest_cell_m` -- `BucketIndex::new` clamps silently.
     pub fn cell_m(&self) -> f64 {
         self.grid.cell_m()
+    }
+
+    /// The planet radius this index was built over, exactly as handed to [`WaterIndex::build`].
+    ///
+    /// Held for the query rather than for the index itself: `query::water_at` compares metres --
+    /// a body's `shore_reach_m`, half a reach's `width_m` -- against distances on the sphere, and
+    /// it must measure them on the same planet the record was baked on. Its own signature (spec
+    /// §8.3) carries no radius, so it reads one from here rather than from a caller who could
+    /// supply a different one.
+    pub fn radius_m(&self) -> f64 {
+        self.radius_m
     }
 
     /// For the survey: cells occupied, the largest cell's item count, and the totals.
