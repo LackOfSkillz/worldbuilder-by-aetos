@@ -882,24 +882,44 @@ it does not establish that the extent is *tight*; §5.4 bounds how far past the 
 
 ### 5.7 What plan 1b-4 must test, and what it costs if wrong
 
+> **Corrected by plan 1b-4's Ruling E-9, after its Task 3 ran the trial this section asked for and
+> then re-ran it. The correction is toward what was measured**, and it is confined to this section:
+> **§5.6's containment argument stands, and so does Ruling E-2's stated justification.** On samples
+> that are genuinely over their own body's water, clause 1 alone misses **0 of 74,904**, on all six
+> populations. What was wrong is the probe below — both the failure mode it named and the sample
+> set it specified. What follows is the corrected version; Task 3's report holds the tables.
+
 The trim's correctness is a claim about Voronoi cells, and **sampling member positions cannot see
-it fail**: a member's own position is trivially nearest to itself. The failure mode is a point
-*between* two interior members falling into a collar node's cell, which happens exactly when the
-shore members are too sparse to shield the interior.
+it fail**: a member's own position is trivially nearest to itself. So the interior has to be
+sampled *between* members — but a point between two members is not necessarily over the body's own
+water, and that is the trap this section originally fell into.
+
+**The failure mode, corrected.** It is not "a point between two interior members falling into a
+collar node's cell". On a k-nearest graph two *shore* members can be mutual neighbours with a
+non-member sitting spatially between them, so the midpoint of a member-to-member edge can lie in
+that non-member's cell — dry ground, under the same nearest-node reading §8.3 uses for the
+landform. Clause 1 is not claiming such a point and is not wrong to miss it. Measured: all 284 raw
+clause-1 misses across the six populations are exactly the samples that are not over their own
+body's water, and the two sets are not merely nested but **identical** on every population. The
+failure mode this section named — shore members too sparse to shield the interior — was not
+observed at all.
 
 - **The invariant, stated:** for every body and every point of its interior water, the nearest
   shore member is nearer than any collar point. Equivalently, in the Delaunay sense: **no collar
   point falls inside the circumcircle of a triangle of neighbouring shore members that covers
   interior water.**
-- **The test plan 1b-4 must write**, since the invariant is expensive to check directly: sample the
-  interior *between* members, not at them. For every body of a 1,000,000-node bake, take each graph
-  edge whose two ends are both members, sample its midpoint, and — for bodies that have interior
-  members — also sample the centroid of each member together with its member neighbours. Assert
-  every sample tests inside its own body's extent. **Sampling member node positions alone is not
-  sufficient evidence and must not be substituted for this.**
+- **The test**, since the invariant is expensive to check directly: sample the interior *between*
+  members, not at them. For every body of a 1,000,000-node bake, take each graph edge whose two
+  ends are both members, sample its midpoint, and — for bodies that have interior members — also
+  sample the centroid of each member together with its member neighbours. **Then keep only the
+  samples that are over the body's own water**, decided by the sample's nearest node in the whole
+  graph being a member of that body. Without that filter the probe reaches past the body and
+  reports as misses points that are dry ground. Assert every remaining sample tests inside its own
+  body's extent by clause 1 alone. **Sampling member node positions alone is not sufficient
+  evidence and must not be substituted for this.**
 - **If it fails:** keep the interior members too — untrimmed B, **0.673 MB measured**, an estimated
   **0.890 MB** on the painted bake, still inside the 1 MB budget with about 0.11 MB to spare. That
-  is the fallback, and it is already paid for.
+  is the fallback, and it is already paid for. It was not needed: the trial passed.
 
 Other costs if the ruling is wrong:
 
