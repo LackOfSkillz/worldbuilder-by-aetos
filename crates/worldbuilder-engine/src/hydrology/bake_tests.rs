@@ -1792,4 +1792,22 @@ fn no_bodys_band_counts_a_step_below_its_level() {
             "no body's longest step was an unusable one: this property is asserting nothing");
 }
 
+/// Rulings S-16 and S-17 shipped a 1,500 m corridor and a 1.6e10 density, and plan 1b-3's value
+/// pin only checks the constants. This bakes at them, so a change in behaviour at the shipped
+/// parameters is caught by something other than a parity count.
+#[test]
+fn a_bake_at_the_shipped_pond_params_keeps_ponds() {
+    let mut p = params();
+    p.pond_search_radius_m = HydroParams::earth_like(1_000).pond_search_radius_m;
+    p.pond_density_area_m2 = HydroParams::earth_like(1_000).pond_density_area_m2;
+    let record = crate::hydrology::bake(&ranges_world(), &p).expect("bake");
+    let ponds = record.bodies.iter().filter(|b| b.shore_member_count == 0).count();
+    eprintln!("shipped pond params on the ranges world: {ponds} ponds of {} found", record.stats.ponds_found);
+    assert!(ponds > 0, "the shipped parameters keep no pond on this world");
+    for body in record.bodies.iter().filter(|b| b.shore_member_count == 0) {
+        assert!(body.outline.len() >= 3);
+        assert!(matches!(body.downstream, Downstream::Reach(_)));
+    }
+}
+
 
