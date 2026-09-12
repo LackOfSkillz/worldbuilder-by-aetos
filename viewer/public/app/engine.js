@@ -759,7 +759,7 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 43-word header (schema 4, Task 3 of plan 1b-2) into a plain
+  /// Read a `hydroBake` record's 54-word header (schema 5, Task 5 of plan 1b-3) into a plain
   /// object. Words 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`,
   /// `falls`, `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`,
   /// `great`, `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
@@ -771,15 +771,28 @@ export class Engine {
   /// are new: what capped basins keep (`cappedBasins`, `cappedInner`, `cappedInnerKept`,
   /// carry-forward I3) and the refinement params echo (`refineStepM`, `refineSimplifyM`,
   /// `refineVerticalM`, `fallMinDropM`, `fallMaxRunM`, `meanderWavelengthWidths`,
-  /// `meanderAmplitudeWidths`, `meanderMaxSlope`).
+  /// `meanderAmplitudeWidths`, `meanderMaxSlope`). Words 43-44 (schema 5) are the crossing
+  /// pass's two counts: `crossingsCoarse`, how many crossings the coarse record already had
+  /// (Ruling S-2 keeps those -- they are graph artifacts refinement did not make), and
+  /// `crossingsLeft`, how many are left in the record as it ships. Words 45-53 (Task 5 of the
+  /// same plan, still schema 5) are the fine pond search's two counts, `pondsFound` and
+  /// `pondsKept`, then its seven params (`pondCellM`, `pondSearchRadiusM`, `pondKeepDepthM`,
+  /// `pondKeepAreaM2`, `pondWetnessShare`, `pondMaxSlope`, `pondDensityAreaM2`).
+  /// **`pondsFound` counts hollows in the corridors the search sampled, not in every corridor.**
+  /// Ruling S-12 skips a coarse segment whose midpoint is drier than the wetness floor or inside
+  /// a coarse body before its corridor is sampled at all, so those hollows are never found and
+  /// never counted -- a 65% step down from the old meaning, measured in Task 5. A consumer that
+  /// reads it as "every hollow the world has near a river" will read it 3x too small.
   ///
   /// Of the schema 4 words this returns ONLY 32-34, the three capped-basin counts. The
   /// refinement params echo in words 35-42 is in the record and read by `water-preview.js`'s
   /// `decodeHydro`; it is not a field of this summary. Nothing here is a params echo the studio
   /// can set: by Ruling R-8 the refinement params are not wasm params, so a wasm bake always
-  /// used `earth_like`'s values for them.
+  /// used `earth_like`'s values for them. The pond params in words 47-53 are the same story and
+  /// are left out for the same reason. The four counts -- both crossing words and both pond
+  /// words -- ARE returned: they are counts a bake produced, not params.
   ///
-  /// Throws on a schema other than 4: another schema's header is not these 43 words, and a
+  /// Throws on a schema other than 5: another schema's header is not these 54 words, and a
   /// summary read off it would be wrong silently.
   ///
   /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
@@ -788,8 +801,8 @@ export class Engine {
   /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
   /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
-    if (words[0] !== 4) {
-      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 4)`);
+    if (words[0] !== 5) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 5)`);
     }
     return {
       schema: words[0],
@@ -827,6 +840,10 @@ export class Engine {
       cappedBasins: words[32],
       cappedInner: words[33],
       cappedInnerKept: words[34],
+      crossingsCoarse: words[43],
+      crossingsLeft: words[44],
+      pondsFound: words[45],
+      pondsKept: words[46],
     };
   }
 }

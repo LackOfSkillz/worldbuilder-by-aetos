@@ -14,11 +14,11 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-test("a bake comes back with a schema-4 header and counts that add up", () => {
+test("a bake comes back with a schema-5 header and counts that add up", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
   const s = engine.hydroSummary(words);
-  assert.equal(s.schema, 4);
+  assert.equal(s.schema, 5);
   assert.equal(s.nodes, 12000);
   assert.ok(s.landNodes > 0 && s.landNodes < 12000);
   assert.equal(s.kept + s.notched, s.hollows);
@@ -32,7 +32,7 @@ test("a bake comes back with a schema-4 header and counts that add up", () => {
   assert.ok(s.greatFlowM2 >= 10 * s.riverFlowM2);
 });
 
-test("hydroSummary reads the SCHEMA 4 params echo and forced-outlet match counts", () => {
+test("hydroSummary reads the SCHEMA 5 params echo, forced-outlet matches and crossing counts", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const params = {
     ...PARAMS,
@@ -57,19 +57,39 @@ test("hydroSummary reads the SCHEMA 4 params echo and forced-outlet match counts
   // the count round-trips and never exceeds what was requested.
   assert.equal(s.forcedRequested, 1);
   assert.ok(s.forcedMatched >= 0 && s.forcedMatched <= s.forcedRequested);
-  // SCHEMA 4 (word 32): decodeHydro's schema-4 assertion mirrors this same word.
+  // SCHEMA 4 (word 32): decodeHydro's schema assertion mirrors this same word.
   assert.equal(s.cappedBasins, words[32]);
+  // SCHEMA 5 (words 43-44). Ruling S-2 keeps the coarse crossings, so neither is pinned to
+  // zero here -- only that both are counts, and that what is left is no worse than what the
+  // coarse record already had (the property `refinement_adds_no_crossings` holds engine-side).
+  assert.equal(s.crossingsCoarse, words[43]);
+  assert.equal(s.crossingsLeft, words[44]);
+  assert.ok(Number.isInteger(s.crossingsCoarse) && s.crossingsCoarse >= 0);
+  assert.ok(Number.isInteger(s.crossingsLeft) && s.crossingsLeft >= 0);
+  assert.ok(s.crossingsLeft <= s.crossingsCoarse);
+  // SCHEMA 5 (words 45-46), Task 5: the fine pond search's two counts. Neither is pinned to a
+  // number -- the terrain decides that -- only that both are counts, that nothing can be kept
+  // that was not found, and that the kept ones fit inside the bodies the record carries.
+  assert.equal(s.pondsFound, words[45]);
+  assert.equal(s.pondsKept, words[46]);
+  assert.ok(Number.isInteger(s.pondsFound) && s.pondsFound >= 0);
+  assert.ok(Number.isInteger(s.pondsKept) && s.pondsKept >= 0);
+  assert.ok(s.pondsKept <= s.pondsFound);
+  assert.ok(s.pondsKept <= s.bodies);
+  // The seven pond params are in the record (words 47-53) but deliberately not in this summary:
+  // like the refinement params, they are not wasm params.
+  assert.equal(s.pondCellM, undefined);
 });
 
-test("hydroSummary throws on a schema other than 4 rather than misreading the header", () => {
+test("hydroSummary throws on a schema other than 5 rather than misreading the header", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
-  for (const schema of [2, 3, Number.NaN]) {
+  for (const schema of [2, 3, 4, Number.NaN]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => engine.hydroSummary(tampered), /schema/);
   }
-  assert.equal(engine.hydroSummary(words).schema, 4);
+  assert.equal(engine.hydroSummary(words).schema, 5);
 });
 
 test("the same bake twice is the same words", () => {

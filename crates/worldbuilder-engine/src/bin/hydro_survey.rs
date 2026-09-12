@@ -3,13 +3,16 @@
 //! Task 8) the refinement's own time, point counts, falls, capped-basin counts and record size.
 //!
 //! ```text
-//! cargo run --release --no-default-features --bin hydro_survey -- [--simplify M] [NODES ...]
+//! cargo run --release --no-default-features --bin hydro_survey -- \
+//!     [--simplify M] [--pond-density M2] [--pond-radius M] [--pond-cell M] [NODES ...]
 //! ```
 //!
-//! With no `NODES`, every world is baked at 1,000,000 nodes (plan 1b-2, Task 8). `--simplify M`
-//! overrides `HydroParams::refine_simplify_m` for the run, so Task 8's size gate can measure a
-//! raised tolerance before `earth_like` is changed; without it the bake takes `earth_like`'s
-//! value, as a wasm bake does. `--help` prints this usage.
+//! With no `NODES`, every world is baked at 1,000,000 nodes (plan 1b-2, Task 8). Each flag
+//! overrides one `HydroParams` field for the run, so a gate step can be measured before
+//! `earth_like` is changed; without it the bake takes `earth_like`'s value, as a wasm bake does.
+//! `--simplify` is `refine_simplify_m` (plan 1b-2, Task 8); `--pond-density`, `--pond-radius` and
+//! `--pond-cell` are `pond_density_area_m2`, `pond_search_radius_m` and `pond_cell_m`, the size
+//! and time levers of plan 1b-3's Task 7. `--help` prints this usage.
 //!
 //! This is a `[[bin]]`, not a `cargo test`-visible fixture, for the reason `streambench.rs`,
 //! `pond_threshold_survey.rs` and `climate_survey.rs` already are: a 1,000,000-node bake is a
@@ -35,14 +38,19 @@
 //!     bakes at 10,000 nodes.
 //! - **Params:** `HydroParams::earth_like(n)` (no forced outlets, no threshold tuning), with
 //!   `refine_simplify_m` replaced only when `--simplify` is given.
-//! - **Wall time:** `std::time::Instant` around the three parts `hydrology::bake` itself is made
+//! - **Wall time:** `std::time::Instant` around the four parts `hydrology::bake` itself is made
 //!   of, called here exactly as `bake` calls them -- `hydrology::bake_stages` (validation,
 //!   `LandGraph::sample`, the flood, hollows and judging, `route`, `close_lakes`, and
 //!   `flow::drainage_check`), `hydrology::record_of` (reach extraction on the effective
-//!   thresholds, bodies, notch filter, stats) and `refine::refine` (tracing, falls, meander and
-//!   simplification), on a `refine::Ground` built exactly as `bake` builds it. Their sum is the
-//!   time of the bake that ships; no step is re-implemented here (water 1a final review, I8).
-//!   `record::encode` is timed separately and is not part of `bake`.
+//!   thresholds, bodies, the crossing pass, notch filter, stats), `refine::refine` (tracing,
+//!   falls, meander and simplification) and `ponds::search` with its own `ponds::pond_ground`
+//!   (plan 1b-3: the fine pond search, strips along the refined lines), on a `refine::Ground`
+//!   built exactly as `bake` builds it. Their sum is the time of the bake that ships; no step is
+//!   re-implemented here (water 1a final review, I8). `record::encode` is timed separately and is
+//!   not part of `bake`.
+//! - **Crossings and ponds:** the record's own `BakeStats::crossings_coarse`, `crossings_left`,
+//!   `ponds_found` and `ponds_kept`, so they are the bake's own counts rather than a
+//!   re-derivation.
 //! - **Record size:** `record::encode(&record).len() * 8` bytes -- the words the wasm export
 //!   hands the studio.
 //! - **Points:** `coarse` is the sum of `ReachLine::points` lengths after `record_of`, `refined`
@@ -76,7 +84,8 @@ use std::time::Instant;
 use worldbuilder_engine::hydrology::flow::drainage_check;
 use worldbuilder_engine::hydrology::hollows::Fate;
 use worldbuilder_engine::hydrology::{
-    bake_stages, record, record_of, refine, BodyKind, HydroError, HydroParams, HydroRecord, ReachClass,
+    bake_stages, ponds, record, record_of, refine, BodyKind, HydroError, HydroParams, HydroRecord,
+    ReachClass,
 };
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::Surface;
@@ -154,6 +163,34 @@ fn duplicate_notch_points(record: &HydroRecord) -> (u64, u64) {
     (keys, extra)
 }
 
+/// `HydroParams` fields this run overrides, each `None` meaning "take `earth_like`'s value, as a
+/// wasm bake does". `--simplify` is plan 1b-2's; the three pond flags are plan 1b-3 Task 7's size
+/// and time levers, so the gate steps can be measured without editing `earth_like` between runs.
+#[derive(Clone, Copy, Default)]
+struct Overrides {
+    simplify_m: Option<f64>,
+    pond_density_area_m2: Option<f64>,
+    pond_search_radius_m: Option<f64>,
+    pond_cell_m: Option<f64>,
+}
+
+impl Overrides {
+    fn apply(&self, params: &mut HydroParams) {
+        if let Some(v) = self.simplify_m {
+            params.refine_simplify_m = v;
+        }
+        if let Some(v) = self.pond_density_area_m2 {
+            params.pond_density_area_m2 = v;
+        }
+        if let Some(v) = self.pond_search_radius_m {
+            params.pond_search_radius_m = v;
+        }
+        if let Some(v) = self.pond_cell_m {
+            params.pond_cell_m = v;
+        }
+    }
+}
+
 struct RunResult {
     nodes: u32,
     land_nodes: u32,
@@ -177,7 +214,12 @@ struct RunResult {
     stages_s: f64,
     record_s: f64,
     refine_s: f64,
+    ponds_s: f64,
     encode_s: f64,
+    crossings_coarse: u32,
+    crossings_left: u32,
+    ponds_found: u32,
+    ponds_kept: u32,
     coarse_points: u64,
     refined_points: u64,
     notch_lines: u64,
@@ -191,13 +233,11 @@ struct RunResult {
     record_bytes: u64,
 }
 
-fn run(surface: &Surface, nodes: u32, simplify_m: Option<f64>) -> Result<RunResult, HydroError> {
+fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult, HydroError> {
     let mut params = HydroParams::earth_like(nodes);
-    if let Some(m) = simplify_m {
-        params.refine_simplify_m = m;
-    }
+    overrides.apply(&mut params);
 
-    // `hydrology::bake` is exactly these three calls, in this order, on this `Ground`.
+    // `hydrology::bake` is exactly these four calls, in this order, on this `Ground`.
     let t = Instant::now();
     let stages = bake_stages(surface, &params)?;
     let stages_s = t.elapsed().as_secs_f64();
@@ -212,6 +252,13 @@ fn run(surface: &Surface, nodes: u32, simplify_m: Option<f64>) -> Result<RunResu
     let t = Instant::now();
     refine::refine(&mut record, &ground, &params);
     let refine_s = t.elapsed().as_secs_f64();
+
+    // Plan 1b-3, Task 7: the fine pond search is the bake's fourth part and is timed as its own.
+    // `pond_ground` is built inside the timed region because `bake` builds it there too.
+    let t = Instant::now();
+    let detail = ponds::pond_ground(surface, &params);
+    ponds::search(&mut record, &stages.graph, &stages.routing.lake_of, &ground, &detail, &params);
+    let ponds_s = t.elapsed().as_secs_f64();
 
     let t = Instant::now();
     let words = record::encode(&record);
@@ -283,7 +330,12 @@ fn run(surface: &Surface, nodes: u32, simplify_m: Option<f64>) -> Result<RunResu
         stages_s,
         record_s,
         refine_s,
+        ponds_s,
         encode_s,
+        crossings_coarse: record.stats.crossings_coarse,
+        crossings_left: record.stats.crossings_left,
+        ponds_found: record.stats.ponds_found,
+        ponds_kept: record.stats.ponds_kept,
         coarse_points,
         refined_points: reach_points(&record),
         notch_lines: record.notches.len() as u64, // cast-ok: a line count
@@ -304,13 +356,14 @@ fn print_result(r: &RunResult) {
         Err(node) => format!("FAILED at node {node}"),
     };
     println!(
-        "  n = {:>9}  bake {:>7.2} s  (bake_stages {:>6.2}  record_of {:>6.2}  refine {:>6.2})  \
-         encode {:>5.2} s  drainage {}",
+        "  n = {:>9}  bake {:>7.2} s  (bake_stages {:>6.2}  record_of {:>6.2}  refine {:>6.2}  \
+         ponds {:>6.2})  encode {:>5.2} s  drainage {}",
         r.nodes,
-        r.stages_s + r.record_s + r.refine_s,
+        r.stages_s + r.record_s + r.refine_s + r.ponds_s,
         r.stages_s,
         r.record_s,
         r.refine_s,
+        r.ponds_s,
         r.encode_s,
         drainage,
     );
@@ -321,6 +374,10 @@ fn print_result(r: &RunResult) {
         r.coarse_points,
         r.refined_points,
         r.falls,
+    );
+    println!(
+        "    crossings: coarse {:>5}  left after the pass {:>5}   ponds: found {:>6}  kept {:>6}",
+        r.crossings_coarse, r.crossings_left, r.ponds_found, r.ponds_kept,
     );
     println!(
         "    notches: lines {:>6}  points {:>8}  duplicate points: keys {:>6}  extra {:>6} ({} bytes)",
@@ -362,27 +419,39 @@ fn print_result(r: &RunResult) {
     }
 }
 
-const USAGE: &str = "usage: hydro_survey [--simplify M] [NODES ...]\n\
+const USAGE: &str = "usage: hydro_survey [--simplify M] [--pond-density M2] [--pond-radius M] \
+    [--pond-cell M] [NODES ...]\n\
     \n\
     Bakes three stand-in worlds natively and prints each part's time, the record's size and its\n\
-    counts. NODES defaults to 1000000. --simplify M overrides refine_simplify_m (metres).";
+    counts. NODES defaults to 1000000. --simplify M overrides refine_simplify_m (metres);\n\
+    --pond-density overrides pond_density_area_m2 (m^2), --pond-radius pond_search_radius_m\n\
+    (metres) and --pond-cell pond_cell_m (metres).";
 
 fn main() {
     let mut node_counts: Vec<u32> = Vec::new();
-    let mut simplify_m: Option<f64> = None;
+    let mut overrides = Overrides::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        let positive = |slot: &mut Option<f64>, value: Option<String>, flag: &str| {
+            match value.and_then(|v| v.parse::<f64>().ok()) {
+                Some(v) if v.is_finite() && v > 0.0 => *slot = Some(v),
+                _ => {
+                    eprintln!("{flag} needs a positive number\n{USAGE}");
+                    std::process::exit(2);
+                }
+            }
+        };
         if arg == "--help" || arg == "-h" {
             println!("{USAGE}");
             return;
         } else if arg == "--simplify" {
-            match args.next().and_then(|v| v.parse::<f64>().ok()) {
-                Some(v) if v.is_finite() && v > 0.0 => simplify_m = Some(v),
-                _ => {
-                    eprintln!("--simplify needs a positive number of metres\n{USAGE}");
-                    std::process::exit(2);
-                }
-            }
+            positive(&mut overrides.simplify_m, args.next(), "--simplify");
+        } else if arg == "--pond-density" {
+            positive(&mut overrides.pond_density_area_m2, args.next(), "--pond-density");
+        } else if arg == "--pond-radius" {
+            positive(&mut overrides.pond_search_radius_m, args.next(), "--pond-radius");
+        } else if arg == "--pond-cell" {
+            positive(&mut overrides.pond_cell_m, args.next(), "--pond-cell");
         } else {
             match arg.parse::<u32>() {
                 Ok(n) => node_counts.push(n),
@@ -401,18 +470,24 @@ fn main() {
     println!("worlds: plain (20260904, 6.371 Mm, 12 plates, 0.29 land, no tectonics)");
     println!("        owner_survey (562423712, 4.5 Mm, 28 plates, 0.16 land, TectonicParams::ranges())");
     println!("        seed1_ranges (1, 6.371 Mm, 12 plates, 0.40 land, TectonicParams::ranges())");
-    let simplify_note = match simplify_m {
-        Some(m) => format!("refine_simplify_m overridden to {m} m"),
-        None => format!("refine_simplify_m {} m (earth_like)", HydroParams::earth_like(DEFAULT_NODES).refine_simplify_m),
-    };
-    println!("node counts: {node_counts:?}, each with HydroParams::earth_like(n); {simplify_note}");
+    let mut shown = HydroParams::earth_like(DEFAULT_NODES);
+    overrides.apply(&mut shown);
+    println!("node counts: {node_counts:?}, each with HydroParams::earth_like(n)");
+    println!(
+        "params in force: refine_simplify_m {} m  pond_density_area_m2 {:.3e} m^2  \
+         pond_search_radius_m {} m  pond_cell_m {} m",
+        shown.refine_simplify_m,
+        shown.pond_density_area_m2,
+        shown.pond_search_radius_m,
+        shown.pond_cell_m,
+    );
 
     for world in worlds() {
         println!();
         println!("== {} ==", world.name);
         for &nodes in &node_counts {
             let t = Instant::now();
-            let outcome = run(&world.surface, nodes, simplify_m);
+            let outcome = run(&world.surface, nodes, overrides);
             let wall_s = t.elapsed().as_secs_f64();
             match outcome {
                 Ok(r) => print_result(&r),

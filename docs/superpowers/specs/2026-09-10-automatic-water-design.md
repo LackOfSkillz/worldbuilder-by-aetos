@@ -259,14 +259,71 @@ which starts with a spike. A 250 m fill of the owner's 41.33M km² great lake wo
 method must be decided on measurements first. Plan 1b-2 does the channels, which stage 2's
 carving needs.
 
-- **Lake outlines.** Each kept lake is filled at 250 m resolution from its lowest point up to its
-  level, within its coarse basin. The outline is traced and then simplified to 250 m tolerance.
+- **Lake outlines (Ruling S-1, as replaced by plan 1b-3's Task 1).** A lake's extent is **not**
+  traced. It is recorded as an unordered set of **shore points** — the lake's **shore members**
+  (the graph nodes it floods that have a neighbour it does not) followed by its **collar** (the
+  distinct non-member nodes adjacent to a member) — plus, per body, how many of those points are
+  members and the greatest distance from a shore member to a collar neighbour of it. Section 8.3's
+  query decides what is inside from those points and the lake's level; nothing about the extent is
+  ordered, so nothing needs a ring, a walk or the triangulation the k-nearest graph cannot give.
+  Interior members are not recorded: they cannot move the boundary.
+  - **Why not a ring, and why not a 250 m trace.** Both were measured at 1,000,000 nodes on four
+    worlds (`docs/superpowers/reports/2026-09-12-water-1b3-outlines-design.md`). A collar **ring**
+    cannot be built: a minimum-turn edge walk closes on a 3-cycle covering 0.3–4.1% of the collar
+    on 11 of 12 bodies, and the one substantial ring it produced self-crossed 6 times; an angular
+    sort about the centroid closes but leaves up to 24.5% of a body's own members outside its
+    ring. A **250 m contour** costs 2.4–8.3 MB a world, and the owner world's great lake alone
+    costs 1.5–3.3 MB against a 1 MB budget. The shore-point set costs 0.073 MB on the owner world.
+  - **Ponds keep the 250 m trace.** A pond's surface is under 1 km² by definition, so its outline
+    is a few dozen points. A pond is filled at 250 m resolution from its lowest point up to its
+    level, within its coarse basin, and the outline is traced and simplified to **half a cell**
+    (125 m — Ruling S-13, plan 1b-3's Task 5). A whole cell was the first choice and was measured
+    to leave **5,717 of 6,243 rings with some of their own water outside their own outline**: a
+    single staircase corner stands 176.8 m off the chord across it, so a 250 m tolerance drops it
+    and the replacing chord runs through the corner cell's own centre. A simplified ring is used
+    only if it is simple and still contains every cell it was traced from; otherwise the untouched
+    trace is used, and a candidate for which neither holds is not recorded at all.
+    **`kind` says which of the two geometries a body carries** (§7): a lake's outline is a
+    shore-point set, a pond's is a traced curve.
 - **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined
-  river lines, and in terrain with wetness above the 60th percentile and slopes under 3%. It has
+  river lines (the spec's 3 km; `earth_like` ships **1,500 m** after Ruling S-17 — see "Two
+  departures from spec §6.6" in `docs/superpowers/reports/2026-09-12-water-1b3-verification.md`),
+  and in terrain with wetness above the 60th percentile and slopes under 3%. It has
   **its own keep rule: depth ≥ 2 m and area ≥ 0.05 km²**. Section 6.3's rule (area ≥ 1 km²)
   could never keep a pond, whose surface is under 1 km² by definition. Found hollows that fail
   are simply not recorded; at this scale they are texture and need no notch. At most one small
-  lake or pond per 500 km² of searched area is kept, the deepest first.
+  lake or pond per 500 km² of searched area is kept, the deepest first (the spec's 500 km²;
+  `earth_like` ships **1.6e10 m², i.e. 16,000 km²**, after Ruling S-16 — see "Two departures from
+  spec §6.6" in `docs/superpowers/reports/2026-09-12-water-1b3-verification.md`).
+  - **A find is recorded whatever its area** (Ruling S-11, plan 1b-3's Task 5, which replaces
+    Ruling T1-2's drop). Below `pond_max_area_m2` it is a `pond`; at or above it, a `lake`. **Both
+    carry the traced 250 m curve**, and `kind` is still the discriminator for what a body's
+    `outline` is, because a body this search found has no coarse basin and so no shore points
+    either way. Task 1 wrote the opposite — an oversized find dropped — before the sizes had been
+    measured. They were then measured on four bakes: the **median survivor is 4.0–4.7 km²**
+    against a 1 km² `pond_max_area_m2`, so the drop would have thrown away most of what the search
+    finds. A body that large which the coarse graph *did* resolve is a coarse body already and is
+    unaffected.
+  - **The gates, in order** (plan 1b-3's Task 5, Rulings S-5 to S-10). A hollow the 3 km corridor
+    clipped on a long side is **not** recorded (Ruling S-10): past the window its terrain may keep
+    descending, so its level, its area and its existence are all window numbers. What is left must
+    sit on ground above the datum and off any coarse body (Ruling S-7), be at least as wet as the
+    `pond_wetness_share` quantile of the graph's land nodes and rise by no more than
+    `pond_max_slope` over one cell at its lowest point (Ruling S-6, both read from the coarse
+    graph, not from a new climate sampling), and be more than two cells from a hollow an earlier
+    strip already kept. **Ruling S-12** asks the wetness and coarse-body questions *twice*: once of
+    a segment's midpoint before its corridor is sampled at all, which is where a bake's time goes
+    and is the granularity §6.6 means by "coarse gates on where to look", and again of each
+    candidate's own anchor. The cost is that the pre-check answers **both** questions — the wetness
+    floor *and* the coarse-body question of Ruling S-7 — from one midpoint, so its granularity is a
+    whole coarse segment, not a candidate: a corridor that straddles a wetness boundary, or that
+    runs half in and half out of a coarse body, is taken or skipped entire. Ponds anywhere along
+    such a segment appear or vanish together, and `ponds_found` counts hollows in the
+    corridors that passed rather than in every corridor. The survivors are then sorted deepest first and thinned to one per 500 km²
+    (Ruling S-8). Each body that survives is **appended after the coarse bodies**, so no coarse id
+    moves (Ruling S-7); it drains to the reach whose refined line is nearest its anchor and has no
+    `outlet` of its own (Ruling S-5); and the record says how many hollows passed the keep rule
+    (`ponds_found`) and how many survived all of that (`ponds_kept`).
 
 ### 6.7 Waterfalls
 
@@ -289,7 +346,8 @@ hydrology: {
   land_fingerprint: <hash of planet params + features + engine version>,
   params: { thresholds, keep rule, pond limit, meander, search limits },
   adjustments: [ ...owner tweaks, section 9.2... ],
-  bodies: [ { id, kind: lake|pond, fresh, level_m, outline: [[lat, lon], ...],
+  bodies: [ { id, kind: lake|salt_lake|salt_flat|pond, fresh, level_m,
+              outline: [[lat, lon], ...], shore_member_count, shore_reach_m,
               outlet: reach id | null, override: null|"forced"|"closed" } ],
   reaches: [ { id, class, fresh, downstream: reach id | body id | "ocean",
                points: [[lat, lon, bed_m, width_m, depth_m, flow], ...] } ],
@@ -298,6 +356,33 @@ hydrology: {
 }
 ```
 
+- **`kind` says what `outline` is** (Ruling S-1 as replaced, and Ruling T1-2, both plan 1b-3's
+  Task 1). The field carries one of two geometries and **`kind` is the discriminator** — never
+  `shore_member_count`, and never any other sentinel value. `kind` is one of the four
+  `BodyKind` variants (`hydrology/mod.rs`), and **three of them take the shore-point branch and
+  one takes the traced curve**:
+  - **Ruling S-11's exception, and why it is not a hole in the discriminator.** The fine search
+    of §6.6 records an oversized find as a `lake` carrying a **traced curve**, not a shore-point
+    set, so on that one path `kind` alone does not settle it. What does settle it is
+    `shore_member_count`, which such a body writes as 0 like every pond: a `lake` with
+    `shore_member_count == 0` is a fine find and its `outline` is a ring. A body with
+    `shore_member_count > 0` is a coarse body and its `outline` is a set. The rule for a reader
+    is therefore: **a pond, or any body with no shore members, is a ring; everything else is a
+    set.** No consumer may treat `kind == lake` alone as proof of a shore-point set.
+  - **`lake`, `salt_lake`, `salt_flat`: `outline` is a set, not a curve.** Its first
+    `shore_member_count` points are the body's shore members and the rest are its collar (§6.6).
+    Within each half the points are in ascending graph-node order; that order is fixed only so the
+    record is deterministic and carries no geometric meaning. **No consumer may join consecutive
+    points into an edge.** `shore_reach_m` is the greatest length of a member-to-collar step whose
+    collar end stands above the body's level, and it is what bounds the extent in §8.3's test.
+  - **`pond`: `outline` is a traced 250 m curve** (§6.6), and **its points are joined in order.**
+    The **ring closes implicitly** — the first point is not repeated at the end, so the shortest
+    legal ring is three points and a consumer joins `outline[i]` to `outline[(i + 1) % len]`. Its
+    winding is fixed by the trace and is the same on every body. A pond writes
+    `shore_member_count = 0` and `shore_reach_m = 0.0`; **`shore_reach_m` is unused on this
+    branch** and is written only so the encoder and its wire twins have a definite value, while
+    `shore_member_count`'s zero is load-bearing, by Ruling S-11 above. The same curve, the same
+    zeroes and the same winding apply to a `lake` the fine search found.
 - **A fall's `at` is its upper end**; the lower end is the next point on that reach, and the bed
   drops by `height_m` between them (Ruling R-5, §6.7).
 - **A reach point's third value is the bed**: the water surface there minus the channel's depth.
@@ -347,10 +432,34 @@ This is a new stage in `Surface`, after features and before detail:
 | kind | when |
 |---|---|
 | `ocean` | below the datum and connected to the ocean (Ruling W1) |
-| `lake` / `pond` | inside a body's outline and below its level |
+| `lake` / `salt_lake` / `salt_flat` | inside a body of that kind's extent — the **shore-point** test — and at or below its level (Ruling S-1, as replaced) |
+| `pond` | inside a pond's **traced 250 m curve** and at or below its level (as does a `lake` the §6.6 fine search found, by Ruling S-11) |
 | `river` | within half a reach's width of its centre line; the level is the bed plus depth |
 | `none` | anything else |
 
+- **Inside a body's extent** (Ruling S-1, as replaced by plan 1b-3's Task 1) is decided from the
+  body's recorded shore points (§7), in one pass over them, for each body §8.2's cell lists as
+  reaching the point. **Which branch is taken is decided by `kind`** (Ruling T1-2), not by any
+  sentinel in the data — with Ruling S-11's one exception, restated here because this is where it
+  bites: a `lake` the §6.6 fine search recorded carries a **traced curve**, and it is told apart
+  by `shore_member_count == 0`. A body with no shore members takes the `pond` branch below
+  whatever its `kind`:
+  - **`lake`, `salt_lake`, `salt_flat`.** Let `dm` be the great-circle distance to the nearest
+    **member** point of that body and `dc` the distance to its nearest **collar** point (ties to
+    the lower outline index; no collar point means `dc` is infinite). The point is inside if
+    `dm <= dc` **or** `dm <= shore_reach_m`. The first clause holds the body's interior, the second
+    the shore band the level contour crosses — and because the contour crosses each member-to-collar
+    step whose collar end is above the level somewhere along that step, and `shore_reach_m` is the
+    longest such step, every point of the contour is inside.
+  - **`pond`, and any body with `shore_member_count == 0`.** Its outline is a traced curve, its
+    points are joined in order, and **the ring closes implicitly** (join the last point back to
+    the first); the point is inside if it is inside that curve. `shore_reach_m` is not consulted.
+  - **Where more than one body claims the point, the smaller `dm` wins; ties go to the lower body
+    id** (Ruling T1-3). `shore_reach_m` is a per-body maximum, so a ridge narrower than it really
+    can put a point inside two extents at once, and without this rule the answer would depend on
+    the order §8.2's cell happens to list the bodies in. A pond's curve test yields to a lake only
+    through this same rule, taking the pond's distance to its own nearest outline point as its `dm`.
+  - `ocean` is still decided first.
 - **Exposed as:** a wasm export (and a per-tile batch form for the relief workers) and a PyO3
   binding. The PyO3 work adds the missing `surface_open` family the Python oracle already calls.
 - **Maritime:** the manifest of Mark 2 section 13.2 is produced from the record. Bodies become

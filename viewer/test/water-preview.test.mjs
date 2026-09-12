@@ -24,10 +24,18 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-function bake() {
+function bake(totalNodes = PARAMS.totalNodes) {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
-  return engine.hydroBake({ handle, params: PARAMS });
+  return engine.hydroBake({ handle, params: { ...PARAMS, totalNodes } });
 }
+
+// Ruling S-17 halved `earth_like`'s pond corridor to 1.5 km, and a wasm bake always takes
+// `earth_like`'s pond params -- they are not on the wire, so this side cannot widen it back the
+// way the Rust fixtures do. At 12,000 nodes the plain world's rivers now find 5 candidates and
+// keep 0, which would leave the pond test below asserting over an empty set. 50,000 nodes on the
+// SAME world keeps 19 in about two seconds, so the pond test bakes at that and everything else
+// stays on the 12,000-node bake `hydro.test.mjs` shares.
+const POND_NODES = 50000;
 
 test("decodeHydro's body and reach counts match hydroSummary's, and it consumes the whole array", () => {
   const words = bake();
@@ -37,14 +45,44 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.reaches.length, summary.reaches);
   assert.equal(decoded.notches, summary.notches);
   assert.equal(decoded.falls.length, summary.falls);
-  assert.equal(decoded.header.schema, 4);
+  assert.equal(decoded.header.schema, 5);
   assert.equal(decoded.header.nodes, summary.nodes);
   assert.equal(decoded.header.forcedRequested, summary.forcedRequested);
   assert.equal(decoded.header.forcedMatched, summary.forcedMatched);
   assert.equal(decoded.header.cappedBasins, words[32]);
+  assert.equal(decoded.header.crossingsCoarse, words[43]);
+  assert.equal(decoded.header.crossingsLeft, words[44]);
+  // Task 5's nine words: both pond counts, then the seven pond params, closing the 54-word
+  // header. `decodeHydro` reads all nine, where `hydroSummary` returns only the two counts.
+  assert.equal(decoded.header.pondsFound, words[45]);
+  assert.equal(decoded.header.pondsKept, words[46]);
+  assert.equal(decoded.header.pondCellM, words[47]);
+  assert.equal(decoded.header.pondSearchRadiusM, words[48]);
+  assert.equal(decoded.header.pondKeepDepthM, words[49]);
+  assert.equal(decoded.header.pondKeepAreaM2, words[50]);
+  assert.equal(decoded.header.pondWetnessShare, words[51]);
+  assert.equal(decoded.header.pondMaxSlope, words[52]);
+  assert.equal(decoded.header.pondDensityAreaM2, words[53]);
+  // The header is 54 words, so word 54 is the first body's id.
+  assert.equal(words[54], decoded.bodies[0].id);
 });
 
-test("decodeHydro consumes a real SCHEMA 4 bake exactly, reach fresh and body downstream included", () => {
+test("every pond the record kept is a traced ring at the end of bodies", () => {
+  const decoded = decodeHydro(bake(POND_NODES));
+  const kept = decoded.header.pondsKept;
+  assert.ok(kept > 0, "sanity: this world's fine search keeps ponds");
+  for (const body of decoded.bodies.slice(decoded.bodies.length - kept)) {
+    // Ruling S-11: the area picks `pond` or `lake`, and both carry the traced 250 m ring.
+    assert.ok(["pond", "lake"].includes(body.kind));
+    assert.ok(body.outline.length >= 3, "a traced ring, not a shore-point set");
+    assert.equal(body.downstream.kind, "reach", "Ruling S-5");
+    assert.equal(body.outletReach, null, "Ruling S-5");
+    assert.ok(body.depthM >= decoded.header.pondKeepDepthM);
+    assert.ok(body.areaM2 >= decoded.header.pondKeepAreaM2);
+  }
+});
+
+test("decodeHydro consumes a real SCHEMA 5 bake exactly, reach fresh and body downstream included", () => {
   const decoded = decodeHydro(bake());
   assert.ok(decoded.reaches.length > 0, "sanity: this world has reaches");
   for (const reach of decoded.reaches) {
@@ -62,16 +100,22 @@ test("decodeHydro throws on a truncated array", () => {
   assert.throws(() => decodeHydro(new Float64Array(0)), /truncated|ran out of words/);
 });
 
-test("decodeHydro throws on a schema-2 header", () => {
+test("decodeHydro throws on a schema-2 or schema-4 header", () => {
   const words = bake();
-  const tampered = words.slice();
-  tampered[0] = 2;
-  assert.throws(() => decodeHydro(tampered), /unsupported schema/);
+  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, so a decoder that adapted rather
+  // than refused would read a body's first eleven words as the crossing and pond words.
+  for (const schema of [2, 4]) {
+    const tampered = words.slice();
+    tampered[0] = schema;
+    assert.throws(() => decodeHydro(tampered), /unsupported schema/);
+  }
 });
 
 test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {
   const words = bake();
   const U32_MAX = 4294967295;
+  // The header's length, which Task 5 of plan 1b-3 took from 45 words to 54.
+  const HEADER = 54;
 
   // The boundary itself is a valid u32: word 5 (`nodes`) at exactly u32::MAX still decodes.
   const atMax = words.slice();
@@ -83,16 +127,16 @@ test("decodeHydro refuses an index or count word above 4294967295, as record.rs'
   header[5] = U32_MAX + 1;
   assert.throws(() => decodeHydro(header), /bad count\/index word/);
 
-  // ...in a body's optional outlet reach (body 0's word 8, record word 51)...
+  // ...in a body's optional outlet reach (body 0's word 8, record word 62)...
   assert.ok(words[1] > 0, "sanity: this world has a body to tamper with");
   const outlet = words.slice();
-  outlet[43 + 8] = U32_MAX + 1;
+  outlet[HEADER + 8] = U32_MAX + 1;
   assert.throws(() => decodeHydro(outlet), /bad optional index word/);
 
-  // ...and in a downstream id (body 0's words 11-12, record words 54-55, made a body link).
+  // ...and in a downstream id (body 0's words 11-12, record words 65-66, made a body link).
   const downstream = words.slice();
-  downstream[43 + 11] = 1;
-  downstream[43 + 12] = U32_MAX + 1;
+  downstream[HEADER + 11] = 1;
+  downstream[HEADER + 12] = U32_MAX + 1;
   assert.throws(() => decodeHydro(downstream), /bad downstream body id/);
 });
 
@@ -241,6 +285,55 @@ test("drawPreview draws every body as a true-size ring, a point only for the sma
   assert.equal(points.length, 1, "only the small body also gets a point");
   assert.equal(points[0].position.lat, 0);
   assert.equal(points[0].point.pixelSize, 5);
+});
+
+test("drawPreview draws a pond's outline as a polygon and counts it, instead of a true-size ring", () => {
+  const Cesium = fakeCesium();
+  const viewer = { dataSources: { contains: () => false, add: (source) => source } };
+  const decoded = {
+    header: { schema: 5, pondsKept: 1, crossingsLeft: 0 },
+    bodies: [
+      {
+        id: 0, kind: "lake", fresh: true, levelM: 100, areaM2: 4e6, depthM: 9,
+        anchor: [1, 1], outline: [], downstream: { kind: "ocean" }, outletReach: null,
+      },
+      {
+        id: 1, kind: "pond", fresh: true, levelM: 90, areaM2: 6e4, depthM: 3,
+        anchor: [2, 2],
+        outline: [[2, 2], [2.001, 2], [2.001, 2.001], [2, 2.001]],
+        downstream: { kind: "reach", id: 0 }, outletReach: null,
+      },
+    ],
+    reaches: [], notches: 0, falls: [],
+  };
+  const drawn = drawPreview(viewer, Cesium, decoded);
+
+  assert.equal(drawn.counts.ponds, 1);
+  assert.equal(drawn.counts.pondOutlines, 1);
+  // Body count still counts both bodies; the ring count only counts the one drawn as a ring.
+  assert.equal(drawn.counts.bodies, 2);
+  assert.equal(drawn.counts.rings, 1);
+
+  const polygons = drawn.source.entities.list.filter((e) => e.polygon);
+  assert.equal(polygons.length, 1, "only the pond is drawn as a polygon");
+  const [pondEntity] = polygons;
+  // fakeCesium's fromDegreesArray is the identity, so the hierarchy is the flat lon/lat array
+  // built from the outline's [lat, lon] points, same order the reach polylines use.
+  const expectedFlat = decoded.bodies[1].outline.flatMap(([lat, lon]) => [lon, lat]);
+  assert.deepEqual(pondEntity.polygon.hierarchy, expectedFlat);
+  assert.equal(pondEntity.polygon.clampToGround, true);
+  // fakeCesium's withAlpha ignores its argument and returns the underlying css string.
+  assert.equal(pondEntity.polygon.material, "#3aa7e0");
+  assert.equal(pondEntity.polygon.outline, true);
+  assert.equal(pondEntity.polygon.outlineColor.css, "#3aa7e0");
+  assert.match(pondEntity.description, /3\.0 m/); // depth
+  assert.match(pondEntity.description, /6\.00 ha/); // 6e4 m2 -> 6.00 ha
+  assert.match(pondEntity.description, /reach 0/); // downstream reach it drains to
+
+  // The lake with an empty outline still gets its usual true-size ring, no polygon.
+  const rings = drawn.source.entities.list.filter((e) => e.ellipse);
+  assert.equal(rings.length, 1);
+  assert.equal(rings[0].position.lat, 1);
 });
 
 test("drawPreview outlines a salt body in the salt colour and a fresh body in the fresh colour", () => {

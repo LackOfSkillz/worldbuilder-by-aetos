@@ -15,6 +15,7 @@ pub mod reaches;
 pub mod record;
 pub mod bake;
 pub mod refine;
+pub mod ponds;
 #[cfg(test)]
 mod bake_tests;
 
@@ -70,6 +71,26 @@ pub struct HydroParams {
     pub meander_amplitude_widths: f64,
     /// Ruling R-6: a segment meanders only if its bed falls less steeply than this.
     pub meander_max_slope: f64,
+    /// Spec §6.6: the fine search's cell.
+    pub pond_cell_m: f64,
+    /// How far either side of a refined reach the fine search looks. Spec §6.6 says 3 km;
+    /// `earth_like` ships 1.5 km after Ruling S-17 -- see `earth_like` for the measurement. The
+    /// search's cost is linear in this, and so is roughly the candidate count.
+    pub pond_search_radius_m: f64,
+    /// The pond keep rule's depth.
+    pub pond_keep_depth_m: f64,
+    /// The pond keep rule's area.
+    pub pond_keep_area_m2: f64,
+    /// Ruling S-6: a candidate's terrain must be wetter than this share of the graph's land
+    /// nodes, measured at the nearest node.
+    pub pond_wetness_share: f64,
+    /// Ruling S-6: and flatter than this, over one pond cell.
+    pub pond_max_slope: f64,
+    /// Ruling S-8: at most one kept body per this much searched area. Spec §6.6 says 500 km^2
+    /// (5.0e8); `earth_like` ships 1.6e10, **32x the spec's number**, because the owner's world
+    /// recorded 11,146,072 bytes against an 8 MB gate at the intermediate 4.0e9 -- see
+    /// `earth_like` for the measurements and Ruling S-16.
+    pub pond_density_area_m2: f64,
 }
 
 impl HydroParams {
@@ -101,6 +122,53 @@ impl HydroParams {
             meander_wavelength_widths: 11.0,
             meander_amplitude_widths: 1.5,
             meander_max_slope: 0.002,
+            pond_cell_m: 250.0,
+            // RULING S-17, and the only lever in this plan that addresses both gates at once.
+            // Spec §6.6's corridor is 3 km either side. At 3 km, with the cap already at 1.6e10,
+            // the owner's world baked in **441 s and 432 s** (two runs, the second on a settled
+            // page) against a 300 s gate, and recorded 8,430,792 bytes against 8,000,000. The
+            // search samples a lane `2 * radius` wide, so its cost is LINEAR in this number and
+            // so, roughly, is the candidate count: halving it halves the work and drops about
+            // half the candidates. It is preferred over `pond_cell_m` because the cell is the
+            // spec's 250 m trace -- coarsening it would make every recorded outline coarser and
+            // would put Ruling S-13's containment result back in question -- and over another
+            // density doubling because thinning what the search already found is worse than not
+            // looking as far.
+            pond_search_radius_m: 1_500.0,
+            pond_keep_depth_m: 2.0,
+            pond_keep_area_m2: 50_000.0,
+            pond_wetness_share: 0.6,
+            pond_max_slope: 0.03,
+            // Plan 1b-3, Task 7's size gate, and RULING S-16. Spec §6.6's own number is 500 km^2
+            // (5.0e8); this is 16,000 km^2, **32x the spec's**, and that is a measurement, not a
+            // preference.
+            //
+            // Step one, the stand-ins. At 5.0e8 the `seed1_ranges` stand-in's record was
+            // 9,020,112 bytes at 1,000,000 nodes, over the 8,000,000-byte target. Raised in x2
+            // steps, measured at each (`hydro_survey --pond-density D 1000000`, native release,
+            // one host): 5.0e8 -> 9,020,112; 1.0e9 -> 8,746,368; 2.0e9 -> 8,357,824; 4.0e9 ->
+            // 7,896,992, the first that fits; 8.0e9 -> 7,407,872. The cap is a weak lever on
+            // these worlds -- each doubling removes about a tenth of the kept bodies -- because
+            // their 3 km corridors rarely put two candidates in one cell.
+            //
+            // Step two, the world that actually has to fit. The owner's saved studio world, baked
+            // in the branch studio at 1,000,000 nodes through the wasm pool with its two painted
+            // features and one forced outlet, recorded **11,146,072 bytes at 4.0e9** -- 11,578
+            // ponds kept of 131,386 found, about 5.2 MB of the record. On that world the cap is
+            // NOT a weak lever, and one more doubling lands near 8.6 MB with no margin. Two
+            // doublings, to 1.6e10, is Ruling S-16. The other levers were refused on measured
+            // grounds: Ruling S-13 shows a coarser outline breaks containment, and the keep rule
+            // is not the limiter (that bake's median pond is 4.38 km^2 against a 0.05 km^2 floor;
+            // on the bake that finally ships, at S-17's 1.5 km corridor, the median is 1.81 km^2,
+            // still 36x the floor).
+            //
+            // What ships, and it is BOTH numbers: `pond_search_radius_m` 1,500 m and this cap at
+            // 1.6e10. 1.6e10 alone was not enough -- at 3 km the owner's world still recorded
+            // 8,430,792 bytes and took 432-441 s -- so read this constant together with Ruling
+            // S-17 at `pond_search_radius_m`. At the pair, that world records 7,019,992 bytes in
+            // 242 s with 3,719 ponds. See `docs/superpowers/reports/
+            // 2026-09-12-water-1b3-verification.md` for both departures and their consequence.
+            pond_density_area_m2: 1.6e10,
         }
     }
 }
@@ -253,6 +321,31 @@ pub struct BakeStats {
     pub meander_wavelength_widths: f64,
     pub meander_amplitude_widths: f64,
     pub meander_max_slope: f64,
+    /// SCHEMA 5, Rulings S-2 and S-3: how many crossings the *coarse* record already had, before
+    /// refinement traced anything. These are graph artifacts the crossing pass does not try to
+    /// fix (Ruling S-2), so they are the number the refined count is judged against.
+    pub crossings_coarse: u32,
+    /// SCHEMA 5, Ruling S-4: how many crossings are left in the record as it ships, after the
+    /// crossing pass, the meander and simplification. Recorded rather than asserted to be zero,
+    /// because a coarse crossing cannot be straightened away.
+    pub crossings_left: u32,
+    /// SCHEMA 5, spec §6.6: every hollow the fine search found that passed the pond keep rule,
+    /// before Ruling S-10's side clip, Ruling S-6's wetness and slope gates, Ruling S-7's drops,
+    /// the cross-strip dedup and Ruling S-8's density cap.
+    pub ponds_found: u32,
+    /// Of those, how many reached the record as bodies. The gap between the two is what the
+    /// gates and the cap removed, and it is a large gap by design: about half of all candidates
+    /// are side-clipped alone.
+    pub ponds_kept: u32,
+    /// SCHEMA 5: the fine search's seven params, echoed the way the refinement params are (and
+    /// not wasm params either -- a wasm bake always uses `earth_like`'s values).
+    pub pond_cell_m: f64,
+    pub pond_search_radius_m: f64,
+    pub pond_keep_depth_m: f64,
+    pub pond_keep_area_m2: f64,
+    pub pond_wetness_share: f64,
+    pub pond_max_slope: f64,
+    pub pond_density_area_m2: f64,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the
@@ -278,13 +371,21 @@ pub enum HydroError {
     Drainage(u32),
 }
 
-/// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine` (spec §6.6).
+/// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine`, then
+/// `ponds::search` (spec §6.6).
+///
+/// The fine pond search runs **last**, and it must: it walks strips along the *refined* lines, so
+/// it cannot run before they exist, and by Ruling S-5 what it adds changes no routing, no reach
+/// and no notch. The two grounds it is handed are deliberately different (Ruling S-9) -- the
+/// landform for the geometry, the landform with its detail field for the cells it searches.
 pub fn bake(surface: &Surface, params: &HydroParams) -> Result<HydroRecord, HydroError> {
     let stages = bake_stages(surface, params)?;
     let mut record = record_of(&stages, params);
     let height = |p: &SpherePoint| surface.structural_m(p);
     let ground = refine::Ground::for_surface(surface, &height, params);
     refine::refine(&mut record, &ground, params);
+    let detail = ponds::pond_ground(surface, params);
+    ponds::search(&mut record, &stages.graph, &stages.routing.lake_of, &ground, &detail, params);
     Ok(record)
 }
 
