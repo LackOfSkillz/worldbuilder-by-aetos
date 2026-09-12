@@ -1266,25 +1266,50 @@ jobs:
           # Re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
           # --list` (and `--ignored`) and `assert_counts.py cargo-list` AFTER the last source
           # edit, never by hand arithmetic; all five printed `count OK`.
+          #
+          # 2026-09-12, WATER 1b-4 final fix wave: the counts move 799/799/801/905/907 with 8
+          # ignored -> **801/801/803/907/909 with 8 ignored**, and the listed totals
+          # 807/807/809/913/915 -> **809/809/811/915/917**. +2 run UNIFORMLY on every row, 8
+          # ignored unchanged, seventeen test binaries unmoved. **Both new tests are decode
+          # guards in `record.rs`'s unit module**, closing what the whole-branch review found:
+          # `decode_refuses_a_body_claiming_more_shore_members_than_it_has_outline_points`, on a
+          # `shore_member_count` that was validated as a u32 and never against the `outline_len`
+          # read two words later -- every consumer slices the outline on that count, so a record
+          # one past the end panicked the first reader and wrapped the collar size in release;
+          # and `decode_refuses_a_non_finite_or_negative_shore_reach`, on the one float on the
+          # wire used as a containment radius, where an infinity admits the whole planet as
+          # inside one lake. Both are mirrored in `water-preview.js::decodeHydro` and covered by
+          # a JS twin each, which is what takes the **viewer 338 -> 340 pass, 0 fail**.
+          #
+          # `tests/wasm_exports.rs` gained no test, so the two wasm rows move by the same +2 as
+          # the other three. **The parity pins below did NOT move**: a decode guard changes no
+          # record, and the rebuilt `.wasm` is byte-identical (artifact-sha256
+          # ab858cd2dfe0627f2725f3f0bc6bf302b79e15769c6fc23ea5741bdb56dac93a, unchanged) -- only
+          # its source fingerprint moved, because the fingerprint hashes the crate's sources and
+          # `bake_tests.rs` is one of them.
+          #
+          # Re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
+          # --list` (and `--ignored`) and `assert_counts.py cargo-list` AFTER the last source
+          # edit, never by hand arithmetic; all five printed `count OK`.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 799
+            expect: 801
             expect_ignored: 8
           - name: default
             features: ""
-            expect: 799
+            expect: 801
             expect_ignored: 8
           - name: python
             features: "--features python"
-            expect: 801
+            expect: 803
             expect_ignored: 8
           - name: wasm
             features: "--features wasm"
-            expect: 905
+            expect: 907
             expect_ignored: 8
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 907
+            expect: 909
             expect_ignored: 8
     steps:
       - uses: actions/checkout@v4

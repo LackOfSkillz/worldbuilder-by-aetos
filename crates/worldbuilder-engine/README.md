@@ -5783,3 +5783,82 @@ adds no coupling of its own.
 
 The reproduction commands are the ones above, with `--expect-passed <799|799|801|905|907>` and
 `--expect-ignored 8`.
+
+## 2026-09-12, water 1b-4 whole-branch review fix wave: two decode guards, and the pins with them
+
+The whole-branch review re-derived every extent independently across 42 bakes and found the
+geometry correct. It asked for two Importants and four Minors before merge, and **this wave
+changes no geometry**: `extent.rs`, the crossing pass and `ponds.rs` are untouched, and no record
+this branch writes is different by a byte.
+
+**What moved.** The spec's §7 still said, in bold, that `kind` is the discriminator and
+`shore_member_count` is never it — the exact sentence Ruling E-8 overturned, and the one a stage 2
+implementer reading §7 top-down would hit first. §7 now leads with `shore_member_count` and keeps
+`kind` as what the water *is*, matching §8.3. The other Important is a trust-boundary hole:
+`decode` validated `shore_member_count` as a u32 and never against the `outline_len` it reads two
+words later, so a record claiming one more shore member than it has points decoded happily and
+then panicked the first reader on `body.outline[..shore_member_count]` — and wrapped
+`outline.len() - shore_member_count` to 4,294,967,295 in release. `shore_reach_m`, the one float
+on the wire used as a containment radius, took NaN, ±∞ and any negative just as happily; an
+infinite band makes §8.3's clause 2 admit the whole planet as inside that lake. Both are refused
+now, in `record.rs::decode` and in its `water-preview.js::decodeHydro` twin, with a test each side.
+
+**One finding of its own, from Minor 6.** Adding the asked-for `assert_eq!` on `collar_points`
+beside the existing one on `shore_members` went red: 101 against 269 on the `params` population.
+The stat is right and the naive sum is wrong. `bake.rs` totals both halves **before**
+`ponds::search` appends a pond, so they count the coarse bodies only — and "outline length less
+the members" on a pond is its whole traced 250 m ring, which is not a collar. The Rust assertion
+totals the coarse prefix; the viewer's existing all-body collar identity, which held only because
+its 12,000-node bake keeps no pond, now asserts `pondsKept === 0` beside it rather than relying on
+it silently. The two rewritten docstrings say which bodies the totals count.
+
+### Pins, re-derived by running them
+
+**Wasm rebuilt, and the artifact is byte-identical.** artifact-sha256
+`ab858cd2dfe0627f2725f3f0bc6bf302b79e15769c6fc23ea5741bdb56dac93a` — **unchanged**, because the
+only `src/` edits that reach the compiled library are two `decode` guards on paths the browser's
+bake never takes and a doc comment. Only the source fingerprint moved,
+`3eb47b9b74f1df1f1d905f49aaddaddff6e398df39161e6df74d5f5b66202d6d` →
+`54f8b7577a20cd9b7cbb749e480d41809b1756540ad3ded4eb50c7dd502574a9` (66 inputs), because the
+fingerprint hashes the crate's sources and `bake_tests.rs` is one of them. The CRLF guard
+(`git ls-files --eol crates/worldbuilder-engine | grep -v "w/lf"`) printed nothing before each of
+the two rebuilds. `npm run check:wasm` reports it matches its manifest and the source that is here
+now.
+
+**Engine — moved, +2 run uniformly, ignored unchanged.** Re-derived per configuration through
+`cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) and `assert_counts.py
+cargo-list` after the last source edit; all five printed `count OK`:
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 809 | 8 | **801** (was 799) |
+| default | 809 | 8 | **801** (was 799) |
+| `--features python` | 811 | 8 | **803** (was 801) |
+| `--features wasm` | 915 | 8 | **907** (was 905) |
+| `--features python,wasm` | 917 | 8 | **909** (was 907) |
+
+The suites were run, all five, `--no-fail-fast`, and all five are green. **Both new tests are
+`record.rs` unit tests** — `decode_refuses_a_body_claiming_more_shore_members_than_it_has_outline_points`
+and `decode_refuses_a_non_finite_or_negative_shore_reach` — which is why the +2 lands uniformly
+and the two wasm rows move by the same +2 as the other three. `assert_counts.py` still reports
+**seventeen** test binaries. `no_std_math` is **6/6**.
+
+**Both ignored sweeps pass.** `every_small_world_drains` in **71.33 s**;
+`refinement_adds_no_crossings_at_1m` in **121.17 s**, printing the same `ranges 1M: 5545 reaches,
+coarse 54 shipped 50` and `default 1M: 4285 reaches, coarse 33 shipped 28` as Task 6 — so nothing
+in this wave moved a line.
+
+**Python:** 565 collected, 157 of them conformance — **unchanged** (`pytest --collect-only -q
+tests` and the same over `tests/test_conformance.py`; this wave touched no Python).
+
+**Viewer:** `npm test` (Node's test runner, `viewer/`, this host) — **340 pass, 0 fail** (was
+338). The +2 is this wave's: the JS twin of each decode guard, in
+`viewer/test/water-preview.test.mjs`.
+
+**Parity — unmoved, which is the claim.** `parity: 150830 values compared through the shipped
+exports, 0 divergent`; `--mutate seed` **145,274 of 150,830**, both exactly Task 6's numbers. A
+decode guard changes no record, so the corpus is identical group for group — `hydro/ranges` 17,099
+and `hydro/plain` 6,072, unchanged.
+
+The reproduction commands are Task 6's, with `--expect-passed <801|801|803|907|909>` and
+`--expect-ignored 8`.
