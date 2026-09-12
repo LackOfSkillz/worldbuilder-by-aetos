@@ -17,8 +17,10 @@ pub mod extent;
 pub mod bake;
 pub mod refine;
 pub mod ponds;
+/// `pub(crate)` for its populations alone: `water::query_tests` bakes the same three worlds the
+/// refinement tests use, and a second copy of them would be a second thing to keep in step.
 #[cfg(test)]
-mod bake_tests;
+pub(crate) mod bake_tests;
 /// Ruling E-2's trim on trial (the design note's §5.7). Its own file because `bake_tests` is
 /// already past the plan's 1,500-line mark.
 #[cfg(test)]

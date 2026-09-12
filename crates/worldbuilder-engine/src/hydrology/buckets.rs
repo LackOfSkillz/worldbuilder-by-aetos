@@ -100,12 +100,43 @@ impl BucketIndex {
         self.buckets[self.first[row] + column].push(id);
     }
 
+    /// How many cells this index's grid has. A caller keeping its own payload alongside the
+    /// grid -- `water::index::WaterIndex` keeps three -- sizes them by this and addresses them
+    /// with [`cell_of`](Self::cell_of) and [`cells_within`](Self::cells_within).
+    pub fn cell_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// Every cell whose row/column range the disc of `reach_m` about `point` touches, ascending.
+    ///
+    /// A **superset** of the cells the disc actually intersects -- the sweep is a latitude band
+    /// crossed with the widest longitude stretch the band needs -- so a caller may rely on it
+    /// listing every cell that holds any point within `reach_m`, and must not rely on it listing
+    /// only those. [`candidates`](Self::candidates) is this sweep with the points in each cell
+    /// collected; a caller with its own per-cell payload takes the cells instead.
+    pub fn cells_within(&self, point: &SpherePoint, reach_m: f64) -> Vec<usize> {
+        let mut cells = Vec::new();
+        self.sweep(point, reach_m, |cell| cells.push(cell));
+        cells.sort_unstable();
+        cells.dedup();
+        cells
+    }
+
     pub fn candidates(&self, point: &SpherePoint, reach_m: f64) -> Vec<u32> {
+        let mut found = Vec::new();
+        self.sweep(point, reach_m, |cell| found.extend_from_slice(&self.buckets[cell]));
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The row/column arithmetic both of the two above are made of: hands `visit` each cell of
+    /// the sweep, row by row, without deciding what to do with it.
+    fn sweep(&self, point: &SpherePoint, reach_m: f64, mut visit: impl FnMut(usize)) {
         let (lat, lon) = point.to_latlon();
         let reach_deg = m::to_degrees(reach_m / self.radius_m);
         let low = self.row_of(if lat - reach_deg < -90.0 { -90.0 } else { lat - reach_deg });
         let high = self.row_of(if lat + reach_deg > 90.0 { 90.0 } else { lat + reach_deg });
-        let mut found = Vec::new();
         for row in low..=high {
             let south = -90.0 + row as f64 * 180.0 / self.rows as f64;
             let north = south + 180.0 / self.rows as f64;
@@ -120,7 +151,7 @@ impl BucketIndex {
             let everything = cos <= 1.0e-9 || reach_deg / cos >= 180.0 || lat.abs() + reach_deg >= 90.0;
             if everything {
                 for column in 0..count {
-                    found.extend_from_slice(&self.buckets[self.first[row] + column]);
+                    visit(self.first[row] + column);
                 }
                 continue;
             }
@@ -129,16 +160,13 @@ impl BucketIndex {
             let east = self.column_of(row, wrap(lon + stretch));
             let mut column = west;
             loop {
-                found.extend_from_slice(&self.buckets[self.first[row] + column]);
+                visit(self.first[row] + column);
                 if column == east {
                     break;
                 }
                 column = (column + 1) % count;
             }
         }
-        found.sort_unstable();
-        found.dedup();
-        found
     }
 
     pub fn nearest(&self, point: &SpherePoint, positions: &[SpherePoint]) -> Option<u32> {
@@ -281,6 +309,32 @@ mod tests {
         for (lat, lon) in [(90.0, 0.0), (-90.0, 0.0), (0.0, 180.0), (0.0, -180.0)] {
             let cell = index.cell_of(&SpherePoint::from_latlon(lat, lon));
             assert!(cell < index.buckets.len(), "{lat},{lon} landed outside the grid");
+        }
+    }
+
+    /// `candidates` and `cells_within` are one sweep with two endings, and a caller keeping its
+    /// own payload per cell (`water::index`) relies on that: whatever `candidates` would have
+    /// collected must live in the cells `cells_within` names. Checked at the poles and the seam,
+    /// where the column arithmetic wraps.
+    #[test]
+    fn cells_within_names_exactly_the_cells_candidates_reads() {
+        let positions = scatter(3_000);
+        let mut index = BucketIndex::new(R, 150_000.0);
+        for (i, p) in positions.iter().enumerate() {
+            index.insert(p, i as u32); // cast-ok: test fixture
+        }
+        for (lat, lon) in [(0.0, 0.0), (89.9, 10.0), (-89.9, -170.0), (0.0, 179.99),
+                           (0.0, -179.99), (45.0, 90.0)] {
+            let p = SpherePoint::from_latlon(lat, lon);
+            for reach in [10_000.0, 400_000.0, 3_000_000.0] {
+                let cells = index.cells_within(&p, reach);
+                assert!(cells.iter().all(|&c| c < index.cell_count()), "{lat},{lon} r{reach}");
+                let mut through_cells: Vec<u32> =
+                    cells.iter().flat_map(|&c| index.buckets[c].iter().copied()).collect();
+                through_cells.sort_unstable();
+                through_cells.dedup();
+                assert_eq!(index.candidates(&p, reach), through_cells, "{lat},{lon} r{reach}");
+            }
         }
     }
 

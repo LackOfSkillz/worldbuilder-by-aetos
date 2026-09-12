@@ -39,6 +39,23 @@
 //! that actually wants `Lake::level_m` to carry the filled value -- which every real caller
 //! does -- must reach for the `_and_apply` entry point rather than assume `fill_basins` alone
 //! did it.
+//!
+//! # The query side of the module (plan 2a)
+//!
+//! Everything above is the *bake* side: it fills a `StreamGraph`'s lakes and hands the levels
+//! back. [`index`] is the *query* side, and the two share nothing but this module: it builds a
+//! spatial index over a baked `hydrology::HydroRecord` so a sample tests a handful of candidate
+//! bodies, reaches and notches instead of the whole record. Plan 2a's query types (`WaterAt`,
+//! `WaterKind`) land here alongside them in Task 2.
+//!
+//! The two halves share one module because `water.rs` was already `crate::water` when the query
+//! arrived, and Rust has one module per path. See plan 2a's task-1 report for the note this
+//! leaves Task 2.
+
+pub mod index;
+
+#[cfg(test)]
+mod query_tests;
 
 use std::collections::HashMap;
 

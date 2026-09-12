@@ -1262,7 +1262,7 @@ fn every_fall_is_a_step_on_its_own_reach() {
 
 /// The three refined populations: the bake test world at both thresholds, and the seed 1
 /// `ranges` world at 12,000 nodes (real relief, and the one with falls).
-pub(super) fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
+pub(crate) fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
     [("params", world(), params()),
      ("junction_params", world(), junction_params()),
      ("ranges", ranges_world(), HydroParams::earth_like(12_000))]
