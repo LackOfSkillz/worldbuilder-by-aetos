@@ -76,9 +76,31 @@ It closed:
 
 Two parts of item 6 remain:
 
-- **Lake outlines, and small lakes and ponds**, go to **plan 1b-3 (shores)**, which starts with a spike.
-- **Reaches still cross one another** inside their corridors (Ruling FF-3 of the 1b-2 final review). The corridor keeps a refined line in its own basin and no more, and the coarse graph crossed too: at 1M nodes, the plain world has 61 coarse crossings and 1,957 refined; the seed 1 `ranges` world 95 and 3,922. It must be fixed before stage 2 carves two channels into each other.
+- [x] **Small lakes and ponds done in 1b-3**; **lake outlines go to plan 1b-4**, ruled in 1b-3's Task 1 as Candidate B. **Lake outlines, and small lakes and ponds**, go to **plan 1b-3 (shores)**, which starts with a spike.
+- [x] **Done in 1b-3** (Tasks 2 and 3, and Ruling S-14). **Reaches still cross one another** inside their corridors (Ruling FF-3 of the 1b-2 final review). The pass now runs on the lines the record **ships** — trace, meander, simplify, then check, repeating up to four times — so the shipped count is at or under the coarse count everywhere measured: **43 coarse against 37 shipped** on the owner's world, 54 → 50 and 33 → 28 on the 1M stand-ins. **Coarse crossings stay** (Ruling S-2): a coarse crossing is a graph artifact and fixing it means re-routing, which is out of scope.
 - **Falls** work (4 on a native `ranges()` stand-in, and analytic cliff tests), but there are **0 on the owner world**. Its landform has no 10 m drop within 150 m along any reach at these resolutions. Falls await the mountains project's steeper relief.
+
+## Status after plan 1b-3 (2026-09-12)
+
+Plan 1b-3 (shores) stops the refinement introducing river crossings, adds spec §6.6's fine pond search, and moves the record to SCHEMA 5 (a 54-word header). See `2026-09-12-water-1b3-verification.md`. On the owner's world at 1M nodes, forced outlet 0°N 0°E, measured in the branch studio (wasm) on the owner's laptop at c13d150:
+
+- the record is **7,019,992 bytes** (gate 8,000,000) and the bake takes **242 s** (gate 300 s);
+- **4,067 bodies** = 348 coarse + **3,719 ponds**, of 55,742 found;
+- crossings **43 coarse → 37 shipped**;
+- 0 bed rises, 3,268 junctions all shared, 0 mouths above their water, 0 fresh dead-ends, 0 ponds breaking Ruling S-5 or shipping a ring under 3 points;
+- the great lake still runs 63 → 316 → 317 → 318 → 322 → 319 to the ocean at 25.938°S 30.106°W.
+
+**Two departures from spec §6.6 ship together, both for the gates and both measured.** The density cap is **1.6e10 m² against the spec's 5.0e8** (32×), because the same world recorded 11,146,072 bytes at 4.0e9; and the search corridor is **1,500 m against the spec's 3,000 m**, because at 3 km it took 432–441 s against a 300 s gate. The consequence: about **twenty times fewer ponds** than §6.6's own parameters would place, and **no pond looked for beyond 1.5 km of a river**. `pond_cell_m` stays at the spec's 250 m, so no recorded geometry is coarser.
+
+**Ruling S-15 is deferred as ruled:** at 1M the crossing pass's first round sees **2,909 crossings**, so that many segments ship straightened and unmeandered under Ruling S-4a. Re-tuning `meander_amplitude_widths` waits for the mountains project's erosion.
+
+### Routed to plan 1b-4 by 1b-3's Task 1
+
+Task 1 ruled **Candidate B** for a body's extent (see item 6 above) and rewrote spec §6.6, §7 and §8.3 to match. Three places in the spec still describe the ring that ruling replaced, and 1b-4 owns all three:
+
+- [ ] **Spec §8.2's spatial index must list a body whose shore points come within `shore_reach_m` of a cell.** A nearest-point test is only as good as the candidate set the index hands it; an index built for polygon containment will not return the right bodies.
+- [ ] **Spec §9 still names `dilateBodyExtents` and the box-and-level rule.** Both are polygon-era; §9 has to be rewritten against the shore-point set.
+- [ ] **Spec §14's two uses of "outline" are still curve-sense.** They read as a closed curve and must be restated for an unordered point set, or scoped explicitly to ponds, which do keep the 250 m trace.
 
 ## Plan 1b must fix (load-bearing for stage 2)
 
@@ -90,7 +112,11 @@ Two parts of item 6 remain:
 3. **Closed in 1b-2.** Mechanism done in 1b-1; on the owner world at 1M, 7 capped basins keep 9 of their 60 inner hollows (SCHEMA 4 header words 32–34). **I3:** 12b-5's capped giant basins lose their inner lake-worthy sub-basins. Give them nested judging.
 4. **Done in 1b-1.** **I5:** fresh lakes with no downstream link (4–34 per 200k world). Add `Body.downstream`, or always start a reach at a fresh lake's outlet.
 5. **Done in 1b-1.** **Record size:** 23.6 MB against the spec's 8 MB target, where notches are 74–94% of the words. About half of the retained notch points duplicate reach points (whose bed already carries the cut). Record only outlet cuts, plus off-reach cut segments above a depth threshold.
-6. **Tracing and waterfalls done in 1b-2; outlines and ponds are plan 1b-3.** **The fine layer itself:** tracing at 1.5 km, lake outlines, small lakes and ponds (which have their own keep rule), and waterfalls. There are 0 ponds at graph resolution. Falls are 0 on the owner world and await steeper relief (see the 1b-2 status above).
+6. **Tracing and waterfalls done in 1b-2; small lakes and ponds done in 1b-3; outlines are plan 1b-4.** **The fine layer itself:** tracing at 1.5 km, lake outlines, small lakes and ponds (which have their own keep rule), and waterfalls.
+   - [x] **Tracing and waterfalls — done in 1b-2.**
+   - [x] **Small lakes and ponds — done in 1b-3.** 3,719 ponds on the owner's world, each with a traced 250 m ring and each naming a river by Ruling S-5. **Two of spec §6.6's parameters ship changed** to meet the gates: the density cap is 1.6e10 m² against the spec's 5.0e8 (32×), and the search corridor is 1,500 m against the spec's 3,000 m. See `2026-09-12-water-1b3-verification.md`.
+   - [ ] **Lake outlines — plan 1b-4.** Ruled in 1b-3's Task 1 as **Candidate B**, replacing Ruling S-1: a body's extent is an unordered set of shore points (its shore members then its collar) plus `shore_member_count`, `shore_reach_m` and its level, and `water_at` decides by a nearest-point test rather than a polygon. Ponds keep the 250 m trace. The argument is in `2026-09-12-water-1b3-outlines-design.md`.
+   - Falls are 0 on the owner world and await steeper relief (see the 1b-2 status above).
 
 ## Smaller items (plan 1b or stage 2)
 
