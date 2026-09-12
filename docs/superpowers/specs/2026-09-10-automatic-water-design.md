@@ -286,11 +286,15 @@ carving needs.
     **`kind` says which of the two geometries a body carries** (§7): a lake's outline is a
     shore-point set, a pond's is a traced curve.
 - **Small lakes and ponds.** A fine hollow search (250 m cells) runs only within 3 km of refined
-  river lines, and in terrain with wetness above the 60th percentile and slopes under 3%. It has
+  river lines (the spec's 3 km; `earth_like` ships **1,500 m** after Ruling S-17 — see "Two
+  departures from spec §6.6" in `docs/superpowers/reports/2026-09-12-water-1b3-verification.md`),
+  and in terrain with wetness above the 60th percentile and slopes under 3%. It has
   **its own keep rule: depth ≥ 2 m and area ≥ 0.05 km²**. Section 6.3's rule (area ≥ 1 km²)
   could never keep a pond, whose surface is under 1 km² by definition. Found hollows that fail
   are simply not recorded; at this scale they are texture and need no notch. At most one small
-  lake or pond per 500 km² of searched area is kept, the deepest first.
+  lake or pond per 500 km² of searched area is kept, the deepest first (the spec's 500 km²;
+  `earth_like` ships **1.6e10 m², i.e. 16,000 km²**, after Ruling S-16 — see "Two departures from
+  spec §6.6" in `docs/superpowers/reports/2026-09-12-water-1b3-verification.md`).
   - **A find is recorded whatever its area** (Ruling S-11, plan 1b-3's Task 5, which replaces
     Ruling T1-2's drop). Below `pond_max_area_m2` it is a `pond`; at or above it, a `lake`. **Both
     carry the traced 250 m curve**, and `kind` is still the discriminator for what a body's
@@ -310,8 +314,11 @@ carving needs.
     strip already kept. **Ruling S-12** asks the wetness and coarse-body questions *twice*: once of
     a segment's midpoint before its corridor is sampled at all, which is where a bake's time goes
     and is the granularity §6.6 means by "coarse gates on where to look", and again of each
-    candidate's own anchor. The cost is that the pre-check takes or skips a corridor whole, so a
-    few ponds near a wetness boundary appear or vanish, and `ponds_found` counts hollows in the
+    candidate's own anchor. The cost is that the pre-check answers **both** questions — the wetness
+    floor *and* the coarse-body question of Ruling S-7 — from one midpoint, so its granularity is a
+    whole coarse segment, not a candidate: a corridor that straddles a wetness boundary, or that
+    runs half in and half out of a coarse body, is taken or skipped entire. Ponds anywhere along
+    such a segment appear or vanish together, and `ponds_found` counts hollows in the
     corridors that passed rather than in every corridor. The survivors are then sorted deepest first and thinned to one per 500 km²
     (Ruling S-8). Each body that survives is **appended after the coarse bodies**, so no coarse id
     moves (Ruling S-7); it drains to the reach whose refined line is nearest its anchor and has no
