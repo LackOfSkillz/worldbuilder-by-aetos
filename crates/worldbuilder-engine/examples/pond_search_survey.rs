@@ -6,9 +6,15 @@
 //!
 //! ```text
 //! cargo run --release -p worldbuilder-engine --example pond_search_survey
+//! cargo run --release -p worldbuilder-engine --example pond_search_survey -- --stand-ins-1m
 //! ```
 //!
 //! Release matters: a debug bake of the 200k populations takes minutes.
+//!
+//! `--stand-ins-1m` swaps the populations for `src/bin/hydro_survey.rs`'s three worlds at
+//! 1,000,000 nodes, the population plan 1b-3's Task 7 judges the size and time gates at. It is
+//! opt-in because it is about twenty minutes of bakes, and because the default run above is the
+//! one Tasks 4 and 5 reported at.
 //!
 //! It is an example rather than a test because it asserts nothing. The numbers move when the
 //! generator moves, which is the point: a survey that could fail would have to be pinned, and a
@@ -130,9 +136,10 @@ fn survey(label: &str, surface: &Surface, p: &HydroParams) {
 }
 
 /// What Task 5's `ponds::search` actually put in the record, and what Ruling S-8's density cap
-/// cost: the same world baked twice, once at the spec's 500 km² cap and once with the cap
-/// effectively removed (one cell per 10,000 m², finer than the search's own 250 m cell, so no two
-/// candidates can share one).
+/// cost: the same world baked twice, once at the caller's cap and once with the cap effectively
+/// removed (one cell per 10,000 m², finer than the search's own 250 m cell, so no two candidates
+/// can share one). The caller's cap is `earth_like`'s, which plan 1b-3's Task 7 size gate raised
+/// from spec §6.6's 500 km² to 4,000 km²; the printed line names whatever it is.
 fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
     let started = std::time::Instant::now();
     let record = hydrology::bake(surface, p).expect("bake");
@@ -148,9 +155,10 @@ fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
     let mut without_ponds = record.clone();
     without_ponds.bodies.truncate(record.bodies.len() - kept);
     let bare = hydrology::record::encode(&without_ponds).len();
-    println!("{label}: found {} kept {kept}; uncapped {} -- the 500 km2 cap removes {}; \
+    println!("{label}: found {} kept {kept}; uncapped {} -- the {:.0} km2 cap removes {}; \
               coarse bodies {}; record {words} words ({} of them ponds, {} bytes);               bake {bake_s:.2} s",
              record.stats.ponds_found, without.stats.ponds_kept,
+             p.pond_density_area_m2 / 1.0e6,
              without.stats.ponds_kept as usize - kept, record.bodies.len() - kept,
              words - bare, (words - bare) * 8);
     if kept > 0 {
@@ -163,7 +171,34 @@ fn recorded(label: &str, surface: &Surface, p: &HydroParams) {
     }
 }
 
+/// Plan 1b-3, Task 7: `src/bin/hydro_survey.rs`'s three stand-ins at its 1,000,000 nodes, so the
+/// corridor and ring measurements can be read at the population the gates are judged at. Opt-in,
+/// because it is about twenty minutes of bakes -- `survey` walks every strip a second time and
+/// `recorded` bakes each world twice more -- and because the default run above is the population
+/// Tasks 4 and 5 reported at, which must not move under it.
+fn stand_ins_1m() {
+    let p = HydroParams::earth_like(1_000_000);
+    let worlds = [
+        ("plain 1M", Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None)),
+        ("owner_survey 1M",
+         Surface::new(562_423_712, 4_500_000.0, 28, 0.16, None, None, Some(TectonicParams::ranges()))),
+        ("seed1_ranges 1M",
+         Surface::new(1, 6_371_000.0, 12, 0.40, None, None, Some(TectonicParams::ranges()))),
+    ];
+    for (label, surface) in &worlds {
+        survey(label, surface, &p);
+    }
+    for (label, surface) in &worlds {
+        recorded(&format!("RECORD {label}"), surface, &p);
+    }
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--stand-ins-1m") {
+        stand_ins_1m();
+        return;
+    }
+
     // `bake_tests`'s two worlds and its two populations, so the survey and the suite argue about
     // the same terrain.
     let default_world = Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None);

@@ -5213,14 +5213,21 @@ The cap is a weak lever — each doubling removes about a tenth of the kept bodi
 3 km corridors rarely put two candidates in one cell — so four steps were needed and the fifth
 was measured too, in case the owner world needs the headroom.
 
-**The time gate binds nothing.** The pond search's own part, at the shipped 4.0e9: plain 59.26 s,
-owner_survey 25.59 s, seed1_ranges 77.45 s, against a 120 s gate. `pond_search_radius_m` stays at
+That sweep was measured before Ruling S-14 and has not been re-run step by step; **the decision it
+reached was re-checked on S-14's pipeline and still holds** -- at 4.0e9 the three stand-ins record
+5,521,624 / 2,781,080 / 7,898,992 bytes, all under 8,000,000. The `seed1_ranges` margin is 101,008
+bytes, 1.26%, essentially what it was.
+
+**The time gate binds nothing.** The pond search's own part, at the shipped 4.0e9 on S-14's
+pipeline: plain 60.43 s, owner_survey 27.01 s, seed1_ranges 83.30 s, against a 120 s gate (before
+S-14: 59.26 / 25.59 / 77.45 s). `pond_search_radius_m` stays at
 3,000 m and `pond_cell_m` stays at the spec's 250 m; neither was moved.
 
-`src/` moved, so the wasm was rebuilt: 426,828 bytes, 31 exports, 0 imports; artifact-sha256
-8112f5e1ad8a3adc6bcfda6a5259ecde383375e27a08c6cdae82078093a604c4, source-fingerprint
-63ee77483af79cec04c494c655e2f070244aa0c352de9f7b1271997aad561494 (58 inputs). `npm run
-check:wasm` reports it matches its manifest and the source here.
+`src/` moved, so the wasm was rebuilt: **427,667 bytes**, 31 exports, 0 imports; artifact-sha256
+`fcc0439e920044277e79e9dd2194600cc7a05f9213b1ac1e81011571c971b726`, source-fingerprint
+`cc4742703c0fcf86074902f20b34d2e6bb66b32a9216a3d8f389de779255c301` (58 inputs). `npm run
+check:wasm` reports it matches its manifest and the source here. (The figures first recorded here
+were 426,828 bytes / `8112f5e1...` / `63ee7748...`; Ruling S-14 superseded them.)
 
 **Engine, re-derived per configuration through `cargo test -p worldbuilder-engine <cfg> --
 --list` (and `--ignored`) and `assert_counts.py cargo-list`, which printed `count OK` at all
@@ -5228,27 +5235,34 @@ five:**
 
 | configuration | listed | ignored | **run** |
 |---|---|---|---|
-| `--no-default-features` | 789 | 6 | **783** (was 751) |
-| default | 789 | 6 | **783** (was 751) |
-| `--features python` | 791 | 6 | **785** (was 753) |
-| `--features wasm` | 895 | 6 | **889** (was 857) |
-| `--features python,wasm` | 897 | 6 | **891** (was 859) |
+| `--no-default-features` | 790 | 7 | **783** (was 751) |
+| default | 790 | 7 | **783** (was 751) |
+| `--features python` | 792 | 7 | **785** (was 753) |
+| `--features wasm` | 896 | 7 | **889** (was 857) |
+| `--features python,wasm` | 898 | 7 | **891** (was 859) |
 
-751/751/753/857/859 -> **783/783/785/889/891**, 6 ignored, unchanged, but over **seventeen** test
+751/751/753/857/859 -> **783/783/785/889/891**, and `expect_ignored` **6 -> 7**, over **seventeen** test
 binaries rather than sixteen: `src/bin/shore_probe.rs` came back in Task 1 (commit d72312a), and a
 bin is a test target. **+32 uniformly on every row**, all from this plan's Tasks 1-6 — the
 crossing pass in `reaches.rs` and `bake_tests.rs`, the fine pond search in the new `ponds.rs`, and
 the SCHEMA 5 record words in `record.rs`/`bake_tests.rs`. Task 7's own source edits
-(`src/bin/hydro_survey.rs` and `earth_like`'s `pond_density_area_m2`) add no test. The ignored
-sweep, `cargo test --release -p worldbuilder-engine --lib every_small_world_drains -- --ignored`,
-passed (67.09 s).
+(`src/bin/hydro_survey.rs`, `examples/pond_search_survey.rs` and `earth_like`'s
+`pond_density_area_m2`) add no test. The seventh ignored test is Ruling S-14's own:
+`hydrology::bake_tests::refinement_adds_no_crossings_at_1m`, the 1,000,000-node sweep that
+reproduces what Task 7 measured. Both ignored sweeps were run: `every_small_world_drains` passed
+in 71.12 s, and `refinement_adds_no_crossings_at_1m` passed in 191.58 s, printing `ranges 1M:
+5545 reaches, coarse 54 shipped 50` and `default 1M: 4285 reaches, coarse 33 shipped 28`.
 
 **Python:** 565 collected, 157 of them conformance -- unchanged (`pytest --collect-only -q`).
 
 **Viewer:** `npm test` in `viewer/` -- **337 passed, 0 failed** (was 333; Task 6 added four
 `water-preview` tests).
 
-**Parity, all eight runs from `crates/worldbuilder-engine/parity/` as `gates.yml` runs them:**
+**Parity, all eight runs from `crates/worldbuilder-engine/parity/` as `gates.yml` runs them.**
+Re-derived again after Ruling S-14 and **unmoved**: S-14 changes where the shipped points sit, not
+how many words a record has, and native and wasm move together, so every row below is what both
+derivations produced.
+
 
 | | compared | divergent |
 |---|---|---|
@@ -5272,15 +5286,22 @@ as the native side predicted"; the five belt groups are unchanged at 6,186.
 **`hydro_survey` at 1,000,000 nodes**, at the shipped params (native, release, this host; the
 owner-world figures stay the controller's):
 
-| world | bake | (stages / record_of / refine / ponds) | record | crossings coarse / left | ponds found / kept |
+| world | bake | (stages / record_of / refine / ponds) | record | crossings coarse / shipped | ponds found / kept |
 |---|---|---|---|---|---|
-| plain | 72.15 s | 10.15 / 0.03 / 2.71 / 59.26 | 5,520,664 bytes (was 4,227,936) | 33 / 36 | 9,363 / 2,779 |
-| owner_survey | 36.19 s | 9.29 / 0.01 / 1.30 / 25.59 | 2,780,984 bytes (was 2,471,360) | 4 / 5 | 2,083 / 691 |
-| seed1_ranges | 91.48 s | 9.56 / 0.05 / 4.43 / 77.45 | 7,896,992 bytes (was 5,967,064) | 54 / 57 | 15,686 / 4,270 |
+| plain | 71.40 s | 9.28 / 0.02 / 1.68 / 60.43 | 5,521,624 bytes (was 4,227,936) | 33 / **28** | 9,358 / 2,780 |
+| owner_survey | 37.74 s | 9.93 / 0.01 / 0.79 / 27.01 | 2,781,080 bytes (was 2,471,360) | 4 / **3** | 2,083 / 691 |
+| seed1_ranges | 96.24 s | 10.27 / 0.04 / 2.63 / 83.30 | 7,898,992 bytes (was 5,967,064) | 54 / **50** | 15,683 / 4,270 |
 
-All three are under the 8 MB target, and `drainage_check` is `Ok` on all three. `crossings_left`
-exceeding `crossings_coarse` is not a contradiction: by Ruling S-2 the two count different
-populations — the coarse record's crossings before refinement traced anything, and the crossings
-left in the refined record as it ships.
+All three are under the 8 MB target, the pond search is under its 120 s gate on all three, and
+`drainage_check` is `Ok` on all three.
+
+**These figures supersede the first ones recorded in this section** (5,520,664 / 2,780,984 /
+7,896,992 bytes, and crossings 36 / 5 / 57 against 33 / 4 / 54 coarse). Task 7's first run
+measured the shipped record crossing MORE than the coarse record it came from, because Ruling S-4
+put the crossing pass between tracing and the meander, and neither the meander nor
+Douglas-Peucker was looked at again. **Ruling S-14** (commit 2ce614e) moved the pass to the end of
+the pipeline -- trace, meander, simplify, then check -- and raised `MAX_CROSSING_PASSES` 3 -> 4.
+Shipped is now at or under coarse on every stand-in, and the record grew by 960 / 96 / 2,000
+bytes, which is the straightened segments' own points surviving simplification differently.
 
 The reproduction commands are the ones above, with `--expect-passed <783|783|785|889|891>`.

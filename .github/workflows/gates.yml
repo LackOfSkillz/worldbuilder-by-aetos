@@ -1162,26 +1162,37 @@ jobs:
           # test. Re-derived per configuration through `cargo test -p worldbuilder-engine <cfg>
           # -- --list` (and `--ignored`) and `assert_counts.py cargo-list` AFTER the last source
           # edit; all five printed `count OK`.
+          # 2026-09-12, water 1b-3 Ruling S-14 (the crossing pass moved to the end of the
+          # pipeline, commit 2ce614e): 783/783/785/889/891 UNCHANGED, but `expect_ignored` moves
+          # 6 -> 7 and `listed` 789/789/791/895/897 -> 790/790/792/896/898. Exactly one test was
+          # added and it is `#[ignore]`d -- `hydrology::bake_tests::refinement_adds_no_crossings
+          # _at_1m`, the 1,000,000-node sweep that reproduces the finding Task 7 measured (the
+          # shipped record crossing more than the coarse record it came from). The same commit
+          # extended the existing `refinement_adds_no_crossings` with a 200,000-node ranges
+          # population rather than adding a test, so no `run` count moves. Re-derived per
+          # configuration through `cargo test -p worldbuilder-engine <cfg> -- --list` (and
+          # `--ignored`) and `assert_counts.py cargo-list` AFTER the last source edit; all five
+          # printed `count OK`.
           - name: no-default-features
             features: "--no-default-features"
             expect: 783
-            expect_ignored: 6
+            expect_ignored: 7
           - name: default
             features: ""
             expect: 783
-            expect_ignored: 6
+            expect_ignored: 7
           - name: python
             features: "--features python"
             expect: 785
-            expect_ignored: 6
+            expect_ignored: 7
           - name: wasm
             features: "--features wasm"
             expect: 889
-            expect_ignored: 6
+            expect_ignored: 7
           - name: python+wasm
             features: "--features python,wasm"
             expect: 891
-            expect_ignored: 6
+            expect_ignored: 7
     steps:
       - uses: actions/checkout@v4
 
