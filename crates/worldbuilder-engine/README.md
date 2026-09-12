@@ -5637,3 +5637,128 @@ segment, or a collinear overlap, passes it.
 
 The reproduction commands are the ones above, with `--expect-passed <786|786|788|892|894>` and
 `--expect-ignored 7`.
+
+## 2026-09-12, water 1b-4 Task 6: the extent surveyed, and every pin re-derived by running it
+
+Plan 1b-4 (automatic water, body extents) puts a **body extent** on the wire: every kept coarse
+body now records its shore members and its collar, plus `shore_reach_m`. Ponds are unchanged
+(Ruling E-6). The record went to **SCHEMA 6** — a 56-word header and a 16-word body prefix. This
+section is the measurement half; the verification report has the argument.
+
+### The extent's share, and how it is counted
+
+Two figures, because they answer two questions. **Points** is `2 × (shore_members +
+collar_points) × 8` bytes — the `(lat, lon)` pair every recorded extent point costs, which is
+exactly the measured growth of `params`, `junction_params` and `ranges` in Tasks 1 and 2.
+**Total** adds SCHEMA 6's fixed words: the two header words and the two per-body words, i.e.
+`(2 + 2 × bodies) × 8` more. A pond's traced outline is **not** counted — it predates this plan
+and is not the extent. `shore_reach_m`'s largest and median are over the **coarse** bodies alone,
+those with `shore_member_count > 0`; ponds are excluded because Ruling E-6 fixes theirs at 0.0, so
+including them would only measure how many ponds a bake found.
+
+### The three stand-ins at 1,000,000 nodes
+
+`./target/release/hydro_survey.exe`, no flags, `HydroParams::earth_like(1_000_000)`.
+`drainage_check` is `Ok` on all three. **No body on any stand-in is missing a collar.**
+
+| world | bake | (stages / record_of / refine / ponds) | record | coarse bodies | shore members | collar points | extent: points / total | share | `shore_reach_m` largest / median | no collar |
+|---|---|---|---|---|---|---|---|---|---|---|
+| plain | 46.05 s | 9.82 / 0.03 / 1.83 / 34.37 | **4,281,864** (was 4,241,672) | 23 | 968 | 1,247 | 35,440 / **40,192** | 0.94% | 43,908.3 / 39,402.6 m | **0** |
+| owner_survey | 26.95 s | 10.87 / 0.02 / 0.80 / 15.25 | **2,511,928** (was 2,461,400) | 71 | 1,159 | 1,870 | 48,464 / **50,528** | 2.01% | 30,129.4 / 27,186.9 m | **0** |
+| seed1_ranges | 56.87 s | 10.30 / 0.04 / 2.84 / 43.69 | **6,098,912** (was 5,974,160) | 160 | 2,764 | 4,368 | 114,112 / **124,752** | 2.05% | 43,397.7 / 39,549.3 m | **0** |
+
+**Each record grew by exactly its own extent total** — +40,192, +50,528, +124,752 against the
+1b-3 figures — so the accounting above is not a model fitted to the growth, it *is* the growth.
+
+**The extent's points half reproduces the design note's own per-world estimate to three decimal
+places**: 0.035 / 0.048 / 0.114 MB predicted in §5.1's "B trimmed" column, 0.0354 / 0.0485 /
+0.1141 MB measured here. The note's probe and this survey agree, which is the strongest available
+check on the 229 KB owner-world figure Task 4 measures — that figure is a scaling of the same
+quantity from 65 bodies to 348.
+
+**Both gates hold with room and no lever was pulled.** The worst record clears 8,000,000 by
+**1,901,088 bytes (23.8%)** and the worst bake is **56.87 s of 120 s (47%)**.
+`pond_density_area_m2` stays at 1.6e10.
+
+**The extent costs no measurable time.** `extent_of` runs inside `record_of`, which is
+0.03 / 0.02 / 0.04 s — unmoved from 1b-3's 0.03 / 0.02 / 0.06. The whole-bake times are 6.1 / 2.3
+/ 3.7 s above 1b-3's, and the movement is in `ponds` and `bake_stages`, which this plan does not
+touch (the pond part alone moved +4.84 s on `plain`); it is host variance, not the extent.
+
+**Task 5's pond dedup fix moved no pond count on the stand-ins.** Found/kept are 1,993 / 273,
+409 / 57 and 3,752 / 504 — byte-for-byte the 1b-3 figures. The owner's world may still move; Task
+4 is where that would show.
+
+### Pins, re-derived by running them
+
+**Wasm rebuilt:** 431,385 bytes, 31 exports, 0 imports; artifact-sha256
+`ab858cd2dfe0627f2725f3f0bc6bf302b79e15769c6fc23ea5741bdb56dac93a` — **identical**, because a
+`[[bin]]` is not compiled into the artifact — and source-fingerprint
+`11e0aba0e1388e9bc47258e9aa8ac412105d1341e150dbc16bf97ab24adfff20` (66 inputs, was
+`5efa9073…`). The CRLF guard (`git ls-files --eol crates/worldbuilder-engine | grep -v "w/lf"`)
+printed nothing before the rebuild. `npm run check:wasm` reports it matches its manifest and the
+source that is here now.
+
+**Engine — moved, +13 run and +1 ignored uniformly.** Re-derived per configuration through
+`cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) and `assert_counts.py
+cargo-list`; all five printed `count OK`:
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 807 | 8 | **799** (was 786) |
+| default | 807 | 8 | **799** (was 786) |
+| `--features python` | 809 | 8 | **801** (was 788) |
+| `--features wasm` | 913 | 8 | **905** (was 892) |
+| `--features python,wasm` | 915 | 8 | **907** (was 894) |
+
+The suites were run, all five, `--no-fail-fast`: **780 + 4 + 9 + 6 = 799** passed / 0 failed / 8
+ignored under `--no-default-features` and default; **782 + 4 + 9 + 6 = 801** with `python`; and
+**+106 `wasm_exports`** on the two wasm rows, for 905 and 907. `no_std_math` is **6/6** in every
+configuration.
+
+Nothing is wasm-gated: `tests/wasm_exports.rs` gained no test — its only edit is the header
+assertion SCHEMA 6 moves from 54 to 56 words — so the two wasm rows move by the same +13 as the
+other three. **`expect_ignored` moves 7 → 8**, the first time in this file's history: the eighth
+is `hydrology::extent_tests::the_trim_holds_at_a_million_nodes`, the design note's §5.7 trial,
+`#[ignore]`d for the reason the other two sweeps are. `assert_counts.py` still reports
+**seventeen** test binaries — this plan added no `[[bin]]`, no `tests/` file and no example.
+
+**Both ignored sweeps pass.** `every_small_world_drains` in **76.31 s**;
+`refinement_adds_no_crossings_at_1m` in **128.18 s**, printing the same `ranges 1M: 5545 reaches,
+coarse 54 shipped 50` and `default 1M: 4285 reaches, coarse 33 shipped 28` — so the extent moved
+no line. The third `#[ignore]`d test, `extent_tests::the_trim_holds_at_a_million_nodes`, is Task
+3's own trial and its evidence is Task 3's; it is named here rather than silently skipped.
+
+**Python:** 565 collected, 157 of them conformance — **unchanged** (`pytest --collect-only -q
+tests` and the same over `tests/test_conformance.py`; the plan touched no Python).
+
+**Viewer:** `npm test` — **338 pass, 0 fail** (was 337).
+
+**Parity — moved:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **150,830** (was 147,553) | **0** |
+| `--mutate seed` | 150,830 | **145,274** (was 141,765) |
+| `--mutate erosion-k` | 150,830 | 216 |
+| `--mutate water-pond` | 150,830 | 60 |
+| `--mutate tectonic-warp` | 150,830 | **22,993** (was 21,783) |
+| `--mutate coast-amplitude` | 150,830 | 13,128 |
+| `--mutate gully-steer` | 150,830 | 3,752 |
+| `--mutate climate-samples` | 150,830 | 648 |
+
+The whole +3,277 is the extent, and it is both hydro records: `hydro/ranges` 15,945 → **17,099**
+(+1,154) and `hydro/plain` 3,949 → **6,072** (+2,123). Every non-H group is byte-for-byte unmoved
+in the plain run and in all seven controls. **0 divergent is the claim that matters here:** the
+extent is computed identically natively and in the browser, so `extent_of` carries no platform
+libm and no map iteration order — which is what §14.1's determinism requirement asks of it.
+
+Under the seed control `hydro/ranges` is 17,047 of 17,099 and `hydro/plain` 6,019 of 6,072; the
+extent's new words are almost all seed-sensitive, as they must be, and the shortfall in each is
+the params echo a moved seed cannot move. The tectonic control's `hydro/ranges` goes 15,597 →
+**16,807 of 17,099**, its native `TCTL` prediction moved with it, and it again printed *"exactly
+as the native side predicted"*; the five belt groups are unchanged at 6,186, which says the extent
+adds no coupling of its own.
+
+The reproduction commands are the ones above, with `--expect-passed <799|799|801|905|907>` and
+`--expect-ignored 8`.

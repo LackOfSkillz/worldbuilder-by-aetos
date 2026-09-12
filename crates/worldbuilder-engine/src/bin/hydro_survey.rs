@@ -77,6 +77,22 @@
 //!   `capped_inner_kept` (carry-forward I3).
 //! - **Bifurcation ratios:** the record's own `BakeStats` min/max over
 //!   `reaches::bifurcation_ratios`, over whatever orders it returns a ratio for.
+//! - **The extent (plan 1b-4, Task 6):** `shore members` and `collar points` are the record's own
+//!   `BakeStats::shore_members` and `BakeStats::collar_points`, so they are the bake's counts and
+//!   not a re-derivation. **The extent's share** is what SCHEMA 6 added to the wire, in bytes, in
+//!   two figures: `points` is `2 * (shore_members + collar_points) * 8` -- the `(lat, lon)` pair
+//!   each recorded point costs, which is exactly the measured growth of `params`,
+//!   `junction_params` and `ranges` -- and `total` adds SCHEMA 6's fixed words, the two header
+//!   words (`shore_members`, `collar_points`) and the two per-body words (`shore_member_count`,
+//!   `shore_reach_m`), i.e. `(2 + 2 * bodies) * 8` more. A pond's traced outline is *not* counted:
+//!   it predates this plan and is not the extent.
+//! - **`shore_reach_m` largest and median:** over the **coarse** bodies alone, those with
+//!   `shore_member_count > 0`. Ponds are excluded because Ruling E-6 fixes theirs at 0.0, so
+//!   including them would only measure how many ponds a bake found. The median is the sorted
+//!   median (`total_cmp`), the mean of the middle two when the population is even.
+//! - **Bodies with no collar:** coarse bodies whose `outline.len() == shore_member_count`, i.e.
+//!   a shore with nothing outside it. There should be none; the count is printed so a zero is a
+//!   measured zero.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -231,6 +247,15 @@ struct RunResult {
     capped_inner: u32,
     capped_inner_kept: u32,
     record_bytes: u64,
+    // Plan 1b-4, Task 6: the extent. See the module doc's "The extent" paragraph.
+    coarse_bodies: u32,
+    shore_members: u32,
+    collar_points: u32,
+    extent_point_bytes: u64,
+    extent_total_bytes: u64,
+    shore_reach_max_m: f64,
+    shore_reach_median_m: f64,
+    coarse_bodies_without_collar: u32,
 }
 
 fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult, HydroError> {
@@ -304,6 +329,25 @@ fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult,
         Some((record.stats.bifurcation_min, record.stats.bifurcation_max))
     };
 
+    // Plan 1b-4, Task 6: the extent's own figures, off the record the bake produced.
+    let shore_members = record.stats.shore_members;
+    let collar_points = record.stats.collar_points;
+    let extent_points = shore_members as u64 + collar_points as u64; // cast-ok: counts, never negative
+    let extent_point_bytes = extent_points * 2 * 8;
+    let bodies_len = record.bodies.len() as u64; // cast-ok: a body count, never negative
+    let extent_total_bytes = extent_point_bytes + (2 + 2 * bodies_len) * 8;
+    let coarse: Vec<&worldbuilder_engine::hydrology::Body> =
+        record.bodies.iter().filter(|b| b.shore_member_count > 0).collect();
+    let coarse_bodies = coarse.len() as u32; // cast-ok: bounded by body count
+    let coarse_bodies_without_collar = coarse
+        .iter()
+        .filter(|b| b.outline.len() as u32 == b.shore_member_count) // cast-ok: at most one point per node
+        .count() as u32; // cast-ok: bounded by body count
+    let mut reaches_m: Vec<f64> = coarse.iter().map(|b| b.shore_reach_m).collect();
+    reaches_m.sort_unstable_by(|a, b| a.total_cmp(b));
+    let shore_reach_max_m = if reaches_m.is_empty() { 0.0 } else { reaches_m[reaches_m.len() - 1] };
+    let shore_reach_median_m = if reaches_m.is_empty() { 0.0 } else { median_of_sorted(&reaches_m) };
+
     let (duplicate_notch_keys, duplicate_notch_extra) = duplicate_notch_points(&record);
     let notch_points: u64 = record.notches.iter().map(|l| l.points.len() as u64).sum(); // cast-ok: a point count
 
@@ -347,6 +391,14 @@ fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult,
         capped_inner: record.stats.capped_inner,
         capped_inner_kept: record.stats.capped_inner_kept,
         record_bytes,
+        coarse_bodies,
+        shore_members,
+        collar_points,
+        extent_point_bytes,
+        extent_total_bytes,
+        shore_reach_max_m,
+        shore_reach_median_m,
+        coarse_bodies_without_collar,
     })
 }
 
@@ -404,6 +456,25 @@ fn print_result(r: &RunResult) {
     println!(
         "    bodies: lakes {:>5}  ponds {:>5}  salt lakes {:>5}  salt flats {:>5}",
         r.lakes, r.ponds, r.salt_lakes, r.salt_flats,
+    );
+    println!(
+        "    extent: coarse bodies {:>5}  shore members {:>7}  collar points {:>7}  \
+         no collar {:>4}",
+        r.coarse_bodies, r.shore_members, r.collar_points, r.coarse_bodies_without_collar,
+    );
+    println!(
+        "      share of the record: points {:>9} bytes ({:.1} KB)  total {:>9} bytes ({:.1} KB, \
+         {:.2}% of the record)",
+        r.extent_point_bytes,
+        (r.extent_point_bytes as f64) / 1.0e3, // cast-ok: a byte count to f64 for a printed KB figure
+        r.extent_total_bytes,
+        (r.extent_total_bytes as f64) / 1.0e3, // cast-ok: a byte count to f64 for a printed KB figure
+        // cast-ok: two byte counts to f64 for a printed percentage
+        100.0 * (r.extent_total_bytes as f64) / (r.record_bytes as f64),
+    );
+    println!(
+        "      shore_reach_m over the coarse bodies: largest {:>10.1} m  median {:>10.1} m",
+        r.shore_reach_max_m, r.shore_reach_median_m,
     );
     match r.bifurcation {
         Some((lo, hi)) => println!(
