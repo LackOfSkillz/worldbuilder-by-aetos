@@ -5431,3 +5431,248 @@ fn a_hydro_bake_refuses_an_absurd_forced_count() {
 
     wb_world_free(world);
 }
+
+// ============================================================ the water query
+//
+// Plan 2a Task 4: `wb_water_at` and `wb_water_tile`, the two doors a browser asks §8.3's
+// question through. Both take *two* ids -- a world handle for the ground and a bake id for
+// the record -- because the answer needs both and neither table can supply the other's.
+//
+// What these tests are about is the boundary, the same as the rest of this file: which
+// arguments are refused, what is written on a refusal (nothing), that the batch agrees with
+// the scalar sample for sample, and that a freed bake stops answering rather than being
+// served out of the index cache it left behind. The *query's own* correctness -- §14.9's
+// agreement with the record, Rulings Q-3 through Q-18 -- is the crate's business and lives in
+// `src/water/query_tests.rs`.
+
+/// A prefilled sentinel no answer can produce, so "nothing was written" is checked rather than
+/// assumed: every word these exports write is a kind code, a metre or an id.
+const UNWRITTEN: f64 = -7.0;
+
+/// A plain world, its bake, and the record's decoded contents. The caller frees both ids.
+fn baked_plain_world() -> (u32, u32, worldbuilder_engine::hydrology::HydroRecord) {
+    let world = plain_world();
+    let params = hydro_params(12_000);
+    let mut bake: u32 = 0;
+    assert_eq!(
+        wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut bake), // cast-ok: a 12-word buffer
+        WB_OK,
+    );
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    let record = worldbuilder_engine::hydrology::record::decode(&words)
+        .expect("the record this crate just encoded decodes");
+    (world, bake, record)
+}
+
+/// A shore member of a coarse body that stands at or below its own body's level on the
+/// landform -- the point §14.9 pins to that body. `wb_structural_m` is asked for the ground
+/// because it is the very surface Ruling Q-3 makes the query compare against, reached through
+/// the boundary rather than reproduced beside it.
+///
+/// Returns the body's id, its recorded kind code, and the point.
+fn a_wet_shore_member(
+    world: u32,
+    record: &worldbuilder_engine::hydrology::HydroRecord,
+) -> (u32, f64, f64, f64) {
+    use worldbuilder_engine::hydrology::BodyKind;
+    for body in &record.bodies {
+        let members = body.shore_member_count as usize; // cast-ok: a recorded count, bounded by the outline at decode
+        for &(lat, lon) in body.outline.iter().take(members) {
+            if wb_structural_m(world, lat, lon) <= body.level_m {
+                let kind = match body.kind {
+                    BodyKind::Lake => 2.0,
+                    BodyKind::SaltLake => 3.0,
+                    BodyKind::SaltFlat => 4.0,
+                    BodyKind::Pond => 5.0,
+                };
+                return (body.id, kind, lat, lon);
+            }
+        }
+    }
+    panic!("this fixture exists to have a coarse body with a wet shore member");
+}
+
+#[test]
+fn the_water_query_refuses_a_bad_handle_a_bad_bake_and_a_bad_buffer_without_writing() {
+    let (world, bake, _record) = baked_plain_world();
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+    // The world: zero is never issued, and 9,999 was never issued either.
+    assert_eq!(wb_water_at(0, bake, 0.0, 0.0, out.as_mut_ptr(), stride), WB_ERR_HANDLE);
+    assert_eq!(wb_water_at(9_999, bake, 0.0, 0.0, out.as_mut_ptr(), stride), WB_ERR_HANDLE);
+    // The bake: same discipline, its own table.
+    assert_eq!(wb_water_at(world, 0, 0.0, 0.0, out.as_mut_ptr(), stride), WB_ERR_HANDLE);
+    assert_eq!(wb_water_at(world, 9_999, 0.0, 0.0, out.as_mut_ptr(), stride), WB_ERR_HANDLE);
+    // The buffer: null, and one word short of the stride.
+    assert_eq!(wb_water_at(world, bake, 0.0, 0.0, core::ptr::null_mut(), stride), WB_ERR_BUFFER);
+    assert_eq!(wb_water_at(world, bake, 0.0, 0.0, out.as_mut_ptr(), stride - 1), WB_ERR_BUFFER);
+    // A point that is not a point.
+    for (lat, lon) in [(f64::NAN, 0.0), (0.0, f64::INFINITY)] {
+        assert_eq!(wb_water_at(world, bake, lat, lon, out.as_mut_ptr(), stride), WB_ERR_GRID);
+    }
+    assert!(out.iter().all(|w| *w == UNWRITTEN), "a refusal wrote into the buffer: {out:?}");
+
+    // And the same buffer, on the same arguments made good, IS written -- or the assertions
+    // above are satisfied by an export that never writes at all.
+    assert_eq!(wb_water_at(world, bake, 0.0, 0.0, out.as_mut_ptr(), stride), WB_OK);
+    assert!(out.iter().any(|w| *w != UNWRITTEN), "a good call wrote nothing");
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(world);
+}
+
+#[test]
+fn the_water_tile_refuses_a_zero_dimension_an_overflowing_count_and_a_short_buffer() {
+    let (world, bake, _record) = baked_plain_world();
+    let mut out = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+    let full = out.len() as u32; // cast-ok: a fixture-sized buffer
+
+    for (rows, columns) in [(0u32, 2u32), (2, 0), (0, 0)] {
+        assert_eq!(
+            wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, rows, columns, out.as_mut_ptr(), full),
+            WB_ERR_GRID,
+        );
+    }
+    // `rows * columns` at u32::MAX squared still FITS in a 64-bit usize -- it is the stride
+    // that carries it over. Both multiplications are checked, and this is the case that says so.
+    assert_eq!(
+        wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, u32::MAX, u32::MAX, out.as_mut_ptr(), full),
+        WB_ERR_GRID,
+    );
+    // A bound that is not a bound.
+    assert_eq!(
+        wb_water_tile(world, bake, f64::NAN, 1.0, 0.0, 0.0, 2, 2, out.as_mut_ptr(), full),
+        WB_ERR_GRID,
+    );
+    // Four samples need twenty words; nineteen is short, and a half-filled tile reads as water.
+    assert_eq!(
+        wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, 2, 2, out.as_mut_ptr(), full - 1),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(
+        wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, 2, 2, core::ptr::null_mut(), full),
+        WB_ERR_BUFFER,
+    );
+    assert_eq!(
+        wb_water_tile(0, bake, 1.0, 1.0, 0.0, 0.0, 2, 2, out.as_mut_ptr(), full),
+        WB_ERR_HANDLE,
+    );
+    assert_eq!(
+        wb_water_tile(world, 0, 1.0, 1.0, 0.0, 0.0, 2, 2, out.as_mut_ptr(), full),
+        WB_ERR_HANDLE,
+    );
+    assert!(out.iter().all(|w| *w == UNWRITTEN), "a refusal wrote into the tile: {out:?}");
+
+    assert_eq!(
+        wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, 2, 2, out.as_mut_ptr(), full),
+        WB_OK,
+    );
+    assert!(out.iter().any(|w| *w != UNWRITTEN), "a good tile wrote nothing");
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(world);
+}
+
+#[test]
+fn wb_water_at_answers_a_shore_members_own_body_by_kind_and_by_id() {
+    let (world, bake, record) = baked_plain_world();
+    let (body_id, kind_code, lat, lon) = a_wet_shore_member(world, &record);
+
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+    assert_eq!(wb_water_at(world, bake, lat, lon, out.as_mut_ptr(), stride), WB_OK);
+    assert_eq!(out[0], kind_code, "body {body_id}'s own shore member answers another kind");
+    assert_eq!(out[3], f64::from(body_id),
+               "body {body_id}'s own shore member answers body {}", out[3]);
+    // A body answer is not a river answer: Ruling Q-18's fifth word is the sentinel here.
+    assert_eq!(out[4], f64::from(worldbuilder_engine::water::NO_REACH));
+    // The level is the body's own, and the depth is that level less the landform -- Ruling Q-6,
+    // asked through the boundary, with `wb_structural_m` supplying the same ground the export
+    // read (Ruling Q-3).
+    let body = record.bodies.iter().find(|b| b.id == body_id).expect("the body we chose");
+    assert_eq!(out[1], body.level_m);
+    assert_eq!(out[2], body.level_m - wb_structural_m(world, lat, lon));
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_water_tile_agrees_with_the_scalar_export_sample_for_sample() {
+    let (world, bake, record) = baked_plain_world();
+    // A rectangle straddling a body, so the sixteen samples are not sixteen `None`s agreeing
+    // trivially: centred on a wet shore member, a degree either way.
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let (lat0, lat1) = (lat + 1.0, lat - 1.0);
+    let (lon0, lon1) = (lon - 1.0, lon + 1.0);
+    const ROWS: u32 = 4;
+    const COLUMNS: u32 = 4;
+    let samples = (ROWS * COLUMNS) as usize; // cast-ok: a 16-sample fixture
+
+    let mut tile = vec![UNWRITTEN; samples * WB_WATER_STRIDE];
+    assert_eq!(
+        wb_water_tile(world, bake, lat0, lon0, lat1, lon1, ROWS, COLUMNS,
+                      tile.as_mut_ptr(), tile.len() as u32), // cast-ok: a fixture-sized buffer
+        WB_OK,
+    );
+
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+    let mut answered = 0usize;
+    for row in 0..ROWS {
+        for column in 0..COLUMNS {
+            let latitude = grid_coordinate(lat0, lat1, f64::from(row), f64::from(ROWS - 1));
+            let longitude = grid_coordinate(lon0, lon1, f64::from(column), f64::from(COLUMNS - 1));
+            let mut one = [UNWRITTEN; WB_WATER_STRIDE];
+            assert_eq!(wb_water_at(world, bake, latitude, longitude, one.as_mut_ptr(), stride), WB_OK);
+            let sample = row as usize * COLUMNS as usize + column as usize; // cast-ok: fixture grid indices
+            let base = sample * WB_WATER_STRIDE;
+            for word in 0..WB_WATER_STRIDE {
+                assert_eq!(tile[base + word].to_bits(), one[word].to_bits(),
+                           "row {row} column {column} word {word}: tile {} against scalar {}",
+                           tile[base + word], one[word]);
+            }
+            if one[0] != 0.0 {
+                answered += 1;
+            }
+        }
+    }
+    assert!(answered > 0,
+            "the rectangle round a wet shore member answered `None` sixteen times, so this \
+             test compared nothing");
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(world);
+}
+
+#[test]
+fn the_index_cache_is_freed_with_its_bake_rather_than_outliving_it() {
+    let (world, bake, record) = baked_plain_world();
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+    // First query: builds the index. Second: served from the cache, and must agree bit for bit
+    // -- a cache that rebuilt from something else would show up here.
+    let mut first = [UNWRITTEN; WB_WATER_STRIDE];
+    let mut second = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, first.as_mut_ptr(), stride), WB_OK);
+    assert_eq!(wb_water_at(world, bake, lat, lon, second.as_mut_ptr(), stride), WB_OK);
+    assert_eq!(first.map(f64::to_bits), second.map(f64::to_bits));
+
+    // Ruling Q-2: freeing the bake frees the index. Asserted by behaviour and not by timing --
+    // the next call must be REFUSED, not answered out of an index that outlived its record.
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    let mut after = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, after.as_mut_ptr(), stride), WB_ERR_HANDLE);
+    assert!(after.iter().all(|w| *w == UNWRITTEN), "a freed bake answered: {after:?}");
+    let mut tile = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(
+        wb_water_tile(world, bake, lat, lon, lat, lon, 1, 1, tile.as_mut_ptr(), stride),
+        WB_ERR_HANDLE,
+    );
+    assert!(tile.iter().all(|w| *w == UNWRITTEN), "a freed bake filled a tile: {tile:?}");
+
+    wb_world_free(world);
+}

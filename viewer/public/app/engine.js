@@ -2,7 +2,7 @@
 //
 // `viewer/public/wasm/worldbuilder_engine.wasm` has **zero imports** by design, so
 // `WebAssembly.instantiate(bytes, {})` is the entire loader: no wasm-bindgen, no glue
-// module, no bundler. Everything below is hand-written marshalling over the twenty-six
+// module, no bundler. Everything below is hand-written marshalling over the thirty-two
 // `extern "C"` entry points documented in `crates/worldbuilder-engine/src/wasm.rs`
 // (`WB_EXPORTS` is the declared list; a Rust test holds that file's source to it).
 //
@@ -118,6 +118,28 @@ export const WB_HYDRO_PARAMS_STRIDE = 12;
 /// about 372 MB of the 512 MB ceiling -- lower the count, never raise the ceiling).
 export const WB_MAX_HYDRO_NODES = 1300000;
 
+/// f64 per water sample `wb_water_at` and `wb_water_tile` write, and **the order is the ABI**:
+/// `[kind, levelM, depthM, bodyId, reachId]`. Mirrored from `WB_WATER_STRIDE`.
+///
+/// **Five and not four.** The plan's first cut wrote four -- Ruling Q-8 -- and Ruling Q-18
+/// widened it to carry the reach id, because §9.1 tints a river by its **class** and a class
+/// lives on the reach: without the id a drawing path would have to re-run the whole query to
+/// find out which reach had answered. Any reader of a tile buffer strides by this constant, so
+/// a copy of the number that says 4 reads every sample after the first from the wrong offset.
+export const WB_WATER_STRIDE = 5;
+
+/// `kind` codes in a water sample, mirrored from `WB_WATER_STRIDE`'s own table in `wasm.rs`.
+export const WB_WATER_KIND = {
+  none: 0, ocean: 1, lake: 2, saltLake: 3, saltFlat: 4, pond: 5, river: 6,
+};
+
+/// `bodyId` when the answer belongs to no recorded body (ocean, river, none), and `reachId`
+/// when it belongs to no recorded reach (everything but a river). `u32::MAX`, mirrored from
+/// `water::NO_BODY` and `water::NO_REACH` -- one value, two names, because the two words index
+/// different tables.
+export const WB_NO_BODY = 0xffffffff;
+export const WB_NO_REACH = 0xffffffff;
+
 export class Engine {
   constructor(instance) {
     this.instance = instance;
@@ -153,6 +175,7 @@ export class Engine {
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32", "wb_water_run",
       "wb_hydro_bake", "wb_hydro_len", "wb_hydro_copy", "wb_hydro_free",
+      "wb_water_at", "wb_water_tile",
     ]) {
       if (typeof engine.exports[name] !== "function") {
         throw new Error(`engine wasm is missing export ${name}`);
@@ -710,7 +733,25 @@ export class Engine {
   /// `streamFlowM2`, `riverFlowM2`, `greatFlowM2`, `notchFallM`, `evaporationFactor`,
   /// `saltFlatShare`, and `forcedOutlets` -- an array of `{ latitudeDeg, longitudeDeg }`,
   /// defaulting to none.
+  ///
+  /// The bake-and-hold half is `hydroHold`, which is what a caller that wants to *query* the
+  /// bake (`waterAt`, `waterTile`) needs; this is that plus the free.
   hydroBake({ handle, params }) {
+    const { id, words } = this.hydroHold({ handle, params });
+    this.hydroFree(id);
+    return words;
+  }
+
+  /// `hydroBake`, but **the bake stays held** and its id comes back with the record:
+  /// `{ id, words }`. The caller owns the id and must pass it to `hydroFree` when it is done.
+  ///
+  /// This exists because `waterAt` and `waterTile` query a *held* bake -- Ruling Q-2 builds the
+  /// spatial index on the first query and caches it beside the record, and freeing the bake
+  /// frees the index -- so a caller that wants to ask §8.3 questions cannot use the
+  /// bake-and-free shape above. The record comes back anyway, and not as a second copy step,
+  /// because the answers name bodies and reaches by **id**: `fresh`, a river's class and a
+  /// body's kind are read out of the record entry the id points at.
+  hydroHold({ handle, params }) {
     const forced = params.forcedOutlets ?? [];
     const stride = WB_HYDRO_PARAMS_STRIDE + 2 * forced.length;
     const paramsBytes = stride * 8;
@@ -725,6 +766,7 @@ export class Engine {
     let id = 0;
     let wordsPtr = 0;
     let wordsBytes = 0;
+    let held = false;
     try {
       const words = new Float64Array(this.memory.buffer, paramsPtr, stride);
       words.set([
@@ -750,12 +792,86 @@ export class Engine {
       }
       // The view is created after the allocation and copied immediately, before this
       // function's own dealloc calls can detach the buffer -- the module doc's rule 1.
-      return new Float64Array(this.memory.buffer, wordsPtr, len).slice();
+      const record = new Float64Array(this.memory.buffer, wordsPtr, len).slice();
+      held = true;
+      return { id, words: record };
     } finally {
-      if (id !== 0) this.exports.wb_hydro_free(id);
+      // The bake is freed on the way out ONLY if this call is failing: on success the id is
+      // the caller's, which is the whole difference between this and `hydroBake`.
+      if (id !== 0 && !held) this.exports.wb_hydro_free(id);
       if (wordsPtr !== 0) this.exports.wb_dealloc(wordsPtr, wordsBytes);
       this.exports.wb_dealloc(idPtr, idBytes);
       this.exports.wb_dealloc(paramsPtr, paramsBytes);
+    }
+  }
+
+  /// Drop a bake held by `hydroHold`, and with it the query index Ruling Q-2 cached beside it.
+  /// Throws on an id that names no live bake, so a double free is a message rather than a
+  /// silently ignored `1`.
+  hydroFree(id) {
+    const status = this.exports.wb_hydro_free(id) >>> 0;
+    if (status !== WB_OK) {
+      throw new Error(`wb_hydro_free returned ${statusName(status)}`);
+    }
+  }
+
+  /// **Spec §8.3 at one point**: what water is at `latitudeDeg, longitudeDeg` on the world
+  /// `handle`, according to the bake held under `bakeId` (from `hydroHold`).
+  ///
+  /// Returns `{ kind, levelM, depthM, bodyId, reachId }`, where `kind` is one of
+  /// `WB_WATER_KIND`'s names -- `"none"`, `"ocean"`, `"lake"`, `"saltLake"`, `"saltFlat"`,
+  /// `"pond"`, `"river"` -- and `bodyId` / `reachId` are `null` where the answer names no
+  /// recorded body or reach rather than the raw `0xffffffff` sentinel.
+  ///
+  /// **`fresh` is not here**, and is not missing: it belongs to the body or reach the ids name,
+  /// so read it out of the record `hydroHold` handed back. See `WB_WATER_STRIDE`.
+  ///
+  /// Pass the world the bake was made from. Nothing on the wire ties a record to a world, so
+  /// nothing checks it: a bake queried against another planet answers that planet's ground
+  /// against this record's levels, which is a wrong answer and not an error.
+  waterAt({ handle, bakeId, latitudeDeg, longitudeDeg }) {
+    const bytes = WB_WATER_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the water sample buffer");
+    try {
+      const status = this.exports.wb_water_at(
+        handle, bakeId, latitudeDeg, longitudeDeg, ptr, WB_WATER_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_water_at returned ${statusName(status)}`);
+      }
+      const words = new Float64Array(this.memory.buffer, ptr, WB_WATER_STRIDE);
+      return decodeWaterSample(words, 0);
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// **The batch**: `rows * columns` §8.3 answers in one call, as a `Float64Array` of
+  /// `rows * columns * WB_WATER_STRIDE` words on the JS heap.
+  ///
+  /// `box` is `{ lat0, lon0, lat1, lon1 }` and the grid is row-major with **both endpoints
+  /// included**, exactly `fillTileF32`'s shape: row 0 at `lat0`, row `rows - 1` at `lat1`,
+  /// column 0 at `lon0`, column `columns - 1` at `lon1`. Sample `row * columns + column`
+  /// starts at word `WB_WATER_STRIDE * (row * columns + column)`; `decodeWaterSample` reads one
+  /// out. Nothing is interpolated and nothing is smoothed -- every sample is exactly what
+  /// `waterAt` answers at that point.
+  ///
+  /// The raw buffer is returned rather than an array of objects because a tile is thousands of
+  /// samples and the caller is a drawing path: it strides, it does not allocate.
+  waterTile({ handle, bakeId, box, rows, columns }) {
+    const words = rows * columns * WB_WATER_STRIDE;
+    const bytes = words * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error(`wb_alloc refused ${bytes} bytes for a water tile`);
+    try {
+      const status = this.exports.wb_water_tile(
+        handle, bakeId, box.lat0, box.lon0, box.lat1, box.lon1, rows, columns, ptr, words) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_water_tile returned ${statusName(status)}`);
+      }
+      return new Float64Array(this.memory.buffer, ptr, words).slice();
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
     }
   }
 
@@ -860,4 +976,33 @@ export class Engine {
 
 export function statusName(code) {
   return STATUS_NAMES[code] ?? String(code);
+}
+
+/// `WB_WATER_KIND` inverted: the code a sample's word 0 carries to the name it means.
+const WATER_KIND_NAMES = Object.fromEntries(
+  Object.entries(WB_WATER_KIND).map(([name, code]) => [code, name]));
+
+/// Read one water sample out of a `waterTile` buffer (or a `waterAt` one), starting at
+/// `sample * WB_WATER_STRIDE`. **The only place the five-word order is spelled out**, so a
+/// reader that gets it wrong gets it wrong once.
+///
+/// `bodyId` and `reachId` come back `null` where the answer names no recorded body or reach,
+/// rather than as the raw `0xffffffff` sentinel -- an id that is a number is an id you can
+/// index the record with, and a `null` is one you cannot mistake for entry 4,294,967,295.
+export function decodeWaterSample(words, sample = 0) {
+  const at = sample * WB_WATER_STRIDE;
+  const code = words[at];
+  const kind = WATER_KIND_NAMES[code];
+  if (kind === undefined) {
+    throw new Error(`water sample: unknown kind ${code}`);
+  }
+  const bodyId = words[at + 3];
+  const reachId = words[at + 4];
+  return {
+    kind,
+    levelM: words[at + 1],
+    depthM: words[at + 2],
+    bodyId: bodyId === WB_NO_BODY ? null : bodyId,
+    reachId: reachId === WB_NO_REACH ? null : reachId,
+  };
 }
