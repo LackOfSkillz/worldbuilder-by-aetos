@@ -12,11 +12,11 @@
 
 use crate::hydrology::bake_tests::refined_populations;
 use crate::hydrology::buckets::BucketIndex;
-use crate::hydrology::{BodyKind, HydroParams};
+use crate::hydrology::{Body, BodyKind, HydroParams};
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 use crate::water::index::{body_circle_m, WaterIndex, DEFAULT_CELL_M};
-use crate::water::query::{water_at, WaterKind};
+use crate::water::query::{water_at, Ground, WaterKind};
 
 /// What Ruling Q-13's bounding circle costs, measured rather than argued. Reports, per
 /// population: cells occupied, entries stored per family, the largest cell's item count, and the
@@ -231,8 +231,15 @@ fn midpoint(a: &SpherePoint, b: &SpherePoint) -> SpherePoint {
 ///   from the outline alone. The anchor is the body's deepest node, interior by construction.
 /// - **Every ring vertex** of a body recorded as a traced curve: not `Ocean`, and where the body
 ///   itself answers, its own recorded kind. It is *not* asserted that some body answers, and the
-///   count says why -- a vertex sits on its own ring, where `inside_ring`'s even-odd crossing
-///   count is at its least decisive, because the vertex projects to the ray's own origin.
+///   counts say why. Ruling Q-17 closed one reason -- a vertex projects to the crossing count's own
+///   ray origin, and 88 vertices were claimed by nothing until the boundary was made explicitly
+///   inside; that count is now zero. The other reason is not a defect and does not go away: **a
+///   ring IS the shoreline contour**, so a vertex stands on the boundary between a filled cell and
+///   an unfilled one and is as likely to be a little above its own level as a little below. Ruling
+///   Q-16 made that comparison ask the surface the level was written against, which dropped the
+///   *magnitude* from 45.8 m worst / 20.8 m mean to 1.28 m / 0.41 m while barely moving the count
+///   (144 of 226 to 141 of 226). Both the count and the magnitude are printed, because it is the
+///   magnitude that tells a resolution residual from a wrong surface.
 /// - **Every collar point**: how many answer their own body is reported, because the band admits
 ///   some by design, and no point may answer a body whose level is *below* the landform there.
 /// - **Every reach point** answers `River` at that point's own `bed_m + depth_m` within 1e-6, or
@@ -249,8 +256,8 @@ fn midpoint(a: &SpherePoint, b: &SpherePoint) -> SpherePoint {
 ///   the sea where the cut runs under the datum.
 ///
 /// Every count is printed. They are Task 6's verification table, and two of them -- ring vertices
-/// standing above their own recorded level, and vertices claimed by nothing -- are the subject of
-/// this task's report.
+/// standing above their own recorded level, and vertices claimed by nothing -- are what produced
+/// Rulings Q-16 and Q-17.
 #[test]
 fn the_query_agrees_with_the_record_at_every_recorded_point() {
     let mut ponds_seen = 0usize;
@@ -258,10 +265,21 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
     for (name, surface, params) in query_populations() {
         let record = crate::hydrology::bake(&surface, &params).expect("bake");
         let index = WaterIndex::build(&record, surface.radius_m, DEFAULT_CELL_M);
-        // Ruling Q-3: the LANDFORM, never `elevation_m`. Every level and bed in the record is
-        // landform-derived, so the level test must ask the same surface.
-        let ground = |p: &SpherePoint| surface.structural_m(p);
+        // Ruling Q-3: the LANDFORM for a coarse body, a reach and the ocean -- every level and
+        // bed the coarse bake wrote is landform-derived, so the level test must ask the same
+        // surface. Ruling Q-16: the DETAIL FIELD at `pond_cell_m` for a body the fine search
+        // found, because Ruling S-9 levelled it off exactly that, and `ponds::pond_ground` is
+        // the very closure that did it.
+        let landform = |p: &SpherePoint| surface.structural_m(p);
+        let detail = crate::hydrology::ponds::pond_ground(&surface, &params);
+        let ground = Ground { landform_m: &landform, detail_m: &detail };
         let ask = |p: &SpherePoint| water_at(&record, &index, &ground, p);
+        // The surface the query itself compares THIS body's level against (Ruling Q-16). Every
+        // "stands above its own level" test below asks through this rather than through
+        // `landform`, because asking the wrong surface is the defect this ruling fixed.
+        let level_ground = |body: &Body, p: &SpherePoint| {
+            if body.shore_member_count == 0 { detail(p) } else { landform(p) }
+        };
 
         let (mut members, mut member_dry) = (0usize, 0usize);
         let (mut collars, mut collar_own, mut collar_other, mut collar_dry) =
@@ -271,6 +289,11 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
         let (mut rings, mut ring_ponds) = (0usize, 0usize);
         let (mut vertices, mut vertex_own, mut vertex_other, mut vertex_above,
              mut vertex_unclaimed) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        // How far above, not just how many: a ring IS the shoreline contour, so a vertex sitting
+        // a few centimetres proud of its own level is the trace's own resolution and not a wrong
+        // surface. Reported so Task 6 can tell those two apart at a glance.
+        let mut vertex_above_max_m = 0.0f64;
+        let mut vertex_above_sum_m = 0.0f64;
 
         for body in &record.bodies {
             let member_count = body.shore_member_count as usize; // cast-ok: a recorded count
@@ -280,11 +303,13 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
             let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
             let got = ask(&anchor);
             anchors += 1;
-            if ground(&anchor) > body.level_m {
-                // Ruling Q-12 again, and see the report: a body the *fine* search found is
-                // levelled off `Surface::elevation_m`, and the query reads `structural_m`, so its
-                // own deepest node can stand above its own recorded level in the landform. It
-                // cannot be claimed there. What it must not be is sea.
+            if level_ground(body, &anchor) > body.level_m {
+                // Ruling Q-12 again. This branch used to be where the Q-16 defect showed --
+                // 10 of 41 anchors, because a fine-search body's level was compared against
+                // `structural_m` when Ruling S-9 had levelled it off the detail field. With
+                // `level_ground` asking the surface the query asks, it is empty everywhere
+                // measured. It is kept, and kept strict about the one thing that matters if a
+                // body ever does stand above its own level: whatever it is, it is not sea.
                 anchor_above += 1;
                 assert_ne!(got.kind, WaterKind::Ocean,
                            "{name}: body {}'s own anchor {},{} answers Ocean -- an extent \
@@ -295,7 +320,7 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                         "{name}: body {} answers {:?} at its own anchor {},{}, where the landform \
                          is {} m under its level {} m -- an interior hole",
                         body.id, got.kind, body.anchor.0, body.anchor.1,
-                        body.level_m - ground(&anchor), body.level_m);
+                        body.level_m - level_ground(body, &anchor), body.level_m);
                 if got.body_id == body.id {
                     assert_eq!(got.kind, want,
                                "{name}: body {} is recorded {:?} and answers {:?} at its own \
@@ -319,8 +344,11 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                 if member_count == 0 {
                     // A traced ring's vertex: its own body, or a neighbour by Ruling T1-3.
                     vertices += 1;
-                    if ground(&point) > body.level_m {
+                    if level_ground(body, &point) > body.level_m {
                         vertex_above += 1; // the anchor's case, on the ring
+                        let over = level_ground(body, &point) - body.level_m;
+                        vertex_above_sum_m += over;
+                        if over > vertex_above_max_m { vertex_above_max_m = over; }
                     } else if is_body(got.kind) {
                         if got.body_id == body.id {
                             assert_eq!(got.kind, want,
@@ -340,7 +368,7 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                                body.id);
                 } else if i < member_count {
                     members += 1;
-                    if ground(&point) > body.level_m {
+                    if level_ground(body, &point) > body.level_m {
                         // Ruling Q-12: inside its own extent, above its own level. The extent
                         // suppresses the ocean; the claim, which fails, is what would have
                         // decided the body. So it is dry ground, not sea.
@@ -348,7 +376,8 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                         assert_eq!(got.kind, WaterKind::None,
                                    "{name}: body {}'s member {lat},{lon} stands {} m above its \
                                     own level {} m, so it is dry -- not {:?}",
-                                   body.id, ground(&point) - body.level_m, body.level_m, got.kind);
+                                   body.id, level_ground(body, &point) - body.level_m,
+                                   body.level_m, got.kind);
                     } else {
                         assert_eq!(got.body_id, body.id,
                                    "{name}: body {}'s own shore member {lat},{lon} answers body \
@@ -362,10 +391,10 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                     if is_body(got.kind) {
                         let claimed = record.bodies.iter().find(|b| b.id == got.body_id)
                             .expect("the query answered a body id the record does not carry");
-                        assert!(claimed.level_m >= ground(&point),
+                        assert!(claimed.level_m >= level_ground(claimed, &point),
                                 "{name}: collar point {lat},{lon} answers body {} at level {} m, \
-                                 under the landform's {} m",
-                                claimed.id, claimed.level_m, ground(&point));
+                                 under the ground's {} m",
+                                claimed.id, claimed.level_m, level_ground(claimed, &point));
                         if got.body_id == body.id { collar_own += 1 } else { collar_other += 1 }
                     } else {
                         collar_dry += 1;
@@ -461,8 +490,10 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
              anchors {anchors}: {anchor_own} answer their own body, {anchor_other} a neighbour \
              (Q-14), {anchor_above} stand above their own level;\n  \
              ring vertices {vertices}: {vertex_own} their own body, {vertex_other} a neighbour \
-             (T1-3), {vertex_above} above their own level, {vertex_unclaimed} claimed by \
-             nothing;\n  \
+             (T1-3), {vertex_above} above their own level (at most {vertex_above_max_m:.3} m, \
+             {:.3} m mean -- a ring IS the shoreline contour, so a vertex marginally proud of \
+             its own level is the 250 m trace's own resolution, not a wrong surface), \
+             {vertex_unclaimed} claimed by nothing;\n  \
              collar points {collars}: {collar_own} their own body, {collar_other} another, \
              {collar_dry} not water;\n  \
              reach points {reach_points}: {reach_own} their own reach, {reach_confluence} another \
@@ -472,7 +503,9 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
              on a last leg;\n  \
              notch points {notch_points}: {notch_river} river, {notch_dry} dry, {notch_sea} sea, \
              {notch_body} a body.",
-            record.bodies.len(), record.reaches.len(), record.notches.len());
+            record.bodies.len(), record.reaches.len(), record.notches.len(),
+            // cast-ok: a count of ring vertices into a float, for a mean
+            if vertex_above > 0 { vertex_above_sum_m / vertex_above as f64 } else { 0.0 });
 
         // Not a vacuous pass: the population really does record all three families, and the
         // interior sample and the between-the-points sample really did run.

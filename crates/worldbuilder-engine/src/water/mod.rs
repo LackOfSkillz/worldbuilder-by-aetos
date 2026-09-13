@@ -61,7 +61,7 @@
 pub mod index;
 pub mod query;
 
-pub use query::{water_at, WaterAt, WaterKind, NO_BODY};
+pub use query::{water_at, Ground, WaterAt, WaterKind, NO_BODY, NO_REACH};
 
 #[cfg(test)]
 mod query_tests;
