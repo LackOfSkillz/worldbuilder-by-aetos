@@ -108,6 +108,240 @@ fn bake_hydro_native(world: u32, params: &[f64]) -> (u32, u32, Vec<f64>) {
     (status, len, words)
 }
 
+/// **Ruling Q-21.** The explicit `WP` sample points beside the `WQ` grid, chosen **from the
+/// record** rather than by hand, so the parity corpus carries every §8.3 kind the bake actually
+/// records -- and a non-sentinel `reach_id` with them.
+///
+/// The grid covers `none`, `Ocean` and `Lake` densely and reaches nothing else: a river is a few
+/// hundred metres wide and a 4-degree box steps about 14 km, so a fixed grid catches `River` and
+/// `Pond` only by luck. Those two are the branches the drawing path uses most, and before this
+/// neither crossed the boundary at all.
+///
+/// The rules, all deterministic and all read off the record:
+///
+/// - **`Lake`, `SaltLake`, `SaltFlat`, `Pond`** -- the **lowest-id** body of that kind, sampled at
+///   its own `anchor`. Ruling Q-14's reason applies here too: every recorded outline point is on a
+///   shore by construction, so an anchor is the only point that tests the interior.
+/// - **`River`** -- the **lowest-id** reach with at least three recorded points whose **middle**
+///   recorded point answers `River`. The middle, not an end: a mouth sits at a shore, where Ruling
+///   Q-5 hands the answer to the body, and this point exists to carry a real `reach_id`.
+/// - **`FineFound`** -- the **lowest-id** body with `shore_member_count == 0`, sampled at its
+///   `anchor`. **This is the point that stands in for the pond, and the substitution is measured,
+///   not preferred.** Neither parity bake records a body of `BodyKind::Pond`: that kind is an
+///   *area* classification (`pond_max_surface_area_m2` against a summed surface area), and at
+///   these node counts -- 20,000 on `plain`, 60,000 on `ranges` -- every kept body is above the
+///   threshold. What the two bakes DO hold is bodies the **fine pond search** found, which are the
+///   ones Ruling Q-16 makes the query read the **detail field** for rather than the landform.
+///   That is the branch worth putting on the wire; `BodyKind::Pond` is a label on the same branch
+///   that these bakes happen not to apply. `shore_member_count == 0` is the discriminator (Ruling
+///   E-8), not `kind`, which is exactly why this point is chosen by it.
+///
+/// A kind the record has no body of yields no point, is named in the returned report, and is not
+/// an error -- a bake with no salt flat cannot be made to produce one. **What IS an error is a
+/// chosen point that stops covering what it was chosen for**: `main` asserts that and refuses to
+/// write the corpus, which is what keeps this group honest as the bake moves under it.
+///
+/// Returns the points and, for the dump's own stderr report, what each one was chosen for.
+fn water_points_from(world: u32, bake: u32, record: &hydrology::HydroRecord)
+    -> Vec<(&'static str, f64, f64, u32, [f64; WP_STRIDE])> {
+    let ask = |lat: f64, lon: f64| -> (u32, [f64; WP_STRIDE]) {
+        let mut out = [0.0f64; WP_STRIDE];
+        let status = wb_water_at(world, bake, lat, lon, out.as_mut_ptr(), WP_STRIDE as u32); // cast-ok: a compile-time stride of five
+        (status, out)
+    };
+
+    let mut points = Vec::new();
+    for (want, kind) in [
+        ("Lake", hydrology::BodyKind::Lake),
+        ("SaltLake", hydrology::BodyKind::SaltLake),
+        ("SaltFlat", hydrology::BodyKind::SaltFlat),
+        ("Pond", hydrology::BodyKind::Pond),
+    ] {
+        // `record.bodies` is written in ascending id order by `record_of`, so `find` IS the
+        // lowest-id body of the kind; `min_by_key` would say the same thing less plainly.
+        if let Some(body) = record.bodies.iter().find(|b| b.kind == kind) {
+            let (status, words) = ask(body.anchor.0, body.anchor.1);
+            points.push((want, body.anchor.0, body.anchor.1, status, words));
+        }
+    }
+    if let Some(body) = record.bodies.iter().find(|b| b.shore_member_count == 0) {
+        let (status, words) = ask(body.anchor.0, body.anchor.1);
+        points.push(("FineFound", body.anchor.0, body.anchor.1, status, words));
+    }
+    for reach in &record.reaches {
+        if reach.points.len() < 3 {
+            continue;
+        }
+        let point = &reach.points[reach.points.len() / 2];
+        let (status, words) = ask(point.lat_deg, point.lon_deg);
+        if status == WB_OK && words[0] == WATER_KIND_RIVER {
+            points.push(("River", point.lat_deg, point.lon_deg, status, words));
+            break;
+        }
+    }
+    points
+}
+
+/// The lowest-id body with `shore_member_count == 0`, if the record holds one: the body the
+/// `FineFound` point of [`water_points_from`] is chosen for, and the id its guard checks against.
+fn fine_found_body_id(record: &hydrology::HydroRecord) -> Option<u32> {
+    record.bodies.iter().find(|b| b.shore_member_count == 0).map(|b| b.id)
+}
+
+/// `wasm::WB_WATER_STRIDE`, restated for an example: an example cannot see a `pub(crate)` and this
+/// number is Ruling Q-18's five, not Ruling Q-8's superseded four.
+const WP_STRIDE: usize = 5;
+
+/// `wasm::water_kind_code`'s own table, the two values this file names. They are the contract.
+const WATER_KIND_NONE: f64 = 0.0;
+const WATER_KIND_RIVER: f64 = 6.0;
+
+/// The code `water_kind_code` gives the kind a `WP` point was chosen for, so the guard below can
+/// compare the answer against the reason the point is in the corpus at all.
+fn wanted_kind_code(want: &str) -> f64 {
+    match want {
+        "Lake" => 2.0,
+        "SaltLake" => 3.0,
+        "SaltFlat" => 4.0,
+        "Pond" => 5.0,
+        "River" => WATER_KIND_RIVER,
+        other => panic!("no kind code for {other}"),
+    }
+}
+
+/// Emits one `WP` line and the stderr report beside it. Ruling Q-21; see [`water_points_from`].
+///
+/// **This is where the corpus is refused.** Three guards, and each one is a failure mode that has
+/// a name: a chosen point that no longer answers its kind (the bake moved under the corpus); a
+/// `River` point whose `reach_id` is the sentinel (the reach branch stopped setting it, and the
+/// word would be compared 1,024 times without ever being a reach); and an empty point list (a
+/// record with no body and no reach, which is not a bake worth comparing). Each fails the dump
+/// rather than writing a group that compares agreement it never tested.
+fn print_water_points(name: &str, world: u32, params: &[f64])
+    -> (Vec<&'static str>, Vec<(&'static str, f64, f64, u32, [f64; WP_STRIDE])>) {
+    let mut bake: u32 = 0;
+    let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut bake); // cast-ok: a small params buffer
+    assert_eq!(status, WB_OK, "the {name} bake must succeed for the WP group");
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize]; // cast-ok: a freshly measured record length sizing its own buffer
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    let record = hydrology::record::decode(&words)
+        .expect("the record must decode -- this same binary just encoded it");
+
+    let points = water_points_from(world, bake, &record);
+    assert!(
+        !points.is_empty(),
+        "{name}: the record offered no body and no reach, so the WP group would compare nothing"
+    );
+
+    let mut covered = Vec::new();
+    let mut fields: Vec<String> = Vec::new();
+    for (want, lat, lon, point_status, answer) in &points {
+        assert_eq!(
+            *point_status, WB_OK,
+            "{name}: the {want} point at {lat},{lon} was refused with status {point_status}"
+        );
+        if *want == "FineFound" {
+            // Chosen for a BRANCH, not for a kind: `kind` on a fine-found body is whatever the
+            // area classifier made it (`Lake` in both parity bakes), so the guard that means
+            // something here is that the query still answers THAT BODY. If it stops, the detail
+            // field it is read through (Ruling Q-16) has stopped reaching its own anchor, which is
+            // precisely the failure this point exists to catch.
+            let expected = fine_found_body_id(&record)
+                .expect("a FineFound point exists only when a fine-found body does");
+            assert_eq!(
+                answer[3],
+                f64::from(expected),
+                "{name}: the fine-found point at {lat},{lon} answers body {} rather than body \
+                 {expected} (kind code {}) -- the detail field no longer reaches that body's own \
+                 anchor, and Ruling Q-16's branch would be on the wire in name only",
+                answer[3],
+                answer[0]
+            );
+        } else {
+            assert_eq!(
+                answer[0],
+                wanted_kind_code(want),
+                "{name}: the point chosen for {want} at {lat},{lon} now answers kind {} -- the \
+                 bake has moved under this corpus, and a group whose points no longer cover the \
+                 kinds they were chosen for proves nothing about those branches",
+                answer[0]
+            );
+        }
+        if *want == "River" {
+            assert_ne!(
+                answer[4],
+                f64::from(u32::MAX),
+                "{name}: the River point at {lat},{lon} answers River with NO_REACH -- the whole \
+                 reason this point is in the corpus is that `reach_id` crosses the boundary as a \
+                 real id (Ruling Q-18), and the sentinel would be compared without ever being one"
+            );
+        }
+        covered.push(*want);
+        fields.push(hex(*lat));
+        fields.push(hex(*lon));
+        fields.push(point_status.to_string());
+        for word in answer.iter() {
+            fields.push(hex(*word));
+        }
+    }
+    println!("WP {name} {} {} {} {}", params.len(),
+        params.iter().map(|v| hex(*v)).collect::<Vec<String>>().join(" "),
+        points.len(),
+        fields.join(" "));
+    eprintln!(
+        "WP {name}: {} explicit points covering {:?}; bodies {}, reaches {}",
+        points.len(), covered, record.bodies.len(), record.reaches.len()
+    );
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    (covered, points)
+}
+
+/// The native prediction for `--mutate tectonic-warp` on a `WP` group: how many of its
+/// `count * (1 + WP_STRIDE)` values move when the same points, with the same params, are asked of
+/// a bake on `world` instead.
+///
+/// **Why this record needed one and `water_at/plain` did not.** `margin_warp_m` reaches the
+/// terrain the `ranges` bake runs over -- that is the whole reason `hydro/ranges` moves 16,807
+/// words under this control -- so a query on that world must move too, and `parity.mjs` requires
+/// every group's movement to equal a number the native side computed rather than a number the run
+/// produced. The `plain` groups are on a world with no tectonic block, so their prediction is the
+/// zero every unlisted group already gets.
+///
+/// The points are **replayed, not re-chosen**: the same latitudes and longitudes the corpus
+/// records, exactly as the replaying side uses them. Re-choosing from the warp-0 record would
+/// compare two different questions and call the difference a divergence.
+fn water_points_divergence(
+    world: u32,
+    params: &[f64],
+    recorded: &[(&'static str, f64, f64, u32, [f64; WP_STRIDE])],
+) -> usize {
+    let mut bake: u32 = 0;
+    let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut bake); // cast-ok: a small params buffer
+    if status != WB_OK {
+        // The whole group counts as moved: there is no record to answer from, which is itself a
+        // divergence from a corpus recorded off a bake that succeeded.
+        return recorded.len() * (1 + WP_STRIDE);
+    }
+    let mut moved = 0usize;
+    for (_, lat, lon, point_status, answer) in recorded {
+        let mut out = [0.0f64; WP_STRIDE];
+        let got = wb_water_at(world, bake, *lat, *lon, out.as_mut_ptr(), WP_STRIDE as u32); // cast-ok: a compile-time stride of five
+        if got != *point_status {
+            moved += 1;
+        }
+        for word in 0..WP_STRIDE {
+            // Bit equality, as the replaying side compares: two NaNs of different payloads are
+            // different words here, and -0.0 is not 0.0.
+            if got != WB_OK || out[word].to_bits() != answer[word].to_bits() {
+                moved += 1;
+            }
+        }
+    }
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    moved
+}
+
 /// I6 (final review ruling, rule (a)): the divergence between a recorded hydro record
 /// (`status_on`/`len`/`words_on`) and a freshly measured one under a control
 /// (`status_off`/`n`/`words_off`). One tally for the status, one for the length equality, and
@@ -1149,10 +1383,25 @@ fn main() {
         h_ranges_len + 2,
     );
 
+    // Ruling Q-21's `ranges` points, emitted here rather than beside `WP plain` at the bottom for
+    // one reason: this control's prediction for them has to be in the `TCTL` record below, and
+    // that record is written here. The replaying side reads records by tag, not by position.
+    let (ranges_kinds, ranges_points) =
+        print_water_points("ranges", tectonic_world, &hydro_tectonic_params);
+    let water_points_ranges_control =
+        water_points_divergence(tectonic_control_world, &hydro_tectonic_params, &ranges_points);
+    let water_points_ranges_total = ranges_points.len() * (1 + WP_STRIDE);
+    assert!(
+        water_points_ranges_control > 0 && water_points_ranges_control < water_points_ranges_total,
+        "water_point/ranges: the control moved {water_points_ranges_control} of \
+         {water_points_ranges_total}. A control that moves everything is as uninformative as one \
+         that moves nothing, and this corpus refuses to write either."
+    );
+
     println!(
         "TCTL {control_elevation_ranges} {control_structural_ranges} \
          {control_elevation_belt} {control_structural_belt} {control_tile_belt} \
-         {hydro_ranges_control}"
+         {hydro_ranges_control} {water_points_ranges_control}"
     );
 
     // --- the coast channel: the presets, the checker, and a world built from one -----------
@@ -2002,7 +2251,7 @@ fn main() {
     const WQ_LON1: f64 = -1.0;
     const WQ_ROWS: u32 = 32;
     const WQ_COLUMNS: u32 = 32;
-    const WQ_STRIDE: usize = 5; // Ruling Q-18; `wasm::WB_WATER_STRIDE`, restated for an example
+    const WQ_STRIDE: usize = WP_STRIDE; // Ruling Q-18, one statement of the five for both groups
     let wq_samples = (WQ_ROWS as usize) * (WQ_COLUMNS as usize); // cast-ok: two compile-time grid extents
     let mut wq_words = vec![0.0f64; wq_samples * WQ_STRIDE];
     let wq_status = wb_water_tile(
@@ -2041,7 +2290,7 @@ fn main() {
          compares one constant proves nothing about the query"
     );
     assert!(
-        wq_hist[0] > 0,
+        wq_hist[WATER_KIND_NONE as usize] > 0, // cast-ok: a compile-time kind code, 0
         "the query box holds no dry land ({wq_hist:?}); §8.3's `none` branch would be untested"
     );
     assert!(
@@ -2068,6 +2317,45 @@ fn main() {
     );
 
     assert_eq!(wb_hydro_free(hydro_id), WB_OK);
+
+    // --- Ruling Q-21: the kinds the grid cannot reach, sampled explicitly ---------------------
+    //
+    // Both bakes are asked, and which one supplies which kind is a measured property of the two
+    // records rather than a choice made here. `plain` is asked first because it is the world the
+    // `WQ` grid is on; `ranges` is asked because a bake with no pond, no salt lake and no salt
+    // flat cannot be made to produce one, and between them the two records cover more.
+    let (plain_kinds, _) = print_water_points("plain", plain, &HYDRO_PARAMS);
+    // `ranges` was emitted beside `TCTL`, where its own control prediction had to be computed.
+
+    // The ruling's own requirement, asserted across both records rather than within either.
+    // `River` and the fine-found branch are the two the drawing path uses most, and they are why
+    // this group exists; both bakes hold both, so this is an assertion and not a hope. A kind
+    // NEITHER record holds is reported below and is not an error -- there is no bake to take it
+    // from, and `BodyKind::Pond` is exactly that case (see `water_points_from`).
+    for required in ["River", "FineFound"] {
+        assert!(
+            plain_kinds.contains(&required) || ranges_kinds.contains(&required),
+            "neither parity bake offers a {required} point; Ruling Q-21 exists because that \
+             branch does not otherwise cross the native/WASM boundary at all"
+        );
+    }
+    for kind in ["Lake", "SaltLake", "SaltFlat", "Pond", "FineFound", "River"] {
+        let plain_has = plain_kinds.contains(&kind);
+        let ranges_has = ranges_kinds.contains(&kind);
+        if !plain_has && !ranges_has {
+            eprintln!(
+                "WP coverage: NEITHER bake records a {kind}; §8.3's {kind} branch is not on the \
+                 wire in this corpus and is covered by unit tests alone"
+            );
+        } else {
+            eprintln!(
+                "WP coverage: {kind} from {}{}{}",
+                if plain_has { "plain" } else { "" },
+                if plain_has && ranges_has { " and " } else { "" },
+                if ranges_has { "ranges" } else { "" }
+            );
+        }
+    }
 
     println!("version {}", wb_generator_version());
 }

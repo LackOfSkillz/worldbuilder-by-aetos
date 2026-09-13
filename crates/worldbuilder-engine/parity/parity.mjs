@@ -724,7 +724,7 @@ for (const raw of lines) {
     }
     case 'TCTL': {
       // TCTL <elevation/ranges> <structural/ranges> <elevation/belt> <structural/belt>
-      //      <tile/belt> <hydro/ranges>
+      //      <tile/belt> <hydro/ranges> <water_point/ranges>
       //
       // Prediction, not a compared value: nothing here goes through `tally`. The first five
       // counts are computed natively in `examples/parity_dump.rs` -- through the exports AND,
@@ -734,6 +734,13 @@ for (const raw of lines) {
       // forced-outlet `H ranges` record and the same bake on the warp-0 world, under rule (a)'s
       // length-safe accounting. This script requires every one of these groups to move exactly
       // the predicted amount and every other group to move zero.
+      //
+      // The seventh, `water_point/ranges`, is Ruling Q-21's addition. It is here for the same
+      // reason the sixth is: `margin_warp_m` reaches the terrain the `ranges` bake runs over, so
+      // a QUERY on that world must move too, and a group that moves without a prediction is a
+      // control that has stopped being one. The native side asks the same recorded points of a
+      // bake on the warp-0 world and counts the values that differ. `water_point/plain` has no
+      // entry and therefore a prediction of zero -- the `plain` world carries no tectonic block.
       tectonicControl = {
         'elevation/ranges': Number(f[1]),
         'structural/ranges': Number(f[2]),
@@ -741,6 +748,7 @@ for (const raw of lines) {
         'structural/belt': Number(f[4]),
         'tile/belt': Number(f[5]),
         'hydro/ranges': Number(f[6]),
+        'water_point/ranges': Number(f[7]),
       };
       break;
     }
@@ -1022,6 +1030,79 @@ for (const raw of lines) {
       }
       wb.wb_hydro_free(id);
       wb.wb_dealloc(out, expected * 8);
+      wb.wb_dealloc(pp, pl * 8);
+      wb.wb_dealloc(idp, 4);
+      break;
+    }
+    case 'WP': {
+      // WP <world> <params_len> <params hex...> <count> [<lat> <lon> <status> <5 words>] x count
+      //
+      // **Ruling Q-21.** The `WQ` grid covers `none`, `Ocean` and `Lake` densely and reaches
+      // nothing else -- a river is a few hundred metres wide and a 4-degree box steps about 14 km
+      // -- so `River`, the salt kinds and the fine-found (detail-field, Ruling Q-16) branch did
+      // not cross this boundary at all. These points do, and they are chosen FROM THE RECORD on
+      // the native side: the lowest-id body of each kind at its own anchor, the lowest-id
+      // fine-found body at its anchor, and the middle recorded point of the lowest-id reach that
+      // answers `River`. `examples/parity_dump.rs` refuses to write the corpus if any of them
+      // stops covering what it was chosen for, or if the `River` point's `reach_id` is the
+      // sentinel -- so this side replays coordinates rather than re-deriving a rule.
+      //
+      // Through `wb_water_at`, not `wb_water_tile`: the scalar export is the one a caller asking
+      // about one place uses, and the grid group already exercises the batch. 1 + 5 per point.
+      const h = worlds.get(f[1]);
+      const pl = Number(f[2]);
+      const params = f.slice(3, 3 + pl).map(f64of);
+      const count = Number(f[3 + pl]);
+      const stride = 5;
+      const fieldsPerPoint = 3 + stride; // lat, lon, status, then the five words
+      const rest = f.slice(4 + pl);
+      if (rest.length !== count * fieldsPerPoint) {
+        throw new Error(
+          `WP line holds ${rest.length} fields for ${count} points, not ${count * fieldsPerPoint}`);
+      }
+      group = `water_point/${f[1]}`;
+
+      const pp = wb.wb_alloc(pl * 8);
+      const idp = wb.wb_alloc(4);
+      if (pp === 0 || idp === 0) throw new Error('wb_alloc refused a WP input buffer');
+      new Float64Array(wb.memory.buffer, pp, pl).set(params);
+      // Not tallied, refused: a query against a bake that did not happen would compare whatever
+      // the allocator left behind. `H` already compares this bake's status word for itself.
+      const baked = wb.wb_hydro_bake(h, pp, pl, idp);
+      if (baked !== 0) {
+        throw new Error(`WP ${f[1]}: wb_hydro_bake returned ${baked}; there is no record to query`);
+      }
+      const id = mem().getUint32(idp, true);
+
+      const out = wb.wb_alloc(stride * 8);
+      if (out === 0) throw new Error('wb_alloc refused the WP output buffer');
+      const names = ['kind', 'level_m', 'depth_m', 'body_id', 'reach_id'];
+      for (let p = 0; p < count; p += 1) {
+        const base = p * fieldsPerPoint;
+        const lat = f64of(rest[base]);
+        const lon = f64of(rest[base + 1]);
+        const status = rest[base + 2];
+        const words = rest.slice(base + 3, base + 3 + stride);
+        const got = wb.wb_water_at(h, id, lat, lon, out, stride);
+        tally(String(got) === status);
+        if (String(got) !== status) note(`water_at point ${p} status`, status, String(got));
+        const view = mem();
+        for (let w = 0; w < stride; w += 1) {
+          if (got === 0) {
+            const bits = bitsOf(view.getFloat64(out + w * 8, true));
+            tally(bits === words[w]);
+            if (bits !== words[w]) note(`water_at point ${p} ${names[w]}`, words[w], bits);
+          } else {
+            // Nothing is written on any refusal (`wb_water_at`'s own contract), so the buffer
+            // holds whatever was there. Count it divergent without reading it -- the rule `H`'s
+            // past-the-copy branch and the `WQ` refusal branch both follow.
+            tally(false);
+            note(`water_at point ${p} ${names[w]}`, words[w], '<the query refused>');
+          }
+        }
+      }
+      wb.wb_hydro_free(id);
+      wb.wb_dealloc(out, stride * 8);
       wb.wb_dealloc(pp, pl * 8);
       wb.wb_dealloc(idp, 4);
       break;

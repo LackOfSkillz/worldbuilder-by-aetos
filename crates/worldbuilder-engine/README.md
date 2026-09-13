@@ -5976,10 +5976,103 @@ project's history.
 
 **No box on this bake reaches four kinds, and that is recorded rather than tuned around.** A river
 is a few hundred metres wide and a 4-degree box steps about 14 km, so every box that catches one
-catches a single sample of it, which one re-bake could lose. `reach_id` is therefore `NO_REACH` at
-all 1,024 samples — compared 1,024 times, but the river branch's own `reach_id` is covered by
-`query.rs`'s and `wasm_exports.rs`'s unit tests, not by this corpus. A later plan wanting the
-river branch on the wire needs a finer box or a denser grid, not a re-reading of this one.
+catches a single sample of it, which one re-bake could lose. That gap is what **Ruling Q-21**
+closes, in the next section — with explicit points beside the grid rather than by stretching it.
+
+### Ruling Q-21: the kinds a grid cannot reach, sampled explicitly
+
+A fixed grid reaches only what happens to lie under it. On `plain` that is `none`, `Ocean` and
+`Lake`, densely — and nothing else. **`River` and the fine-found branch are the two the drawing
+path uses most, and neither crossed the native/WASM boundary at all**; a `reach_id` that is
+`NO_REACH` at all 1,024 grid samples is a word compared 1,024 times without ever being a reach.
+
+So two groups join the grid — `water_point/plain` and `water_point/ranges`, **30 values each**:
+five explicit points × (1 status + 5 words), through **`wb_water_at`** rather than the tile,
+because the scalar export is what a caller asking about one place uses and the grid already
+exercises the batch.
+
+**The points are chosen from the record, not by hand**, and both bakes are asked:
+
+- the **lowest-id** body of each of `Lake`, `SaltLake`, `SaltFlat`, `Pond`, at its own `anchor`.
+  Ruling Q-14's reason applies here too: every recorded outline point is on a shore by
+  construction, so the anchor is the only point that tests the interior.
+- the **lowest-id** body with `shore_member_count == 0` — Ruling E-8's discriminator — at its
+  anchor. This is the **fine-found** branch, the one Ruling Q-16 makes the query read the *detail
+  field* for rather than the landform.
+- the **middle** recorded point of the lowest-id reach that answers `River`. The middle and not an
+  end: a mouth sits at a shore, where Ruling Q-5 hands the answer to the body, and this point
+  exists to carry a real `reach_id`.
+
+Measured, both bakes cover **Lake, SaltLake, SaltFlat, FineFound and River** — five points each,
+hence 5 × 6 × 2 = **60**, and the corpus goes 155,951 → **156,011, 0 divergent**.
+
+#### Neither bake records a `BodyKind::Pond`, and that is stated rather than engineered around
+
+`Pond` is an **area** classification — `pond_max_surface_area_m2` against a body's summed surface
+area — not a statement about where the body was found. At 20,000 nodes on `plain` and 60,000 on
+`ranges`, every kept body is above the threshold; the 1,000,000-node survey worlds above do record
+one (`plain`: 291 lakes, 1 pond). What these two bakes *do* hold is bodies the **fine pond search**
+found, and that is the branch worth putting on the wire — which is what the `FineFound` point
+covers, and why it is chosen by `shore_member_count == 0` rather than by `kind`. Raising a node
+count to manufacture a `Pond` would move the `H` records, which this plan's own constraints forbid.
+**`WaterKind::Pond` is therefore covered by unit tests alone in this corpus**, and
+`examples/parity_dump.rs` prints that on stderr at every run rather than leaving it to be noticed.
+
+#### The guards, extended — the part that makes this stick
+
+`examples/parity_dump.rs` refuses to write the corpus if:
+
+- any chosen point stops answering the kind it was chosen for (the bake moved under the corpus);
+- the fine-found point stops answering **its own body id** — chosen for a *branch*, not a kind, so
+  the guard that means something is that the detail field still reaches that body's anchor;
+- the `River` point's `reach_id` comes back as the sentinel;
+- a record offers no point at all.
+
+Those sit alongside the grid's existing three (at least two kinds, at least one `none`, at least
+one body).
+
+#### The tectonic control gained a prediction, and the first run failed as it should
+
+`margin_warp_m` reaches the terrain the `ranges` bake runs over — that is why `hydro/ranges` moves
+16,807 words under that control — so a **query** on that world must move too. The first run of the
+new group printed exactly the right refusal:
+
+```
+FAIL: group water_point/ranges moved 2 values; the native side predicted 0
+```
+
+That is the control doing its job: a group that moves without a prediction is a control that has
+stopped being one. The fix is a **seventh `TCTL` field**, computed natively by asking the *same
+recorded points* — replayed, never re-chosen — of a bake on the warp-0 world, with the dump
+refusing to write a prediction of 0 or of all 30. It measures **2 of 30**, and the control printed
+*"exactly as the native side predicted"*. `water_point/plain` has no entry, so its prediction is
+the zero every unlisted group gets: the `plain` world carries no tectonic block.
+
+#### The pins that moved with it
+
+| | compared | divergent | was |
+|---|---|---|---|
+| `parity` | **156,011** | **0** | 155,951 / 0 |
+| `--mutate seed` | 156,011 | **147,387** | 147,347 |
+| `--mutate erosion-k` | 156,011 | 216 | 216 |
+| `--mutate water-pond` | 156,011 | 60 | 60 |
+| `--mutate tectonic-warp` | 156,011 | **22,995** | 22,993 |
+| `--mutate coast-amplitude` | 156,011 | 13,128 | 13,128 |
+| `--mutate gully-steer` | 156,011 | 3,752 | 3,752 |
+| `--mutate climate-samples` | 156,011 | 648 | 648 |
+
+The seed control's **+40 is 20 of 30 in each new group**, and the shape is arithmetic rather than
+luck: a moved seed is a different planet, so every chosen point's kind, level, depth and body id
+move — but the **status** word is `WB_OK` on both planets, and four of the five points answer a
+body, whose `reach_id` is `NO_REACH` on both. 20 of 30 is 5 × 4 of 5 × 6, exactly that accounting.
+
+**Nothing in `src/` changed for this ruling** — only `examples/parity_dump.rs` and
+`parity/parity.mjs` — so the artifact is **byte-identical** at
+`acf822dfe26ee260f44dbdffa7cf3926b0c59adfd212c405924a1a2e1eb04b93`; only the source fingerprint
+moved, `eeca7662…` → `6e81ebc6d5aa4477416e4823552796cc286e1e9bdd38ef3ea1cf39d49b3d72c1` (69
+inputs), because `examples/parity_dump.rs` is one of the fingerprinted inputs. The engine counts
+(841/841/843/953/955 with 9 ignored), the Python pins (569/161) and the viewer suite (346/0) are
+unchanged and were re-run to say so.
 
 ### Pins, re-derived by running them
 
@@ -5989,8 +6082,9 @@ from: fc573f6e…` — Task 5 edited `src/` without rebuilding, exactly as the b
 guard (`git ls-files --eol crates/worldbuilder-engine | grep -v "w/lf"`) printed nothing before the
 rebuild. **Rebuilt:** 461,498 bytes (was 461,474), 33 exports, 0 imports; artifact-sha256
 `acf822dfe26ee260f44dbdffa7cf3926b0c59adfd212c405924a1a2e1eb04b93` (was `26284781…`),
-source-fingerprint `eeca76627d830bde2d05287ada8ddd76890b7bd27aaebe0a88c1102fccd11b01` (69 inputs,
-was `fc573f6e…`). `check:wasm` now reports it matches its manifest and the source that is here;
+source-fingerprint `6e81ebc6d5aa4477416e4823552796cc286e1e9bdd38ef3ea1cf39d49b3d72c1` (69 inputs,
+was `fc573f6e…`, via `eeca7662…` before Ruling Q-21's corpus change; the artifact hash is
+unmoved across that step because an example is not compiled into the library). `check:wasm` now reports it matches its manifest and the source that is here;
 both build self-tests pass.
 
 **Engine — moved, +40 run uniformly and +46 on the two wasm rows, and +1 ignored.** Re-derived per
@@ -6041,22 +6135,23 @@ of this branch.
 
 **Viewer:** `npm test` (Node's test runner, `viewer/`, this host) — **346 pass, 0 fail** (was 340).
 The +6 is Task 4's, not this task's; Task 6 only re-ran the suite to confirm it is green at the
-pins above.
+pins above, and re-ran it again after Ruling Q-21.
 
 **Parity — moved by exactly one group:**
 
 | | compared | divergent |
 |---|---|---|
-| `parity` | **155,951** (was 150,830) | **0** |
-| `--mutate seed` | 155,951 | **147,347** (was 145,274) |
-| `--mutate erosion-k` | 155,951 | 216 |
-| `--mutate water-pond` | 155,951 | 60 |
-| `--mutate tectonic-warp` | 155,951 | 22,993 |
-| `--mutate coast-amplitude` | 155,951 | 13,128 |
-| `--mutate gully-steer` | 155,951 | 3,752 |
-| `--mutate climate-samples` | 155,951 | 648 |
+| `parity` | **156,011** (was 150,830) | **0** |
+| `--mutate seed` | 156,011 | **147,387** (was 145,274) |
+| `--mutate erosion-k` | 156,011 | 216 |
+| `--mutate water-pond` | 156,011 | 60 |
+| `--mutate tectonic-warp` | 156,011 | **22,995** (was 22,993) |
+| `--mutate coast-amplitude` | 156,011 | 13,128 |
+| `--mutate gully-steer` | 156,011 | 3,752 |
+| `--mutate climate-samples` | 156,011 | 648 |
 
-**The whole +5,121 is `water_at/plain` and nothing else moves by a value or by a word.**
+**The +5,181 is three new groups and nothing else moves by a value or by a word** — `water_at/plain`
+at 5,121 and the two Ruling Q-21 `water_point` groups at 30 each.
 `hydro/plain` is still 6,072 and `hydro/ranges` still 17,099, byte for byte, in the plain run and
 in all seven controls — which is what the global constraint "`elevation_m` must return the same
 bits; parity's existing groups must not move" asks of this plan, measured rather than asserted.
@@ -6064,8 +6159,8 @@ bits; parity's existing groups must not move" asks of this plan, measured rather
 note that computes this group at four words a sample is wrong on arithmetic before anything is
 measured.
 
-The seed control's **+2,073 is the new group's own, 2,073 of 5,121 — 40.5%, and both 99% and 0%
-would be findings.** A moved seed is a different planet, so every sample naming water moves; but a
+The seed control's **+2,113 splits 2,073 of 5,121 across the grid — 40.5%, and both 99% and 0%
+would be findings — and 20 of 30 in each `water_point` group.** A moved seed is a different planet, so every sample naming water moves; but a
 sample answering `none` writes the same five words on *both* planets (kind 0, level 0, depth 0 and
 the two sentinels), so most of the box's 692 dry samples compare equal against whatever the moved
 world puts there. A group moving nearly everything would mean `none` had stopped being a constant
