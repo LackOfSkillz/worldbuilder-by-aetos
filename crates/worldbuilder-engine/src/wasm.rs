@@ -4310,7 +4310,7 @@ fn with_ground<T>(
 ) -> T {
     let landform_m = |point: &SpherePoint| surface.structural_m(point);
     let detail_m = |point: &SpherePoint| surface.elevation_m(point, Some(pond_cell_m));
-    action(&water::Ground { landform_m: &landform_m, detail_m: &detail_m })
+    action(&water::Ground { landform_m: water::Landform(&landform_m), detail_m: water::Detail(&detail_m) })
 }
 
 /// Borrow the decoded record and the [`water::index::WaterIndex`] for bake `id` at `radius_m`,

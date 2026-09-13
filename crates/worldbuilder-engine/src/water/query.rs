@@ -180,21 +180,46 @@ impl WaterAt {
     }
 }
 
-/// The two surfaces the query compares a recorded level against, named rather than positional so
-/// a caller cannot pass them the wrong way round. `refine::Ground` is the shape this follows.
+/// `Surface::structural_m` -- the landform, with painted features and **without** the detail
+/// field. Ruling Q-3. Used for every coarse body, every reach and the ocean datum.
+///
+/// A newtype rather than a bare closure so it cannot be passed where [`Detail`] belongs. Both
+/// surfaces are `&dyn Fn(&SpherePoint) -> f64`, so as two fields of the same type they could be
+/// bound backwards at any call site and nothing -- not the compiler, not the query, not a test
+/// with one flat surface -- would say so. The failure is silent and it is not small: ponds read
+/// dry and lake edges wander with the detail slider.
+pub struct Landform<'a>(pub &'a dyn Fn(&SpherePoint) -> f64);
+
+/// `Surface::elevation_m(point, Some(pond_cell_m))` -- the landform **plus** the detail field, at
+/// the fine search's own cell size. This is exactly `hydrology::ponds::pond_ground`, and passing
+/// anything else means comparing a fine-found body's level against a surface it was never
+/// levelled from. Ruling Q-16. Used only for a body with `shore_member_count == 0`.
+///
+/// A newtype for the same reason as [`Landform`]; see there.
+pub struct Detail<'a>(pub &'a dyn Fn(&SpherePoint) -> f64);
+
+impl Landform<'_> {
+    pub fn at(&self, point: &SpherePoint) -> f64 {
+        (self.0)(point)
+    }
+}
+
+impl Detail<'_> {
+    pub fn at(&self, point: &SpherePoint) -> f64 {
+        (self.0)(point)
+    }
+}
+
+/// The two surfaces the query compares a recorded level against, named rather than positional and
+/// typed so a caller **cannot** pass them the wrong way round. `refine::Ground` is the shape this
+/// follows.
 ///
 /// See the module header for the whole argument. In short: the bake wrote most of its numbers
 /// against the landform (Ruling Q-3) and a fine-search body's level against the detail field
 /// (Ruling S-9), so the query has to ask each question of the surface that answered it.
 pub struct Ground<'a> {
-    /// `Surface::structural_m` -- the landform, with painted features and **without** the detail
-    /// field. Ruling Q-3. Used for every coarse body, every reach and the ocean datum.
-    pub landform_m: &'a dyn Fn(&SpherePoint) -> f64,
-    /// `Surface::elevation_m(point, Some(pond_cell_m))` -- the landform **plus** the detail field,
-    /// at the fine search's own cell size. This is exactly `hydrology::ponds::pond_ground`, and
-    /// passing anything else means comparing a fine-found body's level against a surface it was
-    /// never levelled from. Ruling Q-16. Used only for a body with `shore_member_count == 0`.
-    pub detail_m: &'a dyn Fn(&SpherePoint) -> f64,
+    pub landform_m: Landform<'a>,
+    pub detail_m: Detail<'a>,
 }
 
 /// Spec §8.3. `ground` carries **both** surfaces (Rulings Q-3 and Q-16): the landform for coarse
@@ -211,7 +236,7 @@ pub fn water_at(
     point: &SpherePoint,
 ) -> WaterAt {
     let radius_m = index.radius_m();
-    let landform = (ground.landform_m)(point);
+    let landform = ground.landform_m.at(point);
     // Ruling Q-16's second surface, read only if a ring body is actually a candidate here. Most
     // samples never touch one, and a detail sample is the more expensive of the two.
     let mut detail: Option<f64> = None;
@@ -242,7 +267,7 @@ pub fn water_at(
         // comparison has to use that one. `shore_member_count == 0` is the discriminator (Ruling
         // E-8), and it is the same one `extent_claim` just used above.
         let here = if body.shore_member_count == 0 {
-            *detail.get_or_insert_with(|| (ground.detail_m)(point))
+            *detail.get_or_insert_with(|| ground.detail_m.at(point))
         } else {
             landform
         };
@@ -660,7 +685,7 @@ mod tests {
     fn ask_with(record: &HydroRecord, index: &WaterIndex, height_m: f64, point: &SpherePoint)
                 -> WaterAt {
         let same = flat(height_m);
-        water_at(record, index, &Ground { landform_m: &same, detail_m: &same }, point)
+        water_at(record, index, &Ground { landform_m: Landform(&same), detail_m: Detail(&same) }, point)
     }
 
     fn body(id: u32, kind: BodyKind, fresh: bool, level_m: f64, shore_member_count: u32,
@@ -918,7 +943,7 @@ mod tests {
         assert_eq!(record.bodies[4].shore_reach_m.to_bits(), 0.0f64.to_bits());
         let index = built(&record);
         let same = flat(40.0);
-        let g = Ground { landform_m: &same, detail_m: &same };
+        let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
         assert_eq!(water_at(&record, &index, &g, &interior).kind, WaterKind::Lake,
                    "clause 1 still admits the interior with no band at all");
         assert_eq!(water_at(&record, &index, &g, &banded).body_id, NO_BODY,
@@ -967,7 +992,7 @@ mod tests {
         let record = fixture();
         let index = built(&record);
         let same = flat(20.0);
-        let g = Ground { landform_m: &same, detail_m: &same };
+        let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
 
         let inside = at(10.03, 10.01);
         let got = water_at(&record, &index, &g, &inside);
@@ -1006,7 +1031,7 @@ mod tests {
 
         // Detail wet, landform dry: 20 m is under the pond's 50 m level, 150 m is over the lake's
         // 100 m. Only the body that reads the detail field can answer.
-        let detail_is_wet = Ground { landform_m: &flat(150.0), detail_m: &flat(20.0) };
+        let detail_is_wet = Ground { landform_m: Landform(&flat(150.0)), detail_m: Detail(&flat(20.0)) };
         let pond = water_at(&record, &index, &detail_is_wet, &in_the_pond);
         assert_eq!(pond.kind, WaterKind::Pond, "a ring body reads the detail field, where it is wet");
         assert_eq!(pond.body_id, 1);
@@ -1016,7 +1041,7 @@ mod tests {
 
         // The other way round: landform wet, detail dry. 40 m is under the lake's 100 m level,
         // 80 m is over the pond's 50 m. Now only the body that reads the landform can answer.
-        let landform_is_wet = Ground { landform_m: &flat(40.0), detail_m: &flat(80.0) };
+        let landform_is_wet = Ground { landform_m: Landform(&flat(40.0)), detail_m: Detail(&flat(80.0)) };
         assert_eq!(water_at(&record, &index, &landform_is_wet, &in_the_pond), WaterAt::none(),
                    "the pond's own level is 50 m and the detail field stands at 80 m");
         let lake = water_at(&record, &index, &landform_is_wet, &in_the_lake);
@@ -1065,7 +1090,7 @@ mod tests {
         let record = fixture();
         let index = built(&record);
         let same = flat(40.0);
-        let g = Ground { landform_m: &same, detail_m: &same };
+        let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
 
         // On the line, halfway along the first leg. The nearest recorded point there is the one
         // at lon 120.1 (bed 19 m), 5,560 m away against 5,560 m for lon 120.0 -- so probe a
@@ -1119,7 +1144,7 @@ mod tests {
         let record = fixture();
         let index = built(&record);
         let same = flat(40.0);
-        let g = Ground { landform_m: &same, detail_m: &same };
+        let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
 
         // Reach 0 starts at lon 120.0. 334 m short of it, along the very line it runs on: inside
         // the 500 m half width of the endpoint, so still river.
@@ -1301,7 +1326,7 @@ mod tests {
         let record = fixture();
         let index = built(&record);
         let same = flat(40.0);
-        let g = Ground { landform_m: &same, detail_m: &same };
+        let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
         for (lat, lon) in [(0.0, 0.05), (0.21, 0.0), (40.0, 0.05), (50.01, 0.0),
                            (10.03, 10.01), (0.0, 120.12), (-45.0, 150.0), (89.9, 12.0)] {
             let p = at(lat, lon);

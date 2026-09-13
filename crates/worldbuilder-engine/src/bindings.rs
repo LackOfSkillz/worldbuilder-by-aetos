@@ -1840,7 +1840,7 @@ pub fn water_at(
     // judged against the surface it was actually found in (Ruling Q-16).
     let landform_m = |point: &SpherePoint| surface.structural_m(point);
     let detail_m = |point: &SpherePoint| surface.elevation_m(point, Some(record.stats.pond_cell_m));
-    let ground = water::Ground { landform_m: &landform_m, detail_m: &detail_m };
+    let ground = water::Ground { landform_m: water::Landform(&landform_m), detail_m: water::Detail(&detail_m) };
 
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
     let answer = water::water_at(record, index, &ground, &point);
