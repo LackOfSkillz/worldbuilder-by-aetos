@@ -1011,7 +1011,8 @@ export function statusName(code) {
 /// caught **before the allocation**.
 ///
 /// The binding bound is the **byte** count, not the word count: `bytes` is eight times `words`,
-/// so `bytes <= 0xffffffff` caps a tile at 536,870,911 words, four words under the word bound.
+/// so `bytes <= 0xffffffff` caps a tile at `floor(0xffffffff / 8)` = 536,870,911 words -- one
+/// eighth of the word bound (`u32::MAX` = 4,294,967,295), not a few words under it.
 /// Both are stated because the wrap that does the damage is the byte one.
 ///
 /// A zero or fractional dimension is refused here too, so `rows: 0` says which argument was

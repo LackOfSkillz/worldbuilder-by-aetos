@@ -4,8 +4,13 @@
 //! # It is a grid of cells, and it is [`BucketIndex`]'s grid
 //!
 //! Ruling Q-1: latitude rows and longitude columns sized so a cell is about `cell_m` square
-//! everywhere, not spec §8.2's "cube-sphere cell grid". `BucketIndex` already draws that grid,
-//! is deterministic, and is tested against brute force including the poles and the ±180 seam.
+//! everywhere, not spec §8.2's "cube-sphere cell grid". `BucketIndex` already draws that grid and
+//! is deterministic, and the superset guarantee this index rests on is brute-forced against the
+//! grid cell by cell rather than against a scatter: at the poles and at every latitude from 40 to
+//! 89 in both hemispheres, at longitudes −180, −179.9, 0 and 179.9, and at radii from 5 km to
+//! 19,000 km — which is wider than the whole circle of longitude at any row. That full cross
+//! product is `#[ignore]`d for cost; what runs on every build is the near-pole small-circle and
+//! multi-megametre regimes, the two where the sweep's column walk was last found under-covering.
 //! `BucketIndex` indexes *points*, though, and this index holds *areas*, so what is borrowed is
 //! the arithmetic and nothing else: [`BucketIndex::cell_of`] says which cell a sample is in,
 //! [`BucketIndex::cells_within`] says which cells a disc touches, and the payloads are this

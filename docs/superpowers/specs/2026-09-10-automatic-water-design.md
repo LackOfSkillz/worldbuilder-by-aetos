@@ -428,7 +428,11 @@ This is a new stage in `Surface`, after features and before detail:
   row given as many longitude columns as its own circumference holds, so a cell is about `cell_m`
   square everywhere — at `index::DEFAULT_CELL_M` (50 km), built once per record. **Not the "fixed
   cube-sphere cell grid" this line said before plan 2a.** `BucketIndex` already existed, is
-  deterministic, and is tested against brute force including the poles and the ±180 seam; a second
+  deterministic, and its `cells_within` superset guarantee is brute-forced cell by cell against the
+  grid itself — at the poles and at every latitude from 40 to 89 in both hemispheres, at longitudes
+  −180, −179.9, 0 and 179.9, and at radii from 5 km to 19,000 km, wider than the whole circle of
+  longitude at any row. That full cross product is `#[ignore]`d for cost; the near-pole
+  small-circle and multi-megametre regimes run on every build. A second
   grid would have been a second thing to get wrong. `BucketIndex` indexes *points* and this index
   holds *areas*, so what is borrowed is the arithmetic alone — `cell_of`, `cells_within`,
   `cell_count` — and the payloads are `water::index`'s own three `Vec<Vec<u32>>`. Each cell lists

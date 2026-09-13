@@ -71,6 +71,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { checkFreshness, destArtifact } from '../../../viewer/scripts/build-wasm.mjs';
+// The wire stride is `WB_WATER_STRIDE`, mirrored in `engine.js` from `wasm.rs`'s own
+// constant. Imported rather than written again here: a fourth literal copy of the five would
+// be a fourth thing to drift.
+import { WB_WATER_STRIDE } from '../../../viewer/public/app/engine.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -981,7 +985,7 @@ for (const raw of lines) {
       const columns = Number(f[8 + pl]);
       const status = f[9 + pl];
       const words = f.slice(10 + pl);
-      const stride = 5;
+      const stride = WB_WATER_STRIDE;
       const expected = rows * columns * stride;
       if (words.length !== expected) {
         throw new Error(`WQ line holds ${words.length} words, not ${expected}`);
@@ -1053,7 +1057,7 @@ for (const raw of lines) {
       const pl = Number(f[2]);
       const params = f.slice(3, 3 + pl).map(f64of);
       const count = Number(f[3 + pl]);
-      const stride = 5;
+      const stride = WB_WATER_STRIDE;
       const fieldsPerPoint = 3 + stride; // lat, lon, status, then the five words
       const rest = f.slice(4 + pl);
       if (rest.length !== count * fieldsPerPoint) {
