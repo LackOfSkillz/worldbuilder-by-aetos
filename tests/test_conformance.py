@@ -7699,31 +7699,73 @@ def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value
 #
 # There is no Python reference implementation of hydrology to compare against (this is a
 # Rust-only feature; nothing in worldbuilder/ bakes water), so this is not a conformance
-# comparison like every section above it. It is a smoke test against a KNOWN, RE-DERIVED
-# answer: `hydrology::bake_tests::world()`/`params()` (the first of that module's own
-# `refined_populations()`, also reused by `water::query_tests`) baked once, with its
-# `record.bodies` printed, to find body id 3's own kind, level and anchor. Reproduce with
-# a temporary `eprintln!` in that test module and
-# `cargo test -p worldbuilder-engine --lib hydrology::bake_tests -- --nocapture`; do not
-# take the numbers below on faith.
+# comparison like every section above it. It is a pin against RE-DERIVED native answers:
+# `bake_tests::world()` at the parity corpus's own `plain` hydro params, asked at one point
+# per §8.3 kind the record actually holds.
+#
+# **Re-derive them; do not transcribe them.** The instrument that prints every number below
+# is `water::query_tests::print_the_python_doors_anchors`, and it is checked in precisely so
+# that "add a temporary eprintln" -- the old instruction here, and the reason this door
+# pinned a single lake for a whole plan -- is not the procedure. Run:
+#
+#   cargo test --release -p worldbuilder-engine --lib print_the_python_doors_anchors #       -- --ignored --nocapture
+#
+# and read the constants off its output.
 # ---------------------------------------------------------------------------------------
 
 WATER_WORLD_SEED = 20_260_904
 WATER_RADIUS_M = 6_371_000.0
 WATER_PLATE_COUNT = 12
 WATER_LAND_FRACTION = 0.29
-WATER_TOTAL_NODES = 12_000
-# hydrology::bake_tests::params(): earth_like(12_000) with these four overridden.
+WATER_TOTAL_NODES = 20_000
+# The parity corpus's own `plain` hydro params, word for word (`parity_dump.rs`'s
+# `HYDRO_PARAMS`), because that population is the one measured to record more than lakes: at
+# 12,000 nodes this world keeps 8 bodies, all `Lake`, and the door could only ever have pinned
+# the one kind. At 20,000 it keeps 13 -- lakes, a salt lake, a salt flat and four the fine pond
+# search found -- and 16 reaches.
 WATER_PARAMS_OVERRIDES = dict(
-    wetness_nodes=500, stream_flow_m2=3.0e10, river_flow_m2=3.0e11, great_flow_m2=3.0e12,
+    wetness_nodes=500, keep_depth_m=8.0, keep_area_m2=1.0e6, pond_max_area_m2=1.0e6,
+    stream_flow_m2=3.0e10, river_flow_m2=3.0e11, great_flow_m2=3.0e12, notch_fall_m=1.0,
+    evaporation_factor=1.0, salt_flat_share=0.1,
 )
 
-# Body id 3 on that population, re-derived as the module note above describes.
-WATER_KNOWN_BODY_ID = 3
-WATER_KNOWN_BODY_KIND = "lake"
-WATER_KNOWN_BODY_LEVEL_M = 84.27789586978496
-WATER_KNOWN_BODY_ANCHOR_LAT_DEG = 29.30557748449655
-WATER_KNOWN_BODY_ANCHOR_LON_DEG = -158.75761211268775
+# Rust's `NO_BODY` and `NO_REACH`, one value under two names. §8.3: these cross as the sentinel
+# and not as Python's None, because `wasm.rs`'s wire contract already fixed that choice and a
+# second door disagreeing would give the feature two vocabularies for the same non-answer.
+WATER_NO_ID = 4_294_967_295
+
+# Every §8.3 answer this population can produce, each pinned against a value the native side
+# printed, as `(what, lat, lon, kind, level_m, depth_m, fresh, body_id, reach_id)`.
+#
+# **Ruling Q-14 is why a body is asked at its ANCHOR**: it is the one interior point every body's
+# own record names, so the query answering anything else there would be disagreeing with the very
+# record it was built from, not sitting on a borderline. A river is asked at its middle recorded
+# point rather than an end, where Ruling Q-5 would hand the answer to the body at the mouth. The
+# `none` and `ocean` points are the first of a 5-degree scan, in that scan's order, that answer
+# each -- **found, not assumed**: the north pole, which this door used to assume was dry land, is
+# inside body 0 on this population, and the test that assumed it accepted six kinds in an else arm
+# rather than discriminating.
+WATER_ANSWERS = [
+    ("lake body 0", 89.55577663940844, -10.534494614929226,
+     "lake", 259.2346276071124, 34.153112066616046, True, 0, WATER_NO_ID),
+    ("salt lake body 6", 2.6891241961354395, 16.745833611290198,
+     "salt_lake", 688.7283770612687, 57.31835350562994, False, 6, WATER_NO_ID),
+    ("salt flat body 5", 17.910819588673224, -136.4429549238563,
+     "salt_flat", 933.2983690441669, 10.445655264069842, False, 5, WATER_NO_ID),
+    # Ruling Q-16's branch: a body the fine pond search found (`shore_member_count == 0`), whose
+    # level the query compares against the DETAIL field rather than the landform. It wears the
+    # `Lake` label -- `BodyKind::Pond` is an area classification and no body here is under the
+    # threshold -- but it is a different code path from the three above, and it is the one that
+    # goes wrong if a caller passes the two surfaces the wrong way round.
+    ("fine-found body 9", -16.834295387797052, -178.5316860047503,
+     "lake", 453.57553918974156, 3.1642147188323975, True, 9, WATER_NO_ID),
+    ("reach 0 midpoint", 81.71404922824875, 38.946696077136195,
+     "river", 131.28162712184877, 1.4360262875772571, True, WATER_NO_ID, 0),
+    ("dry land", -85.0, -180.0,
+     "none", 0.0, 0.0, False, WATER_NO_ID, WATER_NO_ID),
+    ("ocean", -75.0, -160.0,
+     "ocean", 0.0, 147.37416317757544, False, WATER_NO_ID, WATER_NO_ID),
+]
 
 
 def _engine_water_at(latitude_deg, longitude_deg):
@@ -7734,27 +7776,27 @@ def _engine_water_at(latitude_deg, longitude_deg):
     )
 
 
-def test_water_at_names_a_known_bodys_kind_and_id_at_its_own_anchor():
+@pytest.mark.parametrize("case", WATER_ANSWERS, ids=[c[0] for c in WATER_ANSWERS])
+def test_water_at_agrees_with_the_native_answer_for_every_kind_the_record_holds(case):
     """
-    The binding's whole job: given the same world and the same bake params, ask what water
-    is at a point and get back the body the Rust-side record actually recorded there.
+    The binding's whole job, on every branch of §8.3's table this population can reach: given the
+    same world and the same bake params, ask what water is at a point and get back exactly what
+    the native side answers there -- kind, level, depth, freshness and both ids.
 
-    Ruling Q-14 is why the ANCHOR is the point to ask: it is the one interior point every
-    body's own record names, so `water_at` answering anything but this body here would be
-    the query disagreeing with the very record it was built from, not a borderline case.
+    Until plan 2a's final fix wave this pinned ONE point of ONE kind, and the risk it was left
+    covering is the risk it was least able to see: PyO3 and native are one compiled crate, so what
+    can go wrong here is argument assembly in `bindings.rs` -- the wrong surface for the detail
+    field, a dropped param, a sentinel translated -- and every one of those shows up as a
+    kind-specific wrong answer, not as a crash.
     """
-    kind, level_m, depth_m, fresh, body_id, reach_id = _engine_water_at(
-        WATER_KNOWN_BODY_ANCHOR_LAT_DEG, WATER_KNOWN_BODY_ANCHOR_LON_DEG,
-    )
-    assert kind == WATER_KNOWN_BODY_KIND
-    assert body_id == WATER_KNOWN_BODY_ID
-    assert same(level_m, WATER_KNOWN_BODY_LEVEL_M)
-    assert depth_m >= 0.0
-    assert fresh is True
-    # §8.3: a body answer never carries a reach -- reach_id is Rust's NO_REACH sentinel,
-    # not Python's None, because wasm.rs's own wire contract already fixed that choice for
-    # this feature (see water_at's own doc comment in bindings.rs).
-    assert reach_id == 4_294_967_295
+    what, lat, lon, kind, level_m, depth_m, fresh, body_id, reach_id = case
+    got = _engine_water_at(lat, lon)
+    assert got[0] == kind, what
+    assert same(got[1], level_m), what
+    assert same(got[2], depth_m), what
+    assert got[3] is fresh, what
+    assert got[4] == body_id, what
+    assert got[5] == reach_id, what
 
 
 def test_water_at_calling_twice_agrees_with_itself():
@@ -7764,10 +7806,9 @@ def test_water_at_calling_twice_agrees_with_itself():
     call. A second call with the same arguments must answer bit-for-bit the same as the
     first, not merely a similar-looking lake.
     """
-    first = _engine_water_at(
-        WATER_KNOWN_BODY_ANCHOR_LAT_DEG, WATER_KNOWN_BODY_ANCHOR_LON_DEG)
-    second = _engine_water_at(
-        WATER_KNOWN_BODY_ANCHOR_LAT_DEG, WATER_KNOWN_BODY_ANCHOR_LON_DEG)
+    lat, lon = WATER_ANSWERS[0][1], WATER_ANSWERS[0][2]
+    first = _engine_water_at(lat, lon)
+    second = _engine_water_at(lat, lon)
     assert first[0] == second[0]
     assert same(first[1], second[1])
     assert same(first[2], second[2])
@@ -7776,26 +7817,16 @@ def test_water_at_calling_twice_agrees_with_itself():
     assert first[5] == second[5]
 
 
-def test_water_at_answers_none_far_from_any_recorded_water():
+def test_water_at_answers_a_different_kind_at_each_pinned_point():
     """
-    The other end of §8.3's table, so this section is not just testing the one branch the
-    known-anchor fixture happens to hit. The north pole is nowhere near this population's
-    lakes or reaches (none of `refined_populations()`'s worlds places one there), and above
-    the datum, so it should answer plain dry land.
+    The pins above would all pass against a binding that answered one thing everywhere, if that
+    one thing happened to be what each point was pinned to -- which is impossible, but only
+    because the pins differ, and nothing above says they do. This says it: the seven points reach
+    five distinct kinds, `lake` twice by way of Ruling Q-16's fine-found branch.
     """
-    kind, level_m, depth_m, fresh, body_id, reach_id = _engine_water_at(90.0, 0.0)
-    if kind == "none":
-        assert level_m == 0.0
-        assert depth_m == 0.0
-        assert fresh is False
-        assert body_id == 4_294_967_295
-        assert reach_id == 4_294_967_295
-    else:
-        # Not asserted false: nothing rules out the pole landing in the ocean or a body on
-        # this particular seed, and re-deriving which would mean re-implementing the bake
-        # in Python. Either way the answer must be a real §8.3 kind, not a crash or a
-        # mismatched sentinel.
-        assert kind in ("ocean", "lake", "salt_lake", "salt_flat", "pond", "river")
+    kinds = sorted({case[3] for case in WATER_ANSWERS})
+    assert kinds == ["lake", "none", "ocean", "river", "salt_flat", "salt_lake"]
+    assert [c[3] for c in WATER_ANSWERS].count("lake") == 2, "the fine-found body is a lake too"
 
 
 def test_water_at_refuses_a_seed_outside_the_i64_domain():

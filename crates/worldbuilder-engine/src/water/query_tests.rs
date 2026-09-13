@@ -16,7 +16,7 @@ use crate::hydrology::{Body, BodyKind, HydroParams};
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 use crate::water::index::{body_circle_m, WaterIndex, DEFAULT_CELL_M};
-use crate::water::query::{water_at, Ground, WaterKind};
+use crate::water::query::{water_at, Detail, Ground, Landform, WaterKind};
 
 /// What Ruling Q-13's bounding circle costs, measured rather than argued. Reports, per
 /// population: cells occupied, entries stored per family, the largest cell's item count, and the
@@ -313,7 +313,7 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
         // the very closure that did it.
         let landform = |p: &SpherePoint| surface.structural_m(p);
         let detail = crate::hydrology::ponds::pond_ground(&surface, &params);
-        let ground = Ground { landform_m: &landform, detail_m: &detail };
+        let ground = Ground { landform_m: Landform(&landform), detail_m: Detail(&detail) };
         let ask = |p: &SpherePoint| water_at(&record, &index, &ground, p);
         // The surface the query itself compares THIS body's level against (Ruling Q-16). Every
         // "stands above its own level" test below asks through this rather than through
@@ -677,4 +677,111 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
     assert!(total.reach_confluence > 0,
             "no recorded reach point is answered by another reach: Ruling Q-11's tie-break is \
              asserting nothing on these populations");
+}
+
+/// Re-derives the anchors `tests/test_conformance.py`'s water section pins the PyO3 door against.
+///
+/// The Python door has no reference implementation to compare with -- nothing under
+/// `worldbuilder/` bakes water -- so it is pinned against values this crate produced. Those
+/// values have to come from a **run**, and until plan 2a's final review the instruction for
+/// getting them was "add a temporary `eprintln!`", which is how one anchor ended up being all
+/// there was. This prints every one of them, for every kind the record actually holds, from the
+/// same `bake_tests::world()`/`params()` population and through the same `water_at` the binding
+/// calls. Pond is not among them: this population records none that the query answers as `Pond`,
+/// and the parity work already settled that `BodyKind::Pond` never crosses a wire here.
+///
+/// Ignored because it asserts almost nothing -- it is an instrument. Run it with
+/// `cargo test --release -p worldbuilder-engine --lib print_the_python_doors_anchors -- --ignored --nocapture`
+/// and copy what it prints into the constants in `tests/test_conformance.py`.
+#[test]
+#[ignore = "instrument: prints the Python door's anchors; run with --ignored --nocapture"]
+fn print_the_python_doors_anchors() {
+    let surface = crate::hydrology::bake_tests::world();
+    let mut params = HydroParams::earth_like(20_000);
+    params.wetness_nodes = 500;
+    params.keep_depth_m = 8.0;
+    params.keep_area_m2 = 1.0e6;
+    params.pond_max_area_m2 = 1.0e6;
+    params.stream_flow_m2 = 3.0e10;
+    params.river_flow_m2 = 3.0e11;
+    params.great_flow_m2 = 3.0e12;
+    params.notch_fall_m = 1.0;
+    params.evaporation_factor = 1.0;
+    params.salt_flat_share = 0.1;
+    let record = crate::hydrology::bake(&surface, &params).expect("bake");
+    println!("bodies: {}, reaches: {}", record.bodies.len(), record.reaches.len());
+    let index = WaterIndex::build(&record, surface.radius_m, DEFAULT_CELL_M);
+    let landform = |p: &SpherePoint| surface.structural_m(p);
+    let detail = crate::hydrology::ponds::pond_ground(&surface, &params);
+    let ground = Ground { landform_m: Landform(&landform), detail_m: Detail(&detail) };
+
+    let name = |kind: WaterKind| match kind {
+        WaterKind::None => "none",
+        WaterKind::Ocean => "ocean",
+        WaterKind::Lake => "lake",
+        WaterKind::SaltLake => "salt_lake",
+        WaterKind::SaltFlat => "salt_flat",
+        WaterKind::Pond => "pond",
+        WaterKind::River => "river",
+    };
+    let report = |what: &str, lat: f64, lon: f64| {
+        let answer = water_at(&record, &index, &ground, &SpherePoint::from_latlon(lat, lon));
+        println!("{what}: kind={} level_m={:?} depth_m={:?} fresh={} body_id={} reach_id={} \
+                  lat={lat:?} lon={lon:?}",
+                 name(answer.kind), answer.level_m, answer.depth_m, answer.fresh,
+                 answer.body_id, answer.reach_id);
+    };
+
+    // One body per recorded kind, the lowest id of each, asked at its own anchor -- Ruling Q-14's
+    // point: the one interior point the record itself names.
+    for want in [BodyKind::Lake, BodyKind::SaltLake, BodyKind::SaltFlat, BodyKind::Pond] {
+        match record.bodies.iter().find(|b| b.kind == want) {
+            Some(body) => {
+                let fine = body.shore_member_count == 0;
+                report(&format!("{want:?} body {} (fine-found: {fine})", body.id),
+                       body.anchor.0, body.anchor.1);
+            }
+            None => println!("{want:?}: this population records none"),
+        }
+    }
+    // The lowest-id body the FINE search found, whose level the query reads off the detail field
+    // (Ruling Q-16) rather than the landform -- a different branch of `water_at` from the ones
+    // above, whatever kind it wears.
+    match record.bodies.iter().find(|b| b.shore_member_count == 0) {
+        Some(body) => report(&format!("fine-found body {} ({:?})", body.id, body.kind),
+                             body.anchor.0, body.anchor.1),
+        None => println!("fine-found: this population records none"),
+    }
+    // A river: the midpoint-most recorded point of the lowest-id reach, which is as far from a
+    // mouth or a confluence as a recorded point gets (Ruling Q-11's tie-break and the sea at the
+    // mouth are the two things that make an endpoint answer something other than its own reach).
+    match record.reaches.first() {
+        Some(reach) => {
+            let p = &reach.points[reach.points.len() / 2];
+            report(&format!("reach {} midpoint", reach.id), p.lat_deg, p.lon_deg);
+        }
+        None => println!("river: this population records no reaches"),
+    }
+    // The two answers that are not a body: the first point of a 5-degree scan, in a stated
+    // order, that answers each. Found by scan rather than picked, because the pole -- which the
+    // Python door used to assume was dry -- is inside body 0 on this population.
+    for want in [WaterKind::None, WaterKind::Ocean] {
+        let mut found = false;
+        let mut lat = -85.0;
+        while lat <= 85.0 && !found {
+            let mut lon = -180.0;
+            while lon < 180.0 && !found {
+                let answer = water_at(&record, &index, &ground, &SpherePoint::from_latlon(lat, lon));
+                if answer.kind == want {
+                    report(&format!("first {} of the 5-degree scan", name(want)), lat, lon);
+                    found = true;
+                }
+                lon += 5.0;
+            }
+            lat += 5.0;
+        }
+        if !found {
+            println!("{}: the 5-degree scan found none", name(want));
+        }
+    }
 }

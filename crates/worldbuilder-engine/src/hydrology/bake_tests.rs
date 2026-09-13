@@ -13,7 +13,7 @@ pub(crate) fn world() -> Surface {
     Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None)
 }
 
-fn params() -> HydroParams {
+pub(crate) fn params() -> HydroParams {
     let mut p = HydroParams::earth_like(12_000);
     p.wetness_nodes = 500;
     p.stream_flow_m2 = 3.0e10;
