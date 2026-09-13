@@ -1204,7 +1204,17 @@ thread_local! {
     /// The planet radius is held beside the index because it is **not** the record's: it comes
     /// from the world handle the query was asked through, and [`wb_water_at`] takes a world and
     /// a bake independently. An index built at one radius is refused for a query at another and
-    /// rebuilt, so handing a bake to a differently-sized world cannot answer off the wrong grid.
+    /// rebuilt.
+    ///
+    /// **That rebuild buys less than it looks like it does.** It makes the index consistent with
+    /// the *query's* radius; it does **not** make the answer right. The record's levels, extents
+    /// and `shore_reach_m` were all measured on whatever planet the bake ran against, and the
+    /// record header carries no radius to compare against -- so a bake queried through a
+    /// differently-sized world is still a wrong answer, and the rebuild only removes the
+    /// additional inconsistency of asking the wrong grid on top of it. A real check needs a
+    /// record that names its world, which is a layout change this plan may not make. Ruling
+    /// Q-20: the defence is that the viewer issues the handle and the bake id **together** and
+    /// passes them together, so no call site can drift them apart.
     ///
     /// The decoded record is held too, rather than re-decoded per query: `water_at` needs both,
     /// and decoding a whole record for every sample of a tile is exactly the cost this exists
@@ -4332,6 +4342,14 @@ fn with_water_query<T>(
         return Err(WB_ERR_HANDLE);
     }
 
+    // **The `borrow_mut` deliberately spans `action`**, which for `wb_water_tile` is the whole
+    // fill. It has to: `action` borrows the record and the index out of the slot, so the borrow
+    // cannot be released before it runs, and dropping it early would mean cloning a record per
+    // tile. Nothing re-enters -- `water_at` reads the record and the index and touches no
+    // thread-local -- so this is a hazard to keep in mind rather than a bug: any future code
+    // that calls back into `with_water_query` (or into `wb_hydro_free`) from inside `action`
+    // would panic on the second borrow, which is why neither export does anything between these
+    // braces but sample.
     HYDRO_QUERY.with(|cell| {
         let mut table = cell.borrow_mut();
         if table.len() <= slot {

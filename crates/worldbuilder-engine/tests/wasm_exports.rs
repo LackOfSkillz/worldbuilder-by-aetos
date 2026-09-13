@@ -5509,6 +5509,12 @@ fn the_water_query_refuses_a_bad_handle_a_bad_bake_and_a_bad_buffer_without_writ
     // The buffer: null, and one word short of the stride.
     assert_eq!(wb_water_at(world, bake, 0.0, 0.0, core::ptr::null_mut(), stride), WB_ERR_BUFFER);
     assert_eq!(wb_water_at(world, bake, 0.0, 0.0, out.as_mut_ptr(), stride - 1), WB_ERR_BUFFER);
+    // And misaligned. An `[f64; N]`'s own pointer is always 8-aligned, so the alignment arm is
+    // the one branch of `water_buffer` nothing else here can reach: a byte into the buffer is a
+    // pointer a JS host can produce (`wb_alloc` returns an offset a caller may add to) and one
+    // Rust may not write an f64 through. Nothing is dereferenced -- the export refuses first.
+    let misaligned = unsafe { out.as_mut_ptr().cast::<u8>().add(1).cast::<f64>() };
+    assert_eq!(wb_water_at(world, bake, 0.0, 0.0, misaligned, stride), WB_ERR_BUFFER);
     // A point that is not a point.
     for (lat, lon) in [(f64::NAN, 0.0), (0.0, f64::INFINITY)] {
         assert_eq!(wb_water_at(world, bake, lat, lon, out.as_mut_ptr(), stride), WB_ERR_GRID);
@@ -5554,6 +5560,12 @@ fn the_water_tile_refuses_a_zero_dimension_an_overflowing_count_and_a_short_buff
     );
     assert_eq!(
         wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, 2, 2, core::ptr::null_mut(), full),
+        WB_ERR_BUFFER,
+    );
+    // Misaligned, the one arm of `water_buffer` an `[f64; N]` cannot otherwise reach.
+    let misaligned = unsafe { out.as_mut_ptr().cast::<u8>().add(1).cast::<f64>() };
+    assert_eq!(
+        wb_water_tile(world, bake, 1.0, 1.0, 0.0, 0.0, 2, 2, misaligned, full),
         WB_ERR_BUFFER,
     );
     assert_eq!(
@@ -5674,5 +5686,43 @@ fn the_index_cache_is_freed_with_its_bake_rather_than_outliving_it() {
     );
     assert!(tile.iter().all(|w| *w == UNWRITTEN), "a freed bake filled a tile: {tile:?}");
 
+    wb_world_free(world);
+}
+
+#[test]
+fn a_second_radius_rebuilds_the_cached_index_rather_than_reusing_the_first() {
+    // The cache is keyed by bake id, and the index it holds is built at the radius of the world
+    // the query came through -- which is NOT the record's, because the record carries none. So
+    // the same bake asked through a second world of a different size must be ANSWERED, off an
+    // index rebuilt for that size, and not served the first world's grid.
+    //
+    // What this does NOT assert is that the answer is right. It is not: the record's levels,
+    // extents and shore bands were measured on the first planet, and no rebuild can undo that.
+    // The rebuild removes one inconsistency of two. Ruling Q-20 is the real defence -- the
+    // viewer hands out the handle and the bake id together -- and this test exists so that a
+    // radius change is a rebuild rather than a silent reuse of the wrong grid.
+    let (world, bake, record) = baked_plain_world();
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+    let mut first = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, first.as_mut_ptr(), stride), WB_OK);
+
+    // Half the radius, everything else identical.
+    let smaller = wb_world_new(SEED, RADIUS_M / 2.0, PLATES, LAND, core::ptr::null(), 0);
+    assert_ne!(smaller, 0);
+    let mut other = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(smaller, bake, lat, lon, other.as_mut_ptr(), stride), WB_OK,
+               "a second radius must rebuild and answer, not refuse");
+    assert!(other.iter().any(|w| *w != UNWRITTEN), "the second radius wrote nothing");
+
+    // And back to the first world: still answered, and still the same answer, so the rebuild is
+    // a rebuild and not a corruption of whatever slot the first index lived in.
+    let mut again = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, again.as_mut_ptr(), stride), WB_OK);
+    assert_eq!(first.map(f64::to_bits), again.map(f64::to_bits));
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(smaller);
     wb_world_free(world);
 }
