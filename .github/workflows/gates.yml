@@ -1292,6 +1292,18 @@ jobs:
           # --list` (and `--ignored`) and `assert_counts.py cargo-list` AFTER the last source
           # edit, never by hand arithmetic; all five printed `count OK`.
           #
+          # 2026-09-13, WATER 2a final fix wave: **841/841/843/953/955 with 9 ignored ->
+          # 843/843/845/955/957 with 11 ignored**, listed 850/850/852/962/964 ->
+          # **854/854/856/966/968**. The +2 run everywhere is
+          # `hydrology::buckets::tests::cells_within_covers_the_near_pole_and_multi_megametre_regimes`
+          # (the blocker's regression probe) and `no_std_math.rs`'s new
+          # `abs_stays_within_its_legacy_ledger` -- `no_std_math` is 6 -> **7** on every row, since
+          # the old `the_guard_does_not_ban_abs` was replaced, not added to. The +2 ignored are the
+          # exhaustive form of the same probe (20.7 s in release) and
+          # `water::query_tests::print_the_python_doors_anchors`, the instrument that re-derives the
+          # Python door's pinned answers. Re-derived by `-- --list` and `-- --list --ignored` per
+          # configuration after the last source edit.
+          #
           # 2026-09-12, WATER 2a (automatic water, the query), Task 6: the counts move
           # **801/801/803/907/909 with 8 ignored -> 841/841/843/953/955 with 9 ignored**, and the
           # listed totals 809/809/811/915/917 -> **850/850/852/962/964**.
@@ -1319,24 +1331,24 @@ jobs:
           # 9, `no_std_math` 6 and (on the wasm rows) `wasm_exports` 112.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 841
-            expect_ignored: 9
+            expect: 843
+            expect_ignored: 11
           - name: default
             features: ""
-            expect: 841
-            expect_ignored: 9
+            expect: 843
+            expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 843
-            expect_ignored: 9
+            expect: 845
+            expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 953
-            expect_ignored: 9
+            expect: 955
+            expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 955
-            expect_ignored: 9
+            expect: 957
+            expect_ignored: 11
     steps:
       - uses: actions/checkout@v4
 
@@ -1569,6 +1581,16 @@ jobs:
       # Re-derived by `pytest --collect-only -q tests` (565) and the same over
       # tests/test_conformance.py (157); the plan touched no Python. Re-derived again after
       # the 500 m ruling the same day: 565 / 157, unchanged.
+      # 2026-09-13, WATER 2a final fix wave: **569 -> 575, and conformance 161 -> 167**. The
+      # water section's four tests became ten: the single `Lake` anchor became one pinned,
+      # native-derived answer per kind the record holds (lake, salt lake, salt flat, a fine-found
+      # body, river, ocean and dry land -- seven parametrised cases), plus a case that asserts the
+      # pins actually differ, plus the two that were already there. The population moved with them,
+      # from 12,000 nodes (8 bodies, all lakes) to the parity corpus's own `plain` params at 20,000
+      # (13 bodies and 16 reaches). Re-derived by `pytest --collect-only -q tests` (**575**) and the
+      # same over `tests/test_conformance.py` (**167**), then RUN with
+      # `WORLDBUILDER_REQUIRE_ENGINE=1`: **575 passed, 0 failed** in 208.77 s.
+      #
       # 2026-09-12, WATER 2a (automatic water, the query), Task 6: **565 -> 569, and conformance
       # 157 -> 161**. All four are Task 5's, all four are in `tests/test_conformance.py`, and they
       # are the PyO3 binding's own: `test_water_at_names_a_known_bodys_kind_and_id_at_its_own_anchor`,
@@ -1587,13 +1609,13 @@ jobs:
       # `test_installation.py::test_worldbuilder_importable_outside_the_repo`, the
       # two-checkouts-sharing-one-interpreter property the 1b-4 notes already record. Neither is a
       # property of this branch; CI's own fresh virtualenv is what these pins describe.
-      - name: Assert the suite -- 569 tests, 161 of them conformance
+      - name: Assert the suite -- 575 tests, 167 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 569 --expect-file tests/test_conformance.py=161
+            --expect-total 575 --expect-file tests/test_conformance.py=167
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from

@@ -6174,5 +6174,59 @@ of `erodibility_per_yr`, of `pond_max_surface_area_m2`, of `margin_warp_m`, of t
 of the steering lattice or of the upwind budget" is asserted six times over, not assumed. The
 tectonic, coast and gully controls each printed *"exactly as the native side predicted"*.
 
-The reproduction commands are plan 1b-4 Task 6's, with `--expect-passed <841|841|843|953|955>` and
-`--expect-ignored 9`.
+The reproduction commands are plan 1b-4 Task 6's, with `--expect-passed <843|843|845|955|957>` and
+`--expect-ignored 11`.
+
+## Water 2a — the final fix wave's pins, re-derived by running them
+
+The whole-branch review's one blocker was `BucketIndex::sweep`'s column loop: a row whose swept arc
+covered all but less than one of its own columns put `west` and `east` in the SAME column, and a
+walk that stopped on index equality visited that one cell and called the row done. `cells_within`
+then failed the superset guarantee `water::index` is built on, and a body went unlisted in cells it
+covers — where `water_at` answers `Ocean` or `None` over real water, silently. Fixed by deciding
+the whole row before the walk (`2 * stretch + 360 / count >= 360`) and by walking a **counted**
+number of columns rather than terminating on an index.
+
+**The wasm was rebuilt** (`src/` moved): 461,674 bytes, 33 exports, 0 imports; artifact-sha256
+`9731d8a393aabcd3712d31f2b81ba82ba390c6d567749d067604f48cf4b58c64`, source-fingerprint
+`151e74891a4966f8081c9cbb7f279d6aeec43af67b260800f32766e20f8d3595` (69 inputs). `npm run
+check:wasm` reports it matches its manifest and the source that is here. The CRLF guard
+(`git ls-files --eol crates/worldbuilder-engine viewer/public/app | awk '$2!="w/lf"'`) printed
+nothing, before the rebuild and after.
+
+**Engine — moved, +2 run and +2 ignored on every row.** Re-derived per configuration through
+`cargo test -p worldbuilder-engine <cfg> -- --list` and `-- --list --ignored` after the last
+source edit:
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 854 | 11 | **843** (was 841) |
+| default | 854 | 11 | **843** (was 841) |
+| `--features python` | 856 | 11 | **845** (was 843) |
+| `--features wasm` | 966 | 11 | **955** (was 953) |
+| `--features python,wasm` | 968 | 11 | **957** (was 955) |
+
+`no_std_math.rs` is **7** on every row (was 6): `abs_stays_within_its_legacy_ledger` is new, and
+`the_guard_does_not_ban_abs` was *replaced* by `the_abs_counter_counts_what_the_ledger_is_made_of`
+rather than added to — the ban on `.abs()` was in the constraints all along and the guard asserted
+the opposite. The other +1 run is the blocker's regression probe,
+`cells_within_covers_the_near_pole_and_multi_megametre_regimes`; the +2 ignored are its exhaustive
+form and `water::query_tests::print_the_python_doors_anchors`.
+
+**The exhaustive probe passes: 20.66 s in release on this host**, over the poles, latitudes 40–89
+in both hemispheres, longitudes −180 / −179.9 / 0 / 179.9 and radii 5 km – 19,000 km — 3,264
+sweeps of a 203,682-cell grid, each checked cell by cell against brute-forced samples. **It fails
+on the pre-fix code**, at the reviewer's own case: *"centre 88,−180 reach 144500 m:
+89.10449999999999,−179.6 is 122819.18957849217 m away, within reach, and its cell 203670 (row 398,
+column 0 of 9) is not among the 49 swept"*.
+
+**Python — moved, 569 → 575 and conformance 161 → 167.** The `water_at` section's four tests became
+ten: one pinned, native-derived answer per kind the record holds. Re-derived by
+`pytest --collect-only -q tests` (**575**) and the same over `tests/test_conformance.py` (**167**),
+then RUN with `WORLDBUILDER_REQUIRE_ENGINE=1`: **575 passed, 0 failed** in 208.77 s.
+
+**Viewer:** `npm test` in `viewer/` — **346 pass, 0 fail**, unmoved.
+
+**Parity — unmoved, every figure.** `156,011` compared / **0** divergent, and the four controls at
+`--mutate seed` **147,387**, `erosion-k` **216**, `water-pond` **60**, `tectonic-warp` **22,995** —
+each re-run against a freshly dumped `native.txt`, not carried over.
