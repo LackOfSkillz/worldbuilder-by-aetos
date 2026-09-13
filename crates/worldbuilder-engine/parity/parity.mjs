@@ -944,6 +944,88 @@ for (const raw of lines) {
       wb.wb_dealloc(idp, 4);
       break;
     }
+    case 'WQ': {
+      // WQ <world> <params_len> <params hex...> <lat0> <lon0> <lat1> <lon1> <rows> <columns>
+      //    <status> <5 * rows * columns record hex...>
+      //
+      // Plan 2a, Task 6, Step 1: spec §8.3's query, over a fixed 32x32 box on the `plain`
+      // world's own hydro bake, through `wb_water_tile` -- the batch a relief worker calls, and
+      // the only door onto the query across the shipped surface. Five words a sample (Ruling
+      // Q-18: kind, level, depth, body id, reach id), so 1 + 5,120 values.
+      //
+      // **This case bakes its own record.** The `H` case above frees its bake at the end of its
+      // own line, so there is nothing to reuse by the time this one is read; the params are
+      // carried here for that reason and are the same twelve words. The bake is deterministic,
+      // so a second one is the same record -- and if it ever were not, `H`'s own word-for-word
+      // comparison is what would say so, not this group.
+      //
+      // `--mutate seed` reaches this group the same way it reaches `H`: the `plain` world's own
+      // `world` line rebuilds with `world_seed + 1`, so the bake underneath the query is a
+      // different planet's, and the answers move with it.
+      const h = worlds.get(f[1]);
+      const pl = Number(f[2]);
+      const params = f.slice(3, 3 + pl).map(f64of);
+      const lat0 = f64of(f[3 + pl]);
+      const lon0 = f64of(f[4 + pl]);
+      const lat1 = f64of(f[5 + pl]);
+      const lon1 = f64of(f[6 + pl]);
+      const rows = Number(f[7 + pl]);
+      const columns = Number(f[8 + pl]);
+      const status = f[9 + pl];
+      const words = f.slice(10 + pl);
+      const stride = 5;
+      const expected = rows * columns * stride;
+      if (words.length !== expected) {
+        throw new Error(`WQ line holds ${words.length} words, not ${expected}`);
+      }
+      group = `water_at/${f[1]}`;
+
+      const pp = wb.wb_alloc(pl * 8);
+      const idp = wb.wb_alloc(4);
+      if (pp === 0 || idp === 0) throw new Error('wb_alloc refused a WQ input buffer');
+      new Float64Array(wb.memory.buffer, pp, pl).set(params);
+      // The bake's own status is NOT tallied: the `H` group already compares it for this exact
+      // world and these exact params, so tallying it here would double-count one fact. What it
+      // is used for is refusal -- a query against a bake that did not happen would compare
+      // whatever `wb_alloc` left behind, which is the defect class this harness exists to catch.
+      const baked = wb.wb_hydro_bake(h, pp, pl, idp);
+      if (baked !== 0) {
+        throw new Error(`WQ ${f[1]}: wb_hydro_bake returned ${baked}; there is no record to query`);
+      }
+      const id = mem().getUint32(idp, true);
+
+      const out = wb.wb_alloc(expected * 8);
+      if (out === 0) throw new Error('wb_alloc refused the WQ output buffer');
+      const got = wb.wb_water_tile(h, id, lat0, lon0, lat1, lon1, rows, columns, out, expected);
+      tally(String(got) === status);
+      if (String(got) !== status) note(`water_at status ${f[1]}`, status, String(got));
+      if (got === 0) {
+        const view = mem();
+        for (let i = 0; i < expected; i += 1) {
+          const bits = bitsOf(view.getFloat64(out + i * 8, true));
+          tally(bits === words[i]);
+          if (bits !== words[i]) {
+            // Named by sample and by field, because "word 3,214" says nothing and "sample 642's
+            // body id" says which of §8.3's five the two sides disagree about.
+            const field = ['kind', 'level_m', 'depth_m', 'body_id', 'reach_id'][i % stride];
+            note(`water_at sample ${Math.floor(i / stride)} ${field}`, words[i], bits);
+          }
+        }
+      } else {
+        // Nothing is written on any refusal (`wb_water_tile`'s own contract), so `out` holds
+        // whatever the allocator left. Count the words divergent without reading them, the same
+        // rule `H`'s past-the-copy branch follows.
+        for (let i = 0; i < expected; i += 1) {
+          tally(false);
+          note(`water_at word ${i}`, words[i], '<the tile refused>');
+        }
+      }
+      wb.wb_hydro_free(id);
+      wb.wb_dealloc(out, expected * 8);
+      wb.wb_dealloc(pp, pl * 8);
+      wb.wb_dealloc(idp, 4);
+      break;
+    }
     case 'version': {
       const got = String(wb.wb_generator_version());
       group = 'version';

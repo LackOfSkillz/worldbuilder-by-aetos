@@ -99,10 +99,29 @@
 //!   the no-collar count prints a reassuring 0 for exactly the case it exists to catch. This
 //!   difference is the thing that would be non-zero, so it is printed rather than argued. It is
 //!   signed: a surprise in either direction shows instead of wrapping.
+//! - **The query index (plan 2a, Task 6):** `water::index::WaterIndex::build(&record, radius_m,
+//!   DEFAULT_CELL_M)`, on the record this run just baked, timed with `std::time::Instant` around
+//!   the `build` call alone. `cells`, `occupied` and `largest` are the index's own
+//!   `WaterIndex::stats` -- "occupied" is a cell listing at least one item of any of the three
+//!   families, and "largest" is the biggest `bodies + reaches + notches` over all cells, i.e.
+//!   what a worst-case sample has to test. `bytes` is `WaterIndex::memory_bytes`, printed as its
+//!   three parts: the per-cell `Vec` headers (paid in full on an empty index), the listed
+//!   entries' own allocations (`capacity()`, not `len()`), and the `BucketIndex`'s own. It is a
+//!   summed proxy, not an allocator sample.
+//! - **Mean candidates per query (plan 2a, Task 6, and the gate):** the mean of
+//!   `bodies + reaches + notches` in the answering cell, over a **fixed sample of 10,000
+//!   points**. The sample is an **area-uniform** scatter over the sphere from SplitMix64 seeded
+//!   at 20,260,912 -- `lat = asin(2u - 1)`, not `180u - 90`, because a lat/lon-uniform scatter
+//!   crowds its points at the poles, where this index's cells are emptiest, and would flatter
+//!   the very mean it is being gated on. The same 10,000 points are used on every world and at
+//!   every node count. `max` beside it is the largest single answer in that sample. **Spec gate:
+//!   the mean must be under 50**; the lever if it is not is `index::DEFAULT_CELL_M`. `GATE OK` or
+//!   `OVER THE GATE` is printed rather than left to the reader.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use worldbuilder_engine::detmath as m;
 use worldbuilder_engine::hydrology::flow::drainage_check;
 use worldbuilder_engine::hydrology::hollows::Fate;
 use worldbuilder_engine::hydrology::{
@@ -112,6 +131,7 @@ use worldbuilder_engine::hydrology::{
 use worldbuilder_engine::sphere::SpherePoint;
 use worldbuilder_engine::surface::Surface;
 use worldbuilder_engine::tectonics::TectonicParams;
+use worldbuilder_engine::water::index::{WaterIndex, DEFAULT_CELL_M};
 
 const DEFAULT_NODES: u32 = 1_000_000;
 
@@ -157,6 +177,101 @@ fn median_of_sorted(values: &[f64]) -> f64 {
         (a + b) / 2.0
     }
 }
+
+/// SplitMix64, the same generator `examples/parity_dump.rs` uses for its own reproducible
+/// scatter. The query sample has to be the same 10,000 points on every world and in every run,
+/// or the mean it produces is not comparable across the table it is printed in.
+struct Rng(u64);
+
+impl Rng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    /// A float in [0, 1), from 53 bits.
+    fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0) // cast-ok: a 53-bit mantissa, exactly representable
+    }
+}
+
+/// How many points the query sample holds, and the seed it is drawn from. Fixed so the mean
+/// candidate count the gate reads is a property of the index, not of the run.
+const QUERY_SAMPLE: usize = 10_000;
+const QUERY_SAMPLE_SEED: u64 = 20_260_912;
+
+/// The fixed 10,000-point query sample: **area-uniform** over the sphere, not lat/lon-uniform.
+/// See the module doc's "Mean candidates per query" paragraph for why that distinction decides
+/// whether the gate means anything.
+fn query_sample() -> Vec<SpherePoint> {
+    let mut rng = Rng(QUERY_SAMPLE_SEED);
+    let mut points = Vec::with_capacity(QUERY_SAMPLE);
+    for _ in 0..QUERY_SAMPLE {
+        let latitude_deg = m::to_degrees(m::asin(2.0 * rng.unit() - 1.0));
+        let longitude_deg = rng.unit() * 360.0 - 180.0;
+        points.push(SpherePoint::from_latlon(latitude_deg, longitude_deg));
+    }
+    points
+}
+
+/// The index survey: build it, measure it, and ask it the fixed sample. See the module doc.
+struct IndexSurvey {
+    cell_m: f64,
+    cells: usize,
+    occupied: usize,
+    largest: usize,
+    body_entries: usize,
+    reach_entries: usize,
+    notch_entries: usize,
+    header_bytes: usize,
+    entry_bytes: usize,
+    grid_bytes: usize,
+    build_s: f64,
+    mean_candidates: f64,
+    max_candidates: usize,
+}
+
+fn survey_index(record: &HydroRecord, radius_m: f64, sample: &[SpherePoint]) -> IndexSurvey {
+    let t = Instant::now();
+    let index = WaterIndex::build(record, radius_m, DEFAULT_CELL_M);
+    let build_s = t.elapsed().as_secs_f64();
+
+    let (occupied, largest, body_entries, reach_entries, notch_entries) = index.stats();
+    let (header_bytes, entry_bytes, grid_bytes) = index.memory_bytes();
+
+    let mut total = 0u64;
+    let mut max_candidates = 0usize;
+    for point in sample {
+        let c = index.candidates(point);
+        let here = c.bodies.len() + c.reaches.len() + c.notches.len();
+        total += here as u64; // cast-ok: a per-cell item count, never negative
+        if here > max_candidates {
+            max_candidates = here;
+        }
+    }
+    let mean_candidates = (total as f64) / (sample.len() as f64); // cast-ok: two counts to f64 for a printed mean
+
+    IndexSurvey {
+        cell_m: index.cell_m(),
+        cells: index.cell_count(),
+        occupied,
+        largest,
+        body_entries,
+        reach_entries,
+        notch_entries,
+        header_bytes,
+        entry_bytes,
+        grid_bytes,
+        build_s,
+        mean_candidates,
+        max_candidates,
+    }
+}
+
+/// Spec §8.2's gate, stated once: a query's mean candidate count must be under this.
+const CANDIDATE_GATE: f64 = 50.0;
 
 fn reach_points(record: &HydroRecord) -> u64 {
     record.reaches.iter().map(|r| r.points.len() as u64).sum() // cast-ok: a point count, never negative
@@ -263,9 +378,16 @@ struct RunResult {
     shore_reach_median_m: f64,
     coarse_bodies_without_collar: u32,
     kept_with_no_extent: i64,
+    // Plan 2a, Task 6: the query index. See the module doc's two "query index" paragraphs.
+    index: IndexSurvey,
 }
 
-fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult, HydroError> {
+fn run(
+    surface: &Surface,
+    nodes: u32,
+    overrides: Overrides,
+    sample: &[SpherePoint],
+) -> Result<RunResult, HydroError> {
     let mut params = HydroParams::earth_like(nodes);
     overrides.apply(&mut params);
 
@@ -360,6 +482,11 @@ fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult,
     let shore_reach_max_m = if reaches_m.is_empty() { 0.0 } else { reaches_m[reaches_m.len() - 1] };
     let shore_reach_median_m = if reaches_m.is_empty() { 0.0 } else { median_of_sorted(&reaches_m) };
 
+    // Plan 2a, Task 6: the index is built from the finished record -- after `ponds::search`, so
+    // it lists the fine-found bodies too -- exactly as `wasm::with_water_query` builds it on a
+    // bake's first query (Ruling Q-2).
+    let index = survey_index(&record, surface.radius_m, sample);
+
     let (duplicate_notch_keys, duplicate_notch_extra) = duplicate_notch_points(&record);
     let notch_points: u64 = record.notches.iter().map(|l| l.points.len() as u64).sum(); // cast-ok: a point count
 
@@ -412,6 +539,7 @@ fn run(surface: &Surface, nodes: u32, overrides: Overrides) -> Result<RunResult,
         shore_reach_median_m,
         coarse_bodies_without_collar,
         kept_with_no_extent,
+        index,
     })
 }
 
@@ -492,6 +620,37 @@ fn print_result(r: &RunResult) {
         "      shore_reach_m over the coarse bodies: largest {:>10.1} m  median {:>10.1} m",
         r.shore_reach_max_m, r.shore_reach_median_m,
     );
+    let i = &r.index;
+    println!(
+        "    query index @ {:.0} m cells: build {:>6.3} s  cells {:>8}  occupied {:>8} ({:.2}%)  \
+         largest cell {:>5} items",
+        i.cell_m,
+        i.build_s,
+        i.cells,
+        i.occupied,
+        100.0 * (i.occupied as f64) / (i.cells as f64), // cast-ok: two cell counts to f64 for a printed percentage
+        i.largest,
+    );
+    println!(
+        "      entries: bodies {:>9}  reaches {:>9}  notches {:>9}   memory {:>11} bytes \
+         ({:.2} MiB) = headers {} + entries {} + grid {}",
+        i.body_entries,
+        i.reach_entries,
+        i.notch_entries,
+        i.header_bytes + i.entry_bytes + i.grid_bytes,
+        ((i.header_bytes + i.entry_bytes + i.grid_bytes) as f64) / (1024.0 * 1024.0), // cast-ok: a byte count to f64 for a printed MiB figure
+        i.header_bytes,
+        i.entry_bytes,
+        i.grid_bytes,
+    );
+    println!(
+        "      candidates over the fixed {}-point sample: mean {:.4}  max {}   [gate: mean < {:.0}] {}",
+        QUERY_SAMPLE,
+        i.mean_candidates,
+        i.max_candidates,
+        CANDIDATE_GATE,
+        if i.mean_candidates < CANDIDATE_GATE { "GATE OK" } else { "OVER THE GATE" },
+    );
     match r.bifurcation {
         Some((lo, hi)) => println!(
             "    reaches: streams {:>7}  rivers {:>6}  great {:>4}  max order {:>3}  \
@@ -569,12 +728,19 @@ fn main() {
         shown.pond_cell_m,
     );
 
+    // Drawn once, so the mean candidate count is comparable across every row of the table.
+    let sample = query_sample();
+    println!(
+        "query sample: {QUERY_SAMPLE} area-uniform points, SplitMix64 seed {QUERY_SAMPLE_SEED}; \
+         index cell {DEFAULT_CELL_M} m"
+    );
+
     for world in worlds() {
         println!();
         println!("== {} ==", world.name);
         for &nodes in &node_counts {
             let t = Instant::now();
-            let outcome = run(&world.surface, nodes, overrides);
+            let outcome = run(&world.surface, nodes, overrides, &sample);
             let wall_s = t.elapsed().as_secs_f64();
             match outcome {
                 Ok(r) => print_result(&r),

@@ -189,6 +189,12 @@ impl WaterIndex {
         self.radius_m
     }
 
+    /// How many cells this index's grid has, occupied or not. The denominator the survey's
+    /// "occupied" figure is a fraction of, and what every per-cell cost below is multiplied by.
+    pub fn cell_count(&self) -> usize {
+        self.bodies.len()
+    }
+
     /// For the survey: cells occupied, the largest cell's item count, and the totals.
     ///
     /// "Occupied" is a cell listing at least one item of any of the three families; "the largest
@@ -212,6 +218,35 @@ impl WaterIndex {
          self.bodies.iter().map(Vec::len).sum(),
          self.reaches.iter().map(Vec::len).sum(),
          self.notches.iter().map(Vec::len).sum())
+    }
+
+    /// For the survey: what this index occupies in bytes, as `(headers, entries, grid)`.
+    ///
+    /// Three figures rather than one, because the interesting part is the split. **`headers`** is
+    /// `3 x cell_count x size_of::<Vec<u32>>()` -- the three per-cell `Vec`s this type keeps,
+    /// paid in full on an empty index before a single body is listed; at 50 km cells on Earth's
+    /// radius the grid has about 204,000 cells, so this term is tens of megabytes of mostly-empty
+    /// headers and is the whole of Task 1's review concern. **`entries`** is every listed id's
+    /// heap allocation, summed as `capacity() x size_of::<u32>()` rather than `len()`, so a
+    /// `Vec` holding more than it lists is counted at what it actually holds. **`grid`** is the
+    /// `BucketIndex`'s own (`buckets::BucketIndex::memory_bytes`), which this type pays for
+    /// addressing alone -- it never inserts a point, so the grid's own per-cell `Vec`s are the
+    /// same empty headers a fourth time.
+    ///
+    /// It is a proxy, summed from each `Vec`'s own reported size, not sampled from an allocator:
+    /// allocator rounding and the three `Vec` fields of `WaterIndex` itself are not in it.
+    pub fn memory_bytes(&self) -> (usize, usize, usize) {
+        let header = core::mem::size_of::<Vec<u32>>();
+        let entry = core::mem::size_of::<u32>();
+        let mut headers = 0usize;
+        let mut entries = 0usize;
+        for family in [&self.bodies, &self.reaches, &self.notches] {
+            headers += family.len() * header;
+            for cell in family.iter() {
+                entries += cell.capacity() * entry;
+            }
+        }
+        (headers, entries, self.grid.memory_bytes())
     }
 }
 

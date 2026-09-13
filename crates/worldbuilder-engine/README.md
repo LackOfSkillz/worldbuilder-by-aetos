@@ -5862,3 +5862,222 @@ and `hydro/plain` 6,072, unchanged.
 
 The reproduction commands are Task 6's, with `--expect-passed <801|801|803|907|909>` and
 `--expect-ignored 8`.
+
+## 2026-09-12, water 2a Task 6: the query surveyed and put on the wire, and every pin re-derived by running it
+
+Plan 2a (automatic water, the query) puts spec §8.3's `water_at` behind a spatial index and
+exposes it at three boundaries — `wb_water_at` and `wb_water_tile` in wasm, a PyO3 binding, and
+the crate's own `water::query`. **The record is unchanged**: this plan adds no stage to `Surface`,
+`Surface` gains no field, and no existing output moves. This section is the measurement half; the
+verification report has the argument.
+
+### The `sweep` hoist: eight transcendental calls a row that were computed and thrown away
+
+Task 1's review found `buckets::BucketIndex::sweep` computing `half_extent_deg` for **every row**
+before the `everything` short-circuit and before the `linear >= 180` test, and `sweep` is on the
+bake's hot path through `candidates` and `nearest`. Both whole-row tests are decided without the
+exact term: `stretch` is the *larger* of `linear` and `exact`, so `linear >= 180.0` settles
+`everything` on its own, and the pole test never reads the stretch at all. The pole test is also
+loop-invariant, so it is now asked once rather than once per row.
+
+**Nothing observable changes, and that is the claim, not the hope.** The parity corpus's 150,830
+pre-existing values are byte-for-byte unmoved (see the table below — the whole +5,121 is one new
+group), and `refinement_adds_no_crossings_at_1m` printed the **same two lines it has printed since
+plan 1b-4**: `ranges 1M: 5545 reaches, coarse 54 shipped 50` and `default 1M: 4285 reaches, coarse
+33 shipped 28`. The hoist moved no crossing and no candidate set.
+
+### The query index at 1,000,000 nodes
+
+`./target/release/hydro_survey.exe`, no flags, `HydroParams::earth_like(1_000_000)`, this
+developer machine, `cargo run --release --no-default-features`. The index is
+`water::index::WaterIndex::build(&record, radius_m, DEFAULT_CELL_M)` on the record each run just
+baked — **after** `ponds::search`, exactly as `wasm::with_water_query` builds it on a bake's first
+query (Ruling Q-2). `drainage_check` is `Ok` on all three.
+
+**The candidate sample is 10,000 area-uniform points** from SplitMix64 seeded at 20,260,912 —
+`lat = asin(2u − 1)`, *not* `180u − 90`. That distinction decides whether the gate means anything:
+a lat/lon-uniform scatter crowds its points at the poles, where this index's cells are emptiest,
+and would flatter the very mean it is being gated on. The same 10,000 points are used on all three
+worlds.
+
+| world | cell realised | build | cells | occupied | largest cell | body / reach / notch entries | memory | mean candidates | max | gate |
+|---|---|---|---|---|---|---|---|---|---|---|
+| plain | 50,038 m | 0.091 s | 203,682 | 24,444 (12.00%) | **13** | 6,400 / 39,973 / 49 | **19,998,952 B** (19.07 MiB) | **0.2358** | 9 | OK |
+| owner_survey | 50,132 m | 0.042 s | 101,374 | 7,829 (7.72%) | **20** | 3,223 / 14,362 / 59 | **9,887,576 B** (9.43 MiB) | **0.1686** | 20 | OK |
+| seed1_ranges | 50,038 m | 0.115 s | 203,682 | 44,004 (21.60%) | **20** | 22,445 / 60,852 / 232 | **20,395,096 B** (19.45 MiB) | **0.4101** | 11 | OK |
+
+**The gate is met by more than two orders of magnitude, and the stronger claim is available:** the
+*largest single cell in the whole index* holds 20 items on the worst of the three worlds, so no
+query anywhere on any of these planets can test 50 candidates, let alone average it. Ruling Q-13's
+bounding circle — which widened every body from a band around its shore to a disc — did not cost
+what Task 1's review feared. `DEFAULT_CELL_M` was not touched and no lever was pulled.
+
+The build is **0.04 to 0.12 s**, which is what a bake's first query pays under Ruling Q-2 and what
+every later one does not.
+
+#### The index's memory, and where all of it goes
+
+Nobody had measured this since Ruling Q-13, and the answer is that **the cost is not the entries**:
+
+| world | headers | entries | grid | total | entries' share |
+|---|---|---|---|---|---|
+| plain | 14,665,104 | 439,072 | 4,894,776 | 19,998,952 | **2.20%** |
+| owner_survey | 7,298,928 | 151,152 | 2,437,496 | 9,887,576 | **1.53%** |
+| seed1_ranges | 14,665,104 | 835,216 | 4,894,776 | 20,395,096 | **4.10%** |
+
+`headers` is `3 × cells × size_of::<Vec<u32>>()` — three per-cell `Vec`s, **paid in full on an
+empty index before a single body is listed**. `grid` is the `BucketIndex`'s own, and almost all of
+it is a *fourth* set of empty per-cell `Vec` headers: `WaterIndex` never calls
+`BucketIndex::insert`, so it pays for that grid's `buckets` field purely to address it. Task 1's
+review estimated "about 14 MB of empty `Vec` headers at 50 km cells"; measured, it is **14.67 MB
+of headers plus 4.89 MB of grid, 19.56 MB of the 20.0 MB total**, with 439 KB of actual entries
+inside it.
+
+**This is reported, not fixed.** It is `index.rs`'s shape, which Task 1 owns, and changing it is
+not this task's business; it is also affordable at these sizes (20 MiB of derived state beside a
+4.3 MB record, dropped with the bake). Named as a concern for stage 2b: a `Vec<u32>` per cell for
+a structure that is 88% empty is the wrong container, and an offsets-plus-one-flat-`Vec` layout
+would cost roughly a tenth of it.
+
+**Bake times wandered and nothing recorded moved.** The three bakes measured 82.47 / 51.12 /
+106.83 s against plan 1b-4's 46.05 / 26.95 / 56.87 s on the same host, and essentially all of the
+movement is in `ponds` (60.63 / 28.58 / 81.11 against 34.37 / 15.25 / 43.69). Every recorded
+quantity — record bytes 4,281,864 / 2,511,928 / 6,098,912, ponds found/kept 1,993/273, 409/57 and
+3,752/504, coarse bodies 23 / 71 / 160, `shore_reach_m` largest 43,908.3 / 30,129.4 / 43,397.7 m —
+is **bit-identical to 1b-4's**. On this host the timings wander and the record does not; plan 1b-4
+recorded the same effect at up to 9%, and this is larger. Do not read a bake regression into it
+without a controlled run.
+
+### The parity group: §8.3 answered on a fixed grid, both sides exactly
+
+Before this, `water::query` and `water::index` were **unfalsifiable** native against wasm rather
+than merely unverified — the same sense in which `water.rs` was before `wb_water_run` and
+`erosion.rs` before `wb_erosion_run`. The new `water_at/plain` group is 32 × 32 samples through
+`wb_water_tile` on the `plain` world's own `H plain` bake, at **five words per sample (Ruling
+Q-18: kind, level, depth, body id, reach id)** plus the tile's own status: **5,121 values, 0
+divergent**.
+
+**The box is 31 N, 5 W to 27 N, 1 W**, and it is a literal in `examples/parity_dump.rs` rather
+than a box derived from the record at run time. It was chosen by scanning the bake's own record —
+every body anchor and every reach midpoint, at seventeen half-widths from 0.05 to 8 degrees, a
+32 × 32 histogram each — and scoring by how many kinds appear and how large the smallest of them
+is. It measures:
+
+| none | ocean | lake | salt lake | salt flat | pond | river |
+|---|---|---|---|---|---|---|
+| **692** | **213** | **119** | 0 | 0 | 0 | 0 |
+
+— land, ocean, a lake and **119 samples naming recorded body 2**, with no bucket under 11% of the
+grid. The dump **asserts all three properties and refuses to write the corpus otherwise** (at
+least two kinds, at least one `none`, at least one body), so a future bake that floods or drains
+the box fails there rather than quietly comparing 1,024 copies of one answer here. That is the
+same guard the coast and gully controls carry, and it has already caught two boxes in this
+project's history.
+
+**No box on this bake reaches four kinds, and that is recorded rather than tuned around.** A river
+is a few hundred metres wide and a 4-degree box steps about 14 km, so every box that catches one
+catches a single sample of it, which one re-bake could lose. `reach_id` is therefore `NO_REACH` at
+all 1,024 samples — compared 1,024 times, but the river branch's own `reach_id` is covered by
+`query.rs`'s and `wasm_exports.rs`'s unit tests, not by this corpus. A later plan wanting the
+river branch on the wire needs a finer box or a denser grid, not a re-reading of this one.
+
+### Pins, re-derived by running them
+
+**The shipped wasm was stale at `8f8f998`, and this is the measurement of it.** `npm run
+check:wasm` on the unmodified branch reported `source now: b021c52a…` against `artifact built
+from: fc573f6e…` — Task 5 edited `src/` without rebuilding, exactly as the brief said. The CRLF
+guard (`git ls-files --eol crates/worldbuilder-engine | grep -v "w/lf"`) printed nothing before the
+rebuild. **Rebuilt:** 461,498 bytes (was 461,474), 33 exports, 0 imports; artifact-sha256
+`acf822dfe26ee260f44dbdffa7cf3926b0c59adfd212c405924a1a2e1eb04b93` (was `26284781…`),
+source-fingerprint `eeca76627d830bde2d05287ada8ddd76890b7bd27aaebe0a88c1102fccd11b01` (69 inputs,
+was `fc573f6e…`). `check:wasm` now reports it matches its manifest and the source that is here;
+both build self-tests pass.
+
+**Engine — moved, +40 run uniformly and +46 on the two wasm rows, and +1 ignored.** Re-derived per
+configuration through `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) and
+`assert_counts.py cargo-list` AFTER the last source edit; all five printed `count OK`:
+
+| configuration | listed | ignored | **run** |
+|---|---|---|---|
+| `--no-default-features` | 850 | 9 | **841** (was 801) |
+| default | 850 | 9 | **841** (was 801) |
+| `--features python` | 852 | 9 | **843** (was 803) |
+| `--features wasm` | 962 | 9 | **953** (was 907) |
+| `--features python,wasm` | 964 | 9 | **955** (was 909) |
+
+The suites were run, all five, `--no-fail-fast`, and all five are green: **lib 822 / 822 / 824 /
+822 / 824**, plus `blake2_bytes` 4, `build_fingerprint` 9, `no_std_math` 6 and — on the wasm rows
+only — **`wasm_exports` 112** (was 106). So 822 + 4 + 9 + 6 = **841**, and 841 + 112 = **953**.
+`no_std_math` is **6/6** in every configuration.
+
+The +40 that lands uniformly is the query itself: `src/water/index.rs` and `src/water/query.rs`
+arrived with this plan and their test modules are in `src/`, so every configuration sees them
+alike. The six extra on the wasm rows are `wasm_exports.rs`'s tests for `wb_water_at` and
+`wb_water_tile` (that file is `#![cfg(feature = "wasm")]` in its entirety). **`expect_ignored`
+moves 8 → 9**, the second time in this file's history: the ninth is
+`water::query_tests::the_index_costs_what_it_costs_at_a_million_nodes`, Task 1's index-cost trial,
+`#[ignore]`d for the reason the other two sweeps are. `assert_counts.py` still reports
+**seventeen** test binaries — this plan added no `[[bin]]`, no `tests/` file and no example.
+
+**Both ignored sweeps pass.** `every_small_world_drains` in **141.45 s**;
+`refinement_adds_no_crossings_at_1m` in **247.42 s**, printing `ranges 1M: 5545 reaches, coarse 54
+shipped 50` and `default 1M: 4285 reaches, coarse 33 shipped 28` — **identical to plan 1b-4's**,
+which is the `sweep` hoist's proof. The third `#[ignore]`d test in this family,
+`query_tests::the_index_costs_what_it_costs_at_a_million_nodes`, is Task 1's own trial and its
+evidence is Task 1's; it is named here rather than silently skipped, and the survey table above is
+the same measurement taken on the shipping binary.
+
+**Python — moved, 565 → 569 and conformance 157 → 161.** All four are Task 5's PyO3 binding tests
+in `tests/test_conformance.py`, so the whole-suite delta and the conformance delta are the same +4.
+Re-derived by `pytest --collect-only -q tests` (**569**) and the same over
+`tests/test_conformance.py` (**161**), then RUN in a fresh `.venv` with
+`pip install -e . --no-deps`, `maturin develop --release --features python` and
+`WORLDBUILDER_REQUIRE_ENGINE=1`: **569 passed, 0 failed**. *Caution, recorded rather than hidden:*
+against a **globally**-installed `worldbuilder_engine` older than Task 5, the same suite reports
+five failures — the four `water_at` conformance tests, because that extension has no `water_at`
+binding, plus `test_installation.py::test_worldbuilder_importable_outside_the_repo`, the
+two-checkouts-sharing-one-interpreter property the 1b-4 notes already record. Neither is a property
+of this branch.
+
+**Viewer:** `npm test` (Node's test runner, `viewer/`, this host) — **346 pass, 0 fail** (was 340).
+The +6 is Task 4's, not this task's; Task 6 only re-ran the suite to confirm it is green at the
+pins above.
+
+**Parity — moved by exactly one group:**
+
+| | compared | divergent |
+|---|---|---|
+| `parity` | **155,951** (was 150,830) | **0** |
+| `--mutate seed` | 155,951 | **147,347** (was 145,274) |
+| `--mutate erosion-k` | 155,951 | 216 |
+| `--mutate water-pond` | 155,951 | 60 |
+| `--mutate tectonic-warp` | 155,951 | 22,993 |
+| `--mutate coast-amplitude` | 155,951 | 13,128 |
+| `--mutate gully-steer` | 155,951 | 3,752 |
+| `--mutate climate-samples` | 155,951 | 648 |
+
+**The whole +5,121 is `water_at/plain` and nothing else moves by a value or by a word.**
+`hydro/plain` is still 6,072 and `hydro/ranges` still 17,099, byte for byte, in the plain run and
+in all seven controls — which is what the global constraint "`elevation_m` must return the same
+bits; parity's existing groups must not move" asks of this plan, measured rather than asserted.
+**5,121 = 1 + 32 × 32 × 5**, and the 5 is Ruling Q-18, not Ruling Q-8's superseded 4; any later
+note that computes this group at four words a sample is wrong on arithmetic before anything is
+measured.
+
+The seed control's **+2,073 is the new group's own, 2,073 of 5,121 — 40.5%, and both 99% and 0%
+would be findings.** A moved seed is a different planet, so every sample naming water moves; but a
+sample answering `none` writes the same five words on *both* planets (kind 0, level 0, depth 0 and
+the two sentinels), so most of the box's 692 dry samples compare equal against whatever the moved
+world puts there. A group moving nearly everything would mean `none` had stopped being a constant
+answer; a group moving nothing would mean the query never read the record. `hydro/ranges` stays at
+17,047 of 17,099, `hydro/plain` at 6,019 of 6,072, and non-hydro at 122,208.
+
+**The other six controls are unmoved in divergence, and every one of them requires `water_at/plain`
+to sit at exactly 0** — the water, tectonic, coast, gully and climate controls each check their own
+per-group prediction, and an unlisted group's prediction is zero. So "the query is not downstream
+of `erodibility_per_yr`, of `pond_max_surface_area_m2`, of `margin_warp_m`, of the coast amplitude,
+of the steering lattice or of the upwind budget" is asserted six times over, not assumed. The
+tectonic, coast and gully controls each printed *"exactly as the native side predicted"*.
+
+The reproduction commands are plan 1b-4 Task 6's, with `--expect-passed <841|841|843|953|955>` and
+`--expect-ignored 9`.

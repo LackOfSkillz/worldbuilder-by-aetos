@@ -1956,7 +1956,6 @@ fn main() {
     assert!(hydro_len > 0, "a corpus of zero words would compare nothing");
     let mut hydro_words = vec![0.0f64; hydro_len as usize];
     assert_eq!(wb_hydro_copy(hydro_id, hydro_words.as_mut_ptr(), hydro_len), WB_OK);
-    assert_eq!(wb_hydro_free(hydro_id), WB_OK);
 
     let params_hex: Vec<String> = HYDRO_PARAMS.iter().map(|v| hex(*v)).collect();
     let words_hex: Vec<String> = hydro_words.iter().map(|v| hex(*v)).collect();
@@ -1966,6 +1965,109 @@ fn main() {
         params_hex.join(" "),
         words_hex.join(" ")
     );
+
+    // --- the query channel: §8.3 answered on a fixed grid, through the shipped tile export ----
+    //
+    // **Plan 2a, Task 6, Step 1.** `wb_water_at` and `wb_water_tile` are the whole of the query
+    // across the shipped surface, and before this group their native/WASM agreement was
+    // unfalsifiable rather than unverified -- exactly the sense `wb_hydro_bake` above,
+    // `wb_erosion_run` and `wb_water_run` are each described in. The tile export is the one used
+    // because it is the batch a relief worker actually calls and because its own tests already
+    // pin it to `wb_water_at` sample for sample; a scalar group would compare the same arithmetic
+    // through a thinner door.
+    //
+    // **Five words per sample, Ruling Q-18** -- kind, level, depth, body id, reach id -- so the
+    // group is `1 + 32 x 32 x 5 = 5,121` values: the tile's own status, then the grid row-major
+    // from the north-west with both endpoints included.
+    //
+    // # How the box was chosen, and why it is a literal
+    //
+    // It has to contain land, water and at least one recorded body, or the group compares one
+    // constant 1,024 times and proves nothing. The box was found by scanning this bake's own
+    // record -- every body anchor and every reach midpoint, at seventeen half-widths from 0.05
+    // to 8 degrees, 32x32 each -- and scoring the kind histogram by how many kinds appear and how
+    // large the smallest of them is. **No box on this bake reaches four kinds**: a river is a few
+    // hundred metres wide and a 4-degree box steps about 14 km, so the only boxes that catch one
+    // catch a single sample of it, which one re-bake could lose. The most balanced three-kind box
+    // was taken instead, on whole degrees:
+    //
+    //   **31 N, 5 W to 27 N, 1 W -- 692 none, 213 ocean, 119 lake, and recorded body 2.**
+    //
+    // It is a literal rather than a box derived from the record at run time, deliberately: a
+    // derived box would silently follow the bake wherever it went, and the assertions below --
+    // which fail the dump rather than writing a corpus that proves nothing -- would never fire.
+    const WQ_LAT0: f64 = 31.0;
+    const WQ_LON0: f64 = -5.0;
+    const WQ_LAT1: f64 = 27.0;
+    const WQ_LON1: f64 = -1.0;
+    const WQ_ROWS: u32 = 32;
+    const WQ_COLUMNS: u32 = 32;
+    const WQ_STRIDE: usize = 5; // Ruling Q-18; `wasm::WB_WATER_STRIDE`, restated for an example
+    let wq_samples = (WQ_ROWS as usize) * (WQ_COLUMNS as usize); // cast-ok: two compile-time grid extents
+    let mut wq_words = vec![0.0f64; wq_samples * WQ_STRIDE];
+    let wq_status = wb_water_tile(
+        plain,
+        hydro_id,
+        WQ_LAT0,
+        WQ_LON0,
+        WQ_LAT1,
+        WQ_LON1,
+        WQ_ROWS,
+        WQ_COLUMNS,
+        wq_words.as_mut_ptr(),
+        wq_words.len() as u32, // cast-ok: 5,120, a compile-time bound
+    );
+    assert_eq!(wq_status, WB_OK, "the query tile must succeed for the parity corpus");
+
+    // The dump refuses to write a corpus that cannot fail, exactly as the coast and gully
+    // controls' both-ends-refused guard does -- and that guard has already caught two boxes in
+    // this file's history. Here the failure mode is the opposite one: a box entirely inside a
+    // lake, or entirely on dry land, compares 1,024 copies of one answer and reports agreement
+    // it never tested.
+    let mut wq_hist = [0usize; 7];
+    let mut wq_bodies = 0usize;
+    for sample in 0..wq_samples {
+        let kind = wq_words[sample * WQ_STRIDE] as usize; // cast-ok: a kind code, 0..=6 by `water_kind_code`'s own table
+        assert!(kind < 7, "the tile wrote a kind code outside §8.3's table: {kind}");
+        wq_hist[kind] += 1;
+        if wq_words[sample * WQ_STRIDE + 3] != f64::from(u32::MAX) {
+            wq_bodies += 1;
+        }
+    }
+    let wq_kinds = wq_hist.iter().filter(|&&n| n > 0).count();
+    assert!(
+        wq_kinds >= 2,
+        "the query box answers one kind for all {wq_samples} samples ({wq_hist:?}); a group that \
+         compares one constant proves nothing about the query"
+    );
+    assert!(
+        wq_hist[0] > 0,
+        "the query box holds no dry land ({wq_hist:?}); §8.3's `none` branch would be untested"
+    );
+    assert!(
+        wq_bodies > 0,
+        "the query box answers no recorded body ({wq_hist:?}); the body branch, the tie-break and \
+         the index's dilation would all be untested"
+    );
+    println!(
+        "WQ plain {} {} {} {} {} {} {} {} {wq_status} {}",
+        HYDRO_PARAMS.len(),
+        params_hex.join(" "),
+        hex(WQ_LAT0),
+        hex(WQ_LON0),
+        hex(WQ_LAT1),
+        hex(WQ_LON1),
+        WQ_ROWS,
+        WQ_COLUMNS,
+        wq_words.iter().map(|v| hex(*v)).collect::<Vec<String>>().join(" ")
+    );
+    eprintln!(
+        "query box {WQ_LAT0},{WQ_LON0} .. {WQ_LAT1},{WQ_LON1}: kinds {wq_kinds}, histogram \
+         (none, ocean, lake, salt lake, salt flat, pond, river) {wq_hist:?}, {wq_bodies} samples \
+         naming a body"
+    );
+
+    assert_eq!(wb_hydro_free(hydro_id), WB_OK);
 
     println!("version {}", wb_generator_version());
 }

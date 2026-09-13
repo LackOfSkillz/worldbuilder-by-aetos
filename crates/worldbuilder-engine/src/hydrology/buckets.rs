@@ -107,6 +107,24 @@ impl BucketIndex {
         self.buckets.len()
     }
 
+    /// For a survey: what this grid occupies in bytes -- the `columns` and `first` row tables,
+    /// plus its own per-cell `Vec` headers and whatever those `Vec`s have allocated.
+    ///
+    /// A caller that only ever asks [`cell_of`](Self::cell_of), [`cell_count`](Self::cell_count)
+    /// and [`cells_within`](Self::cells_within) -- `water::index::WaterIndex` is one -- never
+    /// calls [`insert`](Self::insert), so for it the `buckets` term is a cell's worth of empty
+    /// `Vec` header apiece and nothing else. It is counted here rather than hidden, because a
+    /// cost paid for addressing alone is exactly the kind that goes unmeasured.
+    ///
+    /// A proxy, summed from each `Vec`'s own reported size rather than sampled from an
+    /// allocator: allocator rounding and this struct's own fields are not in it.
+    pub fn memory_bytes(&self) -> usize {
+        self.columns.len() * core::mem::size_of::<usize>()
+            + self.first.len() * core::mem::size_of::<usize>()
+            + self.buckets.len() * core::mem::size_of::<Vec<u32>>()
+            + self.buckets.iter().map(|b| b.capacity() * core::mem::size_of::<u32>()).sum::<usize>()
+    }
+
     /// Every cell whose row/column range the disc of `reach_m` about `point` touches, ascending.
     ///
     /// A **superset** of the cells the disc actually intersects -- the sweep is a latitude band
@@ -137,6 +155,12 @@ impl BucketIndex {
         let reach_deg = m::to_degrees(reach_m / self.radius_m);
         let low = self.row_of(if lat - reach_deg < -90.0 { -90.0 } else { lat - reach_deg });
         let high = self.row_of(if lat + reach_deg > 90.0 { 90.0 } else { lat + reach_deg });
+        // Loop-invariant, so it is asked once rather than once per row: a reach that carries the
+        // query past a pole (its latitude band running off the top or bottom of the grid) covers
+        // every longitude at EVERY row it touches, regardless of any row's own stretch -- the
+        // row's whole circle is within reach once the cap itself is, so there is no narrower
+        // column range to compute anywhere in the sweep.
+        let pole_crossing = lat.abs() + reach_deg >= 90.0;
         for row in low..=high {
             let south = -90.0 + row as f64 * 180.0 / self.rows as f64;
             let north = south + 180.0 / self.rows as f64;
@@ -150,13 +174,22 @@ impl BucketIndex {
             // measured against this grid moves, and the exact term alone already makes it a
             // superset.
             let linear = if cos <= 1.0e-9 { 180.0 } else { reach_deg / cos };
-            let exact = half_extent_deg(lat, reach_deg, south, north);
-            let stretch = if exact > linear { exact } else { linear };
-            // Third disjunct: a reach that carries the query past a pole (its latitude band
-            // running off the top or bottom of the grid) covers every longitude at that row
-            // regardless of the stretch -- the row's whole circle is within reach once the cap
-            // itself is, so there is no narrower column range to compute.
-            let everything = stretch >= 180.0 || lat.abs() + reach_deg >= 90.0;
+            // **Both whole-row tests are decided before `half_extent_deg` runs, and neither
+            // needs it.** `stretch` is the LARGER of `linear` and `exact`, so `linear >= 180.0`
+            // settles `everything` on its own, and `pole_crossing` does not read the stretch at
+            // all. `half_extent_deg` is about eight transcendental calls per row, and `sweep` is
+            // on the bake's hot path through `candidates` and `nearest` -- so before this hoist
+            // a pole-crossing sweep computed, and then discarded, that work on every row it
+            // touched. Nothing observable changes: where `whole_row` holds, the exact term could
+            // only have made `stretch` larger, and `everything` was already true either way.
+            let whole_row = linear >= 180.0 || pole_crossing;
+            let stretch = if whole_row {
+                linear
+            } else {
+                let exact = half_extent_deg(lat, reach_deg, south, north);
+                if exact > linear { exact } else { linear }
+            };
+            let everything = whole_row || stretch >= 180.0;
             if everything {
                 for column in 0..count {
                     visit(self.first[row] + column);
