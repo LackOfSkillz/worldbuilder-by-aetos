@@ -493,10 +493,14 @@ calls"*, and §2 said the oracle "calls a binding that is missing from this chec
 `engine.surface_open` — and asked what that `engine` is.
 
 **It is the maturin-built extension and nothing else:** `planet.py:29` is
-`import worldbuilder_engine as engine`. Inspected directly (fresh `.venv`, wheel built at
-`4af13ae`), it exposes 72 public names — the `surface_*`, `substrate_*`, `plateset_*`, `features_*`
-families and, as of plan 2a, `water_at`. **`planet.py` reaches for five names and the extension
-binds none of them:**
+`import worldbuilder_engine as engine`. Counted from the module's own registration block
+(`crates/worldbuilder-engine/src/lib.rs`, the `#[pymodule]` at line 218, at `b3e7026`), it binds
+**71** names: 69 `wrap_pyfunction!` registrations plus the two exception classes
+`UnknownSubstrateError` and `HydroBakeError`. They are the `surface_*`, `substrate_*`,
+`plateset_*` and `features_*` families and, as of plan 2a, `water_at`. A `dir()` on a
+built wheel returns one more than this; the registration block is the figure to trust, because
+it is the list the extension is compiled from. **`planet.py` reaches for five names and the
+extension binds none of them:**
 
 | `planet.py` | called at | in the extension? |
 |---|---|---|
