@@ -9,12 +9,15 @@ use pyo3::prelude::*;
 use crate::continentality::Continentality;
 use crate::generation;
 use crate::generation::Part;
+use crate::hydrology::{self, HydroError, HydroParams};
 use crate::kinematics::{motion_at, motion_between, surface_velocity};
 use crate::plates::{Plate, PlateSet};
 use crate::shelf::{Coastal, Shelf};
 use crate::sphere::SpherePoint;
+use crate::surface::Surface;
 use crate::tectonics::Tectonics;
 use crate::vectors::Vec3;
+use crate::water;
 
 /// Cache of calibrated `Continentality` instances, keyed on `(seed, land_fraction bits,
 /// radius_m bits)`. Calibration is a 4,000-sample sort and costs a few milliseconds;
@@ -1578,6 +1581,277 @@ pub fn surface_bottom_at(
         .bottom_at(&SpherePoint { vector: Vec3::new(x, y, z) })
         .map_err(|unknown| UnknownSubstrateError::new_err(unknown.to_string()))?;
     Ok((composition.sand, composition.mud, composition.rock))
+}
+
+// --- water: spec §8.3's water_at, bound the way `surface_*` binds a `Surface` -------------
+//
+// **No handle crosses to Python, on either side of this call, and that is a deliberate
+// continuation of this file's own idiom, not a new one.** Every expensive structure above --
+// `Continentality`, `Surface`, `Shelf`, `Tectonics` -- is rebuilt from its plain-value
+// constructor arguments on every call and kept alive behind a cache keyed on those same
+// arguments (`cached_continentality`, `cached_surface`); nothing in this file has ever handed
+// Python an opaque id it has to remember to free. A hydrology bake and the query index built
+// over it are exactly one more such structure: expensive to build (`hydrology::bake` runs a
+// full routing pass; `WaterIndex::build` sorts every body and reach into a grid), cheap to
+// query once built, and safe to memoise for the same reason `cached_surface` already is --
+// this crate runs one game world or a conformance suite's handful of fixtures per process, not
+// an unbounded stream of distinct bakes.
+//
+// The cache key does not re-derive `SurfaceKey`: `cached_surface` already guarantees one
+// `&'static Surface` per distinct construction argument set, stored and never evicted, so its
+// own pointer IS that identity for the whole process lifetime. Keying the hydro cache on
+// `(surface as *const Surface as usize, HydroKey)` is therefore exact, not an approximation --
+// two calls that reach the same `&'static Surface` reference the same world by construction,
+// and two calls that do not can never collide on the same address (leaked memory is never
+// freed or reused while the process runs).
+//
+// `wasm.rs`'s `wb_hydro_bake`/`wb_water_at` pair is the wasm door onto the same query, and it
+// DOES hand JS an opaque id -- because wasm's linear memory has no argument-keyed cache to
+// reuse: a JS caller cannot hash a `Surface` it never held, and the bake's own encoded record
+// has to survive across separate exported calls with nothing but an integer to find it by.
+// Python has no such constraint (`cached_surface` proves it: the same argument-keyed cache
+// idiom already works for a structure at least as expensive to build), so this file follows
+// its OWN established shape rather than the wasm door's.
+
+/// Everything `HydroParams::earth_like` leaves at the caller's discretion for a wasm bake
+/// (`wasm.rs`'s `WB_HYDRO_PARAMS_STRIDE`, twelve words plus two per forced outlet) -- the same
+/// subset, so a Python caller and a wasm caller are choosing among the same knobs. Every other
+/// `HydroParams` field (the refinement and pond-search tuning) is not a wasm parameter either,
+/// for the same reason `hydro_params_from`'s own doc comment gives: nothing outside this
+/// twelve-word set has ever needed to vary from `earth_like`'s own tuned values.
+#[allow(clippy::too_many_arguments)]
+fn hydro_params_and_key(
+    total_nodes: u32,
+    wetness_nodes: u32,
+    keep_depth_m: f64,
+    keep_area_m2: f64,
+    pond_max_area_m2: f64,
+    stream_flow_m2: f64,
+    river_flow_m2: f64,
+    great_flow_m2: f64,
+    notch_fall_m: f64,
+    evaporation_factor: f64,
+    salt_flat_share: f64,
+    forced_outlets: &[(f64, f64)],
+) -> (HydroParams, HydroKey) {
+    let mut params = HydroParams::earth_like(total_nodes);
+    params.wetness_nodes = wetness_nodes;
+    params.keep_depth_m = keep_depth_m;
+    params.keep_area_m2 = keep_area_m2;
+    params.pond_max_area_m2 = pond_max_area_m2;
+    params.stream_flow_m2 = stream_flow_m2;
+    params.river_flow_m2 = river_flow_m2;
+    params.great_flow_m2 = great_flow_m2;
+    params.notch_fall_m = notch_fall_m;
+    params.evaporation_factor = evaporation_factor;
+    params.salt_flat_share = salt_flat_share;
+    params.forced_outlets =
+        forced_outlets.iter().map(|&(lat, lon)| SpherePoint::from_latlon(lat, lon)).collect();
+
+    let key = HydroKey {
+        total_nodes,
+        wetness_nodes,
+        keep_depth_m: keep_depth_m.to_bits(),
+        keep_area_m2: keep_area_m2.to_bits(),
+        pond_max_area_m2: pond_max_area_m2.to_bits(),
+        stream_flow_m2: stream_flow_m2.to_bits(),
+        river_flow_m2: river_flow_m2.to_bits(),
+        great_flow_m2: great_flow_m2.to_bits(),
+        notch_fall_m: notch_fall_m.to_bits(),
+        evaporation_factor: evaporation_factor.to_bits(),
+        salt_flat_share: salt_flat_share.to_bits(),
+        forced_outlets: forced_outlets.iter().map(|&(lat, lon)| (lat.to_bits(), lon.to_bits())).collect(),
+    };
+    (params, key)
+}
+
+/// The bake-configuring subset of [`hydro_params_and_key`]'s arguments, losslessly (floats by
+/// `to_bits`, exactly as `FeatureKey`/`SurfaceKey` above do it): the cache key half of a pair a
+/// single call site always constructs together, never on its own.
+#[derive(PartialEq, Eq, Hash, Clone)]
+struct HydroKey {
+    total_nodes: u32,
+    wetness_nodes: u32,
+    keep_depth_m: u64,
+    keep_area_m2: u64,
+    pond_max_area_m2: u64,
+    stream_flow_m2: u64,
+    river_flow_m2: u64,
+    great_flow_m2: u64,
+    notch_fall_m: u64,
+    evaporation_factor: u64,
+    salt_flat_share: u64,
+    forced_outlets: Vec<(u64, u64)>,
+}
+
+pyo3::create_exception!(
+    worldbuilder_engine,
+    HydroBakeError,
+    pyo3::exceptions::PyValueError,
+    "`hydrology::bake` refused these params or this surface -- a bad param domain, a landform \
+     `bake_stages` could not sample, or a routing that failed the drainage check. Carries the \
+     same information `wasm.rs` spends three distinct WB_ERR_* codes on, as a message, because \
+     a Python caller has an exception channel a wasm export does not."
+);
+
+/// A bake and the [`water::index::WaterIndex`] built over it, kept behind `HYDRO_CACHE` for the
+/// life of the process -- Ruling Q-2's "derived state, built on first query, cached beside the
+/// bake" translated to this file's own leak-and-memoise idiom (`cached_surface`'s own doc
+/// comment) rather than wasm's explicit free.
+type HydroCache =
+    Mutex<HashMap<(usize, HydroKey), &'static (hydrology::HydroRecord, water::index::WaterIndex)>>;
+
+fn hydro_cache() -> &'static HydroCache {
+    static CACHE: OnceLock<HydroCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Bake `surface` (or fetch the held bake) and hand back the record and the query index built
+/// over it, both leaked to `'static` and cached under `(surface's own address, HydroKey)` --
+/// see the section note above for why the surface's pointer is a safe, exact cache key.
+#[allow(clippy::too_many_arguments)]
+fn cached_hydro(
+    surface: &'static Surface,
+    total_nodes: u32,
+    wetness_nodes: u32,
+    keep_depth_m: f64,
+    keep_area_m2: f64,
+    pond_max_area_m2: f64,
+    stream_flow_m2: f64,
+    river_flow_m2: f64,
+    great_flow_m2: f64,
+    notch_fall_m: f64,
+    evaporation_factor: f64,
+    salt_flat_share: f64,
+    forced_outlets: &[(f64, f64)],
+) -> PyResult<&'static (hydrology::HydroRecord, water::index::WaterIndex)> {
+    let (params, key) = hydro_params_and_key(
+        total_nodes, wetness_nodes, keep_depth_m, keep_area_m2, pond_max_area_m2,
+        stream_flow_m2, river_flow_m2, great_flow_m2, notch_fall_m, evaporation_factor,
+        salt_flat_share, forced_outlets,
+    );
+    let cache_key = (surface as *const Surface as usize, key);
+
+    let mut cache = hydro_cache().lock().expect("hydro cache poisoned");
+    if let Some(held) = cache.get(&cache_key) {
+        return Ok(held);
+    }
+
+    let record = hydrology::bake(surface, &params).map_err(|error| {
+        let message = match error {
+            HydroError::Params(reason) => format!("bad hydrology params: {reason}"),
+            HydroError::Sampling => {
+                "bake could not sample a graph over this surface".to_string()
+            }
+            HydroError::Drainage(node) => {
+                format!("the routing failed the drainage check at node {node}")
+            }
+        };
+        HydroBakeError::new_err(message)
+    })?;
+    let index = water::index::WaterIndex::build(&record, surface.radius_m, water::index::DEFAULT_CELL_M);
+    let held: &'static (hydrology::HydroRecord, water::index::WaterIndex) =
+        Box::leak(Box::new((record, index)));
+    cache.insert(cache_key, held);
+    Ok(held)
+}
+
+/// §8.3's kind, by name -- the same lowercase-snake-case convention `MarginKind::as_str` and
+/// `ReachClass`'s own `as_str` already use in this crate, rather than `WaterKind`'s `Debug`
+/// spelling (`"SaltLake"`), which is an implementation detail this binding does not want to
+/// promise stays put.
+fn water_kind_str(kind: water::WaterKind) -> &'static str {
+    match kind {
+        water::WaterKind::None => "none",
+        water::WaterKind::Ocean => "ocean",
+        water::WaterKind::Lake => "lake",
+        water::WaterKind::SaltLake => "salt_lake",
+        water::WaterKind::SaltFlat => "salt_flat",
+        water::WaterKind::Pond => "pond",
+        water::WaterKind::River => "river",
+    }
+}
+
+/// Spec §8.3 at one point: what water is here, as `(kind, level_m, depth_m, fresh, body_id,
+/// reach_id)`. `body_id`/`reach_id` cross as `water::NO_BODY`/`water::NO_REACH`
+/// (`4294967295`) exactly where the Rust side uses that sentinel -- not `None`, because
+/// `wasm.rs`'s own wire contract already fixes that choice for this feature and a second
+/// binding disagreeing with it would give the two doors two different vocabularies for the
+/// same non-answer.
+///
+/// # The world and the bake are the same argument set, not two ids
+///
+/// Every `world_seed`/`radius_m`/`plate_count`/`land_fraction`/`features`/`features_radius_m`
+/// argument is exactly `surface_structural_m`'s own signature, because it builds and caches
+/// the same `Surface` (Ruling Q-3: the query's landform is `Surface::structural_m`, and the
+/// detail field for a fine-found body is `Surface::elevation_m` at the record's own
+/// `pond_cell_m`, Ruling Q-16 -- both read off the one `Surface` this call builds, exactly as
+/// `with_ground` reads them off the one world `wb_water_at` is given). The hydrology params
+/// that follow choose the bake, defaulted to `HydroParams::earth_like(total_nodes)` so a
+/// caller who wants the shipped tuning only has to name `total_nodes`.
+///
+/// Unlike `wb_water_at`, there is no way to pass a bake made from a different world by
+/// accident: there is no bake id to mismatch, because the bake is derived from -- and cached
+/// under -- this same call's own `Surface`.
+#[pyfunction]
+#[pyo3(signature = (
+    world_seed, radius_m, plate_count, land_fraction, x, y, z, total_nodes,
+    wetness_nodes=20_000, keep_depth_m=8.0, keep_area_m2=1.0e6, pond_max_area_m2=1.0e6,
+    stream_flow_m2=2.5e8, river_flow_m2=2.5e9, great_flow_m2=1.0e11, notch_fall_m=1.0,
+    evaporation_factor=1.0, salt_flat_share=0.1, forced_outlets=None,
+    features=None, features_radius_m=None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn water_at(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: usize,
+    land_fraction: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    total_nodes: u32,
+    wetness_nodes: u32,
+    keep_depth_m: f64,
+    keep_area_m2: f64,
+    pond_max_area_m2: f64,
+    stream_flow_m2: f64,
+    river_flow_m2: f64,
+    great_flow_m2: f64,
+    notch_fall_m: f64,
+    evaporation_factor: f64,
+    salt_flat_share: f64,
+    forced_outlets: Option<Vec<(f64, f64)>>,
+    features: Option<Vec<FeatureTuple>>,
+    features_radius_m: Option<f64>,
+) -> PyResult<(&'static str, f64, f64, bool, u32, u32)> {
+    let surface = cached_surface(
+        world_seed, radius_m, plate_count, land_fraction, features, features_radius_m,
+    );
+    let held = cached_hydro(
+        surface, total_nodes, wetness_nodes, keep_depth_m, keep_area_m2, pond_max_area_m2,
+        stream_flow_m2, river_flow_m2, great_flow_m2, notch_fall_m, evaporation_factor,
+        salt_flat_share, forced_outlets.as_deref().unwrap_or(&[]),
+    )?;
+    let (record, index) = held;
+
+    // Exactly `with_ground` in `wasm.rs`: `pond_cell_m` comes from the record's own header,
+    // never from `HydroParams::earth_like`, so a bake made with a different cell size is still
+    // judged against the surface it was actually found in (Ruling Q-16).
+    let landform_m = |point: &SpherePoint| surface.structural_m(point);
+    let detail_m = |point: &SpherePoint| surface.elevation_m(point, Some(record.stats.pond_cell_m));
+    let ground = water::Ground { landform_m: &landform_m, detail_m: &detail_m };
+
+    let point = SpherePoint { vector: Vec3::new(x, y, z) };
+    let answer = water::water_at(record, index, &ground, &point);
+    Ok((
+        water_kind_str(answer.kind),
+        answer.level_m,
+        answer.depth_m,
+        answer.fresh,
+        answer.body_id,
+        answer.reach_id,
+    ))
 }
 
 #[cfg(test)]

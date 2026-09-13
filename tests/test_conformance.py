@@ -7690,3 +7690,123 @@ def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value
     # And a missing file, which cannot be written.
     with pytest.raises(EngineFingerprintUnavailable):
         _manifest_source_fingerprint(tmp_path / "does-not-exist.txt")
+
+
+# ---------------------------------------------------------------------------------------
+# water: spec §8.3's water_at, bound in bindings.rs the same call as the wasm door
+# (wb_water_at) reaches, but with no bake id to hold -- the Surface and the bake it is
+# asked for are cached behind the same argument-keyed idiom cached_surface already uses.
+#
+# There is no Python reference implementation of hydrology to compare against (this is a
+# Rust-only feature; nothing in worldbuilder/ bakes water), so this is not a conformance
+# comparison like every section above it. It is a smoke test against a KNOWN, RE-DERIVED
+# answer: `hydrology::bake_tests::world()`/`params()` (the first of that module's own
+# `refined_populations()`, also reused by `water::query_tests`) baked once, with its
+# `record.bodies` printed, to find body id 3's own kind, level and anchor. Reproduce with
+# a temporary `eprintln!` in that test module and
+# `cargo test -p worldbuilder-engine --lib hydrology::bake_tests -- --nocapture`; do not
+# take the numbers below on faith.
+# ---------------------------------------------------------------------------------------
+
+WATER_WORLD_SEED = 20_260_904
+WATER_RADIUS_M = 6_371_000.0
+WATER_PLATE_COUNT = 12
+WATER_LAND_FRACTION = 0.29
+WATER_TOTAL_NODES = 12_000
+# hydrology::bake_tests::params(): earth_like(12_000) with these four overridden.
+WATER_PARAMS_OVERRIDES = dict(
+    wetness_nodes=500, stream_flow_m2=3.0e10, river_flow_m2=3.0e11, great_flow_m2=3.0e12,
+)
+
+# Body id 3 on that population, re-derived as the module note above describes.
+WATER_KNOWN_BODY_ID = 3
+WATER_KNOWN_BODY_KIND = "lake"
+WATER_KNOWN_BODY_LEVEL_M = 84.27789586978496
+WATER_KNOWN_BODY_ANCHOR_LAT_DEG = 29.30557748449655
+WATER_KNOWN_BODY_ANCHOR_LON_DEG = -158.75761211268775
+
+
+def _engine_water_at(latitude_deg, longitude_deg):
+    v = SpherePoint.from_latlon(latitude_deg, longitude_deg).vector
+    return engine.water_at(
+        WATER_WORLD_SEED, WATER_RADIUS_M, WATER_PLATE_COUNT, WATER_LAND_FRACTION,
+        v.x, v.y, v.z, WATER_TOTAL_NODES, **WATER_PARAMS_OVERRIDES,
+    )
+
+
+def test_water_at_names_a_known_bodys_kind_and_id_at_its_own_anchor():
+    """
+    The binding's whole job: given the same world and the same bake params, ask what water
+    is at a point and get back the body the Rust-side record actually recorded there.
+
+    Ruling Q-14 is why the ANCHOR is the point to ask: it is the one interior point every
+    body's own record names, so `water_at` answering anything but this body here would be
+    the query disagreeing with the very record it was built from, not a borderline case.
+    """
+    kind, level_m, depth_m, fresh, body_id, reach_id = _engine_water_at(
+        WATER_KNOWN_BODY_ANCHOR_LAT_DEG, WATER_KNOWN_BODY_ANCHOR_LON_DEG,
+    )
+    assert kind == WATER_KNOWN_BODY_KIND
+    assert body_id == WATER_KNOWN_BODY_ID
+    assert same(level_m, WATER_KNOWN_BODY_LEVEL_M)
+    assert depth_m >= 0.0
+    assert fresh is True
+    # §8.3: a body answer never carries a reach -- reach_id is Rust's NO_REACH sentinel,
+    # not Python's None, because wasm.rs's own wire contract already fixed that choice for
+    # this feature (see water_at's own doc comment in bindings.rs).
+    assert reach_id == 4_294_967_295
+
+
+def test_water_at_calling_twice_agrees_with_itself():
+    """
+    The bake and the query index behind it are cached keyed on the calling arguments
+    (bindings.rs's own idiom -- see the module note on `cached_hydro`), not rebuilt per
+    call. A second call with the same arguments must answer bit-for-bit the same as the
+    first, not merely a similar-looking lake.
+    """
+    first = _engine_water_at(
+        WATER_KNOWN_BODY_ANCHOR_LAT_DEG, WATER_KNOWN_BODY_ANCHOR_LON_DEG)
+    second = _engine_water_at(
+        WATER_KNOWN_BODY_ANCHOR_LAT_DEG, WATER_KNOWN_BODY_ANCHOR_LON_DEG)
+    assert first[0] == second[0]
+    assert same(first[1], second[1])
+    assert same(first[2], second[2])
+    assert first[3] == second[3]
+    assert first[4] == second[4]
+    assert first[5] == second[5]
+
+
+def test_water_at_answers_none_far_from_any_recorded_water():
+    """
+    The other end of §8.3's table, so this section is not just testing the one branch the
+    known-anchor fixture happens to hit. The north pole is nowhere near this population's
+    lakes or reaches (none of `refined_populations()`'s worlds places one there), and above
+    the datum, so it should answer plain dry land.
+    """
+    kind, level_m, depth_m, fresh, body_id, reach_id = _engine_water_at(90.0, 0.0)
+    if kind == "none":
+        assert level_m == 0.0
+        assert depth_m == 0.0
+        assert fresh is False
+        assert body_id == 4_294_967_295
+        assert reach_id == 4_294_967_295
+    else:
+        # Not asserted false: nothing rules out the pole landing in the ocean or a body on
+        # this particular seed, and re-deriving which would mean re-implementing the bake
+        # in Python. Either way the answer must be a real §8.3 kind, not a crash or a
+        # mismatched sentinel.
+        assert kind in ("ocean", "lake", "salt_lake", "salt_flat", "pond", "river")
+
+
+def test_water_at_refuses_a_seed_outside_the_i64_domain():
+    """
+    `water_at` takes the same `world_seed` domain `surface_structural_m` does (both build
+    the same `Surface`), so it refuses the same way: an `OverflowError` at the boundary,
+    not a masked seed building a different planet than the one asked for.
+    """
+    masked = (-WATER_WORLD_SEED) & ((1 << 64) - 1)
+    with pytest.raises(OverflowError):
+        engine.water_at(
+            masked, WATER_RADIUS_M, WATER_PLATE_COUNT, WATER_LAND_FRACTION,
+            1.0, 0.0, 0.0, WATER_TOTAL_NODES,
+        )
