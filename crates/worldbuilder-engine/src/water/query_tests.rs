@@ -195,15 +195,47 @@ fn recorded_kind(kind: BodyKind) -> WaterKind {
 /// `pond_max_area_m2` at 5 km², which is the *one parameter* that decides the label and touches
 /// nothing else the query reads. Nothing coarse moves with it: the coarse bodies these worlds
 /// record are 8.5e10 m² and up.
-fn query_populations() -> Vec<(String, Surface, HydroParams)> {
-    let mut out: Vec<(String, Surface, HydroParams)> = refined_populations().into_iter()
-        .map(|(name, surface, params)| (name.to_string(), surface, params))
+///
+/// **That makes the fourth population a re-bake of the second, and every count in it that is not
+/// about the pond label is the second's count again.** The `bool` says so: `true` for the three
+/// stock populations, whose counts are distinct and are what the closing totals sum, and `false`
+/// for the pond probe, which is printed for itself and summed into nothing but the pond count.
+/// Adding all four would report 169 shore members where there are 142, and 61 anchors where there
+/// are 41, in a table Task 6 pins.
+fn query_populations() -> Vec<(String, bool, Surface, HydroParams)> {
+    let mut out: Vec<(String, bool, Surface, HydroParams)> = refined_populations().into_iter()
+        .map(|(name, surface, params)| (name.to_string(), true, surface, params))
         .collect();
     let (name, surface, mut params) = refined_populations().into_iter().nth(1)
         .expect("junction_params");
     params.pond_max_area_m2 = 5.0e6;
-    out.push((format!("{name} at a 5 km² pond threshold"), surface, params));
+    out.push((format!("{name} at a 5 km² pond threshold (a re-bake of it: only the pond count \
+                       below is new)"), false, surface, params));
     out
+}
+
+/// The §14.9 counts summed over the populations that are **not** re-bakes of one another, so the
+/// totals Task 6 pins are of distinct points rather than of points counted twice.
+#[derive(Default)]
+struct Distinct {
+    members: usize,
+    member_dry: usize,
+    anchors: usize,
+    anchor_own: usize,
+    anchor_above: usize,
+    vertices: usize,
+    vertex_own: usize,
+    vertex_above: usize,
+    vertex_unclaimed: usize,
+    vertex_above_max_m: f64,
+    vertex_above_sum_m: f64,
+    collars: usize,
+    collar_own: usize,
+    reach_points: usize,
+    reach_own: usize,
+    reach_confluence: usize,
+    midpoints: usize,
+    notch_points: usize,
 }
 
 /// The midpoint of the great-circle arc `a`-`b`: the normalised sum of the two directions, which
@@ -216,11 +248,16 @@ fn midpoint(a: &SpherePoint, b: &SpherePoint) -> SpherePoint {
 /// and reach, on the three 12,000-node populations the bake tests use and the fourth
 /// [`query_populations`] adds so that the pond clause is answered by an actual pond.
 ///
+/// **The fourth population is a re-bake of the second** with one parameter changed, so every count
+/// in it that is not about the pond label duplicates the second's. The closing `DISTINCT TOTALS`
+/// line sums the three stock populations only; the per-population lines above it are printed as
+/// they are measured, duplicates included, and say so. See [`query_populations`].
+///
 /// # What is asserted, clause by clause
 ///
 /// - **Every shore member** of a shore-point body answers *that* body, by kind and by id. A member
-///   is a submerged node of the body by construction, so this holds exactly -- 169 of 169 across
-///   the four populations -- except for Ruling Q-12's case, a member the landform stands above its
+///   is a submerged node of the body by construction, so this holds exactly -- 142 of 142 distinct
+///   -- except for Ruling Q-12's case, a member the ground stands above its
 ///   own body's level: an extent suppresses the ocean while a *claim* decides the body, so such a
 ///   member is dry ground, `None`, and never `Ocean`. It is asserted rather than assumed away, and
 ///   the count is reported either way. (It is zero everywhere measured, and it is asserted anyway
@@ -239,21 +276,25 @@ fn midpoint(a: &SpherePoint, b: &SpherePoint) -> SpherePoint {
 ///   Q-16 made that comparison ask the surface the level was written against, which dropped the
 ///   *magnitude* from 45.8 m worst / 20.8 m mean to 1.28 m / 0.41 m while barely moving the count
 ///   (144 of 226 to 141 of 226). Both the count and the magnitude are printed, because it is the
-///   magnitude that tells a resolution residual from a wrong surface.
+///   magnitude that tells a resolution residual from a wrong surface. The count itself has a
+///   mechanism, and it is not "about half": a vertex is a cell **corner**, placed by `ponds.rs` at
+///   `(index - 0.5) * pond_cell_m`, half a cell outside the outermost sample the search tested as
+///   wet -- so it is biased proud by construction, and 141 of 226 is ~3.7 sigma from a coin flip.
 /// - **Every collar point**: how many answer their own body is reported, because the band admits
 ///   some by design, and no point may answer a body whose level is *below* the landform there.
-/// - **Every reach point** answers `River` at that point's own `bed_m + depth_m` within 1e-6, or
-///   -- Ruling Q-11, where two reaches cover a point the nearer centre line wins -- a *different*
-///   reach at a confluence, or a body where the reach ends in one, or the sea at its mouth. All
-///   four are counted, and a point answering the sea anywhere but at the reach's last point is a
-///   failure.
+/// - **Every reach point** answers `River`, and then **Ruling Q-18's `reach_id` says which reach**
+///   -- so "its own reach" and "a level that happens to match" are two questions, and on the
+///   branch where the reach names itself the `bed_m + depth_m` check is a hard assertion within
+///   1e-6. The alternatives are a *different* reach (Ruling Q-11), a body where the reach ends in
+///   one, or the sea at its mouth. All four are counted, and a point answering the sea anywhere
+///   but at the reach's last point is a failure.
 /// - **Every leg's midpoint** answers `River` unless a body claims it, or the sea on a last leg.
 ///   This is the case a point-only property misses: a recorded point is where the record is right
 ///   by definition.
-/// - **Every notch point** is counted four ways. A notch is a cut, not standing water, and §8.3's
-///   table has no notch row -- the query never reads `Candidates::notches` -- so a notch point
-///   answers whatever the other families say there, `River` or `None` in the ordinary case and
-///   the sea where the cut runs under the datum.
+/// - **Every notch point**: *no* notch point answers a body -- a notch is a cut through a rim, not
+///   the lake it drains -- and one that answers the sea must stand at or below the datum on this
+///   test's own landform closure. §8.3's table has no notch row and the query never reads
+///   `Candidates::notches`, so what is left, `River` and `None`, is counted and reported.
 ///
 /// Every count is printed. They are Task 6's verification table, and two of them -- ring vertices
 /// standing above their own recorded level, and vertices claimed by nothing -- are what produced
@@ -261,8 +302,8 @@ fn midpoint(a: &SpherePoint, b: &SpherePoint) -> SpherePoint {
 #[test]
 fn the_query_agrees_with_the_record_at_every_recorded_point() {
     let mut ponds_seen = 0usize;
-    let mut confluences_seen = 0usize;
-    for (name, surface, params) in query_populations() {
+    let mut total = Distinct::default();
+    for (name, distinct, surface, params) in query_populations() {
         let record = crate::hydrology::bake(&surface, &params).expect("bake");
         let index = WaterIndex::build(&record, surface.radius_m, DEFAULT_CELL_M);
         // Ruling Q-3: the LANDFORM for a coarse body, a reach and the ocean -- every level and
@@ -303,6 +344,15 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
             let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
             let got = ask(&anchor);
             anchors += 1;
+            // Ruling Q-13's own property, and the reason Q-14 asks about the anchor at all:
+            // **is the body even offered here?** It is a question about the index alone, so it is
+            // asked unconditionally, before any level branch. Without it the branch below is
+            // satisfied by a missing candidate -- a body that is in no cell at its own anchor
+            // answers `None`, which is not `Ocean`, and the assertion there would pass. The
+            // interior is exactly where Q-13's hole was, and no outline point can see it.
+            assert!(index.candidates(&anchor).bodies.contains(&body.id),
+                    "{name}: body {} is not even a candidate at its own anchor {},{} (Q-13)",
+                    body.id, body.anchor.0, body.anchor.1);
             if level_ground(body, &anchor) > body.level_m {
                 // Ruling Q-12 again. This branch used to be where the Q-16 defect showed --
                 // 10 of 41 anchors, because a fine-search body's level was compared against
@@ -344,6 +394,13 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                 if member_count == 0 {
                     // A traced ring's vertex: its own body, or a neighbour by Ruling T1-3.
                     vertices += 1;
+                    // The same unconditional candidacy question as at the anchor. Every branch
+                    // below is about the *claim*; this one is about the index, and without it a
+                    // vertex the index lost would fall through the `above its own level` branch
+                    // and assert nothing at all.
+                    assert!(index.candidates(&point).bodies.contains(&body.id),
+                            "{name}: body {} is not even a candidate at its own ring vertex \
+                             {lat},{lon} (Q-13)", body.id);
                     if level_ground(body, &point) > body.level_m {
                         vertex_above += 1; // the anchor's case, on the ring
                         let over = level_ground(body, &point) - body.level_m;
@@ -415,12 +472,25 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                 let got = ask(&point);
                 reach_points += 1;
                 if got.kind == WaterKind::River {
-                    let want = rp.bed_m + rp.depth_m;
-                    let off =
-                        if got.level_m > want { got.level_m - want } else { want - got.level_m };
-                    // Ruling Q-11: the nearer centre line wins, so a point recorded on this reach
-                    // may legitimately answer another one at a confluence.
-                    if off <= 1.0e-6 { reach_own += 1 } else { reach_confluence += 1 }
+                    // **Ruling Q-18 is what makes this an assertion rather than a guess.** Which
+                    // reach answered is now named, so "its own reach" and "the level happens to
+                    // match" are two different questions, and the level check is a real assertion
+                    // on the branch where it belongs. Before `reach_id` existed, a different reach
+                    // carrying a numerically equal level counted silently as this reach's own.
+                    if got.reach_id == reach.id {
+                        let want = rp.bed_m + rp.depth_m;
+                        let off = if got.level_m > want { got.level_m - want }
+                                  else { want - got.level_m };
+                        assert!(off <= 1.0e-6,
+                                "{name}: reach {} answers its own point {},{} at level {} m, and \
+                                 the record says bed {} m plus depth {} m",
+                                reach.id, rp.lat_deg, rp.lon_deg, got.level_m, rp.bed_m, rp.depth_m);
+                        reach_own += 1;
+                    } else {
+                        // Ruling Q-11: the nearer centre line wins, ties to the lower reach id.
+                        // Both halves are reachable at a recorded point -- see the closing note.
+                        reach_confluence += 1;
+                    }
                 } else if is_body(got.kind) {
                     // A reach that ends in a body has its last point inside it, by construction.
                     reach_in_body += 1;
@@ -465,23 +535,37 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
 
         // A notch is a cut, not standing water: §8.3's table has no notch row, and the query
         // never reads `Candidates::notches`. So a notch point answers whatever the *other*
-        // families say there -- the reach that runs through the cut, or nothing. The two the
-        // brief did not anticipate are counted rather than refused: a notch cut at or below the
-        // datum is sea by Ruling Q-4, and one inside a recorded extent is that body.
+        // families say there -- the reach that runs through the cut, or nothing.
+        //
+        // Two of the four outcomes are assertions, not counters. **No notch point answers a
+        // body**: a notch is cut through a rim to drain a hollow, so standing water at one would
+        // say the cut runs through the lake it drains. And a notch point that answers the sea
+        // must actually stand at or below the datum -- Ruling Q-4's own clause, checked against
+        // this test's own landform closure rather than taken on the query's word, so `Ocean`
+        // cannot be accepted anywhere the ocean has no business being.
         let (mut notch_points, mut notch_river, mut notch_dry) = (0usize, 0usize, 0usize);
         let (mut notch_sea, mut notch_body) = (0usize, 0usize);
         for notch in &record.notches {
             for &(lat, lon, _, _) in &notch.points {
-                let got = ask(&SpherePoint::from_latlon(lat, lon));
+                let point = SpherePoint::from_latlon(lat, lon);
+                let got = ask(&point);
                 notch_points += 1;
                 match got.kind {
                     WaterKind::River => notch_river += 1,
                     WaterKind::None => notch_dry += 1,
-                    WaterKind::Ocean => notch_sea += 1,
+                    WaterKind::Ocean => {
+                        assert!(landform(&point) <= 0.0,
+                                "{name}: a notch point at {lat},{lon} answers Ocean on landform \
+                                 standing {} m above the datum", landform(&point));
+                        notch_sea += 1;
+                    }
                     _ => notch_body += 1,
                 }
             }
         }
+        assert_eq!(notch_body, 0,
+                   "{name}: {notch_body} notch points stand in a recorded body -- a notch is a \
+                    cut through a rim, not the lake it drains");
 
         eprintln!(
             "{name}: {} bodies ({rings} traced rings, {ring_ponds} of them ponds) / {} reaches / \
@@ -523,14 +607,74 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
                    "{name}: {reach_sea_inland} recorded reach points answer Ocean somewhere other \
                     than at the reach's last point");
         ponds_seen += ring_ponds;
-        confluences_seen += reach_confluence;
+        if distinct {
+            total.members += members;
+            total.member_dry += member_dry;
+            total.anchors += anchors;
+            total.anchor_own += anchor_own;
+            total.anchor_above += anchor_above;
+            total.vertices += vertices;
+            total.vertex_own += vertex_own;
+            total.vertex_above += vertex_above;
+            total.vertex_unclaimed += vertex_unclaimed;
+            total.vertex_above_sum_m += vertex_above_sum_m;
+            if vertex_above_max_m > total.vertex_above_max_m {
+                total.vertex_above_max_m = vertex_above_max_m;
+            }
+            total.collars += collars;
+            total.collar_own += collar_own;
+            total.reach_points += reach_points;
+            total.reach_own += reach_own;
+            total.reach_confluence += reach_confluence;
+            total.midpoints += midpoints;
+            total.notch_points += notch_points;
+        }
     }
+
+    // Ruling Q-16's residual, measured rather than shrugged at. A ring vertex is a cell
+    // **corner** -- `ponds.rs`'s trace places it at `(index - 0.5) * pond_cell_m`, half a cell
+    // back from the centre the search actually sampled -- so it stands half a cell outside the
+    // outermost wet sample, on ground no sample ever tested as submerged. It is therefore biased
+    // to stand *proud* of its own level by construction, and the measured share is not a coin
+    // flip: 141 of 226 is 62.4%, which against a fair coin's 113 +/- 7.52 is about 3.7 standard
+    // deviations out. The corner offset is what explains the bias; the excess magnitude is what
+    // says the surfaces agree, and it is a metre and change on a 250 m trace.
+    let mean_above_m = if total.vertex_above > 0 {
+        // cast-ok: a count of ring vertices into a float, for a mean
+        total.vertex_above_sum_m / total.vertex_above as f64
+    } else {
+        0.0
+    };
+    eprintln!(
+        "DISTINCT TOTALS over the three stock populations (the fourth is a re-bake of the second \
+         and is excluded; only its pond count is new):\n  \
+         shore members {} ({} above their own level), collar points {} ({} their own body);\n  \
+         anchors {} ({} their own body, {} above their own level);\n  \
+         ring vertices {} ({} their own body, {} above their own level -- at most {:.3} m, \
+         {mean_above_m:.3} m mean -- {} claimed by nothing);\n  \
+         reach points {} ({} their own reach by reach_id, {} another reach), leg midpoints {}, \
+         notch points {}.\n  \
+         Ponds of kind `Pond` across every population: {ponds_seen}.",
+        total.members, total.member_dry, total.collars, total.collar_own,
+        total.anchors, total.anchor_own, total.anchor_above,
+        total.vertices, total.vertex_own, total.vertex_above, total.vertex_above_max_m,
+        total.vertex_unclaimed,
+        total.reach_points, total.reach_own, total.reach_confluence, total.midpoints,
+        total.notch_points);
+
     // The pond clause is answered by a real `Pond` somewhere, which is what the fourth population
-    // is for; without it this whole property says nothing about ponds. The Ruling Q-11 allowance,
-    // by contrast, is *provably* unreachable at a recorded point -- a reach's own centre line
-    // passes through its own point at distance zero, so no other reach can be nearer -- and it is
-    // reported at zero rather than engineered into existence. See the task report.
+    // is for; without it this whole property says nothing about ponds.
     assert!(ponds_seen > 0, "no population recorded a body of kind Pond");
-    eprintln!("across every population: {ponds_seen} traced rings of kind Pond, \
-               {confluences_seen} recorded reach points answered by another reach (Q-11)");
+
+    // **Ruling Q-11's allowance is exercised, and the earlier claim that it could not be was
+    // wrong twice over.** The argument was that a reach's own centre line passes through its own
+    // recorded point at distance zero, so no other reach can be nearer. Both halves fail: the
+    // tie-break at an equal distance goes to the LOWER reach id, so a tributary whose last point
+    // coincides with a main-stem point sits at zero too and the lower id takes it; and the old
+    // discriminator was "the level differs", which counted a different reach carrying a
+    // numerically equal level as this reach's own. Ruling Q-18's `reach_id` settles both, and the
+    // count went from a reported 0 to a measured 35 of 4,082 river answers the moment it did.
+    assert!(total.reach_confluence > 0,
+            "no recorded reach point is answered by another reach: Ruling Q-11's tie-break is \
+             asserting nothing on these populations");
 }
