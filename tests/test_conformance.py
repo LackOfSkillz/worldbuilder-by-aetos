@@ -7708,7 +7708,8 @@ def test_manifest_source_fingerprint_unavailable_never_reads_as_a_matching_value
 # that "add a temporary eprintln" -- the old instruction here, and the reason this door
 # pinned a single lake for a whole plan -- is not the procedure. Run:
 #
-#   cargo test --release -p worldbuilder-engine --lib print_the_python_doors_anchors #       -- --ignored --nocapture
+#   cargo test --release -p worldbuilder-engine --lib print_the_python_doors_anchors \
+#       -- --ignored --nocapture
 #
 # and read the constants off its output.
 # ---------------------------------------------------------------------------------------
@@ -7822,7 +7823,7 @@ def test_water_at_answers_a_different_kind_at_each_pinned_point():
     The pins above would all pass against a binding that answered one thing everywhere, if that
     one thing happened to be what each point was pinned to -- which is impossible, but only
     because the pins differ, and nothing above says they do. This says it: the seven points reach
-    five distinct kinds, `lake` twice by way of Ruling Q-16's fine-found branch.
+    six distinct kinds, `lake` twice by way of Ruling Q-16's fine-found branch.
     """
     kinds = sorted({case[3] for case in WATER_ANSWERS})
     assert kinds == ["lake", "none", "ocean", "river", "salt_flat", "salt_lake"]

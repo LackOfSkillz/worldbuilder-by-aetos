@@ -128,13 +128,16 @@ fn scan_text(label: &str, text: &str) -> Vec<String> {
     offences
 }
 
-/// How many `.abs()` calls a file's source text holds, counted by the same line rules the scan
-/// above uses: a wholly-commented line does not count, and neither does one carrying the
-/// `// cast-ok:` marker.
+/// How many `.abs()` calls a file's source text holds. A wholly-commented line does not count.
+///
+/// The `// cast-ok:` marker deliberately does NOT exempt a line here. That marker justifies a
+/// cast, and a cast is not an `.abs()`; honouring it would make `x.abs() as u32; // cast-ok: ...`
+/// invisible to this scan in every file, ledgered or clean, which is a hole wide enough to drive
+/// the whole ban through.
 fn count_abs(text: &str) -> usize {
     let mut found = 0;
     for line in text.lines() {
-        if line.trim_start().starts_with("//") || line.contains(CAST_OK_MARKER) {
+        if line.trim_start().starts_with("//") {
             continue;
         }
         for needle in ABS_BANNED {
@@ -273,6 +276,7 @@ fn the_abs_counter_counts_what_the_ledger_is_made_of() {
     assert_eq!(count_abs("fn f(x: f64) -> f64 { x.abs() }"), 1);
     assert_eq!(count_abs("fn f(x: f64, y: f64) -> f64 { x.abs() + f64::abs(y) }"), 2);
     assert_eq!(count_abs("// a comment mentioning x.abs() is not a call"), 0);
-    assert_eq!(count_abs("let n = x.abs() as u32; // cast-ok: already counted elsewhere"), 0);
+    // A cast-ok marker justifies the cast, never the .abs() sitting in front of it.
+    assert_eq!(count_abs("let n = x.abs() as u32; // cast-ok: an already-rounded magnitude"), 1);
     assert_eq!(count_abs("fn f(x: f64) -> f64 { if x < 0.0 { -x } else { x } }"), 0);
 }

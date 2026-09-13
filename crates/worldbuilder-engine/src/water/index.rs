@@ -8,7 +8,10 @@
 //! is deterministic, and the superset guarantee this index rests on is brute-forced against the
 //! grid cell by cell rather than against a scatter: at the poles and at every latitude from 40 to
 //! 89 in both hemispheres, at longitudes −180, −179.9, 0 and 179.9, and at radii from 5 km to
-//! 19,000 km — which is wider than the whole circle of longitude at any row. That full cross
+//! 19,000 km — an angular radius of about 117° on a planet this size, which carries the
+//! high-latitude rows past the point where their own swept arc closes the circle of longitude.
+//! (It is the row's arc that closes, not the reach: a parallel at latitude 40 is far longer than
+//! 19,000 km, so no single reach spans one outright.) That full cross
 //! product is `#[ignore]`d for cost; what runs on every build is the near-pole small-circle and
 //! multi-megametre regimes, the two where the sweep's column walk was last found under-covering.
 //! `BucketIndex` indexes *points*, though, and this index holds *areas*, so what is borrowed is

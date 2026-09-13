@@ -430,8 +430,10 @@ This is a new stage in `Surface`, after features and before detail:
   cube-sphere cell grid" this line said before plan 2a.** `BucketIndex` already existed, is
   deterministic, and its `cells_within` superset guarantee is brute-forced cell by cell against the
   grid itself — at the poles and at every latitude from 40 to 89 in both hemispheres, at longitudes
-  −180, −179.9, 0 and 179.9, and at radii from 5 km to 19,000 km, wider than the whole circle of
-  longitude at any row. That full cross product is `#[ignore]`d for cost; the near-pole
+  −180, −179.9, 0 and 179.9, and at radii from 5 km to 19,000 km — an angular radius of about
+  117°, which carries the high-latitude rows past the point where their own swept arc closes the
+  circle of longitude. It is the row's arc that closes there, not the reach: a parallel at
+  latitude 40 is far longer than 19,000 km. That full cross product is `#[ignore]`d for cost; the near-pole
   small-circle and multi-megametre regimes run on every build. A second
   grid would have been a second thing to get wrong. `BucketIndex` indexes *points* and this index
   holds *areas*, so what is borrowed is the arithmetic alone — `cell_of`, `cells_within`,
