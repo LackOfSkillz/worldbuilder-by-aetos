@@ -433,3 +433,30 @@ class TestThePaperShowsOneSymbolPerThing(ProviderTestCase):
         struck = {d.key.split(" (")[0] for d in self.provider.dangers}
         shown = {d.key for d in self.provider.charted_dangers(Position(0.0, 0.0), 60_000.0)}
         self.assertEqual(struck, shown)
+
+    def test_the_provider_says_how_big_its_planet_is(self):
+        """
+        The radius is the provider's to state, because the provider is the only thing that
+        knows it.
+
+        `maritime.bake.bundle` records a world by asking it for `radius_m` and writing that
+        into the bundle's manifest; the reader needs it because a bundle is flat metres and
+        an anchor, and turning those back into a latitude is `degrees(y / radius)`. A
+        provider that stays silent gets Earth's radius assumed on its behalf, which is not
+        an error anybody sees -- it is a graticule that is quietly wrong everywhere.
+
+        **Pinned at a radius that is not Earth's, deliberately.** This adapter used the
+        world's real radius for its own tangent frame all along and still failed to say it
+        out loud, and no test at Earth's radius could have noticed: the assumed value and
+        the true one are the same number there. That is the same blind spot that let six
+        separate `EARTH_RADIUS_M` substitutions through a full suite.
+
+        """
+        elsewhere = 9_309_000.0
+        self.assertNotEqual(elsewhere, 6_371_000.0, "the point of this test is a non-Earth radius")
+        world = Surface(WORLD_SEED, radius_m=elsewhere, features=self.region.features)
+        provider = WorldbuilderTerrain(world, self.region, region_name="demo")
+        self.assertEqual(provider.radius_m, elsewhere)
+        # And the frame it already built agrees, so the attribute is the same planet the
+        # soundings were taken on rather than a second opinion about it.
+        self.assertEqual(provider.radius_m, world.radius_m)
