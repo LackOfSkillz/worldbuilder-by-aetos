@@ -9,7 +9,7 @@
 // Everything is driven by URL parameters so a check can ask for a *different* world without
 // a code change -- including the deliberately wrong ones.
 
-import { Engine } from "./engine.js";
+import { Engine, WB_OK } from "./engine.js";
 import { holdUntilRendered, buildOverlay } from "./loading.js";
 import { keepPainted } from "./worlds.js";
 import { riverFromRoute, soundChannel } from "./river.js";
@@ -20,7 +20,7 @@ import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
 import { coastFromParams } from "./coast-params.js";
 import { gullyFromParams } from "./gully-params.js";
-import { peakFromParams } from "./peak-params.js";
+import { peakFromParams, peakBootPlan } from "./peak-params.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, engineClimateEnabled, createReliefImageryProvider,
@@ -216,7 +216,28 @@ async function boot() {
   // are handed this same `spec` by `structuredClone`, so a peak block chosen here reaches every
   // worker's own constructor and the tiles they fill are the same planet as the main thread's.
   const peakCanonical = engine.peakPreset("canonical");
-  spec.peaks = peakFromParams(params, peakCanonical);
+  // **Blocker 1's fix lives here.** `peakFromParams` forwards an out-of-domain or joint-invariant-
+  // breaking block on purpose (its own doc: "a caller asking for something the engine declines is
+  // a different thing from a caller not asking for anything"), and the only way to *reach* that
+  // path is a hand-edited query string, since neither `reach_m` nor `lattice_m` has a widget. Left
+  // alone, that block would reach `wb_world_new_peak` inside `worldSwapper.swap` below, which
+  // throws -- and `boot()`'s own caller (`window.__wbBoot = boot().catch(...)` at the bottom of
+  // this file) swallows that throw without ever publishing `window.__wb`, so `controls.js` never
+  // gets far enough to run `peakAdmissibleNote`'s check at all. The owner then sees the same
+  // generic "engine unavailable" text a truly dead engine would produce, which blames the wrong
+  // thing -- worse than silence, because it misdirects.
+  //
+  // So the block is checked against the real validator, `wb_peak_check`, BEFORE it ever reaches
+  // the constructor, in a step that runs whether or not the rest of boot later fails for some
+  // other reason. A refused block is swapped for `null` -- the canonical, island-free ocean --
+  // so the constructor never sees it and boot can finish and publish `window.__wb` normally.
+  // `peaksRequested` and `peaksRefused` are kept so `window.__wb.peaks.chosen` below can still
+  // show the owner what was actually asked for: `controls.js`'s existing `presets.check(peakState)`
+  // then reaches a live block and prints the real refusal reason instead of nothing at all.
+  const peaksRequested = peakFromParams(params, peakCanonical);
+  const peaksPlan = peakBootPlan(peaksRequested, engine.checkPeak(peaksRequested) === WB_OK);
+  const peaksRefused = peaksPlan.refused;
+  spec.peaks = peaksPlan.forConstructor;
 
   const size = number("size", HEIGHTMAP_SIZE);
   const maxLevel = number("maxLevel", MAX_LEVEL);
@@ -1244,7 +1265,14 @@ async function boot() {
     peaks: {
       canonical: peakCanonical,
       volcanic: engine.peakPreset("volcanic"),
-      get chosen() { return installed.state.spec.peaks; },
+      /// **The block the query string actually asked for, not the one the world was built
+      /// with.** Those two agree everywhere except the one path Blocker 1 closes: when the
+      /// query string named a block `wb_peak_check` refuses, `installed.state.spec.peaks` reads
+      /// back `null` (the fallback boot substituted so the constructor would not throw) and the
+      /// refusal would vanish the moment boot finished. Reading `peaksRequested` here instead
+      /// means `controls.js`'s `peakState` starts on the REFUSED block, so `presets.check`
+      /// below is asked a live question and `peakAdmissibleNote` actually fires.
+      get chosen() { return peaksRefused ? peaksRequested : installed.state.spec.peaks; },
       /// Whether the engine would accept a block, asked of `wb_peak_check` itself. This
       /// channel's one bound no per-field check can see is joint -- `reach_m <= lattice_m` is
       /// what keeps `peak_of_cell`'s candidate scan complete -- so a panel re-deriving it in

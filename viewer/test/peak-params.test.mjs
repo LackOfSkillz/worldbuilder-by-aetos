@@ -53,6 +53,7 @@ import {
   peakToRecord,
   peakFromRecord,
   peakReadoutFields,
+  peakBootPlan,
 } from "../public/app/peak-params.js";
 
 const DEFAULT_WORLD = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
@@ -74,6 +75,14 @@ const PROBES = [
 
 const appFile = (name) =>
   readFileSync(fileURLToPath(new URL(`../public/app/${name}`, import.meta.url)), "utf8");
+
+/// `tectonics.rs` itself, read the same way `appFile` reads the viewer's own modules -- the
+/// authoritative source `PeakParams`'s field order and `VOLCANIC_DENSITY` both live in.
+const tectonicsSource = () =>
+  readFileSync(
+    fileURLToPath(new URL("../../crates/worldbuilder-engine/src/tectonics.rs", import.meta.url)),
+    "utf8",
+  );
 
 async function loadEngine() {
   const wasmPath = fileURLToPath(new URL("../public/wasm/worldbuilder_engine.wasm", import.meta.url));
@@ -114,6 +123,43 @@ test("the preset crosses as five numbers and moves exactly one of them", () => {
   assert.deepEqual(peakFromRecord(peakToRecord(volcanic)), volcanic);
 });
 
+test("the round trip catches a field swap, not just a length change", () => {
+  // **The gap the test above cannot see.** `height_m` and `min_depth_m` share the domain
+  // `[0, 1e5]`, so a `PEAK_FIELDS` that swapped their two positions would still pass every
+  // assertion above: `canonical`/`volcanic` never move `height_m` or `min_depth_m` at all, and a
+  // round trip of `volcanic` through a permuted order is invisible when the two swapped slots
+  // happen to hold values that are still individually valid at the other's position.
+  //
+  // A DISTINCT sentinel per field closes that gap: if any two positions were swapped, at least
+  // one of the five would land back in the wrong key, and `deepEqual` would catch it without ever
+  // reading `tectonics.rs`.
+  const sentinel = { height_m: 1111, density: 0.2222, reach_m: 3333, min_depth_m: 4444, lattice_m: 5555 };
+  const record = peakToRecord(sentinel);
+  // Each value lands at its own index -- the record IS `PEAK_FIELDS`' order, named rather than
+  // inferred from round-tripping alone.
+  PEAK_FIELDS.forEach((field, index) => {
+    assert.equal(record[index], sentinel[field], `${field} is not at index ${index} of the record`);
+  });
+  assert.deepEqual(peakFromRecord(record), sentinel);
+});
+
+test("PEAK_FIELDS is pinned against PeakParams's own declared order in tectonics.rs", () => {
+  // **The authoritative source, not a second copy of the claim.** `PeakParams`'s doc comment
+  // states its field order IS the ABI; this reads that struct's own declaration directly (the
+  // same grep-the-source technique `no peak number is written down twice in the viewer` below
+  // uses for `VOLCANIC_DENSITY`), so a future edit that reordered the struct -- or this file --
+  // would be named rather than silently agreeing with itself.
+  const source = tectonicsSource();
+  const structMatch = source.match(/pub struct PeakParams \{([\s\S]*?)\n\}/);
+  assert.ok(structMatch, "PeakParams struct not found in tectonics.rs");
+  const declared = [...structMatch[1].matchAll(/pub (\w+):/g)].map((m) => m[1]);
+  assert.deepEqual(
+    PEAK_FIELDS, declared,
+    `PEAK_FIELDS has drifted from PeakParams's declared order in tectonics.rs (Rust says: ` +
+    `${declared.join(", ")}; JS says: ${PEAK_FIELDS.join(", ")})`,
+  );
+});
+
 test("the untouched path is null, and null is the untouched world", () => {
   // RULING 1, on the viewer's side of the boundary. A page with no peak parameters, and a page
   // whose peak parameters all equal canonical's, must both reach the engine as a null pointer.
@@ -131,15 +177,22 @@ test("the untouched path is null, and null is the untouched world", () => {
   assert.equal(refused.density, -1);
   assert.equal(engine.checkPeak(refused), WB_ERR_PARAM);
 
-  // And the world itself: the default path is byte-for-byte the world with no peak argument.
+  // And the world itself: the default path is byte-for-byte the world with no peak argument, at
+  // every probe and at every resolution -- the same three the gully channel's own version of this
+  // test checks (250 m, 76.35 m and 5000 m), rather than one alone.
   const plain = engine.newWorld({ ...DEFAULT_WORLD });
   const defaulted = engine.newWorld({ ...DEFAULT_WORLD, peaks: null });
   const explicit = engine.newWorld({ ...DEFAULT_WORLD, peaks: canonical });
   for (const [lat, lon] of PROBES) {
-    const expected = engine.elevationM(plain, lat, lon, 250);
-    assert.equal(engine.elevationM(defaulted, lat, lon, 250), expected, `null moved ${lat},${lon}`);
-    assert.equal(
-      engine.elevationM(explicit, lat, lon, 250), expected, `canonical moved ${lat},${lon}`);
+    for (const resolution of [250, 76.35, 5000]) {
+      const expected = engine.elevationM(plain, lat, lon, resolution);
+      assert.equal(
+        engine.elevationM(defaulted, lat, lon, resolution), expected,
+        `null moved ${lat},${lon} at ${resolution} m`);
+      assert.equal(
+        engine.elevationM(explicit, lat, lon, resolution), expected,
+        `canonical moved ${lat},${lon} at ${resolution} m`);
+    }
   }
   for (const h of [plain, defaulted, explicit]) assert.equal(engine.freeWorld(h), WB_OK);
 });
@@ -282,14 +335,25 @@ test("no peak number is written down twice in the viewer", () => {
   // string a source file can be asked not to contain in isolation the way `0.35` was for the
   // coast channel -- but the preset's own density is distinctive enough to ask about.
   //
-  // **It is 0.36 and not 0.35, and that is deliberate.** Task 7's survey found seven admissible
-  // hundredths (0.32 through 0.38) and picked 0.36 as the maximin. `CoastParams::fractal()`'s
-  // amplitude is 0.35, and had the density landed there this assertion would have been
-  // indistinguishable from the coast channel's identical one -- a scan that passes only because
-  // another channel's guard already holds is a scan that tests nothing of its own. See
-  // `VOLCANIC_DENSITY`'s doc in `tectonics.rs` for the sweep this came out of.
+  // **Read from `tectonics.rs` itself, not hard-coded.** A literal number here (`"0.11"`, the
+  // pre-calibration density, or `"0.36"`, the value Task 7's survey landed on) would go stale the
+  // day `VOLCANIC_DENSITY` next moves -- the grep below would keep passing, but vacuously: it
+  // would be checking that nobody transcribed a number nobody would transcribe. `volcanic.density`
+  // is already read live across the boundary (`wb_peak_preset`, above in `test.before`), and this
+  // cross-checks it against the constant's own declaration in `tectonics.rs` -- the same
+  // grep-the-source technique `PEAK_FIELDS is pinned against PeakParams's own declared order`
+  // uses -- so a drift between the two is named rather than silently trusted.
+  const volcanicDensityMatch = tectonicsSource().match(/const VOLCANIC_DENSITY: f64 = ([\d.]+)/);
+  assert.ok(volcanicDensityMatch, "VOLCANIC_DENSITY not found in tectonics.rs");
+  assert.equal(
+    volcanic.density, Number(volcanicDensityMatch[1]),
+    "wb_peak_preset(volcanic)'s density has drifted from VOLCANIC_DENSITY in tectonics.rs",
+  );
+  // `CoastParams::fractal()`'s amplitude is 0.35, and had the density landed there this assertion
+  // would have been indistinguishable from the coast channel's identical one -- a scan that
+  // passes only because another channel's guard already holds is a scan that tests nothing of its
+  // own.
   const literals = [String(volcanic.density)];
-  assert.deepEqual(literals, ["0.36"]);
   assert.notEqual(literals[0], "0.35", "the peak density must stay distinct from the coast one");
   assert.notEqual(String(canonical.density), literals[0], "the preset must move the density");
   for (const name of ["controls.js", "main.js"]) {
@@ -364,4 +428,77 @@ test("the panel surfaces a joint-bound refusal rather than staying silent", () =
   assert.match(controls, /peakAdmissibleNote/);
   assert.match(controls, /presets\.check\(peakState\)/);
   assert.match(controls, /the engine will refuse this block/);
+});
+
+test("a hand-edited query string that breaks the joint bound reaches an owner, not a swallowed throw", () => {
+  // **Blocker 1, exercised rather than only claimed.** Before this fix, the only path that could
+  // ever make `peakAdmissibleNote` fire was a query string with `reach_m > lattice_m` -- and that
+  // exact query string, run through `main.js`'s boot path, threw out of `wb_world_new_peak`
+  // straight past `boot().catch(...)` at the bottom of `main.js`, which swallows the error without
+  // ever publishing `window.__wb`. `controls.js`'s `wirePeaks` never runs, so the check this test
+  // file's own header advertises never gets asked. The owner saw the same generic "engine
+  // unavailable" text a truly dead engine produces -- worse than silence, because it blames the
+  // wrong thing.
+  //
+  // This test drives the actual mechanism the fix adds, `peakBootPlan`, with the exact shape a
+  // user's query string produces -- `peakFromParams` over `?peakReach=`/`?peakLattice=` -- and
+  // proves two things a source grep cannot: the constructor never sees the refused block (so boot
+  // does not throw and `window.__wb` gets published), and the block the panel would still show the
+  // owner is the refused one, live-checked, so `peakAdmissibleNote` actually has something to say.
+  const query = new URLSearchParams("peakReach=60000&peakLattice=50000");
+  const requested = peakFromParams(query, canonical);
+  assert.equal(requested.reach_m, 60000);
+  assert.equal(requested.lattice_m, 50000);
+  assert.equal(engine.checkPeak(requested), WB_ERR_PARAM, "this query string must be the refused shape");
+
+  const plan = peakBootPlan(requested, engine.checkPeak(requested) === WB_OK);
+  assert.equal(plan.refused, true);
+  // **The property that keeps boot alive**: the refused block never reaches the constructor.
+  assert.equal(plan.forConstructor, null);
+  assert.doesNotThrow(
+    () => {
+      const handle = engine.newWorld({ ...DEFAULT_WORLD, peaks: plan.forConstructor });
+      // And the fallback really is the canonical, island-free ocean, not merely "a world" --
+      // every probe reads back exactly what the plain constructor call gives.
+      const plain = engine.newWorld({ ...DEFAULT_WORLD });
+      for (const [lat, lon] of PROBES) {
+        assert.equal(
+          engine.elevationM(handle, lat, lon, 250), engine.elevationM(plain, lat, lon, 250),
+          `the boot fallback moved ${lat},${lon} away from canonical`,
+        );
+      }
+      assert.equal(engine.freeWorld(handle), WB_OK);
+      assert.equal(engine.freeWorld(plain), WB_OK);
+    },
+    "a refused peak block must never reach wb_world_new_peak at boot",
+  );
+
+  // **The property that keeps the note honest**: the panel's `chosen` block (what `main.js`
+  // publishes on `window.__wb.peaks.chosen` when `plan.refused` is true) is the ORIGINAL request,
+  // not the fallback -- so `presets.check(peakState)` in `controls.js`'s `paint()` is asked about
+  // the block the owner actually typed, and it fails live rather than defaulting to "admissible".
+  const chosenForPanel = plan.refused ? requested : plan.forConstructor;
+  assert.equal(chosenForPanel, requested);
+  assert.equal(engine.checkPeak(chosenForPanel), WB_ERR_PARAM);
+
+  // And a request that was never refused must pass through untouched -- this fix must not turn
+  // every peak block into a fallback, only the ones the engine actually declines.
+  const fine = peakBootPlan(volcanic, engine.checkPeak(volcanic) === WB_OK);
+  assert.deepEqual(fine, { forConstructor: volcanic, refused: false });
+  const untouched = peakBootPlan(null, true);
+  assert.deepEqual(untouched, { forConstructor: null, refused: false });
+
+  // Finally, that this is actually how `main.js` is wired, not a helper that sits unused: it must
+  // check the request before deciding what reaches the constructor, and the panel's `chosen`
+  // getter must be able to see the refused request rather than only what got built.
+  const mainSource = appFile("main.js");
+  assert.match(mainSource, /peakBootPlan\(/, "main.js must call peakBootPlan");
+  assert.match(
+    mainSource, /engine\.checkPeak\(peaksRequested\)/,
+    "main.js must ask the engine about the request before deciding what reaches the constructor",
+  );
+  assert.match(
+    mainSource, /peaksRefused \? peaksRequested/,
+    "window.__wb.peaks.chosen must fall back to the requested block when it was refused",
+  );
 });

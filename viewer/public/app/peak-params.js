@@ -238,3 +238,26 @@ export function peakToParams(peak, canonical) {
   }
   return out;
 }
+
+/// Boot's answer to the refusal Blocker 1 names: what `wb_world_new_peak` should actually be
+/// handed, given what a query string asked for (`peakFromParams`'s own return) and whether the
+/// engine accepts it (the caller's own `wb_peak_check` verdict, so this module keeps its rule of
+/// asking the engine rather than re-deriving the joint bound itself).
+///
+/// **The property this closes:** `requested` can be a block a hand-edited `?peakReach=` /
+/// `?peakLattice=` breaks the `reach_m <= lattice_m` invariant on, and that is the ONLY path that
+/// can reach it -- neither field has a widget, so no panel action alone can produce one.
+/// Unfiltered, that block reaches `wb_world_new_peak`, which throws; `main.js`'s own
+/// `boot().catch(...)` swallows that throw without ever publishing `window.__wb`, so the panel
+/// never gets far enough to run its own refusal check and the owner sees the same generic "engine
+/// unavailable" text a truly dead engine would produce -- worse than silence, because it blames
+/// the wrong thing.
+///
+/// So a refused `requested` is never the block that reaches the constructor: `forConstructor` is
+/// `null` instead, the canonical, island-free ocean, and `refused` says so. `requested` itself is
+/// not discarded -- `main.js` keeps it so the panel can still show what was actually asked for and
+/// its own `checkPeak`-backed note can still fire on it live.
+export function peakBootPlan(requested, admissible) {
+  const refused = requested !== null && !admissible;
+  return { forConstructor: refused ? null : requested, refused };
+}
