@@ -104,8 +104,8 @@ use crate::stream::{sample_nodes, BuildParams, SamplingKind, StreamGraph};
 use crate::substrate::{MUD, ROCK, SAND};
 use crate::surface::{FeatureInput, Surface};
 use crate::tectonics::{
-    TectonicParams, COASTAL_UPLIFT_OFFSET_M, COLLISION_SYMMETRIC, ISLAND_ARC_OFFSET_M,
-    MAX_TECTONIC_RANGE_M,
+    PeakParams, TectonicParams, COASTAL_UPLIFT_OFFSET_M, COLLISION_SYMMETRIC,
+    ISLAND_ARC_OFFSET_M, MAX_TECTONIC_RANGE_M,
 };
 use crate::detmath as m;
 use crate::hydrology::{self, HydroError, HydroParams};
@@ -1145,6 +1145,9 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_world_new_gully",
     "wb_gully_preset",
     "wb_gully_check",
+    "wb_world_new_peak",
+    "wb_peak_preset",
+    "wb_peak_check",
     "wb_world_free",
     "wb_world_count",
     "wb_elevation_m",
@@ -2165,6 +2168,266 @@ fn gully_preset_by_selector(preset: u32) -> Option<GullyParams> {
     }
 }
 
+// --------------------------------------------------------- the peak channel, decoded
+//
+// Islands slice 1, Task 4. Tasks 1-3 built a cellular seamount field, wired it into
+// `Tectonics::offset_m` with the parity corpus proven unmoved, and gave `Surface` a
+// `with_peaks` door. This is that door's own ABI -- the sixth channel, and `coast` above is
+// the template item for item: a flat f64 record in a documented order, a preset export so no
+// host transcribes a number, a checker that answers *why* rather than only *that*, and a
+// constructor that refuses a record entire rather than admitting it with one field adjusted.
+// **Nothing here clamps.**
+
+/// f64 words per peak record, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `height_m` |
+/// | 1 | `density` |
+/// | 2 | `reach_m` |
+/// | 3 | `min_depth_m` |
+/// | 4 | `lattice_m` |
+///
+/// That is `PeakParams`'s own declaration order -- its own doc comment states that order **is**
+/// the ABI -- and [`wb_peak_preset`] writes it in exactly this order so a host never has to
+/// transcribe a value.
+pub const WB_PEAK_STRIDE: usize = 5;
+
+/// [`wb_peak_preset`] selector: `PeakParams::canonical()`. **Inert by construction**: its
+/// `density` is exactly 0.0 and `Tectonics::peak_offset_m` returns before it ever touches the
+/// lattice when density is zero, the same early-return shape [`WB_COAST_CANONICAL`]'s doc
+/// describes for `above_shore`.
+pub const WB_PEAK_CANONICAL: u32 = 0;
+
+/// [`wb_peak_preset`] selector: `PeakParams::volcanic()`, the one field this preset turns on --
+/// `density` -- over the canonical four. Crosses as FIELDS, never as a name, the same Ruling 7
+/// the tectonic and coast presets are held to: the panel receives five numbers and shows every
+/// one of them, so the owner sees what the preset asked for.
+pub const WB_PEAK_VOLCANIC: u32 = 1;
+
+/// The floor on `height_m`. Zero is admitted and means no peak ever stands proud of its
+/// depth window: a term present in the record and contributing nothing, which is a caller's
+/// choice to make rather than this boundary's to refuse.
+pub const WB_MIN_PEAK_HEIGHT_M: f64 = 0.0;
+
+/// The ceiling on `height_m`, in metres above a peak's own seabed.
+///
+/// **This must NOT be drawn anywhere near `|ABYSS_M|` (4,600 m).** A caller is allowed to ask
+/// for seamounts that never break the surface -- `peak_of_cell`'s own doc calls a node that
+/// falls short of the shell "a real seamount that never breaks the surface... exactly the
+/// navigational hazard a real chart wants" -- so a ceiling that sat at or below the abyss would
+/// silently take that shoal off the table for every caller who wanted one. `canonical()` and
+/// `volcanic()` both carry `VOLCANIC_HEIGHT_M` (8,000 m), comfortably below this line.
+///
+/// The ceiling itself is a magnitude bound rather than a swept edge, set to the same order
+/// [`WB_MAX_TECTONIC_AMPLITUDE_M`] uses for the same reason that one gives: `peak_offset_m`'s
+/// own arithmetic is a bounded product (`height_m * (0.45 + 0.55 * share) * smooth(...) *
+/// window`, every factor besides `height_m` itself already inside `[0, 1]`), so nothing at
+/// this magnitude can push an elevation non-finite or anywhere near overflowing an f64 -- it is
+/// four orders below [`WB_MAX_WORLD_RADIUS_M`], the planet itself.
+pub const WB_MAX_PEAK_HEIGHT_M: f64 = 1.0e5;
+
+/// The floor on `density`. Exactly 0.0 is admitted and is not a silence in the
+/// silently-dropping-builder sense: `canonical()` carries it and `peak_offset_m` returns 0.0
+/// before it ever samples the lattice, an early exit rather than a term computed and discarded.
+pub const WB_MIN_PEAK_DENSITY: f64 = 0.0;
+
+/// The ceiling on `density`: every candidate node holds a peak. A domain statement -- `share`
+/// in `PeakCandidate` is drawn against this the same way a probability is against 1.0.
+pub const WB_MAX_PEAK_DENSITY: f64 = 1.0;
+
+/// The floor on `reach_m`. **A silence, not a crash**, the same shape
+/// [`WB_MIN_COAST_WINDOW_SPREADS`] closes: `peak_of_cell` and `peak_offset_m` both refuse to
+/// scan when `reach_m` is not strictly positive, so a zero or negative reach is a term present
+/// in the record, accepted by a validator that omitted this floor, and contributing exactly
+/// nothing at every point on the planet while `height_m` and `density` sit beside it looking
+/// configured.
+///
+/// One metre rather than a smaller margin for the same reason [`WB_MIN_GULLY_LENGTH_M`] draws
+/// its floor where it does: `peak_offset_m` scales `radius_m` by `1 / lattice_m` to build its
+/// query point, and `reach_m` shares that same scaled space through the joint invariant below,
+/// so a reach far below a metre is a distinction no real chart could ever draw, not a useful
+/// setting.
+pub const WB_MIN_PEAK_REACH_M: f64 = 1.0;
+
+/// The ceiling on `reach_m`, bounded below the planet. Set to [`WB_MAX_WORLD_RADIUS_M`]'s value
+/// for the same reason [`WB_MAX_GULLY_LENGTH_M`] is: a reach larger than the largest admissible
+/// planet is a caller mistake, not a bigger island.
+pub const WB_MAX_PEAK_REACH_M: f64 = WB_MAX_WORLD_RADIUS_M;
+
+/// The floor on `min_depth_m`. Zero is admitted: `peak_depth_window`'s `onset` is then also
+/// zero and its `span` is not positive, so the window closes entire and a peak never stands --
+/// the caller's own choice to draw the line at the shore itself, not a hazard.
+pub const WB_MIN_PEAK_MIN_DEPTH_M: f64 = 0.0;
+
+/// The ceiling on `min_depth_m`, in metres below datum, **beyond any abyss**: `|ABYSS_M|` is
+/// 4,600 m and this sits over an order of magnitude above it, so a caller can require a seabed
+/// deeper than this planet's deepest point ever gets, which is a legitimate way to say "nowhere
+/// on this world" rather than a value this boundary should have to reject. Set to the same
+/// magnitude [`WB_MAX_PEAK_HEIGHT_M`] uses, for the same reason: `peak_depth_window` only ever
+/// compares this against a real seabed depth, so nothing at this order can drive its arithmetic
+/// non-finite.
+pub const WB_MAX_PEAK_MIN_DEPTH_M: f64 = 1.0e5;
+
+/// The floor on `lattice_m`. **Above zero for the reason [`WB_MIN_PEAK_REACH_M`] gives** -- a
+/// non-positive lattice is refused by `peak_of_cell` and `peak_offset_m` as a silence -- but
+/// this floor sits far above that silence, and for a different reason: it is a performance
+/// guard, not a domain statement. The 3x3x3 candidate scan itself is fixed at 27 cells no
+/// matter how fine the lattice is, but a lattice far finer than anything a tile in this viewer
+/// can display spends that fixed cost on islands too small to ever occupy a pixel -- the same
+/// waste [`WB_MAX_COAST_OCTAVES`]'s doc measures on the other end of a schedule, where the
+/// finest post spacing this viewer's tiles ever ask for is about 43 m of arc (see
+/// [`WB_MAX_COAST_OCTAVES`]). Ten metres sits below that with margin while still refusing the
+/// pathological end of the range: a caller asking for a lattice cell smaller than a human
+/// footprint is not asking for an island field, and every candidate that floor would generate
+/// is invisible work.
+pub const WB_MIN_PEAK_LATTICE_M: f64 = 10.0;
+
+/// The ceiling on `lattice_m`, bounded below the planet, for exactly the reason
+/// [`WB_MAX_PEAK_REACH_M`] gives -- and it is also the ceiling the joint invariant below needs:
+/// `reach_m <= lattice_m` cannot be satisfied by any admissible `reach_m` if this ceiling sat
+/// below [`WB_MAX_PEAK_REACH_M`].
+pub const WB_MAX_PEAK_LATTICE_M: f64 = WB_MAX_WORLD_RADIUS_M;
+
+/// Whether a peak block is one this boundary will let reach `Surface::with_peaks`.
+///
+/// Every bound is documented on its own constant. **`reach_m <= lattice_m` is the one joint
+/// invariant on this channel, and it is load-bearing rather than a taste judgement**: it is
+/// what makes `peak_of_cell`'s 3x3x3 candidate scan *complete* rather than merely adequate. A
+/// node outside that 3x3x3 block differs from the query's own cell by at least two cells in
+/// some axis; the query itself lies in `[b, b+1)` of its cell while such a node lies in
+/// `[b+2, b+3)` of its own, so the two are separated by strictly more than one full cell width,
+/// which is `lattice_m`. Once `reach_m <= lattice_m`, no candidate beyond the 27 scanned can
+/// ever be within `reach_m` of the query, and the scan is exhaustive. Violating the invariant
+/// silently under-covers the field instead: a candidate just outside the 3x3x3 block can still
+/// be in reach and the scan will never find it, which reads on the ground as a cliff where a
+/// smooth flank should be -- measured on an earlier draft of this field at 1,466 m in a single
+/// step. `peak_of_cell` and `peak_offset_m` both restate this same guard for every caller
+/// regardless of what a boundary does or does not check; this is the second statement of it,
+/// the same posture [`decode_coast_octaves`]'s loop bound is held to twice.
+///
+/// **Nothing here clamps**: a record is admitted as the host wrote it or refused entire.
+fn peak_is_admissible(peak: &PeakParams) -> bool {
+    if !within(peak.height_m, WB_MIN_PEAK_HEIGHT_M, WB_MAX_PEAK_HEIGHT_M) {
+        return false;
+    }
+    if !within(peak.density, WB_MIN_PEAK_DENSITY, WB_MAX_PEAK_DENSITY) {
+        return false;
+    }
+    if !within(peak.reach_m, WB_MIN_PEAK_REACH_M, WB_MAX_PEAK_REACH_M) {
+        return false;
+    }
+    if !within(peak.min_depth_m, WB_MIN_PEAK_MIN_DEPTH_M, WB_MAX_PEAK_MIN_DEPTH_M) {
+        return false;
+    }
+    if !within(peak.lattice_m, WB_MIN_PEAK_LATTICE_M, WB_MAX_PEAK_LATTICE_M) {
+        return false;
+    }
+    // THE JOINT INVARIANT. Both fields are already known finite and each individually inside
+    // its own domain by the five checks above, so this comparison is never reached with a NaN
+    // on either side -- but it is still written as a negated `<=` rather than a plain one, the
+    // same discipline every other comparison on this boundary keeps, so a future edit that
+    // moves this above the per-field checks does not reopen a NaN door.
+    if !(peak.reach_m <= peak.lattice_m) {
+        return false;
+    }
+    true
+}
+
+/// One peak record, decoded and validated, or `None` if this channel refuses it.
+fn decode_peak(record: &[f64]) -> Option<PeakParams> {
+    let fields = <[f64; WB_PEAK_STRIDE]>::try_from(record).ok()?;
+    let peak = PeakParams {
+        height_m: fields[0],
+        density: fields[1],
+        reach_m: fields[2],
+        min_depth_m: fields[3],
+        lattice_m: fields[4],
+    };
+    if peak_is_admissible(&peak) {
+        Some(peak)
+    } else {
+        None
+    }
+}
+
+/// The inverse of [`decode_peak`]'s field order, in one place so the two cannot drift.
+fn encode_peak(peak: &PeakParams) -> [f64; WB_PEAK_STRIDE] {
+    [peak.height_m, peak.density, peak.reach_m, peak.min_depth_m, peak.lattice_m]
+}
+
+/// What a host's `(peak_ptr, peak_len)` pair means. The same three outcomes [`CoastArg`] and
+/// [`GullyArg`] draw, kept as its own type for the same reason they are separate from each
+/// other: the strides differ and a shared one would have to carry the length as data.
+enum PeakArg {
+    /// A null pointer with a length of zero: the canonical path, `None`, byte-for-byte today's
+    /// world -- and here, as with the gully channel, that means the seamount term is never
+    /// evaluated at all rather than evaluated and found to be zero.
+    Canonical,
+    /// A decoded, validated block.
+    Chosen(PeakParams),
+    /// The buffer was unusable, or a field was outside its documented domain.
+    Refused(u32),
+}
+
+/// Read a peak argument out of linear memory.
+///
+/// **This function, not `PeakParams`' own fields, is the boundary that would admit an
+/// unnormalised query vector if one could arrive here -- and none can.** `peak_of_cell`'s own
+/// doc names Tasks 2 and 4 as the call sites responsible for the unit-length precondition
+/// `Tectonics::peak_offset_m` assumes of `point.vector`. This channel never carries a point at
+/// all: a peak record is five scalars (`height_m`, `density`, `reach_m`, `min_depth_m`,
+/// `lattice_m`), and every `SpherePoint` this file ever builds -- for `wb_elevation_m`,
+/// `wb_structural_m`, `wb_bottom_at`, every tile filler, all of them -- is built exclusively by
+/// `SpherePoint::from_latlon`, which turns a lat/lon pair into `(cos(lat)*cos(lon),
+/// cos(lat)*sin(lon), sin(lat))` and is unit length by that trigonometric construction, not by
+/// a caller's promise. There is no `SpherePoint::from_vector` call anywhere in this file. So the
+/// precondition is already closed, upstream of this channel entirely, by every sampling export
+/// this crate already ships -- and this function adds no redundant normalisation or check
+/// because there is no vector here for one to guard.
+///
+/// # Safety
+/// If `peak_len` is non-zero, `peak_ptr` must be a live, 8-aligned allocation of at least
+/// `peak_len` f64.
+unsafe fn read_peak(peak_ptr: *const f64, peak_len: u32) -> PeakArg {
+    if peak_len == 0 {
+        // A null pointer is the canonical path. A non-null pointer with a length of zero is a
+        // host that computed a length wrong, not a host asking for canonical.
+        return if peak_ptr.is_null() { PeakArg::Canonical } else { PeakArg::Refused(WB_ERR_BUFFER) };
+    }
+    if peak_ptr.is_null() {
+        return PeakArg::Refused(WB_ERR_BUFFER);
+    }
+    let address = peak_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return PeakArg::Refused(WB_ERR_BUFFER);
+    }
+    let words = match usize::try_from(peak_len) {
+        Ok(words) if words == WB_PEAK_STRIDE => words,
+        _ => return PeakArg::Refused(WB_ERR_BUFFER),
+    };
+    let record = core::slice::from_raw_parts(peak_ptr, words);
+    match decode_peak(record) {
+        Some(peak) => PeakArg::Chosen(peak),
+        None => PeakArg::Refused(WB_ERR_PARAM),
+    }
+}
+
+/// The peak preset a selector names, or `None` for one this build does not know.
+///
+/// **The only place `PeakParams::canonical()`'s and `volcanic()`'s values are read**, and there
+/// is no second copy of either anywhere -- not in this file, not in the viewer. Ruling 7 of the
+/// relief slice, for the sixth channel: no host restates a measured constant.
+fn peak_preset_by_selector(preset: u32) -> Option<PeakParams> {
+    if preset == WB_PEAK_CANONICAL {
+        Some(PeakParams::canonical())
+    } else if preset == WB_PEAK_VOLCANIC {
+        Some(PeakParams::volcanic())
+    } else {
+        None
+    }
+}
+
 // -------------------------------------------------------------------------- the exports
 
 /// The generator's identity, per VERSION-001. Not the package version and never derived
@@ -2282,6 +2545,9 @@ pub extern "C" fn wb_world_new(
             // `None` -- no drainage texture, exactly what this export did before the gully
             // channel existed. Its arity is frozen for the same reason its coast argument is.
             None,
+            // `None` -- no seamount field, exactly what this export did before the peak
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
         )
     }
 }
@@ -2342,6 +2608,9 @@ pub extern "C" fn wb_world_new_relief(
             // `None` -- today's coastline. Its arity is frozen for the reason above.
             None,
             // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
+            // `None` -- no seamount field, exactly what this export did before the peak
             // channel existed. Its arity is frozen for the same reason its coast argument is.
             None,
         )
@@ -2419,6 +2688,9 @@ pub extern "C" fn wb_world_new_tectonic(
             // channel existed. Its arity is frozen for the same reason the two above it are.
             None,
             // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
+            // `None` -- no seamount field, exactly what this export did before the peak
             // channel existed. Its arity is frozen for the same reason its coast argument is.
             None,
         )
@@ -2509,6 +2781,9 @@ pub extern "C" fn wb_world_new_coast(
             tectonics,
             coast,
             // `None` -- no drainage texture, exactly what this export did before the gully
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
+            // `None` -- no seamount field, exactly what this export did before the peak
             // channel existed. Its arity is frozen for the same reason its coast argument is.
             None,
         )
@@ -2661,6 +2936,9 @@ pub extern "C" fn wb_world_new_gully(
             tectonics,
             coast,
             gully,
+            // `None` -- no seamount field, exactly what this export did before the peak
+            // channel existed. Its arity is frozen for the same reason its coast argument is.
+            None,
         )
     }
 }
@@ -2717,6 +2995,164 @@ pub extern "C" fn wb_gully_check(gully_ptr: *const f64, gully_len: u32) -> u32 {
     match unsafe { read_gully(gully_ptr, gully_len) } {
         GullyArg::Canonical | GullyArg::Chosen(_) => WB_OK,
         GullyArg::Refused(status) => status,
+    }
+}
+
+/// Build a world with a caller-chosen relief block, tectonic block, coast block, gully block
+/// **and** peak block, or **0** if it refused.
+///
+/// Exactly [`wb_world_new_gully`] plus a peak record, and every one of that function's domains
+/// -- and the four doors before it -- still applies unchanged.
+///
+/// # Why a sixth door rather than a wider fifth one
+///
+/// The same reason the fifth gives for not widening the fourth: `wb_world_new_gully` already
+/// ships in a committed `.wasm` that the parity harness compares against, and widening its
+/// arity would break every existing caller for a parameter most of them never want. All six
+/// doors are one `build_world` behind the boundary, so there is one `Surface::with_peaks` call
+/// in this file and not six.
+///
+/// # The peak argument
+///
+/// - **`peak_ptr` null with `peak_len == 0` is the canonical path** -- `None`, not
+///   `Some(canonical())`. Ruling 1, held at the door. As with the gully channel, `None` means
+///   the seamount term is never evaluated at all: `Tectonics::peak_offset_m` returns 0.0 on its
+///   very first line for `self.peaks == None`.
+/// - Otherwise `peak_len` must be exactly [`WB_PEAK_STRIDE`] and `peak_ptr` a live, 8-aligned
+///   buffer of that many f64 in the order that constant documents. Every field is bounded, and
+///   **a single field outside its documented domain refuses the whole call.**
+///
+/// **One of those bounds is a joint invariant, not a per-field one.** `reach_m <= lattice_m` is
+/// what makes `peak_of_cell`'s 3x3x3 candidate scan complete rather than merely adequate; see
+/// [`peak_is_admissible`] for the derivation and the 1,466 m cliff an earlier draft measured
+/// without it.
+///
+/// A host that wants to know *why* a record was refused calls [`wb_peak_check`] on the same
+/// buffer.
+///
+/// # Safety
+/// The feature-, relief-, tectonic-, coast- and gully-channel safety requirements of
+/// [`wb_world_new_gully`] apply unchanged. If `peak_len` is non-zero, `peak_ptr` must be a live,
+/// 8-aligned allocation of at least `peak_len` f64.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn wb_world_new_peak(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+    coast_ptr: *const f64,
+    coast_len: u32,
+    gully_ptr: *const f64,
+    gully_len: u32,
+    peak_ptr: *const f64,
+    peak_len: u32,
+) -> u32 {
+    let relief = match unsafe { read_relief(relief_ptr, relief_len) } {
+        ReliefArg::Canonical => None,
+        ReliefArg::Chosen(relief) => Some(relief),
+        ReliefArg::Refused(_) => return 0,
+    };
+    let tectonics = match unsafe { read_tectonic(tectonic_ptr, tectonic_len) } {
+        TectonicArg::Canonical => None,
+        TectonicArg::Chosen(tectonics) => Some(tectonics),
+        TectonicArg::Refused(_) => return 0,
+    };
+    let coast = match unsafe { read_coast(coast_ptr, coast_len) } {
+        CoastArg::Canonical => None,
+        CoastArg::Chosen(coast) => Some(coast),
+        CoastArg::Refused(_) => return 0,
+    };
+    let gully = match unsafe { read_gully(gully_ptr, gully_len) } {
+        GullyArg::Canonical => None,
+        GullyArg::Chosen(gully) => Some(gully),
+        GullyArg::Refused(_) => return 0,
+    };
+    let peaks = match unsafe { read_peak(peak_ptr, peak_len) } {
+        PeakArg::Canonical => None,
+        PeakArg::Chosen(peaks) => Some(peaks),
+        PeakArg::Refused(_) => return 0,
+    };
+    unsafe {
+        build_world(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features_ptr,
+            feature_count,
+            relief,
+            tectonics,
+            coast,
+            gully,
+            peaks,
+        )
+    }
+}
+
+/// Write a named peak preset's five f64 into a caller buffer, in [`WB_PEAK_STRIDE`]'s order.
+///
+/// `WB_OK`, or `WB_ERR_PARAM` for a selector this build does not know, or `WB_ERR_BUFFER` for a
+/// null, misaligned, or wrongly-sized buffer. The selectors are [`WB_PEAK_CANONICAL`] and
+/// [`WB_PEAK_VOLCANIC`].
+///
+/// **This export exists so no host ever transcribes a peak default or a preset.** The panel's
+/// density slider is anchored on canonical and its preset button sends `volcanic()` back, so
+/// `tectonics.rs` stays the only place `VOLCANIC_HEIGHT_M`, `VOLCANIC_DENSITY`,
+/// `VOLCANIC_REACH_M`, `VOLCANIC_MIN_DEPTH_M` and `VOLCANIC_LATTICE_M` are written down. The
+/// viewer holds none of them.
+///
+/// # Safety
+/// `out_ptr` must be a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_peak_preset(preset: u32, out_ptr: *mut f64, out_len: u32) -> u32 {
+    let peak = match peak_preset_by_selector(preset) {
+        Some(peak) => peak,
+        None => return WB_ERR_PARAM,
+    };
+    if out_ptr.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(words) if words == WB_PEAK_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    let values = encode_peak(&peak);
+    for (offset, value) in values.into_iter().enumerate() {
+        unsafe { out_ptr.add(offset).write(value) };
+    }
+    WB_OK
+}
+
+/// Ask whether a peak record would be accepted, **without building a world**.
+///
+/// `WB_OK` for a record [`wb_world_new_peak`] would take (including the canonical null/zero
+/// pair), `WB_ERR_BUFFER` for an unusable buffer, `WB_ERR_PARAM` for a field outside its
+/// documented domain -- including a record whose fields are each individually in range but
+/// which breaks the `reach_m <= lattice_m` joint invariant.
+///
+/// The constructor answers a refusal with a handle of 0, which says *that* it refused and never
+/// *why*. A panel driving this channel needs the difference, and so does a sweep, which must be
+/// able to tell "refused" from "accepted and then fatal".
+///
+/// # Safety
+/// If `peak_len` is non-zero, `peak_ptr` must be a live, 8-aligned allocation of at least
+/// `peak_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_peak_check(peak_ptr: *const f64, peak_len: u32) -> u32 {
+    match unsafe { read_peak(peak_ptr, peak_len) } {
+        PeakArg::Canonical | PeakArg::Chosen(_) => WB_OK,
+        PeakArg::Refused(status) => status,
     }
 }
 
@@ -2861,6 +3297,7 @@ unsafe fn build_world(
     tectonics: Option<TectonicParams>,
     coast: Option<CoastParams>,
     gully: Option<GullyParams>,
+    peaks: Option<PeakParams>,
 ) -> u32 {
     if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
         return 0;
@@ -2905,14 +3342,14 @@ unsafe fn build_world(
         Some(FeatureInput::Loose(decoded))
     };
 
-    // All FOUR blocks arrive already validated -- `read_relief`, `read_tectonic`,
-    // `read_coast` and `read_gully` refuse at the boundary, so nothing outside any documented
-    // domain reaches here. `None` is the canonical path for each, and is what `wb_world_new`
-    // always passes for all four. `with_gully` rather than `new` so this file still holds
-    // exactly ONE `Surface` constructor call behind five doors; `new` delegates to
-    // `with_coast`, which delegates to `with_gully` with `None`, so the canonical path is the
-    // same code either way.
-    let surface = Surface::with_gully(
+    // All FIVE blocks arrive already validated -- `read_relief`, `read_tectonic`,
+    // `read_coast`, `read_gully` and `read_peak` refuse at the boundary, so nothing outside any
+    // documented domain reaches here. `None` is the canonical path for each, and is what
+    // `wb_world_new` always passes for all five. `with_peaks` rather than `new` so this file
+    // still holds exactly ONE `Surface` constructor call behind six doors; `new` delegates to
+    // `with_coast`, which delegates to `with_gully`, which delegates to `with_peaks` with
+    // `None`, so the canonical path is the same code either way.
+    let surface = Surface::with_peaks(
         world_seed,
         radius_m,
         plates,
@@ -2922,6 +3359,7 @@ unsafe fn build_world(
         tectonics,
         coast,
         gully,
+        peaks,
     );
     insert_world(World::new(surface))
 }

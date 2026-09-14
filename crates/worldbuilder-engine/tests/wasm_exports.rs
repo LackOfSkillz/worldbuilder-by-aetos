@@ -901,26 +901,28 @@ fn the_surface_is_built_once_per_world_and_never_per_sample() {
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    // **The constructor is `Surface::with_gully`, and EVERY name is asserted.** The one call
-    // has now moved twice -- to `with_coast` when the coast channel opened, and to `with_gully`
-    // when the gully channel did. Each time the previous widest door delegates to the new one
-    // with a `None`, so the canonical path is the same code either way and the widest door is
-    // the only one that reaches the constructor. Counting only the current name would let a
-    // second, older-shaped build reappear beside it without this noticing; counting all three is
-    // the property this test actually means, which is that `wasm.rs` builds a `Surface` exactly
-    // once, anywhere, by any name.
-    let builds = code.matches("Surface::with_gully").count();
-    let legacy =
-        code.matches("Surface::with_coast").count() + code.matches("Surface::new").count();
+    // **The constructor is `Surface::with_peaks`, and EVERY name is asserted.** The one call
+    // has now moved three times -- to `with_coast` when the coast channel opened, to
+    // `with_gully` when the gully channel did, and to `with_peaks` when the peak channel did.
+    // Each time the previous widest door delegates to the new one with a `None`, so the
+    // canonical path is the same code either way and the widest door is the only one that
+    // reaches the constructor. Counting only the current name would let a second, older-shaped
+    // build reappear beside it without this noticing; counting all four is the property this
+    // test actually means, which is that `wasm.rs` builds a `Surface` exactly once, anywhere,
+    // by any name.
+    let builds = code.matches("Surface::with_peaks").count();
+    let legacy = code.matches("Surface::with_gully").count()
+        + code.matches("Surface::with_coast").count()
+        + code.matches("Surface::new").count();
     assert_eq!(
         builds, 1,
         "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs ~10^3x"
     );
     assert_eq!(legacy, 0, "a second Surface constructor appeared beside the one in build_world");
-    let before = &code[..code.find("Surface::with_gully").expect("one build")];
+    let before = &code[..code.find("Surface::with_peaks").expect("one build")];
     assert!(
         before.contains("fn wb_world_new"),
-        "the one Surface::with_gully is not inside the wb_world_new family"
+        "the one Surface::with_peaks is not inside the wb_world_new family"
     );
 }
 
