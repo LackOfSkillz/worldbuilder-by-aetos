@@ -186,6 +186,19 @@ file *appearing* moves the digest exactly as a file *changing* does.
    tree that has moved.`) and `npm run build:wasm:self-test` (rejects a stripped 327-byte,
    memory-only artifact before rebuilding the real one).
 
+   **Two other checks are silently standing on this one, and neither can tell you when it has
+   stopped running.** Gate 3's stale-engine guard compares the installed extension's embedded
+   fingerprint against `MANIFEST.txt`, which answers "is the engine current" only because this
+   gate independently asserts the manifest is current with the tree; and the viewer's four
+   "no number is written down twice" tests derive the literals they forbid from the shipped
+   `.wasm`'s `wb_*_preset` exports, so a stale artifact hands them a superseded value to
+   forbid and they pass having guarded nothing. Both are written up in **What CI does NOT
+   cover** below. Neither fails, or changes its output in any way, if this gate is dropped -
+   they go on reporting green against a number nothing has verified. **So `check:wasm` is not
+   only a check on the artifact; it is a precondition two other checks assume and cannot
+   assert for themselves** - it runs at `gates.yml:1610`, and dropping that one line would
+   leave both of them reporting green with nothing behind them.
+
 **6. Parity**, `parity_dump` (native) replayed through the committed `.wasm` by `parity.mjs`.
 A mutated artifact is refused rather than silently compared: `REFUSING TO REPORT PARITY --
 STALE ARTIFACT:` with the source/artifact hashes, because "the corpus and the .wasm agree
