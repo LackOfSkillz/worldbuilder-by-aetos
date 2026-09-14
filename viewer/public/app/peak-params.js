@@ -73,9 +73,11 @@ export const PEAK_FIELDS = [
 /// **The preset crosses as FIELDS, never as a name.** `engine.peakPreset("volcanic")` returns
 /// five numbers; the panel puts the one it turns on -- `density` -- on a slider and prints the
 /// other four, so the owner SEES what the preset asked for. That is Ruling 7 of the relief
-/// slice, held here the way `COAST_PRESET` and `GULLY_PRESET` hold it: `peak-params.test.mjs`
-/// strips the comments out of this file and `controls.js` and asserts the preset's own
-/// distinctive number appears in neither.
+/// slice, held here the way `COAST_PRESET` and `GULLY_PRESET` hold it: `peak-params.test.mjs`'s
+/// "no peak number is written down twice in the viewer" strips the comments out of all four of
+/// this channel's modules -- this file, `controls.js`, `main.js` and `engine.js` -- and asserts
+/// the preset's own distinctive number appears in none of them, plus the same check over the
+/// source text of `peakTravel`, `peakPanelFields`, `peakFromParams` and `peakToParams`.
 export const PEAK_PRESET = { canonical: 0, volcanic: 1 };
 
 /// The parameters the panel drives, and the query-string name each answers to.

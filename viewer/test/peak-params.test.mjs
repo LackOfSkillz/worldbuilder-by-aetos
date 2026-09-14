@@ -356,7 +356,13 @@ test("no peak number is written down twice in the viewer", () => {
   const literals = [String(volcanic.density)];
   assert.notEqual(literals[0], "0.35", "the peak density must stay distinct from the coast one");
   assert.notEqual(String(canonical.density), literals[0], "the preset must move the density");
-  for (const name of ["controls.js", "main.js"]) {
+  // **Widened by the final whole-branch review's minor 8 from `controls.js`/`main.js` to all
+  // four modules of this channel.** `peak-params.js`'s own header claimed the scan covered "this
+  // file and `controls.js`", and it covered neither this module nor `engine.js`; both of those do
+  // write the preset's numbers down in comments, so the gap was real rather than theoretical.
+  // Widening the test was chosen over narrowing the comment: the comment described the scan
+  // people would want, and the scan is cheap.
+  for (const name of ["controls.js", "main.js", "peak-params.js", "engine.js"]) {
     const code = strip(appFile(name));
     for (const literal of literals) {
       assert.ok(

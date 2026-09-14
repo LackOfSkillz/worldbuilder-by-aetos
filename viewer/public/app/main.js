@@ -1024,8 +1024,11 @@ async function boot() {
         : "canonical"} peaks=${
       s.peaks
         // Density AND the four fields it means nothing without: a caption naming density alone
-        // would say "11%" about a block whose height, reach, min depth or lattice pitch had also
-        // moved, and this line is what a screenshot carries as its own caption.
+        // would report the same share about a block whose height, reach, min depth or lattice
+        // pitch had also moved, and this line is what a screenshot carries as its own caption.
+        // (No density literal in this prose, deliberately: the one that used to be here was the
+        // pre-calibration value and went stale where the sweep in report section 10.4 could not
+        // see it, because that sweep was over code and this is a comment.)
         ? `dens ${s.peaks.density.toFixed(2)} height ${s.peaks.height_m} m reach ${
           s.peaks.reach_m} m depth ${s.peaks.min_depth_m} m lattice ${s.peaks.lattice_m} m`
         : "canonical"} | terrain=${provider.constructor.name} ` +
