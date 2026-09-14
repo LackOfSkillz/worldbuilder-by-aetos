@@ -166,19 +166,33 @@ added by this slice's Task 2/3).
    `count OK: node and rust fingerprints agree on a real digest over a real corpus (29
    inputs)`.
 
-   **The corpus has grown since, and only the node side has been re-measured on master
-   (`8961b9f`): `source-fingerprint:
-   54f8b7577a20cd9b7cbb749e480d41809b1756540ad3ded4eb50c7dd502574a9` /
-   `fingerprint-inputs: 66`.** That is stated twice independently, which is the only reason
-   it is here at all: `npm run digest:wasm` computes it from the source that is on disk, and
-   `viewer/public/wasm/MANIFEST.txt` separately records the same digest and the same 66, with
-   `npm run check:wasm` confirming the artifact matches both. **The Rust half is deliberately
-   not restated at 66, because it was not run** - `source_fingerprint()` needs the extension
-   built (`maturin develop --release --features python`), which this tree has not done. So
-   the paired figure above is the last *demonstrated* agreement between the two
-   implementations, and 66 is the node side's current count; do not read it as a claim that
-   the two have been compared at it. CI compares them on every push, which is where that
-   claim gets made.
+   **Re-run with both sides measured again on master (`8961b9f`), where the corpus has grown
+   to 66 inputs: they still agree, exactly.** Node (`npm run digest:wasm`) and the freshly
+   built extension (`source_fingerprint()` / `source_fingerprint_inputs()`) both report
+   `54f8b7577a20cd9b7cbb749e480d41809b1756540ad3ded4eb50c7dd502574a9` over `66` inputs, and
+   the gate itself exits 0 with `count OK: node and rust fingerprints agree on a real digest
+   over a real corpus (66 inputs)`. A third, independent statement of the same pair:
+   `viewer/public/wasm/MANIFEST.txt` records that digest and that count, and
+   `npm run check:wasm` confirms the shipped artifact matches both. So the two
+   implementations have now been demonstrated to agree at 28, at 29, and at 66 - across
+   thirty-seven inputs' worth of corpus growth, with no drift.
+
+   **The extension was built into a venv private to the worktree** (`.venv/` at the
+   repository root, gitignored), on `rustc 1.98.0 (88d9e12ae)` - the pinned toolchain,
+   matching `MANIFEST.txt`'s recorded build exactly. That isolation is not fussiness: a
+   `maturin develop` into a venv shared with another checkout is the dist-info eviction of
+   item 4 above, and the point of this measurement is not worth reintroducing it for.
+
+   **And the gate was seen to fail, on both of the two things it compares**, by handing it a
+   doctored node output rather than by trusting that a check which has only ever passed would
+   have. One hex digit changed produces the digest message below, exit 1; the count changed
+   from 66 to 65 produces a *different* message, also exit 1, which this file had never
+   recorded:
+
+       FINGERPRINT PARITY GATE FAILED
+         the two input counts disagree:
+               node (build-wasm.mjs):      65
+               rust (worldbuilder_engine): 66
 
    On a real disagreement the gate fails loudly rather than comparing shapes that merely
    happen to be equal - every value is validated as 64-hex-lowercase / positive-integer before
