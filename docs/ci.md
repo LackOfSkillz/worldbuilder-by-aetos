@@ -327,6 +327,33 @@ workaround. What is still genuinely open, so this table does not read as full co
   the same tree.** See gate 3's composition note above: if `npm run check:wasm` is ever
   dropped from CI, or a developer runs the pytest guard locally against a manifest they
   never re-checked with `check:wasm`, the comparison silently goes back to answering nothing.
+- **The viewer's anti-transcription guards depend on gate 5 in the same way, and are a second
+  consumer of that composition.** Four test files in `viewer/test/` -- `coast-params`,
+  `gully-params`, `relief-params`, `tectonic-params` -- carry the "no number is written down
+  twice" check: each asks the shipped artifact for a preset (`engine.coastPreset("fractal")`
+  and its three siblings, through the `wb_*_preset` exports), turns the field into a string,
+  and asserts no file under `viewer/public/app/` contains it. **The literal is derived at test
+  time, not transcribed into the test** - the `assert.deepEqual(literals, [...])` line beside
+  it is a tripwire that fails loudly when a Rust constant moves, not the source of the value
+  being grepped for. Fifteen literals are covered this way across the four files.
+
+  What that derivation reads, though, is the **`.wasm`, not `crates/`**. So a stale artifact
+  makes the whole family answer nothing: the derived literal and the pin beside it would both
+  carry the superseded value, agree with each other, and pass - the identical shape to the
+  stale-`.wasm`-passes-parity failure in item 2 at the top of this file, and to gate 3's
+  composition note above. Only gate 5 closes it, and only on the same tree.
+
+  Re-derived on master (`8961b9f`) rather than carried forward: `npm run check:wasm` reports
+  the artifact current, and all fifteen literals match the Rust constants read independently
+  out of `crates/worldbuilder-engine/src/` (`FRACTAL_AMPLITUDE` 0.35; `GullyParams::canonical()`'s
+  0.005 / 0.25; `ReliefParams::hills()`'s -0.7 / 0.65 / 600, that last being `MOUNTAIN_M` x 4;
+  `TectonicParams::canonical()`'s 1500 / 400000 / 0.45 / 120000 and `ranges()`'s 6000 / 100000
+  / 0.7 / 80000 / 300000). Each of the fifteen was also **seen to fail**, by appending the
+  current value to `viewer/public/app/controls.js` as a code line and running the owning test:
+  fifteen injections, fifteen failures, all reverted. A code line and not a comment, because
+  the guards strip comment lines first - a comment injection proves nothing. The negative
+  control matters as much: a *superseded* coast amplitude (0.33) left `coast-params` green,
+  which is what shows the grep tracks the engine's current answer rather than a snapshot.
 - **The install-order dependency between `pip install -e .` and `maturin develop` is asserted
   fixed, not proven fixed.** The distribution split should make the order irrelevant by
   construction; nobody has verified this by reversing the order and running a `pip
