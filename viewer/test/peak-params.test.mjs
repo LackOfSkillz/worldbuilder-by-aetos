@@ -15,7 +15,15 @@
 //   - Probes: eight open-ocean witness points, DERIVED rather than picked -- a 1-degree global
 //     scan of this fixture compares the canonical world against `PeakParams::volcanic()` and
 //     finds 991 of 64,800 sites moving; these are the eight largest movers subject to a
-//     25-degree separation, so they are not eight seamounts on one plateau. `PEAK_PROBES` in
+//     25-degree separation, so they are not eight seamounts on one plateau. **That derivation
+//     was run at the then-shipped `density: 0.11`, and Task 7's calibration raised it to
+//     0.36. The eight are still witnesses, and monotonicity is why rather than luck:**
+//     `Tectonics::peak_of_cell` returns `None` when a cell's hash is `>= density`, so raising
+//     the density strictly ADDS candidate cells and can never remove one. A site that moved at
+//     0.11 therefore still moves at 0.36 (by at least as much), which the per-probe assertions
+//     below check directly rather than inheriting from this note. The 991 is not re-stated for
+//     0.36 because nothing re-ran that scan; it is the provenance of the probe set, not a
+//     figure about the shipped density. `PEAK_PROBES` in
 //     `crates/worldbuilder-engine/tests/wasm_exports.rs` is a *different* six-point set chosen to
 //     exercise the land/harbour/ocean gating rather than to witness movement -- its own comment
 //     says the on-land and shallow-harbour points are "expected to read back exactly the ground
@@ -272,9 +280,17 @@ test("no peak number is written down twice in the viewer", () => {
   // **Only the DISTINCTIVE value can be asked this question, and saying so is part of the test.**
   // Four of the five canonical fields are 8000, 31500, 2500 and 45000, and none of those is a
   // string a source file can be asked not to contain in isolation the way `0.35` was for the
-  // coast channel -- but the preset's own density, `0.11`, is distinctive enough to ask about.
+  // coast channel -- but the preset's own density is distinctive enough to ask about.
+  //
+  // **It is 0.36 and not 0.35, and that is deliberate.** Task 7's survey found seven admissible
+  // hundredths (0.32 through 0.38) and picked 0.36 as the maximin. `CoastParams::fractal()`'s
+  // amplitude is 0.35, and had the density landed there this assertion would have been
+  // indistinguishable from the coast channel's identical one -- a scan that passes only because
+  // another channel's guard already holds is a scan that tests nothing of its own. See
+  // `VOLCANIC_DENSITY`'s doc in `tectonics.rs` for the sweep this came out of.
   const literals = [String(volcanic.density)];
-  assert.deepEqual(literals, ["0.11"]);
+  assert.deepEqual(literals, ["0.36"]);
+  assert.notEqual(literals[0], "0.35", "the peak density must stay distinct from the coast one");
   assert.notEqual(String(canonical.density), literals[0], "the preset must move the density");
   for (const name of ["controls.js", "main.js"]) {
     const code = strip(appFile(name));

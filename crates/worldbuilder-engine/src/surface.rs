@@ -3157,8 +3157,9 @@ mod tests {
     /// one asks a world. On the same fixture, measured: only **59.8%** of the sphere is
     /// ocean at all, and only **67.5%** of that ocean is deeper than the 2,500 m window
     /// threshold (a mere 20.6% of it actually reaches `ABYSS_M`, which Task 1 assumed
-    /// everywhere). `108 x 0.598 x 0.675` is 43.6 against the 34 seen here, the residual
-    /// being the 2,000-2,500 m partial-window ramp and the fixture difference.
+    /// everywhere). At `density: 0.11` that arithmetic gave `108 x 0.598 x 0.675` = 43.6
+    /// against the 34 this test then saw, the residual being the 2,000-2,500 m partial-window
+    /// ramp and the fixture difference.
     ///
     /// So the volumetric model in `tectonics.rs` predicts the field, **not** a world's
     /// islanded share, and the survey that calibrates `density` must measure through this
@@ -3166,12 +3167,22 @@ mod tests {
     /// that a shallower seabed makes an island *easier*, not harder, so bathymetry alone
     /// cannot explain a reduction; it is the land coverage and the window that do.
     ///
-    /// **Re-measured here rather than transcribed, because the population differs**:
-    /// over this constructor's own 20,000-point fibonacci sweep, at `PeakParams::volcanic()`
-    /// (`density: 0.11`), host K2SO, rustc 1.98.0 release build, this test counts
-    /// **34 of 20,000 (0.17%)**. That is a band, not a floor: a bound of "more than zero"
-    /// would also pass a field that raised nearly everything or a single lucky point, and
-    /// neither of those is this field.
+    /// **Re-pinned by Task 7's calibration.** `VOLCANIC_DENSITY` moved from 0.11 to **0.36**
+    /// because 0.11 put every world measured BELOW the spec's 0.3%-0.8% band -- see that
+    /// constant's own doc for the three-world sweep and why 0.36 is the maximin of the seven
+    /// admissible hundredths. Re-measured here rather than scaled: over this constructor's own
+    /// 20,000-point fibonacci sweep, at `PeakParams::volcanic()` (`density: 0.36`), rustc
+    /// 1.98.0 release build, this test counts **88 of 20,000 (0.44%)**, against 34 (0.17%) at
+    /// the old density.
+    ///
+    /// **This 20,000-point count is a small sample and the calibration was not made on it.**
+    /// `src/bin/island_survey.rs` measures the same world over 200,000 points and reports
+    /// **0.3345%**; the 1-sigma binomial error at n = 20,000 is +-0.047 pp against +-0.013 pp
+    /// at n = 200,000, so the 0.44 / 0.33 gap is a shade over 2 sigma of the smaller sample and
+    /// the two are consistent. **The number to quote for the islanded share is the survey's,
+    /// not this one.** This test's job is that the count is in a BAND, not a floor: a bound of
+    /// "more than zero" would also pass a field that raised nearly everything or a single lucky
+    /// point, and neither of those is this field.
     #[test]
     fn an_island_stands_above_the_datum_in_open_ocean() {
         let peaked = peaked_surface(PeakParams::volcanic());
@@ -3183,8 +3194,8 @@ mod tests {
             }
         }
         assert!(
-            (15..70).contains(&land_offshore),
-            "expected roughly 34 of 20,000 offshore points above the datum (0.17%, measured \
+            (45..140).contains(&land_offshore),
+            "expected roughly 88 of 20,000 offshore points above the datum (0.44%, measured \
              on this constructor's own corpus -- see this test's doc comment), got {land_offshore}"
         );
     }
@@ -3225,11 +3236,23 @@ mod tests {
     /// deeper than 1,000 m is a real claim about steep-to bathymetry, against a
     /// continental shelf that runs some 80 km before reaching comparable depth.
     ///
-    /// **Measured, not predicted**: on this test's own summit (found by `find_a_summit`
-    /// over `peaked_surface(PeakParams::volcanic())`, host K2SO, rustc 1.98.0 release
-    /// build), walking to `walk_m = 29,925` m (0.95 x today's 31,500 m `reach_m`) finds
-    /// the deepest of the eight compass bearings at **-2,594.07 m** -- comfortably past
-    /// the 1,000 m bar and inside the abyssal range the doc above derives.
+    /// **Measured, not predicted, and re-measured by Task 7 rather than scaled**: on this
+    /// test's own summit (found by `find_a_summit` over
+    /// `peaked_surface(PeakParams::volcanic())`, rustc 1.98.0 release build), walking to
+    /// `walk_m = 29,925` m (0.95 x the 31,500 m `reach_m`) finds the deepest of the eight
+    /// compass bearings at **-2,907.71 m**, off a summit standing 4,010.75 m. At the old
+    /// `density: 0.11` the same walk read -2,594.07 m off a DIFFERENT summit -- **the density
+    /// moved which node `find_a_summit` picks, not how steep a flank is**, which is why this
+    /// figure moved at all when calibration touched no geometry. (The mechanism: `peak_of_cell`
+    /// gates on `hash >= density`, so a higher density strictly ADDS candidate cells and can
+    /// never remove one -- and one of the added ones is taller than the old pick. Measured at an
+    /// intermediate `density: 0.35` mid-sweep, this same walk read -2,907.71 m off this same
+    /// 4,010.75 m summit, bit for bit; the hundredth between 0.35 and 0.36 added no cell taller
+    /// still.) Either way it is comfortably past the 1,000 m bar and inside the abyssal range
+    /// the doc above derives.
+    ///
+    /// `src/bin/island_survey.rs` section 5 walks the same ring at six fractions of `reach_m`
+    /// and beside a continental shore for contrast; the report carries that table.
     #[test]
     fn an_island_is_steep_to_rather_than_shelved() {
         let peaks = PeakParams::volcanic();

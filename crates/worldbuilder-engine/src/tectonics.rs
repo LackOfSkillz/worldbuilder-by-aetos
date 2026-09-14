@@ -608,8 +608,9 @@ const PEAK_HEIGHT_SALT: u64 = 0x7374_616E_6469_6E67; // "standing"
 
 /// How tall a full-height peak stands, in metres above the seabed it sits on.
 ///
-/// **Provisional, pending Task 7's survey; see [`VOLCANIC_DENSITY`]'s doc for why THIS is
-/// the binding constraint, not `reach_m` or `density`.** At 5,200 m, a node standing exactly
+/// **Confirmed by Task 7's survey and left where Task 2 put it; see [`VOLCANIC_DENSITY`]'s doc
+/// for why THIS is the binding constraint, not `reach_m` or `density`, and for the sweep that
+/// then chose the density at this height.** At 5,200 m, a node standing exactly
 /// on the reference shell clears a 4,600 m abyss by only 600 m -- 88.46% of `height_m` --
 /// which the `0.45 + 0.55 * share` envelope only reaches for `share > 0.79`, so barely a
 /// fifth of nodes could ever surface at all, and those just past the threshold make
@@ -620,25 +621,77 @@ const PEAK_HEIGHT_SALT: u64 = 0x7374_616E_6469_6E67; // "standing"
 const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// What share of lattice cells hold a peak at the named preset.
 ///
-/// **Provisional, pending Task 7's survey; see [`VOLCANIC_REACH_M`]'s doc for the model this
-/// value was chosen from, and sweep `reach_m / lattice_m` and `height_m` before this knob --
-/// see [`VOLCANIC_HEIGHT_M`] for why `height_m` binds first.** The naive share-weighted
-/// volume (`(4/3)*pi*(0.2116*reach_m)^3`, `0.2116` being the useful radius at `share = 1`)
-/// overstates the real yield by about 12x, because most nodes cannot surface at all before
-/// `height_m` was raised -- see `VOLCANIC_REACH_M`'s doc for the corrected model. At
-/// `height_m: 8,000` the corrected model predicts about **1.372%** at density 1.0 and
-/// **~0.50%** at this value, which is why 0.11 -- not 1.0 -- is shipped: density still has
-/// room to move both up and down, which a knob at its ceiling cannot do. This value only
-/// gets the field into the right regime; Task 7 measures the real number by sampling the
-/// live field, not by trusting this arithmetic.
-const VOLCANIC_DENSITY: f64 = 0.11;
+/// **Calibrated by Task 7's survey, no longer provisional. `src/bin/island_survey.rs` chose
+/// this value and is the only thing that may change it** -- the survey and the constant must
+/// not be allowed to drift apart, the way `CoastParams::fractal()`'s 0.35 and
+/// `coastline_survey.rs` must not. Spec §7 question 1 asks for **0.3% to 0.8%** of a planet's
+/// surface as islands.
+///
+/// **What the survey measured** (`cargo run --release --bin island_survey`, section 4, over a
+/// 200,000-point Fibonacci spiral per world, `D_added` = ground the block turned to land where
+/// the peak-less world had sea, through the full `Surface` pipeline; see
+/// `docs/superpowers/reports/2026-09-14-islands-1-peaks-verification.md` for host and rustc):
+///
+/// | density | island-a (land 0.40) | owner (land 0.16) | earth-a (land 0.29) | margin to the nearer band edge |
+/// |---|---|---|---|---|
+/// | 0.11 (shipped before Task 7) | 0.1070% | 0.2275% | 0.1180% | all three BELOW |
+/// | 0.28 | 0.2625% | 0.5850% | 0.3290% | -0.0375 pp, one BELOW |
+/// | 0.32 | 0.3065% | 0.6655% | 0.3660% | +0.0065 pp |
+/// | 0.33 | 0.3165% | 0.6875% | 0.3730% | +0.0165 pp |
+/// | 0.34 | 0.3215% | 0.7065% | 0.3850% | +0.0215 pp |
+/// | 0.35 | 0.3295% | 0.7310% | 0.3890% | +0.0295 pp |
+/// | **0.36** | **0.3345%** | **0.7525%** | **0.4035%** | **+0.0345 pp -- the maximin** |
+/// | 0.37 | 0.3470% | 0.7710% | 0.4170% | +0.0290 pp |
+/// | 0.38 | 0.3585% | 0.7905% | 0.4325% | +0.0095 pp |
+/// | 0.40 | 0.3785% | 0.8280% | 0.4545% | -0.0280 pp, one ABOVE |
+///
+/// **The islanded share depends on the world's land fraction, so the choice cannot be made on
+/// one world.** A world with less land has more deep ocean for the field to stand an island
+/// in: at every density the owner's 0.16-land world yields roughly twice the share the
+/// 0.40-land fixture does. Seven hundredths -- 0.32 through 0.38 -- put all three worlds inside
+/// the band at once, and **0.36 is the maximin**: the admissible density whose WORST world
+/// sits furthest from a band edge. That matters because the band is squeezed from both sides at
+/// once here -- `island-a` presses the 0.3% floor while `owner` presses the 0.8% ceiling, so
+/// the admissible window is only six hundredths wide and a value admissible by 0.0065 pp would
+/// not survive a fourth world.
+///
+/// Hundredths, because `viewer/public/app/peak-params.js`'s density slider carries an integer
+/// position and maps it to a value by dividing by 100; a density off that lattice is one the
+/// panel cannot reach, which is the defect `panelFieldFaults()` exists for. 0.36 is position
+/// 36. It is also **not** `CoastParams::fractal()`'s 0.35, which matters for a reason that is
+/// not cosmetic: `viewer/test/peak-params.test.mjs`'s "no peak number is written down twice"
+/// scans the viewer's sources for the preset's own distinctive literal, and at 0.35 that scan
+/// would have been indistinguishable from the coast channel's identical one.
+///
+/// **The analytic model is not where this came from.** The corrected volumetric model in
+/// [`VOLCANIC_REACH_M`]'s doc predicts the FIELD -- what the term would make if the whole
+/// planet were abyssal ocean, land included -- not a world's islanded share; the two differ by
+/// the ocean-coverage and depth-window factors `island_survey.rs`'s header sets out. The model
+/// chose where to sample. The sweep chose the number.
+const VOLCANIC_DENSITY: f64 = 0.36;
 /// How far a cone reaches from its centre, in metres.
 ///
 /// Must not exceed [`VOLCANIC_LATTICE_M`] -- see `peak_offset_m`'s own doc for why that is
 /// the invariant that makes its 3x3x3 scan complete rather than merely adequate.
 ///
-/// **Provisional, pending Task 7's survey, and `reach_m / lattice_m` is a real lever, but
-/// [`VOLCANIC_HEIGHT_M`] binds first -- read that doc before this one.** Clearing the abyss
+/// **Swept by Task 7 and left where it was, and the survey's finding is worth more than the
+/// value: the islanded share is invariant under the PAIR, so `reach_m / lattice_m` is the
+/// lever and neither field alone is one.** Holding the ratio at 0.70 and moving the pair over
+/// 30 / 45 / 67.5 / 90 km moved the share by less than the spiral's own noise -- measured on
+/// `island-a` over 200,000 points, `island_survey.rs` section 3: at the shipped density of
+/// 0.36, **0.3290% / 0.3345% / 0.3350% / 0.3310%** -- a spread of 0.006 pp against the
+/// estimator's own 1-sigma binomial error of 0.013 pp. At density 0.58: 0.5460% / 0.5495% /
+/// 0.5420% / 0.5200%. At density 0.11: 0.0970% / 0.1070% / 0.1065% / 0.1080%.
+///
+/// That is what the model below predicts, now measured rather than supposed: `d(share)` scales
+/// with `reach_m`, so `d^3 / lattice_m^3` is scale-free. The pair therefore sets island SIZE
+/// and COUNT, not islanded AREA -- and `island_survey.rs` section 6 measures that other half
+/// on the same world, over a 5 km raster at the shipped density: **10,155 islands of mean
+/// 166.9 km2 at 30 km, 4,617 of mean 368.7 km2 at 45 km, 1,213 of mean 1,354.8 km2 at 90 km**,
+/// with total island area 0.3323% / 0.3337% / 0.3222% of the sphere. Eightfold in count,
+/// eightfold in mean size, and the area does not move. That is why calibration moved `density`
+/// and left both of these alone. [`VOLCANIC_HEIGHT_M`] still binds first; read that doc before
+/// this one. Clearing the abyss
 /// needs `(0.45 + 0.55*share) * smooth(1 - fraction) > 4600/height_m`, so even at `share = 1`
 /// the fraction must be below `1 - smooth^-1(4600/height_m)` -- **0.2116** at the old
 /// `height_m` of 5,200, the useful radius a node's cone can ever have. The naive model built
@@ -672,12 +725,14 @@ const VOLCANIC_REACH_M: f64 = 31_500.0;
 const VOLCANIC_MIN_DEPTH_M: f64 = 2_500.0;
 /// How far apart the candidate nodes are, in metres.
 ///
-/// **Provisional, pending Task 7's survey.** See [`VOLCANIC_REACH_M`]'s doc for the corrected
-/// island-area model this trio was chosen from, and [`VOLCANIC_HEIGHT_M`]'s doc for why
-/// height is the binding constraint the survey should sweep before either `reach_m` or this
-/// value. At this pair an island stands about 13 km across above water on a seamount base
-/// about 63 km wide -- a reasonable volcanic edifice, and the number Task 7 starts its sweep
-/// from rather than from zero.
+/// **Swept by Task 7 and left where it was.** See [`VOLCANIC_REACH_M`]'s doc for the measured
+/// reason -- the islanded share is invariant under `(lattice_m, reach_m)` at a fixed ratio, so
+/// this field sets island size and count rather than islanded area, and calibration moved
+/// `density` instead. [`VOLCANIC_HEIGHT_M`]'s doc says why height binds before either.
+/// `island_survey.rs` section 6 reports the island count and the area distribution this value
+/// produces, at three pitches, so what it DOES control is on the record too: at this 45 km
+/// pitch, **4,617 distinct islands** on `island-a`, mean 368.7 km2, median 323.2 km2, largest
+/// 2,632.3 km2 and smallest 8.2 km2 over a 5 km raster.
 const VOLCANIC_LATTICE_M: f64 = 45_000.0;
 
 /// Sparse volcanic peaks rising out of deep ocean.

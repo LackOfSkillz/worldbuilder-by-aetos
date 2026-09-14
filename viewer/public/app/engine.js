@@ -385,7 +385,7 @@ export class Engine {
 
   /// The five f64 of a named peak preset, as an object keyed by `PEAK_FIELDS`.
   ///
-  /// **The only way the viewer learns a peak number.** Nothing in `viewer/` restates 8000, 0.11,
+  /// **The only way the viewer learns a peak number.** Nothing in `viewer/` restates 8000, 0.36,
   /// 31500, 2500 or 45000; the density slider is anchored here and the preset button sends this
   /// answer straight back, so `tectonics.rs` stays the single place those numbers live. `name` is
   /// a key of `PEAK_PRESET`.

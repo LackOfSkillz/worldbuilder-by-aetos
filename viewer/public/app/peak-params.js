@@ -19,7 +19,7 @@
 // The same hazard `coast-params.js` and `gully-params.js` both open with, and the same answer.
 // The density slider is **anchored on the engine's own `PeakParams::canonical()`**, read across
 // the boundary through `wb_peak_preset` at boot, and the preset button sends back
-// `wb_peak_preset(volcanic)`'s own five numbers. Nothing in `viewer/` writes down 8000, 0.11,
+// `wb_peak_preset(volcanic)`'s own five numbers. Nothing in `viewer/` writes down 8000, 0.36,
 // 31500, 2500 or 45000, and `peak-params.test.mjs` asserts they are not.
 //
 // # Why the slider carries an integer position
@@ -29,10 +29,11 @@
 // only reach the lattice that arithmetic produces, and a default off that lattice is silently
 // replaced -- the defect `panelFieldFaults()` exists for. The widget carries an integer position
 // and this module maps it to a density through DIVISION (`position / 100`), never through
-// multiplication: `0.01 * 11` and `11 / 100` both happen to equal the engine's `0.11` in this
-// build, but division is the form the other three channels settled on for a reason that outlives
-// any one preset's value, and hundredths are what let `density` (domain `[0, 1]`) and the
-// preset's own `0.11` both land on the lattice exactly -- position 100 and position 11.
+// multiplication: `0.01 * 36` and `36 / 100` happen to be the same double in this build --
+// checked, not assumed, and they also agreed at the pre-calibration density of 0.11 -- but
+// division is the form the other three channels settled on for a reason that outlives any one
+// preset's value, and hundredths are what let `density` (domain `[0, 1]`) and the preset's own
+// `0.36` both land on the lattice exactly: position 100 and position 36.
 //
 // # The joint invariant, and the choice this module makes about it
 //
