@@ -621,8 +621,7 @@ const PEAK_HEIGHT_SALT: u64 = 0x7374_616E_6469_6E67; // "standing"
 const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// What share of lattice cells hold a peak at the named preset.
 ///
-/// **Calibrated by Task 7's survey, no longer provisional. `src/bin/island_survey.rs` chose
-/// this value and is the only thing that may change it** -- the survey and the constant must
+/// **Calibrated by `src/bin/island_survey.rs`, which is the only thing that may change it** -- the survey and the constant must
 /// not be allowed to drift apart, the way `CoastParams::fractal()`'s 0.35 and
 /// `coastline_survey.rs` must not. Spec §7 question 1 asks for **0.3% to 0.8%** of a planet's
 /// surface as islands.
@@ -632,55 +631,75 @@ const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// the peak-less world had sea, through the full `Surface` pipeline; see
 /// `docs/superpowers/reports/2026-09-14-islands-1-peaks-verification.md` for host and rustc):
 ///
+/// **RE-SURVEYED. This value was 0.36, and 0.36 was measured against a field that was
+/// suppressed over 77% of the planet.** `Tectonics::offset_m` used to end
+/// `margin_offset_m`, which returns early wherever no plate margin is in range -- so the
+/// seamount term was never evaluated on most of the world, and every share below was a share
+/// of the quarter of the planet where it was. That is fixed (see `Tectonics::offset_m`'s own
+/// doc and `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`), the
+/// field now stands islands everywhere the seabed allows, and the whole sweep was re-run.
+///
+/// **The correction is 3.41x on the share, not the 4.4x the area change alone suggests.**
+/// Measured, not scaled: at the old 0.36 this fixture now reads 1.1400% against the 0.3345% it
+/// read before, which is 3.41x. The area the field can stand on grew by about 4.4x, but the
+/// ocean coverage and the depth window do not fall uniformly with respect to where margins
+/// are, so the two factors are not the same number -- which is exactly why this was re-measured
+/// rather than divided.
+///
 /// | density | island-a (land 0.40) | owner (land 0.16) | earth-a (land 0.29) | margin to the nearer band edge |
 /// |---|---|---|---|---|
-/// | 0.11 (shipped before Task 7) | 0.1070% | 0.2275% | 0.1180% | all three BELOW |
-/// | 0.28 | 0.2625% | 0.5850% | 0.3290% | -0.0375 pp, one BELOW |
-/// | 0.31 | 0.2955% | 0.6455% | 0.3545% | -0.0045 pp, one BELOW |
-/// | 0.32 | 0.3065% | 0.6655% | 0.3660% | +0.0065 pp |
-/// | 0.33 | 0.3165% | 0.6875% | 0.3730% | +0.0165 pp |
-/// | 0.34 | 0.3215% | 0.7065% | 0.3850% | +0.0215 pp |
-/// | 0.35 | 0.3295% | 0.7310% | 0.3890% | +0.0295 pp |
-/// | **0.36** | **0.3345%** | **0.7525%** | **0.4035%** | **+0.0345 pp -- the maximin** |
-/// | 0.37 | 0.3470% | 0.7710% | 0.4170% | +0.0290 pp |
-/// | 0.38 | 0.3585% | 0.7905% | 0.4325% | +0.0095 pp |
-/// | 0.39 | 0.3675% | 0.8120% | 0.4405% | -0.0120 pp, one ABOVE |
-/// | 0.40 | 0.3785% | 0.8280% | 0.4545% | -0.0280 pp, one ABOVE |
+/// | 0.08 | 0.2665% | 0.3640% | 0.3090% | -0.0335 pp, one BELOW |
+/// | 0.09 | 0.3030% | 0.4105% | 0.3430% | +0.0030 pp |
+/// | 0.10 | 0.3350% | 0.4590% | 0.3810% | +0.0350 pp |
+/// | 0.11 | 0.3650% | 0.5000% | 0.4140% | +0.0650 pp |
+/// | 0.12 | 0.3935% | 0.5465% | 0.4495% | +0.0935 pp |
+/// | 0.13 | 0.4180% | 0.5915% | 0.4785% | +0.1180 pp |
+/// | **0.14** | **0.4480%** | **0.6380%** | **0.5210%** | **+0.1480 pp -- the maximin** |
+/// | 0.15 | 0.4795% | 0.6755% | 0.5575% | +0.1245 pp |
+/// | 0.16 | 0.5050% | 0.7175% | 0.5940% | +0.0825 pp |
+/// | 0.17 | 0.5355% | 0.7625% | 0.6380% | +0.0375 pp |
+/// | 0.18 | 0.5640% | 0.8055% | 0.6810% | -0.0055 pp, one ABOVE |
+/// | 0.19 | 0.6045% | 0.8540% | 0.7235% | -0.0540 pp, one ABOVE |
+/// | 0.20 | 0.6355% | 0.8990% | 0.7615% | -0.0990 pp, one ABOVE |
+/// | 0.36 (the suppressed-field pick) | 1.1400% | 1.6180% | 1.3945% | -0.8180 pp, one ABOVE |
 ///
 /// **The islanded share depends on the world's land fraction, so the choice cannot be made on
 /// one world.** A world with less land has more deep ocean for the field to stand an island
-/// in: at every density the owner's 0.16-land world yields roughly twice the share the
-/// 0.40-land fixture does. **Seven admissible hundredths -- 0.32 through 0.38, so six
-/// hundredths of span** -- put all three worlds inside the band at once, and **0.36 is the
+/// in: at every density the owner's 0.16-land world yields roughly 1.4x the share the
+/// 0.40-land fixture does. **Nine admissible hundredths -- 0.09 through 0.17, so eight
+/// hundredths of span** -- put all three worlds inside the band at once, and **0.14 is the
 /// maximin**: the admissible density whose WORST world sits furthest from a band edge.
 ///
-/// **Both edges are measured, not inferred.** The final whole-branch review's minor 6 found
+/// **Both edges are measured, not inferred** -- the 0.08 and 0.18 rows are in the table rather
+/// than a gap either side of it. 0.08 misses the floor by 0.0335 pp and 0.18 clears the ceiling
+/// by 0.0055 pp, so the nine are exactly nine. (The final whole-branch review's minor 6 found
 /// this doc saying "six hundredths wide" while the verification report said "seven hundredths
-/// wide" -- two true statements about different quantities (seven admissible *values*, six
-/// hundredths of *span*), each written as if it were the other. Both now say both, and the
-/// 0.31 and 0.39 rows above were added to `island_survey.rs`'s `CANDIDATES` and re-run so that
-/// the window's edges are rows in this table rather than a gap between 0.28 and 0.40: 0.31
-/// misses the floor by 0.0045 pp and 0.39 clears the ceiling by 0.0120 pp, so the seven are
-/// exactly seven.
+/// wide" -- two true statements about different quantities, each written as if it were the
+/// other. Both now say both, in the corrected units.)
 ///
-/// That narrowness matters because the band is squeezed from both sides at once here --
-/// `island-a` presses the 0.3% floor while `owner` presses the 0.8% ceiling -- and a value
-/// admissible by 0.0065 pp would not survive a fourth world.
+/// **The fix widened the safety margin as well as moving the value, which is the useful part.**
+/// At 0.36 the maximin margin was +0.0345 pp against a 1-sigma binomial error of about
+/// 0.0158 pp -- a little over 2 sigma, and the report flagged that as its first concern. At
+/// 0.14 the margin is **+0.1480 pp against about 0.0150 pp**, close to **10 sigma**, and the
+/// binding world flips from the floor to the ceiling between 0.14 and 0.15 rather than sitting
+/// on top of one edge. `island-a` clears the floor by 0.1480 pp and `owner` clears the ceiling
+/// by 0.1620 pp. A fourth world is no longer likely to push an end out of band.
 ///
 /// Hundredths, because `viewer/public/app/peak-params.js`'s density slider carries an integer
 /// position and maps it to a value by dividing by 100; a density off that lattice is one the
-/// panel cannot reach, which is the defect `panelFieldFaults()` exists for. 0.36 is position
-/// 36. It is also **not** `CoastParams::fractal()`'s 0.35, which matters for a reason that is
+/// panel cannot reach, which is the defect `panelFieldFaults()` exists for. 0.14 is position
+/// 14. It is also **not** `CoastParams::fractal()`'s 0.35, which matters for a reason that is
 /// not cosmetic: `viewer/test/peak-params.test.mjs`'s "no peak number is written down twice"
-/// scans the viewer's sources for the preset's own distinctive literal, and at 0.35 that scan
-/// would have been indistinguishable from the coast channel's identical one.
+/// scans the viewer's sources for the preset's own distinctive literal, and a density that
+/// collided with another channel's would have made that scan pass vacuously. Checked against
+/// the four modules that scan covers: `0.14` appears in none of them.
 ///
 /// **The analytic model is not where this came from.** The corrected volumetric model in
 /// [`VOLCANIC_REACH_M`]'s doc predicts the FIELD -- what the term would make if the whole
 /// planet were abyssal ocean, land included -- not a world's islanded share; the two differ by
 /// the ocean-coverage and depth-window factors `island_survey.rs`'s header sets out. The model
 /// chose where to sample. The sweep chose the number.
-const VOLCANIC_DENSITY: f64 = 0.36;
+const VOLCANIC_DENSITY: f64 = 0.14;
 /// How far a cone reaches from its centre, in metres.
 ///
 /// Must not exceed [`VOLCANIC_LATTICE_M`] -- see `peak_offset_m`'s own doc for why that is
@@ -690,18 +709,26 @@ const VOLCANIC_DENSITY: f64 = 0.36;
 /// value: the islanded share is invariant under the PAIR, so `reach_m / lattice_m` is the
 /// lever and neither field alone is one.** Holding the ratio at 0.70 and moving the pair over
 /// 30 / 45 / 67.5 / 90 km moved the share by less than the spiral's own noise -- measured on
-/// `island-a` over 200,000 points, `island_survey.rs` section 3: at the shipped density of
-/// 0.36, **0.3290% / 0.3345% / 0.3350% / 0.3310%** -- a spread of 0.006 pp against the
-/// estimator's own 1-sigma binomial error of 0.013 pp. At density 0.58: 0.5460% / 0.5495% /
-/// 0.5420% / 0.5200%. At density 0.11: 0.0970% / 0.1070% / 0.1065% / 0.1080%.
+/// `island-a` over 200,000 points, `island_survey.rs` section 3. **Re-measured after the
+/// margin-suppression fix and after `density` was re-surveyed to 0.14**: at the shipped
+/// density, **0.4305% / 0.4480% / 0.4365% / 0.4475%** -- a spread of 0.0175 pp against the
+/// estimator's own 1-sigma binomial error of about 0.0150 pp, so still about one sigma and
+/// still the honest word for it is "unmeasurable". At density 0.11: 0.3385% / 0.3650% /
+/// 0.3530% / 0.3460%. At density 0.58: 1.8170% / 1.8410% / 1.8380% / 1.8030%. (Before the fix
+/// the same sweep at 0.36 read 0.3290% / 0.3345% / 0.3350% / 0.3310%, a 0.006 pp spread; the
+/// spread grew with the share, as a binomial spread does, and not relative to it.)
 ///
 /// That is what the model below predicts, now measured rather than supposed: `d(share)` scales
 /// with `reach_m`, so `d^3 / lattice_m^3` is scale-free. The pair therefore sets island SIZE
 /// and COUNT, not islanded AREA -- and `island_survey.rs` section 6 measures that other half
-/// on the same world, over a 5 km raster at the shipped density: **10,155 islands of mean
-/// 166.9 km2 at 30 km, 4,617 of mean 368.7 km2 at 45 km, 1,213 of mean 1,354.8 km2 at 90 km**,
-/// with total island area 0.3323% / 0.3337% / 0.3222% of the sphere. Eightfold in count,
-/// eightfold in mean size, and the area does not move. That is why calibration moved `density`
+/// on the same world, over a 5 km raster at the shipped density. **Re-run after the
+/// margin-suppression fix and the re-survey**: **13,506 islands of mean 166.9 km2 at 30 km,
+/// 6,137 of mean 363.6 km2 at 45 km, 1,558 of mean 1,415.9 km2 at 90 km**, with total island
+/// area 0.4419% / 0.4375% / 0.4325% of the sphere. Eightfold in count, eightfold in mean size,
+/// and the area does not move. (Before the fix, at 0.36 on a suppressed field, the same three
+/// pitches read 10,155 / 4,617 / 1,213 islands and 0.3323% / 0.3337% / 0.3222% of area. The
+/// mean sizes are unchanged to within the raster, which is the point: the fix and the re-survey
+/// moved how MANY islands there are, not how big one is.) That is why calibration moved `density`
 /// and left both of these alone. [`VOLCANIC_HEIGHT_M`] still binds first; read that doc before
 /// this one. Clearing the abyss
 /// needs `(0.45 + 0.55*share) * smooth(1 - fraction) > 4600/height_m`, so even at `share = 1`
@@ -743,8 +770,9 @@ const VOLCANIC_MIN_DEPTH_M: f64 = 2_500.0;
 /// `density` instead. [`VOLCANIC_HEIGHT_M`]'s doc says why height binds before either.
 /// `island_survey.rs` section 6 reports the island count and the area distribution this value
 /// produces, at three pitches, so what it DOES control is on the record too: at this 45 km
-/// pitch, **4,617 distinct islands** on `island-a`, mean 368.7 km2, median 323.2 km2, largest
-/// 2,632.3 km2 and smallest 8.2 km2 over a 5 km raster.
+/// pitch, **6,137 distinct islands** on `island-a`, mean 363.6 km2, median 327.6 km2, largest
+/// 1,732.5 km2 and smallest 7.0 km2 over a 5 km raster -- re-measured after the
+/// margin-suppression fix and the density re-survey (it read 4,617 of mean 368.7 km2 before).
 const VOLCANIC_LATTICE_M: f64 = 45_000.0;
 
 /// Sparse volcanic peaks rising out of deep ocean.

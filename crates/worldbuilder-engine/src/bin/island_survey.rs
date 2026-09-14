@@ -157,7 +157,7 @@ const OFFSHORE_OFFSET_M: f64 = 2_000.0;
 /// to a value by dividing by 100 -- a chosen density off that lattice is one the panel cannot
 /// reach, which is the defect `panelFieldFaults()` exists for.
 const DENSITIES: [f64; 16] = [
-    0.11, 0.16, 0.20, 0.24, 0.28, 0.32, 0.36, 0.40, 0.45, 0.50, 0.55, 0.58, 0.60, 0.62, 0.70,
+    0.02, 0.04, 0.06, 0.08, 0.09, 0.10, 0.11, 0.12, 0.14, 0.16, 0.20, 0.24, 0.32, 0.36, 0.50,
     0.75,
 ];
 
@@ -188,8 +188,9 @@ const SHIPPED_LATTICE: usize = 1;
 /// code and the report disagreeing about how wide the admissible window is. They are the two
 /// hundredths immediately outside 0.32-0.38, so this list now measures both edges rather than
 /// inferring them from the 0.28 and 0.40 rows four and two hundredths away.
-const CANDIDATES: [f64; 13] =
-    [0.28, 0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39, 0.40, 0.45, 0.58];
+const CANDIDATES: [f64; 14] = [
+    0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.20, 0.36,
+];
 
 /// The raster spacing the component counts are taken at, in metres. An island at the shipped
 /// constants stands about 25 km across, so 5 km puts about five cells across one and about

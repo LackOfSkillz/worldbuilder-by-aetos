@@ -4892,15 +4892,25 @@ fn a_wrongly_sized_or_misaligned_gully_buffer_is_refused_rather_than_read() {
 ///
 /// Replaced by a derivation rather than another guess: a 0.25-degree global scan over
 /// latitudes -80..80 (1,152,721 sites) compared `plain_world()` against `PeakParams::volcanic()`
-/// through `wb_structural_m`; 27,069 sites rose by more than 500 m, and these are the three
-/// largest movers that sit in three different oceans rather than three points on one plateau.
-/// Measured on this host (rustc 1.98.0, `--release`):
+/// through `wb_structural_m`; **47,592 sites rise by more than 500 m**, and these are three of
+/// the largest movers, chosen to sit in three different oceans rather than three points on one
+/// plateau. Measured on this host (rustc 1.98.0, `--release`):
 ///
 /// | probe | plain | peaked | rise |
 /// |---|---|---|---|
 /// | 13.5, -91.5 | -3,446.10 m | +4,327.06 m | 7,773.16 m |
 /// | -43.75, 46.0 | -4,600.00 m | +3,066.62 m | 7,666.62 m |
-/// | -45.5, -147.25 | -3,530.17 m | +3,788.68 m | 7,318.85 m |
+/// | -55.0, -52.5 | -3,870.40 m | +3,801.43 m | 7,671.84 m |
+///
+/// **The scan was re-run at the re-surveyed density and one probe had to move.** The derivation
+/// was first made at `density: 0.36`; the final fix wave found the seamount term suppressed
+/// over 77% of the planet, fixed it, and re-surveyed the density to 0.14. `peak_of_cell` gates
+/// on `hash >= density`, so LOWERING the density strictly removes candidate cells -- and the
+/// cell under the old third probe (`-45.5, -147.25`) was one of them: that site now reads
+/// -2,585.72 m instead of +3,788.68 m. The first two are unchanged to the last bit, which is
+/// the monotonicity argument working rather than luck. `-55.0, -52.5` replaces the lost one.
+/// (The differing-site count went UP, 27,069 to 47,592, at less than half the density: that is
+/// the suppression fix, and it is a second independent witness to it.)
 ///
 /// All three surface -- the field puts land above the datum in open ocean at each of them, which
 /// is the spec's central claim and is what `sample_peak` now watches rather than only finiteness.
@@ -4910,7 +4920,7 @@ const PEAK_PROBES: &[(f64, f64)] = &[
     (0.0, 0.0),          // open water, but shallower than the depth window's onset
     (13.5, -91.5),       // deep ocean, and an island stands here at the shipped preset
     (-43.75, 46.0),      // ditto, a second ocean
-    (-45.5, -147.25),    // ditto, a third
+    (-55.0, -52.5),      // ditto, a third
 ];
 
 /// Which [`PEAK_PROBES`] entries carry an island at `PeakParams::volcanic()`, by index. Named
@@ -4989,12 +4999,14 @@ fn sample_peak(record: &[f64; WB_PEAK_STRIDE], label: &str) {
 /// inert whichever way it is read. And `sample_peak` asserted only finiteness. Under the swap,
 /// `PeakParams::volcanic()` would decode as `height_m: 2,500, min_depth_m: 8,000` -- a block
 /// needing 8 km of water under a node to open its window, which nothing on this world has, so it
-/// would raise nothing anywhere and every one of those tests would stay green.
+/// would raise nothing anywhere and every one of those tests would stay green. (Under the swap
+/// the density slot is untouched, so this holds at the re-surveyed `density: 0.14` exactly as it
+/// held at 0.36.)
 ///
 /// So this asserts what a wire-format regression actually costs: a *sampled elevation*, not a
 /// decoded struct. The three island probes are the derived ones in `PEAK_PROBES`'s own table;
-/// the bars below are loose against the measurements there (7,773 / 7,667 / 7,319 m of rise, to
-/// +4,327 / +3,067 / +3,789 m of ground) because the point is the mechanism, not the digit --
+/// the bars below are loose against the measurements there (7,773 / 7,667 / 7,672 m of rise, to
+/// +4,327 / +3,067 / +3,801 m of ground) because the point is the mechanism, not the digit --
 /// they are far above zero and far below the 8,000 m `height_m` ceiling, so neither an inert
 /// field nor a runaway one can pass.
 ///

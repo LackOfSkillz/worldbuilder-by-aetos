@@ -121,6 +121,13 @@ confirmed. These are not islands and must not be counted as any: they are shorel
 
 ## 2. The calibration, and the trap it was built to avoid
 
+> **SUPERSEDED — measured against a suppressed field.** Every share in this section was measured
+> before §13's defect was found: `Tectonics::offset_m` never reached the seamount term on
+> **77.16%** of the planet, so each figure below is a share of the quarter of the world where the
+> field was evaluated. The defect is fixed and the whole sweep was re-run; **§14 carries the
+> corrected tables and the density they chose.** This section is kept because it is a correct
+> measurement of what the code then did, and because it is why 0.36 was picked.
+
 ### The trap, stated first
 
 **Measure through the full `Surface` pipeline, over ocean. Never through `peak_offset_m` against
@@ -302,43 +309,55 @@ affordable (about 111 s per configuration on this host). **A count at spacing `d
 island below about one cell**, so the spacing is stated with every count and counts are only ever
 compared at the same spacing.
 
+**RE-RUN after §13's fix and §14's re-survey.** The figures are the current ones; the pre-fix
+run, at `density: 0.36` against a field suppressed over 77% of the planet, is given underneath
+each for comparison.
+
 | configuration | island cells | **distinct islands** | total island area | share of sphere | mean |
 |---|---|---|---|---|---|
-| **density 0.36, lattice 45,000 (shipped)** | 106,475 | **4,617** | 1,702,268 km² | **0.3337%** | 368.7 km² |
-| density 0.11, lattice 45,000 (before) | 32,155 | 1,443 | 524,366 km² | 0.1028% | 363.4 km² |
-| density 0.36, lattice 30,000 | 104,689 | **10,155** | 1,694,766 km² | 0.3323% | 166.9 km² |
-| density 0.36, lattice 90,000 | 103,380 | **1,213** | 1,643,372 km² | 0.3222% | 1,354.8 km² |
+| **density 0.14, lattice 45,000 (shipped)** | 147,121 | **6,137** | 2,231,588 km² | **0.4375%** | 363.6 km² |
+| density 0.11, lattice 45,000 | 118,143 | 4,831 | 1,770,676 km² | 0.3471% | 366.5 km² |
+| density 0.14, lattice 30,000 | 147,350 | **13,506** | 2,253,736 km² | 0.4419% | 166.9 km² |
+| density 0.14, lattice 90,000 | 140,120 | **1,558** | 2,206,039 km² | 0.4325% | 1,415.9 km² |
+| *(pre-fix)* density 0.36, lattice 45,000 | 106,475 | 4,617 | 1,702,268 km² | 0.3337% | 368.7 km² |
+| *(pre-fix)* density 0.36, lattice 30,000 | 104,689 | 10,155 | 1,694,766 km² | 0.3323% | 166.9 km² |
+| *(pre-fix)* density 0.36, lattice 90,000 | 103,380 | 1,213 | 1,643,372 km² | 0.3222% | 1,354.8 km² |
 
 ### Area distribution at the shipped constants
 
 | | largest | p90 | median | p10 | smallest |
 |---|---|---|---|---|---|
-| **density 0.36, lattice 45,000** | **2,632.3 km²** | 714.6 km² | **323.2 km²** | 67.6 km² | 8.2 km² |
-| density 0.11, lattice 45,000 | 1,590.5 km² | 727.8 km² | 323.4 km² | 69.9 km² | 10.8 km² |
-| density 0.36, lattice 30,000 | 1,264.0 km² | 319.2 km² | 148.8 km² | 35.3 km² | 3.6 km² |
-| density 0.36, lattice 90,000 | 7,565.8 km² | 2,684.7 km² | 1,137.5 km² | 195.2 km² | 15.0 km² |
+| **density 0.14, lattice 45,000** | **1,732.5 km²** | 705.0 km² | **327.6 km²** | 73.5 km² | 7.0 km² |
+| density 0.11, lattice 45,000 | 1,732.5 km² | 713.3 km² | 334.1 km² | 74.4 km² | 7.0 km² |
+| density 0.14, lattice 30,000 | 1,199.9 km² | 320.9 km² | 149.5 km² | 37.2 km² | 2.4 km² |
+| density 0.14, lattice 90,000 | 6,351.4 km² | 2,839.1 km² | 1,268.9 km² | 252.6 km² | 21.1 km² |
 
-Histogram at the shipped constants, by area: **< 50 km² 387 · 50–200 km² 1,136 · 200–500 km²
-1,836 · 500–2,000 km² 1,248 · 2,000–10,000 km² 10 · ≥ 10,000 km² 0.** No island on this world
-exceeds 10,000 km², and only ten exceed 2,000 km² — so nothing the field makes is
+Histogram at the shipped constants, by area: **< 50 km² 461 · 50–200 km² 1,479 · 200–500 km²
+2,570 · 500–2,000 km² 1,627 · 2,000–10,000 km² 0 · ≥ 10,000 km² 0.** No island on this world
+exceeds 2,000 km² at all now (the pre-fix run had ten) — so nothing the field makes is
 continent-sized, which is what "islands, not fragments" is supposed to mean at this slice.
 
 Three findings worth separating out.
 
-1. **Two independent estimators agree on the share.** The 200,000-point spiral says 0.3345% and
-   the 32-million-point raster says 0.3337% — 0.0008 pp apart, well inside either one's error.
-   The spiral figure is the calibration's; the raster corroborates it on a population three
-   orders of magnitude larger and by a different construction.
+1. **Two independent estimators agree on the share.** The 200,000-point spiral says 0.4480% and
+   the 32-million-point raster says 0.4375% — 0.0105 pp apart, inside the spiral's own ±0.015 pp
+   1σ. The spiral figure is the calibration's; the raster corroborates it on a population three
+   orders of magnitude larger and by a different construction. (Pre-fix the two read 0.3345% and
+   0.3337%, 0.0008 pp apart. The agreement is looser now and honestly so — one run of each, and
+   0.7σ of the smaller estimator is not a worse agreement than 0.05σ, only a differently lucky
+   one.)
 2. **Density moves count, not size. The lattice moves size, not area.** Raising density 0.11 →
-   0.36 tripled the count (1,443 → 4,617) and left the mean essentially untouched (363.4 → 368.7
-   km²) and the median unmoved to three figures (323.4 → 323.2 km²). Moving the lattice 30 km →
-   90 km changed the count eightfold *down* (10,155 → 1,213) and the mean eightfold *up* (166.9 →
-   1,354.8 km²) while total area stayed inside 0.32–0.33%. **This is §3's invariance seen from the
-   other side**, and it is the measured reason the calibration knob is `density`.
-3. **Roughly a tenth of islands are at or below the raster's own resolution floor.** 387 of 4,617
-   are under 50 km² — two cells of 25 km² each — so the smallest bin is resolution-limited and
-   the true count of very small islands is higher than 387. The count of islands above 200 km²
-   (3,094) is the resolution-safe figure. Spec §5's note that "islands smaller than the node
+   0.14 raised the count by a quarter (4,831 → 6,137) and left the mean essentially untouched
+   (366.5 → 363.6 km²) and the median within 2% (334.1 → 327.6 km²). Moving the lattice 30 km →
+   90 km changed the count eightfold *down* (13,506 → 1,558) and the mean eightfold *up* (166.9 →
+   1,415.9 km²) while total area stayed inside 0.432–0.442%. **This is §3's invariance seen from
+   the other side**, and it is the measured reason the calibration knob is `density`. The three
+   mean sizes are within 1% of the pre-fix run's at the same pitches: §13's fix changed how MANY
+   islands there are, not how big one is.
+3. **Roughly a fourteenth of islands are at or below the raster's own resolution floor.** 461 of
+   6,137 are under 50 km² — two cells of 25 km² each — so the smallest bin is resolution-limited
+   and the true count of very small islands is higher than 461. The count of islands above
+   200 km² (**4,197**) is the resolution-safe figure. Spec §5's note that "islands smaller than the node
    spacing have no hydrology" bites here: at 1,000,000 hydrology nodes the spacing is about 33 km,
    so anything below roughly 1,000 km² gets zero or one node — which, on this distribution, is
    the great majority of them.
@@ -353,16 +372,19 @@ spiral found on the plain world. **Method:** `island_survey.rs` section 5. `Tang
 and eight compass bearings at each distance, reporting the deepest and shallowest
 `structural_m` on each ring. **Host:** as above.
 
-The summit stands **4,773.47 m** with a tectonic offset of **7,484.31 m**.
+**RE-RUN after §13's fix and §14's re-survey.** The summit stands **4,291.15 m** with a tectonic
+offset of **6,962.95 m**. (Pre-fix, at `density: 0.36`, it was 4,773.47 m / 7,484.31 m — a
+different node: `peak_of_cell` gates on `hash >= density`, so lowering the density removes
+candidate cells and the tallest one the survey finds moves. No geometry changed.)
 
 | distance off the island | deepest of 8 bearings | shallowest of 8 |
 |---|---|---|
-| 0.20 × `reach_m` = 6,300 m | +3,197.93 m | +4,944.38 m |
-| 0.40 × `reach_m` = 12,600 m | +948.60 m | +3,597.61 m |
-| 0.60 × `reach_m` = 18,900 m | **−1,223.04 m** | +1,422.25 m |
-| 0.80 × `reach_m` = 25,200 m | **−2,450.70 m** | −830.23 m |
-| **0.95 × `reach_m` = 29,925 m** | **−2,738.70 m** | −926.01 m |
-| 1.10 × `reach_m` = 34,650 m | −2,762.89 m | −494.87 m |
+| 0.20 × `reach_m` = 6,300 m | +2,737.76 m | +4,572.47 m |
+| 0.40 × `reach_m` = 12,600 m | +603.91 m | +3,396.46 m |
+| 0.60 × `reach_m` = 18,900 m | **−1,383.05 m** | +1,351.37 m |
+| 0.80 × `reach_m` = 25,200 m | **−2,494.53 m** | −838.33 m |
+| **0.95 × `reach_m` = 29,925 m** | **−2,695.04 m** | −2,137.37 m |
+| 1.10 × `reach_m` = 34,650 m | −2,800.63 m | −2,494.37 m |
 
 The contrast case, from a continental shore on the *same world* with no peak block involved.
 **`SHELF_BREAK_M` is 80,000 m**, so the shelf is expected to run about that far before it breaks:
@@ -376,19 +398,22 @@ The contrast case, from a continental shore on the *same world* with no peak blo
 | 120,000 m | −248.39 m | +111.21 m |
 | 200,000 m | −354.54 m | +174.20 m |
 
-**At 30 km off an island the water is 2,739 m deep; at 80 km off a continent it is 153 m deep.**
+**At 30 km off an island the water is 2,695 m deep; at 80 km off a continent it is 153 m deep.**
 That is a factor of eighteen at a quarter of the distance, and it is the navigational difference
 between an oceanic volcano and a continental margin — the thing a bundle's soundings would show.
+The continental column is unchanged to the centimetre, which it must be: no peak block is
+involved in it, and §13's bit comparison says the plate-only path did not move.
 The mechanism is why peaks go into the tectonic offset at all: `Shelf::weight`'s authority is
-`1 - smooth(|tectonic_m| / 250)`, so a 7,484 m offset holds the shelf off entirely (the shelf
+`1 - smooth(|tectonic_m| / 250)`, so a 6,963 m offset holds the shelf off entirely (the shelf
 weight at this summit reads **0.0000**, measured, in §6 below).
 
 **Two summit figures are in circulation and they are different populations, not a
-disagreement.** `an_island_is_steep_to_rather_than_shelved` reports **−2,907.71 m** off a summit
-standing **4,010.75 m**, because its `find_a_summit` searches 40,000 points with the
-`offset_m > 2000` discriminator; the survey searches 200,000 with `D_added`. They find different
-nodes on the same planet. Both are re-derived in this task by running them, and both are past the
-1,000 m bar by a wide margin.
+disagreement.** `an_island_is_steep_to_rather_than_shelved` reports **−2,695.04 m** off a summit
+standing **4,291.15 m**; its `find_a_summit` searches 40,000 points with the `offset_m > 2000`
+discriminator and the survey searches 200,000 with `D_added`, and at this density both happen to
+land on the same node (at 0.36 they landed on different ones, −2,907.71 m off 4,010.75 m against
+the survey's −2,738.70 m off 4,773.47 m). Both are re-derived in this task by running them, and
+both are past the 1,000 m bar by a wide margin.
 
 ---
 
@@ -406,39 +431,49 @@ them: `surface.shelf.evaluate(point)` supplies `weight` and `tectonic_m`, and
 is `ReliefParams::canonical()`, which is what `Detail::with_gully` builds from the `relief: None`
 these worlds are constructed with.
 
+**RE-RUN after §13's fix and §14's re-survey**, off the summit §5 now finds.
+
 | | at the summit | 1.1 × `reach_m` off it |
 |---|---|---|
-| `elevation_m` | **+4,773.47 m** | −2,753.28 m |
-| `tectonic_m` | **+7,484.31 m** | **0.00 m** |
+| `elevation_m` | **+4,291.15 m** | −2,494.37 m |
+| `tectonic_m` | **+6,962.95 m** | **16.94 m** |
 | shelf `weight` | **0.0000** | 0.0000 |
-| slope | 0.15752 | 0.00239 |
-| `natural` → sand / mud / **rock** | 0.000000 / 0.000000 / **1.000000** | 0.000000 / 0.989720 / **0.010280** |
-| `by_tectonics` = `smooth(\|tectonic_m\| / ROCK_TECTONIC_M)` | `smooth(7484.31/1200)` = `smooth(6.2369)` = **1.000000** | `smooth(0.0000)` = **0.000000** |
-| `by_slope` = `smooth(slope / ROCK_SLOPE)` | `smooth(0.15752/0.04)` = **1.000000** | `smooth(0.00239/0.04)` = **0.010280** |
-| `Detail::amplitude_m` | **45.000000 m** | 55.682384 m |
-| the same with `tectonic_m = 0` | **150.000000 m** | 55.682384 m |
-| quieting = `1 − quieting_strength · smooth(\|tectonic_m\| / quieting_scale_m)` | `1 − 0.70 · smooth(6.2369)` = **0.300000** | `1 − 0.70 · smooth(0)` = **1.000000** |
+| slope | 0.16267 | 0.02071 |
+| `natural` → sand / mud / **rock** | 0.000000 / 0.000000 / **1.000000** | 0.000000 / 0.473372 / **0.526628** |
+| `by_tectonics` = `smooth(\|tectonic_m\| / ROCK_TECTONIC_M)` | `smooth(6962.95/1200)` = `smooth(5.8025)` = **1.000000** | `smooth(0.0141)` = **0.000592** |
+| `by_slope` = `smooth(slope / ROCK_SLOPE)` | `smooth(0.16267/0.04)` = **1.000000** | `smooth(0.02071/0.04)` = **0.526628** |
+| `Detail::amplitude_m` | **45.000000 m** | 57.630360 m |
+| the same with `tectonic_m = 0` | **150.000000 m** | 57.654260 m |
+| quieting = `1 − quieting_strength · smooth(\|tectonic_m\| / quieting_scale_m)` | `1 − 0.70 · smooth(5.8025)` = **0.300000** | `1 − 0.70 · smooth(0.0141)` = **0.999585** |
 
 **Both spec claims hold, and both are saturated with room to spare rather than marginally.**
 
-- **`by_tectonics` saturates.** `ROCK_TECTONIC_M` is 1,200 m and the argument is 6.24 — `smooth`
-  clamps at 1.0 above an argument of 1, so the summit is at **6.2× the saturation threshold.**
+- **`by_tectonics` saturates.** `ROCK_TECTONIC_M` is 1,200 m and the argument is 5.80 — `smooth`
+  clamps at 1.0 above an argument of 1, so the summit is at **5.8× the saturation threshold.**
   Rock is exactly 1.000000 and both loose fractions are exactly zero.
 - **The quieting saturates too, and it costs 105 m of roughness.** `quieting_strength` is 0.70
   and `quieting_scale_m` is 1,200 m, so a saturated quieting multiplies roughness by exactly
   0.300000. Measured: **45.000000 m against the 150.000000 m the same point would get at
   `tectonic_m = 0`** — a 70% reduction, exactly the strength constant, because the quieting is at
   its floor. An island's flanks are therefore *smoother* than the seabed a kilometre away
-  (55.68 m), which is the intended behaviour: deliberate deep structure keeps its shape.
+  (57.63 m), which is the intended behaviour: deliberate deep structure keeps its shape.
 
 **One honest caveat, which is why the decomposition is printed and not just the composition.**
 `by_slope` *also* saturates at the summit (slope 0.158 against `ROCK_SLOPE` 0.04), and
 `natural` takes the **larger** of the two terms. So "100% rock at a summit" is
 over-determined: it would be 100% rock from slope alone. The claim that the *tectonic* term
-saturates rests on the decomposition — `smooth(6.2369) = 1.000000` — and on the contrast point,
-where the slope is 0.00239, `by_slope` is 0.010280, and the composition reads exactly that
-0.010280. Asserting the spec's claim from the composition alone would have been an unfalsifiable
-measurement.
+saturates rests on the decomposition — `smooth(5.8025) = 1.000000` — and on the contrast point,
+where the slope is 0.02071, `by_slope` is 0.526628, and the composition reads exactly that
+0.526628 while `by_tectonics` reads 0.000592. Asserting the spec's claim from the composition
+alone would have been an unfalsifiable measurement.
+
+**The contrast point is a weaker contrast than it was and the reason is §13's fix, not a
+regression.** Pre-fix it read `tectonic_m` exactly **0.00 m** — because it sat outside margin
+range, where `offset_m` returned zero *before* the seamount term, so the plate field and the
+seamount field were both silent there. It now reads **16.94 m**: a real, small tectonic offset,
+which is what a point 35 km off a seamount should have. The decomposition is still unambiguous
+(0.000592 against 0.526628, three orders apart), and the composition still reads `by_slope`
+exactly.
 
 ---
 
@@ -447,11 +482,16 @@ measurement.
 **Population:** the 200,000-point spiral on each world. **Method:** `island_survey.rs` section 4b,
 the share of the spiral with `structural_m > 0`, at the canonical preset and at `volcanic()`.
 
+**RE-RUN after §13's fix and §14's re-survey.** The canonical-preset column is unchanged to the
+digit, which it must be — no block is involved in it.
+
 | world | requested `land_fraction` | achieved, canonical preset | achieved, `volcanic()` | islands add |
 |---|---|---|---|---|
-| `island-a` | 0.4000 | 0.4021 | **0.4054** | **+0.3345 pp** |
-| `owner` | 0.1600 | 0.1630 | **0.1705** | **+0.7525 pp** |
-| `earth-a` | 0.2900 | 0.2928 | **0.2969** | **+0.4035 pp** |
+| `island-a` | 0.4000 | 0.4021 | **0.4065** | **+0.4480 pp** |
+| `owner` | 0.1600 | 0.1630 | **0.1694** | **+0.6380 pp** |
+| `earth-a` | 0.2900 | 0.2928 | **0.2980** | **+0.5210 pp** |
+
+*(Pre-fix, at `density: 0.36`: 0.4054 / 0.1705 / 0.2969, adding 0.3345 / 0.7525 / 0.4035 pp.)*
 
 Two separate gaps are visible and they have different causes.
 
@@ -460,10 +500,11 @@ Two separate gaps are visible and they have different causes.
   `land_fraction` on its own 4,000-sample estimator, whose 1σ error is about ±0.58 pp, and this
   200,000-point estimator measures the result to ±0.1 pp. This slice neither caused nor changed
   it.
-- **`volcanic()` adds land on top, by exactly `D_added`** — 0.3345 / 0.7525 / 0.4035 pp, the same
+- **`volcanic()` adds land on top, by exactly `D_added`** — 0.4480 / 0.6380 / 0.5210 pp, the same
   three numbers as the islanded share, which is a consistency check rather than a coincidence:
   peaks only raise ground and never lower it, so every square metre they add to land is a square
-  metre of island.
+  metre of island. It reproduces at the new density as it did at the old, which is the check
+  doing its job across a recalibration.
 
 ### Spec §5's accessor is deliberately not added, and that is the record
 
@@ -557,13 +598,13 @@ rather than the assertion.
 Re-derived by **running** each one on the host named at the top. Nothing in this table is
 transcribed.
 
-| Pin | baseline `88f199e` | after Task 7 | **after the final fix wave (`3f473f4` + this round)** | note |
+| Pin | baseline `88f199e` | after Task 7 | **after both final fix waves** | note |
 |---|---|---|---|---|
-| Engine lib, `--features wasm` | 843 passed / 11 ignored | 843 / 11 | **846 / 12** | +3 tests, +1 ignored — see below |
-| Engine lib, `--no-default-features` | — | 843 / 11 | **844 / 12** | |
-| Engine lib, default features | — | 843 / 11 | **844 / 12** | |
-| Engine lib, `--features python` | — | 845 / 11 | **846 / 12** | +2 as always on the python rows |
-| Engine lib, `--features python,wasm` | — | 845 / 11 | **848 / 12** | |
+| Engine lib, `--features wasm` | 843 passed / 11 ignored | 843 / 11 | **847 / 11** | +4 tests, ignored back to 11 — see below |
+| Engine lib, `--no-default-features` | — | 843 / 11 | **845 / 11** | |
+| Engine lib, default features | — | 843 / 11 | **845 / 11** | |
+| Engine lib, `--features python` | — | 845 / 11 | **847 / 11** | +2 as always on the python rows |
+| Engine lib, `--features python,wasm` | — | 845 / 11 | **849 / 11** | |
 | `tests/blake2_bytes.rs` | 4 | 4 | **4** | every configuration |
 | `tests/build_fingerprint.rs` | 9 | 9 | **9** | every configuration |
 | `tests/no_std_math.rs` | 7 | 7 | **7** | every configuration |
@@ -577,24 +618,29 @@ transcribed.
 | Python suite, `tests/` | 575 | 575 | **575** | `WORLDBUILDER_REQUIRE_ENGINE=1` |
 | Python conformance, `tests/test_conformance.py` | 167 | 167 | **167** | |
 | Viewer `npm test` | 359 | 359 | **362** | 362 was already the count at `3f473f4`; this round added none |
-| Wasm artifact | 465,699 bytes, 36 exports, 0 imports | 465,699 / 36 / 0 | **465,838 bytes, 36 exports, 0 imports** | moved: `src/` changed |
-| Wasm artifact-sha256 | — | `b13e6003…0ee` | **`ac090cce43f321028f650eb3cb5d9285e68fef9ca0fee0301e5404b6e0ec35af`** | moved: `tectonics.rs` and `wasm.rs` changed |
-| Wasm source-fingerprint | — | `83672441…511` (70 inputs) | **`662ce1d9c75bbb2cdf57fc7bdae19e809c8a83680c60c3f2003e7520e9099c34` (70 inputs)** | moved with the source |
+| Wasm artifact | 465,699 bytes, 36 exports, 0 imports | 465,699 / 36 / 0 | **465,840 bytes, 36 exports, 0 imports** | moved: `src/` changed |
+| Wasm artifact-sha256 | — | `b13e6003…0ee` | **`0362020b1859200f12c9e71af38533c5122f89dbeef97e0bd972bf7fa6d98312`** | moved: `tectonics.rs`, `surface.rs` and `wasm.rs` changed |
+| Wasm source-fingerprint | — | `83672441…511` (70 inputs) | **`0343f7326c04bc1fda9c89b3480b24c4f2581b3fc16b33f16746a0afb74c7f3c` (70 inputs)** | moved with the source |
 | `npm run check:wasm` | matches | matches | **matches its manifest and the source that is here now** | |
 | EOL guard | clean | clean | **clean** | |
 
-**The three new engine tests, and the one new ignored test.** `wasm_exports.rs` gains
+**The four new engine tests.** `wasm_exports.rs` gains
 `an_island_the_probes_can_actually_see_moves_the_ground_a_swapped_slot_would_not` (the review's
 blocker: the only test in that file that fails if `decode_peak` swaps two same-domain slots).
 `src/wasm.rs` gains a `peak_wire_format_tests` module of two — a distinct-sentinel-per-slot
-decode assertion and an encode/decode round trip — which are the wasm-gated pair, hence 846
-with the feature and 844 without. `src/tectonics.rs` gains
+decode assertion and an encode/decode round trip — which are the wasm-gated pair, hence 847 with
+the feature and 845 without. `src/tectonics.rs` gains
 `no_composed_step_exceeds_the_geometric_and_window_bounds_together` (minor 3) in every
-configuration, and `the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range`,
-which is `#[ignore]`d because it records the open defect §13 measures. **All three new tests were
-verified to fail against the defect they pin** — the two wire-format ones and the sampling one
-against a temporary slots-0-and-3 swap in `decode_peak` (reverted), and the inert-path one
-against the pre-fix `density`-only gate.
+configuration, and `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`
+(§13), which the second wave un-ignored once the defect it records was fixed — which is why the
+ignored count is back to its baseline 11.
+
+**Every one of the four was verified to fail against the defect it pins.** The two wire-format
+tests and the sampling test against a temporary slots-0-and-3 swap in `decode_peak` (reverted).
+The reachability test and the composed-continuity sweep against the pre-fix `offset_m` shape,
+temporarily restored for the check and reverted: 35,862 of 200,000 points suppressed, and a
+65.79 m step against an 8.26 m bound at the first frontier crossing the sweep reaches. And the
+widened inert-path test against the pre-fix `density`-only gate.
 
 ### The `.abs()` ledger, and why the ledger test rather than a grep
 
@@ -688,16 +734,19 @@ report, and each one is a **measured figure being re-derived**, not new behaviou
    no rivers; §4's distribution says the great majority are below it at 1,000,000 nodes. Nothing
    in this slice bakes hydrology on a peaked world, so that prediction is stated and unverified.
 6. **An island casts a very large orographic rain shadow, and it reaches pre-existing land.**
-   Measured in §12, added by the final fix wave: the moisture index changes at 27.16% of a
-   1-degree global grid, at 15.80% of the land that existed without the block, and by as much as
-   0.427 there. Nothing in this slice is wrong because of it and nothing in `climate.rs` was
-   changed — but a later slice that pins biomes must pin them on a world with this block on.
-7. **BLOCKING: `Tectonics::offset_m` never reaches the seamount term on 77.16% of the planet, and
-   the frontier of the region where it does is a 3,460 m cliff.** Measured in §13, found while
-   building §12's neighbour, pinned by an `#[ignore]`d test. Fixing it is a few lines and cannot
-   move the canonical world, but it re-scales the islanded share and therefore invalidates the
-   calibration in §§2, 4, 5 and 7 — a re-run of Task 7. **This branch should not merge until that
-   is done.**
+   Measured in §12: the moisture index changes at **45.40%** of a 1-degree global grid, at
+   **22.09%** of the land that existed without the block, and by as much as **0.425** there.
+   Nothing in this slice is wrong because of it and nothing in `climate.rs` was changed — but a
+   later slice that pins biomes must pin them on a world with this block on, and the coarse 20 km
+   march step is the first thing to look at when that slice arrives. **This is now the first
+   open item on this branch.**
+7. **The seamount term was unreachable on 77.16% of the planet. Fixed, and the calibration
+   re-run.** §13 records the defect and §14 the re-survey: `VOLCANIC_DENSITY` moved 0.36 → 0.14
+   and the maximin margin went from a little over 2σ to close to 10σ, which retires concern 1
+   above rather than adding to it. Kept in this list because the *shape* of the miss is worth
+   remembering: a term added "last, as an addition to a finished offset" was added after an early
+   return, and no test on the branch could see it until continuity was measured on the composed
+   function rather than on the term alone.
 
 ---
 
@@ -720,36 +769,46 @@ block — `Surface::new(20260904, 6_371_000, 12, 0.29, …)` against
 
 ### What one island does to the air behind it
 
-| downwind of the island at 13.5, −91.5 | plain | with the block | ratio |
-|---|---|---|---|
-| 0 km (the island itself, +4,327 m of ground) | 1.000000 | 0.004187 | 0.0042 |
-| 20 km | 1.000000 | 0.068402 | 0.0684 |
-| 60 km | 1.000000 | 0.184676 | 0.1847 |
-| 100 km | 1.000000 | 0.042808 | 0.0428 |
-| 200 km | 1.000000 | 0.316119 | 0.3161 |
-| 300 km | 1.000000 | 0.514397 | 0.5144 |
-| 600 km | 1.000000 | 0.141050 | 0.1411 |
-| 1,000 km | 1.000000 | 0.976111 | 0.9761 |
-| 2,000 km | 0.967729 | 0.958795 | 0.9908 |
+**Re-measured after §13's fix and the §14 re-survey.** The figures below are the current ones;
+the pre-fix pair is given after each for comparison, because the direction of the change is the
+interesting part.
 
-The other two derived probes behave the same way: at the island itself the index falls to 0.0462
-(−43.75, 46.0) and 0.0211 (−45.5, −147.25), and the air is back within 1% of its plain value
-somewhere between 600 and 1,000 km downwind. **The march's 20 km step is what makes the shadow
+| downwind of the island at 13.5, −91.5 | plain | with the block | (pre-fix, `density: 0.36`) |
+|---|---|---|---|
+| 0 km (the island itself, +4,327 m of ground) | 1.000000 | **0.013124** | 0.004187 |
+| 20 km | 1.000000 | **0.076775** | 0.068402 |
+| 60 km | 1.000000 | **0.192052** | 0.184676 |
+| 100 km | 1.000000 | **0.044070** | 0.042808 |
+| 200 km | 1.000000 | **0.317150** | 0.316119 |
+| 300 km | 1.000000 | **0.515459** | 0.514397 |
+| 600 km | 1.000000 | **0.908301** | 0.141050 |
+| 1,000 km | 1.000000 | **0.993705** | 0.976111 |
+| 2,000 km | 0.967729 | **0.926968** | 0.958795 |
+
+The other two derived probes behave the same way: at the island itself the index falls to 0.046233
+(−43.75, 46.0) and 0.022853 (−55.0, −52.5), and the air is back within 1% of its plain value
+somewhere between 300 and 1,000 km downwind. **The march's 20 km step is what makes the shadow
 this deep in one sample** — a 4.3 km island crossed in a single step multiplies moisture by
-`exp(−4.3)`, and the recovery term's 300 km scale needs the better part of a thousand kilometres
-to undo it. The non-monotone column (0.18 at 60 km, 0.043 at 100 km, 0.14 at 600 km) is the march
-crossing *different* islands at different offsets, not noise.
+`exp(−4.3)`, and the recovery term's 300 km scale needs hundreds of kilometres to undo it. The
+non-monotone column (0.19 at 60 km, 0.044 at 100 km) is the march crossing *different* islands at
+different offsets, not noise.
 
 ### How much of the planet notices
 
-| population | sites | changed | share |
-|---|---|---|---|
-| all 1-degree sites, −80…80 | 57,960 | 15,740 | **27.16%** |
-| …of those, losing more than 0.10 of index | 57,960 | 3,043 | 5.25% |
-| sites that are already land on the plain world | 18,637 | 2,944 | **15.80%** |
+| population | sites | changed | share | (pre-fix) |
+|---|---|---|---|---|
+| all 1-degree sites, −80…80 | 57,960 | **26,314** | **45.40%** | 15,740 / 27.16% |
+| …of those, losing more than 0.10 of index | 57,960 | **5,430** | 9.37% | 3,043 / 5.25% |
+| sites that are already land on the plain world | 18,637 | **4,117** | **22.09%** | 2,944 / 15.80% |
 
-Worst drop anywhere: **0.986117**, at (−45, −4) — air that was saturated arriving parched. Worst
-drop on *pre-existing* land: **0.427262**. Mean signed drop over the 15,740 changed sites: 0.0730.
+Worst drop anywhere: **0.986832**, at (−32, 21) — air that was saturated arriving parched. Worst
+drop on *pre-existing* land: **0.425249**. Mean signed drop over the 26,314 changed sites: 0.0761.
+
+**The shadow reaches more of the planet now at 40% of the density, which is §13's fix showing up
+in a second place.** 45.40% against 27.16% of sites, and 22.09% against 15.80% of pre-existing
+land, at `density: 0.14` rather than 0.36: the islands are fewer but they are no longer confined
+to the quarter of the world near a plate margin, so far more of the ocean sits downwind of one.
+The previous section said these were lower bounds; they were, by about 1.7x.
 
 ### The judgement, stated rather than implied
 
@@ -770,17 +829,20 @@ on the record.
    nothing here regressed — but a later slice that pins biomes must build those pins on a world
    with this block on, or it will pin them against a planet the studio can no longer make.
 
-One caveat on the size of the figures. They were measured through the wiring the branch actually
-has, and §13 below records that `Tectonics::offset_m` never reaches the seamount term on 77% of
-the planet. **Fixing that wiring makes this shadow larger, not smaller**, roughly in proportion
-to the suppressed fraction. These are lower bounds.
+One note on reading the two columns together. The pre-fix figures were measured through wiring
+that never reached the seamount term on 77% of the planet (§13). The prediction made at the time
+was that fixing it would make the shadow *larger*, roughly in proportion to the suppressed
+fraction; the re-measurement above confirms that, and the density coming down by more than half
+did not offset it.
 
 ---
 
-## 13. A defect the minor-3 measurement found: the seamount term is unreachable on most of the planet
+## 13. A defect the minor-3 measurement found: the seamount term was unreachable on most of the planet
 
 **Found by the final fix wave while building the composed-continuity measurement minor 3 asked
-for. It is not one of the review's nine findings, and it is larger than the blocker was.**
+for. It is not one of the review's nine findings, it was larger than the blocker was, and it is
+now FIXED — the second fix wave lifted the term out of the margin sum and re-ran the whole
+calibration. This section records what was wrong and what it cost; §14 records the re-survey.**
 
 `Tectonics::offset_m` returns `0.0` before it reaches the seamount term whenever
 `PlateSet::margins_within` comes back empty or `nearest` is `None` (`src/tectonics.rs:1213-1220`).
@@ -803,13 +865,143 @@ the planet" — and Task 2 added the seamount term at the **end** of the functio
   **The field is continuous; the wiring is not.** On the three-plate test fixture the same
   measurement reads 90.24% suppressed and a 2,749.07 m worst cliff.
 
-**Pinned, not fixed.** `the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range`
-(`src/tectonics.rs`) asserts the correct property and is `#[ignore]`d with that reason, so it is
-a ready-made pin rather than a red suite; run it with `cargo test -- --ignored`. The fix itself is
-a few lines and cannot move the canonical world — with no peak block `total` is still the same
-`0.0`, so parity and `GENERATOR_VERSION` are untouched either way. What it *does* move is the
-islanded share, by roughly the reciprocal of the suppressed fraction, which puts the shipped
-`VOLCANIC_DENSITY` far above the spec's 0.8% ceiling and invalidates §2's sweep, §4's and §5's
-tables, §7's deltas, `island_survey.rs`'s output and `VOLCANIC_DENSITY`'s own doc table. **That is
-a re-run of Task 7, not a fix wave**, so the defect is measured, named and pinned here and the
-branch should not merge on it.
+### The fix, and how the plate part was held still
+
+`Tectonics::offset_m` now wraps a private `Tectonics::margin_offset_m` instead of ending it. The
+margin summation moved **verbatim** — both early returns and the load-bearing iteration order
+untouched — and the gated seamount term is applied outside it, to whatever that sum returned,
+including nothing.
+
+**The plate part is bit-identical, verified rather than argued.** 60,000 `offset_m` values on the
+no-peak path (a 20,000-point area-uniform spiral on each of the three survey fixtures) were dumped
+as raw `f64` bits before and after the change and compared with `cmp`: **no difference**. That is
+the direct check; three indirect ones agree — the parity corpus reports 156,011 compared and 0
+divergent with all four controls exactly unmoved, `WITNESSED_ELEVATION_M`
+(682.3921701573904, pinned three ways at extraction) still holds, and the Python conformance
+suite's 167 recorded-reference comparisons pass.
+
+**The pin is now live, and it was written red against the old shape.**
+`the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall` (`src/tectonics.rs`)
+replaced the `#[ignore]`d placeholder. Against the old shape it reported **35,862 of 200,000
+points where the field wanted a seamount and `offset_m` did not carry it**, suppressing up to
+7,824.32 m, and the 3,460.23 m frontier step. Both are zero now. The test also asserts that its
+own fixture is mostly plate interior and that the field does want seamounts there, so it cannot
+pass on a world that simply has no interiors to get wrong.
+
+The composed continuity sweep no longer exempts anything either. It used to skip steps that
+crossed the frontier; there is no frontier, so it now bounds **1,439,520 steps per arm, none
+skipped** — worst composed step **7.0073 m** against a worst derived bound of **12.3159 m**, with
+77,016 steps strictly inside the depth window's ramp.
+
+`GENERATOR_VERSION` is untouched: with no peak block the canonical path returns the same `0.0`,
+which the bit comparison above is the proof of.
+
+---
+
+## 14. The re-survey: the calibration, run again against a field that reaches the whole planet
+
+**§13's defect means the first calibration measured the wrong thing.** Every share in §2 was a
+share of the roughly quarter of the planet where `Tectonics::offset_m` actually evaluated the
+seamount term. With the term lifted out of the margin sum, the field stands islands anywhere the
+seabed allows, and `density` had to come down.
+
+**Population, method and host are §2's, unchanged:** the 200,000-point Fibonacci spiral per world;
+`island_survey.rs` sections 2 and 4, `D_added` measured through `Surface::structural_m` over ocean
+on two worlds built identically but for the block; this host, `rustc 1.98.0`, `--release`. Only
+the code under measurement changed. `island_survey.rs`'s `DENSITIES` and `CANDIDATES` were
+re-pointed at the new range and the binary re-run; nothing was scaled.
+
+### The correction is 3.41× on the share, not the 4.4× the area suggests
+
+At the old 0.36 the sweep fixture now reads **1.1400%** against the **0.3345%** it read before —
+**3.41×**. The area the field can stand on grew about 4.4× (77.16% of the planet was suppressed,
+so 22.84% became 100%). The two are not the same number because ocean coverage and the 2,500 m
+depth window are not distributed uniformly with respect to where plate margins fall: the region
+that *was* evaluated is margin-adjacent, and margin-adjacent seabed is on average shallower than
+abyssal plain, so it was already a below-average place to stand an island. **This is exactly why
+the density was re-measured rather than divided.**
+
+### The three-world sweep, re-run
+
+A density is admissible only if its **worst** world is inside the spec's 0.3%–0.8% band.
+
+| density | `island-a` (land 0.40) | `owner` (land 0.16) | `earth-a` (land 0.29) | margin to the nearer band edge |
+|---|---|---|---|---|
+| 0.08 | 0.2665% | 0.3640% | 0.3090% | **−0.0335 pp** — `island-a` BELOW |
+| 0.09 | 0.3030% | 0.4105% | 0.3430% | +0.0030 pp |
+| 0.10 | 0.3350% | 0.4590% | 0.3810% | +0.0350 pp |
+| 0.11 | 0.3650% | 0.5000% | 0.4140% | +0.0650 pp |
+| 0.12 | 0.3935% | 0.5465% | 0.4495% | +0.0935 pp |
+| 0.13 | 0.4180% | 0.5915% | 0.4785% | +0.1180 pp |
+| **0.14** | **0.4480%** | **0.6380%** | **0.5210%** | **+0.1480 pp — the maximin** |
+| 0.15 | 0.4795% | 0.6755% | 0.5575% | +0.1245 pp |
+| 0.16 | 0.5050% | 0.7175% | 0.5940% | +0.0825 pp |
+| 0.17 | 0.5355% | 0.7625% | 0.6380% | +0.0375 pp |
+| 0.18 | 0.5640% | 0.8055% | 0.6810% | **−0.0055 pp** — `owner` ABOVE |
+| 0.19 | 0.6045% | 0.8540% | 0.7235% | −0.0540 pp |
+| 0.20 | 0.6355% | 0.8990% | 0.7615% | −0.0990 pp |
+| 0.36 *(the suppressed-field pick)* | 1.1400% | 1.6180% | 1.3945% | −0.8180 pp |
+
+**`VOLCANIC_DENSITY` = 0.14**, and the three worlds land at **0.4480% / 0.6380% / 0.5210%** — all
+three in band, `island-a` clearing the floor by 0.1480 pp and `owner` clearing the ceiling by
+0.1620 pp. The admissible window is **nine hundredths, 0.09 through 0.17, eight hundredths of
+span**, with both edges measured rather than inferred: 0.08 misses the floor by 0.0335 pp and 0.18
+clears the ceiling by 0.0055 pp.
+
+### The fix widened the safety margin, which is the part worth keeping
+
+| | at 0.36, suppressed field | **at 0.14, whole planet** |
+|---|---|---|
+| maximin margin to a band edge | +0.0345 pp | **+0.1480 pp** |
+| 1σ of the estimator at that share | ±0.0158 pp | ±0.0150 pp |
+| margin in σ | **2.2σ** | **≈10σ** |
+| admissible hundredths | 7 (0.32–0.38) | **9 (0.09–0.17)** |
+| which world binds | the floor, on `island-a`, at every admissible density | the floor below 0.15, the ceiling above it — the two cross *inside* the window |
+
+§11's first concern was that the band was tight and 0.36's margin was "a little over 2σ", with
+only a `land_fraction`-dependent density able to buy more room. **That concern is largely
+retired**: the margin is now near ten sigma, and the binding edge crosses inside the window rather
+than sitting on one end of it, so the maximin is a genuine interior optimum rather than the least
+bad corner. A fourth world is no longer likely to push an end out of band.
+
+### Also that 0.14 is a legal slider position, and distinct
+
+Hundredths only, for the reason `VOLCANIC_DENSITY`'s doc gives: the panel's density slider carries
+an integer position and divides by 100, so a density off that lattice is one the panel cannot
+reach. **0.14 is position 14.** It is not `CoastParams::fractal()`'s 0.35, and — checked, not
+assumed — the string `0.14` appears in none of the four viewer modules
+`peak-params.test.mjs`'s anti-transcription scan reads, so that scan still asks a live question.
+
+### Every figure that moved, and where
+
+| figure | was | **is** | where |
+|---|---|---|---|
+| `VOLCANIC_DENSITY` | 0.36 | **0.14** | `tectonics.rs` |
+| admissible window | 0.32–0.38 (7 values) | **0.09–0.17 (9 values)** | §14, `VOLCANIC_DENSITY` doc |
+| maximin margin | +0.0345 pp (2.2σ) | **+0.1480 pp (≈10σ)** | §14 |
+| islanded share, three worlds | 0.3345 / 0.7525 / 0.4035% | **0.4480 / 0.6380 / 0.5210%** | §§4b, 7, 14 |
+| one-world density sweep, 16 rows | §2's table | **§14's table** (new range) | §2 banner, §14 |
+| ratio-invariance spread | 0.006 pp at 0.36 | **0.0175 pp at 0.14** (still ≈1σ) | §3, `VOLCANIC_REACH_M` doc |
+| distinct islands at 45 km | 4,617 | **6,137** | §4, `VOLCANIC_LATTICE_M` doc |
+| island area share (raster) | 0.3337% | **0.4375%** | §4 |
+| island count at 30 / 90 km | 10,155 / 1,213 | **13,506 / 1,558** | §4, `VOLCANIC_REACH_M` doc |
+| largest island | 2,632.3 km² | **1,732.5 km²** | §4 |
+| islands over 2,000 km² | 10 | **0** | §4 |
+| resolution-safe count (>200 km²) | 3,094 | **4,197** | §4 |
+| survey summit | 4,773.47 m | **4,291.15 m** | §§5, 6 |
+| depth at 0.95 × `reach_m` | −2,738.70 m | **−2,695.04 m** | §5 |
+| summit `tectonic_m` | 7,484.31 m | **6,962.95 m** | §6 |
+| contrast-point `tectonic_m` | 0.00 m | **16.94 m** | §6 |
+| achieved land, `volcanic()` | 0.4054 / 0.1705 / 0.2969 | **0.4065 / 0.1694 / 0.2980** | §7 |
+| test pin: offshore points above datum | 88 of 20,000 | **103 of 20,000** | `surface.rs` |
+| ABI probe 3 | −45.5, −147.25 | **−55.0, −52.5** | `tests/wasm_exports.rs` |
+| moisture sites changed | 27.16% | **45.40%** | §12 |
+| moisture: pre-existing land changed | 15.80% | **22.09%** | §12 |
+| suppressed share of the planet | 77.16% | **0** | §13 |
+| worst frontier step | 3,460.23 m | **none — no frontier** | §13 |
+
+**What did NOT move, and was checked rather than assumed:** the plate-only tectonic offset
+(60,000 values, bit for bit — §13); the canonical-preset land fractions in §7; the continental
+shelf column in §5; `GENERATOR_VERSION`; the parity corpus and all four of its controls;
+`VOLCANIC_HEIGHT_M`, `VOLCANIC_REACH_M`, `VOLCANIC_MIN_DEPTH_M` and `VOLCANIC_LATTICE_M`, all four
+of which the re-run sweep left where they were for the same reasons §3 gives.

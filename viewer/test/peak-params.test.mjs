@@ -16,14 +16,17 @@
 //     scan of this fixture compares the canonical world against `PeakParams::volcanic()` and
 //     finds 991 of 64,800 sites moving; these are the eight largest movers subject to a
 //     25-degree separation, so they are not eight seamounts on one plateau. **That derivation
-//     was run at the then-shipped `density: 0.11`, and Task 7's calibration raised it to
-//     0.36. The eight are still witnesses, and monotonicity is why rather than luck:**
-//     `Tectonics::peak_of_cell` returns `None` when a cell's hash is `>= density`, so raising
-//     the density strictly ADDS candidate cells and can never remove one. A site that moved at
-//     0.11 therefore still moves at 0.36 (by at least as much), which the per-probe assertions
-//     below check directly rather than inheriting from this note. The 991 is not re-stated for
-//     0.36 because nothing re-ran that scan; it is the provenance of the probe set, not a
-//     figure about the shipped density. `PEAK_PROBES` in
+//     was run at the then-shipped `density: 0.11`; calibration then raised it to 0.36, and the
+//     final fix wave re-surveyed it down to 0.14 after finding the seamount term suppressed
+//     over 77% of the planet. The eight are still witnesses, and monotonicity is why rather
+//     than luck:** `Tectonics::peak_of_cell` returns `None` when a cell's hash is `>= density`,
+//     so raising the density strictly ADDS candidate cells and can never remove one. Every
+//     density this preset has shipped is at or above the 0.11 the eight were derived at --
+//     0.11, 0.36, 0.14 -- so a site that moved at 0.11 still moves at every one of them, by at
+//     least as much. The per-probe assertions below check that directly rather than inheriting
+//     it from this note, and they also gained a floor from the suppression fix rather than
+//     losing one. The 991 is not re-stated for the shipped density because nothing re-ran that
+//     scan; it is the provenance of the probe set, not a figure about the density. `PEAK_PROBES` in
 //     `crates/worldbuilder-engine/tests/wasm_exports.rs` is a *different* six-point set chosen to
 //     exercise the land/harbour/ocean gating rather than to witness movement -- its own comment
 //     says the on-land and shallow-harbour points are "expected to read back exactly the ground

@@ -3167,19 +3167,22 @@ mod tests {
     /// that a shallower seabed makes an island *easier*, not harder, so bathymetry alone
     /// cannot explain a reduction; it is the land coverage and the window that do.
     ///
-    /// **Re-pinned by Task 7's calibration.** `VOLCANIC_DENSITY` moved from 0.11 to **0.36**
-    /// because 0.11 put every world measured BELOW the spec's 0.3%-0.8% band -- see that
-    /// constant's own doc for the three-world sweep and why 0.36 is the maximin of the seven
-    /// admissible hundredths. Re-measured here rather than scaled: over this constructor's own
-    /// 20,000-point fibonacci sweep, at `PeakParams::volcanic()` (`density: 0.36`), rustc
-    /// 1.98.0 release build, this test counts **88 of 20,000 (0.44%)**, against 34 (0.17%) at
-    /// the old density.
+    /// **Re-pinned twice.** Task 7's calibration moved `VOLCANIC_DENSITY` from 0.11 to 0.36
+    /// because 0.11 put every world BELOW the spec's 0.3%-0.8% band. The final fix wave then
+    /// found that 0.36 had been measured against a seamount field `Tectonics::offset_m`
+    /// suppressed over 77% of the planet, fixed that, and re-surveyed the density down to
+    /// **0.14** -- see `VOLCANIC_DENSITY`'s own doc for the re-run three-world sweep and why
+    /// 0.14 is the maximin of the nine admissible hundredths. Re-measured here rather than
+    /// scaled at each step: over this constructor's own 20,000-point fibonacci sweep, at
+    /// `PeakParams::volcanic()` (`density: 0.14`), rustc 1.98.0 release build, this test counts
+    /// **103 of 20,000 (0.5150%)** -- against 88 (0.44%) at 0.36 on the suppressed field, and
+    /// 34 (0.17%) at 0.11 on it.
     ///
     /// **This 20,000-point count is a small sample and the calibration was not made on it.**
     /// `src/bin/island_survey.rs` measures the same world over 200,000 points and reports
-    /// **0.3345%**; the 1-sigma binomial error at n = 20,000 is +-0.047 pp against +-0.013 pp
-    /// at n = 200,000, so the 0.44 / 0.33 gap is a shade over 2 sigma of the smaller sample and
-    /// the two are consistent. **The number to quote for the islanded share is the survey's,
+    /// **0.4480%**; the 1-sigma binomial error at n = 20,000 is about +-0.047 pp against
+    /// +-0.015 pp at n = 200,000, so the 0.5150 / 0.4480 gap is under 1.5 sigma of the smaller
+    /// sample and the two are consistent. **The number to quote for the islanded share is the survey's,
     /// not this one.** This test's job is that the count is in a BAND, not a floor: a bound of
     /// "more than zero" would also pass a field that raised nearly everything or a single lucky
     /// point, and neither of those is this field.
@@ -3194,8 +3197,8 @@ mod tests {
             }
         }
         assert!(
-            (45..140).contains(&land_offshore),
-            "expected roughly 88 of 20,000 offshore points above the datum (0.44%, measured \
+            (55..165).contains(&land_offshore),
+            "expected roughly 103 of 20,000 offshore points above the datum (0.5150%, measured \
              on this constructor's own corpus -- see this test's doc comment), got {land_offshore}"
         );
     }
@@ -3240,16 +3243,18 @@ mod tests {
     /// test's own summit (found by `find_a_summit` over
     /// `peaked_surface(PeakParams::volcanic())`, rustc 1.98.0 release build), walking to
     /// `walk_m = 29,925` m (0.95 x the 31,500 m `reach_m`) finds the deepest of the eight
-    /// compass bearings at **-2,907.71 m**, off a summit standing 4,010.75 m. At the old
-    /// `density: 0.11` the same walk read -2,594.07 m off a DIFFERENT summit -- **the density
-    /// moved which node `find_a_summit` picks, not how steep a flank is**, which is why this
-    /// figure moved at all when calibration touched no geometry. (The mechanism: `peak_of_cell`
-    /// gates on `hash >= density`, so a higher density strictly ADDS candidate cells and can
-    /// never remove one -- and one of the added ones is taller than the old pick. Measured at an
-    /// intermediate `density: 0.35` mid-sweep, this same walk read -2,907.71 m off this same
-    /// 4,010.75 m summit, bit for bit; the hundredth between 0.35 and 0.36 added no cell taller
-    /// still.) Either way it is comfortably past the 1,000 m bar and inside the abyssal range
-    /// the doc above derives.
+    /// compass bearings at **-2,695.04 m**, off a summit standing **4,291.15 m** (tectonic
+    /// offset 6,962.95 m). **Re-measured at `density: 0.14`** after the margin-suppression fix
+    /// and the re-survey; at 0.36 the same walk read -2,907.71 m off a 4,010.75 m summit, and
+    /// at 0.11 it read -2,594.07 m off a third one.
+    ///
+    /// **The density moves which node `find_a_summit` picks, not how steep a flank is**, which
+    /// is why this figure moves whenever calibration does even though it touches no geometry.
+    /// The mechanism: `peak_of_cell` gates on `hash >= density`, so raising the density strictly
+    /// ADDS candidate cells and lowering it strictly REMOVES them -- it can never reshape one.
+    /// Going from 0.36 to 0.14 dropped the cell the old pick stood in, so the walk is off a
+    /// different island. Either way it is comfortably past the 1,000 m bar and inside the
+    /// abyssal range the doc above derives.
     ///
     /// `src/bin/island_survey.rs` section 5 walks the same ring at six fractions of `reach_m`
     /// and beside a continental shore for contrast; the report carries that table.
