@@ -35,7 +35,7 @@ const SCALE: f64 = 18_446_744_073_709_551_616.0; // 2^64, exactly representable
 /// line. What lies above it is only what that ceiling already refuses (the ~1.15e24 the
 /// frequency/lacunarity/octaves cross product asks for) and what nothing validates at all
 /// (an infinity handed straight to `bindings::continentality_at`).
-const LATTICE_LIMIT: f64 = 9.0e18;
+pub(crate) const LATTICE_LIMIT: f64 = 9.0e18;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Noise {

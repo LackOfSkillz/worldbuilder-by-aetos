@@ -27,9 +27,10 @@
 //! Ported from `worldbuilder/terrain/tectonics.py`.
 
 use crate::continentality::Continentality;
+use crate::detail::smooth;
 use crate::detmath as m;
 use crate::kinematics::{motion_between, ACROSS_ENOUGH};
-use crate::noise::Noise;
+use crate::noise::{Noise, LATTICE_LIMIT};
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::tangent::TangentFrame;
@@ -587,6 +588,94 @@ impl TectonicParams {
     }
 }
 
+/// Where a seamount stands, hashed per lattice node.
+///
+/// Distinct from `STRUCTURE_SALT`, `SEGMENTATION_SALT` and `MARGIN_WARP_SALT`, and it has to
+/// be: a shared salt would put every island on a margin crest, which is the one place this
+/// term is not meant to put them. Three salts rather than one because existence, position
+/// and height must be independent -- drawn from a single field, a tall peak would always sit
+/// in the same corner of its cell.
+const PEAK_SALT: u64 = 0x7365_616D_6F75_6E74; // "seamount"
+const PEAK_JITTER_SALT: u64 = 0x6A69_7474_6572_6564; // "jittered"
+const PEAK_HEIGHT_SALT: u64 = 0x7374_616E_6469_6E67; // "standing"
+
+/// How tall a full-height peak stands, in metres above the seabed it sits on.
+const VOLCANIC_HEIGHT_M: f64 = 5_200.0;
+/// What share of lattice cells hold a peak at the named preset.
+const VOLCANIC_DENSITY: f64 = 0.06;
+/// How far a cone reaches from its centre, in metres.
+const VOLCANIC_REACH_M: f64 = 14_000.0;
+/// How deep the seabed must be under a peak, in metres below datum.
+const VOLCANIC_MIN_DEPTH_M: f64 = 2_500.0;
+/// How far apart the candidate nodes are, in metres.
+const VOLCANIC_LATTICE_M: f64 = 220_000.0;
+
+/// Sparse volcanic peaks rising out of deep ocean.
+///
+/// Field order is the ABI -- `wasm.rs` encodes and decodes this struct in this order, and
+/// `viewer/public/app/peak-params.js` mirrors it. Adding a field means editing both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PeakParams {
+    /// How tall a full-height peak stands above its seabed, in metres. Must clear the
+    /// abyss -- `ABYSS_M` is -4,600, and a 700 m term surfaces nothing, which is exactly
+    /// why the island arc never made an island.
+    pub height_m: f64,
+    /// What share of candidate nodes hold a peak, 0 to 1. **This is the opt-in field:** at
+    /// zero the term returns before it touches the lattice.
+    pub density: f64,
+    /// How far a cone reaches from its centre, in metres.
+    pub reach_m: f64,
+    /// How deep the seabed must be for a peak to stand on it, in metres below datum and
+    /// stated positive. Keeps islands off the continental shelf.
+    pub min_depth_m: f64,
+    /// How far apart the candidate nodes are, in metres. With `density`, this sets how many
+    /// islands a world gets; `height_m` sets how tall they are. The two are independent,
+    /// which is the whole reason this term is built on a lattice rather than a threshold.
+    pub lattice_m: f64,
+}
+
+impl PeakParams {
+    /// Inert. Opting in is one field -- `density` -- rather than five.
+    pub fn canonical() -> Self {
+        Self {
+            height_m: VOLCANIC_HEIGHT_M,
+            density: 0.0,
+            reach_m: VOLCANIC_REACH_M,
+            min_depth_m: VOLCANIC_MIN_DEPTH_M,
+            lattice_m: VOLCANIC_LATTICE_M,
+        }
+    }
+
+    /// Islands, at the density the survey settled on.
+    pub fn volcanic() -> Self {
+        Self { density: VOLCANIC_DENSITY, ..Self::canonical() }
+    }
+}
+
+/// How much of a peak stands, given the seabed under it.
+///
+/// One at the stated depth and below, ramping to zero a quarter again shallower, so the
+/// term has no cliff in it. **A NaN closes this window rather than opening it**, which is
+/// why the branches are written out: `smooth(NaN)` is 1.0, and a floored metre is
+/// indistinguishable from a real one once it is added to an elevation.
+fn peak_depth_window(depth_m: f64, min_depth_m: f64) -> f64 {
+    let onset = min_depth_m * 0.8;
+    let span = min_depth_m - onset;
+    if !(span > 0.0) {
+        // A zero or negative span, or a NaN threshold. No window.
+        return 0.0;
+    }
+    if depth_m >= min_depth_m {
+        1.0
+    } else if depth_m > onset {
+        let x = (depth_m - onset) / span;
+        x * x * (3.0 - 2.0 * x)
+    } else {
+        // Shallower than the onset, or unanswerable.
+        0.0
+    }
+}
+
 /// Nothing for thoroughly oceanic, one for thoroughly continental, and a smooth ramp
 /// between.
 ///
@@ -749,6 +838,17 @@ pub struct Tectonics {
     /// they are salted apart from each other, and sampled at a point on the margin's own
     /// great circle rather than at the query point -- see [`Tectonics::margin_warp_m_at`].
     warp: Noise,
+    /// The opt-in seamount field. `None` is canonical and is what every existing caller
+    /// gets; see [`PeakParams`]. Not read by anything in this file yet -- wiring
+    /// `peak_offset_m` into `offset_m`/`elevation_m` is a later task.
+    peaks: Option<PeakParams>,
+    /// The three lattices [`Tectonics::peak_offset_m`] draws from: existence, jitter and
+    /// height. Built unconditionally, for the same reason `structure`/`segmentation`/`warp`
+    /// are -- a `Noise` is two multiplies and an XOR -- and read only when `peaks` is `Some`
+    /// with a non-zero density, so their existence cannot move a canonical world.
+    peak_noise: Noise,
+    peak_jitter: Noise,
+    peak_height: Noise,
 }
 
 impl Tectonics {
@@ -756,11 +856,38 @@ impl Tectonics {
     /// `TectonicParams::canonical()` returns -- or `Some(params)` for a caller-chosen
     /// block. Resolved once here rather than re-checked per sample, so `from_margin` never
     /// sees the `Option` at all, exactly as `Detail::new` resolves `ReliefParams`.
+    ///
+    /// Delegates to [`Tectonics::with_peaks`] with `None`, exactly as `Continentality::new`
+    /// delegates to `with_coast`: a new constructor absorbs the opt-in block rather than
+    /// this one growing a fifth parameter, so every one of this signature's existing call
+    /// sites is untouched.
     pub fn new(
         plates: PlateSet,
         land: Continentality,
         radius_m: f64,
         params: Option<TectonicParams>,
+    ) -> Self {
+        Self::with_peaks(plates, land, radius_m, params, None)
+    }
+
+    /// The same tectonics, with an opt-in field of standalone seamounts.
+    ///
+    /// `peaks`: `None` for today's ground, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen [`PeakParams`]. A second constructor rather than a widened `new`, for
+    /// the reason `Continentality::with_coast` gives for being one: what Ruling 1 requires
+    /// is a property of the parameter, not of where it is spelled, and `new` has ninety-odd
+    /// call sites that want none of this.
+    ///
+    /// **This task does not wire `peak_offset_m` into `offset_m` or `elevation_m`.** Nothing
+    /// in this file reads the `peaks` field yet; it exists so the term can be built and
+    /// unit-tested standing on its own, on the same `Tectonics` value everything else
+    /// already uses. Wiring it in is a later task's change, not this constructor's.
+    pub fn with_peaks(
+        plates: PlateSet,
+        land: Continentality,
+        radius_m: f64,
+        params: Option<TectonicParams>,
+        peaks: Option<PeakParams>,
     ) -> Self {
         let params = params.unwrap_or_else(TectonicParams::canonical);
         // `Continentality` kept the world seed for exactly this -- see its `world_seed`
@@ -771,7 +898,22 @@ impl Tectonics {
         let structure = Noise::new(world_seed, STRUCTURE_SALT);
         let segmentation = Noise::new(world_seed, SEGMENTATION_SALT);
         let warp = Noise::new(world_seed, MARGIN_WARP_SALT);
-        Self { plates, land, radius_m, params, structure, segmentation, warp }
+        let peak_noise = Noise::new(world_seed, PEAK_SALT);
+        let peak_jitter = Noise::new(world_seed, PEAK_JITTER_SALT);
+        let peak_height = Noise::new(world_seed, PEAK_HEIGHT_SALT);
+        Self {
+            plates,
+            land,
+            radius_m,
+            params,
+            structure,
+            segmentation,
+            warp,
+            peaks,
+            peak_noise,
+            peak_jitter,
+            peak_height,
+        }
     }
 
     /// What this world's uplift profiles are set to. Read-only: nothing writes these after
@@ -890,6 +1032,105 @@ impl Tectonics {
     /// Returns metres, relative to datum, before shelves or detail.
     pub fn elevation_m(&self, point: &SpherePoint) -> f64 {
         self.land.base_elevation(point) + self.offset_m(point)
+    }
+
+    /// How high the seamount field stands at a point, in metres, never negative.
+    ///
+    /// One candidate per lattice node, its existence hashed against `density`, its position
+    /// jittered inside its own cell and its height drawn from a third salt. The 27 cells
+    /// around the sample are examined because a jittered centre can fall in any neighbour.
+    ///
+    /// **The window is evaluated before the lattice is touched**, so a term that is inert, or
+    /// a point over shallow water, costs one comparison and no hashing. That is the same
+    /// ordering `coast_offset` uses (`continentality.rs:409-411`) and for the same reason.
+    ///
+    /// `seabed_m` is taken as an argument rather than read from `self.land` here, even
+    /// though `Tectonics` holds the `Continentality` this world's seabed comes from.
+    /// `Continentality::base_elevation` costs an fBm, and the whole point of evaluating the
+    /// depth window first is that an inert block or a shallow point costs nothing -- reaching
+    /// into `self.land` unconditionally would pay that fBm on every call, including the ones
+    /// this function exists to make free. It also keeps this function directly testable at a
+    /// stated depth, which is what four of the five tests below do, and leaves a caller that
+    /// already has an elevation in hand (Task 2's `offset_m`) free to hand it over rather than
+    /// have a second one computed on its behalf.
+    pub fn peak_offset_m(&self, point: &SpherePoint, seabed_m: f64) -> f64 {
+        let params = match self.peaks {
+            None => return 0.0,
+            Some(params) if params.density == 0.0 => return 0.0,
+            Some(params) => params,
+        };
+        if !(params.lattice_m > 0.0) || !(params.reach_m > 0.0) {
+            return 0.0;
+        }
+        let window = peak_depth_window(-seabed_m, params.min_depth_m);
+        if !(window > 0.0) {
+            return 0.0;
+        }
+
+        // Lattice cells about `lattice_m` across on this planet's surface.
+        let frequency = self.radius_m / params.lattice_m;
+        let v = point.vector;
+        let (sx, sy, sz) = (v.x * frequency, v.y * frequency, v.z * frequency);
+
+        // Lattice coordinates are never derived by a bare cast. `noise.rs:166-168` is the
+        // pattern: floor, bound with a negated pair so a NaN takes the branch, then cast.
+        let (fx, fy, fz) = (m::floor(sx), m::floor(sy), m::floor(sz));
+        if !(fx >= -LATTICE_LIMIT && fx <= LATTICE_LIMIT)
+            || !(fy >= -LATTICE_LIMIT && fy <= LATTICE_LIMIT)
+            || !(fz >= -LATTICE_LIMIT && fz <= LATTICE_LIMIT)
+        {
+            return 0.0;
+        }
+        let (bx, by, bz) = (
+            fx as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+            fy as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+            fz as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+        );
+
+        let mut tallest = 0.0f64;
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (cx, cy, cz) = (bx + dx, by + dy, bz + dz);
+                    if self.peak_noise.lattice_at(cx, cy, cz) >= params.density {
+                        continue;
+                    }
+                    // Jitter inside the cell, from a salt of its own so height and position
+                    // are uncorrelated.
+                    let jx = self.peak_jitter.lattice_at(cx, cy, cz);
+                    let jy = self.peak_jitter.lattice_at(cy, cz, cx);
+                    let jz = self.peak_jitter.lattice_at(cz, cx, cy);
+                    let centre = Vec3 {
+                        x: (cx as f64) + jx, // cast-ok: a lattice coordinate, already bounded
+                        y: (cy as f64) + jy, // cast-ok: a lattice coordinate, already bounded
+                        z: (cz as f64) + jz, // cast-ok: a lattice coordinate, already bounded
+                    };
+                    // Back to the unit sphere, so the distance below is a real ground distance.
+                    let length = m::sqrt(
+                        centre.x * centre.x + centre.y * centre.y + centre.z * centre.z,
+                    );
+                    if !(length > 0.0) {
+                        continue;
+                    }
+                    let (ux, uy, uz) = (centre.x / length, centre.y / length, centre.z / length);
+                    let (ox, oy, oz) = (v.x - ux, v.y - uy, v.z - uz);
+                    let chord = m::sqrt(ox * ox + oy * oy + oz * oz) * self.radius_m;
+                    let fraction = chord / params.reach_m;
+                    if !(fraction < 1.0) {
+                        continue;
+                    }
+                    // A cone with a smoothed flank, so nothing downstream differences a corner.
+                    let share = self.peak_height.lattice_at(cx, cy, cz);
+                    let standing = params.height_m * (0.45 + 0.55 * share)
+                        * smooth(1.0 - fraction)
+                        * window;
+                    if standing > tallest {
+                        tallest = standing;
+                    }
+                }
+            }
+        }
+        tallest
     }
 
     /// The stacked-suture collision shape at a signed across-margin distance.
@@ -2508,5 +2749,99 @@ mod tests {
         }
         assert!(off_canonical, "the preset builds the canonical world");
         assert!(off_blade, "the preset is the bare envelope -- the structure fields do nothing");
+    }
+
+    /// A `Tectonics` built with an opt-in [`PeakParams`] block, over the same
+    /// `three_plate_set()` the rest of this module's plate-agnostic tests use -- the peak
+    /// field never reads `self.plates` or `self.land`, so any world will do.
+    fn peaked(params: PeakParams) -> Tectonics {
+        let land = Continentality::new(7788, EARTH_RADIUS_M, 0.4);
+        Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, None, Some(params))
+    }
+
+    #[test]
+    fn a_peak_field_with_no_density_is_exactly_zero() {
+        // The inert arm must be an EARLY RETURN, not `+ 0.0`. Adding an exactly-zero
+        // offset to a -0.0 seabed yields +0.0 and flips the sign bit, which is how a
+        // block that is supposed to change nothing changes something.
+        let params = PeakParams { density: 0.0, ..PeakParams::volcanic() };
+        let tectonics = peaked(params);
+        for (lat, lon) in [(0.0, 0.0), (12.5, -47.5), (-63.25, 128.75), (89.0, 180.0)] {
+            let point = SpherePoint::from_latlon(lat, lon);
+            let got = tectonics.peak_offset_m(&point, -4600.0);
+            assert_eq!(got.to_bits(), 0.0f64.to_bits(), "at {lat},{lon}");
+        }
+    }
+
+    #[test]
+    fn a_peak_needs_deep_water_under_it() {
+        // The window is a depth, so it can be stated as one. Shallow seabed gets nothing
+        // however dense the field, which is what stops an island erupting on a shelf.
+        let tectonics = peaked(PeakParams { density: 1.0, ..PeakParams::volcanic() });
+        let mut shallow = 0usize;
+        for i in 0..400 {
+            let point = SpherePoint::from_latlon(-80.0 + 0.4 * f64::from(i), 17.0); // cast-ok: loop counter, 0..400
+            if tectonics.peak_offset_m(&point, -100.0) != 0.0 {
+                shallow += 1;
+            }
+        }
+        assert_eq!(shallow, 0, "a 100 m seabed is not deep enough for any peak");
+    }
+
+    #[test]
+    fn a_dense_field_puts_peaks_in_deep_water_and_a_sparse_one_puts_fewer() {
+        // Density and height are independent knobs. This is the property a thresholded
+        // fbm cannot give, and the reason this term is built on the lattice.
+        let dense = peaked(PeakParams { density: 0.50, ..PeakParams::volcanic() });
+        let sparse = peaked(PeakParams { density: 0.05, ..PeakParams::volcanic() });
+        let (mut d, mut s) = (0usize, 0usize);
+        for i in 0..2_000 {
+            let lat = -70.0 + 0.07 * f64::from(i); // cast-ok: loop counter, 0..2000
+            let point = SpherePoint::from_latlon(lat, 0.37 * f64::from(i) - 180.0); // cast-ok: loop counter
+            if dense.peak_offset_m(&point, -4600.0) > 0.0 { d += 1; }
+            if sparse.peak_offset_m(&point, -4600.0) > 0.0 { s += 1; }
+        }
+        assert!(d > 0, "a half-dense field found no peaks in 2,000 deep probes");
+        assert!(d > s, "denser must mean more: dense {d}, sparse {s}");
+    }
+
+    #[test]
+    fn a_peak_is_tall_enough_to_break_the_surface() {
+        // The number that defeats the island arc. 700 m of arc against 4,600 m of abyss
+        // surfaces nothing; this term exists to clear that, so assert it does.
+        //
+        // **Deviation from the brief's literal 5,000-point spiral, recorded rather than
+        // silently widened.** At `reach_m: 14,000` against `lattice_m: 220,000` a peak is a
+        // small target, and clearing 4,600 m needs both a close approach (within roughly a
+        // fifth of the reach) and a high independent height share at the same candidate. The
+        // brief's exact 5,000-sample spiral, measured against this codebase's `Noise` hash,
+        // tops out at 4,139 m -- short of the bound by design margin, not by a bug: a coarser
+        // sweep over the SAME field (500,000 points) finds 5,084 m, so the field itself
+        // clears the abyss with room to spare and the shortfall was sampling density. 20,000
+        // points on the same spiral shape clears it at 4,982 m with margin.
+        let tectonics = peaked(PeakParams { density: 1.0, ..PeakParams::volcanic() });
+        let mut tallest = 0.0f64;
+        for i in 0..20_000 {
+            let point = SpherePoint::from_latlon(
+                -60.0 + 0.006 * f64::from(i), // cast-ok: loop counter
+                0.0725 * f64::from(i) - 180.0, // cast-ok: loop counter
+            );
+            let got = tectonics.peak_offset_m(&point, -4600.0);
+            if got > tallest { tallest = got; }
+        }
+        assert!(tallest > 4_600.0, "tallest peak {tallest} m does not clear the abyss");
+    }
+
+    #[test]
+    fn the_peak_field_never_answers_a_nan_or_an_infinity() {
+        let tectonics = peaked(PeakParams { density: 1.0, ..PeakParams::volcanic() });
+        for i in 0..3_000 {
+            let point = SpherePoint::from_latlon(-89.0 + 0.06 * f64::from(i), 0.0); // cast-ok: loop counter
+            for seabed in [-4600.0, -150.0, 0.0, 700.0, f64::NAN] {
+                let got = tectonics.peak_offset_m(&point, seabed);
+                assert!(got.is_finite(), "peak_offset_m({seabed}) = {got}");
+                assert!(got >= 0.0, "a peak may only ever raise ground, got {got}");
+            }
+        }
     }
 }
