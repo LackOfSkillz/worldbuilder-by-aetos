@@ -3150,6 +3150,22 @@ mod tests {
     /// goes through the full `Surface::with_peaks` pipeline over `plates_for(9001, 22)`
     /// at `land_fraction: 0.4`.
     ///
+    /// **Why the two differ by threefold, measured rather than supposed.** Task 1's sweep
+    /// pins `seabed_m` to `ABYSS_M` at *every* probe, so `peak_depth_window` returns 1.0
+    /// unconditionally and the count is what the field would make if the whole planet were
+    /// abyssal ocean -- land included. It is a measurement of the FIELD, on a fiction. This
+    /// one asks a world. On the same fixture, measured: only **59.8%** of the sphere is
+    /// ocean at all, and only **67.5%** of that ocean is deeper than the 2,500 m window
+    /// threshold (a mere 20.6% of it actually reaches `ABYSS_M`, which Task 1 assumed
+    /// everywhere). `108 x 0.598 x 0.675` is 43.6 against the 34 seen here, the residual
+    /// being the 2,000-2,500 m partial-window ramp and the fixture difference.
+    ///
+    /// So the volumetric model in `tectonics.rs` predicts the field, **not** a world's
+    /// islanded share, and the survey that calibrates `density` must measure through this
+    /// pipeline over ocean -- never `peak_offset_m` against an assumed seabed. Note also
+    /// that a shallower seabed makes an island *easier*, not harder, so bathymetry alone
+    /// cannot explain a reduction; it is the land coverage and the window that do.
+    ///
     /// **Re-measured here rather than transcribed, because the population differs**:
     /// over this constructor's own 20,000-point fibonacci sweep, at `PeakParams::volcanic()`
     /// (`density: 0.11`), host K2SO, rustc 1.98.0 release build, this test counts
