@@ -1092,35 +1092,17 @@ impl Tectonics {
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     let (cx, cy, cz) = (bx + dx, by + dy, bz + dz);
-                    if self.peak_noise.lattice_at(cx, cy, cz) >= params.density {
-                        continue;
-                    }
-                    // Jitter inside the cell, from a salt of its own so height and position
-                    // are uncorrelated.
-                    let jx = self.peak_jitter.lattice_at(cx, cy, cz);
-                    let jy = self.peak_jitter.lattice_at(cy, cz, cx);
-                    let jz = self.peak_jitter.lattice_at(cz, cx, cy);
-                    let centre = Vec3 {
-                        x: (cx as f64) + jx, // cast-ok: a lattice coordinate, already bounded
-                        y: (cy as f64) + jy, // cast-ok: a lattice coordinate, already bounded
-                        z: (cz as f64) + jz, // cast-ok: a lattice coordinate, already bounded
+                    let (summit, share) = match self.peak_of_cell(cx, cy, cz, params.density) {
+                        Some(found) => found,
+                        None => continue,
                     };
-                    // Back to the unit sphere, so the distance below is a real ground distance.
-                    let length = m::sqrt(
-                        centre.x * centre.x + centre.y * centre.y + centre.z * centre.z,
-                    );
-                    if !(length > 0.0) {
-                        continue;
-                    }
-                    let (ux, uy, uz) = (centre.x / length, centre.y / length, centre.z / length);
-                    let (ox, oy, oz) = (v.x - ux, v.y - uy, v.z - uz);
+                    let (ox, oy, oz) = (v.x - summit.x, v.y - summit.y, v.z - summit.z);
                     let chord = m::sqrt(ox * ox + oy * oy + oz * oz) * self.radius_m;
                     let fraction = chord / params.reach_m;
                     if !(fraction < 1.0) {
                         continue;
                     }
                     // A cone with a smoothed flank, so nothing downstream differences a corner.
-                    let share = self.peak_height.lattice_at(cx, cy, cz);
                     let standing = params.height_m * (0.45 + 0.55 * share)
                         * smooth(1.0 - fraction)
                         * window;
@@ -1131,6 +1113,48 @@ impl Tectonics {
             }
         }
         tallest
+    }
+
+    /// Where the peak of one lattice cell stands, and how tall a share it drew.
+    ///
+    /// `None` if that cell holds no peak at this density -- either the existence hash did
+    /// not clear it, or the cell's jittered centre turned out to be the zero vector (its
+    /// three jitter coordinates all exactly zero at the sphere's own centre, which is not
+    /// reachable by any real cell but is guarded rather than divided into a NaN).
+    ///
+    /// **This is the one statement of where a summit is.** `peak_offset_m`'s 3x3x3 scan
+    /// calls this once per neighbour cell; a test that wants to know where a peak actually
+    /// stands calls the same function rather than re-deriving the jitter maths itself, which
+    /// is what makes `a_peak_of_a_known_cell_stands_exactly_at_its_own_summit` below a proof
+    /// about this code and not about a second copy of it.
+    ///
+    /// Returns the summit's direction as a point on the unit sphere and the cell's height
+    /// share, in `[0, 1)`, both independent of `seabed_m`, `min_depth_m` and `reach_m` --
+    /// none of which this cell's existence or position depends on.
+    fn peak_of_cell(&self, cx: i64, cy: i64, cz: i64, density: f64) -> Option<(Vec3, f64)> {
+        if self.peak_noise.lattice_at(cx, cy, cz) >= density {
+            return None;
+        }
+        // Jitter inside the cell, from a salt of its own so height and position are
+        // uncorrelated.
+        let jx = self.peak_jitter.lattice_at(cx, cy, cz);
+        let jy = self.peak_jitter.lattice_at(cy, cz, cx);
+        let jz = self.peak_jitter.lattice_at(cz, cx, cy);
+        let centre = Vec3 {
+            x: (cx as f64) + jx, // cast-ok: a lattice coordinate, already bounded
+            y: (cy as f64) + jy, // cast-ok: a lattice coordinate, already bounded
+            z: (cz as f64) + jz, // cast-ok: a lattice coordinate, already bounded
+        };
+        // Back to the unit sphere, so the caller's distance to it is a real ground distance.
+        let length =
+            m::sqrt(centre.x * centre.x + centre.y * centre.y + centre.z * centre.z);
+        if !(length > 0.0) {
+            return None;
+        }
+        let summit =
+            Vec3 { x: centre.x / length, y: centre.y / length, z: centre.z / length };
+        let share = self.peak_height.lattice_at(cx, cy, cz);
+        Some((summit, share))
     }
 
     /// The stacked-suture collision shape at a signed across-margin distance.
@@ -2806,30 +2830,113 @@ mod tests {
     }
 
     #[test]
-    fn a_peak_is_tall_enough_to_break_the_surface() {
+    fn a_peak_stands_exactly_at_its_own_summit() {
         // The number that defeats the island arc. 700 m of arc against 4,600 m of abyss
-        // surfaces nothing; this term exists to clear that, so assert it does.
+        // surfaces nothing; this term exists to clear that, so assert it does -- and assert
+        // the height formula itself, not just a consequence of it.
         //
-        // **Deviation from the brief's literal 5,000-point spiral, recorded rather than
-        // silently widened.** At `reach_m: 14,000` against `lattice_m: 220,000` a peak is a
-        // small target, and clearing 4,600 m needs both a close approach (within roughly a
-        // fifth of the reach) and a high independent height share at the same candidate. The
-        // brief's exact 5,000-sample spiral, measured against this codebase's `Noise` hash,
-        // tops out at 4,139 m -- short of the bound by design margin, not by a bug: a coarser
-        // sweep over the SAME field (500,000 points) finds 5,084 m, so the field itself
-        // clears the abyss with room to spare and the shortfall was sampling density. 20,000
-        // points on the same spiral shape clears it at 4,982 m with margin.
+        // **Deterministic, not sampled.** Summits are enumerable, so this needs no luck.
+        // The earlier version of this test sampled a spiral, and the arithmetic on why that
+        // was a mistake is worth having in one place: clearing 4,600 m at `height_m: 5,200`
+        // needs `(0.45 + 0.55 * share) * smooth(1 - fraction) > 0.8846`, so **even at
+        // `share == 1` a sample must land within about 2.96 km of a summit** -- 0.057% of
+        // the surface, against a `reach_m` of 14,000 in a `lattice_m` of 220,000 (1.272% of
+        // the surface at all, before the height requirement). A spiral of thousands of
+        // points was finding a handful of expected hits and clearing the bound on one or two
+        // of them -- exactly the shape of test that an unrelated change to the field or the
+        // sampling pattern flips into a false failure without touching a defect.
+        //
+        // This calls [`Tectonics::peak_of_cell`], the same function `peak_offset_m`'s scan
+        // calls, rather than re-deriving the jitter maths here -- a test that re-derived it
+        // would pass against a field that computed a summit differently, which is not a
+        // property worth having.
+        //
+        // **The cell a probe visits is that probe's OWN floor cell, not an arbitrary
+        // lattice coordinate.** A lattice cell reachable from nowhere on the unit sphere --
+        // near the coordinate origin, where `|cx|,|cy|,|cz|` are all far below `frequency`
+        // -- has a `centre` whose length is nothing like `frequency`, so normalising it
+        // finds a direction with no relation to the cell at all, and re-deriving a query
+        // point from that direction floors to some unrelated, distant cell instead. A block
+        // of small integer coordinates would be silently testing that unreachable case, not
+        // a real summit. Walking real probes' own floor cells keeps every cell one an actual
+        // point on the planet can land in, which is the only kind `peak_offset_m` ever sees.
+        //
+        // **Density stays at the `volcanic()` preset, 0.06, rather than 1.0.** At density
+        // 1.0 every one of the 26 neighbour cells also holds a peak, and occasionally one of
+        // them legitimately beats the cell under test at its own summit -- a competing
+        // candidate close enough to the query point, with a high enough height share, wins
+        // the max `peak_offset_m` takes over the whole neighbourhood. That is correct
+        // behaviour, not a defect, and it is not what this test is pinning down. At 0.06 a
+        // candidate neighbour is rare, so the cell under test is almost always the only one
+        // present in its own neighbourhood and therefore trivially the max.
+        let params = PeakParams::volcanic();
+        let tectonics = peaked(params);
+        let frequency = EARTH_RADIUS_M / params.lattice_m;
+        let mut tallest = 0.0f64;
+        let mut checked = 0usize;
+        for i in 0..3_000 {
+            let lat = -89.0 + 0.06 * f64::from(i); // cast-ok: loop counter, 0..3000
+            let lon = 0.71 * f64::from(i) - 180.0; // cast-ok: loop counter, 0..3000
+            let probe = SpherePoint::from_latlon(lat, lon);
+            let v = probe.vector;
+            // The same floor-bound-cast a real sample takes in `peak_offset_m`; the bound is
+            // omitted here because `|v.x| <= 1` and `frequency` is a small constant (about
+            // 29 at this `lattice_m`), so the product cannot approach `LATTICE_LIMIT`.
+            let (cx, cy, cz) = (
+                m::floor(v.x * frequency) as i64, // cast-ok: |v.x| <= 1 times a ~29 frequency, nowhere near LATTICE_LIMIT
+                m::floor(v.y * frequency) as i64, // cast-ok: |v.y| <= 1 times a ~29 frequency, nowhere near LATTICE_LIMIT
+                m::floor(v.z * frequency) as i64, // cast-ok: |v.z| <= 1 times a ~29 frequency, nowhere near LATTICE_LIMIT
+            );
+            let (summit, share) = match tectonics.peak_of_cell(cx, cy, cz, params.density) {
+                Some(found) => found,
+                None => continue,
+            };
+            checked += 1;
+            let point = SpherePoint::from_vector(&summit)
+                .expect("a summit direction is a unit vector, never the zero one");
+            let got = tectonics.peak_offset_m(&point, -4600.0);
+            // At the summit the chord is exactly zero, so `fraction` is exactly zero and
+            // `smooth(1.0 - 0.0)` is exactly `smooth(1.0)`, which is exactly 1.0 by its own
+            // formula (`1.0 * 1.0 * (3.0 - 2.0) == 1.0`). The window is saturated at 1.0
+            // too, at a -4,600 m seabed against a 2,500 m threshold. So nothing else is in
+            // play, and the answer is exactly this product -- compared by bits, because the
+            // claim is exactness.
+            let expected = params.height_m * (0.45 + 0.55 * share);
+            assert_eq!(
+                got.to_bits(),
+                expected.to_bits(),
+                "at cell ({cx},{cy},{cz}) from probe {i}: got {got}, expected {expected}"
+            );
+            if got > tallest {
+                tallest = got;
+            }
+        }
+        assert!(checked > 0, "density 0.06 found no summit under 3,000 probes' own cells");
+        assert!(tallest > 4_600.0, "tallest summit {tallest} m does not clear the abyss");
+    }
+
+    #[test]
+    fn ordinary_sampling_finds_a_peak_without_needing_a_summit_hit() {
+        // The deterministic test above pins the height formula exactly, at the one point
+        // (`fraction == 0`) where nothing else is in play. This asserts the different thing
+        // only sampling can show: the term is reachable by a caller sampling `peak_offset_m`
+        // at ordinary points, not merely computable at a summit nobody but a test enumerates.
+        // The bound is deliberately low -- 1,000 m against a 5,200 m `height_m` -- so it does
+        // not need a near-summit hit and stays robust to an unrelated change in the field or
+        // the sampling pattern, unlike the 4,600 m bound the test above replaced.
         let tectonics = peaked(PeakParams { density: 1.0, ..PeakParams::volcanic() });
         let mut tallest = 0.0f64;
-        for i in 0..20_000 {
+        for i in 0..2_000 {
             let point = SpherePoint::from_latlon(
-                -60.0 + 0.006 * f64::from(i), // cast-ok: loop counter
-                0.0725 * f64::from(i) - 180.0, // cast-ok: loop counter
+                -70.0 + 0.07 * f64::from(i), // cast-ok: loop counter, 0..2000
+                0.37 * f64::from(i) - 180.0, // cast-ok: loop counter
             );
             let got = tectonics.peak_offset_m(&point, -4600.0);
-            if got > tallest { tallest = got; }
+            if got > tallest {
+                tallest = got;
+            }
         }
-        assert!(tallest > 4_600.0, "tallest peak {tallest} m does not clear the abyss");
+        assert!(tallest > 1_000.0, "ordinary sampling found nothing over 1,000 m: {tallest} m");
     }
 
     #[test]
