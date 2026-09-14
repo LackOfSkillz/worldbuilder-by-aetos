@@ -158,12 +158,29 @@ added by this slice's Task 2/3).
    worktree, compiled the shipped `build_fingerprint.rs` into a scratch crate outside this
    repository's own build, and got the identical digest over the identical 28 inputs.
 
-   Re-run on the current tree (HEAD, both sides): node reports `source-fingerprint:
+   Last re-run with BOTH sides measured, at the identity slice's HEAD: node reported
+   `source-fingerprint:
    029396ea75bc6eb10e1006a6063578829399e88b7525eb5b4abc44b2fef839b2` /
    `fingerprint-inputs: 29`; the just-built extension's `source_fingerprint()` /
-   `source_fingerprint_inputs()` report the same digest and count; the gate exits 0 with
+   `source_fingerprint_inputs()` reported the same digest and count; the gate exited 0 with
    `count OK: node and rust fingerprints agree on a real digest over a real corpus (29
-   inputs)`. On a real disagreement it fails loudly rather than comparing shapes that merely
+   inputs)`.
+
+   **The corpus has grown since, and only the node side has been re-measured on master
+   (`8961b9f`): `source-fingerprint:
+   54f8b7577a20cd9b7cbb749e480d41809b1756540ad3ded4eb50c7dd502574a9` /
+   `fingerprint-inputs: 66`.** That is stated twice independently, which is the only reason
+   it is here at all: `npm run digest:wasm` computes it from the source that is on disk, and
+   `viewer/public/wasm/MANIFEST.txt` separately records the same digest and the same 66, with
+   `npm run check:wasm` confirming the artifact matches both. **The Rust half is deliberately
+   not restated at 66, because it was not run** - `source_fingerprint()` needs the extension
+   built (`maturin develop --release --features python`), which this tree has not done. So
+   the paired figure above is the last *demonstrated* agreement between the two
+   implementations, and 66 is the node side's current count; do not read it as a claim that
+   the two have been compared at it. CI compares them on every push, which is where that
+   claim gets made.
+
+   On a real disagreement the gate fails loudly rather than comparing shapes that merely
    happen to be equal - every value is validated as 64-hex-lowercase / positive-integer before
    either side is compared to the other - with:
 
@@ -174,12 +191,21 @@ added by this slice's Task 2/3).
 
 **5. Provenance**, `npm run check:wasm` in `viewer/`. Source edited without a rebuild:
 `STALE ARTIFACT: - the shipped .wasm was NOT built from the source that is here now: source
-now: <hash> / artifact built from: <hash> (29 inputs fingerprinted.)`. Re-run locally against
+now: <hash> / artifact built from: <hash> (<N> inputs fingerprinted.)`. Re-run locally against
 the current tree: `Current: .../viewer/public/wasm/worldbuilder_engine.wasm matches its
 manifest and the source that is here now.` - confirmed by running the check, not read off a
 report. The input count moved from 28 to 29 in this slice: `tests/build_fingerprint.rs`, a
 new file under one of the three walked directories, is itself a fingerprinted input, and a
 file *appearing* moves the digest exactly as a file *changing* does.
+
+   **That mechanism is exactly why the count is not a constant, and why the message above
+   says `<N>` rather than a number: on master (`8961b9f`) it is 66**, re-derived here by
+   `npm run digest:wasm` and cross-checked against `MANIFEST.txt`'s own
+   `fingerprint-inputs: 66`. The 28 -> 29 figures in this paragraph and in gate 4 above are
+   the identity slice's, kept as the worked example of the mechanism rather than as a current
+   reading - and the per-rebuild counts logged elsewhere are history in the same way, not
+   drift: `gates.yml`'s parity log records 58 against three dated rebuilds on 2026-09-12,
+   each with its own artifact hash, and those were correct when written.
 
    Two cheaper proofs run alongside it, both re-run locally as part of this task:
    `npm run build:wasm:stale-self-test` (`SELF-TEST PASSED: the fingerprint refuses a source
