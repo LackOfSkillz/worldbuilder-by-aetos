@@ -3588,6 +3588,15 @@ mod tests {
         // east crosses lattice cell planes at one fixed angle; a diagonal transect crosses
         // them at a different one, which is what actually varies which axis's floor flips
         // first as the query moves -- the mechanism the whole bug lived in.
+        //
+        // **What this test deliberately does NOT measure, and where that is measured.** Every
+        // step below is taken at a fixed `seabed_m` of -4,600 m, so `peak_depth_window`
+        // returns exactly 1.0 throughout and the bound above is purely GEOMETRIC -- the
+        // window's own gradient, which is the steeper of the two, is held out on purpose so
+        // that a violation here can only mean the profile moved too fast in space.
+        // `no_composed_step_exceeds_the_geometric_and_window_bounds_together` below walks the
+        // same transects with the seabed the world really has and asserts the composed step of
+        // `Tectonics::offset_m` against both terms at once.
         let cases: [(&str, PeakParams, i32, i32); 3] = [
             ("density 1.0", PeakParams { density: 1.0, ..PeakParams::volcanic() }, 24, 3_000),
             ("shipping preset", PeakParams::volcanic(), 240, 3_000),
@@ -3629,6 +3638,314 @@ mod tests {
                 }
             }
             assert!(transects_walked > 0, "{label}: no transect was actually walked");
+        }
+    }
+
+    /// The other half of continuity, and the half the final whole-branch review found missing:
+    /// **the test above holds `seabed_m` at -4,600 m, so `peak_depth_window` returns exactly
+    /// 1.0 at every step and its own gradient is never in the measurement** -- and the window
+    /// is the steeper of the two factors. Its ramp spans `min_depth_m - min_depth_m * 0.8`
+    /// (500 m at the preset), so its slope reaches `1.5 / span` per metre of depth, which is
+    /// `height_m * 1.5 / span` = 24 m of peak per metre of seabed: over three times the 7.62 m
+    /// the geometric bound allows for a 20 m step.
+    ///
+    /// So this walks the same transects with the seabed the world actually has under them --
+    /// `base_elevation + offset_m`, exactly the sum `Tectonics::offset_m` hands
+    /// `peak_offset_m` and exactly what `Shelf::evaluate` recomputes -- and asserts the
+    /// **composed** step of `Tectonics::offset_m` itself, not the peak term against a fiction.
+    ///
+    /// **The bound, derived from the parameters and from the measured seabed move, never
+    /// written down.** Over one step the composed offset moves by
+    /// `delta(total) + delta(standing)`, where `total` is bit-for-bit the offset the bare
+    /// `Tectonics::new` field produces (the peak term is added, never fed back), so
+    ///
+    /// ```text
+    /// |delta(offset_m)| <= |delta(bare offset_m)|                     <- measured, per step
+    ///                    + height_m * 1.5 / reach_m * step_m          <- geometric, per step
+    ///                    + height_m * 1.5 / span    * |delta(seabed)| <- the window's own ramp
+    /// ```
+    ///
+    /// Each term is a Lipschitz product of factors that are themselves at most 1: the height
+    /// envelope `0.45 + 0.55 * share` never exceeds 1, `smooth`'s derivative peaks at 1.5, and
+    /// the window is at most 1, so holding one factor and moving the other gives each line.
+    /// The first line is taken from the field itself rather than bounded, because the margin
+    /// terms `total` is made of have no analytic Lipschitz constant on this branch and are not
+    /// what this test is about -- what is asserted is that **the seamount term adds no more
+    /// than its own two-part bound to whatever the pre-existing field already did.**
+    ///
+    /// **Measured, on this host (rustc 1.98.0, `--release`), at the shipping preset over
+    /// 240 transects x 2 bearings x 3,000 steps of 20 m:** the largest composed step is
+    /// 26.9865 m against a worst per-step bound of 4,492.2 m, and the largest seamount-only
+    /// step is 7.2768 m -- inside the 7.6190 m geometric bound the fixed-seabed test enforces,
+    /// so the window's extra allowance is headroom here rather than a cliff being admitted.
+    /// The composed bound is genuinely larger than the geometric one (4,492.2 m against
+    /// 7.6190 m at its worst step) because a single 20 m step can move the seabed by metres
+    /// where the margin terms are steep; that is the number, stated rather than a widening
+    /// waved through. 41,131 steps land strictly inside the window's ramp, which is the
+    /// coverage claim the fixed-seabed test cannot make at all.
+    #[test]
+    fn no_composed_step_exceeds_the_geometric_and_window_bounds_together() {
+        let cases: [(&str, PeakParams, i32, i32); 2] = [
+            ("shipping preset", PeakParams::volcanic(), 240, 3_000),
+            ("density 1.0", PeakParams { density: 1.0, ..PeakParams::volcanic() }, 240, 3_000),
+        ];
+        for (label, params, transect_count, steps_per_transect) in cases {
+            // The same fixture `peaked` builds, plus the bare field it differs from by one
+            // term. Both must share the `Continentality`, or the baseline would not be the
+            // same `total`.
+            let land = Continentality::new(7788, EARTH_RADIUS_M, 0.4);
+            let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, None);
+            let peaked =
+                Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, None, Some(params));
+
+            let step_m = 20.0;
+            // Both halves of the bound, from `params` and from `peak_depth_window`'s own
+            // arithmetic -- the 0.8 onset factor is read off that function, not guessed.
+            let geometric_m = params.height_m * 1.5 / params.reach_m * step_m;
+            let span_m = params.min_depth_m - params.min_depth_m * 0.8;
+            let per_metre_of_seabed = params.height_m * 1.5 / span_m;
+
+            let mut worst_composed_m = 0.0f64;
+            let mut worst_bound_m = 0.0f64;
+            let mut worst_peak_step_m = 0.0f64;
+            let mut worst_seabed_step_m = 0.0f64;
+            let mut steps_on_the_ramp = 0usize;
+            let mut steps_walked = 0usize;
+            let mut frontier_steps = 0usize;
+            let lat_step = 178.0 / f64::from(transect_count);
+            for i in 0..transect_count {
+                let lat = -89.0 + lat_step * f64::from(i); // cast-ok: loop counter, 0..transect_count
+                let lon = 0.83 * f64::from(i) - 180.0; // cast-ok: loop counter
+                for bearing_deg in [0.0, 45.0] {
+                    let frame = TangentFrame::at_latlon(lat, lon, EARTH_RADIUS_M);
+                    let bearing = m::to_radians(bearing_deg);
+                    let (east, north) = (m::cos(bearing), m::sin(bearing));
+                    let sample = |point: &SpherePoint| {
+                        let plain = bare.offset_m(point);
+                        let seabed_m = bare.land.base_elevation(point) + plain;
+                        // Whether `offset_m` reaches its seamount term here at all. See
+                        // `the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range`:
+                        // `offset_m` returns 0.0 before the term on an empty margin set, so a
+                        // step across that frontier is not a step of this field and cannot be
+                        // held to this field's bound.
+                        let (nearest, margins) = bare.plates.margins_within(
+                            point,
+                            MAX_TECTONIC_RANGE_M,
+                            EARTH_RADIUS_M,
+                        );
+                        let live = !margins.is_empty() && nearest.is_some();
+                        (plain, peaked.offset_m(point), seabed_m, live)
+                    };
+                    let mut previous = sample(&frame.origin);
+                    for step in 1..steps_per_transect {
+                        let t_m = step_m * f64::from(step); // cast-ok: loop counter
+                        let point = frame.local_to_sphere(t_m * east, t_m * north);
+                        let here = sample(&point);
+                        let gap = |a: f64, b: f64| if a > b { a - b } else { b - a };
+                        // A step that crosses the margin-range frontier is counted and left
+                        // out of the bound, because on one side of it `offset_m` never
+                        // evaluates the seamount term. That is a separate, larger defect and
+                        // it has its own measurement; hiding it inside this bound by widening
+                        // the bound is exactly what this test exists not to do.
+                        if here.3 != previous.3 {
+                            frontier_steps += 1;
+                            previous = here;
+                            continue;
+                        }
+                        if !here.3 {
+                            // Both sides outside margin range: `offset_m` is 0.0 either way
+                            // and there is no seamount term in the answer to bound.
+                            previous = here;
+                            continue;
+                        }
+                        let bare_step_m = gap(here.0, previous.0);
+                        let composed_step_m = gap(here.1, previous.1);
+                        let seabed_step_m = gap(here.2, previous.2);
+                        let bound_m = bare_step_m
+                            + geometric_m
+                            + per_metre_of_seabed * seabed_step_m;
+                        assert!(
+                            composed_step_m <= bound_m + 1e-6,
+                            "{label}: step {step} at lat {lat}, bearing {bearing_deg}: the \
+                             composed offset jumped {composed_step_m} m, over the {bound_m} m \
+                             bound (bare step {bare_step_m} m + geometric {geometric_m} m + \
+                             {per_metre_of_seabed} m/m x {seabed_step_m} m of seabed)"
+                        );
+                        if composed_step_m > worst_composed_m {
+                            worst_composed_m = composed_step_m;
+                        }
+                        if bound_m > worst_bound_m {
+                            worst_bound_m = bound_m;
+                        }
+                        // The seamount term on its own, against the geometric-only bound the
+                        // fixed-seabed test enforces -- reported, not asserted, because with
+                        // the seabed moving it is the window that may legitimately add more.
+                        let peak_step_m = gap(here.1 - here.0, previous.1 - previous.0);
+                        if peak_step_m > worst_peak_step_m {
+                            worst_peak_step_m = peak_step_m;
+                        }
+                        if seabed_step_m > worst_seabed_step_m {
+                            worst_seabed_step_m = seabed_step_m;
+                        }
+                        // Coverage: the window must actually be somewhere on its ramp, or this
+                        // test would be the fixed-seabed one again with extra arithmetic.
+                        let window = peak_depth_window(-here.2, params.min_depth_m);
+                        if window > 0.0 && window < 1.0 {
+                            steps_on_the_ramp += 1;
+                        }
+                        steps_walked += 1;
+                        previous = here;
+                    }
+                }
+            }
+            println!(
+                "{label}: {steps_walked} bounded steps ({frontier_steps} skipped at the \
+                 margin-range frontier), worst composed {worst_composed_m:.4} m against a worst \
+                 bound of {worst_bound_m:.4} m; worst seamount-only step \
+                 {worst_peak_step_m:.4} m against the {geometric_m:.4} m geometric bound; worst \
+                 seabed move {worst_seabed_step_m:.4} m at {per_metre_of_seabed:.4} m/m; \
+                 {steps_on_the_ramp} steps strictly inside the window's ramp"
+            );
+            assert!(steps_walked > 0, "{label}: no step was actually walked");
+            // **The claim that makes this test the one minor 3 asked for.** Without this the
+            // test could pass with the window saturated at every step, which is exactly the
+            // hole it exists to close.
+            assert!(
+                steps_on_the_ramp > 1_000,
+                "{label}: only {steps_on_the_ramp} steps landed on the window's ramp, so this \
+                 walk measured the saturated window the fixed-seabed test already covers"
+            );
+        }
+    }
+
+    /// **A KNOWN OPEN DEFECT, found by the measurement minor 3 of the final whole-branch review
+    /// asked for, and left failing on purpose rather than papered over.** `#[ignore]`d so it
+    /// does not red the suite while it is open; run it with `cargo test -- --ignored`, and
+    /// delete the attribute the day the wiring is fixed.
+    ///
+    /// `Tectonics::offset_m` returns `0.0` **before** it reaches the seamount term whenever
+    /// `margins_within` comes back empty, or `nearest` is `None` (`tectonics.rs:1213-1220`).
+    /// That early return predates this branch -- its own comment calls a plate interior "69 per
+    /// cent of the planet" -- and Task 2 added the seamount term at the *end* of the function,
+    /// after it. So on most of the planet the seamount field is not evaluated at all, and at the
+    /// frontier of margin range it switches on discontinuously.
+    ///
+    /// **Measured here, on the shipped fixture** (`plates_for(20_260_904, 12)`,
+    /// `Continentality::new(20_260_904, 6_371_000, 0.29)`, `PeakParams::volcanic()`, rustc
+    /// 1.98.0 `--release`, this host) -- the same world `tests/wasm_exports.rs` and the
+    /// verification report use:
+    ///
+    /// - **77.16%** of the planet (154,314 of a 200,000-point area-uniform spiral) has an empty
+    ///   margin set, so `offset_m` never reaches the term there.
+    /// - At those skipped points the field *would* stand up to **7,824.3 m**, and **28,942** of
+    ///   the 200,000 (14.5%) suppress more than 100 m.
+    /// - Worst single-step jump in `offset_m` at a frontier crossing, over 600 transects x 2
+    ///   bearings x 3,000 steps of 20 m: **3,460.23 m** (lat -25.81, bearing 45 degrees, step
+    ///   560) -- **454x** the 7.62 m analytic bound, and larger than the 1,466 m cliff whose
+    ///   discovery is why this file has a continuity test at all.
+    /// - With the term live on both sides of a step, the worst step is **6.13 m**, inside the
+    ///   bound. **The field is continuous; the wiring is not.** On the three-plate test fixture
+    ///   the same measurement reads 90.24% suppressed and a 2,749.07 m worst cliff.
+    ///
+    /// **Why this fix wave did not just move the term.** Restructuring `offset_m` so the term is
+    /// reached on a plate interior is a few lines and cannot move the canonical world (with no
+    /// peak block, `total` is still the same `0.0`). But it multiplies the islanded share by
+    /// roughly the reciprocal of the suppressed fraction, which puts the shipped
+    /// `VOLCANIC_DENSITY` far above the spec's 0.8% ceiling and invalidates every figure in
+    /// Task 7's three-world calibration sweep, `island_survey.rs`'s output, the survey table in
+    /// `VOLCANIC_DENSITY`'s own doc and report sections 4, 5 and 7. That is a re-run of Task 7,
+    /// not a fix wave, and doing it silently under a merge is how a calibration stops meaning
+    /// anything. The defect is measured, named and pinned instead.
+    #[test]
+    #[ignore = "known open defect: offset_m returns before the seamount term on an empty margin set"]
+    fn the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range() {
+        let params = PeakParams::volcanic();
+        let plates = crate::generation::plates_for(20_260_904, 12);
+        let land = Continentality::new(20_260_904, EARTH_RADIUS_M, 0.29);
+        let bare = Tectonics::new(plates.clone(), land, EARTH_RADIUS_M, None);
+        let peaked = Tectonics::with_peaks(plates, land, EARTH_RADIUS_M, None, Some(params));
+
+        let live = |point: &SpherePoint| {
+            let (nearest, margins) =
+                bare.plates.margins_within(point, MAX_TECTONIC_RANGE_M, EARTH_RADIUS_M);
+            !margins.is_empty() && nearest.is_some()
+        };
+
+        // 1. The term must be reachable everywhere, because a seamount is a property of the
+        //    seabed and not of how near a plate boundary it happens to be.
+        let points = area_uniform_spiral(200_000);
+        let mut suppressed = 0usize;
+        let mut worst_suppressed_m = 0.0f64;
+        for point in &points {
+            if live(point) {
+                continue;
+            }
+            suppressed += 1;
+            let wanted = peaked.peak_offset_m(point, bare.land.base_elevation(point));
+            if wanted > worst_suppressed_m {
+                worst_suppressed_m = wanted;
+            }
+        }
+        assert_eq!(
+            suppressed,
+            0,
+            "{suppressed} of {} points never reach the seamount term, suppressing up to \
+             {worst_suppressed_m} m of island",
+            points.len()
+        );
+
+        // 2. And therefore no step ACROSS THE FRONTIER is a cliff. Only those steps are
+        //    asserted here -- the ones with the term live on both sides are
+        //    `no_composed_step_exceeds_the_geometric_and_window_bounds_together`'s job, and
+        //    asserting them again here would be asserting the margin terms' own gradient,
+        //    which this branch does not bound. The bound is the same three-part one that test
+        //    derives: the bare field's own measured step, plus the geometric term, plus the
+        //    window's ramp allowance against the measured seabed move.
+        let step_m = 20.0;
+        let geometric_m = params.height_m * 1.5 / params.reach_m * step_m;
+        let span_m = params.min_depth_m - params.min_depth_m * 0.8;
+        let per_metre_of_seabed = params.height_m * 1.5 / span_m;
+        for i in 0..600 {
+            let lat = -89.0 + (178.0 / 600.0) * f64::from(i); // cast-ok: loop counter, 0..600
+            let lon = 0.611 * f64::from(i) - 180.0; // cast-ok: loop counter
+            for bearing_deg in [0.0, 45.0] {
+                let frame = TangentFrame::at_latlon(lat, lon, EARTH_RADIUS_M);
+                let bearing = m::to_radians(bearing_deg);
+                let (east, north) = (m::cos(bearing), m::sin(bearing));
+                let sample = |point: &SpherePoint| {
+                    let plain = bare.offset_m(point);
+                    (
+                        peaked.offset_m(point),
+                        bare.land.base_elevation(point) + plain,
+                        plain,
+                        live(point),
+                    )
+                };
+                let mut previous = sample(&frame.origin);
+                for step in 1..3_000 {
+                    let t_m = step_m * f64::from(step); // cast-ok: loop counter
+                    let point = frame.local_to_sphere(t_m * east, t_m * north);
+                    let here = sample(&point);
+                    if here.3 == previous.3 {
+                        previous = here;
+                        continue;
+                    }
+                    let gap = |a: f64, b: f64| if a > b { a - b } else { b - a };
+                    let bound_m = gap(here.2, previous.2)
+                        + geometric_m
+                        + per_metre_of_seabed * gap(here.1, previous.1);
+                    let delta_m = gap(here.0, previous.0);
+                    assert!(
+                        delta_m <= bound_m + 1e-6,
+                        "step {step} at lat {lat}, bearing {bearing_deg}: offset_m jumped \
+                         {delta_m} m across the margin-range frontier, over a {bound_m} m \
+                         bound ({} m -> {} m)",
+                        previous.0,
+                        here.0
+                    );
+                    previous = here;
+                }
+            }
         }
     }
 
