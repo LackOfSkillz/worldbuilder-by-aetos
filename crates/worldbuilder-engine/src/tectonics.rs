@@ -636,6 +636,7 @@ const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// |---|---|---|---|---|
 /// | 0.11 (shipped before Task 7) | 0.1070% | 0.2275% | 0.1180% | all three BELOW |
 /// | 0.28 | 0.2625% | 0.5850% | 0.3290% | -0.0375 pp, one BELOW |
+/// | 0.31 | 0.2955% | 0.6455% | 0.3545% | -0.0045 pp, one BELOW |
 /// | 0.32 | 0.3065% | 0.6655% | 0.3660% | +0.0065 pp |
 /// | 0.33 | 0.3165% | 0.6875% | 0.3730% | +0.0165 pp |
 /// | 0.34 | 0.3215% | 0.7065% | 0.3850% | +0.0215 pp |
@@ -643,17 +644,28 @@ const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// | **0.36** | **0.3345%** | **0.7525%** | **0.4035%** | **+0.0345 pp -- the maximin** |
 /// | 0.37 | 0.3470% | 0.7710% | 0.4170% | +0.0290 pp |
 /// | 0.38 | 0.3585% | 0.7905% | 0.4325% | +0.0095 pp |
+/// | 0.39 | 0.3675% | 0.8120% | 0.4405% | -0.0120 pp, one ABOVE |
 /// | 0.40 | 0.3785% | 0.8280% | 0.4545% | -0.0280 pp, one ABOVE |
 ///
 /// **The islanded share depends on the world's land fraction, so the choice cannot be made on
 /// one world.** A world with less land has more deep ocean for the field to stand an island
 /// in: at every density the owner's 0.16-land world yields roughly twice the share the
-/// 0.40-land fixture does. Seven hundredths -- 0.32 through 0.38 -- put all three worlds inside
-/// the band at once, and **0.36 is the maximin**: the admissible density whose WORST world
-/// sits furthest from a band edge. That matters because the band is squeezed from both sides at
-/// once here -- `island-a` presses the 0.3% floor while `owner` presses the 0.8% ceiling, so
-/// the admissible window is only six hundredths wide and a value admissible by 0.0065 pp would
-/// not survive a fourth world.
+/// 0.40-land fixture does. **Seven admissible hundredths -- 0.32 through 0.38, so six
+/// hundredths of span** -- put all three worlds inside the band at once, and **0.36 is the
+/// maximin**: the admissible density whose WORST world sits furthest from a band edge.
+///
+/// **Both edges are measured, not inferred.** The final whole-branch review's minor 6 found
+/// this doc saying "six hundredths wide" while the verification report said "seven hundredths
+/// wide" -- two true statements about different quantities (seven admissible *values*, six
+/// hundredths of *span*), each written as if it were the other. Both now say both, and the
+/// 0.31 and 0.39 rows above were added to `island_survey.rs`'s `CANDIDATES` and re-run so that
+/// the window's edges are rows in this table rather than a gap between 0.28 and 0.40: 0.31
+/// misses the floor by 0.0045 pp and 0.39 clears the ceiling by 0.0120 pp, so the seven are
+/// exactly seven.
+///
+/// That narrowness matters because the band is squeezed from both sides at once here --
+/// `island-a` presses the 0.3% floor while `owner` presses the 0.8% ceiling -- and a value
+/// admissible by 0.0065 pp would not survive a fourth world.
 ///
 /// Hundredths, because `viewer/public/app/peak-params.js`'s density slider carries an integer
 /// position and maps it to a value by dividing by 100; a density off that lattice is one the

@@ -184,8 +184,12 @@ const SHIPPED_LATTICE: usize = 1;
 /// land has more deep ocean for the field to stand an island in, so the same density yields
 /// very different shares. Section 4 prints all three and the choice is the density whose
 /// WORST world is still inside the band.
-const CANDIDATES: [f64; 11] =
-    [0.28, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.40, 0.45, 0.58];
+/// **0.31 and 0.39 were added by the final whole-branch review's minor 6**, which found the
+/// code and the report disagreeing about how wide the admissible window is. They are the two
+/// hundredths immediately outside 0.32-0.38, so this list now measures both edges rather than
+/// inferring them from the 0.28 and 0.40 rows four and two hundredths away.
+const CANDIDATES: [f64; 13] =
+    [0.28, 0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39, 0.40, 0.45, 0.58];
 
 /// The raster spacing the component counts are taken at, in metres. An island at the shipped
 /// constants stands about 25 km across, so 5 km puts about five cells across one and about

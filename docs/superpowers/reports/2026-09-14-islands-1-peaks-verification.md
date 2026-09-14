@@ -156,7 +156,9 @@ at 1σ — an order below the 0.5 pp band, so this estimator can see the band's 
 | 0.40 | 0.4900% | 0.3785% | in band |
 | 0.45 | 0.5300% | 0.4150% | in band |
 | 0.50 | 0.6050% | 0.4675% | in band |
+| 0.55 | 0.6550% | 0.5140% | in band |
 | 0.58 | 0.6700% | 0.5495% | in band |
+| 0.60 | 0.6800% | 0.5680% | in band |
 | 0.62 | 0.7050% | 0.5840% | in band |
 | 0.70 | 0.7750% | 0.6670% | in band |
 | 0.75 | 0.8100% | 0.7165% | in band |
@@ -176,7 +178,13 @@ catch.
 0.04 to 0.14 pp above the 200,000-point figure — 0.17% against 0.107% at density 0.11, 0.44%
 against 0.3345% at 0.36 — with the gap growing roughly in proportion to the share. Each
 individual gap is only 1 to 2.5σ of the smaller sample, so no one row is remarkable; but **the
-sign is the same on all sixteen rows**, which happens by chance with probability 2⁻¹⁶. So this
+sign is the same on all sixteen rows**, which happens by chance with probability 2⁻¹⁶. (The
+final whole-branch review's minor 5 found this claim computed over sixteen rows while the table
+above published only fourteen -- 0.55 and 0.60 were missing. They are published now, from a
+re-run of `cargo run --release --bin island_survey` on the host named at the top of this report:
+0.6550% against 0.5140% at 0.55, and 0.6800% against 0.5680% at 0.60. Both run high like the
+other fourteen, so the population the 2⁻¹⁶ is computed over is the population the table shows.)
+So this
 is a property of *this particular 20,000-point lattice* — it evidently samples more of the deep
 ocean these islands live in than an average sample of that size would — and not of the field.
 
@@ -195,6 +203,7 @@ about a planet.
 | density | `island-a` (land 0.40) | `owner` (land 0.16) | `earth-a` (land 0.29) | margin to the nearer band edge |
 |---|---|---|---|---|
 | 0.28 | 0.2625% | 0.5850% | 0.3290% | **−0.0375 pp** — `island-a` BELOW |
+| 0.31 | 0.2955% | 0.6455% | 0.3545% | **−0.0045 pp** — `island-a` BELOW |
 | 0.32 | 0.3065% | 0.6655% | 0.3660% | +0.0065 pp |
 | 0.33 | 0.3165% | 0.6875% | 0.3730% | +0.0165 pp |
 | 0.34 | 0.3215% | 0.7065% | 0.3850% | +0.0215 pp |
@@ -202,6 +211,7 @@ about a planet.
 | **0.36** | **0.3345%** | **0.7525%** | **0.4035%** | **+0.0345 pp — the maximin** |
 | 0.37 | 0.3470% | 0.7710% | 0.4170% | +0.0290 pp |
 | 0.38 | 0.3585% | 0.7905% | 0.4325% | +0.0095 pp |
+| 0.39 | 0.3675% | 0.8120% | 0.4405% | **−0.0120 pp** — `owner` ABOVE |
 | 0.40 | 0.3785% | 0.8280% | 0.4545% | **−0.0280 pp** — `owner` ABOVE |
 | 0.45 | 0.4150% | 0.9390% | 0.5165% | −0.1390 pp |
 | 0.58 | 0.5495% | 1.2135% | 0.6730% | −0.4135 pp |
@@ -209,10 +219,20 @@ about a planet.
 **A world with less land has more deep ocean for the field to stand an island in, and the effect
 is large: at every density the owner's 0.16-land world yields roughly 2.2× the share the
 0.40-land fixture does.** So the band is squeezed from *both* sides at once — `island-a` presses
-the 0.3% floor while `owner` presses the 0.8% ceiling — and the admissible window is only seven
-hundredths wide (0.32 through 0.38). **0.36 is the maximin**: the admissible density whose worst
-world sits furthest from a band edge. 0.32 clears the floor by 0.0065 pp, which is half the
-estimator's own 1σ error and would not survive a fourth world.
+the 0.3% floor while `owner` presses the 0.8% ceiling — and the admissible window is only
+**seven admissible hundredths, 0.32 through 0.38, so six hundredths of span**. **0.36 is the
+maximin**: the admissible density whose worst world sits furthest from a band edge. 0.32 clears
+the floor by 0.0065 pp, which is half the estimator's own 1σ error and would not survive a
+fourth world.
+
+**Minor 6 of the final whole-branch review found this sentence and `VOLCANIC_DENSITY`'s doc
+disagreeing** — "seven hundredths wide" here against "six hundredths wide" there. Neither number
+was wrong; each was the other quantity, written as if it were this one. Both now say both. And
+the window's two edges are measured rather than inferred from the rows four and two hundredths
+outside it: `island_survey.rs`'s `CANDIDATES` gained 0.31 and 0.39 and was re-run on the host
+named at the top of this report, giving the two new rows above. 0.31 misses the floor by
+0.0045 pp and 0.39 clears the ceiling by 0.0120 pp, so the admissible set is exactly the seven
+hundredths 0.32–0.38 and nothing hides in the gaps.
 
 ### The chosen constants
 
@@ -537,31 +557,44 @@ rather than the assertion.
 Re-derived by **running** each one on the host named at the top. Nothing in this table is
 transcribed.
 
-| Pin | baseline `88f199e` | **after Task 7** | note |
-|---|---|---|---|
-| Engine lib, `--features wasm` | 843 passed / 11 ignored | **843 / 11** | the new `[[bin]]` contributes 0 tests |
-| Engine lib, `--no-default-features` | — | **843 / 11** | |
-| Engine lib, default features | — | **843 / 11** | |
-| Engine lib, `--features python` | — | **845 / 11** | +2 as always on the python rows |
-| Engine lib, `--features python,wasm` | — | **845 / 11** | |
-| `tests/blake2_bytes.rs` | 4 | **4** | every configuration |
-| `tests/build_fingerprint.rs` | 9 | **9** | every configuration |
-| `tests/no_std_math.rs` | 7 | **7** | every configuration |
-| `tests/wasm_exports.rs` | 119 | **119** | wasm rows only |
-| `tectonics.rs` `.abs()` ledger | 9 | **9** | see the note below |
-| Parity, compared / divergent | 156,011 / 0 | **156,011 / 0** | §8 |
-| `--mutate seed` | 147,387 | **147,387** | §8 |
-| `--mutate erosion-k` | 216 | **216** | §8 |
-| `--mutate water-pond` | 60 | **60** | §8 |
-| `--mutate tectonic-warp` | 22,995 | **22,995** | §8 |
-| Python suite, `tests/` | 575 | **575** | `WORLDBUILDER_REQUIRE_ENGINE=1` |
-| Python conformance, `tests/test_conformance.py` | 167 | **167** | |
-| Viewer `npm test` | 359 | **359** | not a CI pin |
-| Wasm artifact | 465,699 bytes, 36 exports, 0 imports | **465,699 bytes, 36 exports, 0 imports** | |
-| Wasm artifact-sha256 | — | **`b13e600356683a83a3731debfb8ec7549e460e808aa3cb0ba43114dbdce020ee`** | moved: a constant changed |
-| Wasm source-fingerprint | — | **`83672441ddddcac2e68b2291c041427d80edf2b2683fd27d15a4154a88895511` (70 inputs)** | moved: `tectonics.rs` changed |
-| `npm run check:wasm` | matches | **matches its manifest and the source that is here now** | |
-| EOL guard | clean | **clean** | |
+| Pin | baseline `88f199e` | after Task 7 | **after the final fix wave (`3f473f4` + this round)** | note |
+|---|---|---|---|---|
+| Engine lib, `--features wasm` | 843 passed / 11 ignored | 843 / 11 | **846 / 12** | +3 tests, +1 ignored — see below |
+| Engine lib, `--no-default-features` | — | 843 / 11 | **844 / 12** | |
+| Engine lib, default features | — | 843 / 11 | **844 / 12** | |
+| Engine lib, `--features python` | — | 845 / 11 | **846 / 12** | +2 as always on the python rows |
+| Engine lib, `--features python,wasm` | — | 845 / 11 | **848 / 12** | |
+| `tests/blake2_bytes.rs` | 4 | 4 | **4** | every configuration |
+| `tests/build_fingerprint.rs` | 9 | 9 | **9** | every configuration |
+| `tests/no_std_math.rs` | 7 | 7 | **7** | every configuration |
+| `tests/wasm_exports.rs` | 119 | 119 | **120** | +1: the swapped-slot sampling test |
+| `tectonics.rs` `.abs()` ledger | 9 | 9 | **9** | exact, by the ledger test; see the note below |
+| Parity, compared / divergent | 156,011 / 0 | 156,011 / 0 | **156,011 / 0** | §8 |
+| `--mutate seed` | 147,387 | 147,387 | **147,387** | §8 |
+| `--mutate erosion-k` | 216 | 216 | **216** | §8 |
+| `--mutate water-pond` | 60 | 60 | **60** | §8 |
+| `--mutate tectonic-warp` | 22,995 | 22,995 | **22,995** | §8 |
+| Python suite, `tests/` | 575 | 575 | **575** | `WORLDBUILDER_REQUIRE_ENGINE=1` |
+| Python conformance, `tests/test_conformance.py` | 167 | 167 | **167** | |
+| Viewer `npm test` | 359 | 359 | **362** | 362 was already the count at `3f473f4`; this round added none |
+| Wasm artifact | 465,699 bytes, 36 exports, 0 imports | 465,699 / 36 / 0 | **465,838 bytes, 36 exports, 0 imports** | moved: `src/` changed |
+| Wasm artifact-sha256 | — | `b13e6003…0ee` | **`ac090cce43f321028f650eb3cb5d9285e68fef9ca0fee0301e5404b6e0ec35af`** | moved: `tectonics.rs` and `wasm.rs` changed |
+| Wasm source-fingerprint | — | `83672441…511` (70 inputs) | **`662ce1d9c75bbb2cdf57fc7bdae19e809c8a83680c60c3f2003e7520e9099c34` (70 inputs)** | moved with the source |
+| `npm run check:wasm` | matches | matches | **matches its manifest and the source that is here now** | |
+| EOL guard | clean | clean | **clean** | |
+
+**The three new engine tests, and the one new ignored test.** `wasm_exports.rs` gains
+`an_island_the_probes_can_actually_see_moves_the_ground_a_swapped_slot_would_not` (the review's
+blocker: the only test in that file that fails if `decode_peak` swaps two same-domain slots).
+`src/wasm.rs` gains a `peak_wire_format_tests` module of two — a distinct-sentinel-per-slot
+decode assertion and an encode/decode round trip — which are the wasm-gated pair, hence 846
+with the feature and 844 without. `src/tectonics.rs` gains
+`no_composed_step_exceeds_the_geometric_and_window_bounds_together` (minor 3) in every
+configuration, and `the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range`,
+which is `#[ignore]`d because it records the open defect §13 measures. **All three new tests were
+verified to fail against the defect they pin** — the two wire-format ones and the sampling one
+against a temporary slots-0-and-3 swap in `decode_peak` (reverted), and the inert-path one
+against the pre-fix `density`-only gate.
 
 ### The `.abs()` ledger, and why the ledger test rather than a grep
 
@@ -635,7 +668,8 @@ report, and each one is a **measured figure being re-derived**, not new behaviou
 ## 11. Concerns and what is left open
 
 1. **The band is tight and the corpus is three worlds.** The admissible window is seven
-   hundredths of density wide (0.32–0.38) because `island-a` presses the 0.3% floor while `owner`
+   admissible hundredths of density (0.32–0.38, six hundredths of span, both edges now measured
+   — see §4) because `island-a` presses the 0.3% floor while `owner`
    presses the 0.8% ceiling. 0.36's margin is +0.0345 pp, a little over 2σ of the estimator. **A
    fourth world with a land fraction outside 0.16–0.40 could push one end out of band**, and the
    honest fix then is not to re-tune `density` but to make the preset's density depend on
@@ -653,3 +687,129 @@ report, and each one is a **measured figure being re-derived**, not new behaviou
 5. **Hydrology on islands is untested.** Spec §5 predicts that islands below the node spacing get
    no rivers; §4's distribution says the great majority are below it at 1,000,000 nodes. Nothing
    in this slice bakes hydrology on a peaked world, so that prediction is stated and unverified.
+6. **An island casts a very large orographic rain shadow, and it reaches pre-existing land.**
+   Measured in §12, added by the final fix wave: the moisture index changes at 27.16% of a
+   1-degree global grid, at 15.80% of the land that existed without the block, and by as much as
+   0.427 there. Nothing in this slice is wrong because of it and nothing in `climate.rs` was
+   changed — but a later slice that pins biomes must pin them on a world with this block on.
+7. **BLOCKING: `Tectonics::offset_m` never reaches the seamount term on 77.16% of the planet, and
+   the frontier of the region where it does is a 3,460 m cliff.** Measured in §13, found while
+   building §12's neighbour, pinned by an `#[ignore]`d test. Fixing it is a few lines and cannot
+   move the canonical world, but it re-scales the islanded share and therefore invalidates the
+   calibration in §§2, 4, 5 and 7 — a re-run of Task 7. **This branch should not merge until that
+   is done.**
+
+---
+
+## 12. The orographic rain shadow an island casts — measured, added by the final fix wave
+
+**Minor 4 of the final whole-branch review: `climate.rs`'s orographic march is the one downstream
+consumer of `elevation_m` that this branch neither measured nor named**, while §6 measured the
+three the spec happened to list. The arithmetic the review did by hand is right, and it is larger
+than "possibly negligible". **Nothing in `climate.rs` was changed** — this section is the
+measurement and the disclosure the review asked for.
+
+**Population:** every point of a 1-degree global grid over latitudes −80…80 — 57,960 sites — plus
+nine downwind stations off each of the three derived island probes.
+**Method:** `Surface::moisture_index(point, None, None)` (so `MoistureParams::canonical()`:
+`MARCH_STEP_M` 20,000 m, `LIFT_SCALE_M` 1,000 m) on two worlds built identically but for the
+block — `Surface::new(20260904, 6_371_000, 12, 0.29, …)` against
+`Surface::with_peaks(…, Some(PeakParams::volcanic()))`. Downwind is the negation of
+`climate::upwind_east(latitude)`.
+**Host:** the one named at the top of this report, `rustc 1.98.0`, `--release`.
+
+### What one island does to the air behind it
+
+| downwind of the island at 13.5, −91.5 | plain | with the block | ratio |
+|---|---|---|---|
+| 0 km (the island itself, +4,327 m of ground) | 1.000000 | 0.004187 | 0.0042 |
+| 20 km | 1.000000 | 0.068402 | 0.0684 |
+| 60 km | 1.000000 | 0.184676 | 0.1847 |
+| 100 km | 1.000000 | 0.042808 | 0.0428 |
+| 200 km | 1.000000 | 0.316119 | 0.3161 |
+| 300 km | 1.000000 | 0.514397 | 0.5144 |
+| 600 km | 1.000000 | 0.141050 | 0.1411 |
+| 1,000 km | 1.000000 | 0.976111 | 0.9761 |
+| 2,000 km | 0.967729 | 0.958795 | 0.9908 |
+
+The other two derived probes behave the same way: at the island itself the index falls to 0.0462
+(−43.75, 46.0) and 0.0211 (−45.5, −147.25), and the air is back within 1% of its plain value
+somewhere between 600 and 1,000 km downwind. **The march's 20 km step is what makes the shadow
+this deep in one sample** — a 4.3 km island crossed in a single step multiplies moisture by
+`exp(−4.3)`, and the recovery term's 300 km scale needs the better part of a thousand kilometres
+to undo it. The non-monotone column (0.18 at 60 km, 0.043 at 100 km, 0.14 at 600 km) is the march
+crossing *different* islands at different offsets, not noise.
+
+### How much of the planet notices
+
+| population | sites | changed | share |
+|---|---|---|---|
+| all 1-degree sites, −80…80 | 57,960 | 15,740 | **27.16%** |
+| …of those, losing more than 0.10 of index | 57,960 | 3,043 | 5.25% |
+| sites that are already land on the plain world | 18,637 | 2,944 | **15.80%** |
+
+Worst drop anywhere: **0.986117**, at (−45, −4) — air that was saturated arriving parched. Worst
+drop on *pre-existing* land: **0.427262**. Mean signed drop over the 15,740 changed sites: 0.0730.
+
+### The judgement, stated rather than implied
+
+**This is a known consequence, and it is bigger than a curiosity: it is the first thing to
+re-measure in the slice that touches biomes.** Three things are true at once and all three belong
+on the record.
+
+1. **It is physically the right sign and roughly the right magnitude.** Real oceanic islands do
+   cast rain shadows, and a 4 km volcano wringing out the air crossing it is not an artefact.
+2. **The 20 km march step makes it coarser than the geography deserves.** An island 25 km across
+   is one or two samples of the march, so the shadow it casts is quantised to the march's own
+   grid — which is why the downwind column is not monotone. A finer step, or a lift term that
+   integrated over the step rather than differencing its ends, would spread the same total
+   rain-out over a plausible distance instead of dumping it in one sample.
+3. **It reaches ground that already existed.** 15.80% of the plain world's land sites see a
+   different moisture index, up to 0.427 lower. Moisture is quantiled into bands, so a shift that
+   size can move a biome. **No biome output in this slice is pinned against a peaked world**, so
+   nothing here regressed — but a later slice that pins biomes must build those pins on a world
+   with this block on, or it will pin them against a planet the studio can no longer make.
+
+One caveat on the size of the figures. They were measured through the wiring the branch actually
+has, and §13 below records that `Tectonics::offset_m` never reaches the seamount term on 77% of
+the planet. **Fixing that wiring makes this shadow larger, not smaller**, roughly in proportion
+to the suppressed fraction. These are lower bounds.
+
+---
+
+## 13. A defect the minor-3 measurement found: the seamount term is unreachable on most of the planet
+
+**Found by the final fix wave while building the composed-continuity measurement minor 3 asked
+for. It is not one of the review's nine findings, and it is larger than the blocker was.**
+
+`Tectonics::offset_m` returns `0.0` before it reaches the seamount term whenever
+`PlateSet::margins_within` comes back empty or `nearest` is `None` (`src/tectonics.rs:1213-1220`).
+That early return predates this branch — its own comment calls a plate interior "69 per cent of
+the planet" — and Task 2 added the seamount term at the **end** of the function, after it.
+
+**Population:** a 200,000-point area-uniform Fibonacci spiral, plus 600 transects × 2 bearings ×
+3,000 steps of 20 m. **Method:** `Tectonics::offset_m` against `Tectonics::peak_offset_m` on
+`plates_for(20_260_904, 12)` / `Continentality::new(20_260_904, 6_371_000, 0.29)` at
+`PeakParams::volcanic()` — the same world `tests/wasm_exports.rs` uses. **Host:** as above.
+
+- **77.16%** of the planet (154,314 of 200,000 points) has an empty margin set, so `offset_m`
+  never evaluates the term there.
+- At those suppressed points the field *would* stand up to **7,824.3 m**, and **28,942** of the
+  200,000 (14.5%) suppress more than 100 m.
+- Worst single-step jump in `offset_m` at a margin-range frontier: **3,460.23 m in one 20 m
+  step** (lat −25.81, bearing 45°, step 560) — **454×** the 7.62 m analytic bound, and larger
+  than the 1,466 m cliff whose discovery is why `tectonics.rs` has a continuity test at all.
+- With the term live on both sides of a step, the worst step is **6.13 m**, inside the bound.
+  **The field is continuous; the wiring is not.** On the three-plate test fixture the same
+  measurement reads 90.24% suppressed and a 2,749.07 m worst cliff.
+
+**Pinned, not fixed.** `the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range`
+(`src/tectonics.rs`) asserts the correct property and is `#[ignore]`d with that reason, so it is
+a ready-made pin rather than a red suite; run it with `cargo test -- --ignored`. The fix itself is
+a few lines and cannot move the canonical world — with no peak block `total` is still the same
+`0.0`, so parity and `GENERATOR_VERSION` are untouched either way. What it *does* move is the
+islanded share, by roughly the reciprocal of the suppressed fraction, which puts the shipped
+`VOLCANIC_DENSITY` far above the spec's 0.8% ceiling and invalidates §2's sweep, §4's and §5's
+tables, §7's deltas, `island_survey.rs`'s output and `VOLCANIC_DENSITY`'s own doc table. **That is
+a re-run of Task 7, not a fix wave**, so the defect is measured, named and pinned here and the
+branch should not merge on it.
