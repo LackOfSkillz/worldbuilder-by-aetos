@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { Engine } from "../public/app/engine.js";
+import {
+  Engine, WB_WATER_STRIDE, decodeWaterSample, waterTileBytes,
+} from "../public/app/engine.js";
+// The record decoder lives with the preview drawing, not with the boundary: the query answers
+// name bodies by id, and this is the reader that turns the record into entries to look them up
+// in. Imported rather than restated -- the layout is a four-way twin already.
+import { decodeHydro } from "../public/app/water-preview.js";
 
 const wasmPath = fileURLToPath(new URL("../public/wasm/worldbuilder_engine.wasm", import.meta.url));
 const { instance } = await WebAssembly.instantiate(readFileSync(wasmPath), {});
@@ -108,4 +114,160 @@ test("the same bake twice is the same words", () => {
   const a = engine.hydroBake({ handle, params: PARAMS });
   const b = engine.hydroBake({ handle, params: PARAMS });
   assert.deepEqual(Array.from(a), Array.from(b));
+});
+
+// Plan 2a Task 4: the browser can ask what water is at a point. The bake is held rather than
+// copied-and-freed (`hydroHold`), because Ruling Q-2 builds the query index beside the held
+// record and drops it with the bake -- and it comes back as one object carrying its own world
+// handle, because Ruling Q-20 makes the pair the unit rather than the two halves.
+
+test("waterAt answers a body's own anchor with that body, and waterTile agrees sample for sample", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const bake = engine.hydroHold({ handle, params: PARAMS });
+  assert.equal(bake.handle, handle, "Ruling Q-20: the bake carries the world it was made from");
+  try {
+    const { bodies } = decodeHydro(bake.words);
+    assert.ok(bodies.length > 0, "sanity: this world's bake keeps at least one body");
+
+    // Ruling Q-14: the anchor is the one INTERIOR point the record names, and an interior hole
+    // in the index is invisible from the outline. A body whose ground stands above its own
+    // level is skipped -- Ruling Q-12 makes that dry ground, not a wrong answer -- so the test
+    // asks for the first anchor that is actually under water.
+    let claimed = null;
+    for (const body of bodies) {
+      const [latitudeDeg, longitudeDeg] = body.anchor;
+      const got = engine.waterAt({ bake, latitudeDeg, longitudeDeg });
+      if (got.bodyId === body.id) {
+        claimed = { body, got, latitudeDeg, longitudeDeg };
+        break;
+      }
+    }
+    assert.ok(claimed, "no body answered as itself at its own anchor");
+
+    const { body, got, latitudeDeg, longitudeDeg } = claimed;
+    assert.equal(got.kind, body.kind, "the answer's kind is the body's recorded kind");
+    assert.equal(got.levelM, body.levelM, "the answer's level is the body's recorded level");
+    assert.ok(got.depthM >= 0, `depth ${got.depthM} is below zero`);
+    // A body answer is not a river answer (Ruling Q-18's fifth word).
+    assert.equal(got.reachId, null);
+    // `fresh` is deliberately not a sixth word: it is read off the record entry the id names.
+    const named = bodies.find((b) => b.id === got.bodyId);
+    assert.ok(named, "the answer named a body id the record does not carry");
+    assert.equal(typeof named.fresh, "boolean");
+
+    // The batch, over a 1x1 rectangle on the same point, is the same five words -- five, not
+    // four (Ruling Q-18 supersedes Q-8's stride).
+    const tile = engine.waterTile({
+      bake,
+      box: { lat0: latitudeDeg, lon0: longitudeDeg, lat1: latitudeDeg, lon1: longitudeDeg },
+      rows: 1, columns: 1,
+    });
+    assert.equal(tile.length, WB_WATER_STRIDE);
+    assert.deepEqual(decodeWaterSample(tile, 0), got);
+
+    // And over a real rectangle: every sample equals the scalar export at the same point.
+    const box = {
+      lat0: latitudeDeg + 0.5, lon0: longitudeDeg - 0.5,
+      lat1: latitudeDeg - 0.5, lon1: longitudeDeg + 0.5,
+    };
+    const rows = 3;
+    const columns = 3;
+    const grid = engine.waterTile({ bake, box, rows, columns });
+    assert.equal(grid.length, rows * columns * WB_WATER_STRIDE);
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const lat = box.lat0 + (box.lat1 - box.lat0) * (row / (rows - 1));
+        const lon = box.lon0 + (box.lon1 - box.lon0) * (column / (columns - 1));
+        assert.deepEqual(
+          decodeWaterSample(grid, row * columns + column),
+          engine.waterAt({ bake, latitudeDeg: lat, longitudeDeg: lon }),
+          `row ${row} column ${column}`);
+      }
+    }
+  } finally {
+    engine.hydroFree(bake);
+  }
+});
+
+test("a freed bake stops answering rather than being served from the index it left behind", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const bake = engine.hydroHold({ handle, params: PARAMS });
+  // Two queries: the first builds the index, the second is served from the cache.
+  const first = engine.waterAt({ bake, latitudeDeg: 0, longitudeDeg: 0 });
+  assert.deepEqual(engine.waterAt({ bake, latitudeDeg: 0, longitudeDeg: 0 }), first);
+  engine.hydroFree(bake);
+  assert.throws(() => engine.waterAt({ bake, latitudeDeg: 0, longitudeDeg: 0 }), /WB_ERR_HANDLE/);
+  assert.throws(() => engine.hydroFree(bake), /WB_ERR_HANDLE/);
+});
+
+test("hydroBake still frees its own bake, so the old shape leaks nothing", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const held = engine.hydroHold({ handle, params: PARAMS });
+  engine.hydroFree(held);
+  // The next bake through `hydroBake` is issued the NEXT id, never a reused one, and is freed
+  // by the time it returns -- so freeing that id again is refused.
+  const words = engine.hydroBake({ handle, params: PARAMS });
+  assert.deepEqual(Array.from(words), Array.from(held.words));
+  assert.throws(() => engine.hydroFree({ id: held.id + 1 }), /WB_ERR_HANDLE/);
+});
+
+// Ruling Q-19. `words` and `bytes` are two JS doubles and BOTH are truncated by ToUint32 at the
+// boundary, but they do not wrap in step -- so an unguarded `waterTile` can allocate a buffer
+// that wrapped small and hand Rust a length that did not, and Rust cannot tell: every number it
+// can see is self-consistent. The guard is in `waterTileBytes` and it runs before `wb_alloc`.
+test("waterTileBytes refuses the dimensions that would allocate short and be written long", () => {
+  // The concrete wrap the review found, spelled in this code's own arithmetic: **107,374,183
+  // samples** -- `words = samples * WB_WATER_STRIDE = 536,870,915` and `bytes = words * 8 =
+  // 4,294,967,320`, whose ToUint32 is **24**. `words` is under 2^32 and crosses intact, so
+  // `out_len` arrives honest at 536,870,915 and Rust recomputes exactly that from its own
+  // `rows` and `columns`; `bytes` is over 2^32 and does not. Unguarded that is a twenty-four
+  // byte allocation written with about 4.3 GB.
+  const rows = 107374183;
+  const columns = 1;
+  const words = rows * columns * WB_WATER_STRIDE;
+  const bytes = words * 8;
+  assert.equal(words, 536870915);
+  assert.equal(words <= 0xffffffff, true, "the length crosses intact -- that is the trap");
+  assert.equal(bytes, 4294967320);
+  assert.equal(bytes >>> 0, 24, "this is the wrap the guard exists for");
+  assert.throws(() => waterTileBytes(rows, columns), /past the u32/);
+
+  // The largest tile the byte count can carry, and one sample past it -- which is the same
+  // 107,374,183 above, because that IS the first refused size. The BYTE bound binds first:
+  // 0xffffffff / 8 / WB_WATER_STRIDE is 107,374,182.4 samples, so the word bound (2^32-1 words,
+  // 858,993,459 samples) is never the one that fires.
+  assert.deepEqual(waterTileBytes(107374182, 1), { words: 536870910, bytes: 4294967280 });
+  assert.deepEqual(waterTileBytes(53687091, 2), { words: 536870910, bytes: 4294967280 });
+  assert.throws(() => waterTileBytes(53687092, 2), /past the u32/);
+
+  // A dimension that is not a positive whole number is named, rather than reported downstream
+  // as "wb_alloc refused 0 bytes", which names the wrong thing.
+  for (const [rows, columns, which] of [
+    [0, 4, /rows/], [4, 0, /columns/], [-1, 4, /rows/], [4, 1.5, /columns/],
+    [Number.NaN, 4, /rows/], [4, Number.POSITIVE_INFINITY, /columns/],
+  ]) {
+    assert.throws(() => waterTileBytes(rows, columns), which);
+  }
+
+  // And an ordinary tile is not refused, or the assertions above prove nothing.
+  assert.deepEqual(waterTileBytes(65, 65), { words: 21125, bytes: 169000 });
+});
+
+test("waterTile refuses a zero dimension before it allocates, and names the argument", () => {
+  const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
+  const bake = engine.hydroHold({ handle, params: PARAMS });
+  try {
+    const box = { lat0: 1, lon0: 1, lat1: 0, lon1: 0 };
+    assert.throws(() => engine.waterTile({ bake, box, rows: 0, columns: 4 }),
+                  /rows must be a positive integer/);
+    assert.throws(() => engine.waterTile({ bake, box, rows: 4, columns: 0 }),
+                  /columns must be a positive integer/);
+    assert.throws(() => engine.waterTile({ bake, box, rows: 107374183, columns: 5 }),
+                  /past the u32/);
+    // Still usable afterwards: nothing was allocated, so nothing leaked.
+    assert.equal(engine.waterTile({ bake, box, rows: 2, columns: 2 }).length,
+                 4 * WB_WATER_STRIDE);
+  } finally {
+    engine.hydroFree(bake);
+  }
 });

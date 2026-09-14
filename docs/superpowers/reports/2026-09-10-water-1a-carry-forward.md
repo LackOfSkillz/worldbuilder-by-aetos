@@ -193,7 +193,94 @@ Plan 1b-4 (body extents) puts a **body extent** on the wire and moves the record
 | The parity corpus must always compare a pond body | **Done in 1b-4 (Task 4).** `examples/parity_dump.rs:1949` — `HYDRO_PARAMS[0]` raised 12,000 → **20,000 nodes**, the smallest of three tried that keeps ponds. `hydro/plain` now bakes 13 bodies (**4 ponds, 9 coarse**) and carries a `shore_member_count == 0` body across the boundary; the record grew 4,223 → 6,072 words. |
 | No Rust test bakes at the shipped pond parameters | **Done in 1b-4 (Task 4).** `src/hydrology/bake_tests.rs:1799` — `a_bake_at_the_shipped_pond_params_keeps_ponds`, deriving both parameters from `earth_like` and asserting a pond survives with a ring of at least 3 points and a `Downstream::Reach`. 2 ponds of 14 found, about 0.5 s. |
 
-## Routed to stage 2
+## Status after plan 2a (2026-09-12)
+
+Plan 2a (the query) makes the baked record **answerable**. `water_at(point)` returns spec §8.3's kind, level, depth, body id and reach id, behind a spatial index built from the record, and it is exposed as `wb_water_at`, the per-tile batch `wb_water_tile` and a PyO3 `water_at`. **The record is unchanged** — no stage was added to `Surface`, `Surface` gained no field, and no existing output moved. See `2026-09-12-water-2a-verification.md`.
+
+**On the owner's world at 1M nodes, forced outlet 0°N 0°E, measured in the branch studio (wasm) on the owner's laptop at `4af13ae`:**
+
+- bake **77 s**, record **7,326,056 bytes**, **4,067 bodies** — every one identical to 1b-4;
+- **every body answers its own id at its own anchor: 4,067 of 4,067**, with 0 wrong body, 0 answering `none` and 0 answering `ocean`;
+- that sweep costs **308 ms for 4,067 queries — 76 µs each**; a 100×100 global grid is **10,000 points in 172 ms, 17 µs each** (3,542 `none`, 6,147 `ocean`, 299 `lake`, 12 `saltLake`);
+- the great lake (body 63, 41.33M km²) answers **`lake`, body 63, level 0.00 m, depth 4,600 m**;
+- a mid-leg point of reach 0 answers **`river`, `reachId` 0, level 35.17 m = `bed_m + depth_m` exactly** (Ruling Q-6);
+- a 4×4 tile around the great lake agrees with **16 of 16** point queries on level and body id (Ruling Q-8: the batch does not interpolate and does not smooth).
+
+**The anchor sweep is the load-bearing result, and Ruling Q-14 is why.** Every recorded outline point is on a shore by construction, so sampling the outline leaves an interior hole in the index invisible; the anchor is the only point that tests the interior. This is the world where that mattered — the great lake is **3,627 km across with a 58 km band**, and the shore-band index this plan started with answered `Ocean` over a region 1,700 km wide. **Ruling Q-13's bounding circle** (greatest anchor-to-recorded-point distance plus `shore_reach_m`, stated once in `index::body_circle_m`) is the fix, and 4,067 of 4,067 is what says it is complete.
+
+**The 77 s is not a speedup.** This host has measured the same bake at 80, 124, 242, 432 and 441 s. Nothing in this plan touches the bake.
+
+**Ruling Q-13's cost was feared and is measured.** Task 1's self-review flagged the circle as possibly unaffordable, because the owner world's `shore_reach_m` runs to 62,586 m against 50 km cells so most bodies dilate into their neighbours' cells. Over three 1,000,000-node stand-ins and a fixed 10,000-point area-uniform sample: **mean candidates per query 0.17 / 0.24 / 0.41 against §8.2's gate of 50**, and the **largest single cell in any of the three indexes holds 20 items** — so no query on those planets tests 50 candidates, let alone averages it. `DEFAULT_CELL_M` was not moved.
+
+**Determinism (§14.1) is measured, not asserted:** **156,011 parity values compare bit-for-bit native against wasm, 0 divergent**, across a 32×32 grid group and two explicit point groups. The query and its index carry no platform libm and no map iteration order.
+
+### Rulings made during plan 2a
+
+The full table with "cost if wrong" is in the plan's `constraints.md`; these are the ones a later reader needs.
+
+| Ruling | Decision |
+|---|---|
+| Q-1 | The index is the crate's own `BucketIndex` grid, **not** spec §8.2's "cube-sphere cell grid". §8.2's text corrected in Task 6. |
+| Q-2 | The index is **derived state**, built from a decoded record, never recorded or transmitted; built on first query and cached beside the bake, freed with it. |
+| Q-3 | The query reads the ground through a caller-supplied closure, and the callers pass **`Surface::structural_m`** — the landform the record's levels were written against. |
+| Q-4 | **Ocean** is: the landform is at or below the datum **and** the point is inside no recorded body's extent. A below-datum basin the bake did not record answers `ocean`. |
+| Q-5 | Precedence is §8.3's table order — ocean, body, river, none — with Ruling T1-3 deciding among bodies. |
+| Q-6 | Depth: for a body, the level minus the landform, never below zero; for a river, the reach's own `depth_m` at the nearest recorded point, with `level_m = bed_m + depth_m`. |
+| Q-7 | A reach's influence is a half-width band around each recorded segment, at the **larger** of the segment's two endpoints' `width_m`. |
+| Q-10 / Q-12 | A body **claims** a point only when it is inside the extent **and** at or below the level; the **extent** suppresses the ocean and the **claim** decides which body answers. Two questions, two tests. |
+| Q-11 | Where two reaches cover a point, the nearer centre line wins; ties to the lower reach id. |
+| Q-13 | The index lists a body in every cell within its **bounding circle**; `index::body_circle_m` is the single statement of it. |
+| Q-14 | The agreement property samples each body's **anchor**, not only its recorded points. |
+| Q-15 | `decode` refuses a body with `shore_member_count > 0` and no collar (its `dc` is infinite and clause 1 would admit the planet). |
+| Q-16 | The query reads the **landform** for coarse bodies, reaches and the ocean, and the **detail field** (`elevation_m` at `pond_cell_m`) for a fine-found body. Measured: 254 of 394 ring vertices stand above their own level against the landform. |
+| Q-17 | A point exactly on a ring's vertex or edge is **inside** that ring, decided explicitly. Measured before it: 88 ring vertices were claimed by nothing. |
+| Q-18 | `WaterAt` carries `reach_id` with a `NO_REACH` sentinel. **Supersedes Ruling Q-8's stride: the tile batch writes FIVE `f64` per sample**, not four. |
+| Q-19 | A wrapper allocating a wasm buffer computes its size and its length word the same way the engine will, and refuses anything that would not survive the u32 boundary. |
+| Q-20 | A bake is **not** tied to the world handle it was made from, and a mismatch is not refused; content, not identity, is the right key, and that is plan 2b's fingerprint. `hydroHold` returns the id and the handle together. |
+| Q-21 | The parity group must put every kind the record holds on the wire, with a non-sentinel `reach_id`. Explicit points beside the grid, chosen from the record. |
+
+### What stage 2's own list said, and what plan 2a closed
+
+The three items "stage 2 must do first, in this order":
+
+| Item | Status |
+|---|---|
+| **1. Build §8.2's index with the `shore_reach_m` dilation** | **Closed by plan 2a (Task 1)**, and the rule changed on the way: a band around the shore satisfies §8.3's clause 2 and nothing else, so **Ruling Q-13 widened it to the body's bounding circle**. Ruling Q-1 settled the grid's shape as the crate's `BucketIndex`. Measured affordable (above); §8.2 rewritten in Task 6. |
+| **2. Implement §8.3's test, including the tie-break** | **Closed by plan 2a (Task 2)**, all five kinds, both clauses, the `shore_member_count` discriminator (Ruling E-8) and Ruling T1-3's tie-break. §14.9's "the query agrees with the record" is Task 3's property, re-run for the verification report. |
+| **3. Carve from the record, not from a re-bake** | **Open — deliberately plan 2b's.** §8.1's carve is the one part of stage 2's water this plan did not touch. |
+
+**The tie-break question 1b-4 left open — should a clause-1 claim beat a band claim? — was not pre-decided by plan 2a either.** Ruling T1-3 still decides on `dm` alone, and Rulings Q-10 and Q-12 answer the case that actually bit: a body's extent suppresses the ocean, but only a *claim* (inside the extent **and** at or below the level) picks the body. Dry ground below a perched lake's surface is therefore excluded by the level test, not by the tie-break. Whether the tie-break itself should prefer a clause-1 claim remains unanswered and unmeasured.
+
+## Routed to plan 2b
+
+Everything below is open. The first four were carried into plan 2a and deliberately left; the fifth is plan 2a's own.
+
+1. **§8.1's carve.** A trapezoid cut to `bed_m` along each refined reach, `width_m` wide at the bank with banks blended over one width either side; notches cut the same way; lake beds **not** cut. **Carve from the record, not from a re-bake** — the record is the artefact and a second bake is a second answer. Expect a mouth's bed to be able to rise at the last step (Ruling R-4's I4 side effect).
+2. **The detail damping.** The layer's authority — 1 inside a channel, falling to 0 at the blended bank — multiplies detail amplitude by `1 − authority`, exactly as `Features::apply` does, so texture cannot dam a river or raise an island in mid-channel. It ships with the carve or not at all: a carved channel with undamped detail is the failure the damping exists to prevent.
+3. **The `hydrology` block and its fingerprint.** §7's block on the wire, and the content fingerprint that **Ruling Q-20 is waiting for**. Until it exists, a bake queried against a genuinely different world of the same radius answers that world's ground against this record's levels — a wrong answer, not an error — and nothing can check it, because nothing on the wire ties a record to a world. Both wasm exports and `engine.js` say so in as many words. This is the highest-value item on the list: it closes a correctness hole, not a cosmetic one.
+4. **The `GENERATOR_VERSION` decision.** Untaken. §8.1's carve changes `elevation_m`, which is the thing the version exists to describe; the decision is whether that is a version bump and what it invalidates.
+5. **The index's empty-header cost (new, from plan 2a Task 6).** The index occupies about **20 MB** at 50 km cells, of which **439 KB** is listed entries — **98% is empty per-cell `Vec` headers**: three families in `WaterIndex`, plus a fourth in the `BucketIndex` it never inserts into (`WaterIndex` never calls `BucketIndex::insert`; it pays for that grid's `buckets` field purely to address it). Measured per world: 14,665,104 header + 439,072 entry + 4,894,776 grid bytes on `plain`. **It is affordable today and it is the wrong container** — a `Vec<u32>` per cell for a structure that is 88% unoccupied; an offsets-plus-one-flat-`Vec` layout would cost roughly a tenth. Plan 2a did not touch it because re-laying out `index.rs` mid-plan would have invalidated every measurement in its verification report.
+
+**Also open, carried forward unchanged from stage 2's list:**
+
+- **`decode` accepts dangling links.** A validation pass is still owed before records are read from disk. (Plan 2a added two decode guards of its own — Ruling Q-15's missing collar, and 1b-4's `shore_member_count`/`shore_reach_m` pair — but not this.)
+- **`reaches.rs`'s invariants** still want debug_asserts or doc comments.
+- **A width-anchor ruling.** Spec §6.5 over-determines it: 3 m at the stream threshold and 1,000 m at the great threshold cannot both hold with a fixed exponent. The code anchors the stream end.
+- **C1-b never takes back a fresh verdict** when a later cut reduces a pocket's inflow (monotone by design).
+
+**Named by plan 2a, and NOT on plan 2b's list:**
+
+- **`WaterKind::Pond` is not on the parity wire.** Neither parity bake records a body of kind `Pond` — it is an *area* classification, and at 20,000 nodes on `plain` and 60,000 on `ranges` every kept body is above the threshold. The **fine-found** branch (`shore_member_count == 0`, the one Ruling Q-16 reads the detail field for) is covered instead, guarded by body id rather than by kind, and `parity_dump.rs` prints the gap on stderr at every run. Closing it needs a parity bake at a node count that keeps a sub-threshold body, which would move the `H` records — so it is a deliberate non-item, not an oversight.
+- **§8.2's performance target (`elevation_m` no more than 20% slower) is untested**, because plan 2a adds no stage to `Surface` and `elevation_m` is bit-identical. **It becomes live the moment plan 2b's carve lands**, and plan 2b owns measuring it.
+- **`planet.py`'s oracle is dead code, and the spec said the opposite.** `evennia_roundtrip/planet.py` reaches for five `engine.*` names — `relief_canonical`, `tectonics_canonical`, `coast_canonical`, `surface_open`, `surface_elevation_by_handle` — and the built extension binds **none** of them, so `planet.elevation_at()` fails at `relief_canonical` before it ever reaches `surface_open`. Nothing in `tests/` calls it, which is why a 569-test suite is green over a function that cannot execute. `water_at` is now the first and only working Python door onto this world's water. **Building the `surface_open` family is not plan 2b's**; it is named in §8.3 so the next reader does not repeat the source-only `grep` and conclude that the binding merely needs re-exporting.
+- **This host's bake timings wander by tens of percent** while every recorded quantity stays bit-identical (three stand-ins at 82.47 / 51.12 / 106.83 s against 1b-4's 46.05 / 26.95 / 56.87 s, essentially all of it in `ponds`). No cross-plan timing comparison is available without a controlled run.
+
+**Still deferred to other projects, not to plan 2b:** Ruling S-15's meander on yielded segments, waterfalls (still 0 on the owner's world), and spec §6.6's two departures (the density cap at 1.6e10 against 5.0e8, the corridor at 1,500 m against 3,000 m) — all unchanged by plan 2a.
+
+## Routed to stage 2 (superseded — see "Routed to plan 2b" above for the live list)
+
+**Kept as history.** Plan 2a closed items 1 and 2 of the three below; item 3, the carve, is plan 2b's. The current open list is the "Routed to plan 2b" section above.
+
 
 All six of plan 1a's "Plan 1b must fix (load-bearing for stage 2)" items are now closed, and plan 1b's four sub-plans are complete. What follows is everything still open anywhere in this file, gathered into one list so stage 2 has one place to read; the sections above are kept as the history of how each item was closed.
 

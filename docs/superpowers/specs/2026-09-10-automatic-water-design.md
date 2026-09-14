@@ -50,8 +50,10 @@ These were taken in conversation and bind everything below.
   5b.
 - **The generator's fresh water is a proxy.** `generate.py::river_points` treats any carve
   feature as fresh water, painted harbours included. `lake_points` reads a `water` block that
-  nothing writes. The oracle it relies on (`planet.elevation_from_worldfile` → `surface_open`)
-  calls a binding that is missing from this checkout's `bindings.rs`.
+  nothing writes. The oracle it relies on (`planet.elevation_at` → `surface_open`) calls a binding
+  that is missing from this checkout's `bindings.rs` — and, measured against the *built* extension
+  in plan 2a's Task 6, so are the four other `engine.*` names `planet.py` reaches for. See §8.3's
+  table: the oracle fails at `relief_canonical` before it ever reaches `surface_open`.
 - **Features have no spatial index.** `Features::apply` scans every feature for every sample.
   About 1,000 features cost roughly 5 ms per sample, against 43 µs for 97 (`hydrology.py`
   measurements). Automatic rivers would make that far worse.
@@ -422,9 +424,43 @@ This is a new stage in `Surface`, after features and before detail:
 
 ### 8.2 Spatial index
 
-- **Structure:** a fixed cube-sphere cell grid of about 50 km cells, built once per record. Each
-  cell lists the reach segments, notch segments, lake outlines and **painted features** whose
-  influence reaches it.
+- **Structure (Ruling Q-1, as built):** the crate's own **`BucketIndex` grid** — latitude rows, each
+  row given as many longitude columns as its own circumference holds, so a cell is about `cell_m`
+  square everywhere — at `index::DEFAULT_CELL_M` (50 km), built once per record. **Not the "fixed
+  cube-sphere cell grid" this line said before plan 2a.** `BucketIndex` already existed, is
+  deterministic, and its `cells_within` superset guarantee is brute-forced cell by cell against the
+  grid itself — at the poles and at every latitude from 40 to 89 in both hemispheres, at longitudes
+  −180, −179.9, 0 and 179.9, and at radii from 5 km to 19,000 km — an angular radius of about
+  117°, which carries the high-latitude rows past the point where their own swept arc closes the
+  circle of longitude. It is the row's arc that closes there, not the reach: a parallel at
+  latitude 40 is far longer than 19,000 km. That full cross product is `#[ignore]`d for cost; the near-pole
+  small-circle and multi-megametre regimes run on every build. A second
+  grid would have been a second thing to get wrong. `BucketIndex` indexes *points* and this index
+  holds *areas*, so what is borrowed is the arithmetic alone — `cell_of`, `cells_within`,
+  `cell_count` — and the payloads are `water::index`'s own three `Vec<Vec<u32>>`. Each cell lists
+  the reach segments, notch segments and lake outlines whose influence reaches it. **Painted
+  features are not in it**, and plan 2a did not add them: the query answers water, and the feature
+  scan is a separate cost that this section's own performance target still names.
+- **Derived state, never on the wire (Ruling Q-2):** the index is built from a *decoded* record and
+  is never recorded or transmitted. In wasm it is built on the first query against a held bake and
+  cached beside it; freeing the bake frees it. The record is the contract; an index on the wire
+  would be a second copy to keep honest. Measured cost of that first build: 0.04 to 0.12 s.
+- **A body is listed in every cell within its bounding circle (Ruling Q-13)** — the greatest
+  anchor-to-recorded-point distance plus `shore_reach_m` — and `index::body_circle_m` is the single
+  statement of that rule. **It supersedes the shore-band dilation below as the *implementation*,
+  though not the reason for it.** A band around the shore satisfies §8.3's clause 2 and nothing
+  else, so a body wider than about twice its band has interior cells that list it nowhere and the
+  query answers `Ocean` there: the owner's great lake is 3,627 km across with a 58 km band, and the
+  band-only form answered `Ocean` over a region 1,700 km wide.
+- **The circle is affordable, measured (plan 2a Task 6, three 1,000,000-node stand-ins, 10,000
+  area-uniform sample points each):** mean candidates per query **0.17 / 0.24 / 0.41** against this
+  section's gate of 50, and the **largest single cell in any of the three indexes holds 20 items**
+  — so no query on those planets tests 50 candidates, let alone averages it. `DEFAULT_CELL_M` was
+  not moved.
+- **A known cost, ledgered for plan 2b:** the index occupies about **20 MB** at 50 km cells, of
+  which **439 KB** is listed entries and the rest is empty per-cell `Vec` headers — three families
+  in `WaterIndex` plus a fourth in the `BucketIndex` it never inserts into. Affordable today
+  (derived state, dropped with the bake), and the wrong container.
 - **A body's shore points are dilated by its `shore_reach_m` before it is assigned to cells.**
   §8.3's test puts a point inside a body when it is within `shore_reach_m` of a shore member, so a
   cell must list every body whose shore points come within `shore_reach_m` **of the cell**, not
@@ -441,15 +477,65 @@ This is a new stage in `Surface`, after features and before detail:
 
 ### 8.3 The query
 
-`water_at(point) -> { kind, level_m, depth_m, fresh, body_id }`
+`water_at(point) -> { kind, level_m, depth_m, fresh, body_id, reach_id }`
+
+**`reach_id` is Ruling Q-18's addition**, with a `NO_REACH` sentinel, set only on the river branch —
+a body answer never borrows a reach's id. **This supersedes Ruling Q-8's four-word stride: the tile
+batch below writes FIVE `f64` per sample** — kind, level, depth, body id, reach id — and the same
+constant is mirrored in the relief workers and the viewer's reader. `fresh` is not among the tile's
+five; it is a per-body property the caller already holds from the record.
+
+**What the query reads the ground through (Ruling Q-3):** a closure the caller supplies, exactly as
+`refine::Ground` does, and the callers pass **`Surface::structural_m`** — the landform. The record's
+levels and beds are landform-derived, so the level test must ask the same surface; a caller passing
+`elevation_m` would get a shoreline that moves with the texture slider.
+
+**Except for a fine-found body (Ruling Q-16):** the query reads the **detail field** (`elevation_m`
+at the record's own `pond_cell_m`) for a body the §6.6 fine search found — the same field that found
+it (Ruling S-9) — and the landform for coarse bodies, reaches and the ocean. The caller supplies
+both. Measured, this is not a nicety: 254 of 394 ring vertices stand above their own recorded level
+against the landform, so against it most ponds read as dry.
 
 | kind | when |
 |---|---|
-| `ocean` | below the datum and connected to the ocean (Ruling W1) |
+| `ocean` | the landform is at or below the datum **and** the point is inside no recorded body's extent (Ruling Q-4) |
 | `lake` / `salt_lake` / `salt_flat` | inside a body of that kind's extent — the **shore-point** test — and at or below its level (Ruling S-1, as replaced) |
 | `pond` | inside a pond's **traced 250 m curve** and at or below its level (as does a `lake` the §6.6 fine search found, by Ruling S-11) |
 | `river` | within half a reach's width of its centre line; the level is the bed plus depth |
 | `none` | anything else |
+
+**Precedence is this table's own order — ocean, then a body, then a river, then none (Ruling Q-5)**
+— and within bodies Ruling T1-3 decides: smaller `dm` wins, ties to the lower body id. Reaches end
+at a shore, so a river inside a lake is not a case that arises; where it does, the reach's own last
+point is at the lake's level anyway.
+
+**Ocean is decided from the record, not from connectivity (Ruling Q-4).** Ruling W1 already makes
+recorded body ids what the query answers from, and the query has no graph to re-run connectivity on.
+**A below-datum point in a basin the bake did not record answers `ocean`** — that is what the record
+says it is. If a future bake stops recording a basin it used to, that basin becomes ocean with no
+error.
+
+**Extent and claim are two questions, not one (Rulings Q-10 and Q-12).** A body's **extent**
+suppresses the ocean; a body **claims** a point only when the point is inside its extent *and* at or
+below its level, and a claim is what decides which body answers. Without the split, dry land inside
+a below-datum body's band would answer `Ocean`.
+
+**A point exactly on a ring's vertex or edge is inside that ring (Ruling Q-17)**, decided explicitly
+rather than left to the ray test's degeneracy. Measured before the ruling: 88 ring vertices were
+claimed by nothing at all.
+
+**Depth and level (Ruling Q-6).** For a body, `depth_m` is the level minus the landform, never below
+zero. For a river, `depth_m` is the reach's own `depth_m` at the nearest recorded point and
+`level_m` is that point's `bed_m + depth_m`. The body case is the only reading that varies across a
+lake rather than reporting one number for the whole of it — and it is a landform depth, not a
+bathymetric one.
+
+**A reach's influence is a half-width band around each recorded segment, and the width used is the
+larger of the segment's two endpoints' `width_m` (Ruling Q-7).** A segment's width tapers between
+recorded points, and taking the larger cannot answer `none` inside a channel §8.1's carve will cut.
+The cost is a strip up to half the width difference called river where the carve tapers narrower.
+**Where two reaches cover a point the nearer centre line wins, ties to the lower reach id (Ruling
+Q-11)**; at a confluence the answer names one of two touching reaches.
 
 - **Inside a body's extent** (Ruling S-1, as replaced by plan 1b-3's Task 1) is decided from the
   body's recorded shore points (§7), in one pass over them, for each body §8.2's cell lists as
@@ -479,8 +565,42 @@ This is a new stage in `Surface`, after features and before detail:
     the order §8.2's cell happens to list the bodies in. A pond's curve test yields to a lake only
     through this same rule, taking the pond's distance to its own nearest outline point as its `dm`.
   - `ocean` is still decided first.
-- **Exposed as:** a wasm export (and a per-tile batch form for the relief workers) and a PyO3
-  binding. The PyO3 work adds the missing `surface_open` family the Python oracle already calls.
+- **Exposed as:** a wasm export `wb_water_at`, a per-tile batch form `wb_water_tile` for the relief
+  workers (Ruling Q-8's rectangle, at Ruling Q-18's five words a sample), and a PyO3 binding
+  `water_at`. All three shipped in plan 2a and all three are compared native-against-wasm by the
+  parity corpus.
+- **A bake is not tied to the world handle it was made from, and a mismatch is not refused (Ruling
+  Q-20).** Handles are never reused and the studio re-creates one on every slider change, so handle
+  equality would invalidate every held bake on every re-creation, including bit-identical ones.
+  Content, not identity, is the right key, and that is plan 2b's fingerprint. Until then a bake
+  queried against a genuinely different world of the same radius answers wrongly rather than
+  erroring; `hydroHold` returns the id and the handle together so a call site cannot drift them
+  apart, and both exports say so in as many words.
+- **What this section used to say about `surface_open`, and what is actually true.** The line here
+  read *"The PyO3 work adds the missing `surface_open` family the Python oracle already calls"*, and
+  §2's bullet still says the oracle "calls a binding that is missing from this checkout's
+  `bindings.rs`". **Plan 2a's Task 6 checked the built extension rather than the source, and the
+  situation is worse and simpler than either sentence.** `evennia_roundtrip/planet.py` reaches for
+  **five** names, and the extension binds **none** of them:
+
+  | `planet.py` | called at | in the extension? |
+  |---|---|---|
+  | `engine.relief_canonical` | `planet.py:138` | no |
+  | `engine.tectonics_canonical` | `planet.py:139` | no |
+  | `engine.coast_canonical` | `planet.py:140` | no |
+  | `engine.surface_open` | `planet.py:196` | no |
+  | `engine.surface_elevation_by_handle` | `planet.py:205` | no |
+
+  `import worldbuilder_engine as engine` (`planet.py:29`) is the maturin-built extension and nothing
+  else; its 72 public names are the `surface_*`, `substrate_*`, `plateset_*`, `features_*` and (as
+  of plan 2a) `water_at` families, and no `*_canonical` and no handle API among them. So
+  `planet.blocks()` fails at `relief_canonical` **before** execution ever reaches `surface_open`,
+  and `planet.elevation_at()` — "the oracle every placement tool has been missing", by its own
+  docstring — has never run against this extension. Nothing in `tests/` calls it, which is why the
+  569-test suite is green over a function that cannot execute. **`water_at` is therefore the first
+  and only working Python door onto this world's water, and the `surface_open` family remains
+  unbuilt.** Building it is not plan 2a's business and is not on plan 2b's list either; it is named
+  here so the next reader does not repeat the source-only `grep` and conclude the opposite.
 - **Maritime:** the manifest of Mark 2 section 13.2 is produced from the record. Bodies become
   named waters and reaches become ordered reaches with bed gradient. A lake's level ignores tide,
   so **the great lake stops having tides**; that is intended.

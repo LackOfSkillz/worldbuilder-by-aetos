@@ -1159,6 +1159,8 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_hydro_len",
     "wb_hydro_copy",
     "wb_hydro_free",
+    "wb_water_at",
+    "wb_water_tile",
 ];
 
 // -------------------------------------------------------------------- the handle table
@@ -1189,6 +1191,36 @@ thread_local! {
     /// returns a *different* kind of id, and conflating the two spaces would let a stale
     /// world handle and a live bake id collide by coincidence of the same integer.
     static HYDRO: RefCell<Vec<Option<Vec<f64>>>> = const { RefCell::new(Vec::new()) };
+
+    /// **Ruling Q-2's index cache**, keyed by the same 1-based bake id `HYDRO` uses, so slot
+    /// `id - 1` here is slot `id - 1` there. Derived state and nothing else: the record on the
+    /// wire is the contract, and a `WaterIndex` is a thing that can always be rebuilt from it.
+    ///
+    /// Built on the **first** query against a bake, and dropped by [`wb_hydro_free`] together
+    /// with the record it was built from -- which is why a freed bake is refused rather than
+    /// answered out of an index that outlived it. Nothing else populates a slot, so a bake that
+    /// is only ever copied out (the studio's own path) pays nothing for this table but a `None`.
+    ///
+    /// The planet radius is held beside the index because it is **not** the record's: it comes
+    /// from the world handle the query was asked through, and [`wb_water_at`] takes a world and
+    /// a bake independently. An index built at one radius is refused for a query at another and
+    /// rebuilt.
+    ///
+    /// **That rebuild buys less than it looks like it does.** It makes the index consistent with
+    /// the *query's* radius; it does **not** make the answer right. The record's levels, extents
+    /// and `shore_reach_m` were all measured on whatever planet the bake ran against, and the
+    /// record header carries no radius to compare against -- so a bake queried through a
+    /// differently-sized world is still a wrong answer, and the rebuild only removes the
+    /// additional inconsistency of asking the wrong grid on top of it. A real check needs a
+    /// record that names its world, which is a layout change this plan may not make. Ruling
+    /// Q-20: the defence is that the viewer issues the handle and the bake id **together** and
+    /// passes them together, so no call site can drift them apart.
+    ///
+    /// The decoded record is held too, rather than re-decoded per query: `water_at` needs both,
+    /// and decoding a whole record for every sample of a tile is exactly the cost this exists
+    /// to avoid.
+    static HYDRO_QUERY: RefCell<Vec<Option<(f64, hydrology::HydroRecord, water::index::WaterIndex)>>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Install a world built by Rust and hand back its handle, or 0 if the table is full.
@@ -4170,22 +4202,356 @@ pub extern "C" fn wb_hydro_copy(id: u32, out: *mut f64, out_len: u32) -> u32 {
     })
 }
 
-/// Drop the hydro record held under `id`. `WB_OK` if it was live, `WB_ERR_HANDLE` if `id`
-/// names no live bake -- never issued, or already freed, same as [`wb_world_free`].
+/// Drop the hydro record held under `id`, **and the query index built from it** (Ruling Q-2:
+/// the index is derived state and is freed with the bake). `WB_OK` if it was live,
+/// `WB_ERR_HANDLE` if `id` names no live bake -- never issued, or already freed, same as
+/// [`wb_world_free`].
 #[no_mangle]
 pub extern "C" fn wb_hydro_free(id: u32) -> u32 {
-    HYDRO.with(|cell| {
+    let slot = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
+        Ok(slot) => slot,
+        Err(_) => return WB_ERR_HANDLE,
+    };
+    let status = HYDRO.with(|cell| {
         let mut table = cell.borrow_mut();
-        let index = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
-            Ok(index) => index,
-            Err(_) => return WB_ERR_HANDLE,
-        };
-        match table.get_mut(index) {
-            Some(slot @ Some(_)) => {
-                *slot = None;
+        match table.get_mut(slot) {
+            Some(held @ Some(_)) => {
+                *held = None;
                 WB_OK
             }
             _ => WB_ERR_HANDLE,
         }
+    });
+    if status == WB_OK {
+        // The record is gone, so the index over it is not an index over anything. Dropped here
+        // rather than left to be noticed on the next query: an id is never reused, so nothing
+        // would ever come back to notice it, and the memory would sit there for the session.
+        HYDRO_QUERY.with(|cell| {
+            let mut table = cell.borrow_mut();
+            if let Some(held) = table.get_mut(slot) {
+                *held = None;
+            }
+        });
+    }
+    status
+}
+
+// --------------------------------------------------------------- the water query, spec §8.3
+
+/// **The tile batch's stride, and the scalar export's buffer length: five `f64` per sample**
+/// (Ruling Q-18, which supersedes Ruling Q-8's four).
+///
+/// | word | meaning |
+/// |---:|---|
+/// | 0 | `kind` -- `0` none, `1` ocean, `2` lake, `3` salt lake, `4` salt flat, `5` pond, `6` river |
+/// | 1 | `level_m`, the water surface, `0` where the kind is none |
+/// | 2 | `depth_m`, the water surface less the ground, never below zero, `0` where the kind is none |
+/// | 3 | the recorded **body** id, or `4294967295` (`water::NO_BODY`) for ocean, river and none |
+/// | 4 | the recorded **reach** id, or `4294967295` (`water::NO_REACH`) for everything but a river |
+///
+/// **`fresh` is not a sixth word**, deliberately. It is a property of the *thing named in words
+/// 3 and 4*, not of the sample: a caller that needs it reads the body's `fresh` out of the
+/// record entry word 3 names, or the reach's out of the entry word 4 names -- the record it
+/// already holds from `wb_hydro_copy`. Ocean is salt and none is dry, so neither has one to
+/// read. Spelling it per sample would put a copy of a record field in every one of a tile's
+/// thousands of samples and give a drawing path two places to disagree about one fact.
+pub const WB_WATER_STRIDE: usize = 5;
+
+/// §8.3's kind, as the boundary carries it. The numbers are [`WB_WATER_STRIDE`]'s table, and
+/// they are the contract: `engine.js` and `water-preview.js` read them back by these values.
+fn water_kind_code(kind: water::WaterKind) -> f64 {
+    match kind {
+        water::WaterKind::None => 0.0,
+        water::WaterKind::Ocean => 1.0,
+        water::WaterKind::Lake => 2.0,
+        water::WaterKind::SaltLake => 3.0,
+        water::WaterKind::SaltFlat => 4.0,
+        water::WaterKind::Pond => 5.0,
+        water::WaterKind::River => 6.0,
+    }
+}
+
+/// One answer, as [`WB_WATER_STRIDE`] words.
+///
+/// # Safety
+/// `out` must be non-null, 8-aligned, and good for [`WB_WATER_STRIDE`] f64 from `offset`.
+unsafe fn write_water(out: *mut f64, offset: usize, answer: &water::WaterAt) {
+    // `f64::from(u32)` and not `as`: every u32 is exactly a f64, so there is nothing to justify.
+    let words = [
+        water_kind_code(answer.kind),
+        answer.level_m,
+        answer.depth_m,
+        f64::from(answer.body_id),
+        f64::from(answer.reach_id),
+    ];
+    for (word, value) in words.into_iter().enumerate() {
+        out.add(offset + word).write(value);
+    }
+}
+
+/// **The one place [`water::Ground`]'s two surfaces are named**, and the reason it is a
+/// function rather than two lines at each call site: the two fields are the *same type*, so
+/// nothing but this comment stops a caller binding them the wrong way round, and the failure is
+/// silent -- ponds read dry and lake edges wander with the detail slider.
+///
+/// - `landform_m` is **`Surface::structural_m`** -- Ruling Q-3, the surface every coarse body's
+///   level, every reach bed and the ocean datum were written against.
+/// - `detail_m` is **`Surface::elevation_m` at `pond_cell_m`** -- Ruling Q-16, exactly what
+///   `hydrology::ponds::pond_ground` builds, and the surface Ruling S-9 levelled a fine-found
+///   body off.
+///
+/// `pond_cell_m` comes from **the record's own header** (`stats.pond_cell_m`) and not from
+/// `HydroParams::earth_like`: a held bake's params are not on the wire, and a bake made with a
+/// different cell size would otherwise be judged against a field it was never found in.
+fn with_ground<T>(
+    surface: &Surface,
+    pond_cell_m: f64,
+    action: impl FnOnce(&water::Ground) -> T,
+) -> T {
+    let landform_m = |point: &SpherePoint| surface.structural_m(point);
+    let detail_m = |point: &SpherePoint| surface.elevation_m(point, Some(pond_cell_m));
+    action(&water::Ground { landform_m: water::Landform(&landform_m), detail_m: water::Detail(&detail_m) })
+}
+
+/// Borrow the decoded record and the [`water::index::WaterIndex`] for bake `id` at `radius_m`,
+/// building and caching them on the first ask (Ruling Q-2).
+///
+/// `Err` carries the status the caller should return: `WB_ERR_HANDLE` for a bake id that names
+/// nothing live -- checked against `HYDRO` itself, *before* the cache, so a freed bake can never
+/// be answered out of a stale index -- and `WB_ERR_PARAM` for a held record that will not decode
+/// or a radius that is not a length. Neither arm panics; a decode failure of a record this
+/// module itself encoded should be unreachable, and is a status rather than an `expect` because
+/// "unreachable" is not a thing an `extern "C"` boundary is allowed to assume.
+fn with_water_query<T>(
+    id: u32,
+    radius_m: f64,
+    action: impl FnOnce(&hydrology::HydroRecord, &water::index::WaterIndex) -> T,
+) -> Result<T, u32> {
+    if !(radius_m.is_finite() && radius_m > 0.0) {
+        return Err(WB_ERR_PARAM);
+    }
+    let slot = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
+        Ok(slot) => slot,
+        Err(_) => return Err(WB_ERR_HANDLE),
+    };
+    // Liveness is asked of `HYDRO`, the table that owns the record, and asked first. This is
+    // also what bounds `slot` below `HYDRO.len()`, so the `resize_with` cannot be talked into a
+    // four-billion-entry allocation by a hostile id.
+    let live = HYDRO.with(|cell| matches!(cell.borrow().get(slot), Some(Some(_))));
+    if !live {
+        return Err(WB_ERR_HANDLE);
+    }
+
+    // **The `borrow_mut` deliberately spans `action`**, which for `wb_water_tile` is the whole
+    // fill. It has to: `action` borrows the record and the index out of the slot, so the borrow
+    // cannot be released before it runs, and dropping it early would mean cloning a record per
+    // tile. Nothing re-enters -- `water_at` reads the record and the index and touches no
+    // thread-local -- so this is a hazard to keep in mind rather than a bug: any future code
+    // that calls back into `with_water_query` (or into `wb_hydro_free`) from inside `action`
+    // would panic on the second borrow, which is why neither export does anything between these
+    // braces but sample.
+    HYDRO_QUERY.with(|cell| {
+        let mut table = cell.borrow_mut();
+        if table.len() <= slot {
+            table.resize_with(slot + 1, || None);
+        }
+        let usable = match table.get(slot) {
+            // Bit equality and not `==`: this is "was it built for this very radius", and a
+            // rebuild is cheap next to answering off the wrong grid.
+            Some(Some((built_at, _, _))) => built_at.to_bits() == radius_m.to_bits(),
+            _ => false,
+        };
+        if !usable {
+            let built = HYDRO.with(|hydro| {
+                let held = hydro.borrow();
+                let words = held.get(slot).and_then(|held| held.as_ref())?;
+                let record = hydrology::record::decode(words)?;
+                let index = water::index::WaterIndex::build(
+                    &record, radius_m, water::index::DEFAULT_CELL_M);
+                Some((radius_m, record, index))
+            });
+            match built {
+                Some(built) => table[slot] = Some(built),
+                None => return Err(WB_ERR_PARAM),
+            }
+        }
+        match table.get(slot) {
+            Some(Some((_, record, index))) => Ok(action(record, index)),
+            _ => Err(WB_ERR_PARAM),
+        }
     })
+}
+
+/// **Spec §8.3 at one point**: what water is here -- ocean, lake, salt lake, salt flat, pond,
+/// river or none -- written to `out` as [`WB_WATER_STRIDE`] f64 in the order that constant
+/// documents. `fresh` is not among them; see [`WB_WATER_STRIDE`] for why, and where to read it.
+///
+/// # Two ids, because the answer needs two things
+///
+/// `world` is a live world handle and supplies **the ground** -- the landform for a coarse body,
+/// a reach and the ocean (Ruling Q-3), and the detail field at the record's own `pond_cell_m`
+/// for a fine-found one (Ruling Q-16). `bake` is a live [`wb_hydro_bake`] id and supplies **the
+/// record**, which is what actually decides the answer: the query never re-runs connectivity and
+/// never re-derives an extent. They are separate tables and separate id spaces; passing a world
+/// handle where a bake id belongs is refused, not coincidentally accepted.
+///
+/// Pass the world the bake was made from. Nothing on the wire ties a record to a world, so
+/// nothing here can check it -- a bake queried against a different planet answers that planet's
+/// ground against this record's levels, which is a wrong answer and not an error.
+///
+/// # The index
+///
+/// Built from the record on the **first** query against a bake and cached beside it (Ruling
+/// Q-2), so the first call to this export or [`wb_water_tile`] for a given bake pays for the
+/// build and the rest do not. [`wb_hydro_free`] drops it.
+///
+/// # Returns
+///
+/// `WB_OK` with five words written; `WB_ERR_HANDLE` if `world` names no live world or `bake`
+/// names no live bake (a freed bake included); `WB_ERR_BUFFER` if `out` is null, misaligned or
+/// shorter than [`WB_WATER_STRIDE`]; `WB_ERR_GRID` if the latitude or longitude is not finite;
+/// `WB_ERR_PARAM` if the held record will not decode. **Nothing is written on any refusal.**
+///
+/// # Safety
+/// `out` must be null, or a live 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_water_at(
+    world: u32,
+    bake: u32,
+    latitude_deg: f64,
+    longitude_deg: f64,
+    out: *mut f64,
+    out_len: u32,
+) -> u32 {
+    if !latitude_deg.is_finite() || !longitude_deg.is_finite() {
+        return WB_ERR_GRID;
+    }
+    if let Err(status) = water_buffer(out, out_len, WB_WATER_STRIDE) {
+        return status;
+    }
+    // The world is borrowed around the whole answer, because `Ground`'s closures read it.
+    let answered = with_world(world, |held| {
+        let surface = held.surface();
+        with_water_query(bake, surface.radius_m, |record, index| {
+            with_ground(surface, record.stats.pond_cell_m, |ground| {
+                let point = SpherePoint::from_latlon(latitude_deg, longitude_deg);
+                let answer = water::water_at(record, index, ground, &point);
+                unsafe { write_water(out, 0, &answer) };
+                WB_OK
+            })
+        })
+    });
+    match answered {
+        None => WB_ERR_HANDLE,
+        Some(Err(status)) => status,
+        Some(Ok(status)) => status,
+    }
+}
+
+/// **Ruling Q-8's batch**: `rows * columns` §8.3 answers in one call, five words each
+/// ([`WB_WATER_STRIDE`], widened from four by Ruling Q-18).
+///
+/// # The grid, exactly
+///
+/// Row-major from the north-west, **both endpoints included**, the same shape and the same
+/// `grid_coordinate` interpolation [`wb_fill_tile_f32`] uses: row 0 sits at `lat0`, row
+/// `rows - 1` at `lat1`, column 0 at `lon0`, column `columns - 1` at `lon1`, and sample
+/// `row * columns + column` occupies words `WB_WATER_STRIDE * (row * columns + column)`
+/// onward. A single-row or single-column grid samples its first bound and nothing else,
+/// because there is no step to take. No hemisphere is baked in -- pass `lat0` as the northern
+/// edge for north-to-south order, or the reverse for the reverse.
+///
+/// **It does not interpolate and it does not smooth** (Ruling Q-8): every sample is exactly the
+/// [`wb_water_at`] answer at that point, and any smoothing belongs to drawing. That equality is
+/// a test, not a claim.
+///
+/// # Returns
+///
+/// `WB_OK`; `WB_ERR_GRID` for a zero `rows` or `columns`, a non-finite bound, or a sample count
+/// whose five words do not fit a `usize`; `WB_ERR_BUFFER` for a null, misaligned or short `out`;
+/// `WB_ERR_HANDLE` for an unknown world or bake; `WB_ERR_PARAM` if the held record will not
+/// decode. **Nothing is written on any refusal** -- a half-filled tile is worse than none,
+/// because it reads as water.
+///
+/// # Safety
+/// `out` must be null, or a live 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_water_tile(
+    world: u32,
+    bake: u32,
+    lat0: f64,
+    lon0: f64,
+    lat1: f64,
+    lon1: f64,
+    rows: u32,
+    columns: u32,
+    out: *mut f64,
+    out_len: u32,
+) -> u32 {
+    if rows == 0 || columns == 0 {
+        return WB_ERR_GRID;
+    }
+    for bound in [lat0, lon0, lat1, lon1] {
+        if !bound.is_finite() {
+            return WB_ERR_GRID;
+        }
+    }
+    let (down_count, across_count) = match (usize::try_from(rows), usize::try_from(columns)) {
+        (Ok(down), Ok(across)) => (down, across),
+        _ => return WB_ERR_GRID,
+    };
+    // Both multiplications are checked. `u32::MAX * u32::MAX` still fits a 64-bit `usize`; it is
+    // the stride that carries it over, so checking only the sample count would leave the real
+    // overflow unchecked.
+    let words = match down_count.checked_mul(across_count)
+        .and_then(|samples| samples.checked_mul(WB_WATER_STRIDE)) {
+        Some(words) => words,
+        None => return WB_ERR_GRID,
+    };
+    if let Err(status) = water_buffer(out, out_len, words) {
+        return status;
+    }
+
+    let last_row = f64::from(rows - 1);
+    let last_column = f64::from(columns - 1);
+    let filled = with_world(world, |held| {
+        let surface = held.surface();
+        with_water_query(bake, surface.radius_m, |record, index| {
+            with_ground(surface, record.stats.pond_cell_m, |ground| {
+                for row in 0..down_count {
+                    let down = row as f64; // cast-ok: a grid row index to float, exact for any tile that fits in memory
+                    let latitude_deg = grid_coordinate(lat0, lat1, down, last_row);
+                    for column in 0..across_count {
+                        let across = column as f64; // cast-ok: a grid column index to float, exact for any tile that fits in memory
+                        let longitude_deg = grid_coordinate(lon0, lon1, across, last_column);
+                        let point = SpherePoint::from_latlon(latitude_deg, longitude_deg);
+                        let answer = water::water_at(record, index, ground, &point);
+                        let offset = (row * across_count + column) * WB_WATER_STRIDE;
+                        unsafe { write_water(out, offset, &answer) };
+                    }
+                }
+                WB_OK
+            })
+        })
+    });
+    match filled {
+        None => WB_ERR_HANDLE,
+        Some(Err(status)) => status,
+        Some(Ok(status)) => status,
+    }
+}
+
+/// The buffer check both water exports make, in one place: non-null, 8-aligned, and long enough
+/// for `needed` f64. `Err` carries `WB_ERR_BUFFER`.
+fn water_buffer(out: *mut f64, out_len: u32, needed: usize) -> Result<(), u32> {
+    if out.is_null() {
+        return Err(WB_ERR_BUFFER);
+    }
+    if (out as usize) % core::mem::align_of::<f64>() != 0 { // cast-ok: a pointer to an integer for an alignment check, not a float truncation
+        return Err(WB_ERR_BUFFER);
+    }
+    match usize::try_from(out_len) {
+        Ok(len) if len >= needed => Ok(()),
+        _ => Err(WB_ERR_BUFFER),
+    }
 }

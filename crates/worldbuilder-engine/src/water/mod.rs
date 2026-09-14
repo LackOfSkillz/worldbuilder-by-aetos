@@ -39,6 +39,32 @@
 //! that actually wants `Lake::level_m` to carry the filled value -- which every real caller
 //! does -- must reach for the `_and_apply` entry point rather than assume `fill_basins` alone
 //! did it.
+//!
+//! # The query side of the module (plan 2a)
+//!
+//! Everything above is the *bake* side: it fills a `StreamGraph`'s lakes and hands the levels
+//! back. [`index`] and [`query`] are the *query* side, and the two sides share nothing but this
+//! module.
+//!
+//! **Which subject is which**, because one module path now carries two of them:
+//!
+//! | here | subject | reads | writes |
+//! |---|---|---|---|
+//! | this file's own items ([`fill_basins`], [`basins_of`], [`resolve_outflow_edges`], ...) | slice 5b's **bake**: fill each lake basin to its spill point and resolve the lake super-graph | a `stream::StreamGraph` | `Lake::level_m`, `Lake::outflow_lake` |
+//! | [`index`] | plan 2a Task 1: a spatial index over a **baked record**, so a sample tests a handful of candidates | a `hydrology::HydroRecord` | nothing |
+//! | [`query`] | plan 2a Task 2: spec §8.3's [`water_at`] -- ocean, lake, pond, river or none at a point | a `hydrology::HydroRecord`, that index, and a landform closure | nothing |
+//!
+//! Nothing in the query half touches a `StreamGraph`, and nothing in the bake half touches a
+//! `HydroRecord`. The two halves share one module because `water.rs` was already `crate::water`
+//! when the query arrived, and Rust has one module per path (Ruling Q-9).
+
+pub mod index;
+pub mod query;
+
+pub use query::{water_at, Detail, Ground, Landform, WaterAt, WaterKind, NO_BODY, NO_REACH};
+
+#[cfg(test)]
+mod query_tests;
 
 use std::collections::HashMap;
 

@@ -100,45 +100,132 @@ impl BucketIndex {
         self.buckets[self.first[row] + column].push(id);
     }
 
+    /// How many cells this index's grid has. A caller keeping its own payload alongside the
+    /// grid -- `water::index::WaterIndex` keeps three -- sizes them by this and addresses them
+    /// with [`cell_of`](Self::cell_of) and [`cells_within`](Self::cells_within).
+    pub fn cell_count(&self) -> usize {
+        self.buckets.len()
+    }
+
+    /// For a survey: what this grid occupies in bytes -- the `columns` and `first` row tables,
+    /// plus its own per-cell `Vec` headers and whatever those `Vec`s have allocated.
+    ///
+    /// A caller that only ever asks [`cell_of`](Self::cell_of), [`cell_count`](Self::cell_count)
+    /// and [`cells_within`](Self::cells_within) -- `water::index::WaterIndex` is one -- never
+    /// calls [`insert`](Self::insert), so for it the `buckets` term is a cell's worth of empty
+    /// `Vec` header apiece and nothing else. It is counted here rather than hidden, because a
+    /// cost paid for addressing alone is exactly the kind that goes unmeasured.
+    ///
+    /// A proxy, summed from each `Vec`'s own reported size rather than sampled from an
+    /// allocator: allocator rounding and this struct's own fields are not in it.
+    pub fn memory_bytes(&self) -> usize {
+        self.columns.len() * core::mem::size_of::<usize>()
+            + self.first.len() * core::mem::size_of::<usize>()
+            + self.buckets.len() * core::mem::size_of::<Vec<u32>>()
+            + self.buckets.iter().map(|b| b.capacity() * core::mem::size_of::<u32>()).sum::<usize>()
+    }
+
+    /// Every cell whose row/column range the disc of `reach_m` about `point` touches, ascending.
+    ///
+    /// A **superset** of the cells the disc actually intersects -- the sweep is a latitude band
+    /// crossed with the widest longitude stretch the band needs -- so a caller may rely on it
+    /// listing every cell that holds any point within `reach_m`, and must not rely on it listing
+    /// only those. [`candidates`](Self::candidates) is this sweep with the points in each cell
+    /// collected; a caller with its own per-cell payload takes the cells instead.
+    pub fn cells_within(&self, point: &SpherePoint, reach_m: f64) -> Vec<usize> {
+        let mut cells = Vec::new();
+        self.sweep(point, reach_m, |cell| cells.push(cell));
+        cells.sort_unstable();
+        cells.dedup();
+        cells
+    }
+
     pub fn candidates(&self, point: &SpherePoint, reach_m: f64) -> Vec<u32> {
+        let mut found = Vec::new();
+        self.sweep(point, reach_m, |cell| found.extend_from_slice(&self.buckets[cell]));
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The row/column arithmetic both of the two above are made of: hands `visit` each cell of
+    /// the sweep, row by row, without deciding what to do with it.
+    fn sweep(&self, point: &SpherePoint, reach_m: f64, mut visit: impl FnMut(usize)) {
         let (lat, lon) = point.to_latlon();
         let reach_deg = m::to_degrees(reach_m / self.radius_m);
         let low = self.row_of(if lat - reach_deg < -90.0 { -90.0 } else { lat - reach_deg });
         let high = self.row_of(if lat + reach_deg > 90.0 { 90.0 } else { lat + reach_deg });
-        let mut found = Vec::new();
+        // Loop-invariant, so it is asked once rather than once per row: a reach that carries the
+        // query past a pole (its latitude band running off the top or bottom of the grid) covers
+        // every longitude at EVERY row it touches, regardless of any row's own stretch -- the
+        // row's whole circle is within reach once the cap itself is, so there is no narrower
+        // column range to compute anywhere in the sweep.
+        // Written as two comparisons rather than `lat.abs()`: the house rule bans `.abs()`, and
+        // `no_std_math` now scans for it.
+        let pole_crossing = lat + reach_deg >= 90.0 || reach_deg - lat >= 90.0;
         for row in low..=high {
             let south = -90.0 + row as f64 * 180.0 / self.rows as f64;
             let north = south + 180.0 / self.rows as f64;
-            // The widest point of the row decides how far the longitude reach stretches.
-            let widest = if south.abs() > north.abs() { south.abs() } else { north.abs() };
+            // The widest point of the row decides how far the LINEAR longitude reach stretches:
+            // whichever edge stands further from the equator, as a distance from it.
+            let from_equator_south = if south < 0.0 { -south } else { south };
+            let from_equator_north = if north < 0.0 { -north } else { north };
+            let widest =
+                if from_equator_south > from_equator_north { from_equator_south } else { from_equator_north };
             let cos = m::cos(m::to_radians(widest));
             let count = self.columns[row];
-            // Third disjunct: a reach that carries the query past a pole (its latitude band
-            // running off the top or bottom of the grid) covers every longitude at that row
-            // regardless of `cos` or `reach_deg / cos` -- the row's whole circle is within
-            // reach once the cap itself is, so there is no narrower column range to compute.
-            let everything = cos <= 1.0e-9 || reach_deg / cos >= 180.0 || lat.abs() + reach_deg >= 90.0;
+            // The linear form alone is not a bound (see `half_extent_deg`), so the stretch is the
+            // larger of it and the exact half-extent. Taking the larger rather than replacing the
+            // linear form is deliberate: no caller's candidate set can shrink, so nothing already
+            // measured against this grid moves, and the exact term alone already makes it a
+            // superset.
+            let linear = if cos <= 1.0e-9 { 180.0 } else { reach_deg / cos };
+            // **Both whole-row tests are decided before `half_extent_deg` runs, and neither
+            // needs it.** `stretch` is the LARGER of `linear` and `exact`, so `linear >= 180.0`
+            // settles `everything` on its own, and `pole_crossing` does not read the stretch at
+            // all. `half_extent_deg` is about eight transcendental calls per row, and `sweep` is
+            // on the bake's hot path through `candidates` and `nearest` -- so before this hoist
+            // a pole-crossing sweep computed, and then discarded, that work on every row it
+            // touched. Nothing observable changes: where `whole_row` holds, the exact term could
+            // only have made `stretch` larger, and `everything` was already true either way.
+            let whole_row = linear >= 180.0 || pole_crossing;
+            let stretch = if whole_row {
+                linear
+            } else {
+                let exact = half_extent_deg(lat, reach_deg, south, north);
+                if exact > linear { exact } else { linear }
+            };
+            // A row whose swept arc leaves less than one of its own columns uncovered is covered
+            // ENTIRELY, and is decided here rather than by the walk below. `west` and `east` are
+            // wrapped longitudes, so an arc of `2 * stretch` that comes within one column of the
+            // full 360 degrees lands them in the SAME column -- and a walk that stops when it
+            // reaches `east` would then visit that one cell and call the row done, leaving the
+            // rest of the circle of longitude unlisted. `stretch < 180` and `pole_crossing`
+            // false, so neither test above catches it; this is the third place this function hid
+            // an under-covering row, and the only one left where the two ends of the arc can
+            // meet.
+            let column_deg = 360.0 / count as f64;
+            let everything = whole_row || stretch >= 180.0 || 2.0 * stretch + column_deg >= 360.0;
             if everything {
                 for column in 0..count {
-                    found.extend_from_slice(&self.buckets[self.first[row] + column]);
+                    visit(self.first[row] + column);
                 }
                 continue;
             }
-            let stretch = reach_deg / cos;
             let west = self.column_of(row, wrap(lon - stretch));
             let east = self.column_of(row, wrap(lon + stretch));
+            // Walk a COUNTED number of columns rather than stopping on index equality. With the
+            // whole-row case already taken above, the arc crosses no column boundary more than
+            // once, so `travelled` is how many columns east of `west` the far end sits and
+            // `travelled + 1` cells cover the row's share of the arc -- at most `count` of them,
+            // never fewer than the arc needs.
+            let travelled = (east + count - west) % count;
             let mut column = west;
-            loop {
-                found.extend_from_slice(&self.buckets[self.first[row] + column]);
-                if column == east {
-                    break;
-                }
+            for _ in 0..=travelled {
+                visit(self.first[row] + column);
                 column = (column + 1) % count;
             }
         }
-        found.sort_unstable();
-        found.dedup();
-        found
     }
 
     pub fn nearest(&self, point: &SpherePoint, positions: &[SpherePoint]) -> Option<u32> {
@@ -169,6 +256,77 @@ impl BucketIndex {
             reach *= 2.0;
         }
     }
+}
+
+/// How far east or west of its own meridian a circle of angular radius `reach_deg` about
+/// `centre_lat_deg` reaches, anywhere in the latitude row `[south_deg, north_deg]`, in degrees.
+///
+/// The exact half-extent at one latitude φ, for a circle of radius `r` about latitude `φ₀`, is
+///
+/// ```text
+/// Δλ(φ) = acos( (cos r − sin φ₀ sin φ) / (cos φ₀ cos φ) )
+/// ```
+///
+/// which is what the linear `r / cos φ` approximates. The approximation is not a bound: it
+/// over-covers while `r` is small -- which is why the linear form served every caller correctly
+/// until plan 2a's index started asking for megametres -- and under-covers once `r` is a fair
+/// fraction of a radian, by 66 km at latitude 70 on a 2,061 km circle.
+///
+/// `Δλ` is unimodal in φ with its maximum at the tangency latitude `sin φₜ = sin φ₀ / cos r`
+/// (where a meridian touches the circle), so the largest value the row can hold is at one of its
+/// two edges or at `φₜ` if that falls between them: three evaluations, and no search.
+///
+/// `acos`, which `detmath` does not carry, is written `atan2(sqrt(1 − x²), x)`.
+fn half_extent_deg(centre_lat_deg: f64, reach_deg: f64, south_deg: f64, north_deg: f64) -> f64 {
+    let r = m::to_radians(reach_deg);
+    let centre = m::to_radians(centre_lat_deg);
+    let cos_r = m::cos(r);
+    let sin_centre = m::sin(centre);
+    let cos_centre = m::cos(centre);
+    // A circle about a pole covers every longitude of every row it reaches at all.
+    if cos_centre <= 1.0e-12 {
+        return 180.0;
+    }
+    let sin_tangency = sin_centre / cos_r;
+    let tangency_deg = if sin_tangency >= 1.0 {
+        90.0
+    } else if sin_tangency <= -1.0 {
+        -90.0
+    } else {
+        m::to_degrees(m::asin(sin_tangency))
+    };
+    let inside = if tangency_deg < south_deg {
+        south_deg
+    } else if tangency_deg > north_deg {
+        north_deg
+    } else {
+        tangency_deg
+    };
+    let mut widest = 0.0;
+    for latitude_deg in [south_deg, north_deg, inside] {
+        let latitude = m::to_radians(latitude_deg);
+        let cos_lat = m::cos(latitude);
+        // A row edge sitting exactly on a pole: a circle that reached the pole took the caller's
+        // `everything` branch, so one that did not reaches nothing at this latitude.
+        if cos_lat <= 1.0e-12 {
+            continue;
+        }
+        let x = (cos_r - sin_centre * m::sin(latitude)) / (cos_centre * cos_lat);
+        let here = if x <= -1.0 {
+            180.0
+        } else if x >= 1.0 {
+            // The circle does not reach this latitude at all.
+            0.0
+        } else {
+            m::to_degrees(m::atan2(m::sqrt(1.0 - x * x), x))
+        };
+        if here > widest {
+            widest = here;
+        }
+    }
+    // A tenth of a millimetre of slack, so a cell edge that the exact value lands on is swept
+    // rather than decided by the last bit of an `atan2`.
+    widest + 1.0e-9
 }
 
 /// A longitude in (-180, 180].
@@ -281,6 +439,177 @@ mod tests {
         for (lat, lon) in [(90.0, 0.0), (-90.0, 0.0), (0.0, 180.0), (0.0, -180.0)] {
             let cell = index.cell_of(&SpherePoint::from_latlon(lat, lon));
             assert!(cell < index.buckets.len(), "{lat},{lon} landed outside the grid");
+        }
+    }
+
+    /// The superset guarantee at the radii `water::index`'s bounding circles actually use.
+    ///
+    /// `candidates_include_every_point_within_reach` checks 900 km at one place. The longitude
+    /// stretch used to be the linear `reach_deg / cos(row's widest latitude)`, which over-covers
+    /// while the reach is small -- every caller before plan 2a's index -- and **under**-covers
+    /// once the reach is a fair fraction of a radian. On this grid a 2,061 km circle fell short
+    /// by 0.5 km at latitude 45, 18.8 km at 60 and 66.1 km at 70, which is more than a body's
+    /// whole shore band: real cells on the circle's east and west flanks went unlisted. This is
+    /// the brute-force check across the latitudes and radii where that bites.
+    #[test]
+    fn candidates_include_every_point_within_reach_at_megametre_radii_and_high_latitude() {
+        let positions = scatter(20_000);
+        let mut index = BucketIndex::new(R, 50_000.0);
+        for (i, p) in positions.iter().enumerate() {
+            index.insert(p, i as u32); // cast-ok: test fixture
+        }
+        for lat in [0.0, 30.0, 45.0, 60.0, 70.0, 80.0, -70.0] {
+            for lon in [0.0, 179.5, -120.0] {
+                let centre = SpherePoint::from_latlon(lat, lon);
+                for reach in [500_000.0, 1_054_219.0, 2_060_743.0] {
+                    let found = index.candidates(&centre, reach);
+                    for (i, q) in positions.iter().enumerate() {
+                        let d = centre.distance_to(q, R);
+                        if d <= reach {
+                            assert!(found.contains(&(i as u32)), // cast-ok: test fixture
+                                    "missed point {i} at {d} m from {lat},{lon}, reach {reach}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `candidates` and `cells_within` are one sweep with two endings, and a caller keeping its
+    /// own payload per cell (`water::index`) relies on that: whatever `candidates` would have
+    /// collected must live in the cells `cells_within` names. Checked at the poles and the seam,
+    /// where the column arithmetic wraps.
+    #[test]
+    fn cells_within_names_exactly_the_cells_candidates_reads() {
+        let positions = scatter(3_000);
+        let mut index = BucketIndex::new(R, 150_000.0);
+        for (i, p) in positions.iter().enumerate() {
+            index.insert(p, i as u32); // cast-ok: test fixture
+        }
+        for (lat, lon) in [(0.0, 0.0), (89.9, 10.0), (-89.9, -170.0), (0.0, 179.99),
+                           (0.0, -179.99), (45.0, 90.0)] {
+            let p = SpherePoint::from_latlon(lat, lon);
+            for reach in [10_000.0, 400_000.0, 3_000_000.0] {
+                let cells = index.cells_within(&p, reach);
+                assert!(cells.iter().all(|&c| c < index.cell_count()), "{lat},{lon} r{reach}");
+                let mut through_cells: Vec<u32> =
+                    cells.iter().flat_map(|&c| index.buckets[c].iter().copied()).collect();
+                through_cells.sort_unstable();
+                through_cells.dedup();
+                assert_eq!(index.candidates(&p, reach), through_cells, "{lat},{lon} r{reach}");
+            }
+        }
+    }
+
+    /// Brute force `cells_within`'s superset guarantee over the **grid** rather than over a
+    /// scatter of points: for every cell the circle could possibly touch, sample inside the cell
+    /// and report the first sample that is within `reach_m` of the centre and whose cell the
+    /// sweep did not list. Returns `None` when the sweep covers everything it must.
+    ///
+    /// Superset is the contract, so an extra cell in the sweep is fine and only a missing one is
+    /// an offence. A scatter cannot do this job: `cells_within` is wrong per *cell*, and whether
+    /// a scatter happens to have seeded the cell that went missing is luck. Two hand-picked
+    /// probes passed against broken sweeps already.
+    fn first_uncovered_cell(index: &BucketIndex, lat: f64, lon: f64, reach_m: f64) -> Option<String> {
+        let centre = SpherePoint::from_latlon(lat, lon);
+        let swept = index.cells_within(&centre, reach_m);
+        let reach_deg = m::to_degrees(reach_m / index.radius_m);
+        let row_height = 180.0 / index.rows as f64;
+        for row in 0..index.rows {
+            let south = -90.0 + row as f64 * row_height;
+            let north = south + row_height;
+            // A great-circle distance is never less than the latitude difference, so a row the
+            // circle cannot reach in latitude alone holds no point within reach. Skipping it
+            // cannot hide an offence, and it is what keeps this affordable.
+            if south > lat + reach_deg || north < lat - reach_deg {
+                continue;
+            }
+            let count = index.columns[row];
+            let width = 360.0 / count as f64;
+            for column in 0..count {
+                if swept.binary_search(&(index.first[row] + column)).is_ok() {
+                    continue;
+                }
+                for lat_fraction in [0.01, 0.5, 0.99] {
+                    for lon_fraction in [0.01, 0.25, 0.5, 0.75, 0.99] {
+                        let sample_lat = south + lat_fraction * row_height;
+                        let sample_lon = wrap(-180.0 + (column as f64 + lon_fraction) * width);
+                        let sample = SpherePoint::from_latlon(sample_lat, sample_lon);
+                        let d = centre.distance_to(&sample, index.radius_m);
+                        if d > reach_m {
+                            continue;
+                        }
+                        // Asked of the grid rather than assumed, so a sample that rounds into a
+                        // neighbouring cell is judged against the cell it actually lands in.
+                        let actual = index.cell_of(&sample);
+                        if swept.binary_search(&actual).is_err() {
+                            return Some(format!(
+                                "centre {lat},{lon} reach {reach_m} m: {sample_lat},{sample_lon} \
+                                 is {d} m away, within reach, and its cell {actual} (row {row}, \
+                                 column {column} of {count}) is not among the {} swept",
+                                swept.len()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The two regimes the megametre brute force above does **not** reach, which is where the
+    /// column loop's wrap collapsed a nearly-full row to one cell: a small circle within a degree
+    /// or two of a pole, where a row has single-digit columns and the swept arc covers all but a
+    /// sliver of it, and a mid-latitude circle of several megametres, where the arc does the same
+    /// on a row of a hundred and seventy. Both were reproduced before the fix; neither is in
+    /// `candidates_include_every_point_within_reach_at_megametre_radii_and_high_latitude`, whose
+    /// cross product stops at latitude 80 and 2,061 km.
+    #[test]
+    fn cells_within_covers_the_near_pole_and_multi_megametre_regimes() {
+        let index = BucketIndex::new(R, 50_000.0);
+        let cases = [
+            (88.0, -180.0, 144_500.0),
+            (88.0, 20.0, 144_500.0),
+            (88.0, 60.0, 144_500.0),
+            (-88.0, 20.0, 144_500.0),
+            (89.4, 0.0, 100_000.0),
+            (90.0, 0.0, 200_000.0),
+            (40.0, 0.0, 4_190_000.0),
+            (40.0, -180.0, 4_190_000.0),
+            (55.0, 179.9, 3_000_000.0),
+            (70.0, -179.9, 2_500_000.0),
+        ];
+        for (lat, lon, reach) in cases {
+            assert_eq!(first_uncovered_cell(&index, lat, lon, reach), None);
+        }
+    }
+
+    /// The same probe, exhaustively: the poles, every latitude from 40 to 89, longitudes on and
+    /// either side of the antimeridian, and radii from a few kilometres to wider than the whole
+    /// circle of longitude — 3,264 sweeps over a 203,682-cell grid. Ignored in the same style as
+    /// `every_small_world_drains`: 20.7 s in release on the owner's host, and an unbuilt debug
+    /// run is an order of magnitude worse. Run it with
+    /// `cargo test --release -p worldbuilder-engine --lib cells_within_covers_every_cell -- --ignored`.
+    #[test]
+    #[ignore = "exhaustive: 20.7 s in release; run with --ignored"]
+    fn cells_within_covers_every_cell_at_every_latitude_longitude_and_radius() {
+        let index = BucketIndex::new(R, 50_000.0);
+        let mut latitudes = vec![90.0, -90.0];
+        for step in 40..=89 {
+            latitudes.push(step as f64);
+            latitudes.push(-(step as f64));
+        }
+        let longitudes = [-180.0, -179.9, 0.0, 179.9];
+        // The last two are wider than a quarter and than half the sphere: `pi * R` is 20,015 km,
+        // so 19,000 km is the regime where a row's swept arc is the whole circle of longitude.
+        let radii = [5_000.0, 50_000.0, 144_500.0, 500_000.0, 1_500_000.0, 4_190_000.0,
+                     10_000_000.0, 19_000_000.0];
+        for &lat in &latitudes {
+            for &lon in &longitudes {
+                for &reach in &radii {
+                    assert_eq!(first_uncovered_cell(&index, lat, lon, reach), None);
+                }
+            }
         }
     }
 

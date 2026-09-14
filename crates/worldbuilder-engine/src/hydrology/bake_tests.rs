@@ -9,11 +9,11 @@ use crate::hydrology::record::{decode, encode};
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 
-pub(super) fn world() -> Surface {
+pub(crate) fn world() -> Surface {
     Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None)
 }
 
-fn params() -> HydroParams {
+pub(crate) fn params() -> HydroParams {
     let mut p = HydroParams::earth_like(12_000);
     p.wetness_nodes = 500;
     p.stream_flow_m2 = 3.0e10;
@@ -1149,7 +1149,7 @@ fn the_record_echoes_the_refinement_params() {
 /// The bake test world with the stream floor lowered to 2 nodes: 165 reaches, 34 of them ending
 /// on another reach. `params()` gives 12 reaches and none ending on another reach (8 run to the
 /// sea, 4 to a lake), so a junction property needs this.
-pub(super) fn ranges_world() -> Surface {
+pub(crate) fn ranges_world() -> Surface {
     Surface::new(1, 6.371e6, 12, 0.40, None, None, Some(crate::tectonics::TectonicParams::ranges()))
 }
 
@@ -1262,7 +1262,7 @@ fn every_fall_is_a_step_on_its_own_reach() {
 
 /// The three refined populations: the bake test world at both thresholds, and the seed 1
 /// `ranges` world at 12,000 nodes (real relief, and the one with falls).
-pub(super) fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
+pub(crate) fn refined_populations() -> [(&'static str, Surface, HydroParams); 3] {
     [("params", world(), params()),
      ("junction_params", world(), junction_params()),
      ("ranges", ranges_world(), HydroParams::earth_like(12_000))]
