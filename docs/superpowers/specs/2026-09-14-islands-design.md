@@ -58,19 +58,42 @@ Therefore:
   and a hull can be in 2,000 m of water a kilometre off the beach — which is what such an
   island is actually like, and is navigationally interesting in a way a shelf is not.
 
-### 2.2 Why peaks are post-calibration
+### 2.2 Where peaks actually go — corrected after reading the code
 
-`Continentality` calibrates a shore threshold over `CALIBRATION_SAMPLES = 4000` points to hit
-the requested `land_fraction`. The file already documents the pattern for adding to the field
-*without* disturbing that: the coast-roughening term is "a separate term with its own
-amplitude, windowed by `|above_shore|`, added after calibration rather than inside it"
-(`continentality.rs:58-76`).
+The first draft of this spec said peaks should copy the coast-roughening term's slot in
+`Continentality::above_shore`. **That is impossible, and the reason is worth recording.**
 
-Peaks follow that precedent exactly, with the window inverted — roughness acts *at* the
-shore, peaks act *far from* it.
+- `Continentality::at` does **not** return metres. It returns the raw normalised fBm value,
+  roughly `[-1, 1]` (`continentality.rs:362-365`). Metres come out of `elevation_from_above`
+  (`:482-501`).
+- That function **caps its input at 1.0**, so the most any perturbation of `above_shore` can
+  produce is `CONTINENT_M * 1.0^0.75` = **700 m**. A 4,700 m cone is arithmetically
+  unreachable through that slot — the same ceiling that defeats the island arc, reached by a
+  different road.
+- Worse, raising `above_shore` at a mid-ocean point pushes `|value|` outside
+  `COASTAL_WINDOW = 0.055` (`shelf.rs:140`), so `Shelf::coastal` returns `None` and the
+  shelf machinery switches *off*. Which is right for a peak and fatal for a fragment.
 
-Fragments cannot follow it, because they must be in the field to get shelves. So fragments
-are inside calibration, and the spec accepts the consequence: see §5.
+**Peaks go into `Tectonics::offset_m` instead** (`tectonics.rs:843`), and this turns out to be
+the better site on the merits rather than a fallback. `Shelf::evaluate` reads that offset as
+`tectonic` and puts it in `macro_elevation` *and* in `Reading.tectonic_m`, and three
+downstream consumers key off `tectonic_m` in exactly the way a volcanic island wants:
+
+| consumer | effect of a 4,700 m tectonic offset | why that is right |
+|---|---|---|
+| `Shelf::weight` authority (`shelf.rs:223`) | `1 − smooth(4700/250)` = **0** | the shelf is held off structurally, so the peak is steep-to by construction rather than by accident |
+| `Detail::amplitude_m` quieting (`detail.rs:589`) | saturates | surface texture defers to the cone instead of covering it |
+| `substrate::natural` (`substrate.rs:200`) | `smooth(4700/1200)` saturates → **100% rock** | a volcanic island is rock, and this comes free |
+
+Putting peaks in `Shelf::evaluate`'s `macro_elevation` instead would get none of those: a
+mid-ocean cone would receive *undamped mountain roughness* and read as sand where it wasn't
+steep. Volcanism is a tectonic phenomenon, so the tectonic offset is where it belongs both
+physically and mechanically.
+
+Fragments still cannot use the coast slot either — they need the gradient to move so `Shelf`
+draws a real break, and only `Continentality::at` does that. That is the most invasive site in
+the file (it feeds calibration and the tectonic margin probes), which is the real reason
+fragments land last.
 
 ## 3. Hard requirement — an absent block changes nothing
 
@@ -102,17 +125,25 @@ the test.
 A separate noise field, windowed to deep water, thresholded so that only rare maxima break
 the surface.
 
-- **Window.** Zero unless `above_shore` is below a threshold, ramped so a peak cannot appear
-  adjacent to a continental shelf. Expressed in field units like the coast term's window, not
-  metres.
+- **Sparsity from a lattice, not a threshold.** A thresholded fBm gives no direct control over
+  *how many* islands a world gets. Instead, use `Noise::lattice_at` — one candidate peak per
+  lattice node, its existence decided by a hashed value against a density knob, its position
+  jittered within the cell, its height drawn from a third salt. This is the pattern the gully
+  kernel already uses for its pivots (`detail.rs:511-512`), and `lattice_at` is `pub(crate)`
+  and documented for exactly this: "its pivots ARE lattice nodes and what it needs from each
+  is a fixed per-node jitter rather than a field."
+  **Density and height then become independent knobs**, which they are not if sparsity comes
+  out of an amplitude.
+- **Window.** Zero unless the surrounding seabed is deep, so a peak cannot erupt on a
+  continental shelf. Read the window off `Continentality::base_elevation` (metres, so the
+  threshold is stateable as a depth) rather than off `above_shore`.
 - **Amplitude.** Must clear `|ABYSS_M|` — of order 4,700 m — or nothing surfaces. This is the
-  number that makes the existing arc term fail and must not be repeated.
-- **Sparsity by threshold, not by amplitude.** The field is `max(0, f − cut)` rescaled: below
-  the cut, exactly zero and no cost; above it, a cone. Lowering `cut` makes more islands,
-  raising `amplitude` makes taller ones. The two knobs are independent, which they are not if
-  sparsity comes from amplitude alone.
-- **Footprint.** Wavelength of order 40–120 km, so an island is 10–40 km across. Detail's
-  canonical wavelength is 250 m, so the shape stays well above the roughness floor.
+  number that defeats the existing arc term and must not be repeated.
+- **Footprint.** A cone 10–40 km across. Detail's canonical wavelength is 250 m, so the shape
+  stays well above the roughness floor.
+- **Beware the gully lattice.** `GullyParams::canonical().steer_lattice_m` is 2,000 m, so a
+  cone narrower than about 2 km will alias in the steering lattice when a gully block is
+  active. Keep the footprint well above that.
 
 ### 4.2 Arc crests
 
