@@ -817,6 +817,45 @@ fn peak_depth_window(depth_m: f64, min_depth_m: f64) -> f64 {
     }
 }
 
+/// Whether a peak block can raise ground **anywhere on any world**, decided from the block
+/// alone.
+///
+/// `Tectonics::with_peaks` stores `None` for a block this answers `false` for, which is what
+/// makes `peak_offset_m`'s doc claim -- "a term that is inert ... costs one comparison and no
+/// hashing" -- true of every inert block rather than of the zero-density one only. Before the
+/// final whole-branch review, four of these five reasons still reached
+/// `Continentality::base_elevation` (an fBm) on every sample.
+///
+/// **Every predicate here is one `peak_offset_m` already applies, written the same way round.**
+/// That is the whole safety argument: a block this rejects is a block `peak_offset_m` would
+/// return exactly `0.0` for at every point, so deciding it once changes nothing but the cost.
+/// The negated comparisons (`!(x > 0.0)` rather than `x <= 0.0`) are kept because a NaN must
+/// make a block inert, not live -- the same reason `peak_depth_window` above spells its branches
+/// out. `height_m == 0.0` is true of `-0.0` as well, which is deliberate: a `-0.0` height makes
+/// every candidate's `standing` a `-0.0` that `peak_offset_m`'s `standing > tallest` never
+/// takes, so the term answers `0.0` there too.
+///
+/// `min_depth_m` is **not** here even though `peak_depth_window`'s `span > 0.0` test is also
+/// point-independent. That test lives in one place, inside the window, and copying its arithmetic
+/// (`min_depth_m * 0.8`, then a subtraction) into a second place to save a comparison is how two
+/// copies of a threshold start to disagree. The four fields that gate before the window is even
+/// reached are the ones worth hoisting.
+fn peak_block_is_live(params: &PeakParams) -> bool {
+    if params.density == 0.0 {
+        return false;
+    }
+    if params.height_m == 0.0 || !params.height_m.is_finite() {
+        return false;
+    }
+    if !(params.lattice_m > 0.0) || !(params.reach_m > 0.0) {
+        return false;
+    }
+    if !(params.reach_m <= params.lattice_m) {
+        return false;
+    }
+    true
+}
+
 /// One lattice cell's candidate peak, as [`Tectonics::peak_of_cell`] computes it.
 ///
 /// `node` is the cell's own jittered position, in the scaled space `peak_offset_m`'s query
@@ -1049,9 +1088,21 @@ impl Tectonics {
     /// call sites that want none of this.
     ///
     /// `peak_offset_m` is wired into [`Tectonics::offset_m`] (and therefore into
-    /// [`Tectonics::elevation_m`]), gated on this field: `None` and a zero-density `Some`
-    /// never call it or `base_elevation`, so an absent block costs nothing and moves
-    /// nothing.
+    /// [`Tectonics::elevation_m`]), gated on this field: a stored `None` never calls it or
+    /// `base_elevation`, so an absent block costs nothing and moves nothing.
+    ///
+    /// **An inert block is STORED as `None`, so inertness is decided once per world rather
+    /// than once per sample.** See `peak_block_is_live`: `peak_offset_m` has five
+    /// point-independent reasons to answer exactly zero everywhere on the planet, and the
+    /// final whole-branch review found that `offset_m` gated on only one of them (zero
+    /// density), so a block inert for any of the other four still paid
+    /// `Continentality::base_elevation` -- a full fBm -- at every sample, only for
+    /// `peak_offset_m` to return 0.0 a few lines later. The hydrology bake asks `structural_m`
+    /// at about a million nodes, so that was real. The normalisation cannot change an answer:
+    /// the predicates are exactly the ones `peak_offset_m` already applied, in the same
+    /// NaN-preserving negated form, and each of them made the term return 0.0, which
+    /// `offset_m`'s `standing > 0.0` guard already turned back into the untouched `total`.
+    /// `the_inert_peak_path_does_not_read_base_elevation` pins all five.
     pub fn with_peaks(
         plates: PlateSet,
         land: Continentality,
@@ -1071,6 +1122,11 @@ impl Tectonics {
         let peak_noise = Noise::new(world_seed, PEAK_SALT);
         let peak_jitter = Noise::new(world_seed, PEAK_JITTER_SALT);
         let peak_height = Noise::new(world_seed, PEAK_HEIGHT_SALT);
+        // Inertness, decided here and not per sample. See this function's own doc.
+        let peaks = match peaks {
+            Some(params) if peak_block_is_live(&params) => Some(params),
+            _ => None,
+        };
         Self {
             plates,
             land,
@@ -1202,9 +1258,13 @@ impl Tectonics {
         // `Continentality::above_shore`'s `amplitude == 0.0` guard
         // (`continentality.rs:382-388`): an early return for the canonical and inert cases,
         // never a `+ 0.0`.
+        //
+        // **One comparison, and it covers every inert block rather than the zero-density one
+        // only.** `with_peaks` stores `None` for any block `peak_block_is_live` refuses, so
+        // there is no second arm here for a `Some` that cannot raise ground -- an inert block
+        // takes the `None` arm and never reaches `base_elevation`'s fBm below.
         match self.peaks {
             None => total,
-            Some(params) if params.density == 0.0 => total,
             Some(_) => {
                 // "Seabed" here means the ground a seamount would actually stand on: the
                 // continental base PLUS everything the plates have already done to it
@@ -1215,9 +1275,9 @@ impl Tectonics {
                 // `macro_elevation` from this function's own return value, so this mirrors
                 // what the caller will do with the answer.
                 //
-                // Computed only on this branch -- an fBm, and the whole reason the None /
-                // density == 0.0 arms above return before touching it, since this function
-                // is sampled at every node the hydrology bake visits.
+                // Computed only on this branch -- an fBm, and the whole reason the `None` arm
+                // above returns before touching it, since this function is sampled at every
+                // node the hydrology bake visits.
                 let seabed_m = self.land.base_elevation(point) + total;
                 // Precondition carried from `peak_offset_m`'s own doc: `point.vector` must
                 // be unit length. Not asserted here, even in debug -- `offset_m`'s own
@@ -1283,6 +1343,12 @@ impl Tectonics {
     /// **The window is evaluated before the lattice is touched**, so a term that is inert, or
     /// a point over shallow water, costs one comparison and no hashing. That is the same
     /// ordering `coast_offset` uses (`continentality.rs:409-411`) and for the same reason.
+    /// **"Inert" means inert for any reason, not only for a zero density**: the five
+    /// point-independent ways a block can answer zero everywhere are decided once per world by
+    /// `peak_block_is_live`, which `Tectonics::with_peaks` applies before storing the block, so
+    /// every one of them arrives here as a `None` and stops at the match below. Until the final
+    /// whole-branch review only the zero-density case did; the other four reached
+    /// `Tectonics::offset_m`'s `base_elevation` call -- a full fBm -- on every sample.
     ///
     /// `seabed_m` is taken as an argument rather than read from `self.land` here, even
     /// though `Tectonics` holds the `Continentality` this world's seabed comes from.
@@ -1300,20 +1366,17 @@ impl Tectonics {
     /// coming from outside, so a caller admitting a raw vector from a boundary is responsible
     /// for that guarantee -- carried to Tasks 2 and 4, where those call sites live.
     pub fn peak_offset_m(&self, point: &SpherePoint, seabed_m: f64) -> f64 {
+        // One comparison for an inert block. `Tectonics::with_peaks` has already refused,
+        // once for the whole world, every block `peak_block_is_live` calls dead -- zero
+        // density, a zero or non-finite `height_m`, a non-positive `lattice_m` or `reach_m`,
+        // and a `reach_m` past `lattice_m`, the invariant that makes the 3x3x3 scan below
+        // complete (see this function's own doc; Task 4 restates it at the ABI boundary).
+        // Nothing writes `peaks` after construction, so a `Some` reaching here is live and
+        // those five conditions need not be re-asked at every sample.
         let params = match self.peaks {
             None => return 0.0,
-            Some(params) if params.density == 0.0 => return 0.0,
             Some(params) => params,
         };
-        if !(params.lattice_m > 0.0) || !(params.reach_m > 0.0) || !params.height_m.is_finite() {
-            return 0.0;
-        }
-        // The invariant that makes the 3x3x3 scan below complete. See this function's own
-        // doc; Task 4 restates it at the ABI boundary, this is the guard that protects the
-        // engine regardless of what a boundary does or does not check.
-        if !(params.reach_m <= params.lattice_m) {
-            return 0.0;
-        }
         let window = peak_depth_window(-seabed_m, params.min_depth_m);
         if !(window > 0.0) {
             return 0.0;
@@ -3759,6 +3822,14 @@ mod tests {
     /// calibration but leaves `world_seed` (and therefore every `Noise` field `Tectonics`
     /// salts from it) untouched -- and show the inert path does not notice, while an active
     /// one does.
+    ///
+    /// **Widened by the final whole-branch review's minor 9 to all five inert cases.** It
+    /// originally covered `None` and a zero-density `Some`, which were the only two
+    /// `offset_m` gated on; a block inert because of `height_m`, `reach_m` or a violated
+    /// `reach_m <= lattice_m` still paid the fBm. `Tectonics::with_peaks` now decides
+    /// inertness once, through `peak_block_is_live`, and the loop below is what keeps it
+    /// decided: five blocks, each inert for a different reason, each required to be blind to
+    /// the land under it *and* bit-identical to no block at all.
     #[test]
     fn the_inert_peak_path_does_not_read_base_elevation() {
         let plates = three_plate_set();
@@ -3779,27 +3850,60 @@ mod tests {
             );
         }
 
-        // Inert (density 0.0 with a Some block): same claim, the other early-return arm.
-        let zero_a = Tectonics::with_peaks(
-            plates.clone(),
-            land_a,
-            EARTH_RADIUS_M,
-            Some(TectonicParams::canonical()),
-            Some(PeakParams::canonical()),
-        );
-        let zero_b = Tectonics::with_peaks(
-            plates.clone(),
-            land_b,
-            EARTH_RADIUS_M,
-            Some(TectonicParams::canonical()),
-            Some(PeakParams::canonical()),
-        );
-        for (index, point) in points.iter().enumerate() {
-            assert_eq!(
-                zero_a.offset_m(point).to_bits(),
-                zero_b.offset_m(point).to_bits(),
-                "density-0.0 path differed at spiral index {index}"
+        // Inert with a `Some` block, on **every** reason a block can be inert, not only the
+        // zero-density one. Minor 9 of the final whole-branch review: `offset_m` gated on
+        // `density == 0.0` alone, so a block made inert any other way still paid
+        // `base_elevation`'s fBm at every sample. `with_peaks` now decides all five through
+        // `peak_block_is_live`, and this is what holds it there -- each of these five blocks
+        // must be as blind to the land under it as no block at all is.
+        //
+        // `height_m: 0.0` is admissible on purpose (`WB_MIN_PEAK_HEIGHT_M` is 0.0) and so is
+        // the whole of `PeakParams::canonical()`; the other three are blocks the ABI would
+        // refuse but the engine must still survive, since `Tectonics::with_peaks` is public
+        // and `peak_offset_m`'s guards are the engine's own, not the boundary's.
+        let inert_blocks: [(&str, PeakParams); 5] = [
+            ("density 0.0", PeakParams::canonical()),
+            ("height_m 0.0", PeakParams { height_m: 0.0, ..PeakParams::volcanic() }),
+            ("height_m NaN", PeakParams { height_m: f64::NAN, ..PeakParams::volcanic() }),
+            ("reach_m 0.0", PeakParams { reach_m: 0.0, ..PeakParams::volcanic() }),
+            (
+                "reach_m past lattice_m",
+                PeakParams {
+                    reach_m: VOLCANIC_LATTICE_M + 1.0,
+                    ..PeakParams::volcanic()
+                },
+            ),
+        ];
+        for (label, block) in inert_blocks {
+            let zero_a = Tectonics::with_peaks(
+                plates.clone(),
+                land_a,
+                EARTH_RADIUS_M,
+                Some(TectonicParams::canonical()),
+                Some(block),
             );
+            let zero_b = Tectonics::with_peaks(
+                plates.clone(),
+                land_b,
+                EARTH_RADIUS_M,
+                Some(TectonicParams::canonical()),
+                Some(block),
+            );
+            for (index, point) in points.iter().enumerate() {
+                assert_eq!(
+                    zero_a.offset_m(point).to_bits(),
+                    zero_b.offset_m(point).to_bits(),
+                    "{label}: inert path differed at spiral index {index}"
+                );
+                // And the same block is bit-identical to no block at all, which is what says
+                // the two lands agree because nothing was read rather than because something
+                // was read consistently.
+                assert_eq!(
+                    zero_a.offset_m(point).to_bits(),
+                    none_a.offset_m(point).to_bits(),
+                    "{label}: differed from an absent block at spiral index {index}"
+                );
+            }
         }
 
         // And the difference between the two lands is real: on an ACTIVE peak block, the
