@@ -2261,7 +2261,7 @@ pub const WB_MAX_PEAK_REACH_M: f64 = WB_MAX_WORLD_RADIUS_M;
 pub const WB_MIN_PEAK_MIN_DEPTH_M: f64 = 0.0;
 
 /// The ceiling on `min_depth_m`, in metres below datum, **beyond any abyss**: `|ABYSS_M|` is
-/// 4,600 m and this sits over an order of magnitude above it, so a caller can require a seabed
+/// 4,600 m and this sits 21.7 times above it, so a caller can require a seabed
 /// deeper than this planet's deepest point ever gets, which is a legitimate way to say "nowhere
 /// on this world" rather than a value this boundary should have to reject. Set to the same
 /// magnitude [`WB_MAX_PEAK_HEIGHT_M`] uses, for the same reason: `peak_depth_window` only ever
@@ -2276,8 +2276,11 @@ pub const WB_MAX_PEAK_MIN_DEPTH_M: f64 = 1.0e5;
 /// matter how fine the lattice is, but a lattice far finer than anything a tile in this viewer
 /// can display spends that fixed cost on islands too small to ever occupy a pixel -- the same
 /// waste [`WB_MAX_COAST_OCTAVES`]'s doc measures on the other end of a schedule, where the
-/// finest post spacing this viewer's tiles ever ask for is about 43 m of arc (see
-/// [`WB_MAX_COAST_OCTAVES`]). Ten metres sits below that with margin while still refusing the
+/// finest post spacing this viewer's tiles ever ask for is about 43 m of arc -- **a figure
+/// that doc measures on a 4,500,000 m planet, and which scales with radius**, so it is about
+/// 61 m at Earth's and about 89 m on the owner's 9,309,000 m world. Ten metres sits below the
+/// smallest of those with margin, which is why one floor serves every radius rather than
+/// needing to be a function of it. While still refusing the
 /// pathological end of the range: a caller asking for a lattice cell smaller than a human
 /// footprint is not asking for an island field, and every candidate that floor would generate
 /// is invisible work.
