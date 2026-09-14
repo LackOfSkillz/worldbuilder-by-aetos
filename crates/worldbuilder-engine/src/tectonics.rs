@@ -1220,7 +1220,11 @@ impl Tectonics {
     /// `margins_within` returns them in plate-position order, and this loop must
     /// accumulate in that same order - no sorting, no reversing, no parallel
     /// accumulation.
-    pub fn offset_m(&self, point: &SpherePoint) -> f64 {
+    ///
+    /// **The plate part only.** The seamount term is added by [`Tectonics::offset_m`], which
+    /// wraps this. It has to be outside this function rather than at the end of it, because
+    /// the two early returns below cover most of the planet -- see `offset_m`'s own doc.
+    fn margin_offset_m(&self, point: &SpherePoint) -> f64 {
         let (nearest, margins) =
             self.plates.margins_within(point, MAX_TECTONIC_RANGE_M, self.radius_m);
         if margins.is_empty() {
@@ -1259,40 +1263,64 @@ impl Tectonics {
                     &margin.normal,
                 );
         }
+        total
+    }
 
-        // The seamount term, added last so it reads as an addition to a finished tectonic
-        // offset rather than something the margin terms above then reshape.
-        //
-        // **Gated, not added unconditionally, and that is load-bearing.** `peak_offset_m`
-        // returns exactly `0.0` when the block is absent, inert, or the water here is too
-        // shallow -- but `-0.0 + total` is `+0.0` when `total` is exactly `-0.0`, which would
-        // flip a sign bit `Tectonics::new` never would. Same shape as
-        // `Continentality::above_shore`'s `amplitude == 0.0` guard
-        // (`continentality.rs:382-388`): an early return for the canonical and inert cases,
-        // never a `+ 0.0`.
-        //
-        // **One comparison, and it covers every inert block rather than the zero-density one
-        // only.** `with_peaks` stores `None` for any block `peak_block_is_live` refuses, so
-        // there is no second arm here for a `Some` that cannot raise ground -- an inert block
-        // takes the `None` arm and never reaches `base_elevation`'s fBm below.
+    /// How much the plates AND the seamount field raise or lower the ground here.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    ///
+    /// Returns metres, to be *added* to the continental base elevation.
+    ///
+    /// Notes:
+    /// [`Tectonics::margin_offset_m`] is the plate part and carries its own notes -- including
+    /// the load-bearing iteration order, which this split does not touch. This function is that
+    /// plus the seamount term, and the split exists for one reason.
+    ///
+    /// **The seamount term cannot live at the end of the margin sum, and that was a real defect
+    /// rather than a style point.** `margin_offset_m` returns `0.0` early when no margin is in
+    /// range, which its own doc puts at 69 per cent of the planet and which measures **77.16%**
+    /// on the shipped fixture. A seamount term written after that early return is not evaluated
+    /// on most of the world, and the boundary of the region where it *is* evaluated is a cliff:
+    /// measured at **3,460.23 m in one 20 m step**, 454 times `peak_offset_m`'s own analytic
+    /// bound and larger than the 1,466 m cliff that made this file grow a continuity test in
+    /// the first place. A seamount is a property of the seabed, not of how near a plate
+    /// boundary it happens to be, so it belongs at this level -- outside the margin sum
+    /// entirely, applied to whatever that sum returned, including nothing.
+    /// `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall` is the pin;
+    /// it was written red against the old shape and is green against this one.
+    ///
+    /// **Gated, not added unconditionally, and that is load-bearing.** `peak_offset_m` returns
+    /// exactly `0.0` when the block is absent, inert, or the water here is too shallow -- but
+    /// `-0.0 + tectonic` is `+0.0` when `tectonic` is exactly `-0.0`, which would flip a sign
+    /// bit `Tectonics::new` never would. Same shape as `Continentality::above_shore`'s
+    /// `amplitude == 0.0` guard (`continentality.rs:382-388`): an early return for the
+    /// canonical and inert cases, never a `+ 0.0`.
+    ///
+    /// **One comparison, and it covers every inert block rather than the zero-density one
+    /// only.** `with_peaks` stores `None` for any block `peak_block_is_live` refuses, so there
+    /// is no second arm here for a `Some` that cannot raise ground -- an inert block takes the
+    /// `None` arm and never reaches `base_elevation`'s fBm below.
+    pub fn offset_m(&self, point: &SpherePoint) -> f64 {
+        let tectonic = self.margin_offset_m(point);
         match self.peaks {
-            None => total,
+            None => tectonic,
             Some(_) => {
                 // "Seabed" here means the ground a seamount would actually stand on: the
                 // continental base PLUS everything the plates have already done to it
-                // (`total`, computed above), not `base_elevation` alone. Using the base
-                // alone would let an island erupt on a tectonic ridge that is already
-                // shallow, or ignore a trench that has made the water deeper than the base
-                // suggests. `Shelf::evaluate` computes exactly this sum as
-                // `macro_elevation` from this function's own return value, so this mirrors
-                // what the caller will do with the answer.
+                // (`tectonic`), not `base_elevation` alone. Using the base alone would let an
+                // island erupt on a tectonic ridge that is already shallow, or ignore a trench
+                // that has made the water deeper than the base suggests. `Shelf::evaluate`
+                // computes exactly this sum as `macro_elevation` from this function's own
+                // return value, so this mirrors what the caller will do with the answer.
                 //
                 // Computed only on this branch -- an fBm, and the whole reason the `None` arm
                 // above returns before touching it, since this function is sampled at every
                 // node the hydrology bake visits.
-                let seabed_m = self.land.base_elevation(point) + total;
+                let seabed_m = self.land.base_elevation(point) + tectonic;
                 // Precondition carried from `peak_offset_m`'s own doc: `point.vector` must
-                // be unit length. Not asserted here, even in debug -- `offset_m`'s own
+                // be unit length. Not asserted here, even in debug -- this function's own
                 // `point` comes from the same `SpherePoint` every other caller in this file
                 // already trusts to be unit length (see `peak_offset_m`'s doc: "every
                 // `SpherePoint` this codebase constructs is already unit length"), and nothing
@@ -1301,9 +1329,9 @@ impl Tectonics {
                 // (Task 4's), and is where a check belongs if one is ever needed.
                 let standing = self.peak_offset_m(point, seabed_m);
                 if standing > 0.0 {
-                    total + standing
+                    tectonic + standing
                 } else {
-                    total
+                    tectonic
                 }
             }
         }
@@ -3723,7 +3751,6 @@ mod tests {
             let mut worst_seabed_step_m = 0.0f64;
             let mut steps_on_the_ramp = 0usize;
             let mut steps_walked = 0usize;
-            let mut frontier_steps = 0usize;
             let lat_step = 178.0 / f64::from(transect_count);
             for i in 0..transect_count {
                 let lat = -89.0 + lat_step * f64::from(i); // cast-ok: loop counter, 0..transect_count
@@ -3735,18 +3762,7 @@ mod tests {
                     let sample = |point: &SpherePoint| {
                         let plain = bare.offset_m(point);
                         let seabed_m = bare.land.base_elevation(point) + plain;
-                        // Whether `offset_m` reaches its seamount term here at all. See
-                        // `the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range`:
-                        // `offset_m` returns 0.0 before the term on an empty margin set, so a
-                        // step across that frontier is not a step of this field and cannot be
-                        // held to this field's bound.
-                        let (nearest, margins) = bare.plates.margins_within(
-                            point,
-                            MAX_TECTONIC_RANGE_M,
-                            EARTH_RADIUS_M,
-                        );
-                        let live = !margins.is_empty() && nearest.is_some();
-                        (plain, peaked.offset_m(point), seabed_m, live)
+                        (plain, peaked.offset_m(point), seabed_m)
                     };
                     let mut previous = sample(&frame.origin);
                     for step in 1..steps_per_transect {
@@ -3754,22 +3770,13 @@ mod tests {
                         let point = frame.local_to_sphere(t_m * east, t_m * north);
                         let here = sample(&point);
                         let gap = |a: f64, b: f64| if a > b { a - b } else { b - a };
-                        // A step that crosses the margin-range frontier is counted and left
-                        // out of the bound, because on one side of it `offset_m` never
-                        // evaluates the seamount term. That is a separate, larger defect and
-                        // it has its own measurement; hiding it inside this bound by widening
-                        // the bound is exactly what this test exists not to do.
-                        if here.3 != previous.3 {
-                            frontier_steps += 1;
-                            previous = here;
-                            continue;
-                        }
-                        if !here.3 {
-                            // Both sides outside margin range: `offset_m` is 0.0 either way
-                            // and there is no seamount term in the answer to bound.
-                            previous = here;
-                            continue;
-                        }
+                        // **Every step is bounded, with nothing skipped.** An earlier draft of
+                        // this test skipped steps that crossed the frontier of margin range,
+                        // because on one side of it `offset_m` returned before the seamount
+                        // term ever ran -- the defect
+                        // `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`
+                        // now forbids. With the term hoisted out of the margin sum there is no
+                        // such frontier and no such exemption: 1,439,520 steps per arm, all asserted.
                         let bare_step_m = gap(here.0, previous.0);
                         let composed_step_m = gap(here.1, previous.1);
                         let seabed_step_m = gap(here.2, previous.2);
@@ -3811,8 +3818,8 @@ mod tests {
                 }
             }
             println!(
-                "{label}: {steps_walked} bounded steps ({frontier_steps} skipped at the \
-                 margin-range frontier), worst composed {worst_composed_m:.4} m against a worst \
+                "{label}: {steps_walked} bounded steps, none skipped; worst composed \
+                 {worst_composed_m:.4} m against a worst \
                  bound of {worst_bound_m:.4} m; worst seamount-only step \
                  {worst_peak_step_m:.4} m against the {geometric_m:.4} m geometric bound; worst \
                  seabed move {worst_seabed_step_m:.4} m at {per_metre_of_seabed:.4} m/m; \
@@ -3830,47 +3837,37 @@ mod tests {
         }
     }
 
-    /// **A KNOWN OPEN DEFECT, found by the measurement minor 3 of the final whole-branch review
-    /// asked for, and left failing on purpose rather than papered over.** `#[ignore]`d so it
-    /// does not red the suite while it is open; run it with `cargo test -- --ignored`, and
-    /// delete the attribute the day the wiring is fixed.
+    /// **A seamount is a property of the seabed, not of how near a plate boundary it happens to
+    /// be.** This is the pin for the defect the composed-continuity measurement above uncovered,
+    /// and it was written RED against the shape that had the bug.
     ///
-    /// `Tectonics::offset_m` returns `0.0` **before** it reaches the seamount term whenever
-    /// `margins_within` comes back empty, or `nearest` is `None` (`tectonics.rs:1213-1220`).
-    /// That early return predates this branch -- its own comment calls a plate interior "69 per
-    /// cent of the planet" -- and Task 2 added the seamount term at the *end* of the function,
-    /// after it. So on most of the planet the seamount field is not evaluated at all, and at the
-    /// frontier of margin range it switches on discontinuously.
-    ///
-    /// **Measured here, on the shipped fixture** (`plates_for(20_260_904, 12)`,
+    /// `Tectonics::margin_offset_m` returns `0.0` early when `margins_within` comes back empty
+    /// or `nearest` is `None` -- its own doc puts that at 69 per cent of the planet, and it
+    /// measures 77.16% on this fixture. The seamount term was originally written at the *end* of
+    /// that function, after those early returns, so on most of the world it was never evaluated,
+    /// and the boundary of the region where it was evaluated was a cliff. Measured against the
+    /// old shape, on this fixture (`plates_for(20_260_904, 12)`,
     /// `Continentality::new(20_260_904, 6_371_000, 0.29)`, `PeakParams::volcanic()`, rustc
-    /// 1.98.0 `--release`, this host) -- the same world `tests/wasm_exports.rs` and the
-    /// verification report use:
+    /// 1.98.0 `--release`) -- the same world `tests/wasm_exports.rs` uses:
     ///
-    /// - **77.16%** of the planet (154,314 of a 200,000-point area-uniform spiral) has an empty
-    ///   margin set, so `offset_m` never reaches the term there.
-    /// - At those skipped points the field *would* stand up to **7,824.3 m**, and **28,942** of
-    ///   the 200,000 (14.5%) suppress more than 100 m.
+    /// - **154,314 of 200,000** area-uniform points (77.16%) never reached the term.
+    /// - The field would have stood up to **7,824.3 m** at those points; **28,942** of the
+    ///   200,000 (14.5%) suppressed more than 100 m.
     /// - Worst single-step jump in `offset_m` at a frontier crossing, over 600 transects x 2
     ///   bearings x 3,000 steps of 20 m: **3,460.23 m** (lat -25.81, bearing 45 degrees, step
     ///   560) -- **454x** the 7.62 m analytic bound, and larger than the 1,466 m cliff whose
     ///   discovery is why this file has a continuity test at all.
-    /// - With the term live on both sides of a step, the worst step is **6.13 m**, inside the
-    ///   bound. **The field is continuous; the wiring is not.** On the three-plate test fixture
-    ///   the same measurement reads 90.24% suppressed and a 2,749.07 m worst cliff.
+    /// - With the term live on both sides of a step the worst step was **6.13 m**, inside the
+    ///   bound: the field was continuous and the wiring was not. On the three-plate fixture the
+    ///   same measurement read 90.24% suppressed and a 2,749.07 m worst cliff.
     ///
-    /// **Why this fix wave did not just move the term.** Restructuring `offset_m` so the term is
-    /// reached on a plate interior is a few lines and cannot move the canonical world (with no
-    /// peak block, `total` is still the same `0.0`). But it multiplies the islanded share by
-    /// roughly the reciprocal of the suppressed fraction, which puts the shipped
-    /// `VOLCANIC_DENSITY` far above the spec's 0.8% ceiling and invalidates every figure in
-    /// Task 7's three-world calibration sweep, `island_survey.rs`'s output, the survey table in
-    /// `VOLCANIC_DENSITY`'s own doc and report sections 4, 5 and 7. That is a re-run of Task 7,
-    /// not a fix wave, and doing it silently under a merge is how a calibration stops meaning
-    /// anything. The defect is measured, named and pinned instead.
+    /// `Tectonics::offset_m` now wraps `margin_offset_m` instead of ending it, so both counts
+    /// below are zero. **This test also fixes the island population in place:** hoisting the
+    /// term multiplied the area the field can stand on by about 4.4x, which is why
+    /// `VOLCANIC_DENSITY` had to be re-surveyed down from 0.36 -- see that constant's own doc
+    /// for the re-run sweep and why the maximin margin is now near 10 sigma rather than 2.
     #[test]
-    #[ignore = "known open defect: offset_m returns before the seamount term on an empty margin set"]
-    fn the_seamount_term_is_unreachable_wherever_no_plate_margin_is_in_range() {
+    fn the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall() {
         let params = PeakParams::volcanic();
         let plates = crate::generation::plates_for(20_260_904, 12);
         let land = Continentality::new(20_260_904, EARTH_RADIUS_M, 0.29);
@@ -3883,19 +3880,38 @@ mod tests {
             !margins.is_empty() && nearest.is_some()
         };
 
-        // 1. The term must be reachable everywhere, because a seamount is a property of the
-        //    seabed and not of how near a plate boundary it happens to be.
+        // 1. The term must be reachable everywhere. `peak_offset_m` answers what the field
+        //    wants to stand at a point; `offset_m` must not silently decline to ask it.
+        //    Asserted as a count of points where the field wants something and the composed
+        //    answer does not carry it, which is the observable form of "the term was skipped".
         let points = area_uniform_spiral(200_000);
         let mut suppressed = 0usize;
         let mut worst_suppressed_m = 0.0f64;
+        let mut interior_points = 0usize;
+        let mut interior_islands = 0usize;
         for point in &points {
-            if live(point) {
-                continue;
+            let interior = !live(point);
+            if interior {
+                interior_points += 1;
             }
-            suppressed += 1;
-            let wanted = peaked.peak_offset_m(point, bare.land.base_elevation(point));
-            if wanted > worst_suppressed_m {
-                worst_suppressed_m = wanted;
+            let tectonic = bare.offset_m(point);
+            let wanted = peaked.peak_offset_m(point, bare.land.base_elevation(point) + tectonic);
+            let carried = peaked.offset_m(point);
+            // The field wants something here, so the composed answer must be exactly the sum
+            // `offset_m` is specified to return. Compared on the SUM rather than on a
+            // difference: `carried - tectonic` is not `standing` once `tectonic` is large
+            // enough to round the addition, and 1,615 of these points hit that -- an artefact
+            // of the check, not of the field.
+            if wanted > 0.0 {
+                if interior {
+                    interior_islands += 1;
+                }
+                if carried.to_bits() != (tectonic + wanted).to_bits() {
+                    suppressed += 1;
+                    if wanted > worst_suppressed_m {
+                        worst_suppressed_m = wanted;
+                    }
+                }
             }
         }
         assert_eq!(
@@ -3905,18 +3921,35 @@ mod tests {
              {worst_suppressed_m} m of island",
             points.len()
         );
+        // And the claim is not vacuous: most of this fixture IS plate interior, and the field
+        // really does want to stand seamounts there. Without these two the assertion above
+        // would pass on a world with no plate interiors, or with no islands in them -- which is
+        // precisely the shape the old code was mistaken for.
+        assert!(
+            interior_points > points.len() / 2,
+            "only {interior_points} of {} points are plate interior; this fixture no longer \
+             exercises the early return the defect lived behind",
+            points.len()
+        );
+        assert!(
+            interior_islands > 100,
+            "the field wants a seamount at only {interior_islands} plate-interior points, so \
+             the assertion above could pass without the term being reachable there"
+        );
 
-        // 2. And therefore no step ACROSS THE FRONTIER is a cliff. Only those steps are
-        //    asserted here -- the ones with the term live on both sides are
-        //    `no_composed_step_exceeds_the_geometric_and_window_bounds_together`'s job, and
-        //    asserting them again here would be asserting the margin terms' own gradient,
-        //    which this branch does not bound. The bound is the same three-part one that test
-        //    derives: the bare field's own measured step, plus the geometric term, plus the
-        //    window's ramp allowance against the measured seabed move.
+        // 2. And therefore no step ACROSS THE FRONTIER is a cliff -- the 3,460.23 m jump the
+        //    old shape produced is now unreproducible. Only frontier-crossing steps are
+        //    asserted here, because the ones with margins on both sides are
+        //    `no_composed_step_exceeds_the_geometric_and_window_bounds_together`'s job, and it
+        //    walks a different fixture. The bound is the same three-part one that test derives:
+        //    the bare field's own measured step, plus the geometric term, plus the window's ramp
+        //    allowance against the measured seabed move. `crossings` is asserted non-zero, or
+        //    this half would be an empty loop.
         let step_m = 20.0;
         let geometric_m = params.height_m * 1.5 / params.reach_m * step_m;
         let span_m = params.min_depth_m - params.min_depth_m * 0.8;
         let per_metre_of_seabed = params.height_m * 1.5 / span_m;
+        let mut crossings = 0usize;
         for i in 0..600 {
             let lat = -89.0 + (178.0 / 600.0) * f64::from(i); // cast-ok: loop counter, 0..600
             let lon = 0.611 * f64::from(i) - 180.0; // cast-ok: loop counter
@@ -3942,6 +3975,7 @@ mod tests {
                         previous = here;
                         continue;
                     }
+                    crossings += 1;
                     let gap = |a: f64, b: f64| if a > b { a - b } else { b - a };
                     let bound_m = gap(here.2, previous.2)
                         + geometric_m
@@ -3959,6 +3993,7 @@ mod tests {
                 }
             }
         }
+        assert!(crossings > 0, "no transect crossed the frontier, so nothing was asserted");
     }
 
     #[test]
