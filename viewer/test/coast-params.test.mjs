@@ -258,11 +258,11 @@ test("the joint bounds are the engine's, asked of the engine", () => {
   assert.throws(
     () => engine.newWorld({ ...DEFAULT_WORLD, coast: { ...fractal, octaves: 0 } }),
     // **The constructor's name moved and this regex moved with it**, deliberately rather than by
-    // loosening. `newWorld` now calls the widest door, `wb_world_new_gully`, for every path -- the
-    // gully channel's wiring -- so the message names that export. What this assertion is about is
-    // unchanged and is the second half: a refused world says WHICH channel refused it, rather than
-    // handing back a handle of 0 and a blank page.
-    /wb_world_new_gully refused.*coast=WB_ERR_PARAM/s,
+    // loosening. `newWorld` now calls the widest door, `wb_world_new_peak` -- the peak channel's
+    // wiring, past `wb_world_new_gully` -- so the message names that export. What this assertion
+    // is about is unchanged and is the second half: a refused world says WHICH channel refused
+    // it, rather than handing back a handle of 0 and a blank page.
+    /wb_world_new_peak refused.*coast=WB_ERR_PARAM/s,
   );
 });
 

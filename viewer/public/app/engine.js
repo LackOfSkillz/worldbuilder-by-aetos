@@ -31,6 +31,9 @@ import {
 import {
   GULLY_STRIDE, GULLY_PRESET, gullyToRecord, gullyFromRecord,
 } from "./gully-params.js";
+import {
+  PEAK_STRIDE, PEAK_PRESET, peakToRecord, peakFromRecord,
+} from "./peak-params.js";
 
 /// Status codes, mirrored from `wasm.rs`. Kept as names so a failure reads as a sentence.
 export const WB_OK = 0;
@@ -171,7 +174,8 @@ export class Engine {
       "wb_relief_preset", "wb_relief_check",
       "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check",
       "wb_world_new_coast", "wb_coast_preset", "wb_coast_check",
-      "wb_world_new_gully", "wb_gully_preset", "wb_gully_check", "wb_world_free",
+      "wb_world_new_gully", "wb_gully_preset", "wb_gully_check",
+      "wb_world_new_peak", "wb_peak_preset", "wb_peak_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32", "wb_water_run",
       "wb_hydro_bake", "wb_hydro_len", "wb_hydro_copy", "wb_hydro_free",
@@ -379,6 +383,52 @@ export class Engine {
     }
   }
 
+  /// The five f64 of a named peak preset, as an object keyed by `PEAK_FIELDS`.
+  ///
+  /// **The only way the viewer learns a peak number.** Nothing in `viewer/` restates 8000, 0.11,
+  /// 31500, 2500 or 45000; the density slider is anchored here and the preset button sends this
+  /// answer straight back, so `tectonics.rs` stays the single place those numbers live. `name` is
+  /// a key of `PEAK_PRESET`.
+  peakPreset(name = "canonical") {
+    const selector = PEAK_PRESET[name];
+    if (selector === undefined) throw new Error(`unknown peak preset "${name}"`);
+    const bytes = PEAK_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the peak preset buffer");
+    try {
+      const status = this.exports.wb_peak_preset(selector, ptr, PEAK_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_peak_preset(${name}) returned ${statusName(status)}`);
+      }
+      // The view is created after the allocation and copied immediately — a view taken before
+      // `wb_alloc` could be detached by heap growth.
+      return peakFromRecord(Array.from(new Float64Array(this.memory.buffer, ptr, PEAK_STRIDE)));
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
+  /// Ask the engine whether a peak block would be accepted, **without building a world**.
+  /// Returns a `WB_*` status. `null` is the canonical path and always answers `WB_OK`.
+  ///
+  /// One of this channel's bounds is joint rather than per-field: `reach_m <= lattice_m` is what
+  /// keeps `peak_of_cell`'s 3x3x3 candidate scan complete, and neither field's own domain check
+  /// can see it. The panel asks the real validator rather than re-deriving the comparison in
+  /// JavaScript, the same posture `checkCoast` and `checkGully` both take on their own joint
+  /// bounds.
+  checkPeak(peak) {
+    if (peak === null || peak === undefined) return WB_OK;
+    const bytes = PEAK_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the peak buffer");
+    try {
+      new Float64Array(this.memory.buffer, ptr, PEAK_STRIDE).set(peakToRecord(peak));
+      return this.exports.wb_peak_check(ptr, PEAK_STRIDE) >>> 0;
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
   /// `relief` is `null`/absent for the canonical path — a null pointer and a length of zero,
   /// which is the same `None` `wb_world_new` passes and is byte-for-byte today's world. An
   /// object keyed by `RELIEF_FIELDS` asks for a different one.
@@ -388,13 +438,16 @@ export class Engine {
   /// `coast` is the same story again: `null`/absent is `None` -- RULING 1 of the fractal-coastline
   /// slice, which is that the default coastline cannot move -- and an object keyed by
   /// `COAST_FIELDS` asks for a roughened one.
-  /// `gully` is the fifth and last: `null`/absent is `None`, which in this channel means
+  /// `gully` is the fifth: `null`/absent is `None`, which in this channel means
   /// `Surface::with_gully` builds **no steering lattice at all** and `elevation_m` takes a
   /// different branch -- so the canonical path is structurally the old one rather than the new one
   /// plus zero. An object keyed by `GULLY_FIELDS` asks for the drainage texture.
+  /// `peaks` is the sixth and last: `null`/absent is `None`, and on this channel that means
+  /// `Tectonics::peak_offset_m` returns 0.0 on its very first line rather than evaluating the
+  /// term at all. An object keyed by `PEAK_FIELDS` asks for the seamount field.
   newWorld({
     seed, radiusM, plateCount, landFraction, features = [], relief = null, tectonics = null,
-    coast = null, gully = null,
+    coast = null, gully = null, peaks = null,
   }) {
     let ptr = 0;
     let bytes = 0;
@@ -406,7 +459,15 @@ export class Engine {
     let coastBytes = 0;
     let gullyPtr = 0;
     let gullyBytes = 0;
+    let peakPtr = 0;
+    let peakBytes = 0;
     try {
+      if (peaks) {
+        peakBytes = PEAK_STRIDE * 8;
+        peakPtr = this.exports.wb_alloc(peakBytes);
+        if (peakPtr === 0) throw new Error("wb_alloc refused the peak buffer");
+        new Float64Array(this.memory.buffer, peakPtr, PEAK_STRIDE).set(peakToRecord(peaks));
+      }
       if (gully) {
         gullyBytes = GULLY_STRIDE * 8;
         gullyPtr = this.exports.wb_alloc(gullyBytes);
@@ -444,37 +505,40 @@ export class Engine {
           ], i * WB_FEATURE_STRIDE);
         });
       }
-      // ONE constructor for all SIXTEEN paths, and `wb_world_new_gully` is now it. With all four
-      // blocks null this is `(null, 0, null, 0, null, 0, null, 0)`, which the engine reads as four
-      // `None`s — the same world `wb_world_new` builds, which the engine-side tests
+      // ONE constructor for all EIGHTEEN paths, and `wb_world_new_peak` is now it. With all five
+      // blocks null this is `(null, 0, null, 0, null, 0, null, 0, null, 0)`, which the engine
+      // reads as five `None`s — the same world `wb_world_new` builds, which the engine-side tests
       // `the_relief_channel_default_path_is_the_untouched_world`,
       // `the_tectonic_channel_default_path_is_the_untouched_world`,
-      // `the_coast_channel_default_path_is_the_untouched_world` and
-      // `gully_none_matches_gully_some_canonical_bit_for_bit` pin bit for bit.
+      // `the_coast_channel_default_path_is_the_untouched_world`,
+      // `gully_none_matches_gully_some_canonical_bit_for_bit` and the peak channel's own parity
+      // test pin bit for bit.
       //
-      // Calling the widest door unconditionally rather than choosing between five is
+      // Calling the widest door unconditionally rather than choosing between six is
       // deliberate: a branch here would mean the default path and the chosen path went
       // through different exports, and the byte-identity those tests assert would stop
-      // covering what the viewer actually calls. **This line moving from `wb_world_new_coast` to
-      // `wb_world_new_gully` is the whole of the wiring**, and it is the line the digest control
-      // exists to hold: the default picture must not move because of it.
-      const handle = this.exports.wb_world_new_gully(
+      // covering what the viewer actually calls. **This line moving from `wb_world_new_gully` to
+      // `wb_world_new_peak` is the whole of the peak channel's wiring**, and it is the line the
+      // digest control exists to hold: the default picture must not move because of it.
+      const handle = this.exports.wb_world_new_peak(
         BigInt(seed), radiusM, plateCount, landFraction, ptr, features.length,
         reliefPtr, relief ? RELIEF_STRIDE : 0,
         tectonicPtr, tectonics ? TECTONIC_STRIDE : 0,
         coastPtr, coast ? COAST_STRIDE : 0,
         gullyPtr, gully ? GULLY_STRIDE : 0,
+        peakPtr, peaks ? PEAK_STRIDE : 0,
       ) >>> 0;
       if (handle === 0) {
-        // A refused world is a blank viewer, so the message has to name the reason. The three
+        // A refused world is a blank viewer, so the message has to name the reason. The five
         // parameter blocks are the arguments here with checkers that can say which field.
         const why =
           (relief ? ` relief=${statusName(this.checkRelief(relief))}` : "") +
           (tectonics ? ` tectonics=${statusName(this.checkTectonic(tectonics))}` : "") +
           (coast ? ` coast=${statusName(this.checkCoast(coast))}` : "") +
-          (gully ? ` gully=${statusName(this.checkGully(gully))}` : "");
+          (gully ? ` gully=${statusName(this.checkGully(gully))}` : "") +
+          (peaks ? ` peaks=${statusName(this.checkPeak(peaks))}` : "");
         throw new Error(
-          `wb_world_new_gully refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
+          `wb_world_new_peak refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
           `land=${landFraction} features=${features.length}${why}`,
         );
       }
@@ -485,6 +549,7 @@ export class Engine {
       if (tectonicPtr !== 0) this.exports.wb_dealloc(tectonicPtr, tectonicBytes);
       if (coastPtr !== 0) this.exports.wb_dealloc(coastPtr, coastBytes);
       if (gullyPtr !== 0) this.exports.wb_dealloc(gullyPtr, gullyBytes);
+      if (peakPtr !== 0) this.exports.wb_dealloc(peakPtr, peakBytes);
     }
   }
 

@@ -20,6 +20,7 @@ import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
 import { coastFromParams } from "./coast-params.js";
 import { gullyFromParams } from "./gully-params.js";
+import { peakFromParams } from "./peak-params.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, engineClimateEnabled, createReliefImageryProvider,
@@ -69,6 +70,7 @@ function worldSpecFromParams() {
     tectonics: null,
     coast: null,
     gully: null,
+    peaks: null,
   };
 }
 
@@ -195,6 +197,26 @@ async function boot() {
   // worker's own constructor and the tiles they fill are the same planet as the main thread's.
   const gullyCanonical = engine.gullyPreset("canonical");
   spec.gully = gullyFromParams(params, gullyCanonical);
+
+  // The peak block, and RULING 1 a sixth time. Same shape as the four above -- canonical is read
+  // FROM THE ENGINE, `peakFromParams` returns `null` when nothing was asked for, and that `null`
+  // reaches `wb_world_new_peak` as a null pointer with a length of zero.
+  //
+  // **This is the block that stands seamounts up out of deep ocean.** Tasks 1 through 5 grew the
+  // cellular field and shipped `wb_world_new_peak`, `wb_peak_preset` and `wb_peak_check` in the
+  // committed artifact; until this line existed nothing in the viewer sent a peak block, so the
+  // owner saw an unbroken ocean floor no matter what the engine could do.
+  //
+  // **The `null` here is stronger than the coast and tectonic ones, the same way gully's is.**
+  // `Tectonics::peak_offset_m` returns `0.0` on its very first line when `self.peaks` is `None`,
+  // so the canonical path never evaluates the term at all rather than evaluating it at a density
+  // of zero.
+  //
+  // Placed beside the other four reads and before the pool for the identical reason: the workers
+  // are handed this same `spec` by `structuredClone`, so a peak block chosen here reaches every
+  // worker's own constructor and the tiles they fill are the same planet as the main thread's.
+  const peakCanonical = engine.peakPreset("canonical");
+  spec.peaks = peakFromParams(params, peakCanonical);
 
   const size = number("size", HEIGHTMAP_SIZE);
   const maxLevel = number("maxLevel", MAX_LEVEL);
@@ -978,6 +1000,13 @@ async function boot() {
           s.gully.slopeReference} crest ${s.gully.crestSharpness} gate ${
           s.gully.gateElevationM}/${s.gully.gateElevationSpanM} m floor ${
           s.gully.flatEnergyFloor} steer ${s.gully.steerLatticeM} m`
+        : "canonical"} peaks=${
+      s.peaks
+        // Density AND the four fields it means nothing without: a caption naming density alone
+        // would say "11%" about a block whose height, reach, min depth or lattice pitch had also
+        // moved, and this line is what a screenshot carries as its own caption.
+        ? `dens ${s.peaks.density.toFixed(2)} height ${s.peaks.height_m} m reach ${
+          s.peaks.reach_m} m depth ${s.peaks.min_depth_m} m lattice ${s.peaks.lattice_m} m`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -1207,6 +1236,20 @@ async function boot() {
       /// a floor that closes an infinite-height hazard rather than stating a domain -- so a panel
       /// re-deriving any of that in JavaScript would be a second copy of a bound.
       check: (block) => engine.checkGully(block) === 0,
+    },
+    /// The engine's own peak presets, read across the boundary at boot. `controls.js` anchors its
+    /// one slider on `canonical` and fills the whole block from `volcanic` when the preset button
+    /// is pressed -- so the panel cannot drift from `tectonics.rs`, because it holds no peak
+    /// number of its own to drift.
+    peaks: {
+      canonical: peakCanonical,
+      volcanic: engine.peakPreset("volcanic"),
+      get chosen() { return installed.state.spec.peaks; },
+      /// Whether the engine would accept a block, asked of `wb_peak_check` itself. This
+      /// channel's one bound no per-field check can see is joint -- `reach_m <= lattice_m` is
+      /// what keeps `peak_of_cell`'s candidate scan complete -- so a panel re-deriving it in
+      /// JavaScript would be a second copy of a bound and a second chance to disagree with it.
+      check: (block) => engine.checkPeak(block) === 0,
     },
     tectonics: {
       canonical: tectonicCanonical,
