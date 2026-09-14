@@ -4996,3 +4996,65 @@ fn water_buffer(out: *mut f64, out_len: u32, needed: usize) -> Result<(), u32> {
         _ => Err(WB_ERR_BUFFER),
     }
 }
+
+/// What this module's *private* wire-format helpers do with a record, asserted where they are
+/// visible.
+///
+/// **Why this module exists at all, when every other claim about this boundary is made from
+/// `tests/wasm_exports.rs`.** That crate reaches this one through the `extern "C"` exports, and
+/// [`decode_peak`]'s slot-to-field mapping is not observable through them by refusal alone:
+/// `height_m` and `min_depth_m` share the domain `[0, 1e5]`, so a record that swapped those two
+/// slots is admissible read either way round and every status code stays identical. The final
+/// whole-branch review found exactly that hole. It can be closed from outside by *behaviour* --
+/// build a live world and watch the ground move, which
+/// `an_island_the_probes_can_actually_see_moves_the_ground_a_swapped_slot_would_not` now does --
+/// but a permutation is better caught by construction than by witness, and construction needs the
+/// function itself. So: the cheap, world-free, catches-every-permutation half of the pin lives
+/// here, next to the two functions it is about, and the expensive does-a-real-world-change half
+/// lives with the rest of the ABI suite.
+#[cfg(test)]
+mod peak_wire_format_tests {
+    use super::*;
+
+    /// A distinct sentinel per slot, so any permutation of the five lands at least one value in
+    /// the wrong field.
+    ///
+    /// The five are the same ones `viewer/test/peak-params.test.mjs`'s "the round trip catches a
+    /// field swap, not just a length change" uses, deliberately: the two sides of this wire format
+    /// are pinned against the same witness, so a reader comparing them is comparing like with
+    /// like. Each is inside its own field's documented domain (and `3333 <= 5555` satisfies the
+    /// joint invariant), so `decode_peak` returns `Some` rather than refusing the record --
+    /// which is the point: a refusal would prove nothing about which slot went where.
+    const SENTINEL: [f64; WB_PEAK_STRIDE] = [1111.0, 0.2222, 3333.0, 4444.0, 5555.0];
+
+    #[test]
+    fn decode_peak_puts_every_slot_in_its_own_field() {
+        let peak = decode_peak(&SENTINEL).expect("the sentinel record is admissible");
+        // Named one by one rather than compared against a rebuilt struct: a struct literal
+        // written in field order here would be a second copy of the order under test, and would
+        // pass a swap that this file and `PeakParams` made together.
+        assert_eq!(peak.height_m, SENTINEL[0], "height_m is not slot 0");
+        assert_eq!(peak.density, SENTINEL[1], "density is not slot 1");
+        assert_eq!(peak.reach_m, SENTINEL[2], "reach_m is not slot 2");
+        assert_eq!(peak.min_depth_m, SENTINEL[3], "min_depth_m is not slot 3");
+        assert_eq!(peak.lattice_m, SENTINEL[4], "lattice_m is not slot 4");
+    }
+
+    #[test]
+    fn encode_peak_is_the_exact_positional_inverse_of_decode_peak() {
+        let peak = decode_peak(&SENTINEL).expect("the sentinel record is admissible");
+        // Bit-for-bit, not approximately: this is a wire format, and a round trip that reordered
+        // two same-domain slots would be invisible to any tolerance.
+        let round_tripped = encode_peak(&peak);
+        for slot in 0..WB_PEAK_STRIDE {
+            assert_eq!(
+                round_tripped[slot].to_bits(),
+                SENTINEL[slot].to_bits(),
+                "slot {slot} did not survive decode then encode"
+            );
+        }
+        // And the inverse direction: the five sentinels are distinct, so an `encode_peak` that
+        // permuted two slots relative to `decode_peak` could not produce the record back.
+        assert_eq!(encode_peak(&peak), SENTINEL);
+    }
+}

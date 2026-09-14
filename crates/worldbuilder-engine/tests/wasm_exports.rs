@@ -4875,20 +4875,47 @@ fn a_wrongly_sized_or_misaligned_gully_buffer_is_refused_rather_than_read() {
 // separate from `coast_field_sweep`: a per-field-only validator cannot see a bound that spans
 // two fields.
 
-/// A handful of points spanning land, a shallow harbour and open ocean at several depths.
-/// `peak_offset_m` gates on seabed depth before it ever touches the lattice, so a probe set
-/// confined to one of those regimes would exercise only one branch of the window -- the
-/// shallow-harbour and on-land points below are expected to read back exactly the ground the
-/// other five channels already produce there, and the open-ocean points are where a seamount
-/// can actually stand.
+/// A handful of points spanning land, shallow water, and deep ocean where a seamount really
+/// does stand. `peak_offset_m` gates on seabed depth before it ever touches the lattice, so a
+/// probe set confined to one of those regimes would exercise only one branch of the window --
+/// the on-land, harbour and shallow points below are expected to read back exactly the ground
+/// the other five channels already produce there, and the last three carry an island at the
+/// shipped preset.
+///
+/// **The last three are DERIVED, and the three they replaced were wrong.** The final
+/// whole-branch review found that the points this set used to label "open ocean"
+/// (`-71.5, 38`; `3, -107.5`; `-73, -132`) read -206.53 m, -280.01 m and -156.65 m of
+/// `wb_structural_m` on this fixture -- all shallower than `peak_depth_window`'s 2,000 m onset,
+/// so no seamount could stand at any of them at *any* density, and the comment claiming they
+/// were "where a seamount can actually stand" was false. (`0, 0` is -1,140.95 m and is kept,
+/// relabelled, as the shallow-open-water case.)
+///
+/// Replaced by a derivation rather than another guess: a 0.25-degree global scan over
+/// latitudes -80..80 (1,152,721 sites) compared `plain_world()` against `PeakParams::volcanic()`
+/// through `wb_structural_m`; 27,069 sites rose by more than 500 m, and these are the three
+/// largest movers that sit in three different oceans rather than three points on one plateau.
+/// Measured on this host (rustc 1.98.0, `--release`):
+///
+/// | probe | plain | peaked | rise |
+/// |---|---|---|---|
+/// | 13.5, -91.5 | -3,446.10 m | +4,327.06 m | 7,773.16 m |
+/// | -43.75, 46.0 | -4,600.00 m | +3,066.62 m | 7,666.62 m |
+/// | -45.5, -147.25 | -3,530.17 m | +3,788.68 m | 7,318.85 m |
+///
+/// All three surface -- the field puts land above the datum in open ocean at each of them, which
+/// is the spec's central claim and is what `sample_peak` now watches rather than only finiteness.
 const PEAK_PROBES: &[(f64, f64)] = &[
-    (12.0, 34.0),       // the witnessed point -- on land, above datum
-    (-18.25, 121.5),    // the harbour -- shallow, coastal
-    (0.0, 0.0),
-    (-71.5, 38.0),       // open ocean
-    (3.0, -107.5),       // open ocean
-    (-73.0, -132.0),     // open ocean
+    (12.0, 34.0),        // the witnessed point -- on land, above datum
+    (-18.25, 121.5),     // the harbour -- shallow, coastal
+    (0.0, 0.0),          // open water, but shallower than the depth window's onset
+    (13.5, -91.5),       // deep ocean, and an island stands here at the shipped preset
+    (-43.75, 46.0),      // ditto, a second ocean
+    (-45.5, -147.25),    // ditto, a third
 ];
+
+/// Which [`PEAK_PROBES`] entries carry an island at `PeakParams::volcanic()`, by index. Named
+/// once, so the table in that constant's doc and the sampling test below cannot drift apart.
+const PEAK_ISLAND_PROBES: &[usize] = &[3, 4, 5];
 
 /// A named preset, read across the boundary exactly as the viewer reads it. **Nothing in this
 /// file writes a peak value down**, canonical or preset: both come from `wb_peak_preset`, so
@@ -4950,6 +4977,88 @@ fn sample_peak(record: &[f64; WB_PEAK_STRIDE], label: &str) {
         );
     }
     assert_eq!(wb_world_free(handle), WB_OK);
+}
+
+/// **The one test in this file that would fail if `decode_peak` swapped two same-domain slots.**
+///
+/// The final whole-branch review's blocker: `height_m` and `min_depth_m` share the domain
+/// `[0, 1e5]`, so swapping slots 0 and 3 in `wasm.rs`'s `decode_peak` passed every other peak
+/// test here. The per-field sweep, the joint-invariant sweep and the checker-versus-constructor
+/// test all only ask which records are *admissible*, and a swapped pair is admissible both ways
+/// round. The canonical-record bit-identity test passes vacuously, because a canonical record is
+/// inert whichever way it is read. And `sample_peak` asserted only finiteness. Under the swap,
+/// `PeakParams::volcanic()` would decode as `height_m: 2,500, min_depth_m: 8,000` -- a block
+/// needing 8 km of water under a node to open its window, which nothing on this world has, so it
+/// would raise nothing anywhere and every one of those tests would stay green.
+///
+/// So this asserts what a wire-format regression actually costs: a *sampled elevation*, not a
+/// decoded struct. The three island probes are the derived ones in `PEAK_PROBES`'s own table;
+/// the bars below are loose against the measurements there (7,773 / 7,667 / 7,319 m of rise, to
+/// +4,327 / +3,067 / +3,789 m of ground) because the point is the mechanism, not the digit --
+/// they are far above zero and far below the 8,000 m `height_m` ceiling, so neither an inert
+/// field nor a runaway one can pass.
+///
+/// The complementary half of the pin -- that each slot lands in its own field, by construction
+/// rather than by witness -- is `wasm.rs`'s own `peak_wire_format_tests`, which can see
+/// `decode_peak` directly and so catches *every* permutation rather than the ones that happen to
+/// move this world.
+#[test]
+fn an_island_the_probes_can_actually_see_moves_the_ground_a_swapped_slot_would_not() {
+    let plain = plain_world();
+    assert_ne!(plain, 0);
+    let volcanic = peak_preset_record(WB_PEAK_VOLCANIC);
+    let peaked = world_with_peak(&volcanic);
+    assert_ne!(peaked, 0, "the shipped volcanic preset was refused: {volcanic:?}");
+
+    let mut surfaced = 0usize;
+    for index in PEAK_ISLAND_PROBES {
+        let (lat, lon) = PEAK_PROBES[*index];
+        let before = wb_structural_m(plain, lat, lon);
+        let after = wb_structural_m(peaked, lat, lon);
+        assert!(
+            before < -2_500.0,
+            "probe {index} ({lat}, {lon}) is not deep ocean on the plain world: {before} m -- a \
+             probe shallower than the depth window's onset can never carry a seamount"
+        );
+        assert!(
+            after - before > 5_000.0,
+            "probe {index} ({lat}, {lon}) rose only {} m ({before} m -> {after} m); the shipped \
+             preset must stand an island here, and a decoder that read two slots the wrong way \
+             round would raise nothing at all",
+            after - before
+        );
+        assert!(
+            after > 0.0,
+            "probe {index} ({lat}, {lon}) stayed under water at {after} m; this field's whole \
+             claim is land above the datum in open ocean"
+        );
+        assert!(
+            after - before < volcanic[0],
+            "probe {index} ({lat}, {lon}) rose {} m, above the block's own height_m ({})",
+            after - before,
+            volcanic[0]
+        );
+        surfaced += 1;
+    }
+    assert_eq!(surfaced, PEAK_ISLAND_PROBES.len(), "not every island probe was checked");
+
+    // And the other three probes do NOT move, bit for bit: the depth window really is what
+    // decides, so this test passes because the preset stands islands in deep water and not
+    // because it raises the whole planet.
+    for (index, (lat, lon)) in PEAK_PROBES.iter().enumerate() {
+        if PEAK_ISLAND_PROBES.contains(&index) {
+            continue;
+        }
+        assert_eq!(
+            wb_structural_m(plain, *lat, *lon).to_bits(),
+            wb_structural_m(peaked, *lat, *lon).to_bits(),
+            "probe {index} ({lat}, {lon}) is on land or inside the depth window's onset and must \
+             read back exactly the ground the other five channels produce there"
+        );
+    }
+
+    assert_eq!(wb_world_free(peaked), WB_OK);
+    assert_eq!(wb_world_free(plain), WB_OK);
 }
 
 /// The documented domain of each peak field, by its index in `WB_PEAK_STRIDE`'s order. Written
