@@ -954,8 +954,8 @@ pub struct Tectonics {
     /// great circle rather than at the query point -- see [`Tectonics::margin_warp_m_at`].
     warp: Noise,
     /// The opt-in seamount field. `None` is canonical and is what every existing caller
-    /// gets; see [`PeakParams`]. Not read by anything in this file yet -- wiring
-    /// `peak_offset_m` into `offset_m`/`elevation_m` is a later task.
+    /// gets; see [`PeakParams`]. Read by [`Tectonics::offset_m`], which is the only place
+    /// it is read.
     peaks: Option<PeakParams>,
     /// The three lattices [`Tectonics::peak_offset_m`] draws from: existence, jitter and
     /// height. Built unconditionally, for the same reason `structure`/`segmentation`/`warp`
@@ -993,10 +993,10 @@ impl Tectonics {
     /// is a property of the parameter, not of where it is spelled, and `new` has ninety-odd
     /// call sites that want none of this.
     ///
-    /// **This task does not wire `peak_offset_m` into `offset_m` or `elevation_m`.** Nothing
-    /// in this file reads the `peaks` field yet; it exists so the term can be built and
-    /// unit-tested standing on its own, on the same `Tectonics` value everything else
-    /// already uses. Wiring it in is a later task's change, not this constructor's.
+    /// `peak_offset_m` is wired into [`Tectonics::offset_m`] (and therefore into
+    /// [`Tectonics::elevation_m`]), gated on this field: `None` and a zero-density `Some`
+    /// never call it or `base_elevation`, so an absent block costs nothing and moves
+    /// nothing.
     pub fn with_peaks(
         plates: PlateSet,
         land: Continentality,
@@ -1136,7 +1136,50 @@ impl Tectonics {
                     &margin.normal,
                 );
         }
-        total
+
+        // The seamount term, added last so it reads as an addition to a finished tectonic
+        // offset rather than something the margin terms above then reshape.
+        //
+        // **Gated, not added unconditionally, and that is load-bearing.** `peak_offset_m`
+        // returns exactly `0.0` when the block is absent, inert, or the water here is too
+        // shallow -- but `-0.0 + total` is `+0.0` when `total` is exactly `-0.0`, which would
+        // flip a sign bit `Tectonics::new` never would. Same shape as
+        // `Continentality::above_shore`'s `amplitude == 0.0` guard
+        // (`continentality.rs:382-388`): an early return for the canonical and inert cases,
+        // never a `+ 0.0`.
+        match self.peaks {
+            None => total,
+            Some(params) if params.density == 0.0 => total,
+            Some(_) => {
+                // "Seabed" here means the ground a seamount would actually stand on: the
+                // continental base PLUS everything the plates have already done to it
+                // (`total`, computed above), not `base_elevation` alone. Using the base
+                // alone would let an island erupt on a tectonic ridge that is already
+                // shallow, or ignore a trench that has made the water deeper than the base
+                // suggests. `Shelf::evaluate` computes exactly this sum as
+                // `macro_elevation` from this function's own return value, so this mirrors
+                // what the caller will do with the answer.
+                //
+                // Computed only on this branch -- an fBm, and the whole reason the None /
+                // density == 0.0 arms above return before touching it, since this function
+                // is sampled at every node the hydrology bake visits.
+                let seabed_m = self.land.base_elevation(point) + total;
+                // Precondition carried from `peak_offset_m`'s own doc: `point.vector` must
+                // be unit length. Not asserted here, even in debug -- `offset_m`'s own
+                // `point` comes from the same `SpherePoint` every other caller in this file
+                // already trusts to be unit length (see `peak_offset_m`'s doc: "every
+                // `SpherePoint` this codebase constructs is already unit length"), and nothing
+                // upstream of this call site admits a raw external vector the way a `bindings.rs`
+                // entry point could. That entry point is this function's other call site
+                // (Task 4's), and is where a check belongs if one is ever needed.
+                let standing = self.peak_offset_m(point, seabed_m);
+                if standing > 0.0 {
+                    total + standing
+                } else {
+                    total
+                }
+            }
+        }
     }
 
     /// The macro elevation: continental base plus whatever the plates have done to it.
@@ -3586,5 +3629,146 @@ mod tests {
                 assert_ne!(peak_salt, other_salt, "{peak_name} and {other_name} collide");
             }
         }
+    }
+
+    /// The plan's first global constraint, and the whole point of this task: an absent
+    /// peak block must produce a BIT-identical world, not merely a close one. `None` and
+    /// `Some(PeakParams::canonical())` (density `0.0`) both take the early-return arms in
+    /// `offset_m`'s new `match`, so neither should differ from `Tectonics::new` by so much
+    /// as a sign bit.
+    #[test]
+    fn the_tectonic_offset_is_bit_identical_without_a_peak_block() {
+        let land = Continentality::new(4242, EARTH_RADIUS_M, LAND_FRACTION);
+        let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        let with_none =
+            Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, Some(TectonicParams::canonical()), None);
+        let inert = Tectonics::with_peaks(
+            three_plate_set(),
+            land,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams::canonical()),
+        );
+        for i in 0..4_000 {
+            let point = SpherePoint::from_latlon(
+                -89.0 + 0.0445 * f64::from(i), // cast-ok: loop counter, 0..4000
+                0.19 * f64::from(i) - 180.0,   // cast-ok: loop counter, 0..4000
+            );
+            let want = bare.offset_m(&point);
+            assert_eq!(with_none.offset_m(&point).to_bits(), want.to_bits(), "None at probe {i}");
+            assert_eq!(inert.offset_m(&point).to_bits(), want.to_bits(), "canonical at probe {i}");
+        }
+    }
+
+    /// The other half of the plan's claim: an active peak block must raise ground and never
+    /// lower it. `offset_m` only ever adds `standing` when it is strictly positive, so this
+    /// is really a test that the wiring in `offset_m` did not accidentally let a peak
+    /// subtract or that the seabed it is evaluated against was assembled wrong.
+    #[test]
+    fn a_peak_block_raises_the_offset_where_the_water_is_deep() {
+        let land = Continentality::new(4242, EARTH_RADIUS_M, LAND_FRACTION);
+        let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        let peaked = Tectonics::with_peaks(
+            three_plate_set(),
+            land,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams { density: 0.35, ..PeakParams::volcanic() }),
+        );
+        let mut raised = 0usize;
+        let mut lowered = 0usize;
+        for i in 0..6_000 {
+            let point = SpherePoint::from_latlon(
+                -89.0 + 0.0297 * f64::from(i), // cast-ok: loop counter, 0..6000
+                0.41 * f64::from(i) - 180.0,   // cast-ok: loop counter, 0..6000
+            );
+            let before = bare.offset_m(&point);
+            let after = peaked.offset_m(&point);
+            if after > before {
+                raised += 1;
+            }
+            if after < before {
+                lowered += 1;
+            }
+        }
+        assert!(raised > 0, "a peak block raised nothing over 6,000 probes");
+        assert_eq!(lowered, 0, "a peak may only ever raise ground; {lowered} probes fell");
+    }
+
+    /// Task 2's own addition to the bit-identity claim above: not just that the INERT path
+    /// produces the same number, but that it does not pay for `base_elevation`'s fBm to get
+    /// there. Can't observe a call directly, so this follows
+    /// `continentality.rs`'s `the_coast_lattice_is_not_read_on_the_canonical_path`
+    /// (`continentality.rs:774`): swap in a `Continentality` whose `base_elevation` answers
+    /// differently -- here, a different `land_fraction`, which moves `shore`/`spread` in
+    /// calibration but leaves `world_seed` (and therefore every `Noise` field `Tectonics`
+    /// salts from it) untouched -- and show the inert path does not notice, while an active
+    /// one does.
+    #[test]
+    fn the_inert_peak_path_does_not_read_base_elevation() {
+        let plates = three_plate_set();
+        let land_a = Continentality::new(4242, EARTH_RADIUS_M, 0.2);
+        let land_b = Continentality::new(4242, EARTH_RADIUS_M, 0.8);
+
+        let points = area_uniform_spiral(1_000);
+
+        // Inert (no block at all): the two lands must not be distinguishable through
+        // `offset_m`, because `base_elevation` is never reached to tell them apart.
+        let none_a = Tectonics::new(plates.clone(), land_a, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        let none_b = Tectonics::new(plates.clone(), land_b, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        for (index, point) in points.iter().enumerate() {
+            assert_eq!(
+                none_a.offset_m(point).to_bits(),
+                none_b.offset_m(point).to_bits(),
+                "inert path differed at spiral index {index}"
+            );
+        }
+
+        // Inert (density 0.0 with a Some block): same claim, the other early-return arm.
+        let zero_a = Tectonics::with_peaks(
+            plates.clone(),
+            land_a,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams::canonical()),
+        );
+        let zero_b = Tectonics::with_peaks(
+            plates.clone(),
+            land_b,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams::canonical()),
+        );
+        for (index, point) in points.iter().enumerate() {
+            assert_eq!(
+                zero_a.offset_m(point).to_bits(),
+                zero_b.offset_m(point).to_bits(),
+                "density-0.0 path differed at spiral index {index}"
+            );
+        }
+
+        // And the difference between the two lands is real: on an ACTIVE peak block, the
+        // same swap does move the answer at some of these points, so the two assertions
+        // above pass because the inert path never reads `base_elevation`, not because
+        // swapping `land_fraction` is inert.
+        let active_a = Tectonics::with_peaks(
+            plates.clone(),
+            land_a,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams { density: 1.0, ..PeakParams::volcanic() }),
+        );
+        let active_b = Tectonics::with_peaks(
+            plates,
+            land_b,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams { density: 1.0, ..PeakParams::volcanic() }),
+        );
+        let moved = points
+            .iter()
+            .filter(|p| active_a.offset_m(p).to_bits() != active_b.offset_m(p).to_bits())
+            .count();
+        assert!(moved > 10, "the land_fraction swap moved only {moved} of 1,000 active points");
     }
 }
