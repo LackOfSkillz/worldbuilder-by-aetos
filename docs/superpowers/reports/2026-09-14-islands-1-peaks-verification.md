@@ -1,5 +1,11 @@
 # Islands slice 1 (peaks) — calibration and verification
 
+> **THIS DOCUMENT WAS WRITTEN FOR TASK 7 AND HAS BEEN AMENDED TWICE SINCE.** Read §§12–14 before
+> quoting anything from §§1–11. The shipped density is **0.14**, not the 0.36 this report was
+> written at; §13 records a defect that made every pre-§13 share a share of part of the planet;
+> §14 carries the re-run calibration and a table of every figure that moved. Sections that still
+> hold pre-fix figures on purpose carry a banner saying so.
+
 Slice 1 of the islands plan grew a cellular seamount field — `PeakParams` and
 `Tectonics::peak_offset_m`, a lattice of jittered candidate nodes that stand islands (or
 submerged shoals) out of deep ocean — wired it through `Tectonics` and `Surface`, exposed and
@@ -10,10 +16,12 @@ parity corpus reports **156,011 compared / 0 divergent** and all four controls a
 **147,387 / 216 / 60 / 22,995**. `GENERATOR_VERSION` is therefore **not** bumped, and the
 reasoning is stated in full below rather than assumed.
 
-**The one thing Task 7 changed in `src/` is a single constant.** `VOLCANIC_DENSITY` moved
-**0.11 → 0.36**, because 0.11 put every world measured *below* the spec's band. Nothing else in
-the field's geometry moved; `height_m`, `reach_m`, `min_depth_m` and `lattice_m` were swept and
-left where Tasks 1 and 2 put them.
+**The one thing Task 7 changed in `src/` was a single constant.** `VOLCANIC_DENSITY` moved
+**0.11 → 0.36** then, because 0.11 put every world measured *below* the spec's band; **the second
+fix wave re-surveyed it to 0.14** after §13, and also restructured `Tectonics::offset_m` — so
+"one constant, no code" describes Task 7 and not this branch's final state. Nothing in the
+field's geometry moved at any point: `height_m`, `reach_m`, `min_depth_m` and `lattice_m` were
+swept twice and left where Tasks 1 and 2 put them.
 
 **The most interesting result is not the density.** It is that **the islanded share is
 invariant under `(lattice_m, reach_m)` at a fixed ratio and strongly dependent on the world's
@@ -278,19 +286,26 @@ exact decimals rather than derived by multiplying, because `45_000.0 * 0.70` is
 `31499.999999999996` — the first revision of this binary did derive them and printed the wrong
 `reach_m` in its own header as evidence.
 
-| `lattice_m` / `reach_m` | density 0.11 | **density 0.36** | density 0.58 |
+**RE-RUN after §13's fix and §14's re-survey.** The pre-fix table is underneath.
+
+| `lattice_m` / `reach_m` | density 0.11 | **density 0.14 (shipped)** | density 0.58 |
 |---|---|---|---|
-| 30,000 / 21,000 | 0.0970% | **0.3290%** | 0.5460% |
-| 45,000 / 31,500 | 0.1070% | **0.3345%** | 0.5495% |
-| 67,500 / 47,250 | 0.1065% | **0.3350%** | 0.5420% |
-| 90,000 / 63,000 | 0.1080% | **0.3310%** | 0.5200% |
+| 30,000 / 21,000 | 0.3385% | **0.4305%** | 1.8170% |
+| 45,000 / 31,500 | 0.3650% | **0.4480%** | 1.8410% |
+| 67,500 / 47,250 | 0.3530% | **0.4365%** | 1.8380% |
+| 90,000 / 63,000 | 0.3460% | **0.4475%** | 1.8030% |
+
+*(Pre-fix, at density 0.11 / 0.36 / 0.58: 0.0970 / 0.3290 / 0.5460, 0.1070 / 0.3345 / 0.5495,
+0.1065 / 0.3350 / 0.5420, 0.1080 / 0.3310 / 0.5200.)*
 
 **The islanded share is invariant under the pair.** At the shipped density the spread across an
-eightfold change of lattice volume is **0.006 pp**, against the estimator's own 1σ error of
-0.013 pp — i.e. unmeasurable. That is what the model predicts (`d(share)` scales with `reach_m`,
-so `d³ / lattice_m³` is scale-free) and it is now measured rather than supposed. **So the ratio
-is the lever and neither field alone is one**, which is why calibration moved `density` and left
-both of these where they were.
+eightfold change of lattice volume is **0.0175 pp**, against the estimator's own 1σ error of
+about **0.0150 pp** at this share — so still about one sigma, and still fairly called
+unmeasurable. (Pre-fix the spread was 0.006 pp against 0.013 pp. It grew roughly with the share,
+as a binomial spread does, and not relative to it.) That is what the model predicts (`d(share)`
+scales with `reach_m`, so `d³ / lattice_m³` is scale-free) and it is measured rather than
+supposed. **So the ratio is the lever and neither field alone is one**, which is why both
+calibrations moved `density` and left these where they were.
 
 What the pair *does* control is measured in §4.
 
@@ -620,7 +635,7 @@ transcribed.
 | Viewer `npm test` | 359 | 359 | **362** | 362 was already the count at `3f473f4`; this round added none |
 | Wasm artifact | 465,699 bytes, 36 exports, 0 imports | 465,699 / 36 / 0 | **465,840 bytes, 36 exports, 0 imports** | moved: `src/` changed |
 | Wasm artifact-sha256 | — | `b13e6003…0ee` | **`0362020b1859200f12c9e71af38533c5122f89dbeef97e0bd972bf7fa6d98312`** | moved: `tectonics.rs`, `surface.rs` and `wasm.rs` changed |
-| Wasm source-fingerprint | — | `83672441…511` (70 inputs) | **`0343f7326c04bc1fda9c89b3480b24c4f2581b3fc16b33f16746a0afb74c7f3c` (70 inputs)** | moved with the source |
+| Wasm source-fingerprint | — | `83672441…511` (70 inputs) | **`ce29b131a9131dd860fa63de31aa8441cba168b7d72c434da8c2a3aae52a3c8d` (70 inputs)** | moved with the source |
 | `npm run check:wasm` | matches | matches | **matches its manifest and the source that is here now** | |
 | EOL guard | clean | clean | **clean** | |
 
@@ -675,30 +690,41 @@ and the test was run to confirm rather than reasoned about.
 
 ## 10. What moved outside `src/bin/` and the report, and why
 
-Task 7 was scoped to write no production logic. Four files moved besides the survey and this
-report, and each one is a **measured figure being re-derived**, not new behaviour.
+> **THIS SECTION DESCRIBES TASK 7 ONLY, and the two fix waves after it moved more.** Task 7 was
+> scoped to write no production logic and this is its inventory. The first fix wave added tests
+> and corrected claims; the second **restructured `Tectonics::offset_m`** and re-surveyed the
+> density, so this section is no longer an inventory of the branch. §13 and §14 are. The figures
+> below are Task 7's and are left as its record; each one that later moved is listed in §14's
+> table.
 
-1. **`src/tectonics.rs`** — `VOLCANIC_DENSITY` 0.11 → **0.36**, the calibration this task exists
-   to perform. Its doc comment now carries the three-world sweep, and
+Four files moved besides the survey and this report, and each one is a **measured figure being
+re-derived**, not new behaviour.
+
+1. **`src/tectonics.rs`** — `VOLCANIC_DENSITY` 0.11 → **0.36** (since re-surveyed to **0.14**;
+   §14), the calibration this task exists to perform. Its doc comment now carries the three-world sweep, and
    `VOLCANIC_HEIGHT_M`/`VOLCANIC_REACH_M`/`VOLCANIC_LATTICE_M` lose their "provisional, pending
    Task 7's survey" labels and gain the measurements that settled them. No code changed.
 2. **`src/surface.rs`** — two pinned measurements re-derived, no logic.
    - `an_island_stands_above_the_datum_in_open_ocean`: the count moved **34 → 88 of 20,000**
-     (0.17% → 0.44%) and the band **`15..70` → `45..140`**. The doc now also records that this
-     20,000-point count is a small sample, that the survey's 200,000-point 0.3345% is the figure
-     to quote, and that the two are consistent to a shade over 2σ.
+     (0.17% → 0.44%) and the band **`15..70` → `45..140`**. (The second wave moved it again, to
+     **103 of 20,000** and `55..165`; §14.) The doc also records that this 20,000-point count is a
+     small sample and that the survey's 200,000-point figure is the one to quote.
    - `an_island_is_steep_to_rather_than_shelved`: the doc figure moved **−2,594.07 m → −2,907.71
      m**, off a summit this task measured at **4,010.75 m** (the old summit's own height was not
-     recorded, so no before/after is claimed for it). **The density moved which node
+     recorded, so no before/after is claimed for it). (The second wave moved it again, to
+     **−2,695.04 m** off **4,291.15 m**; §14.) **The density moved which node
      `find_a_summit` picks, not how steep a flank is** — `peak_of_cell` gates on
      `hash >= density`, so a higher density strictly *adds* candidate cells and can never remove
      one. The assertion itself (deeper than −1,000 m) is untouched.
 3. **`viewer/test/peak-params.test.mjs`** — the transcribed literal `"0.11"` → `"0.36"` in "no
    peak number is written down twice", plus a new assertion that the peak density stays distinct
-   from the coast channel's 0.35 and a note on why. The file's header also now records that its
+   from the coast channel's 0.35 and a note on why. **The first fix wave then retired that
+   transcription entirely**: the literal is now read live from `VOLCANIC_DENSITY`'s own
+   declaration in `tectonics.rs`, so the 0.36 → 0.14 move needed no edit to it at all — which is
+   the whole point of reading it rather than writing it down. The file's header records that its
    eight witness probes were *derived* at density 0.11 and why monotonicity keeps them valid at
-   0.36; the "991 of 64,800" figure is left labelled as the probe set's provenance and **not**
-   restated for 0.36, because nothing re-ran that scan.
+   every density this preset has shipped; the "991 of 64,800" figure is left labelled as the
+   probe set's provenance and **not** restated, because nothing re-ran that scan.
 4. **`viewer/public/app/peak-params.js`** and **`viewer/public/app/engine.js`** — prose only. Two
    comments listing the preset's numbers said `0.11`. One of them argued that the slider divides
    rather than multiplies because `0.01 * 11` and `11 / 100` "happen to equal" 0.11; I first
@@ -713,21 +739,27 @@ report, and each one is a **measured figure being re-derived**, not new behaviou
 
 ## 11. Concerns and what is left open
 
-1. **The band is tight and the corpus is three worlds.** The admissible window is seven
-   admissible hundredths of density (0.32–0.38, six hundredths of span, both edges now measured
-   — see §4) because `island-a` presses the 0.3% floor while `owner`
-   presses the 0.8% ceiling. 0.36's margin is +0.0345 pp, a little over 2σ of the estimator. **A
-   fourth world with a land fraction outside 0.16–0.40 could push one end out of band**, and the
+1. **~~The band is tight~~ — LARGELY RETIRED BY §14, and the corpus is still three worlds.** As
+   written, for Task 7's 0.36: the admissible window was seven hundredths (0.32–0.38, six of
+   span) because `island-a` pressed the 0.3% floor while `owner` pressed the 0.8% ceiling, and
+   0.36's margin was +0.0345 pp, a little over 2σ of the estimator. **After §13's fix and §14's
+   re-survey the window is nine hundredths (0.09–0.17) and 0.14's margin is +0.1480 pp, close to
+   10σ, with the binding edge crossing inside the window rather than sitting on one end.** What
+   survives is the corpus: **a fourth world with a land fraction outside 0.16–0.40 could still
+   push an end out of band**, and the
    honest fix then is not to re-tune `density` but to make the preset's density depend on
    `land_fraction` — which is a design change, not a constant. Flagging it as the first thing to
    re-measure when a new reference world appears.
-2. **Spec §7 question 1 asked for "about 0.5%" as its example and 0.3–0.8% as the band.** No
-   single density puts all three worlds near 0.5%: at 0.36 they read 0.33 / 0.75 / 0.40. The band
-   is met on every world; the 0.5% *centre* is met on none of them, and cannot be while the share
-   scales with ocean coverage. That is a question for the owner, not a defect.
-3. **Roughly a tenth of the islands are at the raster's resolution floor**, so 4,617 is a lower
-   bound on the count and the resolution-safe figure is the 3,094 above 200 km². A finer raster
-   would raise the count and leave the area unchanged. Nobody should quote 4,617 as exact.
+2. **Spec §7 question 1 asked for "about 0.5%" as its example and 0.3–0.8% as the band.** At the
+   re-surveyed 0.14 the three worlds read **0.45 / 0.64 / 0.52%** — so `earth-a` now sits almost
+   exactly on the 0.5% example and the other two straddle it, which is a better answer than the
+   0.33 / 0.75 / 0.40 the suppressed field gave at 0.36. The *centre* still is not hit on every
+   world simultaneously and cannot be while the share scales with ocean coverage. A question for
+   the owner, not a defect — and a smaller question than it was.
+3. **Roughly a fourteenth of the islands are at the raster's resolution floor**, so **6,137** is
+   a lower bound on the count and the resolution-safe figure is the **4,197** above 200 km². A
+   finer raster would raise the count and leave the area unchanged. Nobody should quote 6,137 as
+   exact.
 4. **Spec §5's accessor is not built** — a decision, argued in §7, landing with fragments in slice
    3. Recorded here so it is on the record rather than missing.
 5. **Hydrology on islands is untested.** Spec §5 predicts that islands below the node spacing get
@@ -896,6 +928,33 @@ skipped** — worst composed step **7.0073 m** against a worst derived bound of 
 `GENERATOR_VERSION` is untouched: with no peak block the canonical path returns the same `0.0`,
 which the bit comparison above is the proof of.
 
+### The bit dump is weak on its own, and nobody should reuse it as a general proof
+
+The re-review's critique of the method is fair and worth writing down, because the dump reads
+like a stronger instrument than it is.
+
+**Most of what it compares is a constant.** `offset_m` returns exactly `0.0` at **85.99% /
+81.57% / 67.63%** of the 20,000 points on the three dumped fixtures (the ABI world, `island-a`,
+`owner`) — measured on the same predicate, at 200,000 points. So around four fifths of the 60,000
+compared values are the early return's literal zero on both sides, and they would agree under
+almost any edit to the loop.
+
+**The subpopulation that actually tests the thing at risk is small and was not counted at the
+time.** The iteration order matters only where two or more margins are summed, since
+floating-point addition is non-associative. That is **1.20% / 2.45% / 6.18%** of points on those
+three fixtures — so roughly 2,000 of the 60,000 dumped values, present but thin, and no
+breakdown was reported with the original dump. Points exactly on a margin, on the antimeridian
+and at the poles are measure-zero and unsampled by a Fibonacci spiral at all.
+
+**Why it is nonetheless enough here, and only here.** The argument is *structural*, not
+statistical: the loop body, its two early returns and its accumulation order were moved into
+`margin_offset_m` verbatim, and `git diff` shows no changed line inside the loop. The dump is a
+check that the move was actually verbatim — a guard against a typo in a mechanical edit — not
+evidence that a *rewritten* summation would agree. **A future change that reorders, sorts,
+parallelises or re-associates the margin sum must not lean on this method.** For that, the
+population to build is the two-or-more-margin one, sampled deliberately and reported with its own
+count.
+
 ---
 
 ## 14. The re-survey: the calibration, run again against a field that reaches the whole planet
@@ -911,15 +970,71 @@ on two worlds built identically but for the block; this host, `rustc 1.98.0`, `-
 the code under measurement changed. `island_survey.rs`'s `DENSITIES` and `CANDIDATES` were
 re-pointed at the new range and the binary re-run; nothing was scaled.
 
-### The correction is 3.41× on the share, not the 4.4× the area suggests
+### The correction on each world is that world's plate-interior area factor
 
-At the old 0.36 the sweep fixture now reads **1.1400%** against the **0.3345%** it read before —
-**3.41×**. The area the field can stand on grew about 4.4× (77.16% of the planet was suppressed,
-so 22.84% became 100%). The two are not the same number because ocean coverage and the 2,500 m
-depth window are not distributed uniformly with respect to where plate margins fall: the region
-that *was* evaluated is margin-adjacent, and margin-adjacent seabed is on average shallower than
-abyssal plain, so it was already a below-average place to stand an island. **This is exactly why
-the density was re-measured rather than divided.**
+**Population:** the same 200,000-point area-uniform Fibonacci spiral, per world. **Method:** a
+point is plate interior when `PlateSet::margins_within(point, MAX_TECTONIC_RANGE_M, radius)`
+returns an empty margin set or no nearest plate — the exact predicate `margin_offset_m`'s early
+returns use. The area factor is `1 / (1 − interior)`: the reciprocal of the fraction of the
+planet where the seamount term used to be evaluated at all. **Host:** as above. Re-derived here,
+not taken from the re-review.
+
+| world | plates | plate interior | area factor | share before the fix | share after, same 0.36 | **observed correction** |
+|---|---|---|---|---|---|---|
+| `island-a` | 22 | 139,388 / 200,000 = 69.6940% | **3.2997×** | 0.3345% | 1.1400% | **3.4081×** |
+| `owner` | 28 | 106,539 / 200,000 = 53.2695% | **2.1399×** | 0.7525% | 1.6180% | **2.1502×** |
+| `earth-a` | 22 | 139,435 / 200,000 = 69.7175% | **3.3022×** | 0.4035% | 1.3945% | **3.4560×** |
+
+**Three worlds, three matches — 3.3% / 0.5% / 4.7% apart. The correction needed no further
+mechanism than the area, and there is no shortfall for bathymetry to account for.** The small
+residual even has the opposite sign from a shortfall: the observed correction slightly *exceeds*
+the area factor on all three, because the field's peak-wanting rate is marginally **higher** in
+the interior than near a margin — `island-a` 0.082439 against 0.082079, `owner` 0.134101 against
+0.128321, `earth-a` 0.103303 against 0.097994, over the same spiral and predicate. Interior
+seabed is very slightly the *better* place to stand an island here.
+
+> **What the previous version of this section got wrong, recorded rather than quietly replaced.**
+> It said the correction was "3.41×, not the 4.4× the area suggests", and explained the gap by
+> claiming margin-adjacent seabed is shallower than abyssal plain. Three things were wrong with
+> that. **The 4.4× was a different fixture's**: it is `1/(1−0.771570)` for the **12-plate** ABI
+> world `plates_for(20_260_904, 12)` that §13's suppression was measured on, while the 3.41× was
+> measured on the **22-plate** `island-a`. Fewer plates means fewer margins means more interior,
+> so the two have genuinely different factors and comparing one against the other's share is a
+> category error. **The mechanism was backwards**: a below-average margin belt would make the
+> correction *larger* than the area factor, not smaller. And **the claim was untested** — the
+> peak-wanting rates above say the interior is slightly better, not worse. The number never
+> needed a story; it is the area factor, and now it is measured as one.
+
+### The one-world sweep, re-run
+
+§2's sixteen-row table is superseded by this one. `island_survey.rs`'s `DENSITIES` was
+re-pointed at the range the corrected field needs — the old array started at 0.11, which is now
+mid-band — and re-run on `island-a`. Both columns are the same two estimators §2 used.
+
+| density | n = 20,000 | **n = 200,000** | band |
+|---|---|---|---|
+| 0.02 | 0.0600% | 0.0765% | BELOW |
+| 0.04 | 0.1700% | 0.1395% | BELOW |
+| 0.06 | 0.2450% | 0.2080% | BELOW |
+| 0.08 | 0.3000% | 0.2665% | BELOW |
+| 0.09 | 0.3400% | 0.3030% | in band |
+| 0.10 | 0.3950% | 0.3350% | in band |
+| 0.11 *(the pre-Task-7 value)* | 0.4250% | 0.3650% | in band |
+| 0.12 | 0.4700% | 0.3935% | in band |
+| **0.14 (shipped)** | 0.5150% | **0.4480%** | in band |
+| 0.16 | 0.5650% | 0.5050% | in band |
+| 0.20 | 0.6750% | 0.6355% | in band |
+| 0.24 | 0.7950% | 0.7615% | in band |
+| 0.32 | 1.1200% | 1.0290% | ABOVE |
+| 0.36 *(the suppressed-field pick)* | 1.2650% | 1.1400% | ABOVE |
+| 0.50 | 1.7200% | 1.5785% | ABOVE |
+| 0.75 | 2.4350% | 2.3555% | ABOVE |
+
+**§2's 2⁻¹⁶ observation survives the re-run and is now stronger.** The n = 20,000 column runs
+high at **15 of these 16 rows** — the exception is 0.02, where the smaller sample reads 0.0600%
+against 0.0765%, and at 12 island points in 20,000 that column is counting single digits. So the
+lattice bias §2 identified is a property of that 20,000-point lattice and not of the field, on a
+second, independent population. **The figure to quote is still the 200,000-point one.**
 
 ### The three-world sweep, re-run
 
@@ -968,9 +1083,19 @@ bad corner. A fourth world is no longer likely to push an end out of band.
 
 Hundredths only, for the reason `VOLCANIC_DENSITY`'s doc gives: the panel's density slider carries
 an integer position and divides by 100, so a density off that lattice is one the panel cannot
-reach. **0.14 is position 14.** It is not `CoastParams::fractal()`'s 0.35, and — checked, not
-assumed — the string `0.14` appears in none of the four viewer modules
-`peak-params.test.mjs`'s anti-transcription scan reads, so that scan still asks a live question.
+reach. **0.14 is position 14.** It is not `CoastParams::fractal()`'s 0.35, so the
+anti-transcription scan still asks a live question rather than passing on another channel's
+guard.
+
+**And the scan's blind spot was closed rather than described around.** That scan reads
+`peak-params.js`, `controls.js`, `main.js` and `engine.js` **with whole-line comments stripped**,
+which is why a retired `11%` (§10.4's minor) and a hand-maintained `0.36` both survived in prose
+across two calibrations — and why the density in three of those comments had to be hand-edited
+from 0.36 to 0.14 in the second wave, a transcription with extra steps. The third wave removed
+the preset's values from the prose of all four modules instead, so **`0.14` appears in none of
+them with or without the strip**, checked by grep. The strip is still the right rule — a comment
+cannot move a pinned value — but nothing in `viewer/` now needs editing when this constant
+moves.
 
 ### Every figure that moved, and where
 
@@ -980,8 +1105,8 @@ assumed — the string `0.14` appears in none of the four viewer modules
 | admissible window | 0.32–0.38 (7 values) | **0.09–0.17 (9 values)** | §14, `VOLCANIC_DENSITY` doc |
 | maximin margin | +0.0345 pp (2.2σ) | **+0.1480 pp (≈10σ)** | §14 |
 | islanded share, three worlds | 0.3345 / 0.7525 / 0.4035% | **0.4480 / 0.6380 / 0.5210%** | §§4b, 7, 14 |
-| one-world density sweep, 16 rows | §2's table | **§14's table** (new range) | §2 banner, §14 |
-| ratio-invariance spread | 0.006 pp at 0.36 | **0.0175 pp at 0.14** (still ≈1σ) | §3, `VOLCANIC_REACH_M` doc |
+| one-world density sweep, 16 rows | §2's table, 0.11–0.75 | **§14's table, 0.02–0.75** | §2 banner, §14 |
+| ratio-invariance spread | 0.006 pp at 0.36 | **0.0175 pp at 0.14** (still ≈1σ) | §3 (re-run in place), `VOLCANIC_REACH_M` doc |
 | distinct islands at 45 km | 4,617 | **6,137** | §4, `VOLCANIC_LATTICE_M` doc |
 | island area share (raster) | 0.3337% | **0.4375%** | §4 |
 | island count at 30 / 90 km | 10,155 / 1,213 | **13,506 / 1,558** | §4, `VOLCANIC_REACH_M` doc |
