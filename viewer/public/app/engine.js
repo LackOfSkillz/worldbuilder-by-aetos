@@ -385,10 +385,13 @@ export class Engine {
 
   /// The five f64 of a named peak preset, as an object keyed by `PEAK_FIELDS`.
   ///
-  /// **The only way the viewer learns a peak number.** Nothing in `viewer/` restates 8000, 0.14,
-  /// 31500, 2500 or 45000; the density slider is anchored here and the preset button sends this
-  /// answer straight back, so `tectonics.rs` stays the single place those numbers live. `name` is
-  /// a key of `PEAK_PRESET`.
+  /// **The only way the viewer learns a peak number, and this comment does not restate one.**
+  /// Nothing in `viewer/` writes any of the preset's five values down — an earlier version of
+  /// this comment listed them, and its density had to be hand-edited every time the constant was
+  /// calibrated, which is the transcription the design prevents everywhere except in prose. The
+  /// density slider is anchored here and the preset button sends this answer straight back, so
+  /// `tectonics.rs` stays the single place those numbers live. `name` is a key of
+  /// `PEAK_PRESET`.
   peakPreset(name = "canonical") {
     const selector = PEAK_PRESET[name];
     if (selector === undefined) throw new Error(`unknown peak preset "${name}"`);

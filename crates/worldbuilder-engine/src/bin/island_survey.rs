@@ -156,6 +156,13 @@ const OFFSHORE_OFFSET_M: f64 = 2_000.0;
 /// `viewer/public/app/peak-params.js`'s density slider carries an integer position and maps it
 /// to a value by dividing by 100 -- a chosen density off that lattice is one the panel cannot
 /// reach, which is the defect `panelFieldFaults()` exists for.
+///
+/// **Re-pointed by the second fix wave.** This array used to start at 0.11 and run to 0.75,
+/// which was the right range for a field that only stood islands near a plate margin; with the
+/// suppression fixed the whole band sits below 0.25, so a sweep starting at 0.11 would have had
+/// its first row already in band and no measurement below the floor at all. 0.36 and 0.32 are
+/// kept so the suppressed-field pick can be priced on the corrected field, and 0.50 and 0.75
+/// keep the linearity check that `§2`'s slope argument uses.
 const DENSITIES: [f64; 16] = [
     0.02, 0.04, 0.06, 0.08, 0.09, 0.10, 0.11, 0.12, 0.14, 0.16, 0.20, 0.24, 0.32, 0.36, 0.50,
     0.75,
@@ -184,10 +191,13 @@ const SHIPPED_LATTICE: usize = 1;
 /// land has more deep ocean for the field to stand an island in, so the same density yields
 /// very different shares. Section 4 prints all three and the choice is the density whose
 /// WORST world is still inside the band.
-/// **0.31 and 0.39 were added by the final whole-branch review's minor 6**, which found the
-/// code and the report disagreeing about how wide the admissible window is. They are the two
-/// hundredths immediately outside 0.32-0.38, so this list now measures both edges rather than
-/// inferring them from the 0.28 and 0.40 rows four and two hundredths away.
+/// **Both edges of the admissible window are in this list, so the window's width is measured
+/// rather than inferred.** The first fix wave added 0.31 and 0.39 for that reason, either side
+/// of what was then a 0.32-0.38 window. The second wave found the seamount term was suppressed
+/// over three quarters of the planet, fixed it, and re-surveyed: the window moved to 0.09-0.17,
+/// so **0.31 and 0.39 were replaced by 0.08 and 0.18**, which are the two hundredths
+/// immediately outside it now. 0.36 is kept as the last entry to price the suppressed-field
+/// pick on the corrected field; 0.20 keeps a row two hundredths past the ceiling.
 const CANDIDATES: [f64; 14] = [
     0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19, 0.20, 0.36,
 ];

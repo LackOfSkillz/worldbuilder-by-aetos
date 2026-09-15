@@ -133,16 +133,33 @@ test("the round trip catches a field swap, not just a length change", () => {
   // round trip of `volcanic` through a permuted order is invisible when the two swapped slots
   // happen to hold values that are still individually valid at the other's position.
   //
-  // A DISTINCT sentinel per field closes that gap: if any two positions were swapped, at least
-  // one of the five would land back in the wrong key, and `deepEqual` would catch it without ever
-  // reading `tectonics.rs`.
+  // **What a round trip can and cannot do, stated precisely, because an earlier version of this
+  // comment overclaimed.** `peakToRecord` and `peakFromRecord` both iterate the SAME
+  // `PEAK_FIELDS` array (`peak-params.js:195` and `:201`), so they are inverses of each other
+  // whatever order that array is in -- a permuted `PEAK_FIELDS` round-trips perfectly. The
+  // round trip therefore closes the encode/decode SYMMETRY, not the order; the claim it used to
+  // make, that it catches any swap "without ever reading `tectonics.rs`", was false. **The test
+  // that actually closes the order is the next one**, which reads `PeakParams`'s own declaration
+  // out of `tectonics.rs` -- and on the Rust side `wasm.rs`'s `peak_wire_format_tests` closes it
+  // against the engine's `decode_peak` directly.
+  //
+  // So this test is made non-vacuous the only way a same-file test can be: a DISTINCT sentinel
+  // per field, asserted against a **literal expected order written here**, not against
+  // `PEAK_FIELDS`. A permutation of `PEAK_FIELDS` now fails the per-index assertions below,
+  // because the index each value must land at is spelled out rather than read from the array
+  // under test. The round-trip assertion is kept for what it does cover.
   const sentinel = { height_m: 1111, density: 0.2222, reach_m: 3333, min_depth_m: 4444, lattice_m: 5555 };
   const record = peakToRecord(sentinel);
-  // Each value lands at its own index -- the record IS `PEAK_FIELDS`' order, named rather than
-  // inferred from round-tripping alone.
-  PEAK_FIELDS.forEach((field, index) => {
+  // The ABI order, spelled out. This is the one place in this file that writes it down, and that
+  // is deliberate: a second, independent copy is what makes the comparison mean something. It is
+  // checked against `tectonics.rs`'s own declaration by the next test, so the two cannot drift.
+  const expected = [1111, 0.2222, 3333, 4444, 5555];
+  assert.deepEqual(record, expected, "peakToRecord did not lay the five out in the ABI order");
+  // And each name maps to the slot that order implies, so a failure says which field moved.
+  ["height_m", "density", "reach_m", "min_depth_m", "lattice_m"].forEach((field, index) => {
     assert.equal(record[index], sentinel[field], `${field} is not at index ${index} of the record`);
   });
+  assert.equal(PEAK_FIELDS.length, expected.length, "PEAK_FIELDS changed length");
   assert.deepEqual(peakFromRecord(record), sentinel);
 });
 

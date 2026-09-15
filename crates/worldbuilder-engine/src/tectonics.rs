@@ -639,12 +639,34 @@ const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// doc and `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`), the
 /// field now stands islands everywhere the seabed allows, and the whole sweep was re-run.
 ///
-/// **The correction is 3.41x on the share, not the 4.4x the area change alone suggests.**
-/// Measured, not scaled: at the old 0.36 this fixture now reads 1.1400% against the 0.3345% it
-/// read before, which is 3.41x. The area the field can stand on grew by about 4.4x, but the
-/// ocean coverage and the depth window do not fall uniformly with respect to where margins
-/// are, so the two factors are not the same number -- which is exactly why this was re-measured
-/// rather than divided.
+/// **The correction on each world IS that world's plate-interior area factor. It needed no
+/// further mechanism, and an earlier version of this paragraph invented one.** Measured, not
+/// scaled -- at the old 0.36, each world's share against what it read before the fix:
+///
+/// | world | plates | plate interior, 200,000-point spiral | area factor `1/(1-interior)` | share before | share after | observed correction |
+/// |---|---|---|---|---|---|---|
+/// | island-a | 22 | 139,388 / 200,000 = 69.6940% | **3.2997x** | 0.3345% | 1.1400% | **3.4081x** |
+/// | owner | 28 | 106,539 / 200,000 = 53.2695% | **2.1399x** | 0.7525% | 1.6180% | **2.1502x** |
+/// | earth-a | 22 | 139,435 / 200,000 = 69.7175% | **3.3022x** | 0.4035% | 1.3945% | **3.4560x** |
+///
+/// Three worlds, three matches: 3.3% / 0.5% / 4.7% apart. **There is no shortfall for
+/// bathymetry to account for**, and the small residual has the opposite sign from a shortfall
+/// anyway -- the observed correction slightly EXCEEDS the area factor on all three, because the
+/// field's peak-wanting rate is marginally HIGHER in the interior than near a margin
+/// (island-a 0.082439 against 0.082079; owner 0.134101 against 0.128321; earth-a 0.103303
+/// against 0.097994, all over the same spiral and predicate). Interior seabed is very slightly
+/// the better place to stand an island here, not the worse.
+///
+/// **What the earlier version got wrong, recorded because it is the kind of error this plan
+/// keeps making.** It quoted "4.4x" as the area factor and called the 3.41x correction short of
+/// it. 4.4x is `1/(1-0.771570)` for the **12-plate** ABI fixture (`plates_for(20_260_904, 12)`,
+/// 154,314 / 200,000 interior), which is the world `tests/wasm_exports.rs` uses and the one the
+/// suppression was first measured on -- not the 22-plate `island-a` the 3.41x was measured on.
+/// Fewer plates means fewer margins means more interior, so the two fixtures have genuinely
+/// different factors and comparing one against the other's share is a category error. The
+/// mechanism offered to explain the gap was backwards on top of that: a below-average margin
+/// belt would make the correction LARGER than the area factor, not smaller. **The number never
+/// needed a story.**
 ///
 /// | density | island-a (land 0.40) | owner (land 0.16) | earth-a (land 0.29) | margin to the nearer band edge |
 /// |---|---|---|---|---|
@@ -691,8 +713,17 @@ const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
 /// 14. It is also **not** `CoastParams::fractal()`'s 0.35, which matters for a reason that is
 /// not cosmetic: `viewer/test/peak-params.test.mjs`'s "no peak number is written down twice"
 /// scans the viewer's sources for the preset's own distinctive literal, and a density that
-/// collided with another channel's would have made that scan pass vacuously. Checked against
-/// the four modules that scan covers: `0.14` appears in none of them.
+/// collided with another channel's would have made that scan pass vacuously.
+///
+/// **What that scan does and does not see, stated precisely.** It reads `peak-params.js`,
+/// `controls.js`, `main.js` and `engine.js` **with whole-line comments stripped**, so prose is
+/// permitted to quote a measurement and only code is held to the rule. That exemption is what
+/// let a retired `11%` and a hand-edited `0.36` survive in comments across two calibrations, so
+/// the third fix wave removed the density from the prose of all four as well: as of now
+/// `0.14` appears in none of the four **with or without the strip**, which is the stronger
+/// claim and the one worth making. The exemption itself is still right — a comment cannot move
+/// a pinned value — but a comment that has to be hand-edited every time this constant moves is
+/// a transcription with extra steps.
 ///
 /// **The analytic model is not where this came from.** The corrected volumetric model in
 /// [`VOLCANIC_REACH_M`]'s doc predicts the FIELD -- what the term would make if the whole
