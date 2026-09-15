@@ -3742,26 +3742,42 @@ mod tests {
     /// than its own two-part bound to whatever the pre-existing field already did.**
     ///
     /// **Measured, on this host (rustc 1.98.0, `--release`), at the shipping preset over
-    /// 240 transects x 2 bearings x 3,000 steps of 20 m:** the largest composed step is
-    /// 26.9865 m against a worst per-step bound of 4,492.2 m, and the largest seamount-only
-    /// step is 7.2768 m -- inside the 7.6190 m geometric bound the fixed-seabed test enforces,
-    /// so the window's extra allowance is headroom here rather than a cliff being admitted.
-    /// The composed bound is genuinely larger than the geometric one (4,492.2 m against
-    /// 7.6190 m at its worst step) because a single 20 m step can move the seabed by metres
-    /// where the margin terms are steep; that is the number, stated rather than a widening
-    /// waved through. 41,131 steps land strictly inside the window's ramp, which is the
-    /// coverage claim the fixed-seabed test cannot make at all.
+    /// 240 transects x 2 bearings x 15,000 steps of 20 m -- 7,199,520 steps, none skipped:**
+    /// the largest composed step is **7.0073 m** against a worst per-step bound of
+    /// **12.5460 m**, and the largest seamount-only step is **7.0073 m** -- inside the
+    /// 7.6190 m geometric bound the fixed-seabed test enforces, so the window's extra
+    /// allowance is headroom here rather than a cliff being admitted. **338,118 steps** land
+    /// strictly inside the window's ramp and **33** cross the margin-range frontier; both are
+    /// asserted, because they are the two coverages this walk exists for and the fixed-seabed
+    /// test can make neither claim. The density-1.0 arm reads 7.3396 m against the same
+    /// 12.5460 m.
+    ///
+    /// **The window's own allowance is real but small, and that is a measurement rather than
+    /// the argument an earlier draft of this comment made.** The worst seabed move over any
+    /// single 20 m step is **0.2053 m**, so at 24.0000 m of peak per metre of seabed the
+    /// window contributes at most 4.93 m, and the composed bound is the 7.62 m geometric term
+    /// plus that plus whatever the bare field moved. An earlier version of this comment
+    /// published 26.9865 m worst step against a 4,492.2 m bound, 7.2768 m seamount-only and
+    /// 41,131 ramp steps, and reasoned from "a single 20 m step can move the seabed by
+    /// metres". **No run ever produced those four numbers together**: they came off the first
+    /// draft of this test, which still exempted the margin-range frontier and so measured
+    /// steps where the *bare* field jumped across it, and they were never re-run once that
+    /// exemption was removed. A sub-metre seabed move is a different argument from a
+    /// multi-metre one -- the window is not the loose term here, it is a comparable one, and
+    /// the field uses neither, since the worst step observed is inside the geometric bound on
+    /// its own. Nothing about the derivation changed; the numbers did, and these are a run's.
     #[test]
     fn no_composed_step_exceeds_the_geometric_and_window_bounds_together() {
         let cases: [(&str, PeakParams, i32, i32); 2] = [
-            ("shipping preset", PeakParams::volcanic(), 240, 3_000),
-            ("density 1.0", PeakParams { density: 1.0, ..PeakParams::volcanic() }, 240, 3_000),
+            ("shipping preset", PeakParams::volcanic(), 240, 15_000),
+            ("density 1.0", PeakParams { density: 1.0, ..PeakParams::volcanic() }, 240, 15_000),
         ];
         for (label, params, transect_count, steps_per_transect) in cases {
             // The same fixture `peaked` builds, plus the bare field it differs from by one
             // term. Both must share the `Continentality`, or the baseline would not be the
             // same `total`.
             let land = Continentality::new(7788, EARTH_RADIUS_M, 0.4);
+            let margins_of = three_plate_set();
             let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, None);
             let peaked =
                 Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, None, Some(params));
@@ -3779,6 +3795,11 @@ mod tests {
             let mut worst_seabed_step_m = 0.0f64;
             let mut steps_on_the_ramp = 0usize;
             let mut steps_walked = 0usize;
+            // Coverage of the OTHER thing this walk is supposed to reach: a step with margins
+            // in range on one side and not the other. Those steps used to be exempted from the
+            // bound; they are bounded like any other now, and a future change that stopped this
+            // walk from crossing one at all would narrow its coverage silently. Asserted below.
+            let mut frontier_steps = 0usize;
             let lat_step = 178.0 / f64::from(transect_count);
             for i in 0..transect_count {
                 let lat = -89.0 + lat_step * f64::from(i); // cast-ok: loop counter, 0..transect_count
@@ -3790,7 +3811,16 @@ mod tests {
                     let sample = |point: &SpherePoint| {
                         let plain = bare.offset_m(point);
                         let seabed_m = bare.land.base_elevation(point) + plain;
-                        (plain, peaked.offset_m(point), seabed_m)
+                        // Whether any plate margin is in range here. Not a gate any more -- the
+                        // seamount term is evaluated either way -- but counted, so this walk can
+                        // assert it still crosses the frontier it used to exempt.
+                        let (nearest, margins) = margins_of.margins_within(
+                            point,
+                            MAX_TECTONIC_RANGE_M,
+                            EARTH_RADIUS_M,
+                        );
+                        let near_a_margin = !margins.is_empty() && nearest.is_some();
+                        (plain, peaked.offset_m(point), seabed_m, near_a_margin)
                     };
                     let mut previous = sample(&frame.origin);
                     for step in 1..steps_per_transect {
@@ -3805,6 +3835,11 @@ mod tests {
                         // `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`
                         // now forbids. With the term hoisted out of the margin sum there is no
                         // such frontier and no such exemption: 1,439,520 steps per arm, all asserted.
+                        // The crossings are still COUNTED, because "no exemption" is only worth
+                        // something if the walk actually reaches one.
+                        if here.3 != previous.3 {
+                            frontier_steps += 1;
+                        }
                         let bare_step_m = gap(here.0, previous.0);
                         let composed_step_m = gap(here.1, previous.1);
                         let seabed_step_m = gap(here.2, previous.2);
@@ -3846,7 +3881,8 @@ mod tests {
                 }
             }
             println!(
-                "{label}: {steps_walked} bounded steps, none skipped; worst composed \
+                "{label}: {steps_walked} bounded steps, none skipped ({frontier_steps} of them \
+                 cross the margin-range frontier); worst composed \
                  {worst_composed_m:.4} m against a worst \
                  bound of {worst_bound_m:.4} m; worst seamount-only step \
                  {worst_peak_step_m:.4} m against the {geometric_m:.4} m geometric bound; worst \
@@ -3861,6 +3897,20 @@ mod tests {
                 steps_on_the_ramp > 1_000,
                 "{label}: only {steps_on_the_ramp} steps landed on the window's ramp, so this \
                  walk measured the saturated window the fixed-seabed test already covers"
+            );
+            // **And the walk still reaches the frontier it no longer exempts.** The
+            // reachability pin asserts its own crossings on its own fixture; this one has to
+            // assert its own, or a future change to these transects could stop crossing a
+            // margin boundary and quietly narrow what this bound is tested over -- which is
+            // exactly the coverage this test was widened to get.
+            // 10, against the 33 measured: the frontier is a handful of curves on a
+            // three-plate planet and a 20 m step lands on one only where a transect cuts it,
+            // so this is intrinsically thin coverage and the bar is set to catch "stopped
+            // crossing entirely" rather than to fit the count.
+            assert!(
+                frontier_steps > 10,
+                "{label}: only {frontier_steps} steps crossed the margin-range frontier, so this \
+                 walk no longer bounds the transition the frontier cliff lived at"
             );
         }
     }
