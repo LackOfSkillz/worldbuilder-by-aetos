@@ -1609,13 +1609,19 @@ jobs:
       # `test_installation.py::test_worldbuilder_importable_outside_the_repo`, the
       # two-checkouts-sharing-one-interpreter property the 1b-4 notes already record. Neither is a
       # property of this branch; CI's own fresh virtualenv is what these pins describe.
-      - name: Assert the suite -- 575 tests, 167 of them conformance
+      # 2026-09-14: **575 -> 576**, conformance unmoved at 167. One test, in
+      # tests/test_maritime_provider.py: the adapter must state its planet's radius, which
+      # maritime's bundle reader asks it for and otherwise assumes is Earth's. Pinned at a
+      # non-Earth radius deliberately -- at Earth's the assumed value and the true one are the
+      # same number, which is the blind spot that let six EARTH_RADIUS_M substitutions through
+      # a full suite. Counted by `pytest tests/ -q --collect-only`.
+      - name: Assert the suite -- 576 tests, 167 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 575 --expect-file tests/test_conformance.py=167
+            --expect-total 576 --expect-file tests/test_conformance.py=167
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from
