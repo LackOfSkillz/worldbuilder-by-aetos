@@ -18,13 +18,14 @@
 ## Global Constraints
 
 - **An absent block must produce bit-identical worlds.** The parity corpus reports 156,011 compared / 0 divergent and every control unmoved: seed 147,387, erosion-k 216, water-pond 60, tectonic-warp 22,995. If that cannot pass, the design is wrong, not the test.
-- **`GENERATOR_VERSION` must NOT be bumped.** Its bump test (`lib.rs:65-71`) is "the same seed *and the same parameters* through the new code would produce a different world." With the block absent it would not. **This is the whole reason the layer is opt-in** — see the ruling in Task 5.
+- **`GENERATOR_VERSION` must NOT be bumped.** Its bump test (`lib.rs:65-71`) is "the same seed *and the same parameters* through the new code would produce a different world." With the block absent it would not. **This is the whole reason the layer is opt-in** — see the ruling in Task 7.
 - Determinism is the product. No `std` float maths outside `detmath.rs`; no `ceil` (write `-m::floor(-x)`); no `f64::min`/`max`/`clamp` (NaN-asymmetric, and the static guard does not catch them); `total_cmp` for float sorts; never iterate a `HashMap`/`HashSet` into output.
 - **No `.abs()` in `src/` or `examples/`.** `tests/no_std_math.rs` holds a per-file ledger and counts may only fall. Use the ledger test to check, never a grep — a naive grep over `tectonics.rs` reports ten where the ledger says nine, because one hit is prose inside a comment.
 - `// cast-ok: <reason>` on every `as u32/u64/i32/i64` and float-to-`usize` cast, and the reason must say what makes it safe.
 - No panic reachable from an `extern "C"` boundary — wasm exports return status codes.
 - Four places encode the record's layout and must agree word for word: `src/hydrology/record.rs`, `viewer/public/app/engine.js::hydroSummary`, `viewer/public/app/water-preview.js::decodeHydro`, `crates/worldbuilder-engine/tests/wasm_exports.rs`.
 - Every figure in a report names its population, its method with parameters, and its host, and is obtained by running rather than transcribing.
+- **Pins live in two places, and a task that moves a count updates both.** A verification report is the record; `.github/workflows/gates.yml` is the gate, and it asserts exact counts — the engine's run count per configuration (`expect:` at the five matrix rows, currently 865/865/867/987/989 with 11 ignored) and the Python suite's `--expect-total` (currently 576, conformance 167). The islands slice re-derived every pin into its report and never touched this file, and both of its PRs went red on a green branch. Re-derive with `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`), summing each binary's trailer, and `pytest tests/ -q --collect-only`; never by adding to the old number.
 - Commit subjects carry no franchise or third-party proper nouns; the commit feed is published publicly via a webhook.
 
 ---
@@ -163,6 +164,14 @@ git commit -m "A record from another world is refused, not answered"
 - Consumes: `WaterIndex::candidates` from plan 2a — **this is what makes the carve affordable**, and it is why 2a built an index before anything needed one.
 - Produces: `WaterLayer::cut_m(point, ground_m) -> (f64, f64)` returning the cut ground and the layer's authority, and `Option<WaterParams>` threaded through a new `Surface::with_water` constructor.
 
+**The layer is a second phase, never the bake's own input — added at pre-flight, and it is the load-bearing architecture of this plan.** The bake *reads* `elevation_m`: the pond search samples it (`hydrology/ponds.rs`, Ruling Q-16 — ponds are found in the detail field). The layer *writes* `elevation_m`. A bake run on a surface whose layer is active would therefore find ponds in terrain shaped by its own output, which is circular and has no fixed point to converge to. So:
+
+1. **Bake on a surface without the layer.** Always. `Surface::with_water` must never be the surface a bake is computed from, and a test should make that impossible rather than merely documented.
+2. **Carve by joining a record to a world.** A carved world is built from the same parameters as the bare one, plus the water block, plus the record. Because the layer changes `elevation_m` and never `structural_m`, the carved world and the bare world it was baked from **fingerprint identically** — which is precisely why Task 1 samples `structural_m`.
+3. **The join is where Task 2's refusal lives.** Joining a record to a world whose fingerprint differs is refused there, once, rather than checked per sample.
+
+The layer therefore carries the record, not a handful of scalars — unlike every earlier block. Say in the report how the record reaches `Surface` (owned, shared, or referenced by a held bake's id) and what that costs in memory, because a 7 MB record per world handle is a real number on the owner's world.
+
 **Spec §8.1, quoted so nobody has to go and look:**
 - River channels: a trapezoid cut to `bed_m` along each refined reach, `width_m` wide at the bank, banks blended over one width either side.
 - Notches: cut the same way.
@@ -214,7 +223,47 @@ git commit -m "Texture defers to a channel instead of damming it"
 
 ---
 
-### Task 5: The version decision, and the parity gate
+### Task 5: The wasm door, and its pins
+
+*Added at pre-flight. The draft plan had no ABI task, yet Task 7's parity group needs a wasm door to bit-compare the carve across the boundary, and Task 8 asks whether the carve is visible in the studio.*
+
+**Files:**
+- Modify: `crates/worldbuilder-engine/src/wasm.rs`, `crates/worldbuilder-engine/tests/wasm_exports.rs`
+
+**The peaks block is the template** — islands Tasks 4 and 5, merged in #34: a stride, preset selectors, per-field domains, `water_is_admissible` built on `within()`, `decode_water`/`encode_water` in one place, an arg enum, a reader, and three exports `wb_world_new_water` / `wb_water_preset` / `wb_water_check`, entered in `WB_EXPORTS` (whose count self-validates in `wasm_exports.rs`, so there is no number to bump there).
+
+**Two things peaks did not have to face:**
+
+1. **The door takes a record, not only scalars.** Per Task 3's architecture, `wb_world_new_water` builds a world from the usual parameters plus the water block **plus a held bake** — reference it by the id `hydroHold` already issues (plan 2a) rather than copying 7 MB across the boundary. A stale or unknown id is a status code, not a panic.
+2. **The fingerprint refusal is a status code at this door.** A bake whose fingerprint differs from the world being built is refused with its own named status, distinct from `WB_ERR_PARAM`, so a host can tell "your block is malformed" from "that record belongs to another world". Pin that the checker and the constructor agree on it.
+
+Pin, in `wasm_exports.rs`, everything peaks pinned — and the two things this task adds: **a record from another world of the same radius is refused at the door**, and **a canonical water block with no reaches produces a world bit-identical to `wb_world_new`**. Verify a field swap fails a test by swapping two slots in `decode_water`, watching it fail, and reverting — two of peaks' fields shared a domain and made a swap invisible in two of three mirrors, which is the failure this is guarding.
+
+```bash
+git commit -m "A door that joins a record to its own world, and refuses any other"
+```
+
+---
+
+### Task 6: The studio
+
+*Added at pre-flight, for the same reason as Task 5.*
+
+**Files:**
+- Create: `viewer/public/app/water-params.js`, `viewer/test/water-params.test.mjs`
+- Modify: `viewer/public/app/engine.js`, `viewer/public/app/controls.js`, `viewer/public/app/main.js`
+
+**`peak-params.js` is the template**, including the two things its review had to fix: pin `WATER_FIELDS` order against the Rust struct's own declared order rather than against itself, and make any refusal the engine can issue *reachable and correctly named* — `peakBootPlan()` checks a record before the world build so a refusal is surfaced rather than swallowed as "engine unavailable". Here there are two refusals to surface: a malformed block, and a record from another world.
+
+**An untouched panel writes no water parameter at all**, so a reload takes the absent path and a saved world is bit-identical. **Preset values come from `wb_water_preset`, never transcribed into JS** — and no preset value is written into a comment either, since that is how the islands slice's stale `11%` and `"0.36"` happened.
+
+```bash
+git commit -m "Let the studio carve a river, and say why when it will not"
+```
+
+---
+
+### Task 7: The version decision, and the parity gate
 
 **Files:**
 - Modify: `crates/worldbuilder-engine/src/lib.rs` (only if the decision is to bump — it is not), `crates/worldbuilder-engine/parity/parity_dump.rs`
@@ -243,7 +292,7 @@ git commit -m "Pin the carve across the boundary, and leave the version alone"
 
 ---
 
-### Task 6: The performance target, the survey, and the report
+### Task 8: The performance target, the survey, and the report
 
 **Files:**
 - Create: `docs/superpowers/reports/2026-09-14-water-2b-verification.md`
@@ -260,7 +309,7 @@ git commit -m "Pin the carve across the boundary, and leave the version alone"
 
 - [ ] **Step 3: Write the report and re-derive every pin by running it**
 
-Engine, Python, conformance, viewer, parity and all four controls, `check:wasm`, and the EOL guard. Never transcribe a figure.
+Engine, Python, conformance, viewer, parity and all four controls, `check:wasm`, and the EOL guard. Never transcribe a figure. **Then move `.github/workflows/gates.yml` to match** — the five engine `expect:` rows and the Python `--expect-total` — re-derived per the Global Constraints, with a dated comment saying what moved and why. Every earlier task that adds tests moves these counts; this is the task that makes the gate agree with the record before the branch is pushed.
 
 - [ ] **Step 4: Commit**
 
