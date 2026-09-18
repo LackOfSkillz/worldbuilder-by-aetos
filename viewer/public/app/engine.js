@@ -990,7 +990,8 @@ export class Engine {
   /// `collarPoints` is NOT the sum over every body of `outline.length - shoreMemberCount`. A
   /// schema 6 bake with any coarse body in it reports both above zero. Words 56-59 (schema 7,
   /// Task 1 of plan 2b) are the **ground fingerprint**, `ground`: 16 bytes of BLAKE2b over 64
-  /// millimetre-rounded samples of the world's `structural_m` (`record.rs::ground_fingerprint`),
+  /// millimetre-rounded samples of the ground the bake read -- `Surface::bake_ground_m`,
+  /// elevation with detail and without the water layer (`record.rs::ground_fingerprint`) --
   /// four little-endian bytes a word, returned as 32 lowercase hex digits in byte order. It is
   /// the record's tie to the world it was baked from; nothing compares it yet.
   ///

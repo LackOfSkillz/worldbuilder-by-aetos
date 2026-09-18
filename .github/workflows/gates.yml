@@ -1352,25 +1352,32 @@ jobs:
           # +8 uniformly; `wasm_exports` stays 120 (one existing test gained assertions).
           # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
           # per configuration: 884/884/886/1006/1008 listed, 11 ignored in each.
+          #
+          # 2026-09-18, WATER 2b Task 1 fix round 1 (the fingerprint reads the ground the bake
+          # read, detail included): **873/873/875/995/997 -> 875/875/877/997/999 with 11
+          # ignored**. `record.rs` gains two tests (a relief-only change moves the digest; the
+          # canonical relief spelled out does not) and its radius-margin test is reinstated in
+          # place of the one it replaced, so all five rows move by +2. Re-derived the same way:
+          # 886/886/888/1008/1010 listed, 11 ignored in each.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 873
+            expect: 875
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 873
+            expect: 875
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 875
+            expect: 877
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 995
+            expect: 997
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 997
+            expect: 999
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

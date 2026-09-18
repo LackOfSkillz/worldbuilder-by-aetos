@@ -477,6 +477,28 @@ impl Surface {
         }
     }
 
+    /// **The ground a hydrology bake reads**: `elevation_m` with the water layer skipped, and
+    /// nothing else skipped. Detail, features, gullies and every other layer are in; only water
+    /// the engine itself carves is out.
+    ///
+    /// **This is a contract later tasks must honour, not a synonym.** Today there is no water
+    /// layer, so this returns `elevation_m` bit for bit. Plan 2b's carve will add one to
+    /// `elevation_m`, and when it does, this function -- and only this function -- must keep
+    /// evaluating the ground without it. Two readers depend on that, and route through here so
+    /// they cannot drift apart:
+    ///
+    /// - the fine pond search (`hydrology::ponds::pond_ground`, Ruling S-9), which finds ponds in
+    ///   the detail field at `Some(pond_cell_m)`;
+    /// - the record's ground fingerprint (`hydrology::record::ground_fingerprint`), at `None`.
+    ///
+    /// If the fingerprint read the carved ground, a record's own digest would depend on whether
+    /// its own carve was active -- circular. If it read `structural_m` instead, it would miss the
+    /// detail the pond search found its ponds in, and a world differing only in its relief block
+    /// would be accepted as the same ground.
+    pub fn bake_ground_m(&self, point: &SpherePoint, resolution_m: Option<f64>) -> f64 {
+        self.elevation_m(point, resolution_m)
+    }
+
     /// Mean annual surface temperature at a point, in degrees C.
     ///
     /// Args:

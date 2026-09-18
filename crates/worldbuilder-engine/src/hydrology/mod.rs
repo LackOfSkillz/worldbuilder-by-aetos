@@ -382,7 +382,8 @@ pub struct HydroRecord {
     pub falls: Vec<Fall>,
     pub stats: BakeStats,
     /// SCHEMA 7, plan 2b: `record::ground_fingerprint` of the surface this record was baked
-    /// from -- 64 samples of `structural_m`, never `elevation_m` (see that function for why).
+    /// from -- 64 samples of `Surface::bake_ground_m`, the ground the bake read with detail
+    /// included and the water layer skipped (see that function for why).
     /// It ties a record to its world by content, where nothing on the wire did before.
     pub ground: [u8; 16],
 }

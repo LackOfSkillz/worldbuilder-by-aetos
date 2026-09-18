@@ -146,15 +146,25 @@ pub fn probe_point(index: usize) -> SpherePoint {
     SpherePoint { vector: Vec3 { x: across * m::cos(longitude), y: across * m::sin(longitude), z } }
 }
 
-/// A 16-byte digest of the ground a bake was computed from: [`PROBE_COUNT`] samples of
-/// `structural_m` at [`probe_point`]s, each rounded to the millimetre, hashed with BLAKE2b.
+/// A 16-byte digest of the ground a bake read: [`PROBE_COUNT`] samples of
+/// `Surface::bake_ground_m` at canonical resolution, at [`probe_point`]s, each rounded to the
+/// millimetre, hashed with BLAKE2b.
 ///
-/// **`structural_m`, never `elevation_m` -- and this is load-bearing.** `elevation_m` looks like
-/// the natural choice and is wrong. A later task carves rivers into `elevation_m`, so a digest
-/// over it would depend on whether the carve is active: the record's own fingerprint would
-/// depend on the record, which is circular. `structural_m` is defined before detail and before
-/// that layer, and it is the ground the bake actually reads (`LandGraph::sample`, the refinement
-/// ground), so it is the ground the record is *of*.
+/// **The ground the bake read, detail included -- not `structural_m`, and not raw
+/// `elevation_m`.** Both look natural and both are wrong:
+///
+/// - `structural_m` leaves detail out, but the bake reads detail: the fine pond search finds its
+///   ponds in `elevation_m` at `pond_cell_m` (Ruling S-9). A digest without detail would accept
+///   a world differing only in its relief block as the same ground, and answer with ponds found
+///   in other ground. It also barely sees a radius change -- the landform is laid out by
+///   direction, and on the test world 55 of 64 probes read `structural_m` bit-identically at
+///   9,309 km and 6,371 km, where detail's wavelengths are fixed in metres and move them all.
+/// - raw `elevation_m` will, once plan 2b's carve lands, include the water layer the record
+///   itself writes, making the record's fingerprint depend on the record -- circular.
+///
+/// So it reads `bake_ground_m`: elevation with the water layer skipped and nothing else skipped,
+/// the same function the pond search reads through, so the two cannot drift apart. At `None`,
+/// every configured octave down to the canonical floor -- deterministic, and what physics asks.
 ///
 /// **Rounded to the millimetre before hashing**, so a bit-level difference with no physical
 /// meaning does not make a record foreign. The rounded value is an integer-valued `f64` (exact
@@ -170,7 +180,7 @@ pub fn ground_fingerprint(surface: &Surface) -> [u8; GROUND_BYTES] {
     let mut hasher = Blake2bVar::new(GROUND_BYTES).expect("16 is a valid BLAKE2b output length");
     hasher.update(b"worldbuilder hydro ground v1");
     for index in 0..PROBE_COUNT {
-        let metres = surface.structural_m(&probe_point(index));
+        let metres = surface.bake_ground_m(&probe_point(index), None);
         let millimetres = m::floor(metres * 1000.0 + 0.5);
         hasher.update(&millimetres.to_bits().to_le_bytes());
     }
@@ -1078,6 +1088,8 @@ mod tests {
 
     // ---- the ground fingerprint (plan 2b, Task 1) -------------------------------------------
 
+    use crate::detail::ReliefParams;
+
     const SEED: i64 = 20_260_904;
     /// Not Earth's: the radius change below must be a real change, and 9,309 km -> 6,371 km is
     /// the pair the precedent in `SCHEMA`'s doc names.
@@ -1116,45 +1128,63 @@ mod tests {
         }
     }
 
-    /// The brief for this task asked for **every** probe to move past the millimetre rounding on a
-    /// 9,309 km -> 6,371 km change. On this engine that cannot hold, for any scatter of directions:
-    /// measured on this world (seed 20,260,904, 12 plates, land 0.29), **55 of the 64 probes read
-    /// bit-identical `structural_m` at both radii** -- 22 on the -4,600 m abyssal floor, 4 on the
-    /// 700 m plateau cap, and 29 at varying heights that simply do not depend on the radius --
-    /// because the landform is laid out in direction space and only the plate-boundary terms are
-    /// measured in metres. The nine that moved moved by 5.08 m to 274.80 m. (A "0.44 m minimum,
-    /// all 64 moved" figure exists elsewhere in this project; it belongs to a different probe
-    /// scheme, metre offsets around an anchor sampling a different quantity, and is not this
-    /// scheme's.)
-    ///
-    /// So the margin asserted here is the one the scheme actually has, and it is the property
-    /// the original assertion was protecting: **no probe sits near the rounding floor**. A probe
-    /// either reads the same bits at both radii (ground the radius genuinely does not touch, and
-    /// no interpolation change can nudge it across a millimetre boundary) or it moves by more
-    /// than a metre -- a thousand rounding steps. And more than one probe moves, so the digest
-    /// differing is not one lucky point.
+    /// A digest that differs because ONE probe moved is a digest one interpolation change from
+    /// colliding, so this asserts the margin rather than the inequality: on a 9,309 km -> 6,371 km
+    /// change **every** probe must move past the millimetre rounding. It holds because the digest
+    /// reads the ground with detail in, and detail's wavelengths are fixed in metres, so a radius
+    /// change moves it everywhere. (`structural_m` alone failed this: 55 of 64 probes read it
+    /// bit-identically at both radii. A 0.44 m minimum quoted elsewhere in this project belongs to
+    /// a different probe scheme; this test's own run is the evidence for this one's.)
     #[test]
-    fn a_radius_change_moves_its_probes_by_metres_or_not_at_all() {
+    fn every_probe_moves_when_the_radius_does_so_the_margin_is_not_one_lucky_point() {
         let wide = surface_at(RADIUS_M);
         let narrow = surface_at(6_371_000.0);
         let mut moved = 0usize;
-        let mut smallest_move = f64::INFINITY;
+        let mut smallest = f64::INFINITY;
         for index in 0..PROBE_COUNT {
             let point = probe_point(index);
-            let a = wide.structural_m(&point);
-            let b = narrow.structural_m(&point);
-            if a.to_bits() == b.to_bits() {
-                continue;
-            }
+            let a = wide.bake_ground_m(&point, None);
+            let b = narrow.bake_ground_m(&point, None);
             let gap = if a > b { a - b } else { b - a };
-            assert!(gap > 1.0, "probe {index} moved only {gap} m -- near the millimetre rounding");
-            moved += 1;
-            if gap < smallest_move {
-                smallest_move = gap;
+            if gap >= 0.001 {
+                moved += 1;
+            }
+            if gap < smallest {
+                smallest = gap;
             }
         }
-        println!("{moved} of {PROBE_COUNT} probes moved; smallest move {smallest_move} m");
-        assert!(moved >= 8, "only {moved} of {PROBE_COUNT} probes moved with the radius");
+        println!("smallest probe movement, 9,309 km -> 6,371 km: {smallest} m");
+        assert_eq!(moved, PROBE_COUNT, "only {moved} of {PROBE_COUNT} probes moved");
+        assert!(smallest > 0.001, "smallest probe movement {smallest} m is at the rounding floor");
+    }
+
+    /// The test the `structural_m` design would have failed: two worlds identical except for
+    /// their relief block. The bake reads detail (the pond search), so a record from one must not
+    /// pass for the other. The structural assertion is the evidence that only the detail differs.
+    #[test]
+    fn two_worlds_differing_only_in_relief_get_different_fingerprints() {
+        let mut rougher = ReliefParams::canonical();
+        rougher.interior_m *= 1.5;
+        let plain = surface_with(SEED, RADIUS_M, PLATES, LAND);
+        for relief in [ReliefParams::hills(), rougher] {
+            let other = Surface::new(SEED, RADIUS_M, PLATES, LAND, None, Some(relief), None);
+            for index in 0..PROBE_COUNT {
+                let point = probe_point(index);
+                assert_eq!(plain.structural_m(&point).to_bits(), other.structural_m(&point).to_bits(),
+                           "probe {index}: a relief block must not move the structure");
+            }
+            assert_ne!(ground_fingerprint(&plain), ground_fingerprint(&other),
+                       "a relief-only change must move the digest");
+        }
+    }
+
+    /// `ReliefParams::canonical()` is the `None` path bit for bit, so it must not move the digest:
+    /// the fingerprint tells ground apart, not the way a caller spelled it.
+    #[test]
+    fn the_canonical_relief_spelled_out_is_the_same_ground() {
+        let plain = surface_with(SEED, RADIUS_M, PLATES, LAND);
+        let spelled = Surface::new(SEED, RADIUS_M, PLATES, LAND, None, Some(ReliefParams::canonical()), None);
+        assert_eq!(ground_fingerprint(&plain), ground_fingerprint(&spelled));
     }
 
     #[test]

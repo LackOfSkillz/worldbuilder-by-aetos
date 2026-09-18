@@ -150,7 +150,9 @@ fn clipped_at(cells: &[(usize, usize)], steps: usize, cells_across: usize) -> (b
 pub fn pond_ground<'a>(surface: &'a Surface, params: &HydroParams)
                        -> impl Fn(&SpherePoint) -> f64 + 'a {
     let cell_m = params.pond_cell_m;
-    move |point: &SpherePoint| surface.elevation_m(point, Some(cell_m))
+    // Through `bake_ground_m`, not `elevation_m`: the bake's ground is elevation with the water
+    // layer skipped, and the record's fingerprint reads the same function.
+    move |point: &SpherePoint| surface.bake_ground_m(point, Some(cell_m))
 }
 
 /// One strip per segment of `reach`, sampled at `pond_cell_m` and reaching

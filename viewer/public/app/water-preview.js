@@ -252,7 +252,8 @@ export function decodeHydro(words) {
     shoreMembers: cursor.u32(),
     collarPoints: cursor.u32(),
     // SCHEMA 7, plan 2b, Task 1 (words 56-59): the ground fingerprint -- BLAKE2b-128 over 64
-    // millimetre-rounded samples of the world's `structural_m` (`record.rs::ground_fingerprint`).
+    // millimetre-rounded samples of the ground the bake read -- `Surface::bake_ground_m`,
+    // elevation with detail and without the water layer (`record.rs::ground_fingerprint`).
     // Each word is a u32 holding four digest bytes little-endian; `ground` is the 16 bytes as 32
     // lowercase hex digits in byte order, the same string `engine.js::hydroSummary` returns.
     ground: groundHex([cursor.u32(), cursor.u32(), cursor.u32(), cursor.u32()]),
