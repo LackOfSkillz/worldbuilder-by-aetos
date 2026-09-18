@@ -9,7 +9,7 @@
 // Everything is driven by URL parameters so a check can ask for a *different* world without
 // a code change -- including the deliberately wrong ones.
 
-import { Engine } from "./engine.js";
+import { Engine, WB_OK } from "./engine.js";
 import { holdUntilRendered, buildOverlay } from "./loading.js";
 import { keepPainted } from "./worlds.js";
 import { riverFromRoute, soundChannel } from "./river.js";
@@ -20,6 +20,7 @@ import { reliefFromParams } from "./relief-params.js";
 import { tectonicFromParams } from "./tectonic-params.js";
 import { coastFromParams } from "./coast-params.js";
 import { gullyFromParams } from "./gully-params.js";
+import { peakFromParams, peakBootPlan } from "./peak-params.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, engineClimateEnabled, createReliefImageryProvider,
@@ -69,6 +70,7 @@ function worldSpecFromParams() {
     tectonics: null,
     coast: null,
     gully: null,
+    peaks: null,
   };
 }
 
@@ -195,6 +197,47 @@ async function boot() {
   // worker's own constructor and the tiles they fill are the same planet as the main thread's.
   const gullyCanonical = engine.gullyPreset("canonical");
   spec.gully = gullyFromParams(params, gullyCanonical);
+
+  // The peak block, and RULING 1 a sixth time. Same shape as the four above -- canonical is read
+  // FROM THE ENGINE, `peakFromParams` returns `null` when nothing was asked for, and that `null`
+  // reaches `wb_world_new_peak` as a null pointer with a length of zero.
+  //
+  // **This is the block that stands seamounts up out of deep ocean.** Tasks 1 through 5 grew the
+  // cellular field and shipped `wb_world_new_peak`, `wb_peak_preset` and `wb_peak_check` in the
+  // committed artifact; until this line existed nothing in the viewer sent a peak block, so the
+  // owner saw an unbroken ocean floor no matter what the engine could do.
+  //
+  // **The `null` here is stronger than the coast and tectonic ones, the same way gully's is.**
+  // `Tectonics::peak_offset_m` returns `0.0` on its very first line when `self.peaks` is `None`,
+  // so the canonical path never evaluates the term at all rather than evaluating it at a density
+  // of zero.
+  //
+  // Placed beside the other four reads and before the pool for the identical reason: the workers
+  // are handed this same `spec` by `structuredClone`, so a peak block chosen here reaches every
+  // worker's own constructor and the tiles they fill are the same planet as the main thread's.
+  const peakCanonical = engine.peakPreset("canonical");
+  // **Blocker 1's fix lives here.** `peakFromParams` forwards an out-of-domain or joint-invariant-
+  // breaking block on purpose (its own doc: "a caller asking for something the engine declines is
+  // a different thing from a caller not asking for anything"), and the only way to *reach* that
+  // path is a hand-edited query string, since neither `reach_m` nor `lattice_m` has a widget. Left
+  // alone, that block would reach `wb_world_new_peak` inside `worldSwapper.swap` below, which
+  // throws -- and `boot()`'s own caller (`window.__wbBoot = boot().catch(...)` at the bottom of
+  // this file) swallows that throw without ever publishing `window.__wb`, so `controls.js` never
+  // gets far enough to run `peakAdmissibleNote`'s check at all. The owner then sees the same
+  // generic "engine unavailable" text a truly dead engine would produce, which blames the wrong
+  // thing -- worse than silence, because it misdirects.
+  //
+  // So the block is checked against the real validator, `wb_peak_check`, BEFORE it ever reaches
+  // the constructor, in a step that runs whether or not the rest of boot later fails for some
+  // other reason. A refused block is swapped for `null` -- the canonical, island-free ocean --
+  // so the constructor never sees it and boot can finish and publish `window.__wb` normally.
+  // `peaksRequested` and `peaksRefused` are kept so `window.__wb.peaks.chosen` below can still
+  // show the owner what was actually asked for: `controls.js`'s existing `presets.check(peakState)`
+  // then reaches a live block and prints the real refusal reason instead of nothing at all.
+  const peaksRequested = peakFromParams(params, peakCanonical);
+  const peaksPlan = peakBootPlan(peaksRequested, engine.checkPeak(peaksRequested) === WB_OK);
+  const peaksRefused = peaksPlan.refused;
+  spec.peaks = peaksPlan.forConstructor;
 
   const size = number("size", HEIGHTMAP_SIZE);
   const maxLevel = number("maxLevel", MAX_LEVEL);
@@ -978,6 +1021,16 @@ async function boot() {
           s.gully.slopeReference} crest ${s.gully.crestSharpness} gate ${
           s.gully.gateElevationM}/${s.gully.gateElevationSpanM} m floor ${
           s.gully.flatEnergyFloor} steer ${s.gully.steerLatticeM} m`
+        : "canonical"} peaks=${
+      s.peaks
+        // Density AND the four fields it means nothing without: a caption naming density alone
+        // would report the same share about a block whose height, reach, min depth or lattice
+        // pitch had also moved, and this line is what a screenshot carries as its own caption.
+        // (No density literal in this prose, deliberately: the one that used to be here was the
+        // pre-calibration value and went stale where the sweep in report section 10.4 could not
+        // see it, because that sweep was over code and this is a comment.)
+        ? `dens ${s.peaks.density.toFixed(2)} height ${s.peaks.height_m} m reach ${
+          s.peaks.reach_m} m depth ${s.peaks.min_depth_m} m lattice ${s.peaks.lattice_m} m`
         : "canonical"} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
@@ -1207,6 +1260,27 @@ async function boot() {
       /// a floor that closes an infinite-height hazard rather than stating a domain -- so a panel
       /// re-deriving any of that in JavaScript would be a second copy of a bound.
       check: (block) => engine.checkGully(block) === 0,
+    },
+    /// The engine's own peak presets, read across the boundary at boot. `controls.js` anchors its
+    /// one slider on `canonical` and fills the whole block from `volcanic` when the preset button
+    /// is pressed -- so the panel cannot drift from `tectonics.rs`, because it holds no peak
+    /// number of its own to drift.
+    peaks: {
+      canonical: peakCanonical,
+      volcanic: engine.peakPreset("volcanic"),
+      /// **The block the query string actually asked for, not the one the world was built
+      /// with.** Those two agree everywhere except the one path Blocker 1 closes: when the
+      /// query string named a block `wb_peak_check` refuses, `installed.state.spec.peaks` reads
+      /// back `null` (the fallback boot substituted so the constructor would not throw) and the
+      /// refusal would vanish the moment boot finished. Reading `peaksRequested` here instead
+      /// means `controls.js`'s `peakState` starts on the REFUSED block, so `presets.check`
+      /// below is asked a live question and `peakAdmissibleNote` actually fires.
+      get chosen() { return peaksRefused ? peaksRequested : installed.state.spec.peaks; },
+      /// Whether the engine would accept a block, asked of `wb_peak_check` itself. This
+      /// channel's one bound no per-field check can see is joint -- `reach_m <= lattice_m` is
+      /// what keeps `peak_of_cell`'s candidate scan complete -- so a panel re-deriving it in
+      /// JavaScript would be a second copy of a bound and a second chance to disagree with it.
+      check: (block) => engine.checkPeak(block) === 0,
     },
     tectonics: {
       canonical: tectonicCanonical,

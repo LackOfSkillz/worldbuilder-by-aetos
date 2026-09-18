@@ -1329,25 +1329,39 @@ jobs:
           # all five printed `count OK`. The suites were then run, all five, `--no-fail-fast`, and
           # all five are green: lib 822/822/824/822/824 plus `blake2_bytes` 4, `build_fingerprint`
           # 9, `no_std_math` 6 and (on the wasm rows) `wasm_exports` 112.
+          # 2026-09-14, ISLANDS SLICE 1: **843/843/845/955/957 with 11 ignored ->
+          # 865/865/867/987/989 with 11 ignored**. The slice adds a seamount field
+          # (`PeakParams`), its wasm ABI and the tests that pin both: lib 843 -> 847 on the
+          # wasm rows, `wasm_exports` 119 -> 120, and the other three binaries unmoved at
+          # blake2 4 / fingerprint 9 / no_std_math 7. 847 + 120 + 4 + 9 + 7 = 987 reconciles
+          # the wasm row exactly, and the non-wasm rows are lib + 4 + 9 + 7.
+          #
+          # **Re-derived, not adjusted**, and the omission is worth recording: the slice's own
+          # verification report re-ran every pin and never touched THIS file, because the plan
+          # said "re-derive every pin" without saying the pins live in two places. The report
+          # is the record and this file is the gate; a slice that updates one and not the other
+          # ships a red build. Counted here by `cargo test -p worldbuilder-engine <cfg> --
+          # --list` (and `--ignored`) per configuration, summing each binary's trailer.
+          # Ignored stays 11: the slice adds no `#[ignore]`d test.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 843
+            expect: 865
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 843
+            expect: 865
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 845
+            expect: 867
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 955
+            expect: 987
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 957
+            expect: 989
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

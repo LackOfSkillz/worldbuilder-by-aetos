@@ -60,6 +60,9 @@ import {
   AMPLITUDE_BAND, MEASURED_AMPLITUDE_SWEEP,
   gullyReadoutFields, gullyTravel, gullyPanelFields, gullyToParams, gullyFromParams,
 } from "./gully-params.js";
+import {
+  PEAK_SLIDERS, peakReadoutFields, peakTravel, peakPanelFields, peakToParams, peakFromParams,
+} from "./peak-params.js";
 import { debounceLatest, nextQueryString, RELOAD_ONLY, SWAP_DEBOUNCE_MS } from "./live-swap.js";
 import { waterNodeCountFromParams } from "./water.js";
 
@@ -954,6 +957,142 @@ function build() {
     paint();
   }
 
+  // === islands — this swaps live ==========================================================
+  //
+  // **THE SECTION THAT STANDS SEAMOUNTS UP OUT OF DEEP OCEAN.** Tasks 1 through 5 grew a
+  // cellular field of jittered candidate nodes -- `PeakParams` and `Tectonics::peak_offset_m` --
+  // wired it through `Surface`, and shipped `wb_world_new_peak`, `wb_peak_preset` and
+  // `wb_peak_check` in the committed artifact with no viewer path at all, exactly the story
+  // `CoastParams` and `GullyParams` both had before their own sections existed.
+  //
+  // Rebuild-class in the sense that `PeakParams` is an argument to `Surface`'s constructor,
+  // resolved once -- but it is on the LIVE swap path beside the mountains, coastline and
+  // drainage, because a seamount field is exactly the third thing the owner asked for
+  // ("mountains, lakes and islands"), and `live-swap.js`'s `WORLD_FIELDS` carries it as a
+  // surface-class field the same way it carries `gully`.
+  //
+  // **No peak number is written in this file.** The one slider and the preset button are both
+  // anchored on `wb_peak_preset`'s answer in `wirePeaks` below, and until the engine answers
+  // they are disabled and say so.
+
+  const peakSection = section(body, "islands · live");
+  const peakLabels = {
+    // Labelled for its effect, not its name: "density" means nothing to somebody looking at open
+    // ocean, and this is also the field that turns the whole term on.
+    density: "how many",
+  };
+  const peakRows = {};
+  for (const field of PEAK_SLIDERS) {
+    peakRows[field] = row(peakSection, peakLabels[field], `wb-peak-${field}`,
+      "range", { min: 0, max: 1, step: 1, value: 0, disabled: true });
+    peakRows[field].out.textContent = "—";
+  }
+  // The four fields with no widget, SHOWN. None of them has a swept effect table yet -- Task 7's
+  // survey is what would produce one -- so none gets a slider, the same reasoning `COAST_SLIDERS`
+  // and `GULLY_SLIDERS` give for the fields beside their own one lever. But the preset carries all
+  // five and the query string carries all five, so a preset that changed something the panel never
+  // mentioned would be a parameter the owner cannot see.
+  const peakScheduleNote = el("div", "wb-note", "—");
+  peakSection.append(peakScheduleNote);
+  // And whether the engine would take the block, before generate rather than after. This channel's
+  // one bound that no per-field check can see is JOINT: `reach_m <= lattice_m` is what keeps the
+  // candidate scan complete, and it is only reachable by hand-editing the query string, since
+  // neither field has a widget. Asked of `wb_peak_check` through the engine, which is the same
+  // validator the record will meet, rather than by re-deriving the comparison in JavaScript.
+  const peakAdmissibleNote = el("div", "wb-note", "");
+  peakSection.append(peakAdmissibleNote);
+  const peakNote = el("div", "wb-note", "waiting for the engine…");
+  peakSection.append(peakNote);
+  const peakActions = el("div", "wb-actions");
+  const volcanicButton = el("button", "wb-mini", "volcanic preset");
+  volcanicButton.type = "button";
+  volcanicButton.disabled = true;
+  volcanicButton.title =
+    "PeakParams::volcanic(), read from the engine — its one moved field is on the slider you can see";
+  const peakReset = el("button", "wb-mini", "canonical");
+  peakReset.type = "button";
+  peakReset.disabled = true;
+  peakReset.title = "back to the engine's canonical block, which is the untouched, island-free ocean";
+  peakActions.append(volcanicButton, peakReset);
+  peakSection.append(peakActions);
+
+  /// The peak block the slider currently describes, or `null` while the engine has not answered.
+  let peakState = null;
+  let peakCanonical = null;
+
+  /// Fill in the travel, the defaults and the readouts once the engine can be asked.
+  function wirePeaks(presets) {
+    peakCanonical = presets.canonical;
+    // **The panel-default family check, run in production and not only in a test.** The widget
+    // carries integer positions, so a mis-stepped default ought to be impossible by construction
+    // -- but "impossible by construction" is what was said about the radius slider too.
+    const faults = panelFieldFaults(peakPanelFields(presets.canonical));
+    if (faults.length > 0) {
+      peakNote.textContent = `slider travel refused: ${faults.join("; ")}`;
+      return;
+    }
+    const travel = peakTravel(presets.canonical);
+    peakState = { ...presets.canonical, ...(presets.chosen ?? {}) };
+
+    const paint = () => {
+      for (const field of PEAK_SLIDERS) {
+        const value = travel[field].toValue(Number(peakRows[field].input.value));
+        peakState[field] = value;
+        peakRows[field].out.textContent = travel[field].format(value);
+      }
+      // The schedule, read out of the state the preset button writes rather than from literals.
+      // Every driven field appears somewhere the owner can see it: the slider shows one and this
+      // line shows the rest. Asserted rather than trusted -- `peak-params.test.mjs` checks that
+      // the union of `PEAK_SLIDERS` and the fields named on this line is `PEAK_CONTROLS`, so a
+      // sixth field added to the channel cannot arrive silently.
+      const shown = peakReadoutFields().map((f) => `${f} ${peakState[f]}`).join(" · ");
+      peakScheduleNote.textContent = shown;
+      const off = !(peakState.density > 0);
+      peakNote.textContent = off
+        ? "off — no candidate node ever holds a peak, so the ocean floor is the pre-island one "
+          + "byte for byte."
+        : `${(peakState.density * 100).toFixed(0)}% of candidate lattice nodes hold a peak, `
+          + `each up to ${peakState.height_m} m above its own seabed and reaching for a seabed `
+          + `at least ${peakState.min_depth_m} m deep. Nodes sit ${peakState.lattice_m} m apart `
+          + `and each one's cone reaches ${peakState.reach_m} m.`;
+      if (typeof presets.check === "function") {
+        peakAdmissibleNote.textContent = presets.check(peakState)
+          ? ""
+          : "the engine will refuse this block — check the reach and lattice fields in the query "
+            + "string (reach must not exceed lattice).";
+      }
+    };
+
+    for (const field of PEAK_SLIDERS) {
+      const { input } = peakRows[field];
+      input.min = travel[field].min;
+      input.max = travel[field].max;
+      input.step = 1;
+      input.value = travel[field].toPosition(peakState[field]);
+      input.disabled = false;
+      input.addEventListener("input", paint);
+    }
+    peakReset.disabled = false;
+    volcanicButton.disabled = false;
+    // **Both buttons send the ENGINE'S OWN record back to the engine and restate nothing.**
+    // `setAllPeaks` writes every field of a preset -- the one that has a slider onto its slider,
+    // and the four that do not straight into the state the readout and the query string both
+    // read. That second half is why this is a loop over the block rather than over the widgets: a
+    // preset half-applied because four of its fields had no widget is the silently-dropping-
+    // builder shape, and this file's own history is four instances of a panel value that was not
+    // the engine's value.
+    const setAllPeaks = (block) => {
+      peakState = { ...block };
+      for (const field of PEAK_SLIDERS) {
+        peakRows[field].input.value = travel[field].toPosition(block[field]);
+      }
+      paint();
+    };
+    volcanicButton.addEventListener("click", () => setAllPeaks(presets.volcanic));
+    peakReset.addEventListener("click", () => setAllPeaks(presets.canonical));
+    paint();
+  }
+
   // === clouds — these rebuild =============================================================
   //
   // **Rebuild-class, not live**, and for the same reason the relief sliders are: the coverage
@@ -1141,6 +1280,11 @@ function build() {
     // RULING 1, held in the one place a generate can break it. On this channel `None` is not
     // "the term adding zero": it is a `Surface` with no steering lattice built at all.
     ...(gullyState && gullyCanonical ? gullyToParams(gullyState, gullyCanonical) : {}),
+    // And the same for the islands: every peak field still at canonical is dropped, so an
+    // untouched panel writes no peak parameter at all and the reload takes the `None` path --
+    // RULING 1, held in the one place a generate can break it. On this channel `None` is
+    // stronger still: `Tectonics::peak_offset_m` returns 0.0 before it evaluates the term at all.
+    ...(peakState && peakCanonical ? peakToParams(peakState, peakCanonical) : {}),
   });
 
   // === the live swap ======================================================================
@@ -1160,6 +1304,7 @@ function build() {
       : {}),
     ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
     ...(gullyState && gullyCanonical ? gullyToParams(gullyState, gullyCanonical) : {}),
+    ...(peakState && peakCanonical ? peakToParams(peakState, peakCanonical) : {}),
     lakeNodes: lakeNodes.input.value,
   });
 
@@ -1185,6 +1330,7 @@ function build() {
     if (tectonicCanonical) spec.tectonics = tectonicFromParams(nextParams, tectonicCanonical);
     if (coastCanonical) spec.coast = coastFromParams(nextParams, coastCanonical);
     if (gullyCanonical) spec.gully = gullyFromParams(nextParams, gullyCanonical);
+    if (peakCanonical) spec.peaks = peakFromParams(nextParams, peakCanonical);
     generate.disabled = true;
     swapNote.textContent = "swapping…";
     try {
@@ -1215,12 +1361,14 @@ function build() {
   for (const field of TECTONIC_SLIDERS) wireLive(mountainRows[field].input);
   for (const field of COAST_SLIDERS) wireLive(coastRows[field].input);
   for (const field of GULLY_SLIDERS) wireLive(gullyRows[field].input);
+  for (const field of PEAK_SLIDERS) wireLive(peakRows[field].input);
   wireLive(lakeNodes.input);
   // The preset buttons move several sliders at once and fire no `change` at all, so they ask for
   // the swap themselves. A "ranges preset" that changed six readouts and left the planet alone
   // would look exactly like a broken preset.
   for (const button of [
     rangesButton, mountainReset, fractalButton, coastReset, drainageButton, gullyReset,
+    volcanicButton, peakReset,
   ]) {
     button.addEventListener("click", () => { if (liveOn()) runSwap(); });
   }
@@ -1286,7 +1434,7 @@ function build() {
   document.body.append(panel);
   return {
     readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
-    wireGully, gullyNote,
+    wireGully, gullyNote, wirePeaks, peakNote,
     /// Repainted once boot has published `window.__wb`, so the water note can state what THIS
     /// page actually resolved rather than only what the slider asks for.
     paintWater,
@@ -1343,7 +1491,7 @@ function wireReadout(readout) {
 // dead engine would be the drift hazard again, wearing a different hat.
 const {
   readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
-  wireGully, gullyNote, paintWater,
+  wireGully, gullyNote, wirePeaks, peakNote, paintWater,
 } = build();
 const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
   ? window.__wbBoot
@@ -1363,6 +1511,9 @@ booted
     const gully = window.__wb && window.__wb.gully;
     if (gully) wireGully(gully);
     else gullyNote.textContent = "engine unavailable — the drainage cannot be read or set";
+    const peaks = window.__wb && window.__wb.peaks;
+    if (peaks) wirePeaks(peaks);
+    else peakNote.textContent = "engine unavailable — the islands cannot be read or set";
     paintWater();
   })
   .catch((error) => {
@@ -1371,4 +1522,5 @@ booted
     mountainNote.textContent = `engine unavailable — mountains cannot be set (${error})`;
     coastNote.textContent = `engine unavailable — the coastline cannot be set (${error})`;
     gullyNote.textContent = `engine unavailable — the drainage cannot be set (${error})`;
+    peakNote.textContent = `engine unavailable — the islands cannot be set (${error})`;
   });

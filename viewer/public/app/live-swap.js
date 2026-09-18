@@ -65,6 +65,12 @@ export const WORLD_FIELDS = [
   // module's own measurement gives -- the stream graph samples the surface, so a term that carves
   // 85.8 m of spread into a flank moves the drainage the lakes are resolved from.
   "gully",
+  // The sixth and last block. `PeakParams` is an argument to `Surface::with_peaks`, resolved once
+  // at construction, so it is surface-class exactly as the five before it -- and for the
+  // identical reason the water solve moves with it too: a seamount standing an island out of open
+  // ocean is exactly the kind of surface change the stream graph would otherwise resolve lakes
+  // against stale ground.
+  "peaks",
 ];
 
 /// The fields that decide the WATER manifest and nothing else. Deliberately short: everything

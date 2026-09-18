@@ -156,8 +156,8 @@ test("the untouched path is null, and null is the untouched world", () => {
 
   // And the world itself: the default path is byte-for-byte the world with no gully argument, at
   // every probe and at every resolution. **This is the assertion the whole wiring rests on** --
-  // `newWorld` now calls `wb_world_new_gully` for EVERY path, including the one that used to call
-  // `wb_world_new_coast`, so if this were wrong today's picture would have moved.
+  // `newWorld` now calls `wb_world_new_peak` for EVERY path (the peak channel widened the door
+  // once more, past `wb_world_new_gully`), so if this were wrong today's picture would have moved.
   const plain = engine.newWorld({ ...DEFAULT_WORLD });
   const defaulted = engine.newWorld({ ...DEFAULT_WORLD, gully: null });
   const explicit = engine.newWorld({ ...DEFAULT_WORLD, gully: canonical });
@@ -472,7 +472,10 @@ test("the crest floor closes an infinite-height hazard, and the engine is what s
   // page with a handle of 0.
   assert.throws(
     () => engine.newWorld({ ...DEFAULT_WORLD, gully: { ...drainage, crestSharpness: -0.5 } }),
-    /wb_world_new_gully refused.*gully=WB_ERR_PARAM/s,
+    // **The constructor's name moved again, with the peak channel's door**, and this regex moved
+    // with it: `newWorld` now calls `wb_world_new_peak` for every path. What this assertion is
+    // about is unchanged: a refused world says WHICH channel refused it.
+    /wb_world_new_peak refused.*gully=WB_ERR_PARAM/s,
   );
 });
 
@@ -549,8 +552,10 @@ test("no gully number is written down twice in the viewer", () => {
   assert.match(appFile("engine.js"), /wb_gully_preset/);
   // **And the constructor really is the widened one.** This is the line that makes the channel
   // reachable at all; a viewer that imported the module and still called `wb_world_new_coast`
-  // would pass every other assertion in this file except the ones that build a world.
-  assert.match(appFile("engine.js"), /wb_world_new_gully\(/);
+  // would pass every other assertion in this file except the ones that build a world. The peak
+  // channel widened the door once more, past this one -- see `peak-params.test.mjs` for the
+  // assertion that `newWorld` now calls `wb_world_new_peak`.
+  assert.match(appFile("engine.js"), /wb_world_new_(gully|peak)/);
 });
 
 test("every driven gully field appears somewhere the owner can see it", () => {

@@ -38,7 +38,7 @@ use crate::shelf::Shelf;
 use crate::sphere::SpherePoint;
 use crate::substrate::{self, Composition, UnknownSubstrate};
 use crate::tangent::TangentFrame;
-use crate::tectonics::{TectonicParams, Tectonics};
+use crate::tectonics::{PeakParams, TectonicParams, Tectonics};
 
 /// What the caller brought, where Python writes `features=`.
 ///
@@ -222,6 +222,10 @@ impl Surface {
     /// **This is the only parameter of the five that adds a term to `elevation_m` rather
     /// than changing one**, which is why the `None` path is held by not building the
     /// steering lattice at all. See the `steer` field.
+    ///
+    /// Delegates to [`Surface::with_peaks`] with `None`, exactly as `with_coast` delegates
+    /// to this constructor: the widest door absorbs the next opt-in block rather than this
+    /// one growing a tenth parameter.
     #[allow(clippy::too_many_arguments)]
     pub fn with_gully(
         world_seed: i64,
@@ -233,6 +237,46 @@ impl Surface {
         tectonics: Option<TectonicParams>,
         coast: Option<CoastParams>,
         gully: Option<GullyParams>,
+    ) -> Self {
+        Self::with_peaks(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features,
+            relief,
+            tectonics,
+            coast,
+            gully,
+            None,
+        )
+    }
+
+    /// The same world, with an opt-in field of standalone seamounts reaching `Tectonics`.
+    ///
+    /// `peaks`: `None` for today's ground, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen [`crate::tectonics::PeakParams`]. The sixth opt-in parameter of the
+    /// same kind, after `features`, `relief`, `tectonics`, `coast` and `gully`, and a new
+    /// constructor for the reason `with_gully` gives for being one: `Surface::new` has
+    /// about seventy call sites in this crate that want none of this, and what Ruling 1
+    /// requires is a property of the parameter rather than of where it is spelled.
+    ///
+    /// It reaches `Tectonics` and therefore `Shelf` too, via `Tectonics::with_peaks`,
+    /// because both are built from this same `Tectonics` -- an island whose offset only
+    /// `structural_m` knew about, with the shelf still smoothing a shore over it, would be
+    /// a seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_peaks(
+        world_seed: i64,
+        radius_m: f64,
+        plate_count: usize,
+        land_fraction: f64,
+        features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+        coast: Option<CoastParams>,
+        gully: Option<GullyParams>,
+        peaks: Option<PeakParams>,
     ) -> Self {
         let plates = plates_for(world_seed, plate_count);
         // `Noise::new` mixes first and masks second (`noise.py:38`, `h = (h ^ (seed * K)) &
@@ -246,7 +290,7 @@ impl Surface {
         // The `tectonics` on the right is still the `Option<TectonicParams>` parameter --
         // the binding this line introduces is not in scope until after it -- and from here
         // on the name means the built layer, as it did before this parameter existed.
-        let tectonics = Tectonics::new(plates.clone(), land, radius_m, tectonics);
+        let tectonics = Tectonics::with_peaks(plates.clone(), land, radius_m, tectonics, peaks);
         let shelf = Shelf::new(tectonics.clone(), land, radius_m);
         let detail = Detail::with_gully(noise_seed, radius_m, relief, gully);
         // Built only for a block that will actually draw something. See the `steer` field.
@@ -780,8 +824,10 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detmath as m;
     use crate::generation::DEFAULT_PLATE_COUNT;
     use crate::sphere::{SpherePoint, EARTH_RADIUS_M};
+    use crate::vectors::Vec3;
 
     // Every expected figure below was taken from the live Python on the host named in
     // `.superpowers/sdd/2026-09-03-slice-1o-surface/task-1-report.md` section 0, by
@@ -3026,6 +3072,235 @@ mod tests {
                 surface.bands_at(&point, None, None, None, &edges),
                 None,
                 "a NaN point was banded"
+            );
+        }
+    }
+
+    // --- Task 3: `Surface::with_peaks` -- a world can be asked for islands. ---
+
+    const ISLAND_SEED: i64 = 9001;
+    const ISLAND_PLATES: usize = 22;
+    const ISLAND_LAND: f64 = 0.4;
+
+    fn plain_surface() -> Surface {
+        Surface::new(ISLAND_SEED, EARTH_RADIUS_M, ISLAND_PLATES, ISLAND_LAND, None, None, None)
+    }
+
+    /// Every argument identical to `plain_surface` above; the peak block is the only
+    /// difference, or `no_peak_block_means_a_bit_identical_surface` below would prove
+    /// something about these two helpers rather than about the block.
+    fn peaked_surface(peaks: PeakParams) -> Surface {
+        Surface::with_peaks(
+            ISLAND_SEED,
+            EARTH_RADIUS_M,
+            ISLAND_PLATES,
+            ISLAND_LAND,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(peaks),
+        )
+    }
+
+    /// An area-uniform point, so a share of probes is a share of the planet.
+    fn fibonacci_point(index: usize, count: usize) -> SpherePoint {
+        let n = count as f64; // cast-ok: a test's own probe count
+        let i = index as f64; // cast-ok: a test's own loop counter, below `count`
+        let z = 1.0 - (2.0 * i + 1.0) / n;
+        let radius = m::sqrt(if 1.0 - z * z > 0.0 { 1.0 - z * z } else { 0.0 });
+        let theta = i * core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        SpherePoint::from_vector(&Vec3 {
+            x: radius * m::cos(theta),
+            y: radius * m::sin(theta),
+            z,
+        })
+        .expect("a fibonacci lattice point is never the zero vector")
+    }
+
+    /// The highest offshore point the field makes, or `None` if it made none. Offshore:
+    /// the tectonic offset is what raised it, not the continent field -- `tectonics` is
+    /// reachable straight off `Surface` because it is one of the eight named public
+    /// fields `the_surface_is_not_modified_by_this_slice` (lib.rs) pins, so no accessor
+    /// needs adding for this.
+    fn find_a_summit(surface: &Surface) -> Option<SpherePoint> {
+        let mut best: Option<(f64, SpherePoint)> = None;
+        for i in 0..40_000 {
+            let point = fibonacci_point(i, 40_000);
+            if surface.tectonics.offset_m(&point) < 2_000.0 {
+                continue;
+            }
+            let height = surface.structural_m(&point);
+            if height <= 0.0 {
+                continue;
+            }
+            match &best {
+                Some((tallest, _)) if *tallest >= height => {}
+                _ => best = Some((height, point)),
+            }
+        }
+        best.map(|(_, point)| point)
+    }
+
+    /// The spec's §1: this generator now puts land above the datum offshore, which it
+    /// never did before this slice. Task 1's own report measures 0.54% (108 of 20,000
+    /// points) over its `Tectonics`-level fixture (`peak_offset_m` directly, against
+    /// `three_plate_set` and `ABYSS_M`) -- a different population from this one, which
+    /// goes through the full `Surface::with_peaks` pipeline over `plates_for(9001, 22)`
+    /// at `land_fraction: 0.4`.
+    ///
+    /// **Why the two differ by threefold, measured rather than supposed.** Task 1's sweep
+    /// pins `seabed_m` to `ABYSS_M` at *every* probe, so `peak_depth_window` returns 1.0
+    /// unconditionally and the count is what the field would make if the whole planet were
+    /// abyssal ocean -- land included. It is a measurement of the FIELD, on a fiction. This
+    /// one asks a world. On the same fixture, measured: only **59.8%** of the sphere is
+    /// ocean at all, and only **67.5%** of that ocean is deeper than the 2,500 m window
+    /// threshold (a mere 20.6% of it actually reaches `ABYSS_M`, which Task 1 assumed
+    /// everywhere). At `density: 0.11` that arithmetic gave `108 x 0.598 x 0.675` = 43.6
+    /// against the 34 this test then saw, the residual being the 2,000-2,500 m partial-window
+    /// ramp and the fixture difference.
+    ///
+    /// So the volumetric model in `tectonics.rs` predicts the field, **not** a world's
+    /// islanded share, and the survey that calibrates `density` must measure through this
+    /// pipeline over ocean -- never `peak_offset_m` against an assumed seabed. Note also
+    /// that a shallower seabed makes an island *easier*, not harder, so bathymetry alone
+    /// cannot explain a reduction; it is the land coverage and the window that do.
+    ///
+    /// **Re-pinned twice.** Task 7's calibration moved `VOLCANIC_DENSITY` from 0.11 to 0.36
+    /// because 0.11 put every world BELOW the spec's 0.3%-0.8% band. The final fix wave then
+    /// found that 0.36 had been measured against a seamount field `Tectonics::offset_m`
+    /// suppressed over 77% of the planet, fixed that, and re-surveyed the density down to
+    /// **0.14** -- see `VOLCANIC_DENSITY`'s own doc for the re-run three-world sweep and why
+    /// 0.14 is the maximin of the nine admissible hundredths. Re-measured here rather than
+    /// scaled at each step: over this constructor's own 20,000-point fibonacci sweep, at
+    /// `PeakParams::volcanic()` (`density: 0.14`), rustc 1.98.0 release build, this test counts
+    /// **103 of 20,000 (0.5150%)** -- against 88 (0.44%) at 0.36 on the suppressed field, and
+    /// 34 (0.17%) at 0.11 on it.
+    ///
+    /// **This 20,000-point count is a small sample and the calibration was not made on it.**
+    /// `src/bin/island_survey.rs` measures the same world over 200,000 points and reports
+    /// **0.4480%**; the 1-sigma binomial error at n = 20,000 is about +-0.047 pp against
+    /// +-0.015 pp at n = 200,000, so the 0.5150 / 0.4480 gap is under 1.5 sigma of the smaller
+    /// sample and the two are consistent. **The number to quote for the islanded share is the survey's,
+    /// not this one.** This test's job is that the count is in a BAND, not a floor: a bound of
+    /// "more than zero" would also pass a field that raised nearly everything or a single lucky
+    /// point, and neither of those is this field.
+    #[test]
+    fn an_island_stands_above_the_datum_in_open_ocean() {
+        let peaked = peaked_surface(PeakParams::volcanic());
+        let mut land_offshore = 0usize;
+        for i in 0..20_000 {
+            let point = fibonacci_point(i, 20_000);
+            if peaked.structural_m(&point) > 0.0 && peaked.tectonics.offset_m(&point) > 2_000.0 {
+                land_offshore += 1;
+            }
+        }
+        assert!(
+            (55..165).contains(&land_offshore),
+            "expected roughly 103 of 20,000 offshore points above the datum (0.5150%, measured \
+             on this constructor's own corpus -- see this test's doc comment), got {land_offshore}"
+        );
+    }
+
+    /// `elevation_m` == `structural_m` + the detail offset, bit for bit (`surface.rs:389-394`
+    /// docs the invariant). A term that lands in one and not the other breaks the
+    /// localisation property the whole surface stack rests on: an island that is land
+    /// structurally must be land in the answer physics actually uses.
+    #[test]
+    fn the_island_is_in_both_answers_and_they_still_agree() {
+        let peaked = peaked_surface(PeakParams::volcanic());
+        let mut checked = 0usize;
+        for i in 0..20_000 {
+            let point = fibonacci_point(i, 20_000);
+            let structural = peaked.structural_m(&point);
+            if structural > 0.0 && peaked.tectonics.offset_m(&point) > 2_000.0 {
+                let elevation = peaked.elevation_m(&point, None);
+                assert!(elevation > 0.0, "an island that is land structurally must be land");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "found no island to check");
+    }
+
+    /// The reason peaks go in the tectonic offset: `Shelf::weight`'s authority is
+    /// `1 - smooth(|tectonic_m| / 250)`, so a large offset holds the shelf off entirely.
+    /// Deep water a short way off the beach is the navigational difference between an
+    /// oceanic volcano and a continental shelf, and it is the thing a bundle's soundings
+    /// would show.
+    ///
+    /// The walk-out distance is expressed as a fraction of `reach_m` rather than an
+    /// absolute distance, because `reach_m` is a provisional constant Task 7 may still
+    /// recalibrate (it moved from 14,000 m to 31,500 m within this same plan). A full-height
+    /// island is about 25 km across -- ground reaches the datum at `fraction` 0.4025,
+    /// radius 12.7 km at today's `reach_m` -- and at `fraction` 0.952 the ground stands
+    /// only ~53 m above the seabed, i.e. water about 4,547 m deep. Walking to 0.95 of
+    /// `reach_m` (about 17 km off the beach at today's constant) and asserting water
+    /// deeper than 1,000 m is a real claim about steep-to bathymetry, against a
+    /// continental shelf that runs some 80 km before reaching comparable depth.
+    ///
+    /// **Measured, not predicted, and re-measured by Task 7 rather than scaled**: on this
+    /// test's own summit (found by `find_a_summit` over
+    /// `peaked_surface(PeakParams::volcanic())`, rustc 1.98.0 release build), walking to
+    /// `walk_m = 29,925` m (0.95 x the 31,500 m `reach_m`) finds the deepest of the eight
+    /// compass bearings at **-2,695.04 m**, off a summit standing **4,291.15 m** (tectonic
+    /// offset 6,962.95 m). **Re-measured at `density: 0.14`** after the margin-suppression fix
+    /// and the re-survey; at 0.36 the same walk read -2,907.71 m off a 4,010.75 m summit, and
+    /// at 0.11 it read -2,594.07 m off a third one.
+    ///
+    /// **The density moves which node `find_a_summit` picks, not how steep a flank is**, which
+    /// is why this figure moves whenever calibration does even though it touches no geometry.
+    /// The mechanism: `peak_of_cell` gates on `hash >= density`, so raising the density strictly
+    /// ADDS candidate cells and lowering it strictly REMOVES them -- it can never reshape one.
+    /// Going from 0.36 to 0.14 dropped the cell the old pick stood in, so the walk is off a
+    /// different island. Either way it is comfortably past the 1,000 m bar and inside the
+    /// abyssal range the doc above derives.
+    ///
+    /// `src/bin/island_survey.rs` section 5 walks the same ring at six fractions of `reach_m`
+    /// and beside a continental shore for contrast; the report carries that table.
+    #[test]
+    fn an_island_is_steep_to_rather_than_shelved() {
+        let peaks = PeakParams::volcanic();
+        let peaked = peaked_surface(peaks);
+        let summit = find_a_summit(&peaked).expect("no island to walk out from");
+        let frame = TangentFrame::at(&summit, peaked.radius_m);
+        let walk_m = 0.95 * peaks.reach_m;
+        let mut deepest_close_in = 0.0f64;
+        for bearing in 0..8 {
+            let angle = m::to_radians(45.0 * f64::from(bearing)); // cast-ok: loop counter, 0..8
+            let out = frame.local_to_sphere(walk_m * m::cos(angle), walk_m * m::sin(angle));
+            let depth = peaked.structural_m(&out);
+            if depth < deepest_close_in {
+                deepest_close_in = depth;
+            }
+        }
+        assert!(
+            deepest_close_in < -1_000.0,
+            "{walk_m} m off an island the water is only {deepest_close_in} m; that is a \
+             shelf, and a peak in the tectonic offset is supposed to hold the shelf off",
+        );
+    }
+
+    /// **An absent block must produce bit-identical worlds** (constraints.md's first
+    /// rule). `PeakParams::canonical()` has `density: 0.0`, which `Tectonics::offset_m`
+    /// is documented to gate on before touching the peak lattices at all, so this is a
+    /// second, independent path to the same guarantee `no_peak_block...` tests give the
+    /// other opt-in blocks.
+    #[test]
+    fn no_peak_block_means_a_bit_identical_surface() {
+        let bare = plain_surface();
+        let inert = peaked_surface(PeakParams::canonical());
+        for i in 0..8_000 {
+            let point = fibonacci_point(i, 8_000);
+            assert_eq!(
+                inert.structural_m(&point).to_bits(),
+                bare.structural_m(&point).to_bits(),
+                "structural at probe {i}",
+            );
+            assert_eq!(
+                inert.elevation_m(&point, None).to_bits(),
+                bare.elevation_m(&point, None).to_bits(),
+                "elevation at probe {i}",
             );
         }
     }

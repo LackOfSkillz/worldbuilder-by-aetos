@@ -27,9 +27,10 @@
 //! Ported from `worldbuilder/terrain/tectonics.py`.
 
 use crate::continentality::Continentality;
+use crate::detail::smooth;
 use crate::detmath as m;
 use crate::kinematics::{motion_between, ACROSS_ENOUGH};
-use crate::noise::Noise;
+use crate::noise::{Noise, LATTICE_LIMIT};
 use crate::plates::{Plate, PlateSet};
 use crate::sphere::SpherePoint;
 use crate::tangent::TangentFrame;
@@ -587,6 +588,374 @@ impl TectonicParams {
     }
 }
 
+/// Where a seamount stands, hashed per lattice node.
+///
+/// Distinct from `STRUCTURE_SALT`, `SEGMENTATION_SALT` and `MARGIN_WARP_SALT`, this file's
+/// own three, and it has to be: a shared salt would put every island on a margin crest,
+/// which is the one place this term is not meant to put them. Also distinct from the
+/// cross-module salts these three fields could otherwise echo --
+/// `continentality::NOISE_SALT` and `continentality::COAST_NOISE_SALT`, and `detail.rs`'s
+/// `0x5EABED`, `0x6011E1` and `0x6011E2` -- named here the way `continentality.rs:41-47`
+/// names the salts a new one must differ from, rather than only the ones in this file.
+/// Three salts rather than one because existence, position and height must be independent
+/// -- drawn from a single field, a tall peak would always sit in the same corner of its
+/// cell. [`the_six_salts_in_this_file_are_pairwise_distinct`] guards the six named in this
+/// file so a future copy-paste collision fails a test rather than silently correlating two
+/// fields.
+const PEAK_SALT: u64 = 0x7365_616D_6F75_6E74; // "seamount"
+const PEAK_JITTER_SALT: u64 = 0x6A69_7474_6572_6564; // "jittered"
+const PEAK_HEIGHT_SALT: u64 = 0x7374_616E_6469_6E67; // "standing"
+
+/// How tall a full-height peak stands, in metres above the seabed it sits on.
+///
+/// **Confirmed by Task 7's survey and left where Task 2 put it; see [`VOLCANIC_DENSITY`]'s doc
+/// for why THIS is the binding constraint, not `reach_m` or `density`, and for the sweep that
+/// then chose the density at this height.** At 5,200 m, a node standing exactly
+/// on the reference shell clears a 4,600 m abyss by only 600 m -- 88.46% of `height_m` --
+/// which the `0.45 + 0.55 * share` envelope only reaches for `share > 0.79`, so barely a
+/// fifth of nodes could ever surface at all, and those just past the threshold make
+/// vanishingly small islands. At 8,000 m the same abyss needs only `share > 0.0538`, so most
+/// nodes (about 77%) can surface, and a full-height summit stands roughly 3,400 m above sea
+/// level -- Tenerife is 3,715 m, Reunion 3,070 m, so this is an ordinary volcanic island's
+/// scale, not a fitted number chosen to hit a target.
+const VOLCANIC_HEIGHT_M: f64 = 8_000.0;
+/// What share of lattice cells hold a peak at the named preset.
+///
+/// **Calibrated by `src/bin/island_survey.rs`, which is the only thing that may change it** -- the survey and the constant must
+/// not be allowed to drift apart, the way `CoastParams::fractal()`'s 0.35 and
+/// `coastline_survey.rs` must not. Spec §7 question 1 asks for **0.3% to 0.8%** of a planet's
+/// surface as islands.
+///
+/// **What the survey measured** (`cargo run --release --bin island_survey`, section 4, over a
+/// 200,000-point Fibonacci spiral per world, `D_added` = ground the block turned to land where
+/// the peak-less world had sea, through the full `Surface` pipeline; see
+/// `docs/superpowers/reports/2026-09-14-islands-1-peaks-verification.md` for host and rustc):
+///
+/// **RE-SURVEYED. This value was 0.36, and 0.36 was measured against a field that was
+/// suppressed over 77% of the planet.** `Tectonics::offset_m` used to end
+/// `margin_offset_m`, which returns early wherever no plate margin is in range -- so the
+/// seamount term was never evaluated on most of the world, and every share below was a share
+/// of the quarter of the planet where it was. That is fixed (see `Tectonics::offset_m`'s own
+/// doc and `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`), the
+/// field now stands islands everywhere the seabed allows, and the whole sweep was re-run.
+///
+/// **The correction on each world IS that world's plate-interior area factor. It needed no
+/// further mechanism, and an earlier version of this paragraph invented one.** Measured, not
+/// scaled -- at the old 0.36, each world's share against what it read before the fix:
+///
+/// | world | plates | plate interior, 200,000-point spiral | area factor `1/(1-interior)` | share before | share after | observed correction |
+/// |---|---|---|---|---|---|---|
+/// | island-a | 22 | 139,388 / 200,000 = 69.6940% | **3.2997x** | 0.3345% | 1.1400% | **3.4081x** |
+/// | owner | 28 | 106,539 / 200,000 = 53.2695% | **2.1399x** | 0.7525% | 1.6180% | **2.1502x** |
+/// | earth-a | 22 | 139,435 / 200,000 = 69.7175% | **3.3022x** | 0.4035% | 1.3945% | **3.4560x** |
+///
+/// Three worlds, three matches: 3.3% / 0.5% / 4.7% apart. **There is no shortfall for
+/// bathymetry to account for**, and the small residual has the opposite sign from a shortfall
+/// anyway -- the observed correction slightly EXCEEDS the area factor on all three, because the
+/// field's peak-wanting rate is marginally HIGHER in the interior than near a margin
+/// (island-a 0.082439 against 0.082079; owner 0.134101 against 0.128321; earth-a 0.103303
+/// against 0.097994, all over the same spiral and predicate). Interior seabed is very slightly
+/// the better place to stand an island here, not the worse.
+///
+/// **What the earlier version got wrong, recorded because it is the kind of error this plan
+/// keeps making.** It quoted "4.4x" as the area factor and called the 3.41x correction short of
+/// it. 4.4x is `1/(1-0.771570)` for the **12-plate** ABI fixture (`plates_for(20_260_904, 12)`,
+/// 154,314 / 200,000 interior), which is the world `tests/wasm_exports.rs` uses and the one the
+/// suppression was first measured on -- not the 22-plate `island-a` the 3.41x was measured on.
+/// Fewer plates means fewer margins means more interior, so the two fixtures have genuinely
+/// different factors and comparing one against the other's share is a category error. The
+/// mechanism offered to explain the gap was backwards on top of that: a below-average margin
+/// belt would make the correction LARGER than the area factor, not smaller. **The number never
+/// needed a story.**
+///
+/// | density | island-a (land 0.40) | owner (land 0.16) | earth-a (land 0.29) | margin to the nearer band edge |
+/// |---|---|---|---|---|
+/// | 0.08 | 0.2665% | 0.3640% | 0.3090% | -0.0335 pp, one BELOW |
+/// | 0.09 | 0.3030% | 0.4105% | 0.3430% | +0.0030 pp |
+/// | 0.10 | 0.3350% | 0.4590% | 0.3810% | +0.0350 pp |
+/// | 0.11 | 0.3650% | 0.5000% | 0.4140% | +0.0650 pp |
+/// | 0.12 | 0.3935% | 0.5465% | 0.4495% | +0.0935 pp |
+/// | 0.13 | 0.4180% | 0.5915% | 0.4785% | +0.1180 pp |
+/// | **0.14** | **0.4480%** | **0.6380%** | **0.5210%** | **+0.1480 pp -- the maximin** |
+/// | 0.15 | 0.4795% | 0.6755% | 0.5575% | +0.1245 pp |
+/// | 0.16 | 0.5050% | 0.7175% | 0.5940% | +0.0825 pp |
+/// | 0.17 | 0.5355% | 0.7625% | 0.6380% | +0.0375 pp |
+/// | 0.18 | 0.5640% | 0.8055% | 0.6810% | -0.0055 pp, one ABOVE |
+/// | 0.19 | 0.6045% | 0.8540% | 0.7235% | -0.0540 pp, one ABOVE |
+/// | 0.20 | 0.6355% | 0.8990% | 0.7615% | -0.0990 pp, one ABOVE |
+/// | 0.36 (the suppressed-field pick) | 1.1400% | 1.6180% | 1.3945% | -0.8180 pp, one ABOVE |
+///
+/// **The islanded share depends on the world's land fraction, so the choice cannot be made on
+/// one world.** A world with less land has more deep ocean for the field to stand an island
+/// in: at every density the owner's 0.16-land world yields roughly 1.4x the share the
+/// 0.40-land fixture does. **Nine admissible hundredths -- 0.09 through 0.17, so eight
+/// hundredths of span** -- put all three worlds inside the band at once, and **0.14 is the
+/// maximin**: the admissible density whose WORST world sits furthest from a band edge.
+///
+/// **Both edges are measured, not inferred** -- the 0.08 and 0.18 rows are in the table rather
+/// than a gap either side of it. 0.08 misses the floor by 0.0335 pp and 0.18 clears the ceiling
+/// by 0.0055 pp, so the nine are exactly nine. (The final whole-branch review's minor 6 found
+/// this doc saying "six hundredths wide" while the verification report said "seven hundredths
+/// wide" -- two true statements about different quantities, each written as if it were the
+/// other. Both now say both, in the corrected units.)
+///
+/// **The fix widened the safety margin as well as moving the value, which is the useful part.**
+/// At 0.36 the maximin margin was +0.0345 pp against a 1-sigma binomial error of about
+/// 0.0158 pp -- a little over 2 sigma, and the report flagged that as its first concern. At
+/// 0.14 the margin is **+0.1480 pp against about 0.0150 pp**, close to **10 sigma**, and the
+/// binding world flips from the floor to the ceiling between 0.14 and 0.15 rather than sitting
+/// on top of one edge. `island-a` clears the floor by 0.1480 pp and `owner` clears the ceiling
+/// by 0.1620 pp. A fourth world is no longer likely to push an end out of band.
+///
+/// Hundredths, because `viewer/public/app/peak-params.js`'s density slider carries an integer
+/// position and maps it to a value by dividing by 100; a density off that lattice is one the
+/// panel cannot reach, which is the defect `panelFieldFaults()` exists for. 0.14 is position
+/// 14. It is also **not** `CoastParams::fractal()`'s 0.35, which matters for a reason that is
+/// not cosmetic: `viewer/test/peak-params.test.mjs`'s "no peak number is written down twice"
+/// scans the viewer's sources for the preset's own distinctive literal, and a density that
+/// collided with another channel's would have made that scan pass vacuously.
+///
+/// **What that scan does and does not see, stated precisely.** It reads `peak-params.js`,
+/// `controls.js`, `main.js` and `engine.js` **with whole-line comments stripped**, so prose is
+/// permitted to quote a measurement and only code is held to the rule. That exemption is what
+/// let a retired `11%` and a hand-edited `0.36` survive in comments across two calibrations, so
+/// the third fix wave removed the density from the prose of all four as well: as of now
+/// `0.14` appears in none of the four **with or without the strip**, which is the stronger
+/// claim and the one worth making. The exemption itself is still right — a comment cannot move
+/// a pinned value — but a comment that has to be hand-edited every time this constant moves is
+/// a transcription with extra steps.
+///
+/// **The analytic model is not where this came from.** The corrected volumetric model in
+/// [`VOLCANIC_REACH_M`]'s doc predicts the FIELD -- what the term would make if the whole
+/// planet were abyssal ocean, land included -- not a world's islanded share; the two differ by
+/// the ocean-coverage and depth-window factors `island_survey.rs`'s header sets out. The model
+/// chose where to sample. The sweep chose the number.
+const VOLCANIC_DENSITY: f64 = 0.14;
+/// How far a cone reaches from its centre, in metres.
+///
+/// Must not exceed [`VOLCANIC_LATTICE_M`] -- see `peak_offset_m`'s own doc for why that is
+/// the invariant that makes its 3x3x3 scan complete rather than merely adequate.
+///
+/// **Swept by Task 7 and left where it was, and the survey's finding is worth more than the
+/// value: the islanded share is invariant under the PAIR, so `reach_m / lattice_m` is the
+/// lever and neither field alone is one.** Holding the ratio at 0.70 and moving the pair over
+/// 30 / 45 / 67.5 / 90 km moved the share by less than the spiral's own noise -- measured on
+/// `island-a` over 200,000 points, `island_survey.rs` section 3. **Re-measured after the
+/// margin-suppression fix and after `density` was re-surveyed to 0.14**: at the shipped
+/// density, **0.4305% / 0.4480% / 0.4365% / 0.4475%** -- a spread of 0.0175 pp against the
+/// estimator's own 1-sigma binomial error of about 0.0150 pp, so still about one sigma and
+/// still the honest word for it is "unmeasurable". At density 0.11: 0.3385% / 0.3650% /
+/// 0.3530% / 0.3460%. At density 0.58: 1.8170% / 1.8410% / 1.8380% / 1.8030%. (Before the fix
+/// the same sweep at 0.36 read 0.3290% / 0.3345% / 0.3350% / 0.3310%, a 0.006 pp spread; the
+/// spread grew with the share, as a binomial spread does, and not relative to it.)
+///
+/// That is what the model below predicts, now measured rather than supposed: `d(share)` scales
+/// with `reach_m`, so `d^3 / lattice_m^3` is scale-free. The pair therefore sets island SIZE
+/// and COUNT, not islanded AREA -- and `island_survey.rs` section 6 measures that other half
+/// on the same world, over a 5 km raster at the shipped density. **Re-run after the
+/// margin-suppression fix and the re-survey**: **13,506 islands of mean 166.9 km2 at 30 km,
+/// 6,137 of mean 363.6 km2 at 45 km, 1,558 of mean 1,415.9 km2 at 90 km**, with total island
+/// area 0.4419% / 0.4375% / 0.4325% of the sphere. Eightfold in count, eightfold in mean size,
+/// and the area does not move. (Before the fix, at 0.36 on a suppressed field, the same three
+/// pitches read 10,155 / 4,617 / 1,213 islands and 0.3323% / 0.3337% / 0.3222% of area. The
+/// mean sizes are unchanged to within the raster, which is the point: the fix and the re-survey
+/// moved how MANY islands there are, not how big one is.) That is why calibration moved `density`
+/// and left both of these alone. [`VOLCANIC_HEIGHT_M`] still binds first; read that doc before
+/// this one. Clearing the abyss
+/// needs `(0.45 + 0.55*share) * smooth(1 - fraction) > 4600/height_m`, so even at `share = 1`
+/// the fraction must be below `1 - smooth^-1(4600/height_m)` -- **0.2116** at the old
+/// `height_m` of 5,200, the useful radius a node's cone can ever have. The naive model built
+/// from that alone (`density * (4/3)*pi*(0.2116*reach_m)^3 / lattice_m^3`) is NOT an
+/// approximation of the true yield; it OVERSTATES it by about 12x, because it silently
+/// assumes every node can reach `share = 1`'s ceiling, when at `height_m: 5,200` only nodes
+/// with `share > 0.79` can surface AT ALL -- the share-weighted mean of `d(share)^3` (see the
+/// corrected model below) is only 8.49% of the naive `d(1)^3`. Measured rather than trusted:
+/// this generator's own live field found **0.035%** against the naive model's ~0.41% at
+/// `height_m: 5,200`, `reach_m` at this value and `density` at 0.30 -- three significant
+/// figures away from what the CORRECTED model predicts for that same trio (0.0347%), and the
+/// naive model's 12x error accounts for essentially all of the gap.
+///
+/// **The corrected model**, for Task 7 to start a sweep from and then verify by measurement,
+/// never by trusting it outright:
+///
+/// ```text
+/// island area = density * (4/3)*pi * <d(share)^3> / lattice_m^3
+///   where d(share) = reach_m * (1 - smooth^-1( (4600/height_m) / (0.45 + 0.55*share) ))
+///   and d(share) = 0 for any share where 0.45 + 0.55*share <= 4600/height_m
+/// ```
+///
+/// `<d(share)^3>` is the AVERAGE of `d(share)^3` over `share` uniform on `[0, 1)`, not
+/// `d(1)^3` alone -- that average is what the naive model above conflates with the ceiling
+/// case, and the whole reason it overstates. At `height_m: 8,000`, `reach_m` at this value:
+/// **1.372%** at density 1.0 (77% of nodes can surface, against 21% at 5,200 m) and **~0.50%**
+/// at `density: 0.11`, which is why `VOLCANIC_HEIGHT_M` moved rather than either knob here.
+/// `reach_m <= lattice_m` holds comfortably at this ratio (0.70) either way.
+const VOLCANIC_REACH_M: f64 = 31_500.0;
+/// How deep the seabed must be under a peak, in metres below datum.
+const VOLCANIC_MIN_DEPTH_M: f64 = 2_500.0;
+/// How far apart the candidate nodes are, in metres.
+///
+/// **Swept by Task 7 and left where it was.** See [`VOLCANIC_REACH_M`]'s doc for the measured
+/// reason -- the islanded share is invariant under `(lattice_m, reach_m)` at a fixed ratio, so
+/// this field sets island size and count rather than islanded area, and calibration moved
+/// `density` instead. [`VOLCANIC_HEIGHT_M`]'s doc says why height binds before either.
+/// `island_survey.rs` section 6 reports the island count and the area distribution this value
+/// produces, at three pitches, so what it DOES control is on the record too: at this 45 km
+/// pitch, **6,137 distinct islands** on `island-a`, mean 363.6 km2, median 327.6 km2, largest
+/// 1,732.5 km2 and smallest 7.0 km2 over a 5 km raster -- re-measured after the
+/// margin-suppression fix and the density re-survey (it read 4,617 of mean 368.7 km2 before).
+const VOLCANIC_LATTICE_M: f64 = 45_000.0;
+
+/// Sparse volcanic peaks rising out of deep ocean.
+///
+/// **A seamount now stands anywhere in three dimensions, not glued to the reference
+/// shell.** Each candidate's node is a jittered lattice point in the same scaled space a
+/// query point is measured in, and that node's own distance from the sphere is real: a node
+/// that lands slightly outward or inward of the shell is, respectively, a taller island or
+/// one that never quite reaches the target depth -- a shoal standing just under the surface.
+/// That is not a shortcoming of the geometry; it is the one thing this generator could not
+/// produce before this field existed. A submerged shoal is exactly the navigational hazard a
+/// real chart carries and open ocean here has never been able to hide one.
+///
+/// Field order will matter once Tasks 4 and 6 give this struct an ABI -- `wasm.rs` encoding
+/// it and `viewer/public/app/peak-params.js` mirroring the encoding, the way `TectonicParams`
+/// and `CoastParams` already have. Neither exists yet, so nothing depends on this order
+/// today; the fields are kept in a stable, sensible order now so that later wiring does not
+/// have to choose one under pressure.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PeakParams {
+    /// How tall a full-height peak stands above its seabed, in metres. Must clear the
+    /// abyss -- `ABYSS_M` is -4,600, and a 700 m term surfaces nothing, which is exactly
+    /// why the island arc never made an island. This is the ceiling a node exactly on the
+    /// reference shell reaches; a radially displaced node reaches less.
+    pub height_m: f64,
+    /// What share of candidate nodes hold a peak, 0 to 1. **This is the opt-in field:** at
+    /// zero the term returns before it touches the lattice.
+    pub density: f64,
+    /// How far a cone reaches from its centre, in metres, measured in real 3-D space rather
+    /// than after projecting the candidate onto the sphere. **Must not exceed `lattice_m`**
+    /// -- `peak_offset_m` guards this and returns zero rather than scan an incomplete
+    /// neighbourhood if it is violated.
+    pub reach_m: f64,
+    /// How deep the seabed must be for a peak to stand on it, in metres below datum and
+    /// stated positive. Keeps islands off the continental shelf.
+    pub min_depth_m: f64,
+    /// How far apart the candidate nodes are, in metres. With `density`, this sets how many
+    /// islands a world gets; `height_m` sets how tall they are. The two are independent,
+    /// which is the whole reason this term is built on a lattice rather than a threshold.
+    pub lattice_m: f64,
+}
+
+impl PeakParams {
+    /// Inert. Opting in is one field -- `density` -- rather than five.
+    pub fn canonical() -> Self {
+        Self {
+            height_m: VOLCANIC_HEIGHT_M,
+            density: 0.0,
+            reach_m: VOLCANIC_REACH_M,
+            min_depth_m: VOLCANIC_MIN_DEPTH_M,
+            lattice_m: VOLCANIC_LATTICE_M,
+        }
+    }
+
+    /// Islands, at the density the survey settled on.
+    pub fn volcanic() -> Self {
+        Self { density: VOLCANIC_DENSITY, ..Self::canonical() }
+    }
+}
+
+/// How much of a peak stands, given the seabed under it.
+///
+/// One at the stated depth and below, ramping to zero a quarter again shallower, so the
+/// term has no cliff in it. **A NaN closes this window rather than opening it**, which is
+/// why the branches are written out: `smooth(NaN)` is 1.0, and a floored metre is
+/// indistinguishable from a real one once it is added to an elevation.
+fn peak_depth_window(depth_m: f64, min_depth_m: f64) -> f64 {
+    let onset = min_depth_m * 0.8;
+    let span = min_depth_m - onset;
+    if !(span > 0.0) {
+        // A zero or negative span, or a NaN threshold. No window.
+        return 0.0;
+    }
+    if depth_m >= min_depth_m {
+        1.0
+    } else if depth_m > onset {
+        let x = (depth_m - onset) / span;
+        x * x * (3.0 - 2.0 * x)
+    } else {
+        // Shallower than the onset, or unanswerable.
+        0.0
+    }
+}
+
+/// Whether a peak block can raise ground **anywhere on any world**, decided from the block
+/// alone.
+///
+/// `Tectonics::with_peaks` stores `None` for a block this answers `false` for, which is what
+/// makes `peak_offset_m`'s doc claim -- "a term that is inert ... costs one comparison and no
+/// hashing" -- true of every inert block rather than of the zero-density one only. Before the
+/// final whole-branch review, four of these five reasons still reached
+/// `Continentality::base_elevation` (an fBm) on every sample.
+///
+/// **Every predicate here is one `peak_offset_m` already applies, written the same way round.**
+/// That is the whole safety argument: a block this rejects is a block `peak_offset_m` would
+/// return exactly `0.0` for at every point, so deciding it once changes nothing but the cost.
+/// The negated comparisons (`!(x > 0.0)` rather than `x <= 0.0`) are kept because a NaN must
+/// make a block inert, not live -- the same reason `peak_depth_window` above spells its branches
+/// out. `height_m == 0.0` is true of `-0.0` as well, which is deliberate: a `-0.0` height makes
+/// every candidate's `standing` a `-0.0` that `peak_offset_m`'s `standing > tallest` never
+/// takes, so the term answers `0.0` there too.
+///
+/// `min_depth_m` is **not** here even though `peak_depth_window`'s `span > 0.0` test is also
+/// point-independent. That test lives in one place, inside the window, and copying its arithmetic
+/// (`min_depth_m * 0.8`, then a subtraction) into a second place to save a comparison is how two
+/// copies of a threshold start to disagree. The four fields that gate before the window is even
+/// reached are the ones worth hoisting.
+fn peak_block_is_live(params: &PeakParams) -> bool {
+    if params.density == 0.0 {
+        return false;
+    }
+    if params.height_m == 0.0 || !params.height_m.is_finite() {
+        return false;
+    }
+    if !(params.lattice_m > 0.0) || !(params.reach_m > 0.0) {
+        return false;
+    }
+    if !(params.reach_m <= params.lattice_m) {
+        return false;
+    }
+    true
+}
+
+/// One lattice cell's candidate peak, as [`Tectonics::peak_of_cell`] computes it.
+///
+/// `node` is the cell's own jittered position, in the scaled space `peak_offset_m`'s query
+/// point is measured in -- un-normalised, so its own distance from the origin is real. `share`
+/// is the cell's height draw, in `[0, 1)`. `min_dist_m` is the real distance, in metres, from
+/// `node` to the one point on the sphere closest to it -- already computed by `peak_of_cell`
+/// to decide whether this candidate can ever be reached at all, and carried here so a caller
+/// (a test, most often) that wants it does not recompute the same closest-point arithmetic a
+/// second time. **Deliberately does NOT carry a summit direction or a precomputed crest.**
+/// Both are cheap to recover from `node` and `min_dist_m` when something actually needs them
+/// (see the test module's `summit_and_crest`), and `peak_offset_m`'s hot loop never does --
+/// an earlier version stored them anyway, which cost every live sample a wasted `smooth` call
+/// and left `summit`/`crest_m` flagged `dead_code` in a non-test build, for a value nothing
+/// outside a test ever read.
+#[derive(Debug, Clone, Copy)]
+struct PeakCandidate {
+    node: Vec3,
+    share: f64,
+    // Computed unconditionally in `peak_of_cell` regardless (it decides that function's own
+    // `None` case), so storing it costs nothing extra on the hot path -- unlike `crest_m`
+    // and `summit` before this round, which cost a `smooth` call apiece for a value only a
+    // test ever read. This field IS only ever read by a test (see `summit_and_crest` and the
+    // ring test), so it is dead code in a non-test build by the same measure; `allow`d rather
+    // than left to warn, since the field is intentional and the review that asked for it
+    // knew that.
+    #[cfg_attr(not(test), allow(dead_code))]
+    min_dist_m: f64,
+}
+
 /// Nothing for thoroughly oceanic, one for thoroughly continental, and a smooth ramp
 /// between.
 ///
@@ -749,6 +1118,17 @@ pub struct Tectonics {
     /// they are salted apart from each other, and sampled at a point on the margin's own
     /// great circle rather than at the query point -- see [`Tectonics::margin_warp_m_at`].
     warp: Noise,
+    /// The opt-in seamount field. `None` is canonical and is what every existing caller
+    /// gets; see [`PeakParams`]. Read by [`Tectonics::offset_m`], which is the only place
+    /// it is read.
+    peaks: Option<PeakParams>,
+    /// The three lattices [`Tectonics::peak_offset_m`] draws from: existence, jitter and
+    /// height. Built unconditionally, for the same reason `structure`/`segmentation`/`warp`
+    /// are -- a `Noise` is two multiplies and an XOR -- and read only when `peaks` is `Some`
+    /// with a non-zero density, so their existence cannot move a canonical world.
+    peak_noise: Noise,
+    peak_jitter: Noise,
+    peak_height: Noise,
 }
 
 impl Tectonics {
@@ -756,11 +1136,50 @@ impl Tectonics {
     /// `TectonicParams::canonical()` returns -- or `Some(params)` for a caller-chosen
     /// block. Resolved once here rather than re-checked per sample, so `from_margin` never
     /// sees the `Option` at all, exactly as `Detail::new` resolves `ReliefParams`.
+    ///
+    /// Delegates to [`Tectonics::with_peaks`] with `None`, exactly as `Continentality::new`
+    /// delegates to `with_coast`: a new constructor absorbs the opt-in block rather than
+    /// this one growing a fifth parameter, so every one of this signature's existing call
+    /// sites is untouched.
     pub fn new(
         plates: PlateSet,
         land: Continentality,
         radius_m: f64,
         params: Option<TectonicParams>,
+    ) -> Self {
+        Self::with_peaks(plates, land, radius_m, params, None)
+    }
+
+    /// The same tectonics, with an opt-in field of standalone seamounts.
+    ///
+    /// `peaks`: `None` for today's ground, byte-for-byte -- or `Some(params)` for a
+    /// caller-chosen [`PeakParams`]. A second constructor rather than a widened `new`, for
+    /// the reason `Continentality::with_coast` gives for being one: what Ruling 1 requires
+    /// is a property of the parameter, not of where it is spelled, and `new` has ninety-odd
+    /// call sites that want none of this.
+    ///
+    /// `peak_offset_m` is wired into [`Tectonics::offset_m`] (and therefore into
+    /// [`Tectonics::elevation_m`]), gated on this field: a stored `None` never calls it or
+    /// `base_elevation`, so an absent block costs nothing and moves nothing.
+    ///
+    /// **An inert block is STORED as `None`, so inertness is decided once per world rather
+    /// than once per sample.** See `peak_block_is_live`: `peak_offset_m` has five
+    /// point-independent reasons to answer exactly zero everywhere on the planet, and the
+    /// final whole-branch review found that `offset_m` gated on only one of them (zero
+    /// density), so a block inert for any of the other four still paid
+    /// `Continentality::base_elevation` -- a full fBm -- at every sample, only for
+    /// `peak_offset_m` to return 0.0 a few lines later. The hydrology bake asks `structural_m`
+    /// at about a million nodes, so that was real. The normalisation cannot change an answer:
+    /// the predicates are exactly the ones `peak_offset_m` already applied, in the same
+    /// NaN-preserving negated form, and each of them made the term return 0.0, which
+    /// `offset_m`'s `standing > 0.0` guard already turned back into the untouched `total`.
+    /// `the_inert_peak_path_does_not_read_base_elevation` pins all five.
+    pub fn with_peaks(
+        plates: PlateSet,
+        land: Continentality,
+        radius_m: f64,
+        params: Option<TectonicParams>,
+        peaks: Option<PeakParams>,
     ) -> Self {
         let params = params.unwrap_or_else(TectonicParams::canonical);
         // `Continentality` kept the world seed for exactly this -- see its `world_seed`
@@ -771,7 +1190,27 @@ impl Tectonics {
         let structure = Noise::new(world_seed, STRUCTURE_SALT);
         let segmentation = Noise::new(world_seed, SEGMENTATION_SALT);
         let warp = Noise::new(world_seed, MARGIN_WARP_SALT);
-        Self { plates, land, radius_m, params, structure, segmentation, warp }
+        let peak_noise = Noise::new(world_seed, PEAK_SALT);
+        let peak_jitter = Noise::new(world_seed, PEAK_JITTER_SALT);
+        let peak_height = Noise::new(world_seed, PEAK_HEIGHT_SALT);
+        // Inertness, decided here and not per sample. See this function's own doc.
+        let peaks = match peaks {
+            Some(params) if peak_block_is_live(&params) => Some(params),
+            _ => None,
+        };
+        Self {
+            plates,
+            land,
+            radius_m,
+            params,
+            structure,
+            segmentation,
+            warp,
+            peaks,
+            peak_noise,
+            peak_jitter,
+            peak_height,
+        }
     }
 
     /// What this world's uplift profiles are set to. Read-only: nothing writes these after
@@ -840,7 +1279,11 @@ impl Tectonics {
     /// `margins_within` returns them in plate-position order, and this loop must
     /// accumulate in that same order - no sorting, no reversing, no parallel
     /// accumulation.
-    pub fn offset_m(&self, point: &SpherePoint) -> f64 {
+    ///
+    /// **The plate part only.** The seamount term is added by [`Tectonics::offset_m`], which
+    /// wraps this. It has to be outside this function rather than at the end of it, because
+    /// the two early returns below cover most of the planet -- see `offset_m`'s own doc.
+    fn margin_offset_m(&self, point: &SpherePoint) -> f64 {
         let (nearest, margins) =
             self.plates.margins_within(point, MAX_TECTONIC_RANGE_M, self.radius_m);
         if margins.is_empty() {
@@ -882,6 +1325,77 @@ impl Tectonics {
         total
     }
 
+    /// How much the plates AND the seamount field raise or lower the ground here.
+    ///
+    /// Args:
+    /// point: Anywhere on the planet.
+    ///
+    /// Returns metres, to be *added* to the continental base elevation.
+    ///
+    /// Notes:
+    /// [`Tectonics::margin_offset_m`] is the plate part and carries its own notes -- including
+    /// the load-bearing iteration order, which this split does not touch. This function is that
+    /// plus the seamount term, and the split exists for one reason.
+    ///
+    /// **The seamount term cannot live at the end of the margin sum, and that was a real defect
+    /// rather than a style point.** `margin_offset_m` returns `0.0` early when no margin is in
+    /// range, which its own doc puts at 69 per cent of the planet and which measures **77.16%**
+    /// on the shipped fixture. A seamount term written after that early return is not evaluated
+    /// on most of the world, and the boundary of the region where it *is* evaluated is a cliff:
+    /// measured at **3,460.23 m in one 20 m step**, 454 times `peak_offset_m`'s own analytic
+    /// bound and larger than the 1,466 m cliff that made this file grow a continuity test in
+    /// the first place. A seamount is a property of the seabed, not of how near a plate
+    /// boundary it happens to be, so it belongs at this level -- outside the margin sum
+    /// entirely, applied to whatever that sum returned, including nothing.
+    /// `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall` is the pin;
+    /// it was written red against the old shape and is green against this one.
+    ///
+    /// **Gated, not added unconditionally, and that is load-bearing.** `peak_offset_m` returns
+    /// exactly `0.0` when the block is absent, inert, or the water here is too shallow -- but
+    /// `-0.0 + tectonic` is `+0.0` when `tectonic` is exactly `-0.0`, which would flip a sign
+    /// bit `Tectonics::new` never would. Same shape as `Continentality::above_shore`'s
+    /// `amplitude == 0.0` guard (`continentality.rs:382-388`): an early return for the
+    /// canonical and inert cases, never a `+ 0.0`.
+    ///
+    /// **One comparison, and it covers every inert block rather than the zero-density one
+    /// only.** `with_peaks` stores `None` for any block `peak_block_is_live` refuses, so there
+    /// is no second arm here for a `Some` that cannot raise ground -- an inert block takes the
+    /// `None` arm and never reaches `base_elevation`'s fBm below.
+    pub fn offset_m(&self, point: &SpherePoint) -> f64 {
+        let tectonic = self.margin_offset_m(point);
+        match self.peaks {
+            None => tectonic,
+            Some(_) => {
+                // "Seabed" here means the ground a seamount would actually stand on: the
+                // continental base PLUS everything the plates have already done to it
+                // (`tectonic`), not `base_elevation` alone. Using the base alone would let an
+                // island erupt on a tectonic ridge that is already shallow, or ignore a trench
+                // that has made the water deeper than the base suggests. `Shelf::evaluate`
+                // computes exactly this sum as `macro_elevation` from this function's own
+                // return value, so this mirrors what the caller will do with the answer.
+                //
+                // Computed only on this branch -- an fBm, and the whole reason the `None` arm
+                // above returns before touching it, since this function is sampled at every
+                // node the hydrology bake visits.
+                let seabed_m = self.land.base_elevation(point) + tectonic;
+                // Precondition carried from `peak_offset_m`'s own doc: `point.vector` must
+                // be unit length. Not asserted here, even in debug -- this function's own
+                // `point` comes from the same `SpherePoint` every other caller in this file
+                // already trusts to be unit length (see `peak_offset_m`'s doc: "every
+                // `SpherePoint` this codebase constructs is already unit length"), and nothing
+                // upstream of this call site admits a raw external vector the way a `bindings.rs`
+                // entry point could. That entry point is this function's other call site
+                // (Task 4's), and is where a check belongs if one is ever needed.
+                let standing = self.peak_offset_m(point, seabed_m);
+                if standing > 0.0 {
+                    tectonic + standing
+                } else {
+                    tectonic
+                }
+            }
+        }
+    }
+
     /// The macro elevation: continental base plus whatever the plates have done to it.
     ///
     /// Args:
@@ -890,6 +1404,234 @@ impl Tectonics {
     /// Returns metres, relative to datum, before shelves or detail.
     pub fn elevation_m(&self, point: &SpherePoint) -> f64 {
         self.land.base_elevation(point) + self.offset_m(point)
+    }
+
+    /// How high the seamount field stands at a point, in metres, never negative.
+    ///
+    /// One candidate per lattice node, its existence hashed against `density`, its position
+    /// jittered inside its own cell and its height drawn from a third salt. The 27 cells
+    /// around the sample are examined because a jittered node can fall in any neighbour.
+    ///
+    /// **The 3x3x3 scan is complete, not merely adequate, because `reach_m <= lattice_m` is
+    /// enforced below -- and that is a proof, not an assertion.** In the scaled space this
+    /// function measures in, one lattice unit is `lattice_m` of real distance and the query's
+    /// own cell coordinate on any axis is `b = floor(q)`, so `q` itself lies in `[b, b+1)`.
+    /// A candidate cell outside the 3x3x3 block differs from `b` by at least 2 on SOME axis,
+    /// so that candidate's coordinate on that axis lies in `[b+2, b+3)` or further --
+    /// whatever its jitter, at least `1.0` scaled unit (`lattice_m` of real distance) away
+    /// from `q` on that axis alone, and Euclidean distance can only be at least that large.
+    /// `reach_m <= lattice_m` therefore means such a candidate's `fraction` is at least 1.0,
+    /// which the `!(fraction < 1.0)` guard below already excludes -- so nothing outside the
+    /// 3x3x3 block could ever have contributed regardless of whether the scan reached it.
+    /// **The boundary itself has no seam**: at exact equality (`fraction == 1.0`),
+    /// `smooth(1.0 - 1.0)` is `smooth(0.0)`, which is exactly 0 by its own formula, so a
+    /// candidate at the farthest distance this guard still admits contributes nothing, and
+    /// there is no discontinuity to paper over at the cutoff. Task 4 enforces the invariant
+    /// again at the ABI boundary; here it is a guard, returning zero, not a clamp.
+    ///
+    /// **Distance is measured in the scaled space the lattice itself lives in, before any
+    /// projection onto the sphere.** An earlier version of this function normalised each
+    /// candidate onto the unit sphere and measured chord distance there, which collapses a
+    /// node's radial position to nothing: a node one full lattice cell further from the
+    /// planet's centre than another, in the same direction, reported the same chord to a
+    /// surface query -- a mistake independent of scan radius, since no `N x N x N` widening
+    /// fixes a distance that was never being measured. See [`Tectonics::peak_of_cell`] for
+    /// where the corrected distance is computed and why a node's radial position is real
+    /// rather than a defect to normalise away.
+    ///
+    /// **The window is evaluated before the lattice is touched**, so a term that is inert, or
+    /// a point over shallow water, costs one comparison and no hashing. That is the same
+    /// ordering `coast_offset` uses (`continentality.rs:409-411`) and for the same reason.
+    /// **"Inert" means inert for any reason, not only for a zero density**: the five
+    /// point-independent ways a block can answer zero everywhere are decided once per world by
+    /// `peak_block_is_live`, which `Tectonics::with_peaks` applies before storing the block, so
+    /// every one of them arrives here as a `None` and stops at the match below. Until the final
+    /// whole-branch review only the zero-density case did; the other four reached
+    /// `Tectonics::offset_m`'s `base_elevation` call -- a full fBm -- on every sample.
+    ///
+    /// `seabed_m` is taken as an argument rather than read from `self.land` here, even
+    /// though `Tectonics` holds the `Continentality` this world's seabed comes from.
+    /// `Continentality::base_elevation` costs an fBm, and the whole point of evaluating the
+    /// depth window first is that an inert block or a shallow point costs nothing -- reaching
+    /// into `self.land` unconditionally would pay that fBm on every call, including the ones
+    /// this function exists to make free. It also keeps this function directly testable at a
+    /// stated depth, which is what most of the tests below do, and leaves a caller that
+    /// already has an elevation in hand (Task 2's `offset_m`) free to hand it over rather than
+    /// have a second one computed on its behalf.
+    ///
+    /// **Precondition: `point.vector` is a unit vector.** Neither this function nor
+    /// [`Tectonics::peak_of_cell`] normalises it. Every `SpherePoint` this codebase
+    /// constructs is already unit length, but `bindings.rs` does not itself re-check one
+    /// coming from outside, so a caller admitting a raw vector from a boundary is responsible
+    /// for that guarantee -- carried to Tasks 2 and 4, where those call sites live.
+    pub fn peak_offset_m(&self, point: &SpherePoint, seabed_m: f64) -> f64 {
+        // One comparison for an inert block. `Tectonics::with_peaks` has already refused,
+        // once for the whole world, every block `peak_block_is_live` calls dead -- zero
+        // density, a zero or non-finite `height_m`, a non-positive `lattice_m` or `reach_m`,
+        // and a `reach_m` past `lattice_m`, the invariant that makes the 3x3x3 scan below
+        // complete (see this function's own doc; Task 4 restates it at the ABI boundary).
+        // Nothing writes `peaks` after construction, so a `Some` reaching here is live and
+        // those five conditions need not be re-asked at every sample.
+        let params = match self.peaks {
+            None => return 0.0,
+            Some(params) => params,
+        };
+        let window = peak_depth_window(-seabed_m, params.min_depth_m);
+        if !(window > 0.0) {
+            return 0.0;
+        }
+
+        // Lattice cells about `lattice_m` across on this planet's surface. `q` is the query
+        // point in that SAME scaled space -- one unit is `lattice_m` of real ground distance
+        // -- and is what every candidate's distance below is measured against, before any
+        // renormalisation onto the sphere.
+        let frequency = self.radius_m / params.lattice_m;
+        let v = point.vector;
+        let q = Vec3 { x: v.x * frequency, y: v.y * frequency, z: v.z * frequency };
+
+        // Lattice coordinates are never derived by a bare cast. `noise.rs:166-168` is the
+        // pattern: floor, bound with a negated pair so a NaN takes the branch, then cast.
+        let (fx, fy, fz) = (m::floor(q.x), m::floor(q.y), m::floor(q.z));
+        if !(fx >= -LATTICE_LIMIT && fx <= LATTICE_LIMIT)
+            || !(fy >= -LATTICE_LIMIT && fy <= LATTICE_LIMIT)
+            || !(fz >= -LATTICE_LIMIT && fz <= LATTICE_LIMIT)
+        {
+            return 0.0;
+        }
+        let (bx, by, bz) = (
+            fx as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+            fy as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+            fz as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+        );
+
+        let mut tallest = 0.0f64;
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let (cx, cy, cz) = (bx + dx, by + dy, bz + dz);
+                    let candidate = match self.peak_of_cell(cx, cy, cz, params) {
+                        Some(found) => found,
+                        None => continue,
+                    };
+                    // The corrected distance: real 3-D separation between the query point
+                    // and the candidate's own node, in the scaled space they are both
+                    // already expressed in, converted to metres by `lattice_m` -- one unit
+                    // of this space IS `lattice_m` of ground distance. This is exactly the
+                    // distance a node's radial position was previously erased from.
+                    let d = Vec3 {
+                        x: q.x - candidate.node.x,
+                        y: q.y - candidate.node.y,
+                        z: q.z - candidate.node.z,
+                    };
+                    let dist_m = m::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) * params.lattice_m;
+                    let fraction = dist_m / params.reach_m;
+                    if !(fraction < 1.0) {
+                        continue;
+                    }
+                    // A cone with a smoothed flank, so nothing downstream differences a corner.
+                    let standing = params.height_m * (0.45 + 0.55 * candidate.share)
+                        * smooth(1.0 - fraction)
+                        * window;
+                    if standing > tallest {
+                        tallest = standing;
+                    }
+                }
+            }
+        }
+        tallest
+    }
+
+    /// One lattice cell's candidate peak: its own node, and how far that node stands from
+    /// the one point on the sphere closest to it.
+    ///
+    /// **Precondition: `self` was built at the radius `point.vector` is a unit vector for.**
+    /// This function (and `peak_offset_m` above it) assumes every query direction it is
+    /// handed is already unit length; neither normalises. Nothing at this layer enforces
+    /// that -- `bindings.rs` does not either -- so a caller that can hand this a non-unit
+    /// vector is responsible for the check. Tasks 2 and 4 carry that enforcement at their own
+    /// call sites, which is where the boundary that actually admits an outside vector lives.
+    ///
+    /// `None` if the cell holds no peak at this density, if its jittered node lands exactly
+    /// on the coordinate origin (not reachable by any real query, but guarded rather than
+    /// divided into a NaN), or if -- even at the single point on the sphere closest to this
+    /// node -- the node is too far from the sphere for any query to ever be in reach. The
+    /// last case is new: a node's own existence no longer guarantees it can be seen from
+    /// anywhere.
+    ///
+    /// **This is the one statement of where a candidate's node stands, in the same scaled
+    /// space `peak_offset_m`'s query point is measured in.** `peak_offset_m`'s 3x3x3 scan
+    /// calls this once per neighbour and measures its own distance to `node` directly; a
+    /// test that wants to know a candidate's own geometry calls this same function rather
+    /// than re-deriving the jitter maths, which is what makes the summit and ring tests below
+    /// proofs about this code and not about a second copy of it.
+    ///
+    /// **A node is a point in three dimensions, not a point pinned to the sphere.** The
+    /// jittered node's own distance from the origin need not equal `radius_m / lattice_m`,
+    /// the radius every query point sits at -- and that radial difference is real: a node
+    /// that lands further out than the shell stands taller than `height_m` would suggest at
+    /// a query directly below it were the shell not itself the limit, while a node that
+    /// lands further in can never reach `height_m` at all, no matter how directly a query
+    /// stands over it. `min_dist_m` is exactly the shortfall that ceiling is built from --
+    /// the tallest crest this node can ever produce is
+    /// `height_m * (0.45 + 0.55 * share) * smooth(1 - min_dist_m / reach_m)`, achieved only
+    /// by a query at the node's own summit direction with a fully-saturated depth window, and
+    /// it is frequently below `height_m * (0.45 + 0.55 * share)` alone, which was this
+    /// function's entire (wrong) answer before a node's radial position was measured. Nothing
+    /// on the live path ever needs that crest value, so nothing here computes it -- see
+    /// `PeakCandidate`'s own doc.
+    ///
+    /// **This is also the feature the fixed distance buys, not merely the bug it fixes.** A
+    /// node that falls short of the shell produces a real seamount that never breaks the
+    /// surface -- a submerged shoal, which is exactly the navigational hazard a chart wants
+    /// and which a generator that flattened every candidate onto the shell could never
+    /// produce.
+    fn peak_of_cell(&self, cx: i64, cy: i64, cz: i64, params: PeakParams) -> Option<PeakCandidate> {
+        if self.peak_noise.lattice_at(cx, cy, cz) >= params.density {
+            return None;
+        }
+        // Jitter inside the cell, from a salt of its own so height and position are
+        // uncorrelated. This node lives in the SAME scaled space `peak_offset_m`'s query
+        // point does -- one unit is `lattice_m` of real ground distance -- and is not
+        // renormalised onto the sphere: its own distance from the origin is left exactly as
+        // the lattice produced it.
+        let jx = self.peak_jitter.lattice_at(cx, cy, cz);
+        let jy = self.peak_jitter.lattice_at(cy, cz, cx);
+        let jz = self.peak_jitter.lattice_at(cz, cx, cy);
+        // `cx`, `cy` and `cz` are `bx + dx` etc. in `peak_offset_m` -- an i64 within one of
+        // `bx`/`by`/`bz`, each already an exact round trip of a floored, LATTICE_LIMIT-bounded
+        // f64 (see `noise.rs:166-168`'s pattern). i64-to-f64 is exact up to 2^53 (about
+        // 9.007e15); LATTICE_LIMIT (9.0e18) is the earlier float-to-int cast's overflow bound
+        // and is far past that, not a precision guarantee for this cast on its own -- what
+        // actually keeps this exact is that every coordinate this crate's own frequency
+        // schedules can produce is of order 10 to 1e6, many orders of magnitude below 2^53.
+        let node = Vec3 {
+            x: (cx as f64) + jx, // cast-ok: see the note above this block
+            y: (cy as f64) + jy, // cast-ok: see the note above this block
+            z: (cz as f64) + jz, // cast-ok: see the note above this block
+        };
+        let radial = m::sqrt(node.x * node.x + node.y * node.y + node.z * node.z);
+        if !(radial > 0.0) {
+            return None;
+        }
+        // The one point on the sphere closest to `node`: `node`'s own direction, scaled back
+        // up to the query radius. A local value, not stored -- nothing outside this function
+        // needs the DIRECTION, only the DISTANCE it produces below, so keeping it local is
+        // what stops that distance's own arithmetic (and, before this round, a wasted
+        // `smooth` call besides) from following it onto the hot path as a dead field.
+        let frequency = self.radius_m / params.lattice_m;
+        let closest = Vec3 {
+            x: node.x / radial * frequency,
+            y: node.y / radial * frequency,
+            z: node.z / radial * frequency,
+        };
+        let d = Vec3 { x: closest.x - node.x, y: closest.y - node.y, z: closest.z - node.z };
+        let min_dist_m = m::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) * params.lattice_m;
+        if !(min_dist_m / params.reach_m < 1.0) {
+            // Too far from the shell, in either direction, for any query to ever reach it.
+            return None;
+        }
+        let share = self.peak_height.lattice_at(cx, cy, cz);
+        Some(PeakCandidate { node, share, min_dist_m })
     }
 
     /// The stacked-suture collision shape at a signed across-margin distance.
@@ -1287,7 +2029,7 @@ impl Tectonics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::continentality::LAND_FRACTION;
+    use crate::continentality::{ABYSS_M, LAND_FRACTION};
     use crate::plates::tests::three_plate_set;
     use crate::sphere::EARTH_RADIUS_M;
 
@@ -2508,5 +3250,1157 @@ mod tests {
         }
         assert!(off_canonical, "the preset builds the canonical world");
         assert!(off_blade, "the preset is the bare envelope -- the structure fields do nothing");
+    }
+
+    /// A `Tectonics` built with an opt-in [`PeakParams`] block, over the same
+    /// `three_plate_set()` the rest of this module's plate-agnostic tests use -- the peak
+    /// field never reads `self.plates` or `self.land`, so any world will do.
+    fn peaked(params: PeakParams) -> Tectonics {
+        let land = Continentality::new(7788, EARTH_RADIUS_M, 0.4);
+        Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, None, Some(params))
+    }
+
+    /// A fixed area-uniform spiral (golden-angle Fibonacci), the same construction
+    /// `continentality.rs::spiral` uses, so a measurement over it samples the surface rather
+    /// than over-sampling the poles the way an evenly-stepped lat/lon grid does.
+    fn area_uniform_spiral(count: usize) -> Vec<SpherePoint> {
+        let golden = core::f64::consts::PI * (3.0 - m::sqrt(5.0));
+        let n = count as f64; // cast-ok: sample count to float, exact far below 2^53
+        (0..count)
+            .map(|index| {
+                let i = index as f64; // cast-ok: loop counter to float, exact far below 2^53
+                let z = 1.0 - 2.0 * (i + 0.5) / n;
+                let inner = 1.0 - z * z;
+                let ring = m::sqrt(if inner > 0.0 { inner } else { 0.0 });
+                let angle = golden * i;
+                SpherePoint { vector: Vec3::new(m::cos(angle) * ring, m::sin(angle) * ring, z) }
+            })
+            .collect()
+    }
+
+    /// Real probes' own floor cells that hold a peak at `params`, together with the
+    /// [`PeakCandidate`] found there.
+    ///
+    /// **Why real probes, not an arbitrary lattice coordinate.** A lattice cell reachable
+    /// from nowhere on the unit sphere -- near the coordinate origin, where `|cx|,|cy|,|cz|`
+    /// are all far below `frequency` -- has a jittered node whose distance from the origin
+    /// has nothing to do with `frequency`; it is now filtered out by `peak_of_cell`'s own
+    /// `min_fraction < 1.0` check (such a node is always too far from the shell for any
+    /// query to reach), but walking real probes' own floor cells is still the direct way to
+    /// enumerate the only kind of cell `peak_offset_m` ever actually visits, and is shared by
+    /// every test below so there is one way to do it rather than one per test.
+    fn peak_candidates_from_real_probes(
+        tectonics: &Tectonics,
+        params: PeakParams,
+        probe_count: i32,
+    ) -> Vec<(i64, i64, i64, PeakCandidate)> {
+        let frequency = EARTH_RADIUS_M / params.lattice_m;
+        let mut found = Vec::new();
+        let lat_step = 178.0 / f64::from(probe_count);
+        let lon_step = 0.71;
+        for i in 0..probe_count {
+            let lat = -89.0 + lat_step * f64::from(i); // cast-ok: loop counter, 0..probe_count
+            let lon = lon_step * f64::from(i) - 180.0; // cast-ok: loop counter
+            let v = SpherePoint::from_latlon(lat, lon).vector;
+            // The identical floor-bound-cast `peak_offset_m` itself takes, negated pair and
+            // all -- `constraints.md` makes that pattern unconditional, and it is not relaxed
+            // for a test helper. In practice `|v.x| <= 1` and `frequency` is a small constant
+            // (of order 10-100 at any `lattice_m` this crate ships), so the bound is never
+            // actually the branch taken here; the guard exists so this helper cannot silently
+            // drift from the real one's safety property if that ever stopped being true.
+            let (fx, fy, fz) = (m::floor(v.x * frequency), m::floor(v.y * frequency), m::floor(v.z * frequency));
+            if !(fx >= -LATTICE_LIMIT && fx <= LATTICE_LIMIT)
+                || !(fy >= -LATTICE_LIMIT && fy <= LATTICE_LIMIT)
+                || !(fz >= -LATTICE_LIMIT && fz <= LATTICE_LIMIT)
+            {
+                continue;
+            }
+            let (cx, cy, cz) = (
+                fx as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+                fy as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+                fz as i64, // cast-ok: floored and bounded against LATTICE_LIMIT on the lines above
+            );
+            if let Some(candidate) = tectonics.peak_of_cell(cx, cy, cz, params) {
+                found.push((cx, cy, cz, candidate));
+            }
+        }
+        found
+    }
+
+    /// A candidate's summit direction and the tallest crest it can ever produce, recomputed
+    /// from the geometry `peak_of_cell` already returned in `candidate`.
+    ///
+    /// **Not on any production path, and deliberately so.** `crest_m` costs a `smooth` call
+    /// and an envelope multiply that `peak_offset_m`'s hot loop has no use for -- which is
+    /// why `PeakCandidate` itself does not carry either value; see its own doc and the
+    /// second review round's minor 5, which found both being computed unconditionally on
+    /// every live sample. A test that wants them recomputes from `node`, `share` and
+    /// `min_dist_m`, all already exposed, rather than paying for them on the hot path or
+    /// re-deriving the jitter maths that produced `node` in the first place.
+    fn summit_and_crest(candidate: &PeakCandidate, params: PeakParams) -> (Vec3, f64) {
+        let radial = m::sqrt(
+            candidate.node.x * candidate.node.x
+                + candidate.node.y * candidate.node.y
+                + candidate.node.z * candidate.node.z,
+        );
+        let summit = Vec3 {
+            x: candidate.node.x / radial,
+            y: candidate.node.y / radial,
+            z: candidate.node.z / radial,
+        };
+        let fraction = candidate.min_dist_m / params.reach_m;
+        let crest_m = if fraction < 1.0 {
+            params.height_m * (0.45 + 0.55 * candidate.share) * smooth(1.0 - fraction)
+        } else {
+            0.0
+        };
+        (summit, crest_m)
+    }
+
+    #[test]
+    fn a_peak_field_with_no_density_is_exactly_zero() {
+        // The inert arm must be an EARLY RETURN, not `+ 0.0`. Adding an exactly-zero
+        // offset to a -0.0 seabed yields +0.0 and flips the sign bit, which is how a
+        // block that is supposed to change nothing changes something.
+        let params = PeakParams { density: 0.0, ..PeakParams::volcanic() };
+        let tectonics = peaked(params);
+        for (lat, lon) in [(0.0, 0.0), (12.5, -47.5), (-63.25, 128.75), (89.0, 180.0)] {
+            let point = SpherePoint::from_latlon(lat, lon);
+            let got = tectonics.peak_offset_m(&point, -4600.0);
+            assert_eq!(got.to_bits(), 0.0f64.to_bits(), "at {lat},{lon}");
+        }
+    }
+
+    #[test]
+    fn a_peak_needs_deep_water_under_it() {
+        // The window is a depth, so it can be stated as one. Shallow seabed gets nothing
+        // however dense the field, which is what stops an island erupting on a shelf.
+        let tectonics = peaked(PeakParams { density: 1.0, ..PeakParams::volcanic() });
+        let mut shallow = 0usize;
+        for i in 0..400 {
+            let point = SpherePoint::from_latlon(-80.0 + 0.4 * f64::from(i), 17.0); // cast-ok: loop counter, 0..400
+            if tectonics.peak_offset_m(&point, -100.0) != 0.0 {
+                shallow += 1;
+            }
+        }
+        assert_eq!(shallow, 0, "a 100 m seabed is not deep enough for any peak");
+    }
+
+    #[test]
+    fn a_dense_field_puts_peaks_in_deep_water_and_a_sparse_one_puts_fewer() {
+        // Density and height are independent knobs. This is the property a thresholded
+        // fbm cannot give, and the reason this term is built on the lattice.
+        let dense = peaked(PeakParams { density: 0.50, ..PeakParams::volcanic() });
+        let sparse = peaked(PeakParams { density: 0.05, ..PeakParams::volcanic() });
+        let (mut d, mut s) = (0usize, 0usize);
+        for i in 0..2_000 {
+            let lat = -70.0 + 0.07 * f64::from(i); // cast-ok: loop counter, 0..2000
+            let point = SpherePoint::from_latlon(lat, 0.37 * f64::from(i) - 180.0); // cast-ok: loop counter
+            if dense.peak_offset_m(&point, -4600.0) > 0.0 { d += 1; }
+            if sparse.peak_offset_m(&point, -4600.0) > 0.0 { s += 1; }
+        }
+        assert!(d > 0, "a half-dense field found no peaks in 2,000 deep probes");
+        assert!(d > s, "denser must mean more: dense {d}, sparse {s}");
+    }
+
+    #[test]
+    fn a_peak_stands_exactly_at_its_own_summit() {
+        // Deterministic, not sampled: summits are enumerable, so this needs no luck. An
+        // earlier version of this test sampled a spiral of query points and asserted the
+        // TALLEST cleared 4,600 m; that shape of test is exactly what let the radial
+        // distance bug ship, because "the tallest sample clears the bound" says nothing
+        // about whether the FORMULA is right at the points the spiral happens to land on.
+        //
+        // This calls [`Tectonics::peak_of_cell`], the one statement of a candidate's
+        // geometry, rather than re-deriving the jitter maths here -- a test that re-derived
+        // it would pass against a field that computed a summit differently.
+        //
+        // **The crest asserted is `summit_and_crest`'s `crest_m`, not
+        // `height_m * (0.45 + 0.55 * share)`.** Those two coincide only when a node sits
+        // exactly on the reference shell. In general a node's own radial position falls
+        // short of or beyond the shell, and `crest_m` -- built from `min_dist_m`, the real
+        // distance between the node and the one point on the sphere closest to it -- is the
+        // honest ceiling. Asserting the naive formula here would silently reintroduce the
+        // bug this round of review found: it is bit-identical to `crest_m` only when the
+        // radial shortfall happens to be zero.
+        //
+        // **Density is 0.0025 here, not the shipping preset's 0.30.** At 0.30, with
+        // `reach_m` now 70% of `lattice_m` (31,500 of 45,000, up from 31% before the ratio
+        // was recalibrated), a second candidate is often within reach of the cell under
+        // test's own summit, and legitimately outscores it -- correct behaviour
+        // (`peak_offset_m` is a max over the whole neighbourhood), and not what this test is
+        // pinning down. The useful volume around a node scales with `reach_m^3`, so going
+        // from a ratio of 0.31 to 0.70 (a factor of 2.25) raised collision odds at a fixed
+        // density by about `2.25^3 =~ 11.4`x -- the density that isolated a candidate before
+        // no longer does, which is why this is 0.03 / 11.4, rounded, rather than the old
+        // value carried over unchanged. At 0.0025 a competing neighbour is rare enough again
+        // that the cell under test is almost always the only one present; the probe count
+        // below is raised to compensate for fewer cells passing the existence hash at all.
+        // The shipping preset's own height-clearing property is asserted separately, in
+        // `the_shipping_preset_still_clears_the_abyss`, using a comparison competition
+        // cannot break.
+        let params = PeakParams { density: 0.0025, ..PeakParams::volcanic() };
+        let tectonics = peaked(params);
+        let candidates = peak_candidates_from_real_probes(&tectonics, params, 60_000);
+        let mut tallest = 0.0f64;
+        for (cx, cy, cz, candidate) in &candidates {
+            let (summit, crest_m) = summit_and_crest(candidate, params);
+            // `SpherePoint { vector: summit }` directly, not `SpherePoint::from_vector`
+            // -- `summit` is already exactly unit length (`node / |node|`), and
+            // `from_vector` would renormalise it, introducing a sub-ULP rounding difference
+            // between this query's `v` and the `summit` `crest_m` was computed from. The
+            // claim here is bit-exactness, so the query must be the identical value.
+            let point = SpherePoint { vector: summit };
+            let got = tectonics.peak_offset_m(&point, -4600.0);
+            assert_eq!(
+                got.to_bits(),
+                crest_m.to_bits(),
+                "at cell ({cx},{cy},{cz}): got {got}, crest_m {crest_m}"
+            );
+            if got > tallest {
+                tallest = got;
+            }
+        }
+        assert!(!candidates.is_empty(), "density 0.0025 found no summit under 60,000 probes");
+        assert!(tallest > 4_600.0, "tallest summit {tallest} m does not clear the abyss");
+    }
+
+    #[test]
+    fn the_shipping_preset_still_clears_the_abyss() {
+        // **Pinned at the shipping preset, not only at density 1.0.** The reviewer's sweep
+        // found 5,135 m at density 1.0 but only 4,354 m at the OLD preset density (0.06) --
+        // the shipping preset never actually cleared 4,600 m over 120,000 km of transect,
+        // and a one-sided `> 4_600.0` test at density 1.0 alone would never have shown that,
+        // because comparing a lattice hash against 1.0 is trivially true regardless of
+        // whether the comparison operator is even correct. Testing at the real preset
+        // density exercises that comparison honestly.
+        //
+        // This does not use `peak_offset_m` at each candidate's own summit for the
+        // comparison, because at the shipping density a competing neighbour can
+        // legitimately win there (see `a_peak_stands_exactly_at_its_own_summit`). Instead it
+        // uses the inequality that holds regardless of competition: the actual field,
+        // queried at the tallest candidate's own summit, can only be AT LEAST that
+        // candidate's own `crest_m` (every other candidate in range only adds to the max,
+        // never subtracts from it), so `crest_m > 4_600.0` on its own already proves the
+        // real generator clears the abyss somewhere -- and the live query below confirms it
+        // rather than trusting the arithmetic alone.
+        let params = PeakParams::volcanic();
+        let tectonics = peaked(params);
+        let candidates = peak_candidates_from_real_probes(&tectonics, params, 12_000);
+        assert!(!candidates.is_empty(), "the shipping preset found no peak under 12,000 probes");
+
+        let mut tallest_crest_m = 0.0f64;
+        let mut tallest_cell = (0i64, 0i64, 0i64);
+        let mut tallest_summit = Vec3::new(0.0, 0.0, 0.0);
+        for (cx, cy, cz, candidate) in &candidates {
+            let (summit, crest_m) = summit_and_crest(candidate, params);
+            if crest_m > tallest_crest_m {
+                tallest_crest_m = crest_m;
+                tallest_cell = (*cx, *cy, *cz);
+                tallest_summit = summit;
+            }
+        }
+        assert!(
+            tallest_crest_m > 4_600.0,
+            "the tallest of {} shipping-preset summits crests at {tallest_crest_m} m, short of \
+             the abyss",
+            candidates.len()
+        );
+
+        // See `a_peak_stands_exactly_at_its_own_summit` for why this is a direct field
+        // construction rather than `SpherePoint::from_vector`: `tallest_summit` is already
+        // exactly unit length, and renormalising it again could round `got` a sub-ULP below
+        // `tallest_crest_m`, which would break the `>=` below for a reason that has nothing
+        // to do with the property it is checking.
+        let point = SpherePoint { vector: tallest_summit };
+        let got = tectonics.peak_offset_m(&point, -4600.0);
+        let (cx, cy, cz) = tallest_cell;
+        assert!(
+            got >= tallest_crest_m,
+            "at cell ({cx},{cy},{cz}): the live field ({got} m) undercuts its own candidate's \
+             crest ({tallest_crest_m} m) -- some OTHER accounting must be wrong, since a \
+             neighbour can only ever raise this maximum"
+        );
+        assert!(got > 4_600.0, "the live field at the tallest summit is {got} m, not > 4,600 m");
+    }
+
+    #[test]
+    fn a_20_000_point_area_uniform_sweep_measures_the_islanded_share() {
+        // **Measured, not predicted.** `VOLCANIC_REACH_M`'s doc derives an island area from
+        // the CORRECTED model -- `density * (4/3)*pi * <d(share)^3> / lattice_m^3`, averaging
+        // `d(share)^3` over `share` rather than assuming every node reaches the `share = 1`
+        // ceiling -- which predicts about 0.50% at the shipping preset (`height_m: 8,000`,
+        // `density: 0.11`). This test is the check against the LIVE field, over a population
+        // that samples the surface uniformly rather than over-sampling the poles the way a
+        // lat/lon grid does.
+        //
+        // A first version of this test, at the round-4 constants (`height_m: 5,200`,
+        // `density: 0.30`), measured 0.035% against a naive (uncorrected) model's ~0.41% --
+        // an apparent 12x gap that I first (and wrongly) attributed to the model
+        // over-counting a candidate's useful volume geometrically. It does not: the
+        // controller re-derived the volume-ratio arithmetic exactly and found no
+        // approximation error in it at all. **The missing term was the height envelope.**
+        // `0.45 + 0.55*share` means a node clears the abyss only once
+        // `share > (4600/height_m - 0.45) / 0.55`, which at `height_m: 5,200` is `share >
+        // 0.79` -- so only 21% of nodes could ever surface, and those just past the
+        // threshold made vanishingly small islands. The corrected, share-averaged model
+        // predicts 0.0347% for that same old trio, which is what the 0.035% actually
+        // measured -- three significant figures, not a coincidence. `VOLCANIC_HEIGHT_M`'s
+        // doc has the full corrected model and the qualifying-node percentages at both
+        // heights.
+        //
+        // "Standing above the datum offshore" is `peak_offset_m(point, ABYSS_M) > -ABYSS_M`
+        // -- the seabed is the standard abyss (-4,600 m) and the surface stands above 0 only
+        // once the offset exceeds 4,600 m, exactly the bar every other test in this file
+        // calls "clearing the abyss".
+        //
+        // The band asserted (0.005%-2.0%) is deliberately wide of both the model's ~0.50%
+        // and the 0.3-0.8% design target -- hitting the target precisely is Task 7's job, and
+        // the constants are stated as provisional in their own doc comments -- but tight
+        // enough that a badly broken field (zero islands anywhere, or most of the ocean
+        // standing above datum) still fails here rather than only in a later survey.
+        let params = PeakParams::volcanic();
+        let tectonics = peaked(params);
+        let points = area_uniform_spiral(20_000);
+        let mut islanded = 0usize;
+        for point in &points {
+            if tectonics.peak_offset_m(point, ABYSS_M) > -ABYSS_M {
+                islanded += 1;
+            }
+        }
+        let islanded_f64 = islanded as f64; // cast-ok: a count of at most 20,000, exact far below 2^53
+        let total_f64 = points.len() as f64; // cast-ok: a count of at most 20,000, exact far below 2^53
+        let share = islanded_f64 / total_f64 * 100.0;
+        assert!(
+            share > 0.005 && share < 2.0,
+            "{islanded} of {} points ({share:.4}%) stood above datum offshore -- outside the \
+             0.005%-2.0% sanity band",
+            points.len()
+        );
+    }
+
+    #[test]
+    fn a_ring_off_the_summit_matches_the_stated_profile() {
+        // **The catch this test exists for.** Evaluating exactly AT a summit can never
+        // exercise the radial-distance bug: a summit's own cell is always inside its own
+        // 3x3x3 neighbourhood, chord-to-self is zero either way, and the pre-fix code was
+        // wrong about every OTHER point, not that one. This samples a ring at 0.2-0.9 of
+        // `reach_m` off each enumerated summit and checks the profile the fixed geometry
+        // predicts, which the pre-fix geometry could not have produced except by accident.
+        //
+        // `min_dist_m` is read straight off `candidate` -- `peak_of_cell` already computed
+        // it (to decide whether the candidate is reachable at all) and now returns it for
+        // exactly this, so there is one statement of that arithmetic rather than two. Only
+        // the summit DIRECTION is recomputed here, by normalising `candidate.node` -- cheap,
+        // and not a second copy of the distance arithmetic that produced `min_dist_m` itself.
+        //
+        // The expected distance from a ring point to the node is then the flat, local
+        // approximation `sqrt(min_dist_m^2 + t_m^2)` -- Pythagoras in the plane tangent to
+        // the sphere at the summit -- valid because `reach_m` (at most 31,500 m here) is
+        // still more than four orders of magnitude below `radius_m` (6,371,000 m), so the
+        // curvature correction is negligible against the metre-scale tolerance below.
+        //
+        // Density is sparse (0.0003) for the reason `a_peak_stands_exactly_at_its_own_summit`
+        // gives: a competing neighbour would break the comparison for a reason that has
+        // nothing to do with the property under test, and at this preset's now-larger
+        // reach-to-lattice ratio (0.70, up from 0.31) a competing neighbour is around 11x
+        // likelier at any fixed density. This test samples a RING, not only the summit
+        // itself, at up to 0.9 of `reach_m` off it -- closer to a neighbour's own reach than
+        // the exact-summit test ever gets -- so it needed a lower density still to stay
+        // clean at 40 enumerated summits.
+        let params = PeakParams { density: 0.0003, ..PeakParams::volcanic() };
+        let tectonics = peaked(params);
+        let candidates = peak_candidates_from_real_probes(&tectonics, params, 300_000);
+        assert!(!candidates.is_empty(), "density 0.0003 found no summit under 300,000 probes");
+
+        let mut rings_checked = 0usize;
+        for (_, _, _, candidate) in candidates.iter().take(40) {
+            let min_dist_m = candidate.min_dist_m;
+            let radial = m::sqrt(
+                candidate.node.x * candidate.node.x
+                    + candidate.node.y * candidate.node.y
+                    + candidate.node.z * candidate.node.z,
+            );
+            let summit = Vec3 {
+                x: candidate.node.x / radial,
+                y: candidate.node.y / radial,
+                z: candidate.node.z / radial,
+            };
+            let summit_point = SpherePoint::from_vector(&summit)
+                .expect("a summit direction is a unit vector, never the zero one");
+            let frame = TangentFrame::at(&summit_point, EARTH_RADIUS_M);
+            for fraction in [0.2, 0.5, 0.9] {
+                let t_m = fraction * params.reach_m;
+                for bearing_deg in [0.0, 90.0, 180.0, 270.0] {
+                    let bearing = m::to_radians(bearing_deg);
+                    let ring_point =
+                        frame.local_to_sphere(t_m * m::cos(bearing), t_m * m::sin(bearing));
+                    let got = tectonics.peak_offset_m(&ring_point, -4600.0);
+                    let dist_m = m::sqrt(min_dist_m * min_dist_m + t_m * t_m);
+                    let expected = if dist_m < params.reach_m {
+                        params.height_m
+                            * (0.45 + 0.55 * candidate.share)
+                            * smooth(1.0 - dist_m / params.reach_m)
+                    } else {
+                        0.0
+                    };
+                    let tolerance = 5.0 + 0.02 * expected;
+                    // `.abs()` is banned in this crate; write the comparison out.
+                    let diff = if got > expected { got - expected } else { expected - got };
+                    assert!(
+                        diff <= tolerance,
+                        "ring at {fraction}*reach, bearing {bearing_deg}: got {got} m, \
+                         expected {expected} m (tolerance {tolerance} m)"
+                    );
+                    rings_checked += 1;
+                }
+            }
+        }
+        assert!(rings_checked > 0, "no ring was actually checked");
+    }
+
+    #[test]
+    fn no_step_along_a_transect_exceeds_the_analytic_bound() {
+        // **The continuity test that would have caught the radial-distance bug.** The
+        // reviewer measured a single 20 m step producing a 1,466 m jump in the pre-fix code,
+        // against an analytic ceiling of `height_m * 1.5 / reach_m * step_m` -- `1.5` because
+        // `d(smooth)/du` peaks at 1.5 at `u = 0.5`, so no correctly-computed profile can ever
+        // move faster than that over one step. Derived from the params here, not
+        // hard-coded, so a change to `height_m` or `reach_m` keeps this test honest about
+        // what bound it is actually checking -- at today's `height_m: 8,000` that bound is
+        // 7.62 m at a 20 m step, moved automatically from the 11.14 m it was before
+        // `VOLCANIC_HEIGHT_M` was raised.
+        //
+        // **Three cases, not two.** Density 1.0 maximises how many cell boundaries a single
+        // transect crosses, which is where the pre-fix bug fired loudest (a 3,393.8 m worst
+        // step at the round-3 constants, since re-measured worse below). The shipping
+        // preset is what ships, and its own violations are rarer -- the third review round
+        // found the round-2 continuity claim was measured against RETIRED constants and
+        // asked for ten times the coverage here, so the shipping arm below walks about
+        // 240 transects of 60 km each (roughly 14,400 km) rather than 24. The third case,
+        // `reach_m == lattice_m`, sits exactly at the boundary the completeness proof in
+        // `peak_offset_m`'s own doc is tightest at -- a brute-force 9x9x9-versus-3x3x3 check
+        // over 280,000 probes already found no disagreement there, so this is a guard
+        // against a future recalibration landing on that edge, not a suspected bug today.
+        //
+        // **Two bearings per transect (0 degrees and 45 degrees), not one.** A transect due
+        // east crosses lattice cell planes at one fixed angle; a diagonal transect crosses
+        // them at a different one, which is what actually varies which axis's floor flips
+        // first as the query moves -- the mechanism the whole bug lived in.
+        //
+        // **What this test deliberately does NOT measure, and where that is measured.** Every
+        // step below is taken at a fixed `seabed_m` of -4,600 m, so `peak_depth_window`
+        // returns exactly 1.0 throughout and the bound above is purely GEOMETRIC -- the
+        // window's own gradient, which is the steeper of the two, is held out on purpose so
+        // that a violation here can only mean the profile moved too fast in space.
+        // `no_composed_step_exceeds_the_geometric_and_window_bounds_together` below walks the
+        // same transects with the seabed the world really has and asserts the composed step of
+        // `Tectonics::offset_m` against both terms at once.
+        let cases: [(&str, PeakParams, i32, i32); 3] = [
+            ("density 1.0", PeakParams { density: 1.0, ..PeakParams::volcanic() }, 24, 3_000),
+            ("shipping preset", PeakParams::volcanic(), 240, 3_000),
+            (
+                "reach_m == lattice_m",
+                PeakParams { reach_m: VOLCANIC_LATTICE_M, density: 1.0, ..PeakParams::volcanic() },
+                24,
+                3_000,
+            ),
+        ];
+        for (label, params, transect_count, steps_per_transect) in cases {
+            let tectonics = peaked(params);
+            let step_m = 20.0;
+            let max_step_m = params.height_m * 1.5 / params.reach_m * step_m;
+            let mut transects_walked = 0usize;
+            let lat_step = 178.0 / f64::from(transect_count);
+            for i in 0..transect_count {
+                let lat = -89.0 + lat_step * f64::from(i); // cast-ok: loop counter, 0..transect_count
+                let lon = 0.83 * f64::from(i) - 180.0; // cast-ok: loop counter
+                for bearing_deg in [0.0, 45.0] {
+                    let frame = TangentFrame::at_latlon(lat, lon, EARTH_RADIUS_M);
+                    let bearing = m::to_radians(bearing_deg);
+                    let (east, north) = (m::cos(bearing), m::sin(bearing));
+                    transects_walked += 1;
+                    let mut previous = tectonics.peak_offset_m(&frame.origin, -4600.0);
+                    for step in 1..steps_per_transect {
+                        let t_m = step_m * f64::from(step); // cast-ok: loop counter
+                        let point = frame.local_to_sphere(t_m * east, t_m * north);
+                        let here = tectonics.peak_offset_m(&point, -4600.0);
+                        let delta = if here > previous { here - previous } else { previous - here };
+                        assert!(
+                            delta <= max_step_m + 1e-6,
+                            "{label}: step {step} at lat {lat}, bearing {bearing_deg}: jumped \
+                             {delta} m, over the {max_step_m} m analytic bound \
+                             ({previous} m -> {here} m)"
+                        );
+                        previous = here;
+                    }
+                }
+            }
+            assert!(transects_walked > 0, "{label}: no transect was actually walked");
+        }
+    }
+
+    /// The other half of continuity, and the half the final whole-branch review found missing:
+    /// **the test above holds `seabed_m` at -4,600 m, so `peak_depth_window` returns exactly
+    /// 1.0 at every step and its own gradient is never in the measurement** -- and the window
+    /// is the steeper of the two factors. Its ramp spans `min_depth_m - min_depth_m * 0.8`
+    /// (500 m at the preset), so its slope reaches `1.5 / span` per metre of depth, which is
+    /// `height_m * 1.5 / span` = 24 m of peak per metre of seabed: over three times the 7.62 m
+    /// the geometric bound allows for a 20 m step.
+    ///
+    /// So this walks the same transects with the seabed the world actually has under them --
+    /// `base_elevation + offset_m`, exactly the sum `Tectonics::offset_m` hands
+    /// `peak_offset_m` and exactly what `Shelf::evaluate` recomputes -- and asserts the
+    /// **composed** step of `Tectonics::offset_m` itself, not the peak term against a fiction.
+    ///
+    /// **The bound, derived from the parameters and from the measured seabed move, never
+    /// written down.** Over one step the composed offset moves by
+    /// `delta(total) + delta(standing)`, where `total` is bit-for-bit the offset the bare
+    /// `Tectonics::new` field produces (the peak term is added, never fed back), so
+    ///
+    /// ```text
+    /// |delta(offset_m)| <= |delta(bare offset_m)|                     <- measured, per step
+    ///                    + height_m * 1.5 / reach_m * step_m          <- geometric, per step
+    ///                    + height_m * 1.5 / span    * |delta(seabed)| <- the window's own ramp
+    /// ```
+    ///
+    /// Each term is a Lipschitz product of factors that are themselves at most 1: the height
+    /// envelope `0.45 + 0.55 * share` never exceeds 1, `smooth`'s derivative peaks at 1.5, and
+    /// the window is at most 1, so holding one factor and moving the other gives each line.
+    /// The first line is taken from the field itself rather than bounded, because the margin
+    /// terms `total` is made of have no analytic Lipschitz constant on this branch and are not
+    /// what this test is about -- what is asserted is that **the seamount term adds no more
+    /// than its own two-part bound to whatever the pre-existing field already did.**
+    ///
+    /// **Measured, on this host (rustc 1.98.0, `--release`), at the shipping preset over
+    /// 240 transects x 2 bearings x 15,000 steps of 20 m -- 7,199,520 steps, none skipped:**
+    /// the largest composed step is **7.0073 m** against a worst per-step bound of
+    /// **12.5460 m**, and the largest seamount-only step is **7.0073 m** -- inside the
+    /// 7.6190 m geometric bound the fixed-seabed test enforces, so the window's extra
+    /// allowance is headroom here rather than a cliff being admitted. **338,118 steps** land
+    /// strictly inside the window's ramp and **33** cross the margin-range frontier; both are
+    /// asserted, because they are the two coverages this walk exists for and the fixed-seabed
+    /// test can make neither claim. The density-1.0 arm reads 7.3396 m against the same
+    /// 12.5460 m.
+    ///
+    /// **The window's own allowance is real but small, and that is a measurement rather than
+    /// the argument an earlier draft of this comment made.** The worst seabed move over any
+    /// single 20 m step is **0.2053 m**, so at 24.0000 m of peak per metre of seabed the
+    /// window contributes at most 4.93 m, and the composed bound is the 7.62 m geometric term
+    /// plus that plus whatever the bare field moved. An earlier version of this comment
+    /// published 26.9865 m worst step against a 4,492.2 m bound, 7.2768 m seamount-only and
+    /// 41,131 ramp steps, and reasoned from "a single 20 m step can move the seabed by
+    /// metres". **No run ever produced those four numbers together**: they came off the first
+    /// draft of this test, which still exempted the margin-range frontier and so measured
+    /// steps where the *bare* field jumped across it, and they were never re-run once that
+    /// exemption was removed. A sub-metre seabed move is a different argument from a
+    /// multi-metre one -- the window is not the loose term here, it is a comparable one, and
+    /// the field uses neither, since the worst step observed is inside the geometric bound on
+    /// its own. Nothing about the derivation changed; the numbers did, and these are a run's.
+    #[test]
+    fn no_composed_step_exceeds_the_geometric_and_window_bounds_together() {
+        let cases: [(&str, PeakParams, i32, i32); 2] = [
+            ("shipping preset", PeakParams::volcanic(), 240, 15_000),
+            ("density 1.0", PeakParams { density: 1.0, ..PeakParams::volcanic() }, 240, 15_000),
+        ];
+        for (label, params, transect_count, steps_per_transect) in cases {
+            // The same fixture `peaked` builds, plus the bare field it differs from by one
+            // term. Both must share the `Continentality`, or the baseline would not be the
+            // same `total`.
+            let land = Continentality::new(7788, EARTH_RADIUS_M, 0.4);
+            let margins_of = three_plate_set();
+            let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, None);
+            let peaked =
+                Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, None, Some(params));
+
+            let step_m = 20.0;
+            // Both halves of the bound, from `params` and from `peak_depth_window`'s own
+            // arithmetic -- the 0.8 onset factor is read off that function, not guessed.
+            let geometric_m = params.height_m * 1.5 / params.reach_m * step_m;
+            let span_m = params.min_depth_m - params.min_depth_m * 0.8;
+            let per_metre_of_seabed = params.height_m * 1.5 / span_m;
+
+            let mut worst_composed_m = 0.0f64;
+            let mut worst_bound_m = 0.0f64;
+            let mut worst_peak_step_m = 0.0f64;
+            let mut worst_seabed_step_m = 0.0f64;
+            let mut steps_on_the_ramp = 0usize;
+            let mut steps_walked = 0usize;
+            // Coverage of the OTHER thing this walk is supposed to reach: a step with margins
+            // in range on one side and not the other. Those steps used to be exempted from the
+            // bound; they are bounded like any other now, and a future change that stopped this
+            // walk from crossing one at all would narrow its coverage silently. Asserted below.
+            let mut frontier_steps = 0usize;
+            let lat_step = 178.0 / f64::from(transect_count);
+            for i in 0..transect_count {
+                let lat = -89.0 + lat_step * f64::from(i); // cast-ok: loop counter, 0..transect_count
+                let lon = 0.83 * f64::from(i) - 180.0; // cast-ok: loop counter
+                for bearing_deg in [0.0, 45.0] {
+                    let frame = TangentFrame::at_latlon(lat, lon, EARTH_RADIUS_M);
+                    let bearing = m::to_radians(bearing_deg);
+                    let (east, north) = (m::cos(bearing), m::sin(bearing));
+                    let sample = |point: &SpherePoint| {
+                        let plain = bare.offset_m(point);
+                        let seabed_m = bare.land.base_elevation(point) + plain;
+                        // Whether any plate margin is in range here. Not a gate any more -- the
+                        // seamount term is evaluated either way -- but counted, so this walk can
+                        // assert it still crosses the frontier it used to exempt.
+                        let (nearest, margins) = margins_of.margins_within(
+                            point,
+                            MAX_TECTONIC_RANGE_M,
+                            EARTH_RADIUS_M,
+                        );
+                        let near_a_margin = !margins.is_empty() && nearest.is_some();
+                        (plain, peaked.offset_m(point), seabed_m, near_a_margin)
+                    };
+                    let mut previous = sample(&frame.origin);
+                    for step in 1..steps_per_transect {
+                        let t_m = step_m * f64::from(step); // cast-ok: loop counter
+                        let point = frame.local_to_sphere(t_m * east, t_m * north);
+                        let here = sample(&point);
+                        let gap = |a: f64, b: f64| if a > b { a - b } else { b - a };
+                        // **Every step is bounded, with nothing skipped.** An earlier draft of
+                        // this test skipped steps that crossed the frontier of margin range,
+                        // because on one side of it `offset_m` returned before the seamount
+                        // term ever ran -- the defect
+                        // `the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall`
+                        // now forbids. With the term hoisted out of the margin sum there is no
+                        // such frontier and no such exemption: 1,439,520 steps per arm, all asserted.
+                        // The crossings are still COUNTED, because "no exemption" is only worth
+                        // something if the walk actually reaches one.
+                        if here.3 != previous.3 {
+                            frontier_steps += 1;
+                        }
+                        let bare_step_m = gap(here.0, previous.0);
+                        let composed_step_m = gap(here.1, previous.1);
+                        let seabed_step_m = gap(here.2, previous.2);
+                        let bound_m = bare_step_m
+                            + geometric_m
+                            + per_metre_of_seabed * seabed_step_m;
+                        assert!(
+                            composed_step_m <= bound_m + 1e-6,
+                            "{label}: step {step} at lat {lat}, bearing {bearing_deg}: the \
+                             composed offset jumped {composed_step_m} m, over the {bound_m} m \
+                             bound (bare step {bare_step_m} m + geometric {geometric_m} m + \
+                             {per_metre_of_seabed} m/m x {seabed_step_m} m of seabed)"
+                        );
+                        if composed_step_m > worst_composed_m {
+                            worst_composed_m = composed_step_m;
+                        }
+                        if bound_m > worst_bound_m {
+                            worst_bound_m = bound_m;
+                        }
+                        // The seamount term on its own, against the geometric-only bound the
+                        // fixed-seabed test enforces -- reported, not asserted, because with
+                        // the seabed moving it is the window that may legitimately add more.
+                        let peak_step_m = gap(here.1 - here.0, previous.1 - previous.0);
+                        if peak_step_m > worst_peak_step_m {
+                            worst_peak_step_m = peak_step_m;
+                        }
+                        if seabed_step_m > worst_seabed_step_m {
+                            worst_seabed_step_m = seabed_step_m;
+                        }
+                        // Coverage: the window must actually be somewhere on its ramp, or this
+                        // test would be the fixed-seabed one again with extra arithmetic.
+                        let window = peak_depth_window(-here.2, params.min_depth_m);
+                        if window > 0.0 && window < 1.0 {
+                            steps_on_the_ramp += 1;
+                        }
+                        steps_walked += 1;
+                        previous = here;
+                    }
+                }
+            }
+            println!(
+                "{label}: {steps_walked} bounded steps, none skipped ({frontier_steps} of them \
+                 cross the margin-range frontier); worst composed \
+                 {worst_composed_m:.4} m against a worst \
+                 bound of {worst_bound_m:.4} m; worst seamount-only step \
+                 {worst_peak_step_m:.4} m against the {geometric_m:.4} m geometric bound; worst \
+                 seabed move {worst_seabed_step_m:.4} m at {per_metre_of_seabed:.4} m/m; \
+                 {steps_on_the_ramp} steps strictly inside the window's ramp"
+            );
+            assert!(steps_walked > 0, "{label}: no step was actually walked");
+            // **The claim that makes this test the one minor 3 asked for.** Without this the
+            // test could pass with the window saturated at every step, which is exactly the
+            // hole it exists to close.
+            assert!(
+                steps_on_the_ramp > 1_000,
+                "{label}: only {steps_on_the_ramp} steps landed on the window's ramp, so this \
+                 walk measured the saturated window the fixed-seabed test already covers"
+            );
+            // **And the walk still reaches the frontier it no longer exempts.** The
+            // reachability pin asserts its own crossings on its own fixture; this one has to
+            // assert its own, or a future change to these transects could stop crossing a
+            // margin boundary and quietly narrow what this bound is tested over -- which is
+            // exactly the coverage this test was widened to get.
+            // 10, against the 33 measured: the frontier is a handful of curves on a
+            // three-plate planet and a 20 m step lands on one only where a transect cuts it,
+            // so this is intrinsically thin coverage and the bar is set to catch "stopped
+            // crossing entirely" rather than to fit the count.
+            assert!(
+                frontier_steps > 10,
+                "{label}: only {frontier_steps} steps crossed the margin-range frontier, so this \
+                 walk no longer bounds the transition the frontier cliff lived at"
+            );
+        }
+    }
+
+    /// **A seamount is a property of the seabed, not of how near a plate boundary it happens to
+    /// be.** This is the pin for the defect the composed-continuity measurement above uncovered,
+    /// and it was written RED against the shape that had the bug.
+    ///
+    /// `Tectonics::margin_offset_m` returns `0.0` early when `margins_within` comes back empty
+    /// or `nearest` is `None` -- its own doc puts that at 69 per cent of the planet, and it
+    /// measures 77.16% on this fixture. The seamount term was originally written at the *end* of
+    /// that function, after those early returns, so on most of the world it was never evaluated,
+    /// and the boundary of the region where it was evaluated was a cliff. Measured against the
+    /// old shape, on this fixture (`plates_for(20_260_904, 12)`,
+    /// `Continentality::new(20_260_904, 6_371_000, 0.29)`, `PeakParams::volcanic()`, rustc
+    /// 1.98.0 `--release`) -- the same world `tests/wasm_exports.rs` uses:
+    ///
+    /// - **154,314 of 200,000** area-uniform points (77.16%) never reached the term.
+    /// - The field would have stood up to **7,824.3 m** at those points; **28,942** of the
+    ///   200,000 (14.5%) suppressed more than 100 m.
+    /// - Worst single-step jump in `offset_m` at a frontier crossing, over 600 transects x 2
+    ///   bearings x 3,000 steps of 20 m: **3,460.23 m** (lat -25.81, bearing 45 degrees, step
+    ///   560) -- **454x** the 7.62 m analytic bound, and larger than the 1,466 m cliff whose
+    ///   discovery is why this file has a continuity test at all.
+    /// - With the term live on both sides of a step the worst step was **6.13 m**, inside the
+    ///   bound: the field was continuous and the wiring was not. On the three-plate fixture the
+    ///   same measurement read 90.24% suppressed and a 2,749.07 m worst cliff.
+    ///
+    /// `Tectonics::offset_m` now wraps `margin_offset_m` instead of ending it, so both counts
+    /// below are zero. **This test also fixes the island population in place:** hoisting the
+    /// term multiplied the area the field can stand on by about 4.4x, which is why
+    /// `VOLCANIC_DENSITY` had to be re-surveyed down from 0.36 -- see that constant's own doc
+    /// for the re-run sweep and why the maximin margin is now near 10 sigma rather than 2.
+    #[test]
+    fn the_seamount_term_is_reachable_everywhere_no_matter_where_the_margins_fall() {
+        let params = PeakParams::volcanic();
+        let plates = crate::generation::plates_for(20_260_904, 12);
+        let land = Continentality::new(20_260_904, EARTH_RADIUS_M, 0.29);
+        let bare = Tectonics::new(plates.clone(), land, EARTH_RADIUS_M, None);
+        let peaked = Tectonics::with_peaks(plates, land, EARTH_RADIUS_M, None, Some(params));
+
+        let live = |point: &SpherePoint| {
+            let (nearest, margins) =
+                bare.plates.margins_within(point, MAX_TECTONIC_RANGE_M, EARTH_RADIUS_M);
+            !margins.is_empty() && nearest.is_some()
+        };
+
+        // 1. The term must be reachable everywhere. `peak_offset_m` answers what the field
+        //    wants to stand at a point; `offset_m` must not silently decline to ask it.
+        //    Asserted as a count of points where the field wants something and the composed
+        //    answer does not carry it, which is the observable form of "the term was skipped".
+        let points = area_uniform_spiral(200_000);
+        let mut suppressed = 0usize;
+        let mut worst_suppressed_m = 0.0f64;
+        let mut interior_points = 0usize;
+        let mut interior_islands = 0usize;
+        for point in &points {
+            let interior = !live(point);
+            if interior {
+                interior_points += 1;
+            }
+            let tectonic = bare.offset_m(point);
+            let wanted = peaked.peak_offset_m(point, bare.land.base_elevation(point) + tectonic);
+            let carried = peaked.offset_m(point);
+            // The field wants something here, so the composed answer must be exactly the sum
+            // `offset_m` is specified to return. Compared on the SUM rather than on a
+            // difference: `carried - tectonic` is not `standing` once `tectonic` is large
+            // enough to round the addition, and 1,615 of these points hit that -- an artefact
+            // of the check, not of the field.
+            if wanted > 0.0 {
+                if interior {
+                    interior_islands += 1;
+                }
+                if carried.to_bits() != (tectonic + wanted).to_bits() {
+                    suppressed += 1;
+                    if wanted > worst_suppressed_m {
+                        worst_suppressed_m = wanted;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            suppressed,
+            0,
+            "{suppressed} of {} points never reach the seamount term, suppressing up to \
+             {worst_suppressed_m} m of island",
+            points.len()
+        );
+        // And the claim is not vacuous: most of this fixture IS plate interior, and the field
+        // really does want to stand seamounts there. Without these two the assertion above
+        // would pass on a world with no plate interiors, or with no islands in them -- which is
+        // precisely the shape the old code was mistaken for.
+        assert!(
+            interior_points > points.len() / 2,
+            "only {interior_points} of {} points are plate interior; this fixture no longer \
+             exercises the early return the defect lived behind",
+            points.len()
+        );
+        assert!(
+            interior_islands > 100,
+            "the field wants a seamount at only {interior_islands} plate-interior points, so \
+             the assertion above could pass without the term being reachable there"
+        );
+
+        // 2. And therefore no step ACROSS THE FRONTIER is a cliff -- the 3,460.23 m jump the
+        //    old shape produced is now unreproducible. Only frontier-crossing steps are
+        //    asserted here, because the ones with margins on both sides are
+        //    `no_composed_step_exceeds_the_geometric_and_window_bounds_together`'s job, and it
+        //    walks a different fixture. The bound is the same three-part one that test derives:
+        //    the bare field's own measured step, plus the geometric term, plus the window's ramp
+        //    allowance against the measured seabed move. `crossings` is asserted non-zero, or
+        //    this half would be an empty loop.
+        let step_m = 20.0;
+        let geometric_m = params.height_m * 1.5 / params.reach_m * step_m;
+        let span_m = params.min_depth_m - params.min_depth_m * 0.8;
+        let per_metre_of_seabed = params.height_m * 1.5 / span_m;
+        let mut crossings = 0usize;
+        for i in 0..600 {
+            let lat = -89.0 + (178.0 / 600.0) * f64::from(i); // cast-ok: loop counter, 0..600
+            let lon = 0.611 * f64::from(i) - 180.0; // cast-ok: loop counter
+            for bearing_deg in [0.0, 45.0] {
+                let frame = TangentFrame::at_latlon(lat, lon, EARTH_RADIUS_M);
+                let bearing = m::to_radians(bearing_deg);
+                let (east, north) = (m::cos(bearing), m::sin(bearing));
+                let sample = |point: &SpherePoint| {
+                    let plain = bare.offset_m(point);
+                    (
+                        peaked.offset_m(point),
+                        bare.land.base_elevation(point) + plain,
+                        plain,
+                        live(point),
+                    )
+                };
+                let mut previous = sample(&frame.origin);
+                for step in 1..3_000 {
+                    let t_m = step_m * f64::from(step); // cast-ok: loop counter
+                    let point = frame.local_to_sphere(t_m * east, t_m * north);
+                    let here = sample(&point);
+                    if here.3 == previous.3 {
+                        previous = here;
+                        continue;
+                    }
+                    crossings += 1;
+                    let gap = |a: f64, b: f64| if a > b { a - b } else { b - a };
+                    let bound_m = gap(here.2, previous.2)
+                        + geometric_m
+                        + per_metre_of_seabed * gap(here.1, previous.1);
+                    let delta_m = gap(here.0, previous.0);
+                    assert!(
+                        delta_m <= bound_m + 1e-6,
+                        "step {step} at lat {lat}, bearing {bearing_deg}: offset_m jumped \
+                         {delta_m} m across the margin-range frontier, over a {bound_m} m \
+                         bound ({} m -> {} m)",
+                        previous.0,
+                        here.0
+                    );
+                    previous = here;
+                }
+            }
+        }
+        assert!(crossings > 0, "no transect crossed the frontier, so nothing was asserted");
+    }
+
+    #[test]
+    fn ordinary_sampling_finds_a_peak_without_needing_a_summit_hit() {
+        // Reachability by ordinary sampling, which the deterministic tests above cannot
+        // show on their own: the term must actually turn up for a caller sampling
+        // `peak_offset_m` at everyday points, not merely be computable at an enumerated
+        // summit. **3,000 m, not the original 1,000** -- this bound went slack when
+        // `reach_m`/`lattice_m` was recalibrated for island area (Task 1, round 4): the same
+        // 2,000-point spiral that used to find 1,000-and-a-bit now finds 4,582.6 m, because
+        // a larger reach-to-lattice ratio makes ordinary sampling land near a peak far more
+        // often. 3,000 m keeps real margin below that measured figure without needing a
+        // near-summit hit, so it stays robust to an unrelated change in the field or the
+        // sampling pattern while still meaning something.
+        let tectonics = peaked(PeakParams { density: 1.0, ..PeakParams::volcanic() });
+        let mut tallest = 0.0f64;
+        for i in 0..2_000 {
+            let point = SpherePoint::from_latlon(
+                -70.0 + 0.07 * f64::from(i), // cast-ok: loop counter, 0..2000
+                0.37 * f64::from(i) - 180.0, // cast-ok: loop counter
+            );
+            let got = tectonics.peak_offset_m(&point, -4600.0);
+            if got > tallest {
+                tallest = got;
+            }
+        }
+        assert!(tallest > 3_000.0, "ordinary sampling found nothing over 3,000 m: {tallest} m");
+    }
+
+    #[test]
+    fn the_peak_field_never_answers_a_nan_or_an_infinity() {
+        let params = PeakParams { density: 1.0, ..PeakParams::volcanic() };
+        let tectonics = peaked(params);
+        for i in 0..3_000 {
+            let point = SpherePoint::from_latlon(-89.0 + 0.06 * f64::from(i), 0.0); // cast-ok: loop counter
+            for seabed in [-4600.0, -150.0, 0.0, 700.0, f64::NAN] {
+                let got = tectonics.peak_offset_m(&point, seabed);
+                assert!(got.is_finite(), "peak_offset_m({seabed}) = {got}");
+                assert!(got >= 0.0, "a peak may only ever raise ground, got {got}");
+                // Minor 3 from the third review round: "pin both ends" was only half done --
+                // nothing asserted the field could never exceed its own ceiling. `height_m`
+                // is what a node exactly on the reference shell, at share 1, with a
+                // saturated window reaches; nothing can stand taller than that.
+                assert!(
+                    got <= params.height_m,
+                    "peak_offset_m({seabed}) = {got}, above its own height_m ({})",
+                    params.height_m
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn height_m_as_infinity_does_not_escape_as_infinity() {
+        // Minor 4 from the second review round: `height_m = +-INFINITY` used to escape
+        // `peak_offset_m` as `+INFINITY` rather than being refused with the other cheap
+        // guards.
+        let tectonics = peaked(PeakParams { height_m: f64::INFINITY, ..PeakParams::volcanic() });
+        let got = tectonics.peak_offset_m(&SpherePoint::from_latlon(10.0, 20.0), -4600.0);
+        assert!(got.is_finite(), "an infinite height_m escaped as {got}");
+        let tectonics = peaked(PeakParams { height_m: f64::NEG_INFINITY, ..PeakParams::volcanic() });
+        let got = tectonics.peak_offset_m(&SpherePoint::from_latlon(10.0, 20.0), -4600.0);
+        assert!(got.is_finite(), "a negative-infinite height_m escaped as {got}");
+    }
+
+    #[test]
+    fn the_six_salts_in_this_file_are_pairwise_distinct() {
+        // A future copy-paste collision fails here rather than silently correlating two
+        // fields, in the style of `continentality.rs:863-864`.
+        let salts = [
+            ("STRUCTURE_SALT", STRUCTURE_SALT),
+            ("SEGMENTATION_SALT", SEGMENTATION_SALT),
+            ("MARGIN_WARP_SALT", MARGIN_WARP_SALT),
+            ("PEAK_SALT", PEAK_SALT),
+            ("PEAK_JITTER_SALT", PEAK_JITTER_SALT),
+            ("PEAK_HEIGHT_SALT", PEAK_HEIGHT_SALT),
+        ];
+        for i in 0..salts.len() {
+            for j in (i + 1)..salts.len() {
+                assert_ne!(
+                    salts[i].1, salts[j].1,
+                    "{} and {} collide",
+                    salts[i].0, salts[j].0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_six_salts_are_also_distinct_from_the_five_cross_module_ones_the_doc_names() {
+        // Minor 4 from the third review round: the doc comment beside `PEAK_SALT` names five
+        // cross-module salts a new one must differ from, but the guard above only checked
+        // the six in this file. `continentality.rs:863-864` asserts its own cross-module
+        // case explicitly rather than folding it into a loop over a single module's
+        // constants; this does the same for the three peak salts against all five.
+        use crate::continentality::{COAST_NOISE_SALT, NOISE_SALT};
+        let peak_salts = [
+            ("PEAK_SALT", PEAK_SALT),
+            ("PEAK_JITTER_SALT", PEAK_JITTER_SALT),
+            ("PEAK_HEIGHT_SALT", PEAK_HEIGHT_SALT),
+        ];
+        // `detail.rs`'s three are bare literals there (`0x5EABED`, `0x6011E1`, `0x6011E2`),
+        // not named constants -- named here instead, the same way
+        // `fractal_only_moves_the_amplitude` names `0x5EABED` as a literal rather than
+        // inventing a constant `detail.rs` itself does not have.
+        let cross_module = [
+            ("continentality::NOISE_SALT", NOISE_SALT),
+            ("continentality::COAST_NOISE_SALT", COAST_NOISE_SALT),
+            ("detail.rs's Detail::with_gully noise salt", 0x5EABEDu64),
+            ("detail.rs's Detail::with_gully jitter_x salt", 0x6011E1u64),
+            ("detail.rs's Detail::with_gully jitter_y salt", 0x6011E2u64),
+        ];
+        for (peak_name, peak_salt) in peak_salts {
+            for (other_name, other_salt) in cross_module {
+                assert_ne!(peak_salt, other_salt, "{peak_name} and {other_name} collide");
+            }
+        }
+    }
+
+    /// The plan's first global constraint, and the whole point of this task: an absent
+    /// peak block must produce a BIT-identical world, not merely a close one. `None` and
+    /// `Some(PeakParams::canonical())` (density `0.0`) both take the early-return arms in
+    /// `offset_m`'s new `match`, so neither should differ from `Tectonics::new` by so much
+    /// as a sign bit.
+    #[test]
+    fn the_tectonic_offset_is_bit_identical_without_a_peak_block() {
+        let land = Continentality::new(4242, EARTH_RADIUS_M, LAND_FRACTION);
+        let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        let with_none =
+            Tectonics::with_peaks(three_plate_set(), land, EARTH_RADIUS_M, Some(TectonicParams::canonical()), None);
+        let inert = Tectonics::with_peaks(
+            three_plate_set(),
+            land,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams::canonical()),
+        );
+        for i in 0..4_000 {
+            let point = SpherePoint::from_latlon(
+                -89.0 + 0.0445 * f64::from(i), // cast-ok: loop counter, 0..4000
+                0.19 * f64::from(i) - 180.0,   // cast-ok: loop counter, 0..4000
+            );
+            let want = bare.offset_m(&point);
+            assert_eq!(with_none.offset_m(&point).to_bits(), want.to_bits(), "None at probe {i}");
+            assert_eq!(inert.offset_m(&point).to_bits(), want.to_bits(), "canonical at probe {i}");
+        }
+    }
+
+    /// The other half of the plan's claim: an active peak block must raise ground and never
+    /// lower it. `offset_m` only ever adds `standing` when it is strictly positive, so this
+    /// is really a test that the wiring in `offset_m` did not accidentally let a peak
+    /// subtract or that the seabed it is evaluated against was assembled wrong.
+    #[test]
+    fn a_peak_block_raises_the_offset_where_the_water_is_deep() {
+        let land = Continentality::new(4242, EARTH_RADIUS_M, LAND_FRACTION);
+        let bare = Tectonics::new(three_plate_set(), land, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        let peaked = Tectonics::with_peaks(
+            three_plate_set(),
+            land,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams { density: 0.35, ..PeakParams::volcanic() }),
+        );
+        let mut raised = 0usize;
+        let mut lowered = 0usize;
+        for i in 0..6_000 {
+            let point = SpherePoint::from_latlon(
+                -89.0 + 0.0297 * f64::from(i), // cast-ok: loop counter, 0..6000
+                0.41 * f64::from(i) - 180.0,   // cast-ok: loop counter, 0..6000
+            );
+            let before = bare.offset_m(&point);
+            let after = peaked.offset_m(&point);
+            if after > before {
+                raised += 1;
+            }
+            if after < before {
+                lowered += 1;
+            }
+        }
+        assert!(raised > 0, "a peak block raised nothing over 6,000 probes");
+        assert_eq!(lowered, 0, "a peak may only ever raise ground; {lowered} probes fell");
+    }
+
+    /// Task 2's own addition to the bit-identity claim above: not just that the INERT path
+    /// produces the same number, but that it does not pay for `base_elevation`'s fBm to get
+    /// there. Can't observe a call directly, so this follows
+    /// `continentality.rs`'s `the_coast_lattice_is_not_read_on_the_canonical_path`
+    /// (`continentality.rs:774`): swap in a `Continentality` whose `base_elevation` answers
+    /// differently -- here, a different `land_fraction`, which moves `shore`/`spread` in
+    /// calibration but leaves `world_seed` (and therefore every `Noise` field `Tectonics`
+    /// salts from it) untouched -- and show the inert path does not notice, while an active
+    /// one does.
+    ///
+    /// **Widened by the final whole-branch review's minor 9 to all five inert cases.** It
+    /// originally covered `None` and a zero-density `Some`, which were the only two
+    /// `offset_m` gated on; a block inert because of `height_m`, `reach_m` or a violated
+    /// `reach_m <= lattice_m` still paid the fBm. `Tectonics::with_peaks` now decides
+    /// inertness once, through `peak_block_is_live`, and the loop below is what keeps it
+    /// decided: five blocks, each inert for a different reason, each required to be blind to
+    /// the land under it *and* bit-identical to no block at all.
+    #[test]
+    fn the_inert_peak_path_does_not_read_base_elevation() {
+        let plates = three_plate_set();
+        let land_a = Continentality::new(4242, EARTH_RADIUS_M, 0.2);
+        let land_b = Continentality::new(4242, EARTH_RADIUS_M, 0.8);
+
+        let points = area_uniform_spiral(1_000);
+
+        // Inert (no block at all): the two lands must not be distinguishable through
+        // `offset_m`, because `base_elevation` is never reached to tell them apart.
+        let none_a = Tectonics::new(plates.clone(), land_a, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        let none_b = Tectonics::new(plates.clone(), land_b, EARTH_RADIUS_M, Some(TectonicParams::canonical()));
+        for (index, point) in points.iter().enumerate() {
+            assert_eq!(
+                none_a.offset_m(point).to_bits(),
+                none_b.offset_m(point).to_bits(),
+                "inert path differed at spiral index {index}"
+            );
+        }
+
+        // Inert with a `Some` block, on **every** reason a block can be inert, not only the
+        // zero-density one. Minor 9 of the final whole-branch review: `offset_m` gated on
+        // `density == 0.0` alone, so a block made inert any other way still paid
+        // `base_elevation`'s fBm at every sample. `with_peaks` now decides all five through
+        // `peak_block_is_live`, and this is what holds it there -- each of these five blocks
+        // must be as blind to the land under it as no block at all is.
+        //
+        // `height_m: 0.0` is admissible on purpose (`WB_MIN_PEAK_HEIGHT_M` is 0.0) and so is
+        // the whole of `PeakParams::canonical()`; the other three are blocks the ABI would
+        // refuse but the engine must still survive, since `Tectonics::with_peaks` is public
+        // and `peak_offset_m`'s guards are the engine's own, not the boundary's.
+        let inert_blocks: [(&str, PeakParams); 5] = [
+            ("density 0.0", PeakParams::canonical()),
+            ("height_m 0.0", PeakParams { height_m: 0.0, ..PeakParams::volcanic() }),
+            ("height_m NaN", PeakParams { height_m: f64::NAN, ..PeakParams::volcanic() }),
+            ("reach_m 0.0", PeakParams { reach_m: 0.0, ..PeakParams::volcanic() }),
+            (
+                "reach_m past lattice_m",
+                PeakParams {
+                    reach_m: VOLCANIC_LATTICE_M + 1.0,
+                    ..PeakParams::volcanic()
+                },
+            ),
+        ];
+        for (label, block) in inert_blocks {
+            let zero_a = Tectonics::with_peaks(
+                plates.clone(),
+                land_a,
+                EARTH_RADIUS_M,
+                Some(TectonicParams::canonical()),
+                Some(block),
+            );
+            let zero_b = Tectonics::with_peaks(
+                plates.clone(),
+                land_b,
+                EARTH_RADIUS_M,
+                Some(TectonicParams::canonical()),
+                Some(block),
+            );
+            for (index, point) in points.iter().enumerate() {
+                assert_eq!(
+                    zero_a.offset_m(point).to_bits(),
+                    zero_b.offset_m(point).to_bits(),
+                    "{label}: inert path differed at spiral index {index}"
+                );
+                // And the same block is bit-identical to no block at all, which is what says
+                // the two lands agree because nothing was read rather than because something
+                // was read consistently.
+                assert_eq!(
+                    zero_a.offset_m(point).to_bits(),
+                    none_a.offset_m(point).to_bits(),
+                    "{label}: differed from an absent block at spiral index {index}"
+                );
+            }
+        }
+
+        // And the difference between the two lands is real: on an ACTIVE peak block, the
+        // same swap does move the answer at some of these points, so the two assertions
+        // above pass because the inert path never reads `base_elevation`, not because
+        // swapping `land_fraction` is inert.
+        let active_a = Tectonics::with_peaks(
+            plates.clone(),
+            land_a,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams { density: 1.0, ..PeakParams::volcanic() }),
+        );
+        let active_b = Tectonics::with_peaks(
+            plates,
+            land_b,
+            EARTH_RADIUS_M,
+            Some(TectonicParams::canonical()),
+            Some(PeakParams { density: 1.0, ..PeakParams::volcanic() }),
+        );
+        let moved = points
+            .iter()
+            .filter(|p| active_a.offset_m(p).to_bits() != active_b.offset_m(p).to_bits())
+            .count();
+        assert!(moved > 10, "the land_fraction swap moved only {moved} of 1,000 active points");
     }
 }

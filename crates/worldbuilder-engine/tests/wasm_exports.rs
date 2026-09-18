@@ -31,7 +31,7 @@ use worldbuilder_engine::surface::{FeatureInput, Surface};
 // `MAX_TECTONIC_RANGE_M - COASTAL_UPLIFT_OFFSET_M` compares the boundary against the engine
 // and not against a third copy of two numbers.
 use worldbuilder_engine::tectonics::{
-    COASTAL_UPLIFT_OFFSET_M, ISLAND_ARC_OFFSET_M, MAX_TECTONIC_RANGE_M,
+    COASTAL_UPLIFT_OFFSET_M, ISLAND_ARC_OFFSET_M, MAX_TECTONIC_RANGE_M, PeakParams,
 };
 use worldbuilder_engine::wasm::*;
 use worldbuilder_engine::{World, GENERATOR_VERSION};
@@ -901,26 +901,28 @@ fn the_surface_is_built_once_per_world_and_never_per_sample() {
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    // **The constructor is `Surface::with_gully`, and EVERY name is asserted.** The one call
-    // has now moved twice -- to `with_coast` when the coast channel opened, and to `with_gully`
-    // when the gully channel did. Each time the previous widest door delegates to the new one
-    // with a `None`, so the canonical path is the same code either way and the widest door is
-    // the only one that reaches the constructor. Counting only the current name would let a
-    // second, older-shaped build reappear beside it without this noticing; counting all three is
-    // the property this test actually means, which is that `wasm.rs` builds a `Surface` exactly
-    // once, anywhere, by any name.
-    let builds = code.matches("Surface::with_gully").count();
-    let legacy =
-        code.matches("Surface::with_coast").count() + code.matches("Surface::new").count();
+    // **The constructor is `Surface::with_peaks`, and EVERY name is asserted.** The one call
+    // has now moved three times -- to `with_coast` when the coast channel opened, to
+    // `with_gully` when the gully channel did, and to `with_peaks` when the peak channel did.
+    // Each time the previous widest door delegates to the new one with a `None`, so the
+    // canonical path is the same code either way and the widest door is the only one that
+    // reaches the constructor. Counting only the current name would let a second, older-shaped
+    // build reappear beside it without this noticing; counting all four is the property this
+    // test actually means, which is that `wasm.rs` builds a `Surface` exactly once, anywhere,
+    // by any name.
+    let builds = code.matches("Surface::with_peaks").count();
+    let legacy = code.matches("Surface::with_gully").count()
+        + code.matches("Surface::with_coast").count()
+        + code.matches("Surface::new").count();
     assert_eq!(
         builds, 1,
         "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs ~10^3x"
     );
     assert_eq!(legacy, 0, "a second Surface constructor appeared beside the one in build_world");
-    let before = &code[..code.find("Surface::with_gully").expect("one build")];
+    let before = &code[..code.find("Surface::with_peaks").expect("one build")];
     assert!(
         before.contains("fn wb_world_new"),
-        "the one Surface::with_gully is not inside the wb_world_new family"
+        "the one Surface::with_peaks is not inside the wb_world_new family"
     );
 }
 
@@ -4854,6 +4856,660 @@ fn a_wrongly_sized_or_misaligned_gully_buffer_is_refused_rather_than_read() {
     assert_eq!(wb_gully_check(record.as_ptr(), 11), WB_ERR_BUFFER);
     // The canonical pair.
     assert_eq!(wb_gully_check(core::ptr::null(), 0), WB_OK);
+}
+
+// ---------------------------------------------------------------- the peak channel
+//
+// The sixth block channel, `wb_world_new_peak`, `wb_peak_preset` and `wb_peak_check`. Task 4
+// built this door -- `PeakParams`' five fields, the two presets, the per-field domains and
+// `peak_is_admissible` -- deliberately testable rather than tested. This is the coast
+// channel's shape once more: a preset read across the boundary rather than transcribed, a
+// per-field sweep past both ends of the documented domain, a checker held to the constructor
+// over the identical population, and a canonical-record bit-identity claim.
+//
+// **This channel carries one JOINT invariant, not three.** `reach_m <= lattice_m` is what
+// makes `peak_of_cell`'s 3x3x3 candidate scan complete; see `peak_is_admissible`'s own doc for
+// the derivation and the 1,466 m cliff an earlier draft measured without it. It gets its own
+// sweep below, separate from the per-field one, for the same reason
+// `the_finest_octave_frequency_is_bounded_as_a_product_no_per_field_ceiling_can_see` is
+// separate from `coast_field_sweep`: a per-field-only validator cannot see a bound that spans
+// two fields.
+
+/// A handful of points spanning land, shallow water, and deep ocean where a seamount really
+/// does stand. `peak_offset_m` gates on seabed depth before it ever touches the lattice, so a
+/// probe set confined to one of those regimes would exercise only one branch of the window --
+/// the on-land, harbour and shallow points below are expected to read back exactly the ground
+/// the other five channels already produce there, and the last three carry an island at the
+/// shipped preset.
+///
+/// **The last three are DERIVED, and the three they replaced were wrong.** The final
+/// whole-branch review found that the points this set used to label "open ocean"
+/// (`-71.5, 38`; `3, -107.5`; `-73, -132`) read -206.53 m, -280.01 m and -156.65 m of
+/// `wb_structural_m` on this fixture -- all shallower than `peak_depth_window`'s 2,000 m onset,
+/// so no seamount could stand at any of them at *any* density, and the comment claiming they
+/// were "where a seamount can actually stand" was false. (`0, 0` is -1,140.95 m and is kept,
+/// relabelled, as the shallow-open-water case.)
+///
+/// Replaced by a derivation rather than another guess: a 0.25-degree global scan over
+/// latitudes -80..80 (1,152,721 sites) compared `plain_world()` against `PeakParams::volcanic()`
+/// through `wb_structural_m`; **47,592 sites rise by more than 500 m**, and these are three of
+/// the largest movers, chosen to sit in three different oceans rather than three points on one
+/// plateau. Measured on this host (rustc 1.98.0, `--release`):
+///
+/// | probe | plain | peaked | rise |
+/// |---|---|---|---|
+/// | 13.5, -91.5 | -3,446.10 m | +4,327.06 m | 7,773.16 m |
+/// | -43.75, 46.0 | -4,600.00 m | +3,066.62 m | 7,666.62 m |
+/// | -55.0, -52.5 | -3,870.40 m | +3,801.43 m | 7,671.84 m |
+///
+/// **The scan was re-run at the re-surveyed density and one probe had to move.** The derivation
+/// was first made at `density: 0.36`; the final fix wave found the seamount term suppressed
+/// over 77% of the planet, fixed it, and re-surveyed the density to 0.14. `peak_of_cell` gates
+/// on `hash >= density`, so LOWERING the density strictly removes candidate cells -- and the
+/// cell under the old third probe (`-45.5, -147.25`) was one of them: that site now reads
+/// -2,585.72 m instead of +3,788.68 m. The first two are unchanged to the last bit, which is
+/// the monotonicity argument working rather than luck. `-55.0, -52.5` replaces the lost one.
+/// (The differing-site count went UP, 27,069 to 47,592, at less than half the density: that is
+/// the suppression fix, and it is a second independent witness to it.)
+///
+/// All three surface -- the field puts land above the datum in open ocean at each of them, which
+/// is the spec's central claim and is what `sample_peak` now watches rather than only finiteness.
+const PEAK_PROBES: &[(f64, f64)] = &[
+    (12.0, 34.0),        // the witnessed point -- on land, above datum
+    (-18.25, 121.5),     // the harbour -- shallow, coastal
+    (0.0, 0.0),          // open water, but shallower than the depth window's onset
+    (13.5, -91.5),       // deep ocean, and an island stands here at the shipped preset
+    (-43.75, 46.0),      // ditto, a second ocean
+    (-55.0, -52.5),      // ditto, a third
+];
+
+/// Which [`PEAK_PROBES`] entries carry an island at `PeakParams::volcanic()`, by index. Named
+/// once, so the table in that constant's doc and the sampling test below cannot drift apart.
+const PEAK_ISLAND_PROBES: &[usize] = &[3, 4, 5];
+
+/// A named preset, read across the boundary exactly as the viewer reads it. **Nothing in this
+/// file writes a peak value down**, canonical or preset: both come from `wb_peak_preset`, so
+/// `tectonics.rs` stays the one place the numbers live.
+fn peak_preset_record(selector: u32) -> [f64; WB_PEAK_STRIDE] {
+    let mut record = [0.0; WB_PEAK_STRIDE];
+    let status = wb_peak_preset(selector, record.as_mut_ptr(), WB_PEAK_STRIDE as u32);
+    assert_eq!(status, WB_OK, "peak preset {selector} must be readable");
+    record
+}
+
+fn canonical_peak_record() -> [f64; WB_PEAK_STRIDE] {
+    peak_preset_record(WB_PEAK_CANONICAL)
+}
+
+fn world_with_peak(record: &[f64; WB_PEAK_STRIDE]) -> u32 {
+    wb_world_new_peak(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        record.as_ptr(),
+        WB_PEAK_STRIDE as u32,
+    )
+}
+
+/// Build the world a peak record asks for, walk every probe point on both `elevation_m` and
+/// `structural_m`, and free it.
+///
+/// **This is where an abort would happen, and that is the point of calling it.**
+/// `Tectonics::with_peaks` merely stores the block; it is `peak_offset_m` that reads it, once
+/// per sample, and it is wired into `Tectonics::offset_m` -- which both `elevation_m` (via
+/// `base_elevation + offset_m`) and the shelf that `structural_m` reads from feed off. A term
+/// that landed in one and not the other would be a seam, the same reason
+/// `sample_coast` probes both.
+fn sample_peak(record: &[f64; WB_PEAK_STRIDE], label: &str) {
+    let handle = world_with_peak(record);
+    assert_ne!(handle, 0, "accepted record refused by the constructor: {label} {record:?}");
+    for (lat, lon) in PEAK_PROBES {
+        let height = wb_elevation_m(handle, *lat, *lon, RES_M);
+        assert!(
+            height.is_finite(),
+            "accepted record produced a non-finite elevation at ({lat}, {lon}): {label} {record:?}",
+        );
+        let structural = wb_structural_m(handle, *lat, *lon);
+        assert!(
+            structural.is_finite(),
+            "accepted record gave a non-finite structural at ({lat}, {lon}): {label} {record:?}",
+        );
+    }
+    assert_eq!(wb_world_free(handle), WB_OK);
+}
+
+/// **The one test in this file that would fail if `decode_peak` swapped two same-domain slots.**
+///
+/// The final whole-branch review's blocker: `height_m` and `min_depth_m` share the domain
+/// `[0, 1e5]`, so swapping slots 0 and 3 in `wasm.rs`'s `decode_peak` passed every other peak
+/// test here. The per-field sweep, the joint-invariant sweep and the checker-versus-constructor
+/// test all only ask which records are *admissible*, and a swapped pair is admissible both ways
+/// round. The canonical-record bit-identity test passes vacuously, because a canonical record is
+/// inert whichever way it is read. And `sample_peak` asserted only finiteness. Under the swap,
+/// `PeakParams::volcanic()` would decode as `height_m: 2,500, min_depth_m: 8,000` -- a block
+/// needing 8 km of water under a node to open its window, which nothing on this world has, so it
+/// would raise nothing anywhere and every one of those tests would stay green. (Under the swap
+/// the density slot is untouched, so this holds at the re-surveyed `density: 0.14` exactly as it
+/// held at 0.36.)
+///
+/// So this asserts what a wire-format regression actually costs: a *sampled elevation*, not a
+/// decoded struct. The three island probes are the derived ones in `PEAK_PROBES`'s own table;
+/// the bars below are loose against the measurements there (7,773 / 7,667 / 7,672 m of rise, to
+/// +4,327 / +3,067 / +3,801 m of ground) because the point is the mechanism, not the digit --
+/// they are far above zero and far below the 8,000 m `height_m` ceiling, so neither an inert
+/// field nor a runaway one can pass.
+///
+/// The complementary half of the pin -- that each slot lands in its own field, by construction
+/// rather than by witness -- is `wasm.rs`'s own `peak_wire_format_tests`, which can see
+/// `decode_peak` directly and so catches *every* permutation rather than the ones that happen to
+/// move this world.
+#[test]
+fn an_island_the_probes_can_actually_see_moves_the_ground_a_swapped_slot_would_not() {
+    let plain = plain_world();
+    assert_ne!(plain, 0);
+    let volcanic = peak_preset_record(WB_PEAK_VOLCANIC);
+    let peaked = world_with_peak(&volcanic);
+    assert_ne!(peaked, 0, "the shipped volcanic preset was refused: {volcanic:?}");
+
+    let mut surfaced = 0usize;
+    for index in PEAK_ISLAND_PROBES {
+        let (lat, lon) = PEAK_PROBES[*index];
+        let before = wb_structural_m(plain, lat, lon);
+        let after = wb_structural_m(peaked, lat, lon);
+        assert!(
+            before < -2_500.0,
+            "probe {index} ({lat}, {lon}) is not deep ocean on the plain world: {before} m -- a \
+             probe shallower than the depth window's onset can never carry a seamount"
+        );
+        assert!(
+            after - before > 5_000.0,
+            "probe {index} ({lat}, {lon}) rose only {} m ({before} m -> {after} m); the shipped \
+             preset must stand an island here, and a decoder that read two slots the wrong way \
+             round would raise nothing at all",
+            after - before
+        );
+        assert!(
+            after > 0.0,
+            "probe {index} ({lat}, {lon}) stayed under water at {after} m; this field's whole \
+             claim is land above the datum in open ocean"
+        );
+        assert!(
+            after - before < volcanic[0],
+            "probe {index} ({lat}, {lon}) rose {} m, above the block's own height_m ({})",
+            after - before,
+            volcanic[0]
+        );
+        surfaced += 1;
+    }
+    assert_eq!(surfaced, PEAK_ISLAND_PROBES.len(), "not every island probe was checked");
+
+    // And the other three probes do NOT move, bit for bit: the depth window really is what
+    // decides, so this test passes because the preset stands islands in deep water and not
+    // because it raises the whole planet.
+    for (index, (lat, lon)) in PEAK_PROBES.iter().enumerate() {
+        if PEAK_ISLAND_PROBES.contains(&index) {
+            continue;
+        }
+        assert_eq!(
+            wb_structural_m(plain, *lat, *lon).to_bits(),
+            wb_structural_m(peaked, *lat, *lon).to_bits(),
+            "probe {index} ({lat}, {lon}) is on land or inside the depth window's onset and must \
+             read back exactly the ground the other five channels produce there"
+        );
+    }
+
+    assert_eq!(wb_world_free(peaked), WB_OK);
+    assert_eq!(wb_world_free(plain), WB_OK);
+}
+
+/// The documented domain of each peak field, by its index in `WB_PEAK_STRIDE`'s order. Written
+/// as the constants rather than as numbers, for the reason `coast_field_domain` gives: a test
+/// that restates a bound cannot notice it moving.
+fn peak_field_domain(field: usize) -> (f64, f64) {
+    match field {
+        0 => (WB_MIN_PEAK_HEIGHT_M, WB_MAX_PEAK_HEIGHT_M),
+        1 => (WB_MIN_PEAK_DENSITY, WB_MAX_PEAK_DENSITY),
+        2 => (WB_MIN_PEAK_REACH_M, WB_MAX_PEAK_REACH_M),
+        3 => (WB_MIN_PEAK_MIN_DEPTH_M, WB_MAX_PEAK_MIN_DEPTH_M),
+        4 => (WB_MIN_PEAK_LATTICE_M, WB_MAX_PEAK_LATTICE_M),
+        _ => unreachable!("WB_PEAK_STRIDE is 5"),
+    }
+}
+
+/// `reach_m`'s field index, named because two tests below have to treat it (and `lattice_m`)
+/// differently from the other three fields: the two of them share the one joint invariant this
+/// channel enforces.
+const PEAK_REACH_FIELD: usize = 2;
+/// `lattice_m`'s field index. See `PEAK_REACH_FIELD`.
+const PEAK_LATTICE_FIELD: usize = 4;
+
+/// Every value one peak field is driven through: `HOSTILE` in full, both documented bounds and
+/// the values immediately either side of each, and a ladder across the admissible interval --
+/// geometric where the domain spans orders of magnitude (`reach_m` and `lattice_m` both run up
+/// to `WB_MAX_WORLD_RADIUS_M`) and linear where it does not. Same construction as
+/// `coast_field_sweep` and `gully_field_sweep`, for the same stated reason: every hazard this
+/// project has found was a band, not a cliff.
+fn peak_field_sweep(field: usize) -> Vec<f64> {
+    let (low, high) = peak_field_domain(field);
+    let mut values: Vec<f64> = HOSTILE.to_vec();
+    for bound in [low, high] {
+        values.extend_from_slice(&[
+            bound,
+            bound - bound.abs() * 1.0e-12,
+            bound + bound.abs() * 1.0e-12,
+            bound * 0.5,
+            bound * 2.0,
+            -bound,
+        ]);
+    }
+    let steps = 24;
+    let geometric = low > 0.0 && high / low >= 1.0e3;
+    for step in 0..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        values.push(if geometric { low * (high / low).powf(t) } else { low + (high - low) * t });
+    }
+    values
+}
+
+/// The two bases every peak field is swept around. `PeakParams::canonical()` carries
+/// `density: 0.0`, so `Tectonics::offset_m` returns before `peak_offset_m` is ever called with
+/// it -- around canonical, every OTHER field is swept with the term switched off entirely, the
+/// same shape `coast_sweep_bases` and `gully_sweep_bases` document for their own channels.
+/// Around `volcanic()` the term is live.
+fn peak_sweep_bases() -> [(&'static str, [f64; WB_PEAK_STRIDE]); 2] {
+    [("canonical", canonical_peak_record()), ("volcanic", peak_preset_record(WB_PEAK_VOLCANIC))]
+}
+
+fn swept_peak_records() -> Vec<(String, [f64; WB_PEAK_STRIDE])> {
+    let mut out = Vec::new();
+    for (base_name, base) in peak_sweep_bases() {
+        for field in 0..WB_PEAK_STRIDE {
+            for value in peak_field_sweep(field) {
+                let mut record = base;
+                record[field] = value;
+                out.push((format!("{base_name} + peak field {field} = {value:e}"), record));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_peak_field_swept_across_its_whole_range_and_beyond_never_aborts() {
+    let records = swept_peak_records();
+    // A sweep that refused everything would pass a "nothing aborted" assertion trivially, and
+    // one that accepted everything would prove the validator absent. Both counts are asserted.
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for (label, record) in &records {
+        if wb_peak_check(record.as_ptr(), WB_PEAK_STRIDE as u32) == WB_OK {
+            sample_peak(record, label);
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert_eq!(accepted + refused, records.len());
+    assert!(
+        accepted >= 50,
+        "only {accepted} records were accepted; the sweep is not exercising the engine",
+    );
+    assert!(
+        refused >= 50,
+        "only {refused} records were refused; the validator is not doing its job",
+    );
+}
+
+#[test]
+fn the_peak_checker_and_the_constructor_agree_on_every_swept_record() {
+    // Two validators would be two chances to disagree, and the disagreement that matters is
+    // "the checker said yes and the constructor refused" -- Task 4's review found they share
+    // one `read_peak -> decode_peak` path so they structurally cannot disagree; this is what
+    // stops a later edit breaking that.
+    for (label, record) in swept_peak_records() {
+        let status = wb_peak_check(record.as_ptr(), WB_PEAK_STRIDE as u32);
+        let handle = world_with_peak(&record);
+        if status == WB_OK {
+            assert_ne!(handle, 0, "checker accepted, constructor refused: {label}");
+            assert_eq!(wb_world_free(handle), WB_OK);
+        } else {
+            assert_eq!(
+                status, WB_ERR_PARAM,
+                "a well-formed buffer refused for a buffer reason: {label}",
+            );
+            assert_eq!(handle, 0, "checker refused, constructor built: {label}");
+        }
+    }
+}
+
+/// A base record safe to sweep one field across its WHOLE per-field domain without the
+/// `reach_m <= lattice_m` joint invariant refusing values that are perfectly fine on their own
+/// field's terms. `volcanic()` everywhere except where the field under test is one half of
+/// that invariant, in which case the OTHER half is pinned to the most permissive value the
+/// invariant allows it -- `lattice_m` at its own ceiling (which is `reach_m`'s ceiling too) so
+/// every admissible `reach_m` stays covered, or `reach_m` at its own floor (well below
+/// `lattice_m`'s floor) so every admissible `lattice_m` stays covered.
+fn peak_domain_sweep_base(field: usize) -> [f64; WB_PEAK_STRIDE] {
+    let mut record = peak_preset_record(WB_PEAK_VOLCANIC);
+    match field {
+        f if f == PEAK_REACH_FIELD => record[PEAK_LATTICE_FIELD] = WB_MAX_PEAK_LATTICE_M,
+        f if f == PEAK_LATTICE_FIELD => record[PEAK_REACH_FIELD] = WB_MIN_PEAK_REACH_M,
+        _ => {}
+    }
+    record
+}
+
+#[test]
+fn every_peak_field_is_accepted_just_inside_its_bound_and_refused_just_outside_it() {
+    for field in 0..WB_PEAK_STRIDE {
+        let (low, high) = peak_field_domain(field);
+        let base = peak_domain_sweep_base(field);
+
+        // A tiny step relative to the bound's own magnitude, with a floor for a bound of
+        // exactly zero -- `bound.abs() * epsilon` is zero there and would not move the value
+        // at all.
+        let step = |bound: f64| -> f64 {
+            if bound == 0.0 { 1.0e-300 } else { bound.abs() * 1.0e-9 }
+        };
+
+        for (bound, name) in [(low, "low"), (high, "high")] {
+            let delta = step(bound);
+            let inside = if name == "low" { bound + delta } else { bound - delta };
+            let outside = if name == "low" { bound - delta } else { bound + delta };
+
+            let mut at_bound = base;
+            at_bound[field] = bound;
+            assert_eq!(
+                wb_peak_check(at_bound.as_ptr(), WB_PEAK_STRIDE as u32),
+                WB_OK,
+                "field {field}'s own {name} bound ({bound}) must be admitted -- the boundary \
+                 is inclusive",
+            );
+
+            let mut just_inside = base;
+            just_inside[field] = inside;
+            assert_eq!(
+                wb_peak_check(just_inside.as_ptr(), WB_PEAK_STRIDE as u32),
+                WB_OK,
+                "field {field} at {inside}, just inside its {name} bound ({bound}), was refused",
+            );
+
+            let mut just_outside = base;
+            just_outside[field] = outside;
+            assert_eq!(
+                wb_peak_check(just_outside.as_ptr(), WB_PEAK_STRIDE as u32),
+                WB_ERR_PARAM,
+                "field {field} at {outside}, just outside its {name} bound ({bound}), was admitted",
+            );
+            assert_eq!(world_with_peak(&just_outside), 0);
+        }
+
+        // The non-finite cases, pinned rather than assumed: `within()` compares against a NaN
+        // and every comparison is false, so NaN leaves by the refusing door on every field, and
+        // both infinities are refused by whichever side of the domain they overshoot.
+        for hostile in [f64::NAN, -f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut record = base;
+            record[field] = hostile;
+            assert_eq!(
+                wb_peak_check(record.as_ptr(), WB_PEAK_STRIDE as u32),
+                WB_ERR_PARAM,
+                "field {field} at {hostile} must be refused",
+            );
+            assert_eq!(world_with_peak(&record), 0);
+        }
+    }
+}
+
+#[test]
+fn the_reach_lattice_joint_invariant_is_swept_not_spot_checked() {
+    // `reach_m <= lattice_m` is what makes `peak_of_cell`'s 3x3x3 candidate scan complete; see
+    // `peak_is_admissible`'s own doc for the derivation and the 1,466 m cliff an earlier draft
+    // measured without it.
+    let base = peak_preset_record(WB_PEAK_VOLCANIC);
+
+    // Equal values, at several magnitudes: the boundary is inclusive, because at exact
+    // equality a candidate's `fraction` is 1.0 and `smooth(1.0 - 1.0)` is already zero -- no
+    // discontinuity for the inclusive boundary to paper over.
+    for value in [WB_MIN_PEAK_LATTICE_M, base[PEAK_LATTICE_FIELD], WB_MAX_PEAK_LATTICE_M] {
+        let mut record = base;
+        record[PEAK_REACH_FIELD] = value;
+        record[PEAK_LATTICE_FIELD] = value;
+        assert_eq!(
+            wb_peak_check(record.as_ptr(), WB_PEAK_STRIDE as u32),
+            WB_OK,
+            "reach_m == lattice_m == {value} must be admitted -- the boundary is inclusive",
+        );
+        let handle = world_with_peak(&record);
+        assert_ne!(handle, 0, "the constructor must agree: reach_m == lattice_m == {value}");
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+
+    // `reach_m` one ULP above `lattice_m`: refused, and by nothing but the joint invariant --
+    // both fields individually sit deep inside their own per-field domains at this magnitude.
+    let mut one_ulp_over = base;
+    let lattice_here = base[PEAK_LATTICE_FIELD];
+    one_ulp_over[PEAK_LATTICE_FIELD] = lattice_here;
+    one_ulp_over[PEAK_REACH_FIELD] = f64::from_bits(lattice_here.to_bits() + 1);
+    assert!(one_ulp_over[PEAK_REACH_FIELD] > one_ulp_over[PEAK_LATTICE_FIELD]);
+    assert_eq!(
+        wb_peak_check(one_ulp_over.as_ptr(), WB_PEAK_STRIDE as u32),
+        WB_ERR_PARAM,
+        "reach_m one ULP above lattice_m must be refused",
+    );
+    assert_eq!(world_with_peak(&one_ulp_over), 0);
+
+    // The premise, asserted rather than assumed: `reach_m` at its own ceiling and `lattice_m`
+    // at its own floor are each admissible ALONE -- with the other field parked at whatever
+    // makes the invariant trivially true alongside it -- so the combination below is refused
+    // for the joint invariant and for nothing else.
+    let mut reach_alone = base;
+    reach_alone[PEAK_REACH_FIELD] = WB_MAX_PEAK_REACH_M;
+    reach_alone[PEAK_LATTICE_FIELD] = WB_MAX_PEAK_LATTICE_M;
+    assert_eq!(
+        wb_peak_check(reach_alone.as_ptr(), WB_PEAK_STRIDE as u32),
+        WB_OK,
+        "reach_m at its own ceiling must be admissible on its own",
+    );
+    let mut lattice_alone = base;
+    lattice_alone[PEAK_LATTICE_FIELD] = WB_MIN_PEAK_LATTICE_M;
+    lattice_alone[PEAK_REACH_FIELD] = WB_MIN_PEAK_REACH_M;
+    assert_eq!(
+        wb_peak_check(lattice_alone.as_ptr(), WB_PEAK_STRIDE as u32),
+        WB_OK,
+        "lattice_m at its own floor must be admissible on its own",
+    );
+
+    // And jointly: `reach_m` at its ceiling with `lattice_m` at its floor is refused, though
+    // each is individually inside its own per-field domain -- the one case a per-field-only
+    // validator would let through.
+    let mut jointly_invalid = base;
+    jointly_invalid[PEAK_REACH_FIELD] = WB_MAX_PEAK_REACH_M;
+    jointly_invalid[PEAK_LATTICE_FIELD] = WB_MIN_PEAK_LATTICE_M;
+    assert_eq!(
+        wb_peak_check(jointly_invalid.as_ptr(), WB_PEAK_STRIDE as u32),
+        WB_ERR_PARAM,
+        "reach_m at its ceiling with lattice_m at its floor must be refused jointly",
+    );
+    assert_eq!(world_with_peak(&jointly_invalid), 0);
+}
+
+#[test]
+fn wb_peak_preset_hands_back_the_engines_own_blocks_and_the_canonical_one_is_inert() {
+    // The preset export exists so no host transcribes a peak default or preset. It must
+    // therefore BE them, in `WB_PEAK_STRIDE` order, compared against the module's own values
+    // rather than against a third copy written here.
+    for (selector, expected) in
+        [(WB_PEAK_CANONICAL, PeakParams::canonical()), (WB_PEAK_VOLCANIC, PeakParams::volcanic())]
+    {
+        let record = peak_preset_record(selector);
+        assert_eq!(record[0].to_bits(), expected.height_m.to_bits());
+        assert_eq!(record[1].to_bits(), expected.density.to_bits());
+        assert_eq!(record[2].to_bits(), expected.reach_m.to_bits());
+        assert_eq!(record[3].to_bits(), expected.min_depth_m.to_bits());
+        assert_eq!(record[4].to_bits(), expected.lattice_m.to_bits());
+        // Every preset must be a record this channel would accept. A preset the checker
+        // refuses is a button that produces a blank viewer.
+        assert_eq!(wb_peak_check(record.as_ptr(), WB_PEAK_STRIDE as u32), WB_OK);
+    }
+
+    // Canonical is inert by construction: `density` exactly 0.0, not merely small.
+    let canonical = canonical_peak_record();
+    assert_eq!(canonical[1].to_bits(), 0.0f64.to_bits(), "canonical density must be exactly 0.0");
+
+    // `volcanic()` moves exactly one field off canonical -- `density` -- which is what makes
+    // the panel's single slider an honest presentation of it.
+    let volcanic = peak_preset_record(WB_PEAK_VOLCANIC);
+    let differing =
+        (0..WB_PEAK_STRIDE).filter(|i| canonical[*i].to_bits() != volcanic[*i].to_bits()).count();
+    assert_eq!(differing, 1, "volcanic() moves {differing} fields, not one");
+    assert_ne!(volcanic[1].to_bits(), canonical[1].to_bits(), "and the one field is density");
+
+    // An unknown selector is a parameter error and writes nothing.
+    let mut out = [7.0; WB_PEAK_STRIDE];
+    for unknown in [2u32, 3, u32::MAX] {
+        assert_eq!(wb_peak_preset(unknown, out.as_mut_ptr(), WB_PEAK_STRIDE as u32), WB_ERR_PARAM);
+    }
+    assert!(out.iter().all(|v| *v == 7.0), "a refused selector wrote into the buffer");
+
+    // A bad buffer for the OUT parameter.
+    let mut buf = [0.0; WB_PEAK_STRIDE];
+    assert_eq!(wb_peak_preset(WB_PEAK_CANONICAL, core::ptr::null_mut(), WB_PEAK_STRIDE as u32), WB_ERR_BUFFER);
+    assert_eq!(wb_peak_preset(WB_PEAK_CANONICAL, buf.as_mut_ptr(), 0), WB_ERR_BUFFER);
+    assert_eq!(wb_peak_preset(WB_PEAK_CANONICAL, buf.as_mut_ptr(), 4), WB_ERR_BUFFER);
+}
+
+#[test]
+fn the_peak_channel_default_path_and_a_canonical_record_are_the_untouched_world() {
+    // RULING 1, and the one property this task is not allowed to break: a null pointer with a
+    // length of zero is `None`, not `Some(canonical())`, and the world it builds is
+    // BIT-IDENTICAL to the world `wb_world_new` builds -- the ABI-level statement of the
+    // plan's first global constraint. Unlike the tectonic channel, this is not a vacuous
+    // pairing: `Tectonics::offset_m` matches on `self.peaks` itself and takes the identical
+    // early-return arm for `None` and for `Some(canonical())` (`density == 0.0`), so `None`
+    // and an explicit canonical record reach the same answer by two different routes and the
+    // second comparison below is a real one.
+    let plain = plain_world();
+    let defaulted = wb_world_new_peak(
+        SEED,
+        RADIUS_M,
+        PLATES,
+        LAND,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+        core::ptr::null(),
+        0,
+    );
+    let explicit_canonical = world_with_peak(&canonical_peak_record());
+    assert_ne!(plain, 0);
+    assert_ne!(defaulted, 0);
+    assert_ne!(explicit_canonical, 0);
+
+    // A 4-degree global grid, not just the handful of named probes above -- the claim is that
+    // NOTHING moved, anywhere, and a small fixed probe set cannot rule out a term that only
+    // shows up somewhere else on the planet.
+    let mut compared = 0usize;
+    let mut latitude = -88.0;
+    while latitude <= 88.0 {
+        let mut longitude = -180.0;
+        while longitude < 180.0 {
+            let expected = wb_elevation_m(plain, latitude, longitude, RES_M);
+            assert_eq!(
+                wb_elevation_m(defaulted, latitude, longitude, RES_M).to_bits(),
+                expected.to_bits(),
+                "the null peak path moved the world at ({latitude}, {longitude})",
+            );
+            assert_eq!(
+                wb_elevation_m(explicit_canonical, latitude, longitude, RES_M).to_bits(),
+                expected.to_bits(),
+                "an explicit canonical peak record moved the world at ({latitude}, {longitude})",
+            );
+            let expected_structural = wb_structural_m(plain, latitude, longitude);
+            assert_eq!(
+                wb_structural_m(defaulted, latitude, longitude).to_bits(),
+                expected_structural.to_bits(),
+            );
+            assert_eq!(
+                wb_structural_m(explicit_canonical, latitude, longitude).to_bits(),
+                expected_structural.to_bits(),
+            );
+            compared += 1;
+            longitude += 4.0;
+        }
+        latitude += 4.0;
+    }
+    assert!(compared > 4_000, "the grid comparison did not run: only {compared} points");
+
+    for handle in [plain, defaulted, explicit_canonical] {
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+}
+
+#[test]
+fn a_wrongly_sized_or_misaligned_peak_buffer_is_refused_rather_than_read() {
+    let record = canonical_peak_record();
+    // Null with a length is a caller mistake, not a request for canonical.
+    assert_eq!(wb_peak_check(core::ptr::null(), WB_PEAK_STRIDE as u32), WB_ERR_BUFFER);
+    // Non-null with a length of zero is a host that computed a length wrong.
+    assert_eq!(wb_peak_check(record.as_ptr(), 0), WB_ERR_BUFFER);
+    // Null with zero IS canonical.
+    assert_eq!(wb_peak_check(core::ptr::null(), 0), WB_OK);
+    for length in [1u32, 4, 6, 10, u32::MAX] {
+        assert_eq!(
+            wb_peak_check(record.as_ptr(), length),
+            WB_ERR_BUFFER,
+            "a {length}-word peak record is not a peak record",
+        );
+    }
+    // Misaligned: one byte into an f64-sized buffer.
+    let mut bytes = [0u8; WB_PEAK_STRIDE * 8 + 8];
+    let misaligned = unsafe { bytes.as_mut_ptr().add(1) } as *const f64; // cast-ok: a deliberately misaligned pointer for the alignment check
+    assert_eq!(wb_peak_check(misaligned, WB_PEAK_STRIDE as u32), WB_ERR_BUFFER);
+
+    // The constructor refuses the same things, with a handle of 0 rather than a status.
+    for (ptr, len) in
+        [(core::ptr::null(), WB_PEAK_STRIDE as u32), (record.as_ptr(), 0u32), (record.as_ptr(), 3u32)]
+    {
+        assert_eq!(
+            wb_world_new_peak(
+                SEED,
+                RADIUS_M,
+                PLATES,
+                LAND,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                ptr,
+                len,
+            ),
+            0,
+        );
+    }
 }
 
 // ============================================================ the climate channel
