@@ -6354,17 +6354,15 @@ fn the_index_cache_is_freed_with_its_bake_rather_than_outliving_it() {
 }
 
 #[test]
-fn a_second_radius_rebuilds_the_cached_index_rather_than_reusing_the_first() {
-    // The cache is keyed by bake id, and the index it holds is built at the radius of the world
-    // the query came through -- which is NOT the record's, because the record carries none. So
-    // the same bake asked through a second world of a different size must be ANSWERED, off an
-    // index rebuilt for that size, and not served the first world's grid.
+fn a_bake_asked_through_a_world_of_another_radius_is_refused_and_its_cache_survives() {
+    // Plan 2a pinned the opposite here: the same bake asked through a world of half the radius
+    // was ANSWERED, off an index rebuilt for that radius, with a note that the answer was wrong
+    // and the rebuild only removed "one inconsistency of two". Plan 2b's fingerprint removes the
+    // other: the record now names its ground, so the pairing is refused with its own status.
     //
-    // What this does NOT assert is that the answer is right. It is not: the record's levels,
-    // extents and shore bands were measured on the first planet, and no rebuild can undo that.
-    // The rebuild removes one inconsistency of two. Ruling Q-20 is the real defence -- the
-    // viewer hands out the handle and the bake id together -- and this test exists so that a
-    // radius change is a rebuild rather than a silent reuse of the wrong grid.
+    // A radius change is the weak case -- the same-radius test below is the one that matters --
+    // but it is kept for what it adds: the refusal must not corrupt the cached slot the first
+    // world's index lives in, so going back to the first world answers exactly what it did.
     let (world, bake, record) = baked_plain_world();
     let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
     let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
@@ -6376,12 +6374,10 @@ fn a_second_radius_rebuilds_the_cached_index_rather_than_reusing_the_first() {
     let smaller = wb_world_new(SEED, RADIUS_M / 2.0, PLATES, LAND, core::ptr::null(), 0);
     assert_ne!(smaller, 0);
     let mut other = [UNWRITTEN; WB_WATER_STRIDE];
-    assert_eq!(wb_water_at(smaller, bake, lat, lon, other.as_mut_ptr(), stride), WB_OK,
-               "a second radius must rebuild and answer, not refuse");
-    assert!(other.iter().any(|w| *w != UNWRITTEN), "the second radius wrote nothing");
+    assert_eq!(wb_water_at(smaller, bake, lat, lon, other.as_mut_ptr(), stride), WB_ERR_WRONG_WORLD,
+               "a bake from another radius must be refused, not answered");
+    assert!(other.iter().all(|w| *w == UNWRITTEN), "a refusal wrote: {other:?}");
 
-    // And back to the first world: still answered, and still the same answer, so the rebuild is
-    // a rebuild and not a corruption of whatever slot the first index lived in.
     let mut again = [UNWRITTEN; WB_WATER_STRIDE];
     assert_eq!(wb_water_at(world, bake, lat, lon, again.as_mut_ptr(), stride), WB_OK);
     assert_eq!(first.map(f64::to_bits), again.map(f64::to_bits));
@@ -6389,4 +6385,124 @@ fn a_second_radius_rebuilds_the_cached_index_rather_than_reusing_the_first() {
     assert_eq!(wb_hydro_free(bake), WB_OK);
     wb_world_free(smaller);
     wb_world_free(world);
+}
+
+/// The ground words 56-59 of a bake made on `world` through the shipped door, as the 16-byte
+/// digest -- so a test can prove a native `Surface` is the same world a handle names, rather
+/// than assume two constructors agree.
+fn baked_ground(world: u32) -> [u8; 16] {
+    let params = hydro_params(12_000);
+    let mut bake: u32 = 0;
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut bake), WB_OK); // cast-ok: a 12-word buffer
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    worldbuilder_engine::hydrology::record::decode(&words).expect("decodes").ground
+}
+
+#[test]
+fn a_bake_is_refused_by_another_world_of_the_same_radius_at_every_door() {
+    // **The hole plan 2b's Task 2 closes.** Before it, a bake asked through a different world of
+    // the SAME radius answered that world's ground against this record's levels -- a wrong
+    // answer, not an error -- and no radius check could have caught it. Two such worlds: one
+    // differs in its seed, the other only in its relief block, the change a structure-only
+    // fingerprint could not see (Ruling C-7).
+    //
+    // The same record's words are also read by the native door (`record::decode_for`) against
+    // each world's own digest, and the two doors must agree: wasm refuses exactly where native
+    // refuses. The Python door cannot be handed a foreign bake at all -- it bakes and answers on
+    // one surface in one call -- so it has no mismatch to agree about; see `bindings.rs`.
+    use worldbuilder_engine::detail::ReliefParams;
+    use worldbuilder_engine::hydrology::record::{decode_for, ground_fingerprint, ReadError};
+
+    let (world, bake, record) = baked_plain_world();
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    // Asked through its own world first, so the index is cached for this bake at this radius and
+    // every foreign world below reaches the WARM slot -- the path that needs no rebuild, and so
+    // the one a check made only when building would miss.
+    let mut warm = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, warm.as_mut_ptr(), stride), WB_OK);
+
+    let other_seed = wb_world_new(SEED + 1, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    let other_relief = world_with_relief(&hills_record());
+    assert_ne!(other_seed, 0);
+    assert_ne!(other_relief, 0);
+    // Both built at RADIUS_M, the plain world's own radius: the same-radius case is the point.
+    let foreign = [
+        ("seed", other_seed, Surface::new(SEED + 1, RADIUS_M, 12, LAND, None, None, None)),
+        ("relief", other_relief,
+         Surface::new(SEED, RADIUS_M, 12, LAND, None, Some(ReliefParams::hills()), None)),
+    ];
+    for (name, handle, surface) in &foreign {
+        // The native surface is the world the handle names: a bake through the handle carries
+        // exactly the native digest.
+        let digest = ground_fingerprint(surface);
+        assert_eq!(baked_ground(*handle), digest, "{name}: native and wasm worlds differ");
+
+        let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+        assert_eq!(wb_water_at(*handle, bake, lat, lon, out.as_mut_ptr(), stride), WB_ERR_WRONG_WORLD,
+                   "{name}: wb_water_at answered a record from another world");
+        assert!(out.iter().all(|w| *w == UNWRITTEN), "{name}: a refusal wrote: {out:?}");
+        let mut tile = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+        assert_eq!(
+            wb_water_tile(*handle, bake, lat, lon, lat - 0.1, lon + 0.1, 2, 2, tile.as_mut_ptr(), 4 * stride),
+            WB_ERR_WRONG_WORLD,
+            "{name}: wb_water_tile answered a record from another world",
+        );
+        assert!(tile.iter().all(|w| *w == UNWRITTEN), "{name}: a refused tile was written");
+
+        assert!(matches!(decode_for(&words, &digest), Err(ReadError::Foreign(_))),
+                "{name}: the native door must refuse what the wasm door refuses");
+    }
+
+    // Its own world is accepted by both doors, or the refusals above prove nothing.
+    let home = ground_fingerprint(&Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None));
+    assert_eq!(decode_for(&words, &home).as_ref(), Ok(&record));
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, out.as_mut_ptr(), stride), WB_OK);
+    assert_eq!(out.map(f64::to_bits), warm.map(f64::to_bits), "the refusals disturbed the cache");
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(other_relief);
+    wb_world_free(other_seed);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_world_recreated_from_the_same_parameters_still_answers_its_bake() {
+    // Ruling Q-20, which plan 2a left for this fingerprint to honour: handles are never reused
+    // and the studio re-creates one on every slider change, so a check keyed on the handle would
+    // refuse every held bake after every re-creation, bit-identical ones included. The check is
+    // keyed on the ground, so the old handle freed and a new one made from the same parameters
+    // must answer exactly as the old one did -- through both exports.
+    let (world, bake, record) = baked_plain_world();
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+    let mut before = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, before.as_mut_ptr(), stride), WB_OK);
+    let mut tile_before = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+    assert_eq!(wb_water_tile(world, bake, lat, lon, lat - 0.1, lon + 0.1, 2, 2,
+                             tile_before.as_mut_ptr(), 4 * stride), WB_OK);
+
+    assert_eq!(wb_world_free(world), WB_OK);
+    let recreated = plain_world();
+    assert_ne!(recreated, world, "handles are never reused, which is the whole point");
+
+    let mut after = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(recreated, bake, lat, lon, after.as_mut_ptr(), stride), WB_OK,
+               "a bit-identical re-creation must still answer its bake");
+    assert_eq!(before.map(f64::to_bits), after.map(f64::to_bits));
+    let mut tile_after = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+    assert_eq!(wb_water_tile(recreated, bake, lat, lon, lat - 0.1, lon + 0.1, 2, 2,
+                             tile_after.as_mut_ptr(), 4 * stride), WB_OK);
+    assert_eq!(tile_before.map(f64::to_bits), tile_after.map(f64::to_bits));
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(recreated);
 }

@@ -48,6 +48,12 @@ export const WB_ERR_PARAM = 5;
 export const WB_ERR_GRAPH = 6;
 /// `wasm.rs`'s seventh status: `wb_hydro_bake` refused a world whose routing did not drain.
 export const WB_ERR_DRAINAGE = 7;
+/// `wasm.rs`'s eighth status (plan 2b, Task 2): `wb_water_at` or `wb_water_tile` was handed a
+/// bake made from other ground than the world it was asked through -- the record's ground
+/// fingerprint and the world's differ. Nothing is malformed; the pairing is wrong, and the fix is
+/// to re-bake on this world, not to change a parameter. Named here so it reads as that sentence
+/// and not as a bare `8` a caller would swallow as "engine unavailable".
+export const WB_ERR_WRONG_WORLD = 8;
 
 const STATUS_NAMES = {
   0: "WB_OK",
@@ -58,6 +64,7 @@ const STATUS_NAMES = {
   5: "WB_ERR_PARAM",
   6: "WB_ERR_GRAPH",
   7: "WB_ERR_DRAINAGE",
+  8: "WB_ERR_WRONG_WORLD",
 };
 
 /// Feature record codes, mirrored from `wasm.rs`. A record is eight f64.
@@ -814,9 +821,10 @@ export class Engine {
   /// caller owns it and must pass the whole object to `hydroFree` when it is done.
   ///
   /// **The handle is in there on purpose** (Ruling Q-20): a query needs the record *and* the
-  /// ground it was baked against, and issuing the two together is what keeps a call site from
-  /// pairing this bake with a different world. See `waterAt` for why that pairing cannot be
-  /// checked instead.
+  /// ground it was baked against, and issuing the two together keeps a call site from pairing
+  /// this bake with a different world. Since plan 2b the engine also *checks* the pairing -- see
+  /// `waterAt` -- so a drifted pair is refused rather than answered; carrying the handle is what
+  /// keeps it from drifting in the first place.
   ///
   /// This exists because `waterAt` and `waterTile` query a *held* bake -- Ruling Q-2 builds the
   /// spatial index on the first query and caches it beside the record, and freeing the bake
@@ -869,7 +877,8 @@ export class Engine {
       held = true;
       // Ruling Q-20: the handle travels WITH the id. `waterAt` and `waterTile` need both, and
       // the two are only correct together; returning them as one object is what stops a call
-      // site pairing this bake with a different world by hand.
+      // site pairing this bake with a different world by hand (and the engine refuses one that
+      // does, with WB_ERR_WRONG_WORLD).
       return { id, handle, words: record };
     } finally {
       // The bake is freed on the way out ONLY if this call is failing: on success the id is
@@ -905,15 +914,16 @@ export class Engine {
   /// **`fresh` is not here**, and is not missing: it belongs to the body or reach the ids name,
   /// so read it out of `bake.words`. See `WB_WATER_STRIDE`.
   ///
-  /// **Why the bake carries its own handle (Ruling Q-20).** The answer needs a record *and* a
-  /// ground, and nothing yet checks that one belongs to the other: a record queried against another
-  /// planet answers that planet's ground against this record's levels, which is a wrong answer
-  /// and not an error. Neither side can catch it -- handle equality is not the test, because
-  /// handles are never reused and the studio re-creates one on every slider change, so it would
-  /// invalidate every held bake including the bit-identical ones. Content is the right key, and
-  /// that is stage 2b's fingerprint -- which a schema 7 record now carries (`hydroSummary`'s
-  /// `ground`) and nothing compares yet. Until it does, the defence is that the pair is **issued
-  /// together and passed together**, so there is no call site at which the two can drift apart.
+  /// **Why the bake carries its own handle (Ruling Q-20), and what the engine checks.** The
+  /// answer needs a record *and* a ground. Handle equality is not the test of whether one belongs
+  /// to the other -- handles are never reused and the studio re-creates one on every slider
+  /// change, so it would invalidate every held bake including the bit-identical ones. Content is
+  /// the right key, and since plan 2b the engine uses it: the record's ground fingerprint
+  /// (`hydroSummary`'s `ground`) is compared with the world's, and a bake asked through a world
+  /// of other ground -- even one of the same radius -- throws `WB_ERR_WRONG_WORLD` instead of
+  /// answering that world's ground against this record's levels. A world re-created from the same
+  /// parameters has the same ground and is accepted. The pair is still **issued together and
+  /// passed together**, so a correct caller never meets the refusal.
   waterAt({ bake, latitudeDeg, longitudeDeg }) {
     const bytes = WB_WATER_STRIDE * 8;
     const ptr = this.exports.wb_alloc(bytes);
@@ -993,7 +1003,8 @@ export class Engine {
   /// millimetre-rounded samples of the ground the bake read -- `Surface::bake_ground_m`,
   /// elevation with detail and without the water layer (`record.rs::ground_fingerprint`) --
   /// four little-endian bytes a word, returned as 32 lowercase hex digits in byte order. It is
-  /// the record's tie to the world it was baked from; nothing compares it yet.
+  /// the record's tie to the world it was baked from, and `waterAt`/`waterTile` refuse a world
+  /// whose own fingerprint differs (`WB_ERR_WRONG_WORLD`).
   ///
   /// **`pondsFound` counts hollows in the corridors the search sampled, not in every corridor.**
   /// Ruling S-12 skips a coarse segment whose midpoint is drier than the wetness floor or inside

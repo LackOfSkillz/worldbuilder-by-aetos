@@ -294,6 +294,7 @@ fn worldbuilder_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Same reasoning as UnknownSubstrateError above: a bake refusal has to be a type Python
     // can catch by name, not merely a ValueError indistinguishable from any other.
     m.add("HydroBakeError", m.py().get_type_bound::<bindings::HydroBakeError>())?;
+    m.add("WrongWorldError", m.py().get_type_bound::<bindings::WrongWorldError>())?;
     Ok(())
 }
 

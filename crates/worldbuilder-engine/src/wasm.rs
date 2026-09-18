@@ -151,6 +151,17 @@ pub const WB_ERR_PARAM: u32 = 5;
 pub const WB_ERR_GRAPH: u32 = 6;
 /// `hydrology::bake` refused: the routing broke "everything drains" (`HydroError::Drainage`).
 pub const WB_ERR_DRAINAGE: u32 = 7;
+/// **The bake belongs to another world** (Ruling C-3): [`wb_water_at`] or [`wb_water_tile`] was
+/// handed a world whose ground is not the ground the bake was made from -- the record's ground
+/// fingerprint (header words 56-59) and the world's differ (`record::check_ground`). Nothing is
+/// malformed: the world and the bake are each fine, and the pairing is wrong.
+///
+/// **Its own status and not [`WB_ERR_PARAM`], deliberately.** "Your parameters are malformed"
+/// and "that record belongs to another world" call for different fixes -- one is a bug in the
+/// call, the other a stale bake the host should re-make -- and the islands studio showed that a
+/// refusal a host cannot name gets swallowed as "engine unavailable". Before plan 2b this pairing
+/// was *answered*, off the other world's ground against this record's levels.
+pub const WB_ERR_WRONG_WORLD: u32 = 8;
 
 /// The ceiling on `node_count` for [`wb_erosion_run`]. Not the planetary target -- slice 1p
 /// measured a 20,000,000-node graph at 1.45 GB of arrays and 2.16 GB peak RSS, which does
@@ -1209,21 +1220,67 @@ thread_local! {
     /// a bake independently. An index built at one radius is refused for a query at another and
     /// rebuilt.
     ///
-    /// **That rebuild buys less than it looks like it does.** It makes the index consistent with
-    /// the *query's* radius; it does **not** make the answer right. The record's levels, extents
-    /// and `shore_reach_m` were all measured on whatever planet the bake ran against, and the
-    /// record header carries no radius to compare against -- so a bake queried through a
-    /// differently-sized world is still a wrong answer, and the rebuild only removes the
-    /// additional inconsistency of asking the wrong grid on top of it. A real check needs a
-    /// record that names its world, which is a layout change this plan may not make. Ruling
-    /// Q-20: the defence is that the viewer issues the handle and the bake id **together** and
-    /// passes them together, so no call site can drift them apart.
+    /// **The world is checked before the index is trusted (plan 2b, Task 2).** A record carries
+    /// the fingerprint of the ground it was baked from, and [`with_water_query`] refuses a world
+    /// whose own fingerprint ([`WORLD_GROUND`]) differs, with [`WB_ERR_WRONG_WORLD`]. Plan 2a
+    /// could only rebuild the index for a second radius and note the answer was still wrong;
+    /// that pairing is now refused before any index is built or read. The radius key stays as a
+    /// cheap second guard -- two grounds that fingerprint alike at different radii would have to
+    /// collide sixteen bytes of BLAKE2b -- and Ruling Q-20's "issue the handle and the id
+    /// together" is still how the viewer passes them, now as convenience rather than defence.
     ///
     /// The decoded record is held too, rather than re-decoded per query: `water_at` needs both,
     /// and decoding a whole record for every sample of a tile is exactly the cost this exists
     /// to avoid.
     static HYDRO_QUERY: RefCell<Vec<Option<(f64, hydrology::HydroRecord, water::index::WaterIndex)>>> =
         const { RefCell::new(Vec::new()) };
+
+    /// **Where the fingerprint verdict is held: with the world handle** (Ruling C-10). Slot
+    /// `handle - 1` holds `record::ground_fingerprint` of that world's surface, computed the
+    /// first time the world meets a bake in [`wb_water_at`] or [`wb_water_tile`] and never
+    /// again. A query then decides "is this bake of this world" by comparing sixteen bytes, once
+    /// per export call -- once per tile, never once per pixel.
+    ///
+    /// **Why the world and not the bake.** The digest is a property of the world alone, the
+    /// world behind a handle is never mutated, and a handle is never reused -- so a slot here
+    /// cannot go stale, and nothing needs to invalidate it but [`wb_world_free`]. Held on the
+    /// bake instead, the verdict would be keyed by a handle it had to remember, a bake paired
+    /// with a new handle would have to re-sample it, and a *refused* pairing would re-sample on
+    /// every call unless refusals were cached too. Held here, each world is sampled once however
+    /// many bakes it meets, and a refusal costs what an acceptance does.
+    ///
+    /// **Ruling Q-20 is honoured by content, not identity.** The studio re-creates its world on
+    /// every slider change; a bit-identical re-creation gets a new handle and a new slot, samples
+    /// the same ground, holds the same digest, and is accepted. Nothing here compares handles.
+    ///
+    /// Filled lazily rather than at `wb_world_new`, so a world that never meets a bake -- most
+    /// of them, in a session of slider drags -- pays nothing.
+    static WORLD_GROUND: RefCell<Vec<Option<[u8; hydrology::record::GROUND_BYTES]>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// `handle`'s ground fingerprint, from [`WORLD_GROUND`] or computed and held there on the first
+/// ask. The caller has already borrowed the live world `handle` names, and passes its surface:
+/// that is what bounds `handle - 1` below `WORLDS.len()`, so the `resize_with` cannot be talked
+/// into a four-billion-entry allocation by a hostile handle.
+///
+/// Computed through `record::ground_fingerprint`, the one function the bake signs its record
+/// with -- never a second implementation, or the two sides could drift and every record would
+/// look foreign.
+fn world_ground(handle: u32, surface: &Surface) -> [u8; hydrology::record::GROUND_BYTES] {
+    let slot = match handle.checked_sub(1).and_then(|raw| usize::try_from(raw).ok()) {
+        Some(slot) => slot,
+        // Unreachable for a handle `with_world` accepted; computed and not held rather than
+        // assumed, because an `extern "C"` path does not get to assume.
+        None => return hydrology::record::ground_fingerprint(surface),
+    };
+    WORLD_GROUND.with(|cell| {
+        let mut table = cell.borrow_mut();
+        if table.len() <= slot {
+            table.resize_with(slot + 1, || None);
+        }
+        *table[slot].get_or_insert_with(|| hydrology::record::ground_fingerprint(surface))
+    })
 }
 
 /// Install a world built by Rust and hand back its handle, or 0 if the table is full.
@@ -3380,6 +3437,14 @@ pub extern "C" fn wb_world_free(handle: u32) -> u32 {
         match table.get_mut(index) {
             Some(slot) if slot.is_some() => {
                 *slot = None;
+                // The world's held fingerprint goes with it. Not for correctness -- a handle is
+                // never reused, so nothing could read the slot again -- but so a session that
+                // re-creates its world on every drag does not keep sixteen bytes per world.
+                WORLD_GROUND.with(|ground| {
+                    if let Some(held) = ground.borrow_mut().get_mut(index) {
+                        *held = None;
+                    }
+                });
                 WB_OK
             }
             _ => WB_ERR_HANDLE,
@@ -4755,17 +4820,26 @@ fn with_ground<T>(
 }
 
 /// Borrow the decoded record and the [`water::index::WaterIndex`] for bake `id` at `radius_m`,
-/// building and caching them on the first ask (Ruling Q-2).
+/// building and caching them on the first ask (Ruling Q-2) -- **if the bake is of the world
+/// whose fingerprint is `world_ground`** (plan 2b, Task 2).
 ///
 /// `Err` carries the status the caller should return: `WB_ERR_HANDLE` for a bake id that names
 /// nothing live -- checked against `HYDRO` itself, *before* the cache, so a freed bake can never
-/// be answered out of a stale index -- and `WB_ERR_PARAM` for a held record that will not decode
-/// or a radius that is not a length. Neither arm panics; a decode failure of a record this
-/// module itself encoded should be unreachable, and is a status rather than an `expect` because
-/// "unreachable" is not a thing an `extern "C"` boundary is allowed to assume.
+/// be answered out of a stale index -- `WB_ERR_WRONG_WORLD` for a record whose ground is not
+/// `world_ground` (`record::check_ground`), and `WB_ERR_PARAM` for a held record that will not
+/// decode or a radius that is not a length. None of them panics; a decode failure of a record
+/// this module itself encoded should be unreachable, and is a status rather than an `expect`
+/// because "unreachable" is not a thing an `extern "C"` boundary is allowed to assume.
+///
+/// **The verdict is decided here, once per call, and `action` never sees a foreign record.** The
+/// caller passes the world's digest from [`world_ground`] (held with the handle, sampled once per
+/// world); this compares sixteen bytes before `action` runs. `wb_water_tile`'s `action` is the
+/// whole per-pixel loop, so the check is paid once per tile. A foreign record is refused before
+/// an index is built for it, so a mismatch costs a decode and not a grid.
 fn with_water_query<T>(
     id: u32,
     radius_m: f64,
+    world_ground: &[u8; hydrology::record::GROUND_BYTES],
     action: impl FnOnce(&hydrology::HydroRecord, &water::index::WaterIndex) -> T,
 ) -> Result<T, u32> {
     if !(radius_m.is_finite() && radius_m > 0.0) {
@@ -4805,19 +4879,28 @@ fn with_water_query<T>(
         if !usable {
             let built = HYDRO.with(|hydro| {
                 let held = hydro.borrow();
-                let words = held.get(slot).and_then(|held| held.as_ref())?;
-                let record = hydrology::record::decode(words)?;
+                let words = held.get(slot).and_then(|held| held.as_ref()).ok_or(WB_ERR_PARAM)?;
+                // `decode_for`, not `decode`: a record of another world is refused before an
+                // index is built over it.
+                let record = match hydrology::record::decode_for(words, world_ground) {
+                    Ok(record) => record,
+                    Err(hydrology::record::ReadError::Malformed) => return Err(WB_ERR_PARAM),
+                    Err(hydrology::record::ReadError::Foreign(_)) => return Err(WB_ERR_WRONG_WORLD),
+                };
                 let index = water::index::WaterIndex::build(
                     &record, radius_m, water::index::DEFAULT_CELL_M);
-                Some((radius_m, record, index))
-            });
-            match built {
-                Some(built) => table[slot] = Some(built),
-                None => return Err(WB_ERR_PARAM),
-            }
+                Ok((radius_m, record, index))
+            })?;
+            table[slot] = Some(built);
         }
         match table.get(slot) {
-            Some(Some((_, record, index))) => Ok(action(record, index)),
+            // Checked on every call and not only on a build: the cache is keyed by bake and
+            // radius, and a second world of the same radius reaches a cached slot without a
+            // rebuild -- exactly the pairing this exists to refuse.
+            Some(Some((_, record, index))) => match hydrology::record::check_ground(record, world_ground) {
+                Ok(()) => Ok(action(record, index)),
+                Err(_) => Err(WB_ERR_WRONG_WORLD),
+            },
             _ => Err(WB_ERR_PARAM),
         }
     })
@@ -4836,10 +4919,15 @@ fn with_water_query<T>(
 /// never re-derives an extent. They are separate tables and separate id spaces; passing a world
 /// handle where a bake id belongs is refused, not coincidentally accepted.
 ///
-/// Pass the world the bake was made from. Since SCHEMA 7 the record carries a fingerprint of the
-/// ground it was baked from (header words 56-59, `record::ground_fingerprint`), but nothing here
-/// compares it yet -- a bake queried against a different planet answers that planet's ground
-/// against this record's levels, which is a wrong answer and not an error.
+/// Pass the world the bake was made from. The record carries a fingerprint of the ground it was
+/// baked from (header words 56-59, `record::ground_fingerprint`), and a world whose own
+/// fingerprint differs -- another seed, another relief block, another radius, or the same radius
+/// and any other ground -- is refused with [`WB_ERR_WRONG_WORLD`] rather than answered (plan 2b,
+/// Task 2). Before that check a bake queried against a different planet answered that planet's
+/// ground against this record's levels, which was a wrong answer and not an error. The check is
+/// on content, not on the handle: a world re-created from the same parameters is accepted
+/// (Ruling Q-20). The world's fingerprint is sampled once per world and held ([`WORLD_GROUND`]),
+/// so the check costs this export a sixteen-byte comparison.
 ///
 /// # The index
 ///
@@ -4852,7 +4940,8 @@ fn with_water_query<T>(
 /// `WB_OK` with five words written; `WB_ERR_HANDLE` if `world` names no live world or `bake`
 /// names no live bake (a freed bake included); `WB_ERR_BUFFER` if `out` is null, misaligned or
 /// shorter than [`WB_WATER_STRIDE`]; `WB_ERR_GRID` if the latitude or longitude is not finite;
-/// `WB_ERR_PARAM` if the held record will not decode. **Nothing is written on any refusal.**
+/// `WB_ERR_PARAM` if the held record will not decode; [`WB_ERR_WRONG_WORLD`] if the bake was
+/// made from other ground than `world`'s. **Nothing is written on any refusal.**
 ///
 /// # Safety
 /// `out` must be null, or a live 8-aligned allocation of at least `out_len` f64.
@@ -4874,7 +4963,8 @@ pub extern "C" fn wb_water_at(
     // The world is borrowed around the whole answer, because `Ground`'s closures read it.
     let answered = with_world(world, |held| {
         let surface = held.surface();
-        with_water_query(bake, surface.radius_m, |record, index| {
+        let ground = world_ground(world, surface);
+        with_water_query(bake, surface.radius_m, &ground, |record, index| {
             with_ground(surface, record.stats.pond_cell_m, |ground| {
                 let point = SpherePoint::from_latlon(latitude_deg, longitude_deg);
                 let answer = water::water_at(record, index, ground, &point);
@@ -4912,8 +5002,14 @@ pub extern "C" fn wb_water_at(
 /// `WB_OK`; `WB_ERR_GRID` for a zero `rows` or `columns`, a non-finite bound, or a sample count
 /// whose five words do not fit a `usize`; `WB_ERR_BUFFER` for a null, misaligned or short `out`;
 /// `WB_ERR_HANDLE` for an unknown world or bake; `WB_ERR_PARAM` if the held record will not
-/// decode. **Nothing is written on any refusal** -- a half-filled tile is worse than none,
-/// because it reads as water.
+/// decode; [`WB_ERR_WRONG_WORLD`] if the bake was made from other ground than `world`'s (see
+/// [`wb_water_at`]). **Nothing is written on any refusal** -- a half-filled tile is worse than
+/// none, because it reads as water.
+///
+/// **The world check is made once per tile, before the first sample** (Ruling C-10): the world's
+/// fingerprint is held with its handle ([`WORLD_GROUND`]), and [`with_water_query`] compares it
+/// with the record's before the per-pixel loop starts. A per-sample check would re-sample the
+/// world's sixty-four canonical probes at every pixel.
 ///
 /// # Safety
 /// `out` must be null, or a live 8-aligned allocation of at least `out_len` f64.
@@ -4958,7 +5054,8 @@ pub extern "C" fn wb_water_tile(
     let last_column = f64::from(columns - 1);
     let filled = with_world(world, |held| {
         let surface = held.surface();
-        with_water_query(bake, surface.radius_m, |record, index| {
+        let ground = world_ground(world, surface);
+        with_water_query(bake, surface.radius_m, &ground, |record, index| {
             with_ground(surface, record.stats.pond_cell_m, |ground| {
                 for row in 0..down_count {
                     let down = row as f64; // cast-ok: a grid row index to float, exact for any tile that fits in memory
@@ -4995,6 +5092,103 @@ fn water_buffer(out: *mut f64, out_len: u32, needed: usize) -> Result<(), u32> {
     match usize::try_from(out_len) {
         Ok(len) if len >= needed => Ok(()),
         _ => Err(WB_ERR_BUFFER),
+    }
+}
+
+/// Where the fingerprint verdict lives, asserted where [`WORLD_GROUND`] is visible (Ruling C-10).
+///
+/// **Why a child module and not `tests/wasm_exports.rs`.** The claim is "the world's ground is
+/// sampled once per world and never once per sample", and a sample count is not observable
+/// through the exports: a check that re-sampled sixty-four probes at every pixel would give
+/// exactly the same answers, only sixty-four times slower. So this follows
+/// `continentality.rs`'s `the_coast_lattice_is_not_read_on_the_canonical_path`: nudge the held
+/// state the fast path is supposed to read, and watch the answer move. If an export re-sampled
+/// the world instead of reading the held digest, the nudge would be invisible to it and the
+/// refusals below would be answers.
+#[cfg(test)]
+mod world_ground_tests {
+    use super::*;
+
+    const SEED: i64 = 20_260_904;
+    const RADIUS_M: f64 = 6_371_000.0;
+    const PARAMS: [f64; WB_HYDRO_PARAMS_STRIDE] =
+        [12_000.0, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0];
+    const ROWS: u32 = 16;
+    const COLUMNS: u32 = 16;
+    const TILE_WORDS: usize = 16 * 16 * WB_WATER_STRIDE;
+
+    fn plain() -> u32 {
+        let world = wb_world_new(SEED, RADIUS_M, 12, 0.29, core::ptr::null(), 0);
+        assert_ne!(world, 0);
+        world
+    }
+
+    fn held(world: u32) -> Option<[u8; hydrology::record::GROUND_BYTES]> {
+        let slot = usize::try_from(world - 1).expect("a small handle");
+        WORLD_GROUND.with(|cell| cell.borrow().get(slot).copied().flatten())
+    }
+
+    fn set_held(world: u32, digest: [u8; hydrology::record::GROUND_BYTES]) {
+        let slot = usize::try_from(world - 1).expect("a small handle");
+        WORLD_GROUND.with(|cell| cell.borrow_mut()[slot] = Some(digest));
+    }
+
+    fn tile(world: u32, bake: u32) -> (u32, Vec<f64>) {
+        let mut out = vec![0.0f64; TILE_WORDS];
+        let status = wb_water_tile(world, bake, 31.0, -5.0, 27.0, -1.0, ROWS, COLUMNS,
+                                   out.as_mut_ptr(), u32::try_from(TILE_WORDS).expect("small"));
+        (status, out)
+    }
+
+    #[test]
+    fn a_worlds_ground_is_sampled_once_per_world_and_never_once_per_sample() {
+        let world = plain();
+        let mut bake: u32 = 0;
+        assert_eq!(wb_hydro_bake(world, PARAMS.as_ptr(), WB_HYDRO_PARAMS_STRIDE as u32, &mut bake), WB_OK); // cast-ok: a twelve-word stride constant
+        // Lazy: baking reads the world's ground but does not hold its digest -- only a query does.
+        assert_eq!(held(world), None, "a world that has met no query holds nothing");
+
+        let (status, first) = tile(world, bake);
+        assert_eq!(status, WB_OK);
+        // Read off the world's own surface, not a second one built here: this file builds a
+        // `Surface` in exactly one place, and a source scan in `wasm_exports.rs` holds it to that.
+        let truth = with_world(world, |held| hydrology::record::ground_fingerprint(held.surface()))
+            .expect("a live world");
+        assert_eq!(held(world), Some(truth), "the held digest is the one function's digest");
+
+        // The nudge: the held digest now names some other ground. The world itself is untouched,
+        // so an export that re-sampled it -- per call, or per pixel -- would find the true ground
+        // and answer. Both refuse, so both decide from the held digest alone.
+        let mut other = truth;
+        other[0] ^= 0xff;
+        set_held(world, other);
+        let (status, _) = tile(world, bake);
+        assert_eq!(status, WB_ERR_WRONG_WORLD, "the tile re-sampled the world instead of reading its held digest");
+        let mut sample = [0.0f64; WB_WATER_STRIDE];
+        assert_eq!(
+            wb_water_at(world, bake, 29.0, -3.0, sample.as_mut_ptr(), WB_WATER_STRIDE as u32), // cast-ok: a five-word stride constant
+            WB_ERR_WRONG_WORLD,
+            "wb_water_at re-sampled the world instead of reading its held digest",
+        );
+        assert_eq!(held(world), Some(other), "a refusal must not re-sample and overwrite the slot");
+
+        // And the nudge is the cause: the same world re-created (a new handle, nothing nudged) is
+        // accepted, and so is the nudged one once its true digest is put back -- with the same
+        // tile, bit for bit.
+        let recreated = plain();
+        let (status, again) = tile(recreated, bake);
+        assert_eq!(status, WB_OK, "Ruling Q-20: the same ground through a new handle is accepted");
+        assert_eq!(again.iter().map(|w| w.to_bits()).collect::<Vec<_>>(),
+                   first.iter().map(|w| w.to_bits()).collect::<Vec<_>>());
+        set_held(world, truth);
+        assert_eq!(tile(world, bake).0, WB_OK);
+
+        // Freeing a world drops its held digest with it.
+        assert_eq!(wb_world_free(world), WB_OK);
+        assert_eq!(held(world), None);
+
+        assert_eq!(wb_hydro_free(bake), WB_OK);
+        assert_eq!(wb_world_free(recreated), WB_OK);
     }
 }
 

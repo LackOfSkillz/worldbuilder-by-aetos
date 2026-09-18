@@ -48,8 +48,10 @@ use crate::vectors::Vec3;
 /// appended after `collar_points` as four words (56-59), each an exact integer in `0..=u32::MAX`
 /// holding four digest bytes little-endian -- bytes 0-3 in word 56, 12-15 in word 59. Words 0-55
 /// keep their meaning and position; everything after the header (the first body, reach, notch,
-/// fall) starts four words later. `decode` reads the digest back but does not yet compare it to
-/// anything -- refusing a record read against a foreign world is the next task's.
+/// fall) starts four words later. `decode` reads the digest back; [`decode_for`] and
+/// [`check_ground`] compare it with a world's own digest and refuse a record baked from other
+/// ground (Task 2 of plan 2b), which is what every door that answers a record against a world
+/// goes through.
 ///
 /// Why sample rather than declare: the engine's other on-disk record, the stream graph
 /// (`streamfmt.rs`), has carried the world's radius at `OFF_RADIUS_M` all along, and
@@ -471,6 +473,66 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out
 }
 
+/// A record met a world whose ground is not the ground the record was baked from: the two
+/// [`ground_fingerprint`]s differ. Carries both, so a caller can say which record and which
+/// world rather than only that they disagreed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForeignGround {
+    /// The digest the record carries (header words 56-59).
+    pub record: [u8; GROUND_BYTES],
+    /// The digest of the world it was asked to answer against.
+    pub world: [u8; GROUND_BYTES],
+}
+
+/// Why [`decode_for`] would not hand a record back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadError {
+    /// The words are not a SCHEMA 7 record: everything [`decode`] refuses.
+    Malformed,
+    /// The words are a record, of another world.
+    Foreign(ForeignGround),
+}
+
+/// **The one comparison.** `Ok` when `record` was baked from ground whose digest is
+/// `world_ground`, `Err` carrying both digests otherwise. Every door that answers a record against
+/// a world -- [`decode_for`] natively, `wasm.rs`'s `wb_water_at`/`wb_water_tile`, and the PyO3
+/// `water_at` -- decides through this function, so the three cannot disagree about a record.
+///
+/// **It takes a digest, not a `Surface`, on purpose (Ruling C-10).** Computing a world's digest
+/// is [`PROBE_COUNT`] canonical elevation samples; comparing two is sixteen bytes. A caller
+/// computes `ground_fingerprint(surface)` **once per world** and holds it, and never once per
+/// sample: `wb_water_tile` answers a record once per pixel, and a check that re-sampled the world
+/// at each would multiply a tile's cost by about sixty-four. Taking the surface here would make
+/// that mistake the easy one to write.
+///
+/// **Content, not identity (Ruling Q-20).** Nothing here knows a handle, a pointer or a seed. A
+/// world re-created from the same parameters has the same ground and the same digest, and is
+/// accepted; a world of the same radius and other ground is refused. That is the key 2a deferred
+/// to this fingerprint.
+pub fn check_ground(record: &HydroRecord, world_ground: &[u8; GROUND_BYTES]) -> Result<(), ForeignGround> {
+    if record.ground == *world_ground {
+        Ok(())
+    } else {
+        Err(ForeignGround { record: record.ground, world: *world_ground })
+    }
+}
+
+/// [`decode`], for a reader that is about to answer the record against a world: refuses words
+/// that are not a record ([`ReadError::Malformed`]) and a record baked from other ground
+/// ([`ReadError::Foreign`]). `world_ground` is that world's [`ground_fingerprint`], computed once
+/// and held -- see [`check_ground`] for why this takes the digest rather than the surface.
+///
+/// Before plan 2b a record read against a different world **of the same radius** answered that
+/// world's ground against this record's levels: a wrong answer, not an error. This is the error.
+pub fn decode_for(words: &[f64], world_ground: &[u8; GROUND_BYTES]) -> Result<HydroRecord, ReadError> {
+    let record = decode(words).ok_or(ReadError::Malformed)?;
+    check_ground(&record, world_ground).map_err(ReadError::Foreign)?;
+    Ok(record)
+}
+
+/// Read a record's words with **no world to answer against** -- a summary, a copy, a round trip.
+/// The ground fingerprint is read back into [`HydroRecord::ground`] and not compared: a reader
+/// that will answer the record against a world uses [`decode_for`] instead.
 pub fn decode(words: &[f64]) -> Option<HydroRecord> {
     let mut r = Reader::new(words);
 
@@ -536,7 +598,8 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         collar_points: r.u32()?,
     };
     // SCHEMA 7: the ground fingerprint, four exact u32 words of four little-endian bytes each.
-    // Read back, not compared: refusing a record against a foreign world is the next task's.
+    // Read back here and compared nowhere in this function: `decode` knows no world. A reader
+    // that is about to answer this record against one goes through `decode_for`/`check_ground`.
     let mut ground = [0u8; GROUND_BYTES];
     for chunk in ground.chunks_exact_mut(4) {
         chunk.copy_from_slice(&r.u32()?.to_le_bytes());
@@ -1236,5 +1299,61 @@ mod tests {
         assert_eq!(record.ground, ground_fingerprint(&surface));
         let decoded = decode(&encode(&record)).expect("round trip");
         assert_eq!(decoded.ground, record.ground);
+    }
+
+    // ---- refusing a record from another world (plan 2b, Task 2) ------------------------------
+
+    /// The bake every test below reads, on `bake_tests::world()` (seed 20,260,904, 6,371 km).
+    fn home_words() -> Vec<f64> {
+        let home = crate::hydrology::bake_tests::world();
+        let record = crate::hydrology::bake(&home, &crate::hydrology::bake_tests::params())
+            .expect("bake");
+        encode(&record)
+    }
+
+    /// **The hole this task closes.** A record read against a different world *of the same
+    /// radius* used to answer that world's ground against this record's levels. A radius change
+    /// is not the test -- a declared header field could have caught that -- so both foreign
+    /// worlds here share the home world's 6,371 km exactly: one differs in its seed, the other
+    /// only in its relief block (the change `structural_m` could not see, Ruling C-7).
+    #[test]
+    fn a_record_is_refused_by_another_world_of_the_same_radius() {
+        let words = home_words();
+        let home = crate::hydrology::bake_tests::world();
+        let other_seed = Surface::new(20_260_905, home.radius_m, 12, 0.29, None, None, None);
+        let other_relief = Surface::new(20_260_904, home.radius_m, 12, 0.29, None,
+                                        Some(crate::detail::ReliefParams::hills()), None);
+        let record_ground = decode(&words).expect("well-formed").ground;
+        for (name, other) in [("seed", &other_seed), ("relief", &other_relief)] {
+            assert_eq!(other.radius_m.to_bits(), home.radius_m.to_bits(), "{name}: same radius");
+            let world = ground_fingerprint(other);
+            assert_eq!(decode_for(&words, &world),
+                       Err(ReadError::Foreign(ForeignGround { record: record_ground, world })),
+                       "{name}: a record from another world must be refused, not answered");
+        }
+        // The words themselves are fine: it is the pairing that is refused, not the record.
+        assert!(decode(&words).is_some());
+    }
+
+    /// Ruling Q-20: content, not identity. A world rebuilt from the same parameters -- a new
+    /// `Surface`, as the studio makes a new handle on every slider change -- is the same ground
+    /// and must be accepted, and hands back exactly what `decode` does.
+    #[test]
+    fn a_record_is_accepted_by_its_own_world_rebuilt_from_the_same_parameters() {
+        let words = home_words();
+        let rebuilt = Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None);
+        let got = decode_for(&words, &ground_fingerprint(&rebuilt)).expect("its own world");
+        assert_eq!(Some(got), decode(&words));
+    }
+
+    /// A malformed record is still malformed, whatever world it is read against -- the two
+    /// refusals stay distinct so a caller can say which one it hit.
+    #[test]
+    fn words_that_are_not_a_record_are_malformed_not_foreign() {
+        let ground = ground_fingerprint(&crate::hydrology::bake_tests::world());
+        assert_eq!(decode_for(&[], &ground), Err(ReadError::Malformed));
+        let mut words = home_words();
+        words[0] = SCHEMA - 1.0;
+        assert_eq!(decode_for(&words, &ground), Err(ReadError::Malformed));
     }
 }

@@ -1359,25 +1359,41 @@ jobs:
           # canonical relief spelled out does not) and its radius-margin test is reinstated in
           # place of the one it replaced, so all five rows move by +2. Re-derived the same way:
           # 886/886/888/1008/1010 listed, 11 ignored in each.
+          #
+          # 2026-09-18, WATER 2b Task 2 (a record from another world is refused):
+          # **875/875/877/997/999 -> 878/878/881/1003/1006 with 11 ignored**. The rows move
+          # unevenly because the new tests sit behind three different gates:
+          # - `hydrology/record.rs` +3 (a record refused by another world of the same radius,
+          #   accepted by its own rebuilt from the same parameters, malformed kept distinct from
+          #   foreign). No feature gate, so every row +3.
+          # - `bindings.rs` +1 (`wrong_world_tests`, the Python door's check refusing other ground).
+          #   `--features python` only, so the two python rows +1 more.
+          # - `wasm.rs` +1 (`world_ground_tests`, the held digest is read and never re-sampled) and
+          #   `wasm_exports` 120 -> 122 (the half-radius test rewritten from "answered" to
+          #   "refused", plus the same-radius refusal at every door and the Q-20 re-creation).
+          #   `--features wasm` only, so the two wasm rows +3 more.
+          # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
+          # per configuration, summing each binary's trailer: 889/889/892/1014/1017 listed, 11
+          # ignored in each. Ignored stays 11: no `#[ignore]`d test was added.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 875
+            expect: 878
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 875
+            expect: 878
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 877
+            expect: 881
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 997
+            expect: 1003
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 999
+            expect: 1006
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4
@@ -1645,13 +1661,20 @@ jobs:
       # non-Earth radius deliberately -- at Earth's the assumed value and the true one are the
       # same number, which is the blind spot that let six EARTH_RADIUS_M substitutions through
       # a full suite. Counted by `pytest tests/ -q --collect-only`.
-      - name: Assert the suite -- 576 tests, 167 of them conformance
+      # 2026-09-18, WATER 2b Task 2: **576 -> 577, conformance 167 -> 168**. One test in
+      # tests/test_conformance.py: `water_at` makes the ground-fingerprint check and names its
+      # refusal (`WrongWorldError`, a ValueError and not a HydroBakeError). Counted by
+      # `pytest tests/ -q --collect-only` (577) and the same over tests/test_conformance.py
+      # (168), then run against a wheel built from this tree: 576 passed, 1 failed -- the failure
+      # is test_installation.py's two-checkouts-one-interpreter property described above, which
+      # CI's fresh virtualenv does not have.
+      - name: Assert the suite -- 577 tests, 168 of them conformance
         shell: bash
         run: |
           set -euo pipefail
           python .github/scripts/assert_counts.py pytest \
             --collect collect.out --run pytest.out \
-            --expect-total 576 --expect-file tests/test_conformance.py=167
+            --expect-total 577 --expect-file tests/test_conformance.py=168
 
   # ---------------------------------------------------------------------------------------
   # Provenance and parity. One job, because parity.mjs imports checkFreshness() from

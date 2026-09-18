@@ -1694,6 +1694,40 @@ pyo3::create_exception!(
      a Python caller has an exception channel a wasm export does not."
 );
 
+pyo3::create_exception!(
+    worldbuilder_engine,
+    WrongWorldError,
+    pyo3::exceptions::PyValueError,
+    "A hydrology record met a world whose ground is not the ground it was baked from: the \
+     record's ground fingerprint and the world's differ (`record::check_ground`). The Python \
+     face of `wasm.rs`'s `WB_ERR_WRONG_WORLD`, and its own class rather than a `HydroBakeError`, \
+     for the reason that status is its own code: nothing about the params was wrong."
+);
+
+/// **The fingerprint check, at the Python door** (plan 2b, Task 2): `Ok` when `record` was baked
+/// from `surface`'s ground, [`WrongWorldError`] otherwise. The world's digest is computed through
+/// `record::ground_fingerprint`, the one function the bake signs with, and compared by
+/// `record::check_ground`, the one comparison every door uses -- so this door cannot disagree
+/// with the native or the wasm one about a record.
+///
+/// **Today it cannot fail, and it is here anyway.** [`cached_hydro`] bakes on the very surface
+/// it then queries, so the record's digest is this surface's by construction. It is the door's
+/// guard against the day the record and the surface arrive separately -- which an unmerged branch
+/// (`fix/ferry-routes-stay-on-water`, Ruling C-5) moves toward, by giving this door a world's
+/// relief, tectonics and coast -- and there a record baked on a configured world asked against a
+/// bare one must be refused rather than answered. Called once per pairing, where the record first
+/// meets the surface and before it is cached, never once per sample (Ruling C-10).
+fn refuse_a_foreign_record(record: &hydrology::HydroRecord, surface: &Surface) -> PyResult<()> {
+    let world = hydrology::record::ground_fingerprint(surface);
+    hydrology::record::check_ground(record, &world).map_err(|foreign| {
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        WrongWorldError::new_err(format!(
+            "this hydrology record was baked from other ground (record {}, world {})",
+            hex(&foreign.record), hex(&foreign.world),
+        ))
+    })
+}
+
 /// A bake and the [`water::index::WaterIndex`] built over it, kept behind `HYDRO_CACHE` for the
 /// life of the process -- Ruling Q-2's "derived state, built on first query, cached beside the
 /// bake" translated to this file's own leak-and-memoise idiom (`cached_surface`'s own doc
@@ -1749,6 +1783,8 @@ fn cached_hydro(
         };
         HydroBakeError::new_err(message)
     })?;
+    // Plan 2b, Task 2: the check every door makes, once per pairing, before anything is cached.
+    refuse_a_foreign_record(&record, surface)?;
     let index = water::index::WaterIndex::build(&record, surface.radius_m, water::index::DEFAULT_CELL_M);
     let held: &'static (hydrology::HydroRecord, water::index::WaterIndex) =
         Box::leak(Box::new((record, index)));
@@ -1792,7 +1828,10 @@ fn water_kind_str(kind: water::WaterKind) -> &'static str {
 ///
 /// Unlike `wb_water_at`, there is no way to pass a bake made from a different world by
 /// accident: there is no bake id to mismatch, because the bake is derived from -- and cached
-/// under -- this same call's own `Surface`.
+/// under -- this same call's own `Surface`. The door still makes the same fingerprint check the
+/// wasm and native doors make ([`refuse_a_foreign_record`], raising [`WrongWorldError`]), once
+/// per pairing, so that if the record and the surface ever arrive separately the refusal is
+/// already in place rather than a thing to remember.
 #[pyfunction]
 #[pyo3(signature = (
     world_seed, radius_m, plate_count, land_fraction, x, y, z, total_nodes,
@@ -1852,6 +1891,27 @@ pub fn water_at(
         answer.body_id,
         answer.reach_id,
     ))
+}
+
+/// The door's own check, reached directly. Through `water_at` it cannot fail -- the door bakes on
+/// the surface it queries -- so this is not a mismatch the door can produce; it pins that the
+/// function the door calls refuses a record from other ground and accepts its own, so the
+/// door's guard is a guard and not a call that always returns `Ok`.
+#[cfg(test)]
+mod wrong_world_tests {
+    use super::*;
+
+    #[test]
+    fn the_python_doors_check_refuses_other_ground_and_accepts_its_own() {
+        let home = Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None);
+        let mut params = HydroParams::earth_like(12_000);
+        params.wetness_nodes = 500;
+        let record = hydrology::bake(&home, &params).expect("bake");
+        assert!(refuse_a_foreign_record(&record, &home).is_ok(), "its own world");
+        // The same radius: a radius change is not the case this exists for.
+        let other = Surface::new(20_260_905, 6_371_000.0, 12, 0.29, None, None, None);
+        assert!(refuse_a_foreign_record(&record, &other).is_err(), "another world, same radius");
+    }
 }
 
 #[cfg(test)]

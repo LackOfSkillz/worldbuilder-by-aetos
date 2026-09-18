@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  Engine, WB_WATER_STRIDE, decodeWaterSample, waterTileBytes,
+  Engine, WB_WATER_STRIDE, WB_ERR_WRONG_WORLD, decodeWaterSample, statusName, waterTileBytes,
 } from "../public/app/engine.js";
 // The record decoder lives with the preview drawing, not with the boundary: the query answers
 // name bodies by id, and this is the reader that turns the record into entries to look them up
@@ -116,8 +116,8 @@ test("hydroSummary throws on a schema other than 7 rather than misreading the he
 });
 
 // Plan 2b Task 1: the record carries a fingerprint of the ground it was baked from (words
-// 56-59). Nothing compares it yet; these pin that it is there, that it is a property of the
-// world and not of the bake's params, and that a different world moves it.
+// 56-59). These pin that it is there, that it is a property of the world and not of the bake's
+// params, and that a different world moves it; Task 2's refusal is pinned further down.
 test("a bake's ground fingerprint is the world's, not the params'", () => {
   const world = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
   const handle = engine.newWorld(world);
@@ -224,6 +224,38 @@ test("a freed bake stops answering rather than being served from the index it le
   engine.hydroFree(bake);
   assert.throws(() => engine.waterAt({ bake, latitudeDeg: 0, longitudeDeg: 0 }), /WB_ERR_HANDLE/);
   assert.throws(() => engine.hydroFree(bake), /WB_ERR_HANDLE/);
+});
+
+// Plan 2b Task 2: a bake asked through a world of other ground is refused, by name. The case that
+// matters is the SAME radius -- no declared field could have told those two worlds apart -- and
+// the case that must still work is Ruling Q-20's: the world re-created from the same parameters,
+// through a new handle, as the studio does on every slider change.
+test("a bake asked through another world of the same radius throws WB_ERR_WRONG_WORLD", () => {
+  const world = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
+  const handle = engine.newWorld(world);
+  const bake = engine.hydroHold({ handle, params: PARAMS });
+  try {
+    assert.equal(WB_ERR_WRONG_WORLD, 8);
+    assert.equal(statusName(WB_ERR_WRONG_WORLD), "WB_ERR_WRONG_WORLD");
+    const box = { lat0: 31, lon0: -5, lat1: 27, lon1: -1 };
+    const mine = engine.waterTile({ bake, box, rows: 4, columns: 4 });
+
+    const other = engine.newWorld({ ...world, seed: world.seed + 1 });
+    const drifted = { ...bake, handle: other };
+    assert.throws(() => engine.waterAt({ bake: drifted, latitudeDeg: 29, longitudeDeg: -3 }),
+                  /wb_water_at returned WB_ERR_WRONG_WORLD/);
+    assert.throws(() => engine.waterTile({ bake: drifted, box, rows: 4, columns: 4 }),
+                  /wb_water_tile returned WB_ERR_WRONG_WORLD/);
+
+    // Ruling Q-20: the same world through a fresh handle is the same ground, and answers the
+    // same tile word for word.
+    const again = engine.newWorld(world);
+    assert.notEqual(again, handle);
+    assert.deepEqual(Array.from(engine.waterTile({ bake: { ...bake, handle: again }, box, rows: 4, columns: 4 })),
+                     Array.from(mine));
+  } finally {
+    engine.hydroFree(bake);
+  }
 });
 
 test("hydroBake still frees its own bake, so the old shape leaks nothing", () => {
