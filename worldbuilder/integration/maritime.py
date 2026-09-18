@@ -134,6 +134,18 @@ class WorldbuilderTerrain:
             raise ValueError("a maritime region needs an anchor to sit on")
         self.region = region
         self.region_name = region_name
+        # **How big the planet is, said out loud rather than kept private.**
+        #
+        # A bundle is flat metres and an anchor, so maritime's reader needs the radius those
+        # metres were measured on to turn them back into a latitude. `bake.bundle` asks the
+        # provider for `radius_m` and falls back to Earth's when nothing answers -- which is
+        # right for Earth and wrong by half on a world half again its size, silently, in
+        # every graticule line and every landfall worked up. At 9,309,000 m a point 200 km
+        # north of the anchor charts 0.57 degrees, about 63 km, too far north.
+        #
+        # The frame below has always used the real value. Saying it as an attribute is the
+        # whole of what lets a bundle record it.
+        self.radius_m = surface.radius_m
         self.frame = TangentFrame.at(anchor, surface.radius_m)
         self.features = features if features is not None else surface.features
         self.dangers = self._survey()
