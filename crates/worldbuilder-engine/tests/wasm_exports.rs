@@ -6020,10 +6020,18 @@ fn a_hydro_bake_is_held_copied_and_freed() {
     let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: a 12-word buffer
     assert_eq!(status, WB_OK);
     let len = wb_hydro_len(id);
-    assert!(len >= 56, "at least the header (plan 1b-4 Task 1: 56 words at schema 6)");
+    assert!(len >= 60, "at least the header (plan 2b Task 1: 60 words at schema 7)");
     let mut words = vec![0.0f64; len as usize];
     assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
-    assert_eq!(words[0], 6.0, "schema 6");
+    assert_eq!(words[0], 7.0, "schema 7");
+    // Words 56-59: the ground fingerprint of the world the bake was handed, four little-endian
+    // bytes a word -- the same digest the engine computes for that world directly.
+    let ground = worldbuilder_engine::hydrology::record::ground_fingerprint(
+        &Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None));
+    for (k, chunk) in ground.chunks_exact(4).enumerate() {
+        let want = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        assert_eq!(words[56 + k], f64::from(want), "ground word {}", 56 + k);
+    }
     let mut short = vec![0.0f64; len as usize - 1];
     assert_eq!(wb_hydro_copy(id, short.as_mut_ptr(), len - 1), WB_ERR_BUFFER);
     assert_eq!(wb_hydro_free(id), WB_OK);

@@ -26,6 +26,10 @@ pub struct BakeStages {
     pub routing: routing::Routing,
     pub flow: Vec<f64>,
     pub closure: flow::Closure,
+    /// `record::ground_fingerprint` of the surface these stages were sampled from, taken here
+    /// because this is the last point that holds the surface, so `record_of` -- and the survey,
+    /// which calls it directly -- carry the real digest rather than a placeholder to fill later.
+    pub ground: [u8; 16],
 }
 
 /// A threshold-like parameter must be a finite positive number; `name` is the field name, for
@@ -239,13 +243,14 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     let mut routing = route(&graph, &global_flood, &mut hollows, params);
     let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, params);
     drainage_check(&graph, &routing).map_err(HydroError::Drainage)?;
-    Ok(BakeStages { graph, hollows, routing, flow, closure })
+    let ground = crate::hydrology::record::ground_fingerprint(surface);
+    Ok(BakeStages { graph, hollows, routing, flow, closure, ground })
 }
 
 /// Folds a drained `BakeStages` into the public record: reaches (`extract`, on the effective
 /// thresholds), bodies, the recorded notches and the stats.
 pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
-    let BakeStages { graph, hollows, routing, flow, closure } = stages;
+    let BakeStages { graph, hollows, routing, flow, closure, ground } = stages;
 
     // Ruling 12b-1: the effective thresholds a graph this coarse can actually resolve. Sorted,
     // deterministic median of the land-node areas (the lower of the two middles on an even
@@ -629,6 +634,6 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         collar_points,
     };
 
-    HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }
+    HydroRecord { bodies, reaches: reach_lines, notches, falls, stats, ground: *ground }
 }
 

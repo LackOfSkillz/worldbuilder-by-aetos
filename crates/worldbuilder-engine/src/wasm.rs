@@ -4836,9 +4836,10 @@ fn with_water_query<T>(
 /// never re-derives an extent. They are separate tables and separate id spaces; passing a world
 /// handle where a bake id belongs is refused, not coincidentally accepted.
 ///
-/// Pass the world the bake was made from. Nothing on the wire ties a record to a world, so
-/// nothing here can check it -- a bake queried against a different planet answers that planet's
-/// ground against this record's levels, which is a wrong answer and not an error.
+/// Pass the world the bake was made from. Since SCHEMA 7 the record carries a fingerprint of the
+/// ground it was baked from (header words 56-59, `record::ground_fingerprint`), but nothing here
+/// compares it yet -- a bake queried against a different planet answers that planet's ground
+/// against this record's levels, which is a wrong answer and not an error.
 ///
 /// # The index
 ///

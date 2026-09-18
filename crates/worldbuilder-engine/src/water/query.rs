@@ -846,7 +846,7 @@ mod tests {
                              reach_point(-200.0 / M_PER_DEG, 140.2, 60.0, 2_000.0, 5.0)],
             },
         ];
-        HydroRecord { bodies, reaches, notches: Vec::new(), falls: Vec::new(), stats: stats() }
+        HydroRecord { bodies, reaches, notches: Vec::new(), falls: Vec::new(), stats: stats(), ground: [0; 16] }
     }
 
     fn built(record: &HydroRecord) -> WaterIndex {

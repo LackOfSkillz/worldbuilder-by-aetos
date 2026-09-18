@@ -906,12 +906,13 @@ export class Engine {
   /// so read it out of `bake.words`. See `WB_WATER_STRIDE`.
   ///
   /// **Why the bake carries its own handle (Ruling Q-20).** The answer needs a record *and* a
-  /// ground, and nothing on the wire ties one to the other: a record queried against another
+  /// ground, and nothing yet checks that one belongs to the other: a record queried against another
   /// planet answers that planet's ground against this record's levels, which is a wrong answer
   /// and not an error. Neither side can catch it -- handle equality is not the test, because
   /// handles are never reused and the studio re-creates one on every slider change, so it would
   /// invalidate every held bake including the bit-identical ones. Content is the right key, and
-  /// that is stage 2b's fingerprint. Until then the defence is that the pair is **issued
+  /// that is stage 2b's fingerprint -- which a schema 7 record now carries (`hydroSummary`'s
+  /// `ground`) and nothing compares yet. Until it does, the defence is that the pair is **issued
   /// together and passed together**, so there is no call site at which the two can drift apart.
   waterAt({ bake, latitudeDeg, longitudeDeg }) {
     const bytes = WB_WATER_STRIDE * 8;
@@ -962,7 +963,7 @@ export class Engine {
     }
   }
 
-  /// Read a `hydroBake` record's 56-word header (schema 6, Task 1 of plan 1b-4) into a plain
+  /// Read a `hydroBake` record's 60-word header (schema 7, Task 1 of plan 2b) into a plain
   /// object. Words 0-19 are unchanged from schema 2: `schema`, `bodies`, `reaches`, `notches`,
   /// `falls`, `nodes`, `landNodes`, `hollows`, `kept`, `notched`, `closed`, `streams`, `rivers`,
   /// `great`, `maxOrder`, `bifurcationMin`, `bifurcationMax`, `streamFlowM2`, `riverFlowM2`,
@@ -987,7 +988,11 @@ export class Engine {
   /// `collarPoints` the sum of their outline length less that count. A pond contributes to
   /// neither -- Ruling E-6 zeroes its count, and its outline is a traced ring, not a collar -- so
   /// `collarPoints` is NOT the sum over every body of `outline.length - shoreMemberCount`. A
-  /// schema 6 bake with any coarse body in it reports both above zero.
+  /// schema 6 bake with any coarse body in it reports both above zero. Words 56-59 (schema 7,
+  /// Task 1 of plan 2b) are the **ground fingerprint**, `ground`: 16 bytes of BLAKE2b over 64
+  /// millimetre-rounded samples of the world's `structural_m` (`record.rs::ground_fingerprint`),
+  /// four little-endian bytes a word, returned as 32 lowercase hex digits in byte order. It is
+  /// the record's tie to the world it was baked from; nothing compares it yet.
   ///
   /// **`pondsFound` counts hollows in the corridors the search sampled, not in every corridor.**
   /// Ruling S-12 skips a coarse segment whose midpoint is drier than the wetness floor or inside
@@ -1003,8 +1008,9 @@ export class Engine {
   /// are left out for the same reason. The four counts -- both crossing words and both pond
   /// words -- ARE returned: they are counts a bake produced, not params.
   ///
-  /// Throws on a schema other than 6: another schema's header is not these 56 words, and a
-  /// summary read off it would be wrong silently.
+  /// Throws on a schema other than 7: another schema's header is not these 60 words, and a
+  /// summary read off it would be wrong silently. Throws too on a fingerprint word that is not
+  /// a u32, since it cannot be four bytes.
   ///
   /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
   /// a slot and not a meaning, as `record.rs`'s module doc states: a reach point's third word is
@@ -1012,8 +1018,8 @@ export class Engine {
   /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
   /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
-    if (words[0] !== 6) {
-      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 6)`);
+    if (words[0] !== 7) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 7)`);
     }
     return {
       schema: words[0],
@@ -1057,8 +1063,24 @@ export class Engine {
       pondsKept: words[46],
       shoreMembers: words[54],
       collarPoints: words[55],
+      ground: groundHex([words[56], words[57], words[58], words[59]]),
     };
   }
+}
+
+/// Four ground-fingerprint words (a SCHEMA 7 header's 56-59) as the digest's 32 hex digits, in
+/// byte order: each word holds four bytes little-endian, exactly as `record.rs` writes them.
+function groundHex(ground) {
+  let hex = "";
+  for (const w of ground) {
+    if (!(Number.isInteger(w) && w >= 0 && w <= 0xffffffff)) {
+      throw new Error(`hydro record: bad ground fingerprint word ${w}`);
+    }
+    for (let shift = 0; shift < 32; shift += 8) {
+      hex += ((w >>> shift) & 0xff).toString(16).padStart(2, "0");
+    }
+  }
+  return hex;
 }
 
 export function statusName(code) {

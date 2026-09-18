@@ -20,11 +20,11 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-test("a bake comes back with a schema-6 header and counts that add up", () => {
+test("a bake comes back with a schema-7 header and counts that add up", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
   const s = engine.hydroSummary(words);
-  assert.equal(s.schema, 6);
+  assert.equal(s.schema, 7);
   assert.equal(s.nodes, 12000);
   assert.ok(s.landNodes > 0 && s.landNodes < 12000);
   assert.equal(s.kept + s.notched, s.hollows);
@@ -98,15 +98,41 @@ test("hydroSummary reads the SCHEMA 5/6 params echo, forced-outlet matches, cros
   assert.ok(s.collarPoints > 0, "sanity: this world's coarse bodies carry a collar");
 });
 
-test("hydroSummary throws on a schema other than 6 rather than misreading the header", () => {
+test("hydroSummary throws on a schema other than 7 rather than misreading the header", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
-  for (const schema of [2, 3, 4, 5, Number.NaN]) {
+  for (const schema of [2, 3, 4, 5, 6, Number.NaN]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => engine.hydroSummary(tampered), /schema/);
   }
-  assert.equal(engine.hydroSummary(words).schema, 6);
+  assert.equal(engine.hydroSummary(words).schema, 7);
+  // A fingerprint word that is not a u32 cannot be four bytes.
+  for (const bogus of [0.5, -1, 4294967296, Number.NaN]) {
+    const tampered = words.slice();
+    tampered[57] = bogus;
+    assert.throws(() => engine.hydroSummary(tampered), /ground fingerprint/);
+  }
+});
+
+// Plan 2b Task 1: the record carries a fingerprint of the ground it was baked from (words
+// 56-59). Nothing compares it yet; these pin that it is there, that it is a property of the
+// world and not of the bake's params, and that a different world moves it.
+test("a bake's ground fingerprint is the world's, not the params'", () => {
+  const world = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
+  const handle = engine.newWorld(world);
+  const s = engine.hydroSummary(engine.hydroBake({ handle, params: PARAMS }));
+  assert.match(s.ground, /^[0-9a-f]{32}$/);
+  // The same world through a fresh handle, baked with different params: same ground.
+  const again = engine.newWorld(world);
+  const coarser = engine.hydroSummary(engine.hydroBake({ handle: again, params: { ...PARAMS, totalNodes: 8000 } }));
+  assert.equal(coarser.ground, s.ground);
+  // Another seed and another radius are other ground.
+  for (const other of [{ ...world, seed: world.seed + 1 }, { ...world, radiusM: 9309000 }]) {
+    const h = engine.newWorld(other);
+    assert.notEqual(engine.hydroSummary(engine.hydroBake({ handle: h, params: PARAMS })).ground, s.ground,
+                    JSON.stringify(other));
+  }
 });
 
 test("the same bake twice is the same words", () => {

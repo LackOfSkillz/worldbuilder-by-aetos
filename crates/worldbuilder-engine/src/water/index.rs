@@ -519,6 +519,7 @@ mod tests {
             notches: vec![notch],
             falls: Vec::new(),
             stats: stats(),
+            ground: [0; 16],
         }
     }
 

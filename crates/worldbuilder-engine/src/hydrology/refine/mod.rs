@@ -510,6 +510,7 @@ mod tests {
             notches: Vec::new(),
             falls: Vec::new(),
             stats: stats_for(&params()),
+            ground: [0; 16],
         };
         refine(&mut record, &ground, &params());
         let lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
@@ -566,6 +567,7 @@ mod tests {
             notches: Vec::new(),
             falls: Vec::new(),
             stats: stats_for(&params()),
+            ground: [0; 16],
         };
         refine(&mut record, &ground, &params());
         assert_eq!(record.stats.crossings_left, 0, "the pass still clears the crossing");

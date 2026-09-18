@@ -1276,6 +1276,7 @@ mod tests {
                 pond_density_area_m2: 0.0,
                 shore_members: 0, collar_points: 0,
             },
+            ground: [0; 16],
         }
     }
 

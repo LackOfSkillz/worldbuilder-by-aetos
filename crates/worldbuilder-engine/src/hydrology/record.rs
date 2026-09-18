@@ -33,10 +33,30 @@
 //! - **Reach `fresh`** means "its chain reaches the ocean": following its `downstream` through
 //!   reaches and bodies ends at `Ocean`, not at a closed lake's `Sink`.
 
+use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2bVar;
+
 use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
 use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, ReachLine, ReachPoint};
+use crate::sphere::SpherePoint;
+use crate::surface::Surface;
+use crate::vectors::Vec3;
 
+/// 7.0 as of Task 1 (plan 2b): the record carries a fingerprint of the ground it was baked from
+/// ([`ground_fingerprint`]). The header grows from 56 to **60** words: the 16-byte digest is
+/// appended after `collar_points` as four words (56-59), each an exact integer in `0..=u32::MAX`
+/// holding four digest bytes little-endian -- bytes 0-3 in word 56, 12-15 in word 59. Words 0-55
+/// keep their meaning and position; everything after the header (the first body, reach, notch,
+/// fall) starts four words later. `decode` reads the digest back but does not yet compare it to
+/// anything -- refusing a record read against a foreign world is the next task's.
+///
+/// Why sample rather than declare: the engine's other on-disk record, the stream graph
+/// (`streamfmt.rs`), has carried the world's radius at `OFF_RADIUS_M` all along, and
+/// `GraphReader::open` checks it only for finiteness -- the versions are the only thing it
+/// compares -- so a graph written at 9,309 km opens silently beside a 6,371 km world. A declared
+/// field nothing checks is what we already had.
+///
 /// 6.0 as of Task 1 (plan 1b-4): the discriminator that spec §8.3 already needs -- a body with
 /// `shore_member_count == 0` carries a traced curve, everything else a shore-point set -- had to
 /// reach the wire before Task 2 could put any points behind it. Doing it the other way round
@@ -66,7 +86,98 @@ use crate::hydrology::{BakeStats, Body, BodyKind, Fall, HydroRecord, NotchLine, 
 /// `fall_max_run_m`, `meander_wavelength_widths`, `meander_amplitude_widths`,
 /// `meander_max_slope`). Earlier schemas are refused outright -- `decode` never adapts an old
 /// record to the new shape.
-pub const SCHEMA: f64 = 6.0;
+pub const SCHEMA: f64 = 7.0;
+
+/// Words in the header: everything up to and including the ground fingerprint.
+pub const HEADER_WORDS: usize = 60;
+
+/// How many points of ground [`ground_fingerprint`] samples.
+pub const PROBE_COUNT: usize = 64;
+
+/// Bytes in a ground fingerprint, and on the wire four `u32` words of four bytes each.
+pub const GROUND_BYTES: usize = 16;
+
+/// The same four bytes of a digest as one exact integer word, little-endian.
+fn ground_words(ground: &[u8; GROUND_BYTES]) -> [f64; 4] {
+    let mut out = [0.0; 4];
+    for (word, chunk) in out.iter_mut().zip(ground.chunks_exact(4)) {
+        let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
+        *word = f64::from(u32::from_le_bytes(bytes));
+    }
+    out
+}
+
+/// SplitMix64's finaliser: a cheap, well-mixed integer hash, all of it wrapping integer
+/// arithmetic, so it gives the same bits on every host and every target.
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// A fraction in `[0, 1)` from the top 53 bits of an integer hash: `2^-53` times an integer
+/// below `2^53`, which is exact in an `f64`, so no rounding step exists to differ between hosts.
+fn unit_fraction(h: u64) -> f64 {
+    const TWO_POW_MINUS_53: f64 = 1.0 / 9_007_199_254_740_992.0;
+    // Not a float truncation: `h >> 11` is an integer below 2^53, which an `f64` holds exactly.
+    (h >> 11) as f64 * TWO_POW_MINUS_53
+}
+
+/// Probe `index` of the fingerprint's fixed scatter, uniform over the sphere by area.
+///
+/// **Integers first, floats last.** The scatter is two integer hashes of the index -- not a float
+/// sequence (a golden-angle spiral, say), where each point's rounding feeds the next and two hosts
+/// can drift apart until every record looks foreign. Each hash becomes a fraction exactly (see
+/// [`unit_fraction`]), and the only float maths is one `sqrt`, one `sin` and one `cos` per point,
+/// all through `detmath`, whose pure-Rust `libm` gives the same bits natively and in wasm.
+///
+/// **Irregular on purpose.** A regular grid can land every probe on ground two different worlds
+/// happen to share -- an abyssal plain, a shelf at the same depth -- and call them the same.
+pub fn probe_point(index: usize) -> SpherePoint {
+    // A fixed, arbitrary salt, so probe 0 is not the hash of zero.
+    const SALT: u64 = 0x6772_6f75_6e64_7631; // "groundv1"
+    let i = index as u64; // cast-ok: usize to u64 widens on every target this crate builds for
+    let a = mix64(SALT ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let b = mix64(a ^ SALT.rotate_left(17));
+    // z uniform in [-1, 1) and longitude uniform in [0, 2pi) is uniform by area (Archimedes).
+    let z = 2.0 * unit_fraction(a) - 1.0;
+    let longitude = 2.0 * std::f64::consts::PI * unit_fraction(b);
+    let across = m::sqrt(1.0 - z * z);
+    SpherePoint { vector: Vec3 { x: across * m::cos(longitude), y: across * m::sin(longitude), z } }
+}
+
+/// A 16-byte digest of the ground a bake was computed from: [`PROBE_COUNT`] samples of
+/// `structural_m` at [`probe_point`]s, each rounded to the millimetre, hashed with BLAKE2b.
+///
+/// **`structural_m`, never `elevation_m` -- and this is load-bearing.** `elevation_m` looks like
+/// the natural choice and is wrong. A later task carves rivers into `elevation_m`, so a digest
+/// over it would depend on whether the carve is active: the record's own fingerprint would
+/// depend on the record, which is circular. `structural_m` is defined before detail and before
+/// that layer, and it is the ground the bake actually reads (`LandGraph::sample`, the refinement
+/// ground), so it is the ground the record is *of*.
+///
+/// **Rounded to the millimetre before hashing**, so a bit-level difference with no physical
+/// meaning does not make a record foreign. The rounded value is an integer-valued `f64` (exact
+/// for any ground within 2^53 mm, about nine billion km, of datum), hashed as its bits: there is
+/// no cast, so nothing truncates. `floor(x + 0.5)` never yields `-0.0` (the sum is never `-0.0`),
+/// so zero has one encoding.
+///
+/// **Hashed with BLAKE2b at a 16-byte output**, the one runtime hash this crate already uses
+/// (`generation.rs`); BLAKE2 mixes the output length into its initial state, so this is its own
+/// hash and not a prefix of a longer one. A version tag leads the message, so a later probe
+/// scheme cannot collide with this one by construction.
+pub fn ground_fingerprint(surface: &Surface) -> [u8; GROUND_BYTES] {
+    let mut hasher = Blake2bVar::new(GROUND_BYTES).expect("16 is a valid BLAKE2b output length");
+    hasher.update(b"worldbuilder hydro ground v1");
+    for index in 0..PROBE_COUNT {
+        let metres = surface.structural_m(&probe_point(index));
+        let millimetres = m::floor(metres * 1000.0 + 0.5);
+        hasher.update(&millimetres.to_bits().to_le_bytes());
+    }
+    let mut out = [0u8; GROUND_BYTES];
+    hasher.finalize_variable(&mut out).expect("output buffer is exactly 16 bytes");
+    out
+}
 
 fn word_to_u32(w: f64) -> Option<u32> {
     if w.is_finite() && w >= 0.0 && w <= u32::MAX as f64 && m::floor(w) == w {
@@ -282,6 +393,7 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     out.push(stats.pond_density_area_m2);
     out.push(stats.shore_members as f64);
     out.push(stats.collar_points as f64);
+    out.extend_from_slice(&ground_words(&record.ground));
 
     for body in &record.bodies {
         out.push(body.id as f64);
@@ -413,6 +525,12 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         shore_members: r.u32()?,
         collar_points: r.u32()?,
     };
+    // SCHEMA 7: the ground fingerprint, four exact u32 words of four little-endian bytes each.
+    // Read back, not compared: refusing a record against a foreign world is the next task's.
+    let mut ground = [0u8; GROUND_BYTES];
+    for chunk in ground.chunks_exact_mut(4) {
+        chunk.copy_from_slice(&r.u32()?.to_le_bytes());
+    }
 
     // Body: id, kind, fresh, enclosed, forced, level_m, area_m2, depth_m, outlet_reach,
     // anchor_lat, anchor_lon, downstream_kind, downstream_id, shore_member_count, shore_reach_m,
@@ -572,7 +690,7 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
         return None;
     }
 
-    Some(HydroRecord { bodies, reaches, notches, falls, stats })
+    Some(HydroRecord { bodies, reaches, notches, falls, stats, ground })
 }
 
 #[cfg(test)]
@@ -692,14 +810,18 @@ mod tests {
                 shore_members: 0,
                 collar_points: 0,
             },
+            // Every byte distinct, so a word written in the wrong order or the wrong endianness
+            // cannot round-trip by coincidence.
+            ground: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                     0x09, 0x0a, 0x0b, 0x0c, 0xfd, 0xfe, 0xff, 0x80],
         }
     }
 
     #[test]
-    fn a_hand_built_record_round_trips_at_schema_6() {
+    fn a_hand_built_record_round_trips_at_schema_7() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(SCHEMA, 6.0, "Task 1 (plan 1b-4) bumped the schema for the extent discriminator");
+        assert_eq!(SCHEMA, 7.0, "Task 1 (plan 2b) bumped the schema for the ground fingerprint");
         assert_eq!(words[0], SCHEMA);
         assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
         assert_eq!(words[44], f64::from(record.stats.crossings_left));
@@ -713,21 +835,29 @@ mod tests {
         assert_eq!(words[51], record.stats.pond_wetness_share);
         assert_eq!(words[52], record.stats.pond_max_slope);
         assert_eq!(words[53], record.stats.pond_density_area_m2);
-        // Task 1 of plan 1b-4's two, closing the 56-word header.
+        // Task 1 of plan 1b-4's two, which closed SCHEMA 6's 56-word header.
         assert_eq!(words[54], f64::from(record.stats.shore_members));
         assert_eq!(words[55], f64::from(record.stats.collar_points));
+        // Task 1 of plan 2b's four, closing the 60-word header: the digest, four bytes a word,
+        // little-endian.
+        assert_eq!(words[56], f64::from(0x0403_0201u32));
+        assert_eq!(words[57], f64::from(0x0807_0605u32));
+        assert_eq!(words[58], f64::from(0x0c0b_0a09u32));
+        assert_eq!(words[59], f64::from(0x80ff_fefdu32));
         assert_eq!(decode(&words), Some(record));
     }
 
-    /// The header is 56 words: everything after word 55 is the first body's first word.
+    /// The header is 60 words: everything after word 59 is the first body's first word.
     #[test]
-    fn sample_bodies_start_after_the_fifty_six_word_header() {
+    fn sample_bodies_start_after_the_sixty_word_header() {
         let record = sample();
         let words = encode(&record);
-        assert_eq!(words[56], f64::from(record.bodies[0].id));
+        assert_eq!(words[60], f64::from(record.bodies[0].id));
         let empty = HydroRecord { bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(),
-                                  falls: Vec::new(), stats: record.stats.clone() };
-        assert_eq!(encode(&empty).len(), 56);
+                                  falls: Vec::new(), stats: record.stats.clone(),
+                                  ground: record.ground };
+        assert_eq!(encode(&empty).len(), HEADER_WORDS);
+        assert_eq!(HEADER_WORDS, 60);
     }
 
     /// A pond's outline is a traced ring and a lake's is a shore-point set (spec §7, Ruling
@@ -743,14 +873,39 @@ mod tests {
         assert_eq!(decoded.bodies[0].kind, BodyKind::Pond);
     }
 
-    /// SCHEMA 4's 43-word header is a prefix of both SCHEMA 5's 45 and SCHEMA 6's 56: a decoder
-    /// that adapted rather than refused would read a body's first words as later header words
-    /// and go wrong quietly.
+    /// SCHEMA 4's 43-word header is a prefix of SCHEMA 5's 45, SCHEMA 6's 56 and SCHEMA 7's 60: a
+    /// decoder that adapted rather than refused would read a body's first words as later header
+    /// words and go wrong quietly.
     #[test]
     fn a_schema_4_record_is_refused() {
         let mut words = encode(&sample());
         words[0] = 4.0;
         assert_eq!(decode(&words), None, "SCHEMA 4 input must be refused outright, not adapted");
+    }
+
+    /// SCHEMA 6's 56-word header is a prefix of SCHEMA 7's 60, and a SCHEMA 6 record carries no
+    /// fingerprint at all: adapted, its first body's first four words would be read as a digest.
+    #[test]
+    fn a_schema_6_record_is_refused() {
+        let mut words = encode(&sample());
+        words[0] = 6.0;
+        assert_eq!(decode(&words), None, "SCHEMA 6 input must be refused outright, not adapted");
+    }
+
+    /// Each digest word is a u32 like any count: a fraction, a negative or a word past u32::MAX
+    /// is not four bytes, and the record is refused rather than rounded into a digest.
+    #[test]
+    fn decode_refuses_a_ground_word_that_is_not_four_bytes() {
+        for at in 56..60 {
+            for bogus in [0.5, -1.0, 4_294_967_296.0, f64::NAN] {
+                let mut words = encode(&sample());
+                words[at] = bogus;
+                assert_eq!(decode(&words), None, "ground word {at} = {bogus}");
+            }
+        }
+        let mut words = encode(&sample());
+        words[56] = f64::from(u32::MAX);
+        assert_eq!(decode(&words).expect("u32::MAX is four bytes").ground[..4], [0xff; 4]);
     }
 
     #[test]
@@ -789,20 +944,20 @@ mod tests {
     }
 
     #[test]
-    fn the_header_is_fifty_six_words() {
+    fn the_header_is_sixty_words() {
         let record = HydroRecord {
             bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
-            stats: sample().stats,
+            stats: sample().stats, ground: sample().ground,
         };
-        assert_eq!(encode(&record).len(), 56);
-        assert_eq!(encode(&record)[0], 6.0);
+        assert_eq!(encode(&record).len(), 60);
+        assert_eq!(encode(&record)[0], 7.0);
     }
 
     #[test]
     fn a_body_carries_its_extent_words() {
         let mut record = HydroRecord {
             bodies: vec![sample().bodies[0].clone()], reaches: Vec::new(), notches: Vec::new(),
-            falls: Vec::new(), stats: sample().stats,
+            falls: Vec::new(), stats: sample().stats, ground: sample().ground,
         };
         // Three shore members and one collar point: the count must not exceed the outline it
         // indexes into, so a body carrying an extent carries the points to go with it.
@@ -813,15 +968,15 @@ mod tests {
         assert_eq!(decode(&words).as_ref(), Some(&record));
         // 16 fixed words, then the outline pairs: shore_member_count and shore_reach_m sit
         // after downstream_id (word 12) and before outline_len (word 15).
-        assert_eq!(words[56 + 13], 3.0);
-        assert_eq!(words[56 + 14], 41_000.5);
+        assert_eq!(words[HEADER_WORDS + 13], 3.0);
+        assert_eq!(words[HEADER_WORDS + 14], 41_000.5);
     }
 
     #[test]
     fn a_schema_five_record_is_refused() {
         let mut words = encode(&HydroRecord {
             bodies: Vec::new(), reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
-            stats: sample().stats,
+            stats: sample().stats, ground: sample().ground,
         });
         words[0] = 5.0;
         assert_eq!(decode(&words), None);
@@ -836,7 +991,7 @@ mod tests {
         body.shore_reach_m = shore_reach_m;
         encode(&HydroRecord {
             bodies: vec![body], reaches: Vec::new(), notches: Vec::new(), falls: Vec::new(),
-            stats: sample().stats,
+            stats: sample().stats, ground: sample().ground,
         })
     }
 
@@ -852,13 +1007,13 @@ mod tests {
         assert!(decode(&some_members).is_some(), "count < outline_len is a legal extent");
 
         // Past the outline's end is not. The extent words sit at 13 and 14 of a body's 16 fixed
-        // words, after the 56-word header; `outline_len` is word 15. (Equalling it is refused
+        // words, after the 60-word header; `outline_len` is word 15. (Equalling it is refused
         // too, by Ruling Q-15 -- its own test below.)
-        let outline_len_word = 56 + 15;
+        let outline_len_word = HEADER_WORDS + 15;
         for bogus in [5.0, 4.0e9, f64::from(u32::MAX)] {
             let mut words = one_body_with_extent(4, 3, 1_000.0);
             assert_eq!(words[outline_len_word], 4.0, "sanity: this world's body has 4 outline points");
-            words[56 + 13] = bogus;
+            words[HEADER_WORDS + 13] = bogus;
             assert_eq!(decode(&words), None, "shore_member_count {bogus} exceeds the 4-point outline");
         }
     }
@@ -899,14 +1054,14 @@ mod tests {
     fn decode_refuses_a_non_finite_or_negative_shore_reach() {
         for bogus in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.5] {
             let mut words = one_body_with_extent(4, 2, 1_000.0);
-            words[56 + 14] = bogus;
+            words[HEADER_WORDS + 14] = bogus;
             assert_eq!(decode(&words), None, "shore_reach_m {bogus} is not a usable distance");
         }
         // Zero is legal -- it is what a pond and a body with no usable edge both write -- and so
         // is any finite positive length, however large.
         for fine in [0.0, 1.0e300] {
             let mut words = one_body_with_extent(4, 2, 1_000.0);
-            words[56 + 14] = fine;
+            words[HEADER_WORDS + 14] = fine;
             assert_eq!(decode(&words).expect("decode").bodies[0].shore_reach_m, fine);
         }
     }
@@ -919,5 +1074,128 @@ mod tests {
         assert_eq!(word_to_u32(f64::NAN), None);
         assert_eq!(word_to_u32(f64::INFINITY), None);
         assert_eq!(word_to_u32(u32::MAX as f64 + 2.0), None);
+    }
+
+    // ---- the ground fingerprint (plan 2b, Task 1) -------------------------------------------
+
+    const SEED: i64 = 20_260_904;
+    /// Not Earth's: the radius change below must be a real change, and 9,309 km -> 6,371 km is
+    /// the pair the precedent in `SCHEMA`'s doc names.
+    const RADIUS_M: f64 = 9_309_000.0;
+    const PLATES: usize = 12;
+    const LAND: f64 = 0.29;
+
+    fn surface_with(seed: i64, radius_m: f64, plates: usize, land: f64) -> Surface {
+        Surface::new(seed, radius_m, plates, land, None, None, None)
+    }
+
+    fn surface_at(radius_m: f64) -> Surface {
+        surface_with(SEED, radius_m, PLATES, LAND)
+    }
+
+    fn fingerprint_of(seed: i64, radius_m: f64, plates: usize, land: f64) -> [u8; GROUND_BYTES] {
+        ground_fingerprint(&surface_with(seed, radius_m, plates, land))
+    }
+
+    #[test]
+    fn two_worlds_that_differ_anywhere_get_different_fingerprints() {
+        // The property the whole guard rests on. A seed change, a plate change, a land change
+        // and a radius change must each move the digest.
+        let base = fingerprint_of(SEED, RADIUS_M, PLATES, LAND);
+        assert_ne!(base, fingerprint_of(SEED + 1, RADIUS_M, PLATES, LAND), "seed");
+        assert_ne!(base, fingerprint_of(SEED, 6_371_000.0, PLATES, LAND), "radius");
+        assert_ne!(base, fingerprint_of(SEED, RADIUS_M, PLATES + 1, LAND), "plates");
+        assert_ne!(base, fingerprint_of(SEED, RADIUS_M, PLATES, LAND + 0.05), "land");
+    }
+
+    #[test]
+    fn the_same_world_fingerprints_the_same_every_time() {
+        let once = fingerprint_of(SEED, RADIUS_M, PLATES, LAND);
+        for _ in 0..8 {
+            assert_eq!(once, fingerprint_of(SEED, RADIUS_M, PLATES, LAND));
+        }
+    }
+
+    /// The brief for this task asked for **every** probe to move past the millimetre rounding on a
+    /// 9,309 km -> 6,371 km change. On this engine that cannot hold, for any scatter of directions:
+    /// measured on this world (seed 20,260,904, 12 plates, land 0.29), **55 of the 64 probes read
+    /// bit-identical `structural_m` at both radii** -- 22 on the -4,600 m abyssal floor, 4 on the
+    /// 700 m plateau cap, and 29 at varying heights that simply do not depend on the radius --
+    /// because the landform is laid out in direction space and only the plate-boundary terms are
+    /// measured in metres. The nine that moved moved by 5.08 m to 274.80 m. (A "0.44 m minimum,
+    /// all 64 moved" figure exists elsewhere in this project; it belongs to a different probe
+    /// scheme, metre offsets around an anchor sampling a different quantity, and is not this
+    /// scheme's.)
+    ///
+    /// So the margin asserted here is the one the scheme actually has, and it is the property
+    /// the original assertion was protecting: **no probe sits near the rounding floor**. A probe
+    /// either reads the same bits at both radii (ground the radius genuinely does not touch, and
+    /// no interpolation change can nudge it across a millimetre boundary) or it moves by more
+    /// than a metre -- a thousand rounding steps. And more than one probe moves, so the digest
+    /// differing is not one lucky point.
+    #[test]
+    fn a_radius_change_moves_its_probes_by_metres_or_not_at_all() {
+        let wide = surface_at(RADIUS_M);
+        let narrow = surface_at(6_371_000.0);
+        let mut moved = 0usize;
+        let mut smallest_move = f64::INFINITY;
+        for index in 0..PROBE_COUNT {
+            let point = probe_point(index);
+            let a = wide.structural_m(&point);
+            let b = narrow.structural_m(&point);
+            if a.to_bits() == b.to_bits() {
+                continue;
+            }
+            let gap = if a > b { a - b } else { b - a };
+            assert!(gap > 1.0, "probe {index} moved only {gap} m -- near the millimetre rounding");
+            moved += 1;
+            if gap < smallest_move {
+                smallest_move = gap;
+            }
+        }
+        println!("{moved} of {PROBE_COUNT} probes moved; smallest move {smallest_move} m");
+        assert!(moved >= 8, "only {moved} of {PROBE_COUNT} probes moved with the radius");
+    }
+
+    #[test]
+    fn a_probe_point_is_the_same_on_every_machine() {
+        // The scatter must come from integer arithmetic, not a float sequence, or two hosts
+        // disagree and every record looks foreign. The first three points are pinned bit for bit;
+        // the values were pinned from an actual run of this test, not derived by hand.
+        let pinned: [[u64; 3]; 3] = [
+            [0xbfec_dafe_01b0_5edd, 0x3fdb_274f_9185_d339, 0xbfb5_37ee_b479_bda0],
+            [0x3fdf_caa3_de04_078e, 0xbfea_5d8b_e8c5_81a8, 0x3fd1_750e_df85_c478],
+            [0x3fb5_4dda_a35c_cc10, 0xbfef_b3c0_8446_befd, 0x3fbb_9367_af52_cb00],
+        ];
+        for (index, want) in pinned.iter().enumerate() {
+            let v = probe_point(index).vector;
+            let got = [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+            println!("probe {index}: [{:#018x}, {:#018x}, {:#018x}]", got[0], got[1], got[2]);
+            assert_eq!(&got, want, "probe {index} moved");
+        }
+    }
+
+    /// The scatter is a scatter: every probe is a unit vector, and no two coincide.
+    #[test]
+    fn the_probes_are_distinct_unit_vectors() {
+        let points: Vec<SpherePoint> = (0..PROBE_COUNT).map(probe_point).collect();
+        for (i, p) in points.iter().enumerate() {
+            let length = p.vector.length();
+            assert!(length > 1.0 - 1e-12 && length < 1.0 + 1e-12, "probe {i} length {length}");
+            for q in &points[..i] {
+                assert!(p.vector != q.vector, "probe {i} repeats an earlier one");
+            }
+        }
+    }
+
+    /// The bake writes the fingerprint of the surface it was handed, and it survives the wire.
+    #[test]
+    fn a_bake_carries_its_surfaces_fingerprint_through_the_wire() {
+        let surface = crate::hydrology::bake_tests::world();
+        let record = crate::hydrology::bake(&surface, &crate::hydrology::bake_tests::params())
+            .expect("bake");
+        assert_eq!(record.ground, ground_fingerprint(&surface));
+        let decoded = decode(&encode(&record)).expect("round trip");
+        assert_eq!(decoded.ground, record.ground);
     }
 }
