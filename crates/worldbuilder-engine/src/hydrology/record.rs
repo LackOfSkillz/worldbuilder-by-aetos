@@ -1129,14 +1129,23 @@ mod tests {
     }
 
     /// A digest that differs because ONE probe moved is a digest one interpolation change from
-    /// colliding, so this asserts the margin rather than the inequality: on a 9,309 km -> 6,371 km
-    /// change **every** probe must move past the millimetre rounding. It holds because the digest
-    /// reads the ground with detail in, and detail's wavelengths are fixed in metres, so a radius
-    /// change moves it everywhere. (`structural_m` alone failed this: 55 of 64 probes read it
-    /// bit-identically at both radii. A 0.44 m minimum quoted elsewhere in this project belongs to
-    /// a different probe scheme; this test's own run is the evidence for this one's.)
+    /// colliding, so this asserts a margin rather than the bare inequality: on a 9,309 km -> 6,371 km
+    /// change, **at least 60 of the 64 probes must move by more than 0.1 m**, and the digests must
+    /// differ. It holds because the digest reads the ground with detail in, and detail's wavelengths
+    /// are fixed in metres, so a radius change moves it nearly everywhere. (`structural_m` alone
+    /// failed this: 55 of 64 probes read it bit-identically at both radii. A 0.44 m minimum quoted
+    /// elsewhere in this project belongs to a different probe scheme.)
+    ///
+    /// **Why not "every probe moves".** Measured at this commit, 63 of 64 probes move by 0.163 m or
+    /// more; the 64th (probe 56, on the abyssal floor where detail is weakest) moves by 1.78 mm. The
+    /// digest's discrimination rests on the 63 -- a probe near the millimetre rounding contributes
+    /// nothing either way -- so an assertion that all 64 clear a millimetre would pin a coincidence
+    /// of where one probe happens to sit, and would false-alarm the day abyssal roughness is lowered.
+    /// 0.1 m sits below the smallest meaningful movement with headroom, and 60 tolerates a few
+    /// probes near the floor without letting the test go vacuous.
     #[test]
-    fn every_probe_moves_when_the_radius_does_so_the_margin_is_not_one_lucky_point() {
+    fn most_probes_move_by_a_metre_scale_amount_when_the_radius_does() {
+        const MEANINGFUL_M: f64 = 0.1;
         let wide = surface_at(RADIUS_M);
         let narrow = surface_at(6_371_000.0);
         let mut moved = 0usize;
@@ -1146,16 +1155,16 @@ mod tests {
             let a = wide.bake_ground_m(&point, None);
             let b = narrow.bake_ground_m(&point, None);
             let gap = if a > b { a - b } else { b - a };
-            if gap >= 0.001 {
+            if gap > MEANINGFUL_M {
                 moved += 1;
             }
             if gap < smallest {
                 smallest = gap;
             }
         }
-        println!("smallest probe movement, 9,309 km -> 6,371 km: {smallest} m");
-        assert_eq!(moved, PROBE_COUNT, "only {moved} of {PROBE_COUNT} probes moved");
-        assert!(smallest > 0.001, "smallest probe movement {smallest} m is at the rounding floor");
+        println!("probes moving > {MEANINGFUL_M} m on 9,309 -> 6,371 km: {moved} of {PROBE_COUNT}; smallest {smallest} m");
+        assert!(moved >= 60, "only {moved} of {PROBE_COUNT} probes moved by more than {MEANINGFUL_M} m");
+        assert_ne!(ground_fingerprint(&wide), ground_fingerprint(&narrow), "radius");
     }
 
     /// The test the `structural_m` design would have failed: two worlds identical except for
