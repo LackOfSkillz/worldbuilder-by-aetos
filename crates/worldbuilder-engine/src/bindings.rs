@@ -1911,6 +1911,13 @@ mod wrong_world_tests {
         // The same radius: a radius change is not the case this exists for.
         let other = Surface::new(20_260_905, 6_371_000.0, 12, 0.29, None, None, None);
         assert!(refuse_a_foreign_record(&record, &other).is_err(), "another world, same radius");
+        // Same seed, radius, plates and land, differing ONLY in relief. This is the case that
+        // made the fingerprint read the detail field rather than `structural_m`: the structure
+        // is identical here, so a structure-only digest would accept this record, and answer
+        // with ponds found in the other world's ground. The native and wasm doors test it too.
+        let rougher =
+            Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, Some(crate::detail::ReliefParams::hills()), None);
+        assert!(refuse_a_foreign_record(&record, &rougher).is_err(), "same world, other relief");
     }
 }
 
