@@ -1399,25 +1399,31 @@ jobs:
           # every row +1 (the rewritten river test in `water/query.rs` replaced, not added).
           # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`):
           # 904/904/907/1030/1033 listed, 11 ignored in each.
+          # 2026-09-18, WATER 2b Task 4 (texture defers to a channel, Ruling C-14):
+          # **893/893/896/1019/1022 -> 895/895/898/1021/1024 with 11 ignored**. Two ungated tests
+          # in `water/layer_tests.rs` (no detail sample above the water along any channel, plain and
+          # gullied; a carve with nothing to cut is its bare parent bit for bit), so every row +2.
+          # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`):
+          # 906/906/909/1032/1035 listed, 11 ignored in each.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 893
+            expect: 895
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 893
+            expect: 895
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 896
+            expect: 898
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1019
+            expect: 1021
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1022
+            expect: 1024
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

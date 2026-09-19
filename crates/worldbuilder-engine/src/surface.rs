@@ -549,35 +549,48 @@ impl Surface {
         // bar already shaped; before detail, so the texture knows where the channel is. `None`
         // is the canonical path and returns `shaped` itself, not `shaped` plus a zero cut.
         //
-        // The layer's authority -- the second element -- is carried out of `cut_m` and not
-        // spent here. Damping detail by it is plan 2b Task 4's, which ships with this or not
-        // at all.
-        let shaped = match water {
-            None => shaped,
-            // Before the cut, `shaped` is `structural_m` at this point, bit for bit -- the landform
-            // the query judges coarse bodies by -- and the detail field it judges a fine-found pond
-            // by is this same composition with no layer at the record's `pond_cell_m`, which is
-            // `bake_ground_m`. So the layer asks exactly the query's question about lakes.
+        // **Texture defers to a channel (spec §8.1, Ruling C-14).** Everything detail adds --
+        // the roughness here and the gully term below -- is damped by one factor, `defer`:
+        // `1 - authority` of the features, times `1 - authority` of the layer. Multiplicative,
+        // so it commutes, neither authority overrides the other, and either one at zero leaves
+        // the other exactly as it was. At full layer authority -- everywhere the query answers
+        // `River` -- the factor is zero, and the ground is the carved bed and nothing else: a
+        // texture peak cannot stand in mid-channel and dam the river.
+        //
+        // With no layer `defer` is `1 - authority`, the very expression this line was before
+        // the layer existed, so the canonical path computes the same bits. With a layer and a
+        // point out of its reach the layer's authority is `0.0` and `(1 - a) * 1.0` is
+        // `1 - a` exactly, so an uncut point of a carved world is its bare parent's to the bit.
+        let (shaped, defer) = match water {
+            None => (shaped, 1.0 - authority),
             Some(layer) => {
+                // Before the cut, `shaped` is `structural_m` at this point, bit for bit -- the
+                // landform the query judges coarse bodies by -- and the detail field it judges a
+                // fine-found pond by is this same composition with no layer at the record's
+                // `pond_cell_m`, which is `bake_ground_m`. So the layer asks exactly the query's
+                // question about lakes.
                 let cell_m = layer.bake().record().stats.pond_cell_m;
                 let bare = |q: &SpherePoint| self.composed_m(q, Some(cell_m), None);
-                layer.cut_with(point, shaped, &crate::water::Detail(&bare)).0
+                let (cut, water_authority) =
+                    layer.cut_with(point, shaped, &crate::water::Detail(&bare));
+                (cut, (1.0 - authority) * (1.0 - water_authority))
             }
         };
         let mut amplitude =
             self.detail
                 .amplitude_m(point, shaped, reading.weight, reading.tectonic_m);
-        // Where somebody stated a shape, roughness defers to it.
-        amplitude *= 1.0 - authority;
+        // Where somebody stated a shape, roughness defers to it -- and where a river runs.
+        amplitude *= defer;
         let roughened = shaped + self.detail.offset_m(point, amplitude, resolution_m);
         // **Four lines, and the canonical path does not execute any of them.** `steer` is
         // `None` unless somebody asked for a drainage block with a non-zero amplitude, so
         // this `match` is the whole of what Ruling 1 costs the default world.
         //
-        // The gully term is damped by `1 - authority` for the same reason the roughness
-        // above it is, and it is measured to matter for the same reason: a harbour dredged
-        // flat that still carries a gully is not dredged. It is sized off `shaped` --
-        // structure with features composed, before any texture -- and steered off
+        // The gully term is damped by `defer` for the same reason the roughness above it is,
+        // and it is measured to matter for the same reason: a harbour dredged flat that still
+        // carries a gully is not dredged, and a channel with a gully across it is dammed. It is
+        // sized off `shaped` -- structure with features composed, before any texture -- and
+        // steered off
         // `structural_m`, which is defined before detail exists. Neither reads the value
         // this line is computing, so nothing here steers on itself.
         //
@@ -594,7 +607,7 @@ impl Surface {
                 let frame = TangentFrame::at(point, self.radius_m);
                 let reading = steer.at(point, &frame, &|probe| self.structural_m(probe));
                 roughened
-                    + (1.0 - authority)
+                    + defer
                         * self
                             .detail
                             .gully_offset_m(point, &frame, reading, shaped, resolution_m)

@@ -42,8 +42,9 @@
 //!
 //! 1. **The layer carries its authority out and applies no damping.** [`WaterLayer::cut_m`] hands
 //!    back `(cut ground, authority)`, as `Features::apply` hands back `(shaped, authority)`, and
-//!    `Surface::elevation_m` owns the composition. Authority is `1` inside a channel and falls to
-//!    `0` at the far edge of the blended bank.
+//!    `Surface::elevation_m` owns the composition -- damping detail and gullies by
+//!    `(1 - features' authority) * (1 - this authority)` (Ruling C-14). Authority is `1` inside a
+//!    channel and falls to `0` at the far edge of the blended bank.
 //! 2. **A cut only ever lowers ground.** A river mouth's bed can *rise* at its last step (Ruling
 //!    R-4's known I4 side effect), and a notch's cut surface can stand above ground the landform
 //!    already carried lower. A "cut" to a target above the ground would be a dam, so a leg whose
@@ -199,7 +200,7 @@ impl WaterLayer {
     /// holds -- and the authority is the **highest** of theirs. A leg whose target stands at or
     /// above `ground_m` cuts nothing (rule 2 of the module doc; the running minimum is seeded with
     /// `ground_m`, so its answer is discarded) but keeps its authority: the point is still in a
-    /// channel, and what Task 4's damping needs to know is that, not whether this
+    /// channel, and what the damping (Ruling C-14) needs to know is that, not whether this
     /// particular ground happened to need lowering.
     ///
     /// **A point no leg reaches returns `(ground_m, 0.0)` with `ground_m` untouched** (rule 3).

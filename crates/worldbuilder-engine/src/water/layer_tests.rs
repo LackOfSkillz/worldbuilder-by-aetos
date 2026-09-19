@@ -589,7 +589,7 @@ fn no_body_is_cut_where_reaches_enter_it() {
     assert!(failures.is_empty(), "{}", failures.join("; "));
 }
 
-// ---- the query's water surface and the carve's bed agree (Ruling C-13) -------------------------
+// ---- texture defers to a channel (plan 2b Task 4; Rulings C-13 and C-14) -----------------------
 
 /// `bake_tests::world()`, with or without a gully block, baked bare at `bake_tests::params()` and
 /// then carved by its own record: `(bare, carved, bake)`.
@@ -664,4 +664,70 @@ fn the_querys_water_surface_never_stands_below_the_carved_bed() {
                 q.level_m, p.to_latlon());
     }
     assert!(rivers > 1_000, "vacuous: only {rivers} channel samples answered river");
+}
+
+/// **Texture cannot dam a river.** Over the whole length of every channel of a real bake, no
+/// sample of the carved world's ground -- detail and all, canonical and at a viewer's 250 m --
+/// stands above the water level the query reports there. That is the property; "the amplitude
+/// was multiplied by `1 - authority`" is only how it is kept.
+///
+/// Run on two worlds: the plain one, and the same world with the gully block on, because the
+/// gully term is a second texture with its own damping and a channel with a gully across it is
+/// dammed too.
+///
+/// **Not vacuous**, and asserted rather than hoped: at a good share of these very samples the bare
+/// world's own texture (its `elevation_m` less its `structural_m`) stands taller than the water
+/// is deep, so the same texture laid on the carved bed undamped would break the surface.
+#[test]
+fn no_detail_sample_rises_above_the_water_along_a_channel() {
+    for (name, gully) in [("plain", None), ("gullied", Some(crate::detail::GullyParams::drainage()))] {
+        let (bare, carved, bake) = carved_by_its_own_bake(gully);
+        let layer = WaterLayer::new(WaterParams::canonical(), bake.clone());
+        let (mut rivers, mut would_dam) = (0usize, 0usize);
+        for p in channel_samples(&bake) {
+            let q = ask_carved(&carved, &bake, &p);
+            if q.kind != WaterKind::River {
+                continue;
+            }
+            rivers += 1;
+            for resolution in [None, Some(250.0)] {
+                let ground = carved.elevation_m(&p, resolution);
+                assert!(ground <= q.level_m,
+                        "{name}: ground {ground} m over water {} m at {:?}, resolution {resolution:?}",
+                        q.level_m, p.to_latlon());
+            }
+            let texture = bare.elevation_m(&p, None) - bare.structural_m(&p);
+            let bed = layer.cut_m(&p, bare.structural_m(&p)).0;
+            if bed + texture > q.level_m {
+                would_dam += 1;
+            }
+        }
+        assert!(rivers > 1_000, "{name}: vacuous, only {rivers} channel samples answered river");
+        assert!(would_dam * 10 > rivers,
+                "{name}: the premise is weak -- undamped texture would break the surface at only \
+                 {would_dam} of {rivers} samples");
+    }
+}
+
+/// A carve with nothing to cut is its bare parent, bit for bit -- elevation and the gully term
+/// alike -- because an uncut point's damping factor is `(1 - a) * 1.0`, which is `1 - a` exactly.
+/// What lets a carved world differ from its parent only where water runs.
+#[test]
+fn a_carve_with_nothing_to_cut_is_its_bare_parent_bit_for_bit() {
+    for gully in [None, Some(crate::detail::GullyParams::drainage())] {
+        let bare = Surface::with_gully(20_260_904, R, 12, 0.29, None, None, None, None, gully);
+        let mut empty = record(Vec::new(), Vec::new(), Vec::new());
+        empty.ground = ground_fingerprint(&bare);
+        let carve = Carve { params: WaterParams::canonical(), bake: Arc::new(IndexedRecord::new(empty, R)) };
+        let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, gully, None,
+                                         Some(carve))
+            .expect("joins");
+        for p in area_uniform(-90.0, 90.0, -180.0, 180.0, 30) {
+            for resolution in [None, Some(250.0)] {
+                assert_eq!(carved.elevation_m(&p, resolution).to_bits(),
+                           bare.elevation_m(&p, resolution).to_bits(),
+                           "gully {}: {:?}", gully.is_some(), p.to_latlon());
+            }
+        }
+    }
 }
