@@ -150,7 +150,16 @@ pub(crate) fn downstream_is_fresh(bodies: &[Body], reach_downstream: &[Downstrea
 /// The bake up to the lake closure: validation, `LandGraph::sample` -> `flood(ocean_seeds)` ->
 /// `find_hollows` + `judge` -> `route` -> `close_lakes`, then `flow::drainage_check` (Ruling
 /// C1-c), which refuses a routing where any node's water fails to reach the sea or a sink.
+///
+/// **A carved surface is refused before anything else is looked at** (Ruling C-1,
+/// [`HydroError::Carved`]). The bake reads the ground in more places than `bake_ground_m` --
+/// the wetness march samples `elevation_m` through `Surface::moisture_index` -- so skipping the
+/// layer in one reader would not make the bake layer-free; refusing the surface does. `bake`
+/// begins here, so it refuses too.
 pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages, HydroError> {
+    if surface.is_carved() {
+        return Err(HydroError::Carved);
+    }
     if params.total_nodes < 2 || params.total_nodes > crate::stream::MAX_NODES {
         return Err(HydroError::Params("total_nodes must be in 2..=stream::MAX_NODES"));
     }

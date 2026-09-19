@@ -9,6 +9,7 @@
 //! tectonics           what the plates did to it        structural
 //! shelf               what the coast does to the water structural
 //! features            what somebody put there          structural
+//! water (opt-in)      what a baked river cuts          elevation only, never structural
 //! detail              roughness                        resolution-aware
 //! ```
 //!
@@ -115,6 +116,16 @@ pub struct Surface {
     /// be bit-identical for every value of `shaped` except `-0.0`, and "every value except
     /// one" is not what Ruling 1 asks for.
     steer: Option<crate::steer::SteerLattice>,
+    /// The water layer (spec §8.1), or `None` on the canonical path -- a stage between features
+    /// and detail that lowers the ground along a baked record's channels.
+    ///
+    /// **`None` is the off switch, and like `steer` it is structural.** Only
+    /// `Surface::with_water` sets it, after joining a record to this world; every other
+    /// constructor leaves it `None`, and `elevation_m` then takes the branch it took before this
+    /// field existed. The record is shared, not copied (`water::layer::IndexedRecord` behind an
+    /// `Arc`), and read as lines with a bed and a width -- nothing here follows one line to the
+    /// next.
+    water: Option<crate::water::layer::WaterLayer>,
 }
 
 impl Surface {
@@ -314,6 +325,7 @@ impl Surface {
         };
         Self {
             steer,
+            water: None,
             world_seed,
             radius_m,
             plates,
@@ -323,6 +335,80 @@ impl Surface {
             detail,
             features,
         }
+    }
+
+    /// The same world, carved: an opt-in water block and the held bake it cuts (spec §8.1).
+    ///
+    /// `water`: `None` for today's ground, byte-for-byte -- or `Some(carve)` to lower the ground
+    /// along `carve.bake`'s reaches and notches. The seventh opt-in parameter of the kind, and the
+    /// first that carries a record rather than a handful of scalars.
+    ///
+    /// **This is the second of the two phases (Ruling C-1), and it is the only way to reach it.**
+    /// The bake reads the ground and the layer writes it, so a bake over a carved world would find
+    /// its ponds in terrain shaped by its own output. So a bake runs on a world without the layer,
+    /// always -- `hydrology::bake_stages` refuses a carved one outright (`HydroError::Carved`) --
+    /// and a carved world is **built from the same parameters as the bare one, plus the block,
+    /// plus the record**. Every argument before `water` is `with_peaks`'s, and is handed to it
+    /// unchanged; the world it builds is the bare parent, and the layer is attached to it last.
+    ///
+    /// **The join is where the fingerprint refusal lives** (plan 2b Task 2), made once here
+    /// rather than on every sample: the bare parent's `ground_fingerprint` is taken before the
+    /// layer exists and compared with the record's own. Because the layer changes `elevation_m`
+    /// and never `structural_m`, and `bake_ground_m` skips it, the carved world fingerprints
+    /// exactly as its bare parent does -- which is what lets a record be checked against it at
+    /// all.
+    ///
+    /// Refuses, with [`crate::water::layer::CarveRefused`], a block that is not admissible, a
+    /// bake indexed at another radius, and a record from other ground. `None` never refuses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_water(
+        world_seed: i64,
+        radius_m: f64,
+        plate_count: usize,
+        land_fraction: f64,
+        features: Option<FeatureInput>,
+        relief: Option<ReliefParams>,
+        tectonics: Option<TectonicParams>,
+        coast: Option<CoastParams>,
+        gully: Option<GullyParams>,
+        peaks: Option<PeakParams>,
+        water: Option<crate::water::layer::Carve>,
+    ) -> Result<Self, crate::water::layer::CarveRefused> {
+        use crate::water::layer::{CarveRefused, WaterLayer};
+        let mut surface = Self::with_peaks(
+            world_seed,
+            radius_m,
+            plate_count,
+            land_fraction,
+            features,
+            relief,
+            tectonics,
+            coast,
+            gully,
+            peaks,
+        );
+        let Some(carve) = water else {
+            return Ok(surface);
+        };
+        if !carve.params.is_admissible() {
+            return Err(CarveRefused::Params);
+        }
+        if carve.bake.index().radius_m().to_bits() != surface.radius_m.to_bits() {
+            return Err(CarveRefused::Radius);
+        }
+        // The bare parent's digest: `surface` has no layer yet, so this is the ground a bake of
+        // this world would have read.
+        let ground = crate::hydrology::record::ground_fingerprint(&surface);
+        crate::hydrology::record::check_ground(carve.bake.record(), &ground)
+            .map_err(CarveRefused::Foreign)?;
+        surface.water = Some(WaterLayer::new(carve.params, carve.bake));
+        Ok(surface)
+    }
+
+    /// Whether this world carries the water layer. A carved world is never baked (Ruling C-1):
+    /// `hydrology::bake_stages` asks this first and refuses.
+    pub fn is_carved(&self) -> bool {
+        self.water.is_some()
     }
 
     /// The ground before any roughness, which is the same at every scale.
@@ -380,6 +466,10 @@ impl Surface {
     /// answers the same at every scale, so nothing resolution-aware may enter. The
     /// authority the second tuple element carries is consumed by `elevation_m`, where
     /// the detail amplitude it damps lives.
+    ///
+    /// **Nor does the water layer (spec §8.1).** A channel is cut in `elevation_m`, never here, so
+    /// a carved world and its bare parent answer this bit for bit -- the query's landform (Ruling
+    /// Q-3) and every level the bake wrote against it stay where they were.
     pub fn structural_m(&self, point: &SpherePoint) -> f64 {
         self.features.apply(point, self.shelf.elevation_m(point)).0
     }
@@ -436,9 +526,36 @@ impl Surface {
     /// languages. It localises a defect to a stage - a failure here is the detail add,
     /// and a failure of Task 3's invariant is the feature stage - instead of reporting
     /// only that the total is wrong.
+    ///
+    /// **The water layer runs between features and detail** (spec §8.1), and only in a world
+    /// `with_water` carved; see [`Surface::composed_m`], which this and `bake_ground_m` share.
     pub fn elevation_m(&self, point: &SpherePoint, resolution_m: Option<f64>) -> f64 {
+        self.composed_m(point, resolution_m, self.water.as_ref())
+    }
+
+    /// `elevation_m`'s whole composition, with the water layer passed in rather than read off
+    /// `self` -- so `elevation_m` hands it this world's layer and `bake_ground_m` hands it `None`,
+    /// and "the layer skipped and nothing else skipped" is one argument rather than a second copy
+    /// of the pipeline that could drift from the first.
+    fn composed_m(
+        &self,
+        point: &SpherePoint,
+        resolution_m: Option<f64>,
+        water: Option<&crate::water::layer::WaterLayer>,
+    ) -> f64 {
         let reading = self.shelf.evaluate(point);
         let (shaped, authority) = self.features.apply(point, reading.elevation_m);
+        // The water layer: after features, so a channel is cut into the ground a harbour or a
+        // bar already shaped; before detail, so the texture knows where the channel is. `None`
+        // is the canonical path and returns `shaped` itself, not `shaped` plus a zero cut.
+        //
+        // The layer's authority -- the second element -- is carried out of `cut_m` and not
+        // spent here. Damping detail by it is plan 2b Task 4's, which ships with this or not
+        // at all.
+        let shaped = match water {
+            None => shaped,
+            Some(layer) => layer.cut_m(point, shaped).0,
+        };
         let mut amplitude =
             self.detail
                 .amplitude_m(point, shaped, reading.weight, reading.tectonic_m);
@@ -481,22 +598,27 @@ impl Surface {
     /// nothing else skipped. Detail, features, gullies and every other layer are in; only water
     /// the engine itself carves is out.
     ///
-    /// **This is a contract later tasks must honour, not a synonym.** Today there is no water
-    /// layer, so this returns `elevation_m` bit for bit. Plan 2b's carve will add one to
-    /// `elevation_m`, and when it does, this function -- and only this function -- must keep
-    /// evaluating the ground without it. Two readers depend on that, and route through here so
-    /// they cannot drift apart:
+    /// **This is a contract, not a synonym.** On a world without the layer -- every world but one
+    /// `with_water` built -- this is `elevation_m` bit for bit. **On a carved world it is the
+    /// bare parent's `elevation_m`, bit for bit: the ground as it stood before any channel was
+    /// cut, which is the ground the record's levels, ponds and fingerprint were all measured
+    /// against.** It is `elevation_m`'s own composition with the layer handed in as `None`
+    /// ([`Surface::composed_m`]), so nothing but the layer can differ. Three readers depend on
+    /// that, and route through here so they cannot drift apart:
     ///
     /// - the fine pond search (`hydrology::ponds::pond_ground`, Ruling S-9), which finds ponds in
     ///   the detail field at `Some(pond_cell_m)`;
-    /// - the record's ground fingerprint (`hydrology::record::ground_fingerprint`), at `None`.
+    /// - the record's ground fingerprint (`hydrology::record::ground_fingerprint`), at `None`;
+    /// - the query's detail field (`water::Detail`, Ruling C-9), at the record's `pond_cell_m`: a
+    ///   pond's level was found against bare ground, so a point is compared with bare ground, and
+    ///   a channel cut beside a pond does not read as inside it.
     ///
     /// If the fingerprint read the carved ground, a record's own digest would depend on whether
     /// its own carve was active -- circular. If it read `structural_m` instead, it would miss the
     /// detail the pond search found its ponds in, and a world differing only in its relief block
     /// would be accepted as the same ground.
     pub fn bake_ground_m(&self, point: &SpherePoint, resolution_m: Option<f64>) -> f64 {
-        self.elevation_m(point, resolution_m)
+        self.composed_m(point, resolution_m, None)
     }
 
     /// Mean annual surface temperature at a point, in degrees C.

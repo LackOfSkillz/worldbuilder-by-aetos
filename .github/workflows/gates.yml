@@ -1375,25 +1375,36 @@ jobs:
           # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
           # per configuration, summing each binary's trailer: 889/889/892/1014/1017 listed, 11
           # ignored in each. Ignored stays 11: no `#[ignore]`d test was added.
+          # 2026-09-18, WATER 2b Task 3 (a river cuts the ground it runs through):
+          # **878/878/881/1003/1006 -> 891/891/894/1017/1020 with 11 ignored**. Two gates:
+          # - `water/layer_tests.rs` +13 (the cross-section, the lake exception, the never-raise
+          #   sweeps, the query/carve agreement, the cell-line bank, the absent block, the bake's
+          #   refusal of a carved world, the carved world's fingerprint, and the join's refusals).
+          #   No feature gate, so every row +13.
+          # - `wasm.rs` +1 (`carved_ground_tests`, Ruling C-9: the query's detail field is the bare
+          #   ground). `--features wasm` only, so the two wasm rows +1 more.
+          # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
+          # per configuration, counting `: test` lines: 902/902/905/1028/1031 listed, 11 ignored in
+          # each. The Python total (577, conformance 168) did not move.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 878
+            expect: 891
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 878
+            expect: 891
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 881
+            expect: 894
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1003
+            expect: 1017
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1006
+            expect: 1020
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

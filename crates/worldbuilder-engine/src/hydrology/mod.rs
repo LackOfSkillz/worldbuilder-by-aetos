@@ -397,6 +397,11 @@ pub enum HydroError {
     /// whose receiver chain cycles or stops on dry land (see `flow::drainage_check`). The bake
     /// refuses rather than silently losing that node's water.
     Drainage(u32),
+    /// Ruling C-1: the surface carries the water layer. A bake reads the ground and the layer
+    /// writes it, so a bake over a carved world would find its ponds in terrain shaped by its own
+    /// output -- circular, with no fixed point. Bake the bare world; carve by joining the record
+    /// to it (`Surface::with_water`).
+    Carved,
 }
 
 /// The bake, end to end: `bake_stages`, then `record_of`, then `refine::refine`, then

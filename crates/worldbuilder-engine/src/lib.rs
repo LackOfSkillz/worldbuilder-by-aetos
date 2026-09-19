@@ -413,6 +413,18 @@ mod world_tests {
     /// particular stays on the list: the gully kernel's own prose calls itself a drainage
     /// texture, and the field's doc comment is worded around that word on purpose so this
     /// guard keeps its teeth.
+    ///
+    /// **And from nine to ten, deliberately again.** Water plan 2b added `water:
+    /// Option<crate::water::layer::WaterLayer>`, spec §8.1's water layer. It could not be threaded
+    /// through an existing layer the way the islands slice threaded its seamounts through
+    /// `Tectonics`: it is a *stage of `Surface` itself*, between features and detail, and
+    /// `elevation_m` must be able to run the composition with it and `bake_ground_m` without it
+    /// (Ruling C-1). What it holds is a baked record -- which does carry each reach's link to the
+    /// next -- but the layer reads it only as lines with a bed and a width, through a spatial
+    /// index, and never follows a link: what it adds to `Surface` is one more scalar term of the
+    /// point, not a graph to walk. The field is private, so the public count stays eight, and it
+    /// is named below so an ELEVENTH cannot arrive without this test being edited once more. Every
+    /// banned word stays banned, and the field's own doc comment is worded to keep them out.
     #[test]
     fn the_surface_is_not_modified_by_this_slice() {
         let source = include_str!("surface.rs");
@@ -437,6 +449,15 @@ mod world_tests {
             "the gully slice's steering lattice is the ninth field and is named here so a \
              TENTH cannot arrive without this test being edited again"
         );
+        assert!(
+            body.contains("water: Option<crate::water::layer::WaterLayer>,"),
+            "water plan 2b's water layer is the tenth field and is named here so an ELEVENTH              cannot arrive without this test being edited again"
+        );
+        let fields = body.lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//") && line.contains(": "))
+            .count();
+        assert_eq!(fields, 10, "Surface must have exactly ten fields, public and private");
         assert_eq!(body.matches("pub ").count(), 8, "Surface must still have eight public fields");
         for banned in ["stream", "Stream", "graph", "Graph", "drainage", "downhill"] {
             assert!(!body.contains(banned), "Surface grew a graph field: {banned}");

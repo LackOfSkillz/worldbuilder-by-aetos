@@ -60,24 +60,33 @@
 //!   about twice its band has interior cells that list it nowhere, and the query answers `Ocean`
 //!   there. The owner's great lake is 3,627 km across with a 58 km band, so a query in the
 //!   middle of it answered `Ocean` over a region 1,700 km wide. Task 6 corrects §8.2's text.
-//! - **A reach or a notch** is listed in every cell within half its width of its centre line,
-//!   along every recorded leg. Ruling Q-7: the width of a leg is the **larger** of its two
-//!   endpoints', because a leg tapers between recorded points and the smaller value would put
-//!   the wide end of the taper outside the index.
+//! - **A reach or a notch** is listed in every cell within its **footprint** of its centre line,
+//!   along every recorded leg: [`crate::water::layer::footprint_m`], which is half its width
+//!   plus the widest bank the water layer may blend (plan 2b). Ruling Q-7: the width of a leg is
+//!   the **larger** of its two endpoints', because a leg tapers between recorded points and the
+//!   smaller value would put the wide end of the taper outside the index.
+//!
+//!   **Why the footprint and not half the width, which is what plan 2a shipped.** The query
+//!   claims a river only within half the width, so for the query alone half the width was
+//!   enough. The carve reaches further: it blends a bank out beyond the channel's edge, and a
+//!   bank point in a cell that did not list its reach would be left uncut while its neighbour
+//!   across the cell line was cut -- a cliff along a cell boundary. One footprint serves both:
+//!   the query rejects the extra candidates by distance, which costs it a comparison and can
+//!   never cost it an answer, and the layer shares the index rather than holding a second one.
 //!
 //! # How a leg's cells are enumerated, and what that guarantees
 //!
 //! Walking a leg cell by cell is exact and fiddly on a sphere; this samples instead. Each leg is
-//! sampled at no more than **half a cell** apart, and every sample is dilated by half the width
+//! sampled at no more than **half a cell** apart, and every sample is dilated by the footprint
 //! **plus half of the widest gap between neighbouring samples on that leg** -- a gap that is
 //! measured from the samples actually produced, not assumed from the step. So:
 //!
-//! > **Guarantee.** Every cell holding any point within half the width of the polyline is listed
+//! > **Guarantee.** Every cell holding any point within the footprint of the polyline is listed
 //! > for that reach or notch.
 //!
-//! The proof is two steps. A point `x` within half the width of the line has a nearest point `y`
+//! The proof is two steps. A point `x` within the footprint of the line has a nearest point `y`
 //! on it; `y` lies on some leg between two neighbouring samples, so it is within half that leg's
-//! widest gap of one of them, call it `s`; hence `d(x, s) <= half_width + widest/2`, the reach
+//! widest gap of one of them, call it `s`; hence `d(x, s) <= footprint + widest/2`, the reach
 //! `s` was dilated by. And `cells_within` lists every cell holding a point within its reach (it
 //! sweeps a whole row/column range, so it lists more than that and never less).
 //!
@@ -102,6 +111,8 @@ use crate::detmath as m;
 use crate::hydrology::buckets::BucketIndex;
 use crate::hydrology::{Body, HydroRecord};
 use crate::sphere::SpherePoint;
+use crate::water::layer::footprint_m;
+use crate::water::query::leg_width_m;
 
 /// About 50 km, spec §8.2. A cell holds every item whose influence reaches it.
 pub const DEFAULT_CELL_M: f64 = 50_000.0;
@@ -306,32 +317,26 @@ fn add_point(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, point: &Sphere
     }
 }
 
-/// List `id` along a polyline, half a width either side. See the module doc for the guarantee.
+/// List `id` along a polyline, its footprint either side. See the module doc for the guarantee.
 fn add_line(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, line: &[SpherePoint],
             widths: &[f64], radius_m: f64) {
     if line.is_empty() {
         return;
     }
     if line.len() == 1 {
-        add_point(grid, cells, id, &line[0], half_of(widths[0]));
+        add_point(grid, cells, id, &line[0], footprint_m(widths[0]));
         return;
     }
     for leg in 0..line.len() - 1 {
         // Ruling Q-7: the wider of the two endpoints, because a leg tapers between them and the
         // narrower value would leave the wide end of the taper out of the index.
-        let (a, b) = (widths[leg], widths[leg + 1]);
-        let wider = if b > a { b } else { a };
-        add_leg(grid, cells, id, &line[leg], &line[leg + 1], half_of(wider), radius_m);
+        let wider = leg_width_m(widths[leg], widths[leg + 1]);
+        add_leg(grid, cells, id, &line[leg], &line[leg + 1], footprint_m(wider), radius_m);
     }
 }
 
-/// Half a width, and zero for a width that is negative or not a number.
-fn half_of(width_m: f64) -> f64 {
-    if width_m > 0.0 { width_m * 0.5 } else { 0.0 }
-}
-
 fn add_leg(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, a: &SpherePoint, b: &SpherePoint,
-           half_width_m: f64, radius_m: f64) {
+           footprint_m: f64, radius_m: f64) {
     let length_m = a.distance_to(b, radius_m);
     let step_m = grid.cell_m() * 0.5;
     let raw = length_m / step_m;
@@ -355,7 +360,7 @@ fn add_leg(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, a: &SpherePoint,
             widest_gap_m = gap;
         }
     }
-    let reach_m = half_width_m + widest_gap_m * 0.5;
+    let reach_m = footprint_m + widest_gap_m * 0.5;
     for sample in &samples {
         add_point(grid, cells, id, sample, reach_m);
     }

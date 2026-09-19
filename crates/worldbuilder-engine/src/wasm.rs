@@ -4634,6 +4634,10 @@ pub extern "C" fn wb_hydro_bake(handle: u32, params: *const f64, params_len: u32
         // world -- `bake_stages` already refuses to build one whose routing fails to drain, so
         // this arm is covered by inspection only (see this task's report).
         Some(Err(HydroError::Drainage(_))) => return WB_ERR_DRAINAGE,
+        // Ruling C-1: a carved world is never baked. No door builds a carved world handle yet
+        // (plan 2b Task 5 adds one), so nothing reaches this arm today; it answers the malformed-
+        // request status rather than panicking, and Task 5 may give it a name of its own.
+        Some(Err(HydroError::Carved)) => return WB_ERR_PARAM,
         Some(Ok(record)) => record,
     };
 
@@ -4802,9 +4806,12 @@ unsafe fn write_water(out: *mut f64, offset: usize, answer: &water::WaterAt) {
 ///
 /// - `landform_m` is **`Surface::structural_m`** -- Ruling Q-3, the surface every coarse body's
 ///   level, every reach bed and the ocean datum were written against.
-/// - `detail_m` is **`Surface::elevation_m` at `pond_cell_m`** -- Ruling Q-16, exactly what
+/// - `detail_m` is **`Surface::bake_ground_m` at `pond_cell_m`** -- Ruling Q-16, exactly what
 ///   `hydrology::ponds::pond_ground` builds, and the surface Ruling S-9 levelled a fine-found
-///   body off.
+///   body off. `bake_ground_m` and not `elevation_m` (Ruling C-9): on a carved world the two
+///   differ inside a channel, and a pond's level was found against the bare ground, so a
+///   channel cut beside a pond would otherwise read as inside it. On a bare world they are the
+///   same bits.
 ///
 /// `pond_cell_m` comes from **the record's own header** (`stats.pond_cell_m`) and not from
 /// `HydroParams::earth_like`: a held bake's params are not on the wire, and a bake made with a
@@ -4815,7 +4822,7 @@ fn with_ground<T>(
     action: impl FnOnce(&water::Ground) -> T,
 ) -> T {
     let landform_m = |point: &SpherePoint| surface.structural_m(point);
-    let detail_m = |point: &SpherePoint| surface.elevation_m(point, Some(pond_cell_m));
+    let detail_m = |point: &SpherePoint| surface.bake_ground_m(point, Some(pond_cell_m));
     action(&water::Ground { landform_m: water::Landform(&landform_m), detail_m: water::Detail(&detail_m) })
 }
 
@@ -5189,6 +5196,31 @@ mod world_ground_tests {
 
         assert_eq!(wb_hydro_free(bake), WB_OK);
         assert_eq!(wb_world_free(recreated), WB_OK);
+    }
+}
+
+/// **Ruling C-9: the query's detail field is the bare ground.** [`with_ground`] is the one place
+/// the wasm query names its two surfaces, and on a carved world `elevation_m` and `bake_ground_m`
+/// part company inside a channel. No export builds a carved world yet (plan 2b Task 5 adds that
+/// door), so this is asserted on the function directly, over the carved world the water layer's
+/// own tests join.
+#[cfg(test)]
+mod carved_ground_tests {
+    use super::*;
+
+    #[test]
+    fn the_querys_detail_field_is_the_ground_the_bake_read_not_the_carved_ground() {
+        let (bare, carved, probe) = crate::water::layer::tests::carved_home();
+        let cell_m = crate::hydrology::HydroParams::earth_like(1_000).pond_cell_m;
+        let seen = with_ground(&carved, cell_m, |ground| ground.detail_m.at(&probe));
+        let cut = carved.elevation_m(&probe, Some(cell_m));
+        assert!(bare.elevation_m(&probe, Some(cell_m)) - cut > 1.0,
+                "fixture is wrong: the probe is not in a channel the carve cut");
+        assert_eq!(seen.to_bits(), bare.elevation_m(&probe, Some(cell_m)).to_bits(),
+                   "the query compared a pond against the carved ground, {seen} m, not the bare");
+        // And the landform half is untouched either way: `structural_m` never sees the layer.
+        let landform = with_ground(&carved, cell_m, |ground| ground.landform_m.at(&probe));
+        assert_eq!(landform.to_bits(), bare.structural_m(&probe).to_bits());
     }
 }
 

@@ -23,7 +23,7 @@
 //!   ocean. Every level, bed and datum crossing in the record is landform-derived, and a query
 //!   that asked the detail field instead would put the shoreline wherever the texture noise
 //!   happened to cross the level.
-//! - **Ruling Q-16, the detail field** (`Surface::elevation_m` at `pond_cell_m` -- exactly
+//! - **Ruling Q-16, the detail field** (`Surface::bake_ground_m` at `pond_cell_m` -- exactly
 //!   `hydrology::ponds::pond_ground`), for a body the §6.6 fine search found. **Ruling S-9 made
 //!   that search read the detail field**, because the landform is smooth at 250 m: the deepest
 //!   landform dip on the owner's world is 18 mm, so a pond levelled off `structural_m` would have
@@ -190,10 +190,12 @@ impl WaterAt {
 /// dry and lake edges wander with the detail slider.
 pub struct Landform<'a>(pub &'a dyn Fn(&SpherePoint) -> f64);
 
-/// `Surface::elevation_m(point, Some(pond_cell_m))` -- the landform **plus** the detail field, at
-/// the fine search's own cell size. This is exactly `hydrology::ponds::pond_ground`, and passing
-/// anything else means comparing a fine-found body's level against a surface it was never
-/// levelled from. Ruling Q-16. Used only for a body with `shore_member_count == 0`.
+/// `Surface::bake_ground_m(point, Some(pond_cell_m))` -- the landform **plus** the detail field, at
+/// the fine search's own cell size, and **without** the water layer (Ruling C-9). This is exactly
+/// `hydrology::ponds::pond_ground`, and passing anything else means comparing a fine-found body's
+/// level against a surface it was never levelled from -- `elevation_m` included, which on a carved
+/// world has a channel cut into it. Ruling Q-16. Used only for a body with
+/// `shore_member_count == 0`.
 ///
 /// A newtype for the same reason as [`Landform`]; see there.
 pub struct Detail<'a>(pub &'a dyn Fn(&SpherePoint) -> f64);
@@ -536,8 +538,7 @@ fn river_claim(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> Option<
     }
     let mut best: Option<f64> = None;
     for leg in 0..points.len() - 1 {
-        let (a, b) = (points[leg].width_m, points[leg + 1].width_m);
-        let wider = if b > a { b } else { a };
+        let wider = leg_width_m(points[leg].width_m, points[leg + 1].width_m);
         let d = distance_to_leg_m(point, &reach_at(reach, leg), &reach_at(reach, leg + 1), radius_m);
         if d <= half_of(wider) {
             best = Some(match best {
@@ -580,9 +581,23 @@ fn reach_at(reach: &ReachLine, i: usize) -> SpherePoint {
     SpherePoint::from_latlon(reach.points[i].lat_deg, reach.points[i].lon_deg)
 }
 
+// ---- leg geometry, shared with the water layer ------------------------------------------------
+//
+// **The query's "this is a river" and the carve's "this is a channel" are one test.** Plan 2b's
+// water layer (`water::layer`) cuts a channel wherever this module would answer `River`, and it
+// finds that place with the functions below rather than with a copy of them: the same Ruling Q-7
+// width, the same half of it, the same distance to the same arc. A second version would be a
+// second place for the channel to be.
+
+/// Ruling Q-7: a leg's width is the **larger** of its two endpoints', because a leg tapers between
+/// recorded points and the smaller value would answer `none` inside a channel the carve cuts.
+pub(crate) fn leg_width_m(width_a_m: f64, width_b_m: f64) -> f64 {
+    if width_b_m > width_a_m { width_b_m } else { width_a_m }
+}
+
 /// Half a width, and zero for a width that is negative or not a number -- `index.rs`'s own rule,
 /// so the index and the query agree on what a malformed width means.
-fn half_of(width_m: f64) -> f64 {
+pub(crate) fn half_of(width_m: f64) -> f64 {
     if width_m > 0.0 { width_m * 0.5 } else { 0.0 }
 }
 
@@ -594,9 +609,26 @@ fn half_of(width_m: f64) -> f64 {
 /// transcendental is spent deciding it. Two coincident or antipodal ends have no arc to be
 /// perpendicular to and fall back to the ends.
 fn distance_to_leg_m(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radius_m: f64) -> f64 {
+    leg_foot(point, a, b, radius_m).0
+}
+
+/// [`distance_to_leg_m`], and **how far along the leg its answer was measured**: `0` at `a`, `1`
+/// at `b`. The distance is computed here and nowhere else, so the query and the carve cannot
+/// disagree about it.
+///
+/// The fraction needs no transcendental either. `before` and `after` are the two sign tests'
+/// own values, and on unit vectors they are `|a x b|` times the sines of the angles `a`-foot and
+/// foot-`b`; their ratio is therefore the foot's position by the sines of its two angles, which
+/// is exact at both ends and monotone along the leg, and it departs from the angular fraction
+/// only by the difference between an angle and its sine -- second order in a leg a few hundred
+/// metres long on a planet thousands of kilometres round. Where the foot falls off the leg, the
+/// distance is to the nearer end and so is the fraction: `0` for `a`, `1` for `b`, and `b` on a
+/// tie, because `ends` below keeps `db` when `da == db`.
+pub(crate) fn leg_foot(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radius_m: f64)
+                       -> (f64, f64) {
     let da = point.distance_to(a, radius_m);
     let db = point.distance_to(b, radius_m);
-    let ends = if da < db { da } else { db };
+    let ends = if da < db { (da, 0.0) } else { (db, 1.0) };
 
     let across = a.vector.cross(&b.vector);
     if across.length() < DEGENERATE {
@@ -618,7 +650,9 @@ fn distance_to_leg_m(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radi
     // `.abs()`, and capped rather than `.clamp(`ed, per the house rules.
     let magnitude = if off_plane < 0.0 { -off_plane } else { off_plane };
     let capped = if magnitude > 1.0 { 1.0 } else { magnitude };
-    m::asin(capped) * radius_m
+    let span = before + after;
+    let along = if span > 0.0 { before / span } else { 0.0 };
+    (m::asin(capped) * radius_m, along)
 }
 
 // ---- resolving what the index handed back ----------------------------------------------------
@@ -640,19 +674,29 @@ fn body_by_id(record: &HydroRecord, id: u32) -> Option<&Body> {
 
 /// The reach with this **id**, on the same terms as [`body_by_id`].
 fn reach_by_id(record: &HydroRecord, id: u32) -> Option<&ReachLine> {
+    reach_position(record, id).map(|position| &record.reaches[position])
+}
+
+/// Where in `record.reaches` the reach with this **id** sits, on [`reach_by_id`]'s terms -- the
+/// position tried first as a fast path, then a scan for the first reach carrying the id. Shared
+/// with the water layer, which keeps each reach's points pre-projected by position and must
+/// resolve an index candidate to the same reach the query would.
+pub(crate) fn reach_position(record: &HydroRecord, id: u32) -> Option<usize> {
     let position = id as usize; // cast-ok: a recorded id used as a position, verified on the line below
     if let Some(reach) = record.reaches.get(position) {
         if reach.id == id {
-            return Some(reach);
+            return Some(position);
         }
     }
-    record.reaches.iter().find(|reach| reach.id == id)
+    record.reaches.iter().position(|reach| reach.id == id)
 }
 
 // ---- tests -----------------------------------------------------------------------------
 
+/// `pub(crate)` for [`stats`] alone: `water::layer`'s tests drive hand-written records too, and
+/// a second copy of that forty-field fixture would be a second thing to keep in step.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::hydrology::{
         BakeStats, Body, BodyKind, Downstream, HydroParams, HydroRecord, ReachClass, ReachLine,
@@ -714,7 +758,7 @@ mod tests {
 
     /// Every count zero: a `HydroRecord` driven directly, with no bake behind it. The query
     /// reads nothing from `stats`.
-    fn stats() -> BakeStats {
+    pub(crate) fn stats() -> BakeStats {
         let p = HydroParams::earth_like(1_000);
         BakeStats {
             nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,

@@ -1780,6 +1780,7 @@ fn cached_hydro(
             HydroError::Drainage(node) => {
                 format!("the routing failed the drainage check at node {node}")
             }
+            HydroError::Carved => "a carved world is never baked (Ruling C-1)".to_string(),
         };
         HydroBakeError::new_err(message)
     })?;
@@ -1820,7 +1821,7 @@ fn water_kind_str(kind: water::WaterKind) -> &'static str {
 /// Every `world_seed`/`radius_m`/`plate_count`/`land_fraction`/`features`/`features_radius_m`
 /// argument is exactly `surface_structural_m`'s own signature, because it builds and caches
 /// the same `Surface` (Ruling Q-3: the query's landform is `Surface::structural_m`, and the
-/// detail field for a fine-found body is `Surface::elevation_m` at the record's own
+/// detail field for a fine-found body is `Surface::bake_ground_m` at the record's own
 /// `pond_cell_m`, Ruling Q-16 -- both read off the one `Surface` this call builds, exactly as
 /// `with_ground` reads them off the one world `wb_water_at` is given). The hydrology params
 /// that follow choose the bake, defaulted to `HydroParams::earth_like(total_nodes)` so a
@@ -1878,7 +1879,8 @@ pub fn water_at(
     // never from `HydroParams::earth_like`, so a bake made with a different cell size is still
     // judged against the surface it was actually found in (Ruling Q-16).
     let landform_m = |point: &SpherePoint| surface.structural_m(point);
-    let detail_m = |point: &SpherePoint| surface.elevation_m(point, Some(record.stats.pond_cell_m));
+    // Ruling C-9: `bake_ground_m`, the bare ground the pond's level was found against.
+    let detail_m = |point: &SpherePoint| surface.bake_ground_m(point, Some(record.stats.pond_cell_m));
     let ground = water::Ground { landform_m: water::Landform(&landform_m), detail_m: water::Detail(&detail_m) };
 
     let point = SpherePoint { vector: Vec3::new(x, y, z) };
