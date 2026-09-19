@@ -1446,6 +1446,11 @@ jobs:
           # `--ignored`) per configuration, summing each binary's trailer, listed
           # 914/914/917/1055/1058 with 11 ignored, and `assert_counts.py cargo-list` printed
           # `count OK` for all five.
+          # 2026-09-19, WATER 2b Task 7 fix round: **903/903/906/1044/1047, UNCHANGED**, ignored 11.
+          # The fix round adds parity records (`HC`, `CBANK`, `CBCTL`) and a control, not tests.
+          # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
+          # configuration, summing each binary's trailer: listed 914/914/917/1055/1058, and
+          # `assert_counts.py cargo-list` printed `count OK` for all five.
           - name: no-default-features
             features: "--no-default-features"
             expect: 903
@@ -2192,12 +2197,25 @@ jobs:
       # REFUSES TO WRITE THE CORPUS if any category has no qualifying point. `GENERATOR_VERSION`
       # is not bumped: the block is opt-in, so a world from the same seed and parameters is
       # bit-identical -- which is what every other group here shows, unmoved.
-      - name: Assert the corpus -- 156,075 values, 0 divergent
+      # 2026-09-19, WATER 2b Task 7 fix round (the carving record compared whole): 156,075 ->
+      # **179,086 compared, 0 divergent**. The whole +23,011 is TWO new groups, `hydro_carve/ranges`
+      # (16,971 = 2 + a 16,969-word record) and `hydro_carve/plain` (6,040 = 2 + 6,038): the bakes
+      # the `carve` groups join, baked for carving (params word 12 = 1), compared word for word in
+      # `H`'s own layout (`HC` records). The drain (Task 4b) runs inside the wasm bake whenever the
+      # studio carves, and before these its only cross-boundary check was 56 carved elevations.
+      # `examples/parity_dump.rs::check_drain` asserts natively that each differs from its ordinary
+      # twin ONLY where the drain says: word 0 (7 -> 8), the fine-found bodies
+      # `ponds::drain_deficit_m` drops (re-derived, not read off the diff) plus any find a freed
+      # density cell admits, and `ponds_kept` -- every reach, notch, fall, the fingerprint, every
+      # coarse body and every other header field equal. `ranges` drops 4 of 22 and admits 1
+      # (22 -> 19 kept); `plain` drops 1 of 4 (4 -> 3). These are exactly Task 4b's measured
+      # 16,971 and 6,040 for the drained records. The `CBANK`/`CBCTL` records add no compared value.
+      - name: Assert the corpus -- 179,086 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 156075 --expect-divergent 0
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output parity.out --expect-label parity             --expect-compared 179086 --expect-divergent 0
 
       # The control. The harness's own documented proof that it can notice a wrong answer:
       # `--mutate seed` moves the world seed by one and 68,457 of 71,596 values diverge. A
@@ -2309,12 +2327,18 @@ jobs:
       # carves other ground, so every point moves -- but the door's status is `WB_OK` on both
       # planets (the seed moves the world AND the bake together, so the pairing still matches), so
       # the status value is the one that stays equal in each. Every other group is unmoved.
-      - name: Assert the control -- 147,449 of 156,075 divergent
+      # 2026-09-19, WATER 2b Task 7 fix round: 147,449/156,075 -> **170,363 of 179,086**. The +22,914
+      # is the two carving records alone: `hydro_carve/ranges` 16,922 of 16,971 and
+      # `hydro_carve/plain` 5,992 of 6,040 -- another planet bakes another record, and the words
+      # that stay equal are the status and header words no seed reaches, the same shape as the
+      # ordinary records' own (`hydro/ranges` 17,051 of 17,103, `hydro/plain` 6,023 of 6,076, both
+      # unmoved by this round). Everything else, the `carve` groups included, is unmoved.
+      - name: Assert the control -- 170,363 of 179,086 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 156075 --expect-divergent 147449
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output control.out --expect-label "CONTROL (--mutate seed)"             --expect-compared 179086 --expect-divergent 170363
 
       # The second control, Task 5's own: `--mutate seed` proves the harness notices "an
       # entirely different planet" (95.6% of values move -- every group, gross). It does not
@@ -2372,12 +2396,14 @@ jobs:
       # 2026-09-19, WATER 2b Task 7: 216 divergent is UNCHANGED; only the compared total
       # moved (156,019 -> 156,075). Both new `carve` groups sit at exactly 0: this control reaches
       # neither the `plain` nor the `ranges` carve.
-      - name: Assert the erosion control -- 216 of 156,075 divergent
+      # 2026-09-19, WATER 2b Task 7 fix round: 216 divergent is UNCHANGED; only the compared
+      # total moved (156,075 -> 179,086). Both new `hydro_carve` records sit at exactly 0.
+      - name: Assert the erosion control -- 216 of 179,086 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 156075 --expect-divergent 216
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output erosion-control.out --expect-label "CONTROL (--mutate erosion-k)"             --expect-compared 179086 --expect-divergent 216
 
       # THE THIRD CONTROL, slice 5b Task 5's own, and the one with the sharpest claim.
       #
@@ -2452,12 +2478,14 @@ jobs:
       # 2026-09-19, WATER 2b Task 7: 60 divergent is UNCHANGED; only the compared total
       # moved (156,019 -> 156,075). Both new `carve` groups sit at exactly 0: this control reaches
       # neither the `plain` nor the `ranges` carve.
-      - name: Assert the water control -- 60 of 156,075 divergent, all of them `kind`
+      # 2026-09-19, WATER 2b Task 7 fix round: 60 divergent is UNCHANGED; only the compared
+      # total moved (156,075 -> 179,086). Both new `hydro_carve` records sit at exactly 0.
+      - name: Assert the water control -- 60 of 179,086 divergent, all of them `kind`
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 156075 --expect-divergent 60
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output water-control.out --expect-label "CONTROL (--mutate water-pond)"             --expect-compared 179086 --expect-divergent 60
 
       # THE FOURTH CONTROL, slice mountains Task 6's own, and the first that says anything
       # about the tectonic channel at all.
@@ -2583,12 +2611,17 @@ jobs:
       # It is **12 of 30** -- channel 4, bank 3, body 1, notch 4, clear 0, the door's status
       # unmoved -- and the control printed "exactly as the native side predicted". `carve/plain`
       # has no entry and a prediction of zero: the `plain` world carries no tectonic block.
-      - name: Assert the tectonic control -- 23,011 of 156,075 divergent, across the belt groups, hydro/ranges, water_point/ranges and carve/ranges
+      # 2026-09-19, WATER 2b Task 7 fix round: 23,011/156,075 -> **39,702 of 179,086**. The +16,691 is
+      # `hydro_carve/ranges` alone, 16,691 of 16,971, and it is a ninth `TCTL` field predicted
+      # natively exactly as `hydro/ranges`' own is: the same carving params baked on the warp-0
+      # world, compared under rule (a). `hydro_carve/plain` has no tectonic block: 0. The control
+      # printed "exactly as the native side predicted".
+      - name: Assert the tectonic control -- 39,702 of 179,086 divergent, across the belt groups, hydro/ranges, water_point/ranges, carve/ranges and hydro_carve/ranges
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 156075 --expect-divergent 23011
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output tectonic-control.out --expect-label "CONTROL (--mutate tectonic-warp)"             --expect-compared 179086 --expect-divergent 39702
 
       # THE FIFTH CONTROL, the photoreal slice's Task 6, and the first that exercises the coast
       # channel at all.
@@ -2670,12 +2703,14 @@ jobs:
       # 2026-09-19, WATER 2b Task 7: 13,128 divergent is UNCHANGED; only the compared total
       # moved (156,019 -> 156,075). Both new `carve` groups sit at exactly 0: this control reaches
       # neither the `plain` nor the `ranges` carve.
-      - name: Assert the coast control -- 13,128 of 156,075 divergent, all on the coast world
+      # 2026-09-19, WATER 2b Task 7 fix round: 13,128 divergent is UNCHANGED; only the compared
+      # total moved (156,075 -> 179,086). Both new `hydro_carve` records sit at exactly 0.
+      - name: Assert the coast control -- 13,128 of 179,086 divergent, all on the coast world
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
-          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 156075 --expect-divergent 13128
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity             --output coast-control.out --expect-label "CONTROL (--mutate coast-amplitude)"             --expect-compared 179086 --expect-divergent 13128
 
       # THE SIXTH CONTROL (the gully slice). `--mutate gully-steer` replays the two `worldg`
       # records with word 9, `steer_lattice_m`, moved from the shipped 2,000 m to 500 m -- a
@@ -2749,14 +2784,16 @@ jobs:
       # 2026-09-19, WATER 2b Task 7: 3,752 divergent is UNCHANGED; only the compared total
       # moved (156,019 -> 156,075). Both new `carve` groups sit at exactly 0: this control reaches
       # neither the `plain` nor the `ranges` carve.
-      - name: Assert the gully control -- 3,752 of 156,075 divergent, none of them structural
+      # 2026-09-19, WATER 2b Task 7 fix round: 3,752 divergent is UNCHANGED; only the compared
+      # total moved (156,075 -> 179,086). Both new `hydro_carve` records sit at exactly 0.
+      - name: Assert the gully control -- 3,752 of 179,086 divergent, none of them structural
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
           python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
             --output gully-control.out --expect-label "CONTROL (--mutate gully-steer)" \
-            --expect-compared 156075 --expect-divergent 3752
+            --expect-compared 179086 --expect-divergent 3752
 
       # THE SEVENTH CONTROL (the climate slice). `--mutate climate-samples` adds ONE upwind step
       # to every `CL` and `CK` record and touches nothing else. It is a control with a shape
@@ -2807,11 +2844,43 @@ jobs:
       # 2026-09-19, WATER 2b Task 7: 648 divergent is UNCHANGED; only the compared total
       # moved (156,019 -> 156,075). Both new `carve` groups sit at exactly 0: this control reaches
       # neither the `plain` nor the `ranges` carve.
-      - name: Assert the climate control -- 648 of 156,075 divergent, every one of them moisture
+      # 2026-09-19, WATER 2b Task 7 fix round: 648 divergent is UNCHANGED; only the compared
+      # total moved (156,075 -> 179,086). Both new `hydro_carve` records sit at exactly 0.
+      - name: Assert the climate control -- 648 of 179,086 divergent, every one of them moisture
         shell: bash
         working-directory: crates/worldbuilder-engine/parity
         run: |
           set -euo pipefail
           python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
             --output climate-control.out --expect-label "CONTROL (--mutate climate-samples)" \
-            --expect-compared 156075 --expect-divergent 648
+            --expect-compared 179086 --expect-divergent 648
+
+      # THE EIGHTH CONTROL (water 2b Task 7 fix round). `--mutate carve-bank` rewrites word 0 of
+      # every `WC` record's water block, `bank_widths`, from 1 to the corpus's `CBANK` value 2 and
+      # touches nothing else. Before it, the `carve` groups' ability to see a divergence rested on
+      # hand-run mutations recorded in a report; a later change that blinded them would have passed.
+      # Its counts are PREDICTED natively (`CBCTL`): the same door with the wider block over the
+      # same held bake, the recorded points asked again, and `examples/parity_dump.rs` asserts the
+      # points that move are EXACTLY the bank points -- a channel point is at full authority at any
+      # bank width, a notch point is on its line, body and clear points are cut by nothing -- and
+      # refuses a control that moves none or all of a group. `parity.mjs` then requires every group
+      # to move exactly its prediction: `carve/ranges` 6 of 30, `carve/plain` 6 of 26, and 0
+      # everywhere else, both `hydro_carve` records included (the block is not a bake input).
+      # Seen failing: with `CBCTL` edited from `6 6` to `5 6`, "FAIL: group carve/ranges moved 6
+      # values; the native side predicted 5", exit 1; with `CBANK` set back to 1, "the control
+      # mutation changed nothing", exit 1.
+      - name: Parity -- the carve control (one word of the water block, and the count is predicted)
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          node parity.mjs native.txt --mutate carve-bank 2>&1 | tee carve-control.out
+
+      - name: Assert the carve control -- 12 of 179,086 divergent, every one of them a bank point
+        shell: bash
+        working-directory: crates/worldbuilder-engine/parity
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/.github/scripts/assert_counts.py" parity \
+            --output carve-control.out --expect-label "CONTROL (--mutate carve-bank)" \
+            --expect-compared 179086 --expect-divergent 12

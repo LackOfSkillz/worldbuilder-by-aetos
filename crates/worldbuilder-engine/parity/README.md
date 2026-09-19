@@ -228,6 +228,41 @@ and **`TCTL`'s eighth field predicts it natively** by running the same door over
 warp-0 world; `carve/plain` has no tectonic block and must stay at 0. Every other control leaves
 both groups at 0.
 
+**The eighth control, `--mutate carve-bank` (fix round).** The hand-run mutations above proved
+once that these groups can see a divergence; this proves it on every run. It rewrites word 0 of
+every `WC` record's water block, `bank_widths`, from 1 to the `CBANK` record's 2 and touches
+nothing else. `examples/parity_dump.rs` predicts it natively (`CBCTL`) by building the same door
+with the wider block over the same held bake and asking the recorded points again — and asserts
+there that **the points that move are exactly the bank points**: a channel point is at full
+authority at any bank width, a notch point is on its line, and body and clear points are cut by
+nothing. Measured: `carve/ranges` 6 of 30, `carve/plain` 6 of 26, and every other group —
+both carving records included, since the block is not a bake input — at 0. With `CBCTL` edited
+from `6 6` to `5 6` it fails: *`FAIL: group carve/ranges moved 6 values; the native side
+predicted 5`*. With `CBANK` set back to the canonical 1 it fails as a control that changes nothing.
+
+### The two carving records (fix round)
+
+`hydro_carve/ranges` (16,971 values) and `hydro_carve/plain` (6,040) are the bakes the carve groups
+join, compared **word for word** in `H`'s own layout (`HC` records): status, length, every word.
+The drain (Task 4b) runs inside the wasm bake whenever the studio carves, and before these the
+only cross-boundary check on it was the carved elevations at their own points — a pond drained on
+one side and kept on the other, away from those points, would have passed unseen.
+
+The dump also checks, natively, that each carving record differs from its ordinary twin
+(`hydro/*`, same world, same params but word 12) **only where the drain says**: word 0 (`SCHEMA` 7
+against `SCHEMA_CARVE` 8); the fine-found bodies `ponds::drain_deficit_m` drops at the bake's own
+step and tolerance — re-derived against the carving record's channels, not read off the diff —
+plus any find a freed density cell let in, which must not be drained itself; and `ponds_kept`.
+Every reach, notch and fall, the ground fingerprint, every coarse body with its id, every other
+header field, and every kept pond in its original order are asserted equal, and the dump refuses
+a pair where the drain dropped nothing. Measured: `ranges` drops 4 of 22 fine-found bodies and
+admits 1 other find (`ponds_kept` 22 → 19, 17,101 → 16,969 words); `plain` drops 1 of 4 (4 → 3,
+6,074 → 6,038 words), admitting none.
+
+Both records move under `--mutate seed` (16,922 of 16,971 and 5,992 of 6,040), and
+`hydro_carve/ranges` moves under `--mutate tectonic-warp` by 16,691 — **`TCTL`'s ninth field**,
+predicted natively under rule (a) over a bake of the warp-0 world, as `hydro/ranges`' own is.
+
 **`GENERATOR_VERSION` is not bumped, and these rows are why that is safe to say.** Its bump test
 (`lib.rs`) is "the same seed *and the same parameters*, run through the new code, would produce a
 different world" — and names "a new generator stage that is off unless explicitly requested" as
@@ -284,6 +319,7 @@ and that substitution, tried as a source mutation on the Rust side, **does not t
 ```sh
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate coast-amplitude # control 5 (photoreal)
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate gully-steer      # control 6 (gully)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate carve-bank       # control 8 (water 2b)
 ```
 
 `--wasm <path>` overrides the artifact; the default is the committed

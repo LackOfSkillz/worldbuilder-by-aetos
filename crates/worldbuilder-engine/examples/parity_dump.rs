@@ -36,7 +36,9 @@
 //! `wb_world_new_water` over a held bake baked *for carving*, sampled at points chosen from the
 //! record by category -- in a channel, on a bank, in a body, at a notch, clear of water -- and
 //! refused if any category stops being covered (see [`carve_points`]). Every earlier group only
-//! proved the carve stays OUT of the canonical path; these compare what it cuts.
+//! proved the carve stays OUT of the canonical path; these compare what it cuts. The `HC` records
+//! are the bakes they join, word for word, checked natively to differ from their ordinary twins
+//! only where the drain says ([`check_drain`]); `CBANK`/`CBCTL` are the carve's own control.
 //!
 //! The output is the corpus *and* its answers: every f64 is written as its 16-hex-digit
 //! bit pattern, so the replaying side parses no decimal text and the comparison is exact.
@@ -393,6 +395,7 @@ const WC_CATEGORIES: [&str; 5] = ["channel", "bank", "body", "notch", "clear"];
 
 /// What a `WC` group is built from on the native side: the world's own arguments, the bake's
 /// params (the thirteen-word-or-longer layout, word 12 = 1), and the water block.
+#[derive(Clone, Copy)]
 struct CarveSpec<'a> {
     name: &'static str,
     /// The handle the bake runs on -- the bare world these same arguments build.
@@ -746,6 +749,145 @@ fn carve_divergence(spec: &CarveSpec, control_world: u32, control_tectonic: &[f6
     assert_eq!(wb_hydro_free(bake), WB_OK);
     moved
 }
+
+/// **The drain, confirmed to be the only difference between the two records** (plan 2b Task 7,
+/// fix round). `ordinary` and `carving` are the same world baked with the same params, the second
+/// with `drain_for_carve` set. Ruling C-20 says they may differ in exactly three places: word 0
+/// (`SCHEMA` 7 against `SCHEMA_CARVE` 8), the fine-found bodies the drain drops -- with a pond
+/// that the dropped one's density cell was holding back free to take its place -- and the
+/// header's `ponds_kept`, which counts them. Everything else must be equal: every reach, notch
+/// and fall, the ground fingerprint, every coarse body with its id, every other stat, and every
+/// fine-found body the drain keeps, in the same order.
+///
+/// **"The drain says" is re-derived, not read off the diff.** Each fine-found body of the ordinary
+/// record is put to `hydrology::ponds::drain_deficit_m` against the carving record's own channels,
+/// at the bake's own step (`pond_cell_m / 4`) and tolerance (`refine_vertical_m`) -- which is
+/// exactly `ponds::is_drained` -- and the set that test drops must be exactly the set that is
+/// missing. The channel index is built at `water::index::DEFAULT_CELL_M` rather than the bake's
+/// private 200 km: the index's footprint guarantee holds at any cell (`ponds.rs`,
+/// `DRAIN_INDEX_CELL_M`'s own doc), so the cell changes the candidates offered, never the answer.
+///
+/// Refuses the corpus when the drain dropped nothing: a comparison of two records that are equal
+/// but for word 0 would show the carving record's words cross the boundary and prove nothing about
+/// the drain. Returns (dropped, added, kept) fine-found counts.
+fn check_drain(name: &str, ordinary: &[f64], carving: &[f64]) -> (usize, usize, usize) {
+    use worldbuilder_engine::hydrology::record::{SCHEMA, SCHEMA_CARVE};
+    use worldbuilder_engine::water::index::{WaterIndex, DEFAULT_CELL_M};
+
+    assert_eq!(ordinary[0].to_bits(), SCHEMA.to_bits(), "{name}: the ordinary record's word 0");
+    assert_eq!(carving[0].to_bits(), SCHEMA_CARVE.to_bits(), "{name}: the carving record's word 0");
+    let o = hydrology::record::decode(ordinary).expect("the ordinary record decodes");
+    let c = hydrology::record::decode(carving).expect("the carving record decodes");
+    assert!(!o.stats.drained_for_carve && c.stats.drained_for_carve, "{name}: the flags");
+    assert!(o.reaches == c.reaches, "{name}: the drain moved a reach");
+    assert!(o.notches == c.notches, "{name}: the drain moved a notch");
+    assert!(o.falls == c.falls, "{name}: the drain moved a fall");
+    assert_eq!(o.ground, c.ground, "{name}: the drain moved the ground fingerprint");
+
+    let coarse = |r: &hydrology::HydroRecord| -> Vec<hydrology::Body> {
+        r.bodies.iter().filter(|b| b.shore_member_count != 0).cloned().collect()
+    };
+    assert!(coarse(&o) == coarse(&c), "{name}: the drain moved a coarse body");
+    // A fine-found body with its id set aside: ids are handed out in keep order, so a dropped
+    // pond renumbers every find kept after it, and that renumbering is the drain's too.
+    let key = |b: &hydrology::Body| hydrology::Body { id: 0, ..b.clone() };
+    let fine_o: Vec<hydrology::Body> = o.bodies.iter().filter(|b| b.shore_member_count == 0).map(key).collect();
+    let fine_c: Vec<hydrology::Body> = c.bodies.iter().filter(|b| b.shore_member_count == 0).map(key).collect();
+
+    let index = WaterIndex::build(&c, RADIUS_M, DEFAULT_CELL_M);
+    let step_m = c.stats.pond_cell_m * 0.25;
+    let drained = |b: &hydrology::Body| {
+        match hydrology::ponds::drain_deficit_m(b, &c, &index, step_m) {
+            Some(deficit) => deficit > c.stats.refine_vertical_m,
+            None => false,
+        }
+    };
+    let mut kept_in_order: Vec<&hydrology::Body> = Vec::new();
+    let mut dropped = 0usize;
+    for body in &fine_o {
+        if drained(body) {
+            dropped += 1;
+            assert!(!fine_c.contains(body),
+                    "{name}: a pond the drain drops at {:?} is still in the carving record", body.anchor);
+        } else {
+            kept_in_order.push(body);
+        }
+    }
+    // Every pond the drain keeps is in the carving record, in the same relative order.
+    let mut cursor = 0usize;
+    for body in &kept_in_order {
+        let found = fine_c[cursor..].iter().position(|b| b == *body);
+        let Some(at) = found else {
+            panic!("{name}: the pond at {:?} is not drained and not in the carving record, or not in \
+                    the ordinary record's order", body.anchor);
+        };
+        cursor += at + 1;
+    }
+    // Anything else in the carving record is a find the ordinary bake's density cell turned away,
+    // taken because a drained pond freed that cell -- so it must not be drained itself.
+    let added: Vec<&hydrology::Body> = fine_c.iter().filter(|b| !fine_o.contains(b)).collect();
+    for body in &added {
+        assert!(!drained(body), "{name}: the carving record keeps a drained pond at {:?}", body.anchor);
+    }
+    assert_eq!(fine_c.len(), kept_in_order.len() + added.len(), "{name}: fine-found accounting");
+
+    let mut stats = c.stats.clone();
+    stats.drained_for_carve = false;
+    stats.ponds_kept = o.stats.ponds_kept;
+    assert!(stats == o.stats, "{name}: the drain moved a header field other than ponds_kept");
+    assert_eq!(c.stats.ponds_kept as usize, o.stats.ponds_kept as usize - dropped + added.len(), // cast-ok: two pond counts widened to usize
+               "{name}: ponds_kept does not count the drain");
+    assert!(dropped > 0, "{name}: the drain dropped nothing, so the carving record would prove nothing \
+                          about it beyond word 0");
+    eprintln!(
+        "hydro_carve/{name}: {} words against {} ordinary; drain dropped {dropped} of {} fine-found \
+         bodies, {} other finds took freed cells, {} kept; ponds_kept {} -> {}; word 0 {} -> {}; \
+         reaches, notches, falls, ground, coarse bodies and every other header field equal",
+        carving.len(), ordinary.len(), fine_o.len(), added.len(), kept_in_order.len(),
+        o.stats.ponds_kept, c.stats.ponds_kept, ordinary[0], carving[0]
+    );
+    (dropped, added.len(), kept_in_order.len())
+}
+
+/// Emit one `HC` record: the carving bake, word for word, in `H`'s own layout.
+fn print_carving_record(name: &str, params: &[f64], status: u32, len: u32, words: &[f64]) {
+    let params_hex: Vec<String> = params.iter().map(|v| hex(*v)).collect();
+    let words_hex: Vec<String> = words.iter().map(|v| hex(*v)).collect();
+    println!("HC {name} {} {} {status} {len} {}", params.len(), params_hex.join(" "), words_hex.join(" "));
+}
+
+/// The native prediction for `--mutate carve-bank` on a `WC` group: the same door over the same
+/// held bake with `bank_widths` moved to `mutated`, and the recorded points asked again. Returns
+/// the count the replaying side will see -- the checker's status and each point -- and asserts
+/// the prediction's SHAPE: the bank width reaches a point only through the blended bank, so the
+/// points that move must be exactly the bank points. A channel point is at full authority at any
+/// bank width, and body and clear points are cut by nothing; a notch point sits on its line.
+fn carve_bank_divergence(spec: &CarveSpec, mutated: f64, status: u32, points: &[CarvePoint]) -> usize {
+    let mut bake: u32 = 0;
+    let len = spec.params.len() as u32; // cast-ok: a small params buffer
+    assert_eq!(wb_hydro_bake(spec.base, spec.params.as_ptr(), len, &mut bake), WB_OK);
+    let wider_spec = CarveSpec { block: [mutated], ..*spec };
+    let (got, handle) = carve_door(&wider_spec, spec.tectonic, bake);
+    assert_ne!(handle, 0, "{}: the carve-bank control's block must be admissible", spec.name);
+    let mut moved = usize::from(got != status);
+    for p in points {
+        let changed = wb_elevation_m(handle, p.lat, p.lon, RES_M).to_bits() != p.carved.to_bits();
+        assert_eq!(changed, p.category == "bank",
+                   "{}: under bank_widths {mutated} the {} point at {},{} {} -- the bank width must move \
+                    exactly the bank points", spec.name, p.category, p.lat, p.lon,
+                   if changed { "moved" } else { "did not move" });
+        if changed {
+            moved += 1;
+        }
+    }
+    assert_eq!(wb_world_free(handle), WB_OK);
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    moved
+}
+
+/// The bank width `--mutate carve-bank` substitutes for the canonical block's: twice it, inside
+/// the admissible (0, 4] -- a plausible block a host could send, not a refused one.
+const CARVE_BANK_CONTROL: f64 = 2.0;
 
 fn main() {
     // Two worlds: open water, and the placed harbour. A scattered corpus never lands
@@ -1783,9 +1925,36 @@ fn main() {
         params: &carve_ranges_params,
         block: water_preset_block(),
     };
+    // The carving record itself, word for word (fix round): the drain (Task 4b) runs inside the
+    // wasm bake whenever the studio carves, and the carved elevations below see it only at their
+    // own points. Compared whole, as `H ranges` is, and checked natively against the ordinary
+    // record to differ only where the drain says.
+    let (hc_ranges_status, hc_ranges_len, hc_ranges_words) =
+        bake_hydro_native(tectonic_world, &carve_ranges_params);
+    assert_eq!(hc_ranges_status, WB_OK, "the ranges bake for carving must succeed");
+    print_carving_record("ranges", &carve_ranges_params, hc_ranges_status, hc_ranges_len, &hc_ranges_words);
+    check_drain("ranges", &h_ranges_words, &hc_ranges_words);
+    let (hc_ranges_off_status, hc_ranges_off_len, hc_ranges_off_words) =
+        bake_hydro_native(tectonic_control_world, &carve_ranges_params);
+    let hydro_carve_ranges_control = divergent_count(
+        hc_ranges_status, hc_ranges_len, &hc_ranges_words,
+        hc_ranges_off_status, hc_ranges_off_len, &hc_ranges_off_words,
+    );
+    assert!(
+        hydro_carve_ranges_control > 0 && hydro_carve_ranges_control < hc_ranges_len as usize + 2, // cast-ok: a record length widened to compare with a divergent count over the same 2+len accounting
+        "hydro_carve/ranges: the control moved {hydro_carve_ranges_control} of {}; this corpus \
+         refuses a control that moves nothing or everything",
+        hc_ranges_len + 2,
+    );
+
+    // `--mutate carve-bank`'s value goes out before the first `WC` record, which is where the
+    // replaying side substitutes it; its prediction (`CBCTL`) follows the last.
+    println!("CBANK {}", hex(CARVE_BANK_CONTROL));
     let (carve_ranges_status, carve_ranges_points) =
         carve_points(&carve_ranges, Some(TectonicParams::ranges()));
     print_carve(&carve_ranges, carve_ranges_status, &carve_ranges_points);
+    let carve_bank_ranges =
+        carve_bank_divergence(&carve_ranges, CARVE_BANK_CONTROL, carve_ranges_status, &carve_ranges_points);
     let carve_ranges_control = carve_divergence(&carve_ranges, tectonic_control_world,
         &tectonic_control, carve_ranges_status, &carve_ranges_points);
     let carve_ranges_total = 1 + carve_ranges_points.len();
@@ -1799,7 +1968,8 @@ fn main() {
     println!(
         "TCTL {control_elevation_ranges} {control_structural_ranges} \
          {control_elevation_belt} {control_structural_belt} {control_tile_belt} \
-         {hydro_ranges_control} {water_points_ranges_control} {carve_ranges_control}"
+         {hydro_ranges_control} {water_points_ranges_control} {carve_ranges_control} \
+         {hydro_carve_ranges_control}"
     );
 
     // --- the coast channel: the presets, the checker, and a world built from one -----------
@@ -2767,6 +2937,23 @@ fn main() {
     };
     let (carve_plain_status, carve_plain_points) = carve_points(&carve_plain, None);
     print_carve(&carve_plain, carve_plain_status, &carve_plain_points);
+    let carve_bank_plain =
+        carve_bank_divergence(&carve_plain, CARVE_BANK_CONTROL, carve_plain_status, &carve_plain_points);
+    for (label, moved, total) in [
+        ("carve/ranges", carve_bank_ranges, 1 + carve_ranges_points.len()),
+        ("carve/plain", carve_bank_plain, 1 + carve_plain_points.len()),
+    ] {
+        assert!(moved > 0 && moved < total,
+                "{label}: the carve-bank control moved {moved} of {total}; this corpus refuses a \
+                 control that moves nothing or everything");
+    }
+    println!("CBCTL {carve_bank_ranges} {carve_bank_plain}");
+
+    // The `plain` carving record, word for word, beside the carve built from it.
+    let (hc_plain_status, hc_plain_len, hc_plain_words) = bake_hydro_native(plain, &carve_plain_params);
+    assert_eq!(hc_plain_status, WB_OK, "the plain bake for carving must succeed");
+    print_carving_record("plain", &carve_plain_params, hc_plain_status, hc_plain_len, &hc_plain_words);
+    check_drain("plain", &hydro_words, &hc_plain_words);
 
     println!("version {}", wb_generator_version());
 }
