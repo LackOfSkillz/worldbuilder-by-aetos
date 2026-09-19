@@ -158,12 +158,43 @@ added by this slice's Task 2/3).
    worktree, compiled the shipped `build_fingerprint.rs` into a scratch crate outside this
    repository's own build, and got the identical digest over the identical 28 inputs.
 
-   Re-run on the current tree (HEAD, both sides): node reports `source-fingerprint:
+   Last re-run with BOTH sides measured, at the identity slice's HEAD: node reported
+   `source-fingerprint:
    029396ea75bc6eb10e1006a6063578829399e88b7525eb5b4abc44b2fef839b2` /
    `fingerprint-inputs: 29`; the just-built extension's `source_fingerprint()` /
-   `source_fingerprint_inputs()` report the same digest and count; the gate exits 0 with
+   `source_fingerprint_inputs()` reported the same digest and count; the gate exited 0 with
    `count OK: node and rust fingerprints agree on a real digest over a real corpus (29
-   inputs)`. On a real disagreement it fails loudly rather than comparing shapes that merely
+   inputs)`.
+
+   **Re-run with both sides measured again on master (`8961b9f`), where the corpus has grown
+   to 66 inputs: they still agree, exactly.** Node (`npm run digest:wasm`) and the freshly
+   built extension (`source_fingerprint()` / `source_fingerprint_inputs()`) both report
+   `54f8b7577a20cd9b7cbb749e480d41809b1756540ad3ded4eb50c7dd502574a9` over `66` inputs, and
+   the gate itself exits 0 with `count OK: node and rust fingerprints agree on a real digest
+   over a real corpus (66 inputs)`. A third, independent statement of the same pair:
+   `viewer/public/wasm/MANIFEST.txt` records that digest and that count, and
+   `npm run check:wasm` confirms the shipped artifact matches both. So the two
+   implementations have now been demonstrated to agree at 28, at 29, and at 66 - across
+   thirty-seven inputs' worth of corpus growth, with no drift.
+
+   **The extension was built into a venv private to the worktree** (`.venv/` at the
+   repository root, gitignored), on `rustc 1.98.0 (88d9e12ae)` - the pinned toolchain,
+   matching `MANIFEST.txt`'s recorded build exactly. That isolation is not fussiness: a
+   `maturin develop` into a venv shared with another checkout is the dist-info eviction of
+   item 4 above, and the point of this measurement is not worth reintroducing it for.
+
+   **And the gate was seen to fail, on both of the two things it compares**, by handing it a
+   doctored node output rather than by trusting that a check which has only ever passed would
+   have. One hex digit changed produces the digest message below, exit 1; the count changed
+   from 66 to 65 produces a *different* message, also exit 1, which this file had never
+   recorded:
+
+       FINGERPRINT PARITY GATE FAILED
+         the two input counts disagree:
+               node (build-wasm.mjs):      65
+               rust (worldbuilder_engine): 66
+
+   On a real disagreement the gate fails loudly rather than comparing shapes that merely
    happen to be equal - every value is validated as 64-hex-lowercase / positive-integer before
    either side is compared to the other - with:
 
@@ -174,17 +205,39 @@ added by this slice's Task 2/3).
 
 **5. Provenance**, `npm run check:wasm` in `viewer/`. Source edited without a rebuild:
 `STALE ARTIFACT: - the shipped .wasm was NOT built from the source that is here now: source
-now: <hash> / artifact built from: <hash> (29 inputs fingerprinted.)`. Re-run locally against
+now: <hash> / artifact built from: <hash> (<N> inputs fingerprinted.)`. Re-run locally against
 the current tree: `Current: .../viewer/public/wasm/worldbuilder_engine.wasm matches its
 manifest and the source that is here now.` - confirmed by running the check, not read off a
 report. The input count moved from 28 to 29 in this slice: `tests/build_fingerprint.rs`, a
 new file under one of the three walked directories, is itself a fingerprinted input, and a
 file *appearing* moves the digest exactly as a file *changing* does.
 
+   **That mechanism is exactly why the count is not a constant, and why the message above
+   says `<N>` rather than a number: on master (`8961b9f`) it is 66**, re-derived here by
+   `npm run digest:wasm` and cross-checked against `MANIFEST.txt`'s own
+   `fingerprint-inputs: 66`. The 28 -> 29 figures in this paragraph and in gate 4 above are
+   the identity slice's, kept as the worked example of the mechanism rather than as a current
+   reading - and the per-rebuild counts logged elsewhere are history in the same way, not
+   drift: `gates.yml`'s parity log records 58 against three dated rebuilds on 2026-09-12,
+   each with its own artifact hash, and those were correct when written.
+
    Two cheaper proofs run alongside it, both re-run locally as part of this task:
    `npm run build:wasm:stale-self-test` (`SELF-TEST PASSED: the fingerprint refuses a source
    tree that has moved.`) and `npm run build:wasm:self-test` (rejects a stripped 327-byte,
    memory-only artifact before rebuilding the real one).
+
+   **Two other checks are silently standing on this one, and neither can tell you when it has
+   stopped running.** Gate 3's stale-engine guard compares the installed extension's embedded
+   fingerprint against `MANIFEST.txt`, which answers "is the engine current" only because this
+   gate independently asserts the manifest is current with the tree; and the viewer's four
+   "no number is written down twice" tests derive the literals they forbid from the shipped
+   `.wasm`'s `wb_*_preset` exports, so a stale artifact hands them a superseded value to
+   forbid and they pass having guarded nothing. Both are written up in **What CI does NOT
+   cover** below. Neither fails, or changes its output in any way, if this gate is dropped -
+   they go on reporting green against a number nothing has verified. **So `check:wasm` is not
+   only a check on the artifact; it is a precondition two other checks assume and cannot
+   assert for themselves** - it runs at `gates.yml:1610`, and dropping that one line would
+   leave both of them reporting green with nothing behind them.
 
 **6. Parity**, `parity_dump` (native) replayed through the committed `.wasm` by `parity.mjs`.
 A mutated artifact is refused rather than silently compared: `REFUSING TO REPORT PARITY --
@@ -327,6 +380,33 @@ workaround. What is still genuinely open, so this table does not read as full co
   the same tree.** See gate 3's composition note above: if `npm run check:wasm` is ever
   dropped from CI, or a developer runs the pytest guard locally against a manifest they
   never re-checked with `check:wasm`, the comparison silently goes back to answering nothing.
+- **The viewer's anti-transcription guards depend on gate 5 in the same way, and are a second
+  consumer of that composition.** Four test files in `viewer/test/` -- `coast-params`,
+  `gully-params`, `relief-params`, `tectonic-params` -- carry the "no number is written down
+  twice" check: each asks the shipped artifact for a preset (`engine.coastPreset("fractal")`
+  and its three siblings, through the `wb_*_preset` exports), turns the field into a string,
+  and asserts no file under `viewer/public/app/` contains it. **The literal is derived at test
+  time, not transcribed into the test** - the `assert.deepEqual(literals, [...])` line beside
+  it is a tripwire that fails loudly when a Rust constant moves, not the source of the value
+  being grepped for. Fifteen literals are covered this way across the four files.
+
+  What that derivation reads, though, is the **`.wasm`, not `crates/`**. So a stale artifact
+  makes the whole family answer nothing: the derived literal and the pin beside it would both
+  carry the superseded value, agree with each other, and pass - the identical shape to the
+  stale-`.wasm`-passes-parity failure in item 2 at the top of this file, and to gate 3's
+  composition note above. Only gate 5 closes it, and only on the same tree.
+
+  Re-derived on master (`8961b9f`) rather than carried forward: `npm run check:wasm` reports
+  the artifact current, and all fifteen literals match the Rust constants read independently
+  out of `crates/worldbuilder-engine/src/` (`FRACTAL_AMPLITUDE` 0.35; `GullyParams::canonical()`'s
+  0.005 / 0.25; `ReliefParams::hills()`'s -0.7 / 0.65 / 600, that last being `MOUNTAIN_M` x 4;
+  `TectonicParams::canonical()`'s 1500 / 400000 / 0.45 / 120000 and `ranges()`'s 6000 / 100000
+  / 0.7 / 80000 / 300000). Each of the fifteen was also **seen to fail**, by appending the
+  current value to `viewer/public/app/controls.js` as a code line and running the owning test:
+  fifteen injections, fifteen failures, all reverted. A code line and not a comment, because
+  the guards strip comment lines first - a comment injection proves nothing. The negative
+  control matters as much: a *superseded* coast amplitude (0.33) left `coast-params` green,
+  which is what shows the grep tracks the engine's current answer rather than a snapshot.
 - **The install-order dependency between `pip install -e .` and `maturin develop` is asserted
   fixed, not proven fixed.** The distribution split should make the order irrelevant by
   construction; nobody has verified this by reversing the order and running a `pip
