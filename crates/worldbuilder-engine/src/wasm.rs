@@ -92,6 +92,7 @@
 use std::alloc as sys;
 use std::alloc::Layout;
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use crate::climate;
 use crate::continentality::CoastParams;
@@ -110,6 +111,7 @@ use crate::tectonics::{
 use crate::detmath as m;
 use crate::hydrology::{self, HydroError, HydroParams};
 use crate::water;
+use crate::water::layer::{Carve, CarveRefused, IndexedRecord, WaterParams, MAX_BANK_WIDTHS};
 use crate::{World, GENERATOR_VERSION};
 
 // ---------------------------------------------------------------- the declared contract
@@ -162,6 +164,24 @@ pub const WB_ERR_DRAINAGE: u32 = 7;
 /// refusal a host cannot name gets swallowed as "engine unavailable". Before plan 2b this pairing
 /// was *answered*, off the other world's ground against this record's levels.
 pub const WB_ERR_WRONG_WORLD: u32 = 8;
+/// **The bake was not made for carving** (Ruling C-20): [`wb_world_new_water`] was handed a held
+/// bake whose record is an ordinary one (`HydroParams::drain_for_carve` unset, SCHEMA 7 on the
+/// wire rather than `SCHEMA_CARVE`) -- `water::layer::CarveRefused::NotBakedForCarving`. Such a
+/// record keeps the hollows its own channels drain, and a carved world built on it stands a pond
+/// across a notch as a dam (194 m on `bake_tests::world()` at 30,000 nodes). The world and the bake
+/// are each fine, and the bake may well be of this very world; the fix is to re-bake it *for
+/// carving* ([`WB_HYDRO_PARAMS_CARVE_STRIDE`]), not to change a parameter or pick another world.
+/// Checked before the ground, so a record that is both ordinary and foreign is named for its kind.
+pub const WB_ERR_NOT_BAKED_FOR_CARVING: u32 = 9;
+/// **The world is carved, and this export computes from its ground** (Rulings C-1 and C-24):
+/// `hydrology::bake` refuses a carved world (`HydroError::Carved`), and so do [`wb_erosion_run`]
+/// and [`wb_water_run`], which read `elevation_m` and derive a drainage from it exactly as a bake
+/// does. A carved world's ground was lowered along a record's channels, so anything derived from
+/// it is derived in part from that record -- the circularity Ruling C-1 exists to stop. The fix
+/// is to ask the same question of the bare world, built from the same parameters without the
+/// water block. Before plan 2b Task 5 no door built a carved handle, and the bake's refusal was
+/// answered as [`WB_ERR_PARAM`].
+pub const WB_ERR_CARVED: u32 = 10;
 
 /// The ceiling on `node_count` for [`wb_erosion_run`]. Not the planetary target -- slice 1p
 /// measured a 20,000,000-node graph at 1.45 GB of arrays and 2.16 GB peak RSS, which does
@@ -1159,6 +1179,9 @@ pub const WB_EXPORTS: &[&str] = &[
     "wb_world_new_peak",
     "wb_peak_preset",
     "wb_peak_check",
+    "wb_world_new_water",
+    "wb_water_preset",
+    "wb_water_check",
     "wb_world_free",
     "wb_world_count",
     "wb_elevation_m",
@@ -1232,7 +1255,20 @@ thread_local! {
     /// The decoded record is held too, rather than re-decoded per query: `water_at` needs both,
     /// and decoding a whole record for every sample of a tile is exactly the cost this exists
     /// to avoid.
-    static HYDRO_QUERY: RefCell<Vec<Option<(f64, hydrology::HydroRecord, water::index::WaterIndex)>>> =
+    ///
+    /// **One held bake, one index, however many readers (plan 2b Task 5).** A slot holds the same
+    /// `Arc<IndexedRecord>` -- decoded record, index and projected points, built together so they
+    /// cannot be paired wrongly -- that [`wb_world_new_water`] hands `Surface::with_water` for the
+    /// carve. The query and every carved world built on the bake read one index; before this the
+    /// slot held its own `(radius, HydroRecord, WaterIndex)`, and a carve beside it would have
+    /// paid for a second 41.7 MB index on the owner's 9,309 km world. The radius the index was
+    /// built at is the index's own (`WaterIndex::radius_m`), not a second copy beside it.
+    ///
+    /// A carved world holds its own clone of the `Arc`, so [`wb_hydro_free`] emptying this slot
+    /// does not un-carve a world already built: its record lives until the last such world is
+    /// freed. What the free does do is refuse every later use of the id, at this door and at the
+    /// query, exactly as before.
+    static HYDRO_QUERY: RefCell<Vec<Option<Arc<IndexedRecord>>>> =
         const { RefCell::new(Vec::new()) };
 
     /// **Where the fingerprint verdict is held: with the world handle** (Ruling C-10). Slot
@@ -2488,6 +2524,230 @@ fn peak_preset_by_selector(preset: u32) -> Option<PeakParams> {
     }
 }
 
+// --------------------------------------------------------- the water block, decoded
+//
+// Plan 2b Task 5. Tasks 1-4b gave the engine a ground fingerprint on every record, refusal of a
+// record read against another world, and the carve itself -- `Surface::with_water`, which lowers
+// the ground along a record's reaches and notches. This is its ABI, and the peak channel above is
+// the template for everything ordinary: a flat f64 block in a documented order, a preset export so
+// no host transcribes a number, a checker that answers *why*, and a constructor that refuses a
+// block entire. **Nothing here clamps.**
+//
+// What peaks never had to face: the carve is not only scalars. The world is built from the usual
+// parameters, the block, **and a held bake**, referenced by the id `wb_hydro_bake` already issues
+// (Ruling C-2) rather than copied across the boundary, and shared with the query's own index
+// rather than duplicated beside it (`HYDRO_QUERY`). And the join can refuse for reasons a block
+// cannot express, each with its own named status (Ruling C-3): a malformed block
+// (`WB_ERR_PARAM`), a record of another world (`WB_ERR_WRONG_WORLD`), a record not baked for
+// carving (`WB_ERR_NOT_BAKED_FOR_CARVING`) -- and, once a carved world exists, any bake-like
+// export asked of it (`WB_ERR_CARVED`).
+
+/// f64 words per water block, **and the order is the contract**:
+///
+/// | index | field |
+/// |---:|---|
+/// | 0 | `bank_widths` |
+///
+/// That is `WaterParams`'s own declaration order -- it has one field -- and [`wb_water_preset`]
+/// writes it so a host never transcribes a value.
+///
+/// **The field-swap guard is vacuous here, and that is stated rather than papered over.** The
+/// islands slice was saved by a test that swapped two same-domain slots in `decode_peak` and
+/// watched it fail; with one field there are no two slots to swap, and a second field invented to
+/// give the guard something to do would be a parameter nobody asked for. What still has content --
+/// the domain refused just outside and admitted just inside, and decode/encode as exact inverses
+/// -- is pinned. The guard becomes live the day a second field arrives, and that is the day to
+/// write it.
+pub const WB_WATER_BLOCK_STRIDE: usize = 1;
+
+/// [`wb_water_preset`] selector: `WaterParams::canonical()`, spec Â§8.1's banks blended over one
+/// channel width either side. The only preset: the one field was chosen in Task 3, not tuned
+/// against a world, so there is no second named block to offer.
+pub const WB_WATER_CANONICAL: u32 = 0;
+
+/// The floor on `bank_widths`, **exclusive**: zero and below are refused. A zero-width bank would
+/// be a channel cut as a vertical wall with no blend -- `WaterParams::is_admissible` refuses it,
+/// and this boundary refuses exactly what the layer refuses, so the layer's own refusal
+/// (`CarveRefused::Params`) is unreachable from here.
+pub const WB_MIN_WATER_BANK_WIDTHS: f64 = 0.0;
+
+/// The ceiling on `bank_widths`, inclusive: `water::layer::MAX_BANK_WIDTHS`, **the width the index
+/// is built to**. Not a margin: the index lists a reach in every cell within that footprint of its
+/// line, so a wider bank would blend out past the cells the index can see and stop dead at a cell
+/// line. Imported, not restated, so the two cannot drift.
+pub const WB_MAX_WATER_BANK_WIDTHS: f64 = MAX_BANK_WIDTHS;
+
+/// Whether a water block is one this boundary will let reach `Surface::with_water`. Built on
+/// [`within`] like every other channel, with the one exclusive floor written as its own negated
+/// comparison so a NaN leaves by the refusing door. **Agrees with `WaterParams::is_admissible` on
+/// every value**, and a test sweeps the two against each other.
+fn water_is_admissible(water: &WaterParams) -> bool {
+    if !within(water.bank_widths, WB_MIN_WATER_BANK_WIDTHS, WB_MAX_WATER_BANK_WIDTHS) {
+        return false;
+    }
+    if !(water.bank_widths > WB_MIN_WATER_BANK_WIDTHS) {
+        return false;
+    }
+    true
+}
+
+/// One water block, decoded and validated, or `None` if this channel refuses it.
+fn decode_water(record: &[f64]) -> Option<WaterParams> {
+    let fields = <[f64; WB_WATER_BLOCK_STRIDE]>::try_from(record).ok()?;
+    let water = WaterParams { bank_widths: fields[0] };
+    if water_is_admissible(&water) {
+        Some(water)
+    } else {
+        None
+    }
+}
+
+/// The inverse of [`decode_water`]'s field order, in one place so the two cannot drift.
+fn encode_water(water: &WaterParams) -> [f64; WB_WATER_BLOCK_STRIDE] {
+    [water.bank_widths]
+}
+
+/// What a host's `(water_ptr, water_len)` pair means. The same three outcomes [`PeakArg`] draws.
+enum WaterArg {
+    /// A null pointer with a length of zero: no carve at all -- `None`, the bare world, which is
+    /// what [`wb_world_new_peak`] builds from the same arguments. With no block there is nothing
+    /// for a bake to be joined by, so the bake id must then be 0.
+    Canonical,
+    /// A decoded, validated block.
+    Chosen(WaterParams),
+    /// The buffer was unusable, or the field was outside its documented domain.
+    Refused(u32),
+}
+
+/// Read a water block out of linear memory.
+///
+/// # Safety
+/// If `water_len` is non-zero, `water_ptr` must be a live, 8-aligned allocation of at least
+/// `water_len` f64.
+unsafe fn read_water(water_ptr: *const f64, water_len: u32) -> WaterArg {
+    if water_len == 0 {
+        // A null pointer is the canonical path. A non-null pointer with a length of zero is a
+        // host that computed a length wrong, not a host asking for canonical.
+        return if water_ptr.is_null() { WaterArg::Canonical } else { WaterArg::Refused(WB_ERR_BUFFER) };
+    }
+    if water_ptr.is_null() {
+        return WaterArg::Refused(WB_ERR_BUFFER);
+    }
+    let address = water_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WaterArg::Refused(WB_ERR_BUFFER);
+    }
+    let words = match usize::try_from(water_len) {
+        Ok(words) if words == WB_WATER_BLOCK_STRIDE => words,
+        _ => return WaterArg::Refused(WB_ERR_BUFFER),
+    };
+    let record = core::slice::from_raw_parts(water_ptr, words);
+    match decode_water(record) {
+        Some(water) => WaterArg::Chosen(water),
+        None => WaterArg::Refused(WB_ERR_PARAM),
+    }
+}
+
+/// The water preset a selector names, or `None` for one this build does not know. **The only
+/// place `WaterParams::canonical()`'s value is read** on this side of the boundary.
+fn water_preset_by_selector(preset: u32) -> Option<WaterParams> {
+    if preset == WB_WATER_CANONICAL {
+        Some(WaterParams::canonical())
+    } else {
+        None
+    }
+}
+
+/// Every argument of [`wb_world_new_water`] and [`wb_water_check`], turned into the carved (or
+/// bare) `Surface` they describe or the status that refuses them. **The one function behind both
+/// exports**, so the checker cannot say yes where the constructor says no, or name a different
+/// refusal: the checker is this with the world dropped, the constructor is this with it kept.
+///
+/// Refusals, in the order they are decided, each a status a host can name (Ruling C-3):
+///
+/// 1. each of the six blocks, exactly as its own reader decides -- `WB_ERR_BUFFER` for an
+///    unusable buffer, `WB_ERR_PARAM` for a field outside its domain;
+/// 2. a bake id with no block: `WB_ERR_PARAM` -- a bake nothing will carve with is a host bug,
+///    and quietly building the bare world would drop an argument the host thinks it passed;
+/// 3. the world's own parameters and features ([`build_surface`]): `WB_ERR_PARAM`, or
+///    `WB_ERR_BUFFER` for an unusable feature buffer;
+/// 4. the bake id: `WB_ERR_HANDLE` for 0, never issued, or already freed -- a status, never a
+///    panic;
+/// 5. the join (`Surface::with_water`): [`WB_ERR_NOT_BAKED_FOR_CARVING`] for an ordinary record,
+///    checked first; [`WB_ERR_WRONG_WORLD`] for a record from other ground, the same radius
+///    included.
+///
+/// # Safety
+/// Every pointer-and-length pair must satisfy its own channel's safety requirement.
+#[allow(clippy::too_many_arguments)]
+unsafe fn water_world(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+    coast_ptr: *const f64,
+    coast_len: u32,
+    gully_ptr: *const f64,
+    gully_len: u32,
+    peak_ptr: *const f64,
+    peak_len: u32,
+    water_ptr: *const f64,
+    water_len: u32,
+    bake: u32,
+) -> Result<Surface, u32> {
+    let relief = match read_relief(relief_ptr, relief_len) {
+        ReliefArg::Canonical => None,
+        ReliefArg::Chosen(relief) => Some(relief),
+        ReliefArg::Refused(status) => return Err(status),
+    };
+    let tectonics = match read_tectonic(tectonic_ptr, tectonic_len) {
+        TectonicArg::Canonical => None,
+        TectonicArg::Chosen(tectonics) => Some(tectonics),
+        TectonicArg::Refused(status) => return Err(status),
+    };
+    let coast = match read_coast(coast_ptr, coast_len) {
+        CoastArg::Canonical => None,
+        CoastArg::Chosen(coast) => Some(coast),
+        CoastArg::Refused(status) => return Err(status),
+    };
+    let gully = match read_gully(gully_ptr, gully_len) {
+        GullyArg::Canonical => None,
+        GullyArg::Chosen(gully) => Some(gully),
+        GullyArg::Refused(status) => return Err(status),
+    };
+    let peaks = match read_peak(peak_ptr, peak_len) {
+        PeakArg::Canonical => None,
+        PeakArg::Chosen(peaks) => Some(peaks),
+        PeakArg::Refused(status) => return Err(status),
+    };
+    let water = match read_water(water_ptr, water_len) {
+        WaterArg::Canonical if bake == 0 => None,
+        WaterArg::Canonical => return Err(WB_ERR_PARAM),
+        WaterArg::Chosen(water) => Some((water, bake)),
+        WaterArg::Refused(status) => return Err(status),
+    };
+    build_surface(
+        world_seed,
+        radius_m,
+        plate_count,
+        land_fraction,
+        features_ptr,
+        feature_count,
+        relief,
+        tectonics,
+        coast,
+        gully,
+        peaks,
+        water,
+    )
+}
+
 // -------------------------------------------------------------------------- the exports
 
 /// The generator's identity, per VERSION-001. Not the package version and never derived
@@ -3216,6 +3476,168 @@ pub extern "C" fn wb_peak_check(peak_ptr: *const f64, peak_len: u32) -> u32 {
     }
 }
 
+/// Build a world **carved by a held bake** (spec Â§8.1, plan 2b), or **0** if it refused.
+///
+/// Exactly [`wb_world_new_peak`] plus a water block and a bake id, and every one of that
+/// function's domains -- and the five doors before it -- still applies unchanged. This is the
+/// second of Ruling C-1's two phases: the bake ran on the bare world (`wb_hydro_bake`, with
+/// [`WB_HYDRO_PARAMS_CARVE_STRIDE`]'s flag set), and this builds the same world again from the
+/// same parameters, with the record's channels cut into it.
+///
+/// # The water argument and the bake
+///
+/// - **`water_ptr` null with `water_len == 0` and `bake == 0` is the uncarved path** -- `None`,
+///   the bare world, bit-identical to what [`wb_world_new_peak`] builds from the same arguments.
+///   A null block with a non-zero bake is refused rather than read as "no carve", since the host
+///   plainly meant something by the id.
+/// - Otherwise `water_len` must be exactly [`WB_WATER_BLOCK_STRIDE`] and `water_ptr` a live,
+///   8-aligned buffer of that many f64 in the order that constant documents, and `bake` a live
+///   id from [`wb_hydro_bake`] (Ruling C-2: **the record is referenced, never copied** -- 7 MB
+///   per build would be the wrong shape for a studio that rebuilds on every slider drag).
+///
+/// **The record and its index are shared, not built per world.** The bake's decoded record,
+/// index and projected points are one `Arc` in [`HYDRO_QUERY`], built on first use at this
+/// world's radius and handed to every carved world and every query of the bake; a slider drag
+/// that rebuilds the world costs a `Surface` and a pointer, not another 41.7 MB index.
+///
+/// **A handle of 0 says that it refused and never why.** [`wb_water_check`] takes the same
+/// arguments and returns the named status -- including the two only this door has,
+/// [`WB_ERR_WRONG_WORLD`] and [`WB_ERR_NOT_BAKED_FOR_CARVING`] -- from the same code path, so the
+/// two cannot disagree. A carved handle then refuses every bake-like export with
+/// [`WB_ERR_CARVED`] (Rulings C-1 and C-24) and answers every sampling export as usual.
+///
+/// # Safety
+/// The feature-, relief-, tectonic-, coast-, gully- and peak-channel safety requirements of
+/// [`wb_world_new_peak`] apply unchanged. If `water_len` is non-zero, `water_ptr` must be a live,
+/// 8-aligned allocation of at least `water_len` f64.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn wb_world_new_water(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+    coast_ptr: *const f64,
+    coast_len: u32,
+    gully_ptr: *const f64,
+    gully_len: u32,
+    peak_ptr: *const f64,
+    peak_len: u32,
+    water_ptr: *const f64,
+    water_len: u32,
+    bake: u32,
+) -> u32 {
+    let built = unsafe {
+        water_world(
+            world_seed, radius_m, plate_count, land_fraction, features_ptr, feature_count,
+            relief_ptr, relief_len, tectonic_ptr, tectonic_len, coast_ptr, coast_len,
+            gully_ptr, gully_len, peak_ptr, peak_len, water_ptr, water_len, bake,
+        )
+    };
+    match built {
+        Ok(surface) => insert_world(World::new(surface)),
+        Err(_) => 0,
+    }
+}
+
+/// Write a named water preset's f64 into a caller buffer, in [`WB_WATER_BLOCK_STRIDE`]'s order.
+///
+/// `WB_OK`, or `WB_ERR_PARAM` for a selector this build does not know, or `WB_ERR_BUFFER` for a
+/// null, misaligned, or wrongly-sized buffer. The only selector is [`WB_WATER_CANONICAL`].
+///
+/// **This export exists so no host ever transcribes the bank width.** `water/layer.rs` stays the
+/// only place `CANONICAL_BANK_WIDTHS` is written down.
+///
+/// # Safety
+/// `out_ptr` must be a live, 8-aligned allocation of at least `out_len` f64.
+#[no_mangle]
+pub extern "C" fn wb_water_preset(preset: u32, out_ptr: *mut f64, out_len: u32) -> u32 {
+    let water = match water_preset_by_selector(preset) {
+        Some(water) => water,
+        None => return WB_ERR_PARAM,
+    };
+    if out_ptr.is_null() {
+        return WB_ERR_BUFFER;
+    }
+    let address = out_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
+    if address % core::mem::align_of::<f64>() != 0 {
+        return WB_ERR_BUFFER;
+    }
+    match usize::try_from(out_len) {
+        Ok(words) if words == WB_WATER_BLOCK_STRIDE => {}
+        _ => return WB_ERR_BUFFER,
+    }
+    let values = encode_water(&water);
+    for (offset, value) in values.into_iter().enumerate() {
+        unsafe { out_ptr.add(offset).write(value) };
+    }
+    WB_OK
+}
+
+/// Ask whether [`wb_world_new_water`] would build a world from these arguments, **and if not,
+/// why** -- the named status its handle of 0 cannot carry.
+///
+/// **Takes the constructor's whole argument list, unlike every other checker in this file**, and
+/// that is forced rather than chosen: the peak checker can judge a block alone, but whether a
+/// record belongs to a world ([`WB_ERR_WRONG_WORLD`]) cannot be answered without the world, and
+/// whether a bake id is live ([`WB_ERR_HANDLE`]) or baked for carving
+/// ([`WB_ERR_NOT_BAKED_FOR_CARVING`]) without the id. Both exports run the same function and
+/// differ only in what they keep, which is what makes "the checker and the constructor agree on
+/// every refusal" a structural property; a test holds it anyway.
+///
+/// `WB_OK` if the constructor would return a handle; otherwise the first refusal in the order
+/// `water_world` documents: `WB_ERR_BUFFER`, `WB_ERR_PARAM`, `WB_ERR_HANDLE`,
+/// [`WB_ERR_NOT_BAKED_FOR_CARVING`] or [`WB_ERR_WRONG_WORLD`].
+///
+/// **It costs what the constructor costs** -- it builds the world and, for a carve, fingerprints
+/// it (64 canonical samples) and may build the bake's shared index -- so it is the call to make
+/// after a refusal, not before every build. A host that only wants to validate a block needs any
+/// world and bake: a malformed block is refused before either is looked at.
+///
+/// # Safety
+/// As [`wb_world_new_water`].
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn wb_water_check(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief_ptr: *const f64,
+    relief_len: u32,
+    tectonic_ptr: *const f64,
+    tectonic_len: u32,
+    coast_ptr: *const f64,
+    coast_len: u32,
+    gully_ptr: *const f64,
+    gully_len: u32,
+    peak_ptr: *const f64,
+    peak_len: u32,
+    water_ptr: *const f64,
+    water_len: u32,
+    bake: u32,
+) -> u32 {
+    let built = unsafe {
+        water_world(
+            world_seed, radius_m, plate_count, land_fraction, features_ptr, feature_count,
+            relief_ptr, relief_len, tectonic_ptr, tectonic_len, coast_ptr, coast_len,
+            gully_ptr, gully_len, peak_ptr, peak_len, water_ptr, water_len, bake,
+        )
+    };
+    match built {
+        Ok(_) => WB_OK,
+        Err(status) => status,
+    }
+}
+
 /// Write a named tectonic preset's nine f64 into a caller buffer, in
 /// [`WB_TECTONIC_STRIDE`]'s order.
 ///
@@ -3340,7 +3762,7 @@ pub extern "C" fn wb_relief_check(relief_ptr: *const f64, relief_len: u32) -> u3
     }
 }
 
-/// The one `Surface::new` call in this file, behind both constructors.
+/// The six older constructors' builder: [`build_surface`] with no carve, installed, or 0.
 ///
 /// # Safety
 /// If `feature_count` is non-zero, `features_ptr` must be a live, 8-aligned allocation of at
@@ -3359,57 +3781,118 @@ unsafe fn build_world(
     gully: Option<GullyParams>,
     peaks: Option<PeakParams>,
 ) -> u32 {
+    let built = build_surface(
+        world_seed,
+        radius_m,
+        plate_count,
+        land_fraction,
+        features_ptr,
+        feature_count,
+        relief,
+        tectonics,
+        coast,
+        gully,
+        peaks,
+        None,
+    );
+    match built {
+        Ok(surface) => insert_world(World::new(surface)),
+        Err(_) => 0,
+    }
+}
+
+/// The one `Surface` constructor call in this file, behind all seven doors, and the status that
+/// refuses them when it will not build.
+///
+/// `water`: `None` for the bare world, or the decoded block and the bake id to carve with. The
+/// id becomes the bake's shared `Arc<IndexedRecord>` here ([`held_bake`], at this world's radius),
+/// and the join's own refusals come back as the named statuses Ruling C-3 asks for:
+/// `CarveRefused::NotBakedForCarving` as [`WB_ERR_NOT_BAKED_FOR_CARVING`], `Foreign` as
+/// [`WB_ERR_WRONG_WORLD`]. `Params` and `Radius` are unreachable -- the block was validated by
+/// the same bounds the layer uses, and the index was built at this very radius -- and are
+/// answered as `WB_ERR_PARAM` rather than assumed away.
+///
+/// A world-parameter refusal (radius, plates, land fraction, a feature that will not decode) is
+/// `WB_ERR_PARAM`, or `WB_ERR_BUFFER` for an unusable feature buffer. The six older doors turn
+/// every `Err` into a handle of 0 exactly as before; only [`wb_water_check`] reports which.
+///
+/// # Safety
+/// If `feature_count` is non-zero, `features_ptr` must be a live, 8-aligned allocation of at
+/// least `feature_count * WB_FEATURE_STRIDE` f64.
+#[allow(clippy::too_many_arguments)]
+unsafe fn build_surface(
+    world_seed: i64,
+    radius_m: f64,
+    plate_count: u32,
+    land_fraction: f64,
+    features_ptr: *const f64,
+    feature_count: u32,
+    relief: Option<ReliefParams>,
+    tectonics: Option<TectonicParams>,
+    coast: Option<CoastParams>,
+    gully: Option<GullyParams>,
+    peaks: Option<PeakParams>,
+    water: Option<(WaterParams, u32)>,
+) -> Result<Surface, u32> {
     if !radius_m.is_finite() || radius_m <= 0.0 || radius_m > WB_MAX_WORLD_RADIUS_M {
-        return 0;
+        return Err(WB_ERR_PARAM);
     }
     if plate_count == 0 || plate_count > WB_MAX_PLATE_COUNT {
-        return 0;
+        return Err(WB_ERR_PARAM);
     }
     if !land_fraction.is_finite() || !(0.0..=1.0).contains(&land_fraction) {
-        return 0;
+        return Err(WB_ERR_PARAM);
     }
     let plates = match usize::try_from(plate_count) {
         Ok(plates) => plates,
-        Err(_) => return 0,
+        Err(_) => return Err(WB_ERR_PARAM),
     };
 
     let features = if feature_count == 0 {
         None
     } else {
         if features_ptr.is_null() {
-            return 0;
+            return Err(WB_ERR_BUFFER);
         }
         let address = features_ptr as usize; // cast-ok: a pointer to an integer for an alignment check, no float anywhere near it
         if address % core::mem::align_of::<f64>() != 0 {
-            return 0;
+            return Err(WB_ERR_BUFFER);
         }
         let count = match usize::try_from(feature_count) {
             Ok(count) => count,
-            Err(_) => return 0,
+            Err(_) => return Err(WB_ERR_BUFFER),
         };
         let words = match count.checked_mul(WB_FEATURE_STRIDE) {
             Some(words) => words,
-            None => return 0,
+            None => return Err(WB_ERR_BUFFER),
         };
         let records = core::slice::from_raw_parts(features_ptr, words);
         let mut decoded = Vec::with_capacity(count);
         for record in records.chunks_exact(WB_FEATURE_STRIDE) {
             match decode_feature(record) {
                 Some(feature) => decoded.push(feature),
-                None => return 0,
+                None => return Err(WB_ERR_PARAM),
             }
         }
         Some(FeatureInput::Loose(decoded))
     };
 
-    // All FIVE blocks arrive already validated -- `read_relief`, `read_tectonic`,
-    // `read_coast`, `read_gully` and `read_peak` refuse at the boundary, so nothing outside any
+    // The bake, if there is one, as the shared `Arc` -- the query's own, never a second copy.
+    // Looked up after every world parameter is known good, so a refused radius never builds an
+    // index at it.
+    let carve = match water {
+        None => None,
+        Some((params, bake)) => Some(Carve { params, bake: held_bake(bake, radius_m, None)? }),
+    };
+
+    // All SIX blocks arrive already validated -- `read_relief`, `read_tectonic`, `read_coast`,
+    // `read_gully`, `read_peak` and `read_water` refuse at the boundary, so nothing outside any
     // documented domain reaches here. `None` is the canonical path for each, and is what
-    // `wb_world_new` always passes for all five. `with_peaks` rather than `new` so this file
-    // still holds exactly ONE `Surface` constructor call behind six doors; `new` delegates to
-    // `with_coast`, which delegates to `with_gully`, which delegates to `with_peaks` with
-    // `None`, so the canonical path is the same code either way.
-    let surface = Surface::with_peaks(
+    // `wb_world_new` always passes for all six. `with_water` rather than `new` so this file
+    // still holds exactly ONE `Surface` constructor call behind seven doors; `with_water` with
+    // `None` is `with_peaks` returned as it stands, and `new` delegates to `with_coast`, to
+    // `with_gully`, to `with_peaks` with `None`, so the canonical path is the same code either way.
+    Surface::with_water(
         world_seed,
         radius_m,
         plates,
@@ -3420,8 +3903,13 @@ unsafe fn build_world(
         coast,
         gully,
         peaks,
-    );
-    insert_world(World::new(surface))
+        carve,
+    )
+    .map_err(|refused| match refused {
+        CarveRefused::NotBakedForCarving => WB_ERR_NOT_BAKED_FOR_CARVING,
+        CarveRefused::Foreign(_) => WB_ERR_WRONG_WORLD,
+        CarveRefused::Params | CarveRefused::Radius => WB_ERR_PARAM,
+    })
 }
 
 /// Drop a world. `WB_OK` if one was there, `WB_ERR_HANDLE` otherwise -- so a double free is
@@ -4007,7 +4495,8 @@ const WB_EROSION_POND_MAX_SURFACE_AREA_M2: f64 = 1.0e10;
 /// outside the domains above, `WB_ERR_BUFFER` for a null, misaligned or short output
 /// buffer, or `WB_ERR_GRAPH` if the sampled node set could not be built into a graph (see
 /// that constant's doc for why this is believed unreachable today and kept as a status
-/// anyway). Nothing is written to any output buffer on a refusal.
+/// anyway), or [`WB_ERR_CARVED`] for a carved world (Ruling C-24: erosion computes from the
+/// ground, as a bake does). Nothing is written to any output buffer on a refusal.
 ///
 /// # Safety
 /// `out_heights` must be null, or a live 8-aligned allocation of at least `out_len` f64
@@ -4088,6 +4577,11 @@ pub extern "C" fn wb_erosion_run(
     };
 
     let outcome = with_world(handle, |world| {
+        // Ruling C-24: erosion computes FROM the terrain, as a bake does, so it refuses a carved
+        // world for Ruling C-1's reason -- the channels it would erode were cut from a record.
+        if world.surface().is_carved() {
+            return Err(WB_ERR_CARVED);
+        }
         let world_seed = world.surface().world_seed as u64; // cast-ok: two's-complement reinterpretation, the same one wb_world_new already makes for Noise
         let radius_m = world.surface().radius_m;
         let sampling = sample_nodes(world_seed, node_count, radius_m).ok_or(WB_ERR_GRAPH)?;
@@ -4340,7 +4834,9 @@ fn every_component_has_an_outlet(graph: &StreamGraph, neighbours: &[Vec<u32>]) -
 ///
 /// `WB_OK`, `WB_ERR_HANDLE`, `WB_ERR_PARAM` for a numeric argument outside the domains above,
 /// `WB_ERR_BUFFER` for a null, misaligned or short output buffer, or [`WB_ERR_GRAPH`] if the
-/// node set could not be sampled or built into a graph, or produced a rimless basin.
+/// node set could not be sampled or built into a graph, or produced a rimless basin, or
+/// [`WB_ERR_CARVED`] for a carved world (Ruling C-24: this run computes from the ground, as a
+/// bake does).
 ///
 /// # Safety
 /// `out_bodies` must be null, or a live 8-aligned allocation of at least `out_len` f64.
@@ -4397,6 +4893,11 @@ pub extern "C" fn wb_water_run(
     };
 
     let outcome = with_world(handle, |world| {
+        // Ruling C-24: this run fills and resolves water FROM the terrain, as a bake does, so it
+        // refuses a carved world for Ruling C-1's reason.
+        if world.surface().is_carved() {
+            return Err(WB_ERR_CARVED);
+        }
         let radius_m = world.surface().radius_m;
         if !(sea_level_m.abs() <= radius_m) {
             return Err(WB_ERR_PARAM);
@@ -4513,7 +5014,34 @@ pub extern "C" fn wb_water_run(
 ///
 /// followed by `forced_count` pairs of `[latitude_deg, longitude_deg]`. **The order is the
 /// contract**, the same words every other flat record in this file carries at its own doc.
+///
+/// **This is the ordinary bake's buffer, and it is frozen.** A 12-word record (plus its pairs)
+/// bakes exactly what it baked before the carve existed -- `HydroParams::drain_for_carve` false,
+/// a SCHEMA 7 record, byte for byte. A bake *for carving* uses the one-word-longer
+/// [`WB_HYDRO_PARAMS_CARVE_STRIDE`] instead.
 pub const WB_HYDRO_PARAMS_STRIDE: usize = 12;
+
+/// f64 words in a hydrology params record that **says whether the bake is for carving** (plan
+/// 2b Task 5, Ruling C-20): the twelve words of [`WB_HYDRO_PARAMS_STRIDE`] in their order, then
+///
+/// | index | field |
+/// |---:|---|
+/// | 12 | `drain_for_carve` -- exactly `0.0` (an ordinary bake) or exactly `1.0` (for carving) |
+///
+/// followed by the `forced_count` pairs, which therefore start at word 13 rather than 12.
+///
+/// **The two layouts cannot be confused, and the length is what tells them apart.** Twelve words
+/// plus two per forced outlet is always an even length; thirteen plus two per outlet is always
+/// odd. So [`wb_hydro_bake`] reads the flag word exactly when the buffer's length is odd, a host
+/// that never heard of carving keeps sending the even length it always sent and gets the bake it
+/// always got, and no word of the old layout moved to make room. The flag rides after
+/// `forced_count` rather than at the end because the end is a variable number of pairs away.
+///
+/// A flag word of `0.0` is the ordinary bake spelled the long way, and bakes the same record, bit
+/// for bit, as the 12-word buffer does -- a test holds the two to each other. Any other value but
+/// `1.0` (including `0.5`, `2.0`, NaN) is refused as `WB_ERR_PARAM`: a flag that is neither is a
+/// host bug, and reading it as either answer would be a silently-adjusted parameter.
+pub const WB_HYDRO_PARAMS_CARVE_STRIDE: usize = WB_HYDRO_PARAMS_STRIDE + 1;
 
 /// The ceiling on `total_nodes` and `wetness_nodes` for [`wb_hydro_bake`]. Ruling I7 (final
 /// review of water 1a): a measured hazard, not a domain margin -- the studio heap was about
@@ -4530,8 +5058,12 @@ pub const WB_MAX_HYDRO_FORCED: u32 = 1_024;
 /// malformed. Every numeric domain check `hydrology::bake` itself would make is left to
 /// `bake`; what this function refuses is a record `bake` cannot even be asked about --
 /// non-finite words, a non-integral node count or forced-outlet count, a stride that does not
-/// match its own declared `forced_count`, a node count above [`WB_MAX_HYDRO_NODES`], or a
-/// `forced_count` above [`WB_MAX_HYDRO_FORCED`].
+/// match its own declared `forced_count`, a node count above [`WB_MAX_HYDRO_NODES`], a
+/// `forced_count` above [`WB_MAX_HYDRO_FORCED`], or a carving flag that is neither 0 nor 1.
+///
+/// Which of the two layouts the buffer is ([`WB_HYDRO_PARAMS_STRIDE`] or
+/// [`WB_HYDRO_PARAMS_CARVE_STRIDE`]) is read off the parity of its length, as the latter's doc
+/// explains; an even length takes the path this function always took, unchanged.
 fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
     let whole = |w: f64| w.is_finite() && w >= 0.0 && m::floor(w) == w;
     if words.len() < WB_HYDRO_PARAMS_STRIDE || words.iter().any(|w| !w.is_finite()) {
@@ -4548,14 +5080,23 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
     if words[11] > WB_MAX_HYDRO_FORCED as f64 { // cast-ok: a ceiling constant widened to f64 for a domain comparison, exact for every u32
         return None;
     }
+    // Odd length: the carving layout, whose header is one word longer. Even: the ordinary one.
+    let header = if words.len() % 2 == 1 { WB_HYDRO_PARAMS_CARVE_STRIDE } else { WB_HYDRO_PARAMS_STRIDE };
     let forced = words[11] as usize; // cast-ok: checked non-negative, integral and <= WB_MAX_HYDRO_FORCED above
-    let expected_len = match forced.checked_mul(2).and_then(|doubled| doubled.checked_add(WB_HYDRO_PARAMS_STRIDE)) {
+    let expected_len = match forced.checked_mul(2).and_then(|doubled| doubled.checked_add(header)) {
         Some(len) => len,
         None => return None,
     };
     if words.len() != expected_len {
         return None;
     }
+    let drain_for_carve = if header == WB_HYDRO_PARAMS_STRIDE || words[WB_HYDRO_PARAMS_STRIDE] == 0.0 {
+        false
+    } else if words[WB_HYDRO_PARAMS_STRIDE] == 1.0 {
+        true
+    } else {
+        return None;
+    };
     let total = words[0] as u32; // cast-ok: checked integral, non-negative and <= WB_MAX_HYDRO_NODES above
     let wet = words[1] as u32; // cast-ok: checked integral, non-negative and <= WB_MAX_HYDRO_NODES above
     let mut p = HydroParams::earth_like(total);
@@ -4569,8 +5110,9 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
     p.notch_fall_m = words[8];
     p.evaporation_factor = words[9];
     p.salt_flat_share = words[10];
+    p.drain_for_carve = drain_for_carve;
     p.forced_outlets = (0..forced)
-        .map(|k| SpherePoint::from_latlon(words[12 + 2 * k], words[13 + 2 * k]))
+        .map(|k| SpherePoint::from_latlon(words[header + 2 * k], words[header + 1 + 2 * k]))
         .collect();
     Some(p)
 }
@@ -4580,10 +5122,13 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
 ///
 /// # Parameters
 /// `params` is a [`WB_HYDRO_PARAMS_STRIDE`]-word record (plus two words per forced outlet),
-/// in the order that constant documents. `params_len` must equal
-/// `WB_HYDRO_PARAMS_STRIDE + 2 * forced_count`, every word must be finite, `total_nodes` and
-/// `wetness_nodes` must be integral and no larger than [`WB_MAX_HYDRO_NODES`], and
-/// `forced_count` must be integral. `params` must be non-null and 8-aligned.
+/// in the order that constant documents -- or, to bake **for carving** (Ruling C-20), a
+/// [`WB_HYDRO_PARAMS_CARVE_STRIDE`]-word record whose word 12 is the flag. `params_len` must
+/// equal `WB_HYDRO_PARAMS_STRIDE + 2 * forced_count` or `WB_HYDRO_PARAMS_CARVE_STRIDE + 2 *
+/// forced_count`, every word must be finite, `total_nodes` and `wetness_nodes` must be integral
+/// and no larger than [`WB_MAX_HYDRO_NODES`], and `forced_count` must be integral. `params`
+/// must be non-null and 8-aligned. Only a record baked for carving (`SCHEMA_CARVE` in word 0)
+/// is accepted by [`wb_world_new_water`].
 ///
 /// # Returns
 /// `WB_OK` with `*out_id` written to a fresh, never-reused id; `WB_ERR_PARAM` if the record
@@ -4591,8 +5136,9 @@ fn hydro_params_from(words: &[f64]) -> Option<HydroParams> {
 /// `WB_ERR_BUFFER` if `params` or `out_id` is null or misaligned, or `params_len` is short;
 /// `WB_ERR_HANDLE` if `handle` names no live world; [`WB_ERR_GRAPH`] if `bake` could not
 /// sample or build a graph over the surface (`HydroError::Sampling`); [`WB_ERR_DRAINAGE`] if
-/// the routing it built failed the drainage check (`HydroError::Drainage`). `*out_id` is
-/// written only on `WB_OK`.
+/// the routing it built failed the drainage check (`HydroError::Drainage`); [`WB_ERR_CARVED`]
+/// if `handle` is a carved world (`HydroError::Carved`, Ruling C-1). `*out_id` is written only
+/// on `WB_OK`.
 ///
 /// # Safety
 /// `params` must be null or a live, 8-aligned allocation of at least `params_len` f64.
@@ -4634,10 +5180,10 @@ pub extern "C" fn wb_hydro_bake(handle: u32, params: *const f64, params_len: u32
         // world -- `bake_stages` already refuses to build one whose routing fails to drain, so
         // this arm is covered by inspection only (see this task's report).
         Some(Err(HydroError::Drainage(_))) => return WB_ERR_DRAINAGE,
-        // Ruling C-1: a carved world is never baked. No door builds a carved world handle yet
-        // (plan 2b Task 5 adds one), so nothing reaches this arm today; it answers the malformed-
-        // request status rather than panicking, and Task 5 may give it a name of its own.
-        Some(Err(HydroError::Carved)) => return WB_ERR_PARAM,
+        // Ruling C-1: a carved world is never baked. Reachable since plan 2b Task 5, whose
+        // `wb_world_new_water` builds carved handles, and named rather than answered as a
+        // malformed request: nothing in the params is wrong, the world is.
+        Some(Err(HydroError::Carved)) => return WB_ERR_CARVED,
         Some(Ok(record)) => record,
     };
 
@@ -4716,6 +5262,11 @@ pub extern "C" fn wb_hydro_copy(id: u32, out: *mut f64, out_len: u32) -> u32 {
 /// the index is derived state and is freed with the bake). `WB_OK` if it was live,
 /// `WB_ERR_HANDLE` if `id` names no live bake -- never issued, or already freed, same as
 /// [`wb_world_free`].
+///
+/// **A carved world built on this bake is not un-carved.** [`wb_world_new_water`] gave it its own
+/// reference to the shared record and index, so it keeps sampling exactly what it sampled; the
+/// memory goes when the last such world is freed as well. Every later use of the id -- a query,
+/// or another carved world -- is refused with `WB_ERR_HANDLE`.
 #[no_mangle]
 pub extern "C" fn wb_hydro_free(id: u32) -> u32 {
     let slot = match usize::try_from(id.checked_sub(1).unwrap_or(u32::MAX)) {
@@ -4826,29 +5377,31 @@ fn with_ground<T>(
     action(&water::Ground { landform_m: water::Landform(&landform_m), detail_m: water::Detail(&detail_m) })
 }
 
-/// Borrow the decoded record and the [`water::index::WaterIndex`] for bake `id` at `radius_m`,
-/// building and caching them on the first ask (Ruling Q-2) -- **if the bake is of the world
-/// whose fingerprint is `world_ground`** (plan 2b, Task 2).
+/// The shared [`IndexedRecord`] for bake `id`, indexed at `radius_m`: from [`HYDRO_QUERY`] if a
+/// slot was already built at exactly this radius, or decoded from `HYDRO`'s words, built, and
+/// held there on the first ask (Ruling Q-2). **The one place a held bake becomes an index**, for
+/// the query and the carve alike, so the two can never read different indexes of one bake.
 ///
-/// `Err` carries the status the caller should return: `WB_ERR_HANDLE` for a bake id that names
-/// nothing live -- checked against `HYDRO` itself, *before* the cache, so a freed bake can never
-/// be answered out of a stale index -- `WB_ERR_WRONG_WORLD` for a record whose ground is not
-/// `world_ground` (`record::check_ground`), and `WB_ERR_PARAM` for a held record that will not
-/// decode or a radius that is not a length. None of them panics; a decode failure of a record
-/// this module itself encoded should be unreachable, and is a status rather than an `expect`
-/// because "unreachable" is not a thing an `extern "C"` boundary is allowed to assume.
+/// `ground`: `Some(digest)` for a query, which knows the world it answers for -- a record of other
+/// ground is then refused with [`WB_ERR_WRONG_WORLD`] *before* an index is built over it, so a
+/// mismatch costs a decode and not a grid. `None` for [`wb_world_new_water`], which has no world
+/// yet: `Surface::with_water` makes the carving-flag and ground checks at the join, in its own
+/// order (Ruling C-20 first), and a record it refuses has had its index built and cached here. That
+/// index is the very one a later query of the same bake would build, so it is not waste in the
+/// studio's flow; it is freed with the bake either way.
 ///
-/// **The verdict is decided here, once per call, and `action` never sees a foreign record.** The
-/// caller passes the world's digest from [`world_ground`] (held with the handle, sampled once per
-/// world); this compares sixteen bytes before `action` runs. `wb_water_tile`'s `action` is the
-/// whole per-pixel loop, so the check is paid once per tile. A foreign record is refused before
-/// an index is built for it, so a mismatch costs a decode and not a grid.
-fn with_water_query<T>(
+/// `Err` carries the status the caller should return: `WB_ERR_HANDLE` for an id that names
+/// nothing live -- asked of `HYDRO` itself, *before* the cache, so a freed bake can never be served
+/// out of a stale slot -- `WB_ERR_PARAM` for a radius that is not a length or a held record that
+/// will not decode (unreachable for a record this module encoded, and a status rather than an
+/// `expect` because an `extern "C"` boundary does not get to assume), and `WB_ERR_WRONG_WORLD` as
+/// above. The `Arc` is cloned out and every borrow released before the caller runs, so nothing the
+/// caller does -- a whole tile, a world build -- happens inside a `RefCell` borrow.
+fn held_bake(
     id: u32,
     radius_m: f64,
-    world_ground: &[u8; hydrology::record::GROUND_BYTES],
-    action: impl FnOnce(&hydrology::HydroRecord, &water::index::WaterIndex) -> T,
-) -> Result<T, u32> {
+    ground: Option<&[u8; hydrology::record::GROUND_BYTES]>,
+) -> Result<Arc<IndexedRecord>, u32> {
     if !(radius_m.is_finite() && radius_m > 0.0) {
         return Err(WB_ERR_PARAM);
     }
@@ -4863,54 +5416,66 @@ fn with_water_query<T>(
     if !live {
         return Err(WB_ERR_HANDLE);
     }
-
-    // **The `borrow_mut` deliberately spans `action`**, which for `wb_water_tile` is the whole
-    // fill. It has to: `action` borrows the record and the index out of the slot, so the borrow
-    // cannot be released before it runs, and dropping it early would mean cloning a record per
-    // tile. Nothing re-enters -- `water_at` reads the record and the index and touches no
-    // thread-local -- so this is a hazard to keep in mind rather than a bug: any future code
-    // that calls back into `with_water_query` (or into `wb_hydro_free`) from inside `action`
-    // would panic on the second borrow, which is why neither export does anything between these
-    // braces but sample.
+    // Bit equality and not `==`: this is "was it built for this very radius", and a rebuild is
+    // cheap next to answering off the wrong grid.
+    let cached = HYDRO_QUERY.with(|cell| {
+        cell.borrow().get(slot).and_then(|held| held.as_ref())
+            .filter(|held| held.index().radius_m().to_bits() == radius_m.to_bits())
+            .cloned()
+    });
+    if let Some(held) = cached {
+        return Ok(held);
+    }
+    let record = HYDRO.with(|hydro| {
+        let held = hydro.borrow();
+        let words = held.get(slot).and_then(|held| held.as_ref()).ok_or(WB_ERR_PARAM)?;
+        match ground {
+            // `decode_for`, not `decode`: a record of another world is refused before an index
+            // is built over it.
+            Some(ground) => match hydrology::record::decode_for(words, ground) {
+                Ok(record) => Ok(record),
+                Err(hydrology::record::ReadError::Malformed) => Err(WB_ERR_PARAM),
+                Err(hydrology::record::ReadError::Foreign(_)) => Err(WB_ERR_WRONG_WORLD),
+            },
+            None => hydrology::record::decode(words).ok_or(WB_ERR_PARAM),
+        }
+    })?;
+    let built = Arc::new(IndexedRecord::new(record, radius_m));
     HYDRO_QUERY.with(|cell| {
         let mut table = cell.borrow_mut();
         if table.len() <= slot {
             table.resize_with(slot + 1, || None);
         }
-        let usable = match table.get(slot) {
-            // Bit equality and not `==`: this is "was it built for this very radius", and a
-            // rebuild is cheap next to answering off the wrong grid.
-            Some(Some((built_at, _, _))) => built_at.to_bits() == radius_m.to_bits(),
-            _ => false,
-        };
-        if !usable {
-            let built = HYDRO.with(|hydro| {
-                let held = hydro.borrow();
-                let words = held.get(slot).and_then(|held| held.as_ref()).ok_or(WB_ERR_PARAM)?;
-                // `decode_for`, not `decode`: a record of another world is refused before an
-                // index is built over it.
-                let record = match hydrology::record::decode_for(words, world_ground) {
-                    Ok(record) => record,
-                    Err(hydrology::record::ReadError::Malformed) => return Err(WB_ERR_PARAM),
-                    Err(hydrology::record::ReadError::Foreign(_)) => return Err(WB_ERR_WRONG_WORLD),
-                };
-                let index = water::index::WaterIndex::build(
-                    &record, radius_m, water::index::DEFAULT_CELL_M);
-                Ok((radius_m, record, index))
-            })?;
-            table[slot] = Some(built);
-        }
-        match table.get(slot) {
-            // Checked on every call and not only on a build: the cache is keyed by bake and
-            // radius, and a second world of the same radius reaches a cached slot without a
-            // rebuild -- exactly the pairing this exists to refuse.
-            Some(Some((_, record, index))) => match hydrology::record::check_ground(record, world_ground) {
-                Ok(()) => Ok(action(record, index)),
-                Err(_) => Err(WB_ERR_WRONG_WORLD),
-            },
-            _ => Err(WB_ERR_PARAM),
-        }
-    })
+        table[slot] = Some(Arc::clone(&built));
+    });
+    Ok(built)
+}
+
+/// Run `action` over the decoded record and the [`water::index::WaterIndex`] for bake `id` at
+/// `radius_m` ([`held_bake`]) -- **if the bake is of the world whose fingerprint is
+/// `world_ground`** (plan 2b, Task 2).
+///
+/// `Err` carries [`held_bake`]'s statuses, and `WB_ERR_WRONG_WORLD` for a record whose ground is
+/// not `world_ground` (`record::check_ground`).
+///
+/// **The verdict is decided here, once per call, and `action` never sees a foreign record.** The
+/// caller passes the world's digest from [`world_ground`] (held with the handle, sampled once per
+/// world); this compares sixteen bytes before `action` runs. `wb_water_tile`'s `action` is the
+/// whole per-pixel loop, so the check is paid once per tile. It is made on every call and not
+/// only when an index is built: the cache is keyed by bake and radius, and a second world of the
+/// same radius -- or a slot [`wb_world_new_water`] built with no world to check against --
+/// reaches a warm slot without a rebuild, which is exactly the pairing this exists to refuse.
+fn with_water_query<T>(
+    id: u32,
+    radius_m: f64,
+    world_ground: &[u8; hydrology::record::GROUND_BYTES],
+    action: impl FnOnce(&hydrology::HydroRecord, &water::index::WaterIndex) -> T,
+) -> Result<T, u32> {
+    let held = held_bake(id, radius_m, Some(world_ground))?;
+    match hydrology::record::check_ground(held.record(), world_ground) {
+        Ok(()) => Ok(action(held.record(), held.index())),
+        Err(_) => Err(WB_ERR_WRONG_WORLD),
+    }
 }
 
 /// **Spec §8.3 at one point**: what water is here -- ocean, lake, salt lake, salt flat, pond,
@@ -5201,9 +5766,9 @@ mod world_ground_tests {
 
 /// **Ruling C-9: the query's detail field is the bare ground.** [`with_ground`] is the one place
 /// the wasm query names its two surfaces, and on a carved world `elevation_m` and `bake_ground_m`
-/// part company inside a channel. No export builds a carved world yet (plan 2b Task 5 adds that
-/// door), so this is asserted on the function directly, over the carved world the water layer's
-/// own tests join.
+/// part company inside a channel. Asserted on the function directly, over the carved world the
+/// water layer's own tests join -- a fixture whose channel is known to the metre, which a real
+/// bake behind [`wb_world_new_water`] is not.
 #[cfg(test)]
 mod carved_ground_tests {
     use super::*;
@@ -5221,6 +5786,149 @@ mod carved_ground_tests {
         // And the landform half is untouched either way: `structural_m` never sees the layer.
         let landform = with_ground(&carved, cell_m, |ground| ground.landform_m.at(&probe));
         assert_eq!(landform.to_bits(), bare.structural_m(&probe).to_bits());
+    }
+}
+
+/// **One held bake, one index** (plan 2b Task 5): the carve and the query read the same
+/// `Arc<IndexedRecord>`, asserted where [`HYDRO_QUERY`] is visible.
+///
+/// **Why a child module.** Sharing is not observable through the exports: a door that built its
+/// own record and index per carved world would answer every sample identically, and only cost the
+/// owner's world another 41.7 MB per bake. So this counts references to the one `Arc` the query
+/// cache holds -- a door that built its own would leave the count at one.
+#[cfg(test)]
+mod shared_bake_tests {
+    use super::*;
+
+    const SEED: i64 = 20_260_904;
+    const RADIUS_M: f64 = 6_371_000.0;
+    /// `world_ground_tests`' twelve words, plus the carving flag set.
+    const FOR_CARVING: [f64; WB_HYDRO_PARAMS_CARVE_STRIDE] =
+        [12_000.0, 500.0, 8.0, 1.0e6, 1.0e6, 3.0e10, 3.0e11, 3.0e12, 1.0, 1.0, 0.1, 0.0, 1.0];
+
+    fn plain() -> u32 {
+        let world = wb_world_new(SEED, RADIUS_M, 12, 0.29, core::ptr::null(), 0);
+        assert_ne!(world, 0);
+        world
+    }
+
+    fn carved(bake: u32) -> u32 {
+        let block = encode_water(&WaterParams::canonical());
+        let null = core::ptr::null();
+        wb_world_new_water(SEED, RADIUS_M, 12, 0.29, null, 0, null, 0, null, 0, null, 0, null, 0,
+                           null, 0, block.as_ptr(), 1, bake)
+    }
+
+    fn check(bake: u32) -> u32 {
+        let block = encode_water(&WaterParams::canonical());
+        let null = core::ptr::null();
+        wb_water_check(SEED, RADIUS_M, 12, 0.29, null, 0, null, 0, null, 0, null, 0, null, 0,
+                       null, 0, block.as_ptr(), 1, bake)
+    }
+
+    /// The query cache's `Arc` for `bake`, if one is held.
+    fn cached(bake: u32) -> Option<Arc<IndexedRecord>> {
+        let slot = usize::try_from(bake - 1).expect("a small id");
+        HYDRO_QUERY.with(|cell| cell.borrow().get(slot).and_then(|held| held.clone()))
+    }
+
+    #[test]
+    fn the_carve_and_the_query_share_one_record_and_one_index() {
+        let world = plain();
+        let mut bake: u32 = 0;
+        let len = u32::try_from(FOR_CARVING.len()).expect("thirteen words");
+        assert_eq!(wb_hydro_bake(world, FOR_CARVING.as_ptr(), len, &mut bake), WB_OK);
+        assert!(cached(bake).is_none(), "a bake builds no index until something reads it");
+
+        // The query builds the one index.
+        let mut sample = [0.0f64; WB_WATER_STRIDE];
+        let stride = u32::try_from(WB_WATER_STRIDE).expect("five words");
+        assert_eq!(wb_water_at(world, bake, 29.0, -3.0, sample.as_mut_ptr(), stride), WB_OK);
+        let first = cached(bake).expect("the query cached its index");
+        // `first` itself is one reference and the slot another.
+        assert_eq!(Arc::strong_count(&first), 2);
+
+        // Two carved worlds on the bake: each holds the SAME Arc, not a copy of what is in it.
+        let one = carved(bake);
+        let two = carved(bake);
+        assert_ne!(one, 0);
+        assert_ne!(two, 0);
+        assert_eq!(Arc::strong_count(&first), 4,
+                   "a carved world built its own record and index instead of sharing the query's");
+        let still = cached(bake).expect("still cached");
+        assert!(Arc::ptr_eq(&first, &still), "the door replaced the query's index with its own");
+        drop(still);
+
+        // The checker keeps nothing: it builds the same world and drops it.
+        assert_eq!(check(bake), WB_OK);
+        assert_eq!(Arc::strong_count(&first), 4, "the checker held on to the bake");
+
+        // A query through a carved world reads the same index again, rebuilding nothing.
+        assert_eq!(wb_water_at(one, bake, 29.0, -3.0, sample.as_mut_ptr(), stride), WB_OK);
+        assert_eq!(Arc::strong_count(&first), 4);
+
+        // Freeing a carved world lets go of its reference; freeing the bake drops the slot's,
+        // and the other carved world keeps its own -- it is not un-carved behind its back.
+        assert_eq!(wb_world_free(one), WB_OK);
+        assert_eq!(Arc::strong_count(&first), 3);
+        assert_eq!(wb_hydro_free(bake), WB_OK);
+        assert_eq!(Arc::strong_count(&first), 2, "the carved world and `first` remain");
+        assert_eq!(carved(bake), 0, "a freed bake carves nothing more");
+        assert_eq!(check(bake), WB_ERR_HANDLE);
+
+        assert_eq!(wb_world_free(two), WB_OK);
+        assert_eq!(Arc::strong_count(&first), 1, "only this test's own reference is left");
+        assert_eq!(wb_world_free(world), WB_OK);
+    }
+
+    /// The other order: the door meets the bake FIRST, with the cache cold. Its index must land
+    /// in the query's slot, so the query that follows reads it rather than building a second --
+    /// the order the studio takes when it bakes for carving and builds the carved world before
+    /// drawing any water.
+    #[test]
+    fn a_carve_built_before_any_query_leaves_its_index_for_the_query() {
+        let world = plain();
+        let mut bake: u32 = 0;
+        let len = u32::try_from(FOR_CARVING.len()).expect("thirteen words");
+        assert_eq!(wb_hydro_bake(world, FOR_CARVING.as_ptr(), len, &mut bake), WB_OK);
+        assert!(cached(bake).is_none());
+
+        let one = carved(bake);
+        assert_ne!(one, 0);
+        let held = cached(bake).expect("the door left its index in the query's slot");
+        // `held`, the slot, and the carved world.
+        assert_eq!(Arc::strong_count(&held), 3, "the door's index is not the one the slot holds");
+
+        let mut sample = [0.0f64; WB_WATER_STRIDE];
+        let stride = u32::try_from(WB_WATER_STRIDE).expect("five words");
+        assert_eq!(wb_water_at(world, bake, 29.0, -3.0, sample.as_mut_ptr(), stride), WB_OK);
+        let after = cached(bake).expect("cached");
+        assert!(Arc::ptr_eq(&held, &after), "the query built a second index beside the carve's");
+        drop(after);
+        assert_eq!(Arc::strong_count(&held), 3);
+
+        assert_eq!(wb_world_free(one), WB_OK);
+        assert_eq!(wb_hydro_free(bake), WB_OK);
+        assert_eq!(wb_world_free(world), WB_OK);
+    }
+}
+
+/// The water block's wire format, asserted where [`decode_water`] and [`encode_water`] are
+/// visible. **There is no field swap to catch** -- the block has one field (see
+/// [`WB_WATER_BLOCK_STRIDE`]) -- so what is left to pin is that slot 0 is `bank_widths` and that
+/// the two functions are exact inverses.
+#[cfg(test)]
+mod water_wire_format_tests {
+    use super::*;
+
+    #[test]
+    fn decode_water_and_encode_water_are_exact_inverses() {
+        // Not the canonical 1.0, which a decoder that ignored its input and returned
+        // `canonical()` would also produce.
+        let sentinel = [2.718_281_828];
+        let water = decode_water(&sentinel).expect("admissible");
+        assert_eq!(water.bank_widths.to_bits(), sentinel[0].to_bits(), "bank_widths is not slot 0");
+        assert_eq!(encode_water(&water).map(f64::to_bits), sentinel.map(f64::to_bits));
     }
 }
 

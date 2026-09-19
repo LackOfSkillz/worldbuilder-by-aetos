@@ -1426,6 +1426,18 @@ jobs:
           # SCHEMA_CARVE = SCHEMA + 1 -- a genuine layout bump must go to 9, not 8. Re-derived by
           # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
           # configuration, summing each binary's trailer: listed 914/914/917/1040/1043.
+          # 2026-09-18, WATER 2b Task 5 (the carve's wasm door): **903/903/906/1029/1032 ->
+          # 903/903/906/1044/1047**, ignored unchanged at 11. Fifteen tests, all behind `wasm`, so
+          # only the two wasm rows move: twelve in `tests/wasm_exports.rs` (the door's statuses and
+          # the viewer's names for them; the thirteen-word bake for carving; the preset; the bank
+          # width's bounds and sweep; the buffer; the checker and constructor agreeing on every
+          # refusal; a record from another world of the same radius refused; a record not baked
+          # for carving refused; an empty carve bit-identical to `wb_world_new`; the door carving
+          # what the engine carves; a carved world refusing every bake-like export) and three in
+          # `src/wasm.rs` (the carve and the query share one `Arc` either way round; the water
+          # block's wire format). Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list`
+          # (and `--ignored`) per configuration, summing each binary's trailer: listed
+          # 914/914/917/1055/1058.
           - name: no-default-features
             features: "--no-default-features"
             expect: 903
@@ -1440,11 +1452,11 @@ jobs:
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1029
+            expect: 1044
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1032
+            expect: 1047
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4
@@ -1719,6 +1731,10 @@ jobs:
       # (168), then run against a wheel built from this tree: 576 passed, 1 failed -- the failure
       # is test_installation.py's two-checkouts-one-interpreter property described above, which
       # CI's fresh virtualenv does not have.
+      # 2026-09-18, WATER 2b Task 5: **577, conformance 168, both unchanged** -- the carve's door is
+      # wasm-only and adds no Python test. Re-counted by `pytest tests/ -q --collect-only` (577),
+      # then run against a wheel rebuilt from this tree: 576 passed, 1 failed, the same
+      # test_installation property.
       - name: Assert the suite -- 577 tests, 168 of them conformance
         shell: bash
         run: |
@@ -2149,6 +2165,10 @@ jobs:
       # (ddb430d) moved the two hydro records to 155,851; Ruling C-20 made it apply only to a bake
       # for a world that will be carved (`HydroParams::drain_for_carve`, default false), and the
       # parity bakes are ordinary ones. The native dump is byte-identical to e37575b's again.
+      # 2026-09-18, WATER 2b Task 5 (the carve's wasm door): **156,019 / 0 divergent, unchanged**,
+      # and every control unmoved (seed 147,395, erosion-k 216, water-pond 60, tectonic-warp
+      # 22,999, coast-amplitude 13,128, gully-steer 3,752, climate-samples 648). The door is
+      # opt-in and absent from every canonical path; the parity bakes use the 12-word buffer.
       - name: Assert the corpus -- 156,019 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity

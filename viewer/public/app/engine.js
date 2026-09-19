@@ -54,6 +54,17 @@ export const WB_ERR_DRAINAGE = 7;
 /// to re-bake on this world, not to change a parameter. Named here so it reads as that sentence
 /// and not as a bare `8` a caller would swallow as "engine unavailable".
 export const WB_ERR_WRONG_WORLD = 8;
+/// `wasm.rs`'s ninth status (plan 2b, Task 5): `wb_world_new_water` was handed a held bake that
+/// was not baked FOR CARVING -- an ordinary record, SCHEMA 7. Such a record keeps the ponds its
+/// own channels drain, and carving with it would stand a dam across a river. The world and the
+/// bake may both be right; the fix is to re-bake for carving, which this name says and a bare
+/// `9` would not.
+export const WB_ERR_NOT_BAKED_FOR_CARVING = 9;
+/// `wasm.rs`'s tenth status (plan 2b, Task 5; Rulings C-1 and C-24): a bake, an erosion run or a
+/// water run was asked of a CARVED world. Each computes from the ground, and a carved world's
+/// ground was cut from a record, so the question belongs to the bare world built from the same
+/// parameters without the water block.
+export const WB_ERR_CARVED = 10;
 
 const STATUS_NAMES = {
   0: "WB_OK",
@@ -65,6 +76,8 @@ const STATUS_NAMES = {
   6: "WB_ERR_GRAPH",
   7: "WB_ERR_DRAINAGE",
   8: "WB_ERR_WRONG_WORLD",
+  9: "WB_ERR_NOT_BAKED_FOR_CARVING",
+  10: "WB_ERR_CARVED",
 };
 
 /// Feature record codes, mirrored from `wasm.rs`. A record is eight f64.

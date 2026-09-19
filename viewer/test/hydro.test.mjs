@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  Engine, WB_WATER_STRIDE, WB_ERR_WRONG_WORLD, decodeWaterSample, statusName, waterTileBytes,
+  Engine, WB_WATER_STRIDE, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING, WB_ERR_CARVED,
+  decodeWaterSample, statusName, waterTileBytes,
 } from "../public/app/engine.js";
 // The record decoder lives with the preview drawing, not with the boundary: the query answers
 // name bodies by id, and this is the reader that turns the record into entries to look them up
@@ -231,6 +232,20 @@ test("a freed bake stops answering rather than being served from the index it le
   engine.hydroFree(bake);
   assert.throws(() => engine.waterAt({ bake, latitudeDeg: 0, longitudeDeg: 0 }), /WB_ERR_HANDLE/);
   assert.throws(() => engine.hydroFree(bake), /WB_ERR_HANDLE/);
+});
+
+// Plan 2b Task 5: the carve's door adds two refusals a host must be able to tell apart from "bad
+// parameter" and "wrong world" -- a bake that was not made for carving, and a bake-like question
+// asked of a carved world. Ruling C-3: a status the viewer cannot name is swallowed as "engine
+// unavailable". The door's three exports are in the shipped module; Task 6 wires them.
+test("the carve's two new refusals have names, and the shipped module has the door", () => {
+  assert.equal(WB_ERR_NOT_BAKED_FOR_CARVING, 9);
+  assert.equal(statusName(WB_ERR_NOT_BAKED_FOR_CARVING), "WB_ERR_NOT_BAKED_FOR_CARVING");
+  assert.equal(WB_ERR_CARVED, 10);
+  assert.equal(statusName(WB_ERR_CARVED), "WB_ERR_CARVED");
+  for (const name of ["wb_world_new_water", "wb_water_preset", "wb_water_check"]) {
+    assert.equal(typeof instance.exports[name], "function", `${name} is not exported`);
+  }
 });
 
 // Plan 2b Task 2: a bake asked through a world of other ground is refused, by name. The case that
