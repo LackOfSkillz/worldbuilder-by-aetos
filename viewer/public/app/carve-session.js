@@ -157,6 +157,20 @@ export class CarveSession {
   }
 }
 
+/// Which record the water preview should draw, or `null` to bake the bare world as before.
+///
+/// **While the carve is on, the preview draws the record the carve cut from** -- the held bake,
+/// baked for carving. Baking the bare world instead draws the ordinary record, which still holds
+/// the ponds a channel drains, so the preview would show water the carved world does not have.
+/// Off, or refused, or with nothing held, the answer is `null` and the preview bakes the bare
+/// world exactly as it did before the carve existed.
+export function previewRecord(outcome, session) {
+  if (!outcome || !outcome.carved) return null;
+  const held = session && session.held;
+  if (!held || !held.words) return null;
+  return held.words;
+}
+
 /// The owner-facing text for an outcome: the refusal, the notes met on the way, and the pond
 /// account -- **every part of it named**, so the panel prints this and adds nothing of its own.
 export function carveOutcomeText(outcome) {

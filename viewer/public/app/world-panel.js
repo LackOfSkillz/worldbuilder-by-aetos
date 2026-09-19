@@ -15,6 +15,7 @@ import {
   savedWorlds, searchFromPlanet, startAutosave, suspectValues, trail, urlFor,
 } from "./worlds.js";
 import { carveRefusal } from "./water-params.js";
+import { previewRecord } from "./carve-session.js";
 import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
 import { enablePicking, flyFragment, markPick, pickAt } from "./pick-point.js";
@@ -581,6 +582,9 @@ export function mountWorldPanel(parent, getViewer) {
   // (`wb-world-rebuilt`) leaves a stale preview floating over new terrain, which looks like a
   // river that moved on its own rather than like a picture nobody re-drew.
   window.addEventListener("wb-world-rebuilt", () => dropPreview("water preview cleared - the world changed"));
+  // Turning the carve on or off changes which record the preview should draw (below), and a
+  // commit that only swaps the carve does not rebuild the ground, so it gets its own event.
+  window.addEventListener("wb-carve-changed", () => dropPreview("water preview cleared - the carve changed"));
 
   previewButton.addEventListener("click", async () => {
     if (previewLayer) {
@@ -600,8 +604,10 @@ export function mountWorldPanel(parent, getViewer) {
         ...PREVIEW_PARAMS,
         forcedOutlets: forcedOutletsFromParams(new URLSearchParams(location.search)),
       };
-      let words;
-      if (wb.pool) {
+      let words = previewRecord(wb.carve && wb.carve.last, wb.carve && wb.carve.session);
+      if (words) {
+        previewNote.textContent = "drawing the record the carve cut from (baked for carving)";
+      } else if (wb.pool) {
         words = (await wb.pool.hydro({ params })).words;
       } else {
         previewNote.textContent += " - no worker pool (?workers=0), running on the main thread";

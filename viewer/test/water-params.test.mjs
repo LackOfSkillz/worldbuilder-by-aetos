@@ -37,7 +37,7 @@ import {
   BANK_STEPS_PER_WIDTH, waterTravel, waterPanelFields, waterToRecord, waterFromRecord,
   waterFromParams, waterToParams, hydroParamsWords, carveRefusal, pondChange, pondChangeText,
 } from "../public/app/water-params.js";
-import { CarveSession, carveOutcomeText } from "../public/app/carve-session.js";
+import { CarveSession, carveOutcomeText, previewRecord } from "../public/app/carve-session.js";
 import { decodeHydro } from "../public/app/water-preview.js";
 import { nextQueryString, swapPlan } from "../public/app/live-swap.js";
 
@@ -418,7 +418,11 @@ test("every refusal the carve can meet has its own name and its own sentence", (
   // `main.js` publishes it, and the panel prints `carveOutcomeText` of it.
   const main = appFile("main.js");
   assert.match(main, /get last\(\) \{ return installed\.carve; \}/);
-  assert.match(main, /if \(rebuildCarve\) installed\.carve = await installCarve\(nextState\);/);
+  assert.match(main, /if \(rebuildCarve\) \{\s*installed\.carve = await installCarve\(nextState\);/);
+  // A carve-only commit rebuilds no ground, so it announces itself: the water preview drops a
+  // picture drawn against the other record (Ruling C-27(b)).
+  assert.match(main, /installCarve\(nextState\);\s*window\.dispatchEvent\(new CustomEvent\("wb-carve-changed"/);
+  assert.match(appFile("world-panel.js"), /addEventListener\("wb-carve-changed", \(\) => dropPreview\(/);
   assert.match(appFile("controls.js"), /carveNote\.textContent = carveOutcomeText\(last\);/);
 });
 
@@ -499,4 +503,18 @@ test("turning the carve on tells the owner what it does to their ponds, from the
     "carving changes no pond: all 5 are kept where they were.");
   s.free();
   engine.freeWorld(bare);
+});
+
+// Ruling C-27(b): while the carve is on, the water preview draws the record the carve cut from.
+// Baking the bare world instead draws the ORDINARY record, which still holds the ponds a
+// channel drains -- so the preview would show water the carved world does not have.
+test("the water preview draws the carving record while the carve is on, and bakes the bare world otherwise", () => {
+  const carving = new Float64Array([8, 1, 2, 3]);
+  const session = { held: { id: 1, handle: 7, words: carving } };
+  assert.equal(previewRecord({ carved: true }, session), carving, "carved: the held record, the very one");
+  assert.equal(previewRecord({ carved: false }, session), null, "carve off: bake the bare world");
+  assert.equal(previewRecord({ carved: false, refusal: { status: 9 } }, session), null, "refused: bake the bare world");
+  assert.equal(previewRecord(null, session), null, "no outcome yet");
+  assert.equal(previewRecord({ carved: true }, { held: null }), null, "carved but nothing held");
+  assert.equal(previewRecord({ carved: true }, null), null, "no session");
 });

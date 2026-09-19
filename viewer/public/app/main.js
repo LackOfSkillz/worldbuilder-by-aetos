@@ -532,7 +532,10 @@ async function boot() {
     }
     // **The carve, over the bare world just built** -- or over the one already there, for a
     // carve-only change such as a bank-width release, which rebuilds nothing but the carved pair.
-    if (rebuildCarve) installed.carve = await installCarve(nextState);
+    if (rebuildCarve) {
+      installed.carve = await installCarve(nextState);
+      window.dispatchEvent(new CustomEvent("wb-carve-changed", { detail: { carved: !!(installed.carve && installed.carve.carved) } }));
+    }
     // A carved world lives only in THIS engine instance, so its tiles are filled here: the
     // workers hold the bare world, and a tile from one of them would be the uncarved planet --
     // the `wrong-world` fault arrived at by accident. Water, climate and clouds still use the pool.
