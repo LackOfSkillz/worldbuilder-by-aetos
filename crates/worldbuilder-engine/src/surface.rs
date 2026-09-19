@@ -554,7 +554,15 @@ impl Surface {
         // at all.
         let shaped = match water {
             None => shaped,
-            Some(layer) => layer.cut_m(point, shaped).0,
+            // Before the cut, `shaped` is `structural_m` at this point, bit for bit -- the landform
+            // the query judges coarse bodies by -- and the detail field it judges a fine-found pond
+            // by is this same composition with no layer at the record's `pond_cell_m`, which is
+            // `bake_ground_m`. So the layer asks exactly the query's question about lakes.
+            Some(layer) => {
+                let cell_m = layer.bake().record().stats.pond_cell_m;
+                let bare = |q: &SpherePoint| self.composed_m(q, Some(cell_m), None);
+                layer.cut_with(point, shaped, &crate::water::Detail(&bare)).0
+            }
         };
         let mut amplitude =
             self.detail

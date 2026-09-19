@@ -432,6 +432,13 @@ fn a_carved_world_is_refused_by_the_bake() {
     let params = crate::hydrology::bake_tests::params();
     assert_eq!(crate::hydrology::bake(&carved, &params).err(), Some(HydroError::Carved));
     assert_eq!(crate::hydrology::bake_stages(&carved, &params).err(), Some(HydroError::Carved));
+    // The land graph is a bake's input and a public door of its own: it reads carved ground
+    // through `moisture_index`, so it refuses too -- and the bare parent still samples.
+    let graph = |s: &Surface| {
+        crate::hydrology::landgraph::LandGraph::sample(s, params.total_nodes, params.wetness_nodes)
+    };
+    assert!(graph(&carved).is_none(), "LandGraph::sample sampled a carved world");
+    assert!(graph(&bare).is_some(), "the bare parent must still sample, or the refusal proves nothing");
 }
 
 /// **A carved world and its bare parent fingerprint identically** -- which is what lets a record be
@@ -483,4 +490,124 @@ fn the_join_refuses_a_foreign_record_a_foreign_radius_and_a_bad_block() {
                    "bank_widths {bank_widths}");
     }
     assert_eq!(join(WaterParams { bank_widths: MAX_BANK_WIDTHS }, good, R), None);
+}
+
+// ---- a lake's bed is not a river's channel (Task 3 review blocker) ------------------------------
+
+/// Every sample of a real bake that the query answers as a body -- a lake, a pond, a salt lake or a
+/// salt flat -- together with the id that answered: an area-uniform 40 by 40 grid over every body's
+/// outline box (padded by its shore band), plus 35 points in every reach's channel, which is where a
+/// body a reach flows into or through meets its channel.
+fn body_samples(bare: &Surface, bake: &IndexedRecord) -> Vec<(SpherePoint, u32)> {
+    let record = bake.record();
+    let mut points = channel_samples_on(bake);
+    for body in &record.bodies {
+        let (mut lat0, mut lat1, mut lon0, mut lon1) = (90.0f64, -90.0f64, 180.0f64, -180.0f64);
+        for &(la, lo) in &body.outline {
+            if la < lat0 { lat0 = la; }
+            if la > lat1 { lat1 = la; }
+            if lo < lon0 { lon0 = lo; }
+            if lo > lon1 { lon1 = lo; }
+        }
+        if body.outline.is_empty() || lon1 - lon0 > 180.0 {
+            continue; // no outline, or a box across the seam that would span the planet
+        }
+        let pad = body.shore_reach_m / M_PER_DEG;
+        let (lat0, lat1) = (if lat0 - pad < -90.0 { -90.0 } else { lat0 - pad },
+                            if lat1 + pad > 90.0 { 90.0 } else { lat1 + pad });
+        points.extend(area_uniform(lat0, lat1, lon0 - pad, lon1 + pad, 40));
+    }
+    let cell_m = record.stats.pond_cell_m;
+    let landform = |q: &SpherePoint| bare.structural_m(q);
+    let detail = |q: &SpherePoint| bare.bake_ground_m(q, Some(cell_m));
+    let ground = Ground { landform_m: Landform(&landform), detail_m: Detail(&detail) };
+    points.into_iter()
+        .filter_map(|p| {
+            let q = water_at(record, bake.index(), &ground, &p);
+            match q.kind {
+                WaterKind::Lake | WaterKind::Pond | WaterKind::SaltLake | WaterKind::SaltFlat =>
+                    Some((p, q.body_id)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// [`channel_samples`]'s placement, for the lake tests: 35 points in every leg's channel.
+fn channel_samples_on(bake: &IndexedRecord) -> Vec<SpherePoint> {
+    let mut out = Vec::new();
+    for reach in &bake.record().reaches {
+        for pair in reach.points.windows(2) {
+            let (a, b) = (at(pair[0].lat_deg, pair[0].lon_deg), at(pair[1].lat_deg, pair[1].lon_deg));
+            let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
+            let half = half_of(leg_width_m(pair[0].width_m, pair[1].width_m));
+            for k in 1..8 {
+                let t = f64::from(k) / 8.0;
+                let blend = a.vector.scaled(1.0 - t).add(&b.vector.scaled(t));
+                let Some(on) = SpherePoint::from_vector(&blend) else { continue };
+                for share in [-0.9, -0.5, 0.0, 0.5, 0.9] {
+                    if let Some(p) = SpherePoint::from_vector(&on.vector.add(&normal.scaled(share * half / R))) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// **Spec §8.1: lake beds are not cut -- on real bakes where reaches actually enter bodies.** The
+/// fine pond search looks for ponds along reach lines, so a pond sitting on a river is the ordinary
+/// case, and a coarse lake a reach flows into is another. `bake_tests::world()` at
+/// `earth_like(30_000)` and `earth_like(60_000)`: every sample the query answers as a body keeps
+/// its ground to the bit, carved world against bare, and the layer claims no authority there.
+///
+/// Not vacuous: each bake must put channel samples inside bodies -- the population the first lake
+/// test could not reach, because no reach came near its lakes.
+#[test]
+fn no_body_is_cut_where_reaches_enter_it() {
+    let mut failures: Vec<String> = Vec::new();
+    for nodes in [30_000u32, 60_000] {
+        let bare = home();
+        let baked = crate::hydrology::bake(&bare, &crate::hydrology::HydroParams::earth_like(nodes))
+            .expect("the bare world bakes");
+        let bake = Arc::new(IndexedRecord::new(baked, R));
+        let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                                         Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+            .expect("joins its own world");
+        let mut cut_bodies: Vec<u32> = Vec::new();
+        let (mut samples, mut lowered, mut in_channel, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
+        let channel = channel_samples_on(&bake);
+        let samples_in = body_samples(&bare, &bake);
+        for (p, id) in &samples_in {
+            samples += 1;
+            if channel.iter().any(|c| c.vector == p.vector) {
+                in_channel += 1;
+            }
+            let was = bare.elevation_m(p, None);
+            let now = carved.elevation_m(p, None);
+            if now.to_bits() != was.to_bits() {
+                if !cut_bodies.contains(id) {
+                    cut_bodies.push(*id);
+                }
+                if was - now > 0.5 {
+                    lowered += 1;
+                }
+                if was - now > worst {
+                    worst = was - now;
+                }
+            }
+        }
+        eprintln!("earth_like({nodes}): {} bodies, {samples} body samples ({in_channel} in a channel), \
+                   {} bodies cut, {lowered} samples lowered > 0.5 m, deepest {worst} m",
+                  bake.record().bodies.len(), cut_bodies.len());
+        assert!(in_channel > 0, "earth_like({nodes}): vacuous, no reach's channel enters a body");
+        if !cut_bodies.is_empty() {
+            failures.push(format!(
+                "earth_like({nodes}): {} of {} bodies cut ({cut_bodies:?}), {lowered} samples \
+                 lowered by more than 0.5 m, deepest {worst} m",
+                cut_bodies.len(), bake.record().bodies.len()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
 }

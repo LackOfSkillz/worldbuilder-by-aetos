@@ -451,7 +451,8 @@ mod world_tests {
         );
         assert!(
             body.contains("water: Option<crate::water::layer::WaterLayer>,"),
-            "water plan 2b's water layer is the tenth field and is named here so an ELEVENTH              cannot arrive without this test being edited again"
+            "water plan 2b's water layer is the tenth field and is named here so an ELEVENTH \
+             cannot arrive without this test being edited again"
         );
         let fields = body.lines()
             .map(str::trim)

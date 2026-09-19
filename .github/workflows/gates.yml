@@ -1386,25 +1386,32 @@ jobs:
           # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`)
           # per configuration, counting `: test` lines: 902/902/905/1028/1031 listed, 11 ignored in
           # each. The Python total (577, conformance 168) did not move.
+          # 2026-09-18, WATER 2b Task 3 fix (a lake's bed is not a river's channel):
+          # **891/891/894/1017/1020 -> 892/892/895/1018/1021 with 11 ignored**. One ungated test,
+          # `water/layer_tests.rs::no_body_is_cut_where_reaches_enter_it` (two real bakes, 30,000
+          # and 60,000 nodes), so every row +1. The `LandGraph::sample` refusal was added to the
+          # existing `a_carved_world_is_refused_by_the_bake`, so it moves nothing. Re-derived by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`):
+          # 903/903/906/1029/1032 listed, 11 ignored in each.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 891
+            expect: 892
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 891
+            expect: 892
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 894
+            expect: 895
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1017
+            expect: 1018
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1020
+            expect: 1021
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

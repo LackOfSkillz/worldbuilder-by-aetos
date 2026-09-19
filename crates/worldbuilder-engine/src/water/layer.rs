@@ -15,9 +15,12 @@
 //! - **Notches:** cut the same way, to the notch point's own `surface_m` -- the lowered ground, which
 //!   is the water surface through the cut (Ruling F-2).
 //! - **Lake beds: not cut.** A kept lake is an existing hollow; its outline and its level decide the
-//!   water surface, and the ground under it is already the ground the bake found it in. **This
-//!   module never reads `HydroRecord::bodies`**, and that absence is the implementation of the
-//!   rule -- `a_lakes_interior_is_not_cut` pins it.
+//!   water surface, and the ground under it is already the ground the bake found it in. A point
+//!   the query's own body test claims (`query::claim_bodies`) is returned untouched, even where a
+//!   reach's channel runs into or through the body -- which is common, because the fine pond
+//!   search finds its ponds along reach lines. The first version of this module simply never
+//!   read `bodies`, and that cut a channel through most lake floors on a real bake;
+//!   `no_body_is_cut_where_reaches_enter_it` pins the rule where it can actually fail.
 //!
 //! # Where the channel is: the query's answer, not a second one
 //!
@@ -59,7 +62,9 @@ use std::sync::Arc;
 use crate::hydrology::HydroRecord;
 use crate::sphere::SpherePoint;
 use crate::water::index::{WaterIndex, DEFAULT_CELL_M};
-use crate::water::query::{half_of, leg_foot, leg_width_m, reach_position};
+use crate::water::query::{
+    claim_bodies, half_of, leg_foot, leg_width_m, reach_position, Detail, Ground, Landform,
+};
 
 /// Spec §8.1's "banks blended over one width either side".
 pub const CANONICAL_BANK_WIDTHS: f64 = 1.0;
@@ -191,13 +196,38 @@ impl WaterLayer {
     /// the **lowest** of those cuts -- channels are a union, and where two meet, the deeper one
     /// holds -- and the authority is the **highest** of theirs. A leg whose target stands at or
     /// above `ground_m` cuts nothing (rule 2 of the module doc; the running minimum is seeded with
-/// `ground_m`, so its answer is discarded) but keeps its authority: the point
-    /// is still in a channel, and what Task 4's damping needs to know is that, not whether this
+    /// `ground_m`, so its answer is discarded) but keeps its authority: the point is still in a
+    /// channel, and what Task 4's damping needs to know is that, not whether this
     /// particular ground happened to need lowering.
     ///
     /// **A point no leg reaches returns `(ground_m, 0.0)` with `ground_m` untouched** (rule 3).
     /// `cut <= ground_m` always; never a single bit above it.
+    ///
+    /// **Nor is a point inside a body cut** (spec §8.1, "lake beds: not cut"): see
+    /// [`WaterLayer::cut_with`], which this is with `ground_m` standing for both of the query's
+    /// surfaces. That is right for a caller with one surface -- a fixture, a flat plain -- and
+    /// wrong for a world with a pond on it, whose level was found in the detail field;
+    /// `Surface::elevation_m` calls `cut_with`.
     pub fn cut_m(&self, point: &SpherePoint, ground_m: f64) -> (f64, f64) {
+        let flat = move |_: &SpherePoint| ground_m;
+        self.cut_with(point, ground_m, &Detail(&flat))
+    }
+
+    /// [`WaterLayer::cut_m`], with the query's second surface named: `ground_m` is the landform at
+    /// `point` (`Surface::structural_m`, the ground being cut) and `detail` the bare detail field
+    /// at the record's `pond_cell_m` (`Surface::bake_ground_m`) -- exactly the two surfaces
+    /// `wasm.rs::with_ground` hands the query, and asked only at `point`.
+    ///
+    /// **A point a body claims is returned untouched, with no authority**, by the query's own body
+    /// test (`query::claim_bodies`: inside the extent and at or under the level, each body judged
+    /// against the surface its level was found in). The fine pond search looks for ponds along
+    /// reach lines, so a pond on a river is the ordinary case, not the odd one; before this rule a
+    /// channel was cut straight through the floor of 12 of the 14 bodies of `bake_tests::world()`
+    /// at `earth_like(30_000)`, up to 197 m deep. Using the query's test rather than a second one
+    /// is what makes "this is a lake" and "this is not a channel" the same answer (Ruling C-12).
+    /// It is asked only where some leg reached the point, so a point far from any channel pays
+    /// nothing for it.
+    pub fn cut_with(&self, point: &SpherePoint, ground_m: f64, detail: &Detail) -> (f64, f64) {
         let bake = &*self.bake;
         let radius_m = bake.index.radius_m();
         let candidates = bake.index.candidates(point);
@@ -241,6 +271,14 @@ impl WaterLayer {
 
         if !touched {
             return (ground_m, 0.0); // rule 3: the ground exactly as it came in
+        }
+        if !candidates.bodies.is_empty() {
+            let landform = move |_: &SpherePoint| ground_m;
+            let ground = Ground { landform_m: Landform(&landform), detail_m: Detail(detail.0) };
+            let claims = claim_bodies(&bake.record, candidates.bodies, &ground, point, radius_m, ground_m);
+            if claims.best.is_some() {
+                return (ground_m, 0.0); // a lake's bed: an existing hollow, never a channel
+            }
         }
         (cut, authority)
     }

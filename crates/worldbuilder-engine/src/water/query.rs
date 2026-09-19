@@ -239,56 +239,12 @@ pub fn water_at(
 ) -> WaterAt {
     let radius_m = index.radius_m();
     let landform = ground.landform_m.at(point);
-    // Ruling Q-16's second surface, read only if a ring body is actually a candidate here. Most
-    // samples never touch one, and a detail sample is the more expensive of the two.
-    let mut detail: Option<f64> = None;
     let candidates = index.candidates(point);
 
     // Bodies first, though the table lists the ocean first: Ruling Q-4, a recorded body's extent
-    // beats the ocean's. Ruling T1-3 picks between claimants -- smaller `dm`, ties to lower id.
-    //
-    // Ruling Q-12: **two different questions, tracked separately.** `in_an_extent` is "some
-    // candidate body's extent held this point", which is what suppresses the ocean (Q-4's own
-    // words: "at or below the datum AND inside no recorded body's extent"). `best` is "some body
-    // claimed it", which is extent AND level (Q-10), and is what decides which body answers. Where
-    // the two part company -- the dry shore of a body recorded below the datum, where the landform
-    // is above the body's level and still under the sea's -- gating the ocean on the *claim* would
-    // flood an enclosed basin's dry shore. It is inside the salt flat's extent, so it is not sea;
-    // it is above the salt flat's level, so it is not water either. It is `none`.
-    let mut in_an_extent = false;
-    let mut best: Option<(f64, &Body, f64)> = None;
-    for &id in candidates.bodies {
-        let Some(body) = body_by_id(record, id) else {
-            continue; // an index built over a different record; refuse it, never index blindly
-        };
-        let Some(dm) = extent_claim(body, point, radius_m) else {
-            continue;
-        };
-        in_an_extent = true;
-        // Ruling Q-16: this body's level was written against one of the two surfaces, and the
-        // comparison has to use that one. `shore_member_count == 0` is the discriminator (Ruling
-        // E-8), and it is the same one `extent_claim` just used above.
-        let here = if body.shore_member_count == 0 {
-            *detail.get_or_insert_with(|| ground.detail_m.at(point))
-        } else {
-            landform
-        };
-        // "and at or below its level" -- the table's own second half, for every body row. A body
-        // that fails it is still an extent for Q-4's purposes, and simply does not claim.
-        if here > body.level_m {
-            continue;
-        }
-        best = Some(match best {
-            None => (dm, body, here),
-            Some((best_dm, held, held_here)) => {
-                if dm < best_dm || (dm == best_dm && body.id < held.id) {
-                    (dm, body, here)
-                } else {
-                    (best_dm, held, held_here)
-                }
-            }
-        });
-    }
+    // beats the ocean's. See [`claim_bodies`] for the claim and for Ruling Q-12's two questions.
+    let BodyClaims { best, in_an_extent } =
+        claim_bodies(record, candidates.bodies, ground, point, radius_m, landform);
     if let Some((_, body, here)) = best {
         return body_answer(body, here);
     }
@@ -337,6 +293,81 @@ pub fn water_at(
 }
 
 // ---- the body clauses -------------------------------------------------------------------
+
+/// What the recorded bodies say about `point`: **which body claims it**, if any, and whether it
+/// stands **inside any body's extent** at all -- §8.3's body rows, and Ruling Q-12's two separate
+/// questions. `bodies` is the index's candidate list here; `landform` is `ground.landform_m` at
+/// `point`, already read by the caller.
+///
+/// **Shared with the water layer**, which asks it whether a point is in a lake before cutting a
+/// channel there (spec §8.1, "lake beds: not cut"): "this is a lake" and "this is not a channel"
+/// are one test, so the carve can never cut a place the query answers as standing water.
+pub(crate) fn claim_bodies<'r>(
+    record: &'r HydroRecord,
+    bodies: &[u32],
+    ground: &Ground,
+    point: &SpherePoint,
+    radius_m: f64,
+    landform: f64,
+) -> BodyClaims<'r> {
+    // Ruling T1-3 picks between claimants -- smaller `dm`, ties to lower id.
+    //
+    // Ruling Q-12: **two different questions, tracked separately.** `in_an_extent` is "some
+    // candidate body's extent held this point", which is what suppresses the ocean (Q-4's own
+    // words: "at or below the datum AND inside no recorded body's extent"). `best` is "some body
+    // claimed it", which is extent AND level (Q-10), and is what decides which body answers. Where
+    // the two part company -- the dry shore of a body recorded below the datum, where the landform
+    // is above the body's level and still under the sea's -- gating the ocean on the *claim* would
+    // flood an enclosed basin's dry shore. It is inside the salt flat's extent, so it is not sea;
+    // it is above the salt flat's level, so it is not water either. It is `none`.
+    //
+    // Ruling Q-16's second surface, read only if a ring body is actually a candidate here. Most
+    // samples never touch one, and a detail sample is the more expensive of the two.
+    let mut detail: Option<f64> = None;
+    let mut in_an_extent = false;
+    let mut best: Option<(f64, &'r Body, f64)> = None;
+    for &id in bodies {
+        let Some(body) = body_by_id(record, id) else {
+            continue; // an index built over a different record; refuse it, never index blindly
+        };
+        let Some(dm) = extent_claim(body, point, radius_m) else {
+            continue;
+        };
+        in_an_extent = true;
+        // Ruling Q-16: this body's level was written against one of the two surfaces, and the
+        // comparison has to use that one. `shore_member_count == 0` is the discriminator (Ruling
+        // E-8), and it is the same one `extent_claim` just used above.
+        let here = if body.shore_member_count == 0 {
+            *detail.get_or_insert_with(|| ground.detail_m.at(point))
+        } else {
+            landform
+        };
+        // "and at or below its level" -- the table's own second half, for every body row. A body
+        // that fails it is still an extent for Q-4's purposes, and simply does not claim.
+        if here > body.level_m {
+            continue;
+        }
+        best = Some(match best {
+            None => (dm, body, here),
+            Some((best_dm, held, held_here)) => {
+                if dm < best_dm || (dm == best_dm && body.id < held.id) {
+                    (dm, body, here)
+                } else {
+                    (best_dm, held, held_here)
+                }
+            }
+        });
+    }
+    BodyClaims { best, in_an_extent }
+}
+
+/// [`claim_bodies`]'s answer: the claiming body as `(dm, body, the ground its level was compared
+/// against)`, and whether any candidate's extent held the point.
+pub(crate) struct BodyClaims<'r> {
+    pub(crate) best: Option<(f64, &'r Body, f64)>,
+    pub(crate) in_an_extent: bool,
+}
+
 
 /// What a claiming body answers: its own kind and level, its own `fresh`, and a depth that is the
 /// level minus the ground, floored at zero (Ruling Q-6 -- a *ground* depth, not a bathymetric one,
