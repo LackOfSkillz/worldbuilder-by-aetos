@@ -16,6 +16,11 @@
 //! is returned here rather than dropped, flagged with [`Candidate::touches_side`] and
 //! [`Candidate::touches_end`]: Ruling S-10 says Task 5 must not record a side-clipped one, and
 //! flagging rather than filtering keeps the count visible.
+//!
+//! **One gate reads the record rather than the terrain (Ruling C-16, plan 2b).** A hollow the
+//! strips found in bare ground can sit on a ridge a recorded notch or reach cuts through; in the
+//! world the record describes -- the carved one -- that channel drains it. [`is_drained`] asks,
+//! with the query's own body test and the query's own water level, and such a find is not kept.
 
 use crate::detmath as m;
 use crate::hydrology::buckets::BucketIndex;
@@ -928,6 +933,9 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
     // gate and Ruling S-16, about 126.5 km. It is built only after the two indexes above have
     // been dropped.
     let density = BucketIndex::new(ground.radius_m, m::sqrt(params.pond_density_area_m2));
+    // Ruling C-16's channels: the reaches and notches this record will cut, indexed once. Built
+    // after the strip indexes above are dropped, and at a coarse cell (`DRAIN_INDEX_CELL_M`).
+    let channels = crate::water::index::WaterIndex::build(record, ground.radius_m, DRAIN_INDEX_CELL_M);
     // The cells already spoken for, sorted so membership is a binary search rather than a hash
     // set: a few thousand entries at most, and nothing here may depend on a hash order.
     let mut taken: Vec<usize> = Vec::new();
@@ -944,13 +952,8 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
             Some(point) => Downstream::Reach(line_reach[point as usize]),
             None => continue,
         };
-        let cell = density.cell_of(&survivor.anchor);
-        match taken.binary_search(&cell) {
-            Ok(_) => continue,
-            Err(at) => taken.insert(at, cell),
-        }
         let id = record.bodies.len() as u32; // cast-ok: a body index, bounded by the candidate count
-        record.bodies.push(Body {
+        let body = Body {
             id,
             // Ruling S-11: the area picks the kind and neither kind is dropped. Both carry the
             // traced ring; spec §7 makes `kind` the discriminator between a ring and a lake's
@@ -970,12 +973,176 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
             // shore-point set, so the discriminator stays zero regardless of plan 1b-4's task.
             shore_member_count: 0,
             shore_reach_m: 0.0,
-        });
+        };
+        // Ruling C-16: a hollow a recorded channel drains is not a hollow in the world the record
+        // describes, where that channel is cut. Asked before the density cell is claimed, so a
+        // drained find does not stand in the way of a pond nearby that is really there.
+        if is_drained(&body, record, &channels, params) {
+            continue;
+        }
+        let cell = density.cell_of(&survivor.anchor);
+        match taken.binary_search(&cell) {
+            Ok(_) => continue,
+            Err(at) => taken.insert(at, cell),
+        }
+        record.bodies.push(body);
         kept += 1;
     }
 
     record.stats.ponds_found = found as u32; // cast-ok: at most one candidate per strip cell
     record.stats.ponds_kept = kept as u32; // cast-ok: bounded by `found`
+}
+
+/// The cell the transient channel index in [`search`] is built at. The index's footprint
+/// guarantee holds at any cell size (`water::index`'s module doc), and a coarse cell keeps the
+/// transient allocation small: at 200 km the owner's 9,309 km world has about 27,000 cells
+/// rather than the 434,626 of the query's 50 km -- a few megabytes of per-cell headers instead of
+/// forty, in a bake whose wasm heap is already most of the way to its ceiling. A coarser cell
+/// only means more candidates to reject by distance.
+const DRAIN_INDEX_CELL_M: f64 = 200_000.0;
+
+/// **Ruling C-16: how far below `body`'s level a recorded channel's water runs inside its ring**,
+/// or `None` if no reach or notch crosses the ring at all.
+///
+/// The record describes the **carved** world: a notch is a cut the record says will be made, and a
+/// reach's bed is the channel the carve will cut. A fine-found body -- found in bare terrain,
+/// where it is a genuine hollow -- whose ring is crossed by water standing well below its own
+/// level is therefore not a closed hollow once those cuts are made: the channel drains it. Kept,
+/// the water layer (which never cuts a body) leaves the pond's footprint standing across the
+/// channel as a dam; measured at 30,000 nodes on `bake_tests::world()`, a 190 m wall.
+///
+/// **"Crossed" and "level" are the query's and the carve's own code, not a third copy** (Ruling
+/// C-12). Each candidate leg is sampled every quarter of `pond_cell_m` -- a ring's own grain --
+/// on its centre line, at both edges of its Ruling Q-7 width and half way to each, and a sample is
+/// inside the ring exactly when `water::query::claim_bodies` would put it in the
+/// body's extent (its level test is disarmed by asking with ground at minus infinity, so only the
+/// extent speaks). The water there is `water::query::along_leg` at the sample's foot on the leg:
+/// a reach's `bed_m + depth_m`, which is the level the query reports (Ruling C-13), or a notch's
+/// `surface_m`, the cut surface the carve lowers to. The deficit is the largest `level - water`
+/// over every inside sample of every candidate; a negative one is water standing above the pond.
+///
+/// Candidates come from `index` -- a `WaterIndex` over this record's reaches and notches -- as
+/// everything listed within the ring's span of its anchor (`WaterIndex::candidates_within`).
+/// Every point of the ring lies in that disc, and a leg is listed in every cell its channel
+/// reaches, so a leg whose channel crosses the ring anywhere is a candidate.
+/// **Ruling C-16's keep rule:** a fine-found body is drained -- not kept -- when a channel crossing
+/// its ring runs more than `params.refine_vertical_m` below its level.
+///
+/// **Why that tolerance.** `refine_vertical_m` is the vertical tolerance Ruling R-7's
+/// simplification allows a shipped bed to stray from the traced one (1.0 m in `earth_like`), so a
+/// recorded channel's water level is only known to within it: a deficit inside it is "at the
+/// pond's own level" as far as the record can say, and a river flowing through a pond at its own
+/// level is a pond on a river, which must survive. It is the record's own precision, echoed in its
+/// header, not a number chosen here -- and it is chosen over a gap in the data because the data has
+/// none. Measured on the owner's world before this rule (1M nodes, 86,000 wetness): of 3,732
+/// fine-found bodies, 3,543 are crossed and 1,371 have the channel below their level, by a
+/// distribution continuous from 0.027 m to 1,089 m with no break near zero; 60 of those lie within
+/// 1 m and survive, and 1,080 have the channel below the pond's own floor. See task-4b-report.md.
+pub fn is_drained(body: &Body, record: &HydroRecord, index: &crate::water::index::WaterIndex,
+                  params: &HydroParams) -> bool {
+    match drain_deficit_m(body, record, index, params.pond_cell_m * 0.25) {
+        Some(deficit) => deficit > params.refine_vertical_m,
+        None => false,
+    }
+}
+
+pub fn drain_deficit_m(body: &Body, record: &HydroRecord, index: &crate::water::index::WaterIndex,
+                       step_m: f64) -> Option<f64> {
+    use crate::water::query::{along_leg, claim_bodies, half_of, leg_foot, leg_width_m,
+                              reach_position, Detail, Ground as QueryGround, Landform};
+    if body.outline.len() < 3 || !(step_m > 0.0) {
+        return None;
+    }
+    let radius_m = index.radius_m();
+    let anchor = SpherePoint::from_latlon(body.anchor.0, body.anchor.1);
+    let ring: Vec<SpherePoint> =
+        body.outline.iter().map(|&(lat, lon)| SpherePoint::from_latlon(lat, lon)).collect();
+    let mut span_m = 0.0;
+    for vertex in &ring {
+        let d = anchor.distance_to(vertex, radius_m);
+        if d > span_m {
+            span_m = d;
+        }
+    }
+    // Every point of the ring is within `span_m` of the anchor, so every cell holding one is in
+    // this disc, and a channel crossing the ring anywhere is listed in the cell it crosses in.
+    let (reaches, notches) = index.candidates_within(&anchor, span_m);
+
+    let deep = |_: &SpherePoint| f64::NEG_INFINITY;
+    let everywhere = QueryGround { landform_m: Landform(&deep), detail_m: Detail(&deep) };
+    let own = core::slice::from_ref(body);
+    let ids = [body.id];
+    let inside = |p: &SpherePoint| {
+        claim_bodies(own, &ids, &everywhere, p, radius_m, f64::NEG_INFINITY).best.is_some()
+    };
+
+    let mut deficit: Option<f64> = None;
+    let mut consider = |a: &SpherePoint, b: &SpherePoint, half_m: f64, water: &dyn Fn(f64) -> f64| {
+        // A leg whose channel passes nowhere near the ring cannot cross it: skip it unsampled.
+        if leg_foot(&anchor, a, b, radius_m).0 > span_m + half_m {
+            return;
+        }
+        let Some(normal) = a.vector.cross(&b.vector).normalised() else {
+            return;
+        };
+        let length_m = a.distance_to(b, radius_m);
+        let raw = length_m / step_m;
+        let mut steps = if raw > 1.0 {
+            -m::floor(-raw) as usize // cast-ok: a sample count from a positive finite ratio
+        } else {
+            1
+        };
+        if steps > 4_096 {
+            steps = 4_096;
+        }
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            let Some(on) = SpherePoint::from_vector(&a.vector.scaled(1.0 - t).add(&b.vector.scaled(t)))
+            else {
+                continue;
+            };
+            // Across the channel as well as along it: the centre line and both edges, and half
+            // way to each -- the whole width the query answers `River` in (Ruling Q-7), so a ring
+            // clipping a channel's side is caught as well as one straddling its line.
+            for share in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                let Some(p) = SpherePoint::from_vector(&on.vector.add(&normal.scaled(share * half_m / radius_m)))
+                else {
+                    continue;
+                };
+                if !inside(&p) {
+                    continue;
+                }
+                let along = leg_foot(&p, a, b, radius_m).1;
+                let here = body.level_m - water(along);
+                deficit = Some(match deficit {
+                    Some(held) if held >= here => held,
+                    _ => here,
+                });
+            }
+        }
+    };
+    for &id in &reaches {
+        let Some(position) = reach_position(record, id) else { continue };
+        let points = &record.reaches[position].points;
+        for pair in points.windows(2) {
+            let (pa, pb) = (&pair[0], &pair[1]);
+            let (a, b) = (SpherePoint::from_latlon(pa.lat_deg, pa.lon_deg),
+                          SpherePoint::from_latlon(pb.lat_deg, pb.lon_deg));
+            let water = |along: f64| along_leg(pa.bed_m, pb.bed_m, along)
+                + along_leg(pa.depth_m, pb.depth_m, along);
+            consider(&a, &b, half_of(leg_width_m(pa.width_m, pb.width_m)), &water);
+        }
+    }
+    for &id in &notches {
+        let Some(notch) = record.notches.get(id as usize) else { continue }; // cast-ok: a notch id is its position
+        for pair in notch.points.windows(2) {
+            let ((la, loa, sa, wa), (lb, lob, sb, wb)) = (pair[0], pair[1]);
+            let (a, b) = (SpherePoint::from_latlon(la, loa), SpherePoint::from_latlon(lb, lob));
+            let water = |along: f64| along_leg(sa, sb, along);
+            consider(&a, &b, half_of(leg_width_m(wa, wb)), &water);
+        }
+    }
+    deficit
 }
 
 #[cfg(test)]
@@ -1004,13 +1171,23 @@ mod tests {
         p
     }
 
+    /// The fixtures' stream, running along the equator with its water at 101 m -- a metre over
+    /// the 100 m plain every bowl below is cut into. **The level is load-bearing since Ruling
+    /// C-16**: the strips never read a bed, but the keep rule does, and a stream whose water ran
+    /// under a bowl's level would drain it. At the plain's own level, every bowl these tests
+    /// place on the line is a pond on a stream, which survives, so they measure what they were
+    /// written to measure. `a_bowl_a_channel_drains_is_found_and_not_kept` is the other case.
     fn reach_along_the_equator(km: f64) -> ReachLine {
+        reach_along_the_equator_with_beds(km, 100.0, 100.0)
+    }
+
+    fn reach_along_the_equator_with_beds(km: f64, bed_start_m: f64, bed_end_m: f64) -> ReachLine {
         let end = (km * 1_000.0) / M_PER_DEG;
         ReachLine {
             id: 0, class: ReachClass::Stream, order: 1, downstream: Downstream::Ocean, fresh: true,
             points: vec![
-                ReachPoint { lat_deg: 0.0, lon_deg: 0.0, bed_m: 100.0, width_m: 5.0, depth_m: 1.0, flow_m2: 1.0e9 },
-                ReachPoint { lat_deg: 0.0, lon_deg: end, bed_m: 90.0, width_m: 5.0, depth_m: 1.0, flow_m2: 1.0e9 },
+                ReachPoint { lat_deg: 0.0, lon_deg: 0.0, bed_m: bed_start_m, width_m: 5.0, depth_m: 1.0, flow_m2: 1.0e9 },
+                ReachPoint { lat_deg: 0.0, lon_deg: end, bed_m: bed_end_m, width_m: 5.0, depth_m: 1.0, flow_m2: 1.0e9 },
             ],
         }
     }
@@ -1387,6 +1564,29 @@ mod tests {
         let (_, lon) = (body.anchor.0, body.anchor.1);
         assert!(lon * M_PER_DEG > 2_400.0 && lon * M_PER_DEG < 3_600.0,
                 "kept body at {} m along", lon * M_PER_DEG);
+    }
+
+    /// **Ruling C-16, end to end.** The density cap's two bowls again -- 3 km and 5 km along the
+    /// line, their levels at the 100 m plain -- under a stream whose bed falls from 100 m to 90 m:
+    /// its water runs about 2 m and 4 m under them. Both are found, and neither is kept; the same
+    /// bowls under a stream at the plain's level (the density-cap test) keep one.
+    #[test]
+    fn a_bowl_a_channel_drains_is_found_and_not_kept() {
+        let deep = bowl(0.0, 3_000.0, 600.0, 5.0);
+        let shallow = bowl(0.0, 5_000.0, 600.0, 3.0);
+        let h = move |p: &SpherePoint| {
+            let (a, b) = (deep(p), shallow(p));
+            if a < b { a } else { b }
+        };
+        let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
+        let p = params();
+        let graph = graph_under_the_line();
+        let lake_of = vec![NO_LAKE; graph.len()];
+        let mut record = record_for(reach_along_the_equator_with_beds(10.0, 100.0, 90.0));
+        search(&mut record, &graph, &lake_of, &ground, &h, &p);
+        assert_eq!(record.stats.ponds_found, 2, "both bowls are still found");
+        assert_eq!(record.stats.ponds_kept, 0, "and the stream through them drains both");
+        assert!(record.bodies.is_empty());
     }
 
     /// The line graph with one extra node `north_m` metres off the line at 5,000 m along it. A

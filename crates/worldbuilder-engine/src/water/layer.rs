@@ -278,7 +278,7 @@ impl WaterLayer {
         if !candidates.bodies.is_empty() {
             let landform = move |_: &SpherePoint| ground_m;
             let ground = Ground { landform_m: Landform(&landform), detail_m: Detail(detail.0) };
-            let claims = claim_bodies(&bake.record, candidates.bodies, &ground, point, radius_m, ground_m);
+            let claims = claim_bodies(&bake.record.bodies, candidates.bodies, &ground, point, radius_m, ground_m);
             if claims.best.is_some() {
                 return (ground_m, 0.0); // a lake's bed: an existing hollow, never a channel
             }

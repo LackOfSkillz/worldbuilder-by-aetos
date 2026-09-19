@@ -191,6 +191,32 @@ impl WaterIndex {
         }
     }
 
+    /// Every reach and every notch listed in **any** cell within `reach_m` of `point`, as two
+    /// ascending, deduplicated id lists. [`WaterIndex::candidates`] answers one point; this answers
+    /// a disc, and it is airtight in the way that matters to a caller asking about an area: an
+    /// item whose footprint reaches any point of the disc is listed in that point's cell, and
+    /// `cells_within` lists every cell holding a point of the disc (more, never fewer).
+    pub fn candidates_within(&self, point: &SpherePoint, reach_m: f64) -> (Vec<u32>, Vec<u32>) {
+        let mut reaches: Vec<u32> = Vec::new();
+        let mut notches: Vec<u32> = Vec::new();
+        let mut take = |cell: usize| {
+            reaches.extend_from_slice(&self.reaches[cell]);
+            notches.extend_from_slice(&self.notches[cell]);
+        };
+        if reach_m > 0.0 {
+            for cell in self.grid.cells_within(point, reach_m) {
+                take(cell);
+            }
+        } else {
+            take(self.grid.cell_of(point));
+        }
+        reaches.sort_unstable();
+        reaches.dedup();
+        notches.sort_unstable();
+        notches.dedup();
+        (reaches, notches)
+    }
+
     /// The cell this index **realised**, which is the one it was asked for only when that was at
     /// or above `buckets::finest_cell_m` -- `BucketIndex::new` clamps silently.
     pub fn cell_m(&self) -> f64 {

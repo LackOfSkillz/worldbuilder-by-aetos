@@ -245,7 +245,7 @@ pub fn water_at(
     // Bodies first, though the table lists the ocean first: Ruling Q-4, a recorded body's extent
     // beats the ocean's. See [`claim_bodies`] for the claim and for Ruling Q-12's two questions.
     let BodyClaims { best, in_an_extent } =
-        claim_bodies(record, candidates.bodies, ground, point, radius_m, landform);
+        claim_bodies(&record.bodies, candidates.bodies, ground, point, radius_m, landform);
     if let Some((_, body, here)) = best {
         return body_answer(body, here);
     }
@@ -299,15 +299,16 @@ pub fn water_at(
 
 /// What the recorded bodies say about `point`: **which body claims it**, if any, and whether it
 /// stands **inside any body's extent** at all -- §8.3's body rows, and Ruling Q-12's two separate
-/// questions. `bodies` is the index's candidate list here; `landform` is `ground.landform_m` at
-/// `point`, already read by the caller.
+/// questions. `ids` is the index's candidate list here, resolved against `bodies` (a record's
+/// `bodies`, or any slice of bodies -- the pond search asks it of one candidate); `landform` is
+/// `ground.landform_m` at `point`, already read by the caller.
 ///
 /// **Shared with the water layer**, which asks it whether a point is in a lake before cutting a
 /// channel there (spec §8.1, "lake beds: not cut"): "this is a lake" and "this is not a channel"
 /// are one test, so the carve can never cut a place the query answers as standing water.
 pub(crate) fn claim_bodies<'r>(
-    record: &'r HydroRecord,
-    bodies: &[u32],
+    bodies: &'r [Body],
+    ids: &[u32],
     ground: &Ground,
     point: &SpherePoint,
     radius_m: f64,
@@ -329,8 +330,8 @@ pub(crate) fn claim_bodies<'r>(
     let mut detail: Option<f64> = None;
     let mut in_an_extent = false;
     let mut best: Option<(f64, &'r Body, f64)> = None;
-    for &id in bodies {
-        let Some(body) = body_by_id(record, id) else {
+    for &id in ids {
+        let Some(body) = body_by_id(bodies, id) else {
             continue; // an index built over a different record; refuse it, never index blindly
         };
         let Some(dm) = extent_claim(body, point, radius_m) else {
@@ -731,14 +732,14 @@ pub(crate) fn leg_foot(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, ra
 /// when the body sitting there actually carries that id. A record whose ids and positions disagree
 /// -- or an index built over a different record entirely -- answers correctly or answers nothing,
 /// and never indexes blindly.
-fn body_by_id(record: &HydroRecord, id: u32) -> Option<&Body> {
+fn body_by_id(bodies: &[Body], id: u32) -> Option<&Body> {
     let position = id as usize; // cast-ok: a recorded id used as a position, verified on the line below
-    if let Some(body) = record.bodies.get(position) {
+    if let Some(body) = bodies.get(position) {
         if body.id == id {
             return Some(body);
         }
     }
-    record.bodies.iter().find(|body| body.id == id)
+    bodies.iter().find(|body| body.id == id)
 }
 
 /// The reach with this **id**, on the same terms as [`body_by_id`].

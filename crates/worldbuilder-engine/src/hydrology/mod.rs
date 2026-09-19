@@ -352,7 +352,9 @@ pub struct BakeStats {
     pub ponds_found: u32,
     /// Of those, how many reached the record as bodies. The gap between the two is what the
     /// gates and the cap removed, and it is a large gap by design: about half of all candidates
-    /// are side-clipped alone.
+    /// are side-clipped alone. Ruling C-16 (plan 2b) is one more gate: a find a recorded channel
+    /// drains -- its water running more than `refine_vertical_m` under the find's level inside
+    /// its ring -- is not a hollow in the world the record describes, and is not kept.
     pub ponds_kept: u32,
     /// SCHEMA 5: the fine search's seven params, echoed the way the refinement params are (and
     /// not wasm params either -- a wasm bake always uses `earth_like`'s values).

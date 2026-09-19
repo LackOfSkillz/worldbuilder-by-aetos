@@ -731,3 +731,207 @@ fn a_carve_with_nothing_to_cut_is_its_bare_parent_bit_for_bit() {
         }
     }
 }
+
+// ---- a pond a channel drains is not a pond (plan 2b Task 4b; Rulings C-16 and C-19) -----------
+
+/// **The dam test.** `bake_tests::world()` at `earth_like(30_000)` and `earth_like(60_000)`, each
+/// carved by its own record. Along every reach and every notch -- 17 stations a leg, 9 across the
+/// channel from edge to edge -- nothing stands above the water that channel carries there, beyond
+/// the record's own vertical precision (`refine_vertical_m`, Ruling C-16):
+///
+/// - where the query answers a **fine-found body**, that body's water surface is what stands in
+///   the channel, and it may not stand above the channel's water: a pond kept across a notch is a
+///   wall across the river;
+/// - anywhere else the query calls water, the carved ground itself.
+///
+/// The channel's water is its own leg's `query::along_leg` level at the sample's foot -- a reach's
+/// `bed_m + depth_m` (Ruling C-13), a notch's `surface_m`. Samples a **coarse** lake claims are
+/// Ruling C-17's, not this rule's, and are counted rather than judged; samples the query does not
+/// call water at all (a knife-edge on the channel's rim) are counted too.
+///
+/// Sampled independently of `ponds::drain_deficit_m` -- denser along the leg and across it -- so
+/// this does not merely re-run the rule it pins. At the commit before Ruling C-16 it fails on the
+/// 30,000-node bake's 190 m wall.
+#[test]
+fn no_channel_is_dammed_by_a_pond_it_drains() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut ponds_judged = 0usize;
+    for nodes in [30_000u32, 60_000] {
+        let bare = home();
+        let baked = crate::hydrology::bake(&bare, &crate::hydrology::HydroParams::earth_like(nodes))
+            .expect("the bare world bakes");
+        let tolerance = baked.stats.refine_vertical_m;
+        let bake = Arc::new(IndexedRecord::new(baked, R));
+        let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                                         Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+            .expect("joins its own world");
+        let record = bake.record();
+        let mut lines: Vec<(Vec<SpherePoint>, Vec<(f64, f64, f64)>)> = Vec::new(); // points; (water_a-ish parts)
+        for reach in &record.reaches {
+            lines.push((reach.points.iter().map(|p| at(p.lat_deg, p.lon_deg)).collect(),
+                        reach.points.iter().map(|p| (p.bed_m, p.depth_m, p.width_m)).collect()));
+        }
+        for notch in &record.notches {
+            lines.push((notch.points.iter().map(|&(la, lo, _, _)| at(la, lo)).collect(),
+                        notch.points.iter().map(|&(_, _, s, w)| (s, 0.0, w)).collect()));
+        }
+        let (mut judged, mut in_ponds, mut coarse, mut dry, mut worst) = (0usize, 0usize, 0usize, 0usize, f64::NEG_INFINITY);
+        let mut worst_at = String::new();
+        for (points, water) in &lines {
+            for k in 0..points.len().saturating_sub(1) {
+                let (a, b) = (&points[k], &points[k + 1]);
+                let ((bed_a, depth_a, width_a), (bed_b, depth_b, width_b)) = (water[k], water[k + 1]);
+                let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
+                let half = half_of(leg_width_m(width_a, width_b));
+                for station in 0..=16 {
+                    let t = f64::from(station) / 16.0;
+                    let Some(on) = SpherePoint::from_vector(&a.vector.scaled(1.0 - t).add(&b.vector.scaled(t)))
+                    else { continue };
+                    for step in -4i32..=4 {
+                        let share = f64::from(step) / 4.0;
+                        let Some(p) = SpherePoint::from_vector(&on.vector.add(&normal.scaled(share * half / R)))
+                        else { continue };
+                        let along = leg_foot(&p, a, b, R).1;
+                        let channel = along_leg(bed_a, bed_b, along) + along_leg(depth_a, depth_b, along);
+                        let q = ask_carved(&carved, &bake, &p);
+                        let standing = match q.kind {
+                            WaterKind::Lake | WaterKind::Pond | WaterKind::SaltLake | WaterKind::SaltFlat => {
+                                let body = record.bodies.iter().find(|b| b.id == q.body_id).expect("answered");
+                                if body.shore_member_count > 0 {
+                                    coarse += 1;
+                                    continue;
+                                }
+                                in_ponds += 1;
+                                body.level_m
+                            }
+                            WaterKind::River | WaterKind::Ocean => carved.elevation_m(&p, None),
+                            WaterKind::None => {
+                                dry += 1;
+                                continue;
+                            }
+                        };
+                        judged += 1;
+                        let over = standing - channel;
+                        if over > worst {
+                            worst = over;
+                            worst_at = format!("{:?} ({:?} {})", p.to_latlon(), q.kind, q.body_id);
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("earth_like({nodes}): {judged} channel samples judged ({in_ponds} in fine-found \
+                   bodies), {coarse} in coarse lakes (Ruling C-17, not judged), {dry} on a rim; the \
+                   most anything stands above its channel's water: {worst} m at {worst_at}");
+        assert!(judged > 10_000, "earth_like({nodes}): vacuous -- only {judged} judged");
+        ponds_judged += in_ponds;
+        if worst > tolerance {
+            failures.push(format!("earth_like({nodes}): something stands {worst} m above its \
+                                   channel's water at {worst_at}, over the record's {tolerance} m"));
+        }
+    }
+    // Not vacuous in the case the rule is about: some pond a channel runs through is still kept
+    // (its water at or above the channel's, within the record's precision) and was judged here.
+    assert!(ponds_judged > 0, "vacuous: no channel sample fell in a kept fine-found body");
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+/// A ring pond at level 50 m and three channels, through `ponds::is_drained` exactly as the pond
+/// search asks it: **a river through the pond at its own level survives** (water 0.5 m under the
+/// level, inside the record's 1 m precision); a river 1.5 m under it drains it, and so does a notch
+/// 30 m under it; a river running past the ring, however low, is not a crossing.
+#[test]
+fn a_pond_a_river_runs_through_at_its_own_level_survives() {
+    let params = crate::hydrology::HydroParams::earth_like(1_000);
+    assert_eq!(params.refine_vertical_m, 1.0, "the fixture's margins are laid out against 1 m");
+    let pond = Body {
+        id: 0, kind: BodyKind::Pond, fresh: true, enclosed: false, forced: false,
+        level_m: 50.0, area_m2: 1.2e6, depth_m: 3.0, outlet_reach: None, anchor: (5.005, 5.005),
+        outline: vec![(5.0, 5.0), (5.01, 5.0), (5.01, 5.01), (5.0, 5.01)],
+        downstream: Downstream::Sink, shore_member_count: 0, shore_reach_m: 0.0,
+    };
+    let river = |water_m: f64, lat: f64| reach(0, vec![reach_point(lat, 4.99, water_m - 2.0, 40.0),
+                                                       reach_point(lat, 5.02, water_m - 2.0, 40.0)]);
+    let drained = |reaches: Vec<ReachLine>, notches: Vec<NotchLine>| {
+        let r = record(reaches, notches, Vec::new());
+        let index = crate::water::index::WaterIndex::build(&r, R, 200_000.0);
+        crate::hydrology::ponds::is_drained(&pond, &r, &index, &params)
+    };
+    assert!(!drained(vec![river(49.5, 5.005)], Vec::new()), "a river through it at its own level");
+    assert!(!drained(vec![river(60.0, 5.005)], Vec::new()), "a river through it above its level");
+    assert!(drained(vec![river(48.5, 5.005)], Vec::new()), "a river 1.5 m under its level drains it");
+    assert!(drained(Vec::new(), vec![NotchLine { points: vec![(5.005, 4.99, 20.0, 30.0),
+                                                              (5.005, 5.02, 20.0, 30.0)] }]),
+            "a notch cut 30 m under its level drains it");
+    assert!(!drained(vec![river(10.0, 5.02)], Vec::new()), "a river 1.1 km past the ring crosses nothing");
+    // Ruling Q-7's width is the channel: a river whose centre line misses the ring by 15 m, but
+    // whose 40 m channel reaches into it, still crosses it.
+    let clipping = 5.01 + 15.0 / M_PER_DEG;
+    assert!(drained(vec![river(10.0, clipping)], Vec::new()), "a channel clipping the ring's side");
+}
+
+/// **Ruling C-19: the two authorities compose multiplicatively.** A carving feature laid over a
+/// channel's bank, at a point where the feature's authority and the layer's are **both** strictly
+/// between 0 and 1: there `(1 - a_f)(1 - a_w)` and the additive `1 - a_f - a_w` differ, and the
+/// carved world's `elevation_m` must be the multiplicative one to the bit. Every other test has one
+/// of the two authorities at 0 or 1, where the forms agree -- which is why the additive form used
+/// to pass the whole suite.
+#[test]
+fn a_feature_over_a_channel_damps_detail_by_the_product_of_the_two_authorities() {
+    use crate::features::Feature;
+    use crate::surface::FeatureInput;
+    // A land point, found rather than assumed: the first of a coarse scan standing 100-600 m up.
+    let plain = home();
+    let mut land = None;
+    'scan: for i in 0..60 {
+        for j in 0..120 {
+            let p = at(-60.0 + f64::from(i) * 2.0, -180.0 + f64::from(j) * 3.0);
+            let h = plain.structural_m(&p);
+            if h > 100.0 && h < 600.0 {
+                land = Some(p);
+                break 'scan;
+            }
+        }
+    }
+    let centre = land.expect("the home world has land");
+    let (lat, lon) = centre.to_latlon();
+    let feature = Feature {
+        kind: "cut".to_string(), at: centre, target_m: plain.structural_m(&centre) - 30.0,
+        length_m: 3_000.0, width_m: 3_000.0, bearing_deg: 0.0,
+        compose: crate::features::CARVE.to_string(), marked: false, substrate: None,
+    };
+    let bare = Surface::new(20_260_904, R, 12, 0.29, Some(FeatureInput::Loose(vec![feature.clone()])), None, None);
+    // A 200 m channel 1,700 m north of the feature's centre, its bed well under the ground; the
+    // probe stands 200 m off its line -- past the 100 m half-width, half way across the 200 m bank
+    // -- and 1,500 m from the feature's centre, where its weight is partial.
+    let line_lat = lat + 1_700.0 / M_PER_DEG;
+    let bed = plain.structural_m(&centre) - 80.0;
+    let mut joined = record(vec![reach(0, vec![reach_point(line_lat, lon - 0.02, bed, 200.0),
+                                               reach_point(line_lat, lon + 0.02, bed, 200.0)])],
+                            Vec::new(), Vec::new());
+    joined.ground = ground_fingerprint(&bare);
+    let bake = Arc::new(IndexedRecord::new(joined, R));
+    let carved = Surface::with_water(20_260_904, R, 12, 0.29, Some(FeatureInput::Loose(vec![feature])),
+                                     None, None, None, None, None,
+                                     Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+        .expect("joins");
+    let probe = at(line_lat - 200.0 / M_PER_DEG, lon);
+
+    // The pipeline's own pieces, so the two forms can be told apart at this very point.
+    let reading = carved.shelf.evaluate(&probe);
+    let (shaped, a_f) = carved.features.apply(&probe, reading.elevation_m);
+    let cell_m = bake.record().stats.pond_cell_m;
+    let bare_detail = |q: &SpherePoint| carved.bake_ground_m(q, Some(cell_m));
+    let layer = WaterLayer::new(WaterParams::canonical(), bake.clone());
+    let (cut, a_w) = layer.cut_with(&probe, shaped, &Detail(&bare_detail));
+    assert!(a_f > 0.05 && a_f < 0.95, "fixture is wrong: the feature's authority here is {a_f}");
+    assert!(a_w > 0.05 && a_w < 0.95, "fixture is wrong: the layer's authority here is {a_w}");
+    let amplitude = carved.detail.amplitude_m(&probe, cut, reading.weight, reading.tectonic_m);
+    let product = cut + carved.detail.offset_m(&probe, amplitude * ((1.0 - a_f) * (1.0 - a_w)), None);
+    let additive = cut + carved.detail.offset_m(&probe, amplitude * (1.0 - a_f - a_w), None);
+    let gap = if product > additive { product - additive } else { additive - product };
+    assert!(gap > 1.0e-3, "fixture is wrong: the two forms differ by only {gap} m here");
+    assert_eq!(carved.elevation_m(&probe, None).to_bits(), product.to_bits(),
+               "elevation {} m is not the multiplicative {product} m (additive would be {additive} m)",
+               carved.elevation_m(&probe, None));
+}
