@@ -356,8 +356,16 @@ fn the_layer_never_raises_ground_on_a_real_bake() {
 // ---- the carve and the query agree ------------------------------------------------------------
 
 /// **"This is a river" and "this is a channel" are one test.** A tapering reach (Ruling Q-7's
-/// wider-endpoint width is only visible on a taper), a bend, and a one-point reach, swept
-/// area-uniformly: the query answers `River` exactly where the layer's authority is 1.
+/// wider-endpoint width is only visible on a taper), a bend, a one-point reach, and **notches**
+/// (Ruling C-35) -- a tapering two-leg notch that no reach runs through, a notch that crosses a
+/// reach, and a one-point notch -- swept area-uniformly: the query answers `River` exactly where
+/// the layer's authority is 1, and wherever it does, the carve stands at or under the level it
+/// reports (Ruling C-13).
+///
+/// **The notches are the point.** On a real bake 10 of 12 notches lie 97 km or more from any
+/// recorded reach (a lake's outflow below the stream threshold), and before C-35 the query had no
+/// notch clause: it called every point of those channels dry while the carve cut them. This
+/// fixture had no notch, so it could not see that.
 #[test]
 fn the_carve_and_the_query_agree_about_where_the_channel_is() {
     let fixture = record(
@@ -365,25 +373,36 @@ fn the_carve_and_the_query_agree_about_where_the_channel_is() {
                            reach_point(0.0, 0.004, 4.0, 240.0),
                            reach_point(0.003, 0.007, 3.0, 120.0)]),
              reach(1, vec![reach_point(-0.002, 0.002, 6.0, 90.0)])],
-        Vec::new(), Vec::new());
+        vec![NotchLine { points: vec![(-0.0033, 0.004, 9.0, 60.0), (-0.0033, 0.0060, 8.0, 110.0),
+                                      (-0.0020, 0.0080, 7.5, 70.0)] },
+             NotchLine { points: vec![(0.0012, 0.0010, 6.5, 50.0), (-0.0010, 0.0010, 6.0, 50.0)] },
+             NotchLine { points: vec![(0.0040, 0.0000, 8.0, 80.0)] }],
+        Vec::new());
     let layer = layer_over(fixture.clone());
     let index = layer.bake().index();
     let high = |_: &SpherePoint| 100.0;
     let ground = Ground { landform_m: Landform(&high), detail_m: Detail(&high) };
-    let (mut rivers, mut banks) = (0usize, 0usize);
+    let (mut rivers, mut banks, mut notch_water) = (0usize, 0usize, 0usize);
     for p in area_uniform(-0.004, 0.005, -0.002, 0.009, 180) {
-        let is_river = water_at(&fixture, index, &ground, &p).kind == WaterKind::River;
-        let (_, authority) = layer.cut_m(&p, 100.0);
+        let answer = water_at(&fixture, index, &ground, &p);
+        let is_river = answer.kind == WaterKind::River;
+        let (cut, authority) = layer.cut_m(&p, 100.0);
         assert_eq!(is_river, authority == 1.0,
                    "at {:?} the query says river={is_river} and the carve's authority is {authority}",
                    p.to_latlon());
         if is_river {
             rivers += 1;
+            assert!(cut <= answer.level_m, "at {:?} the carve stands at {cut} m, over the water \
+                    the query reports at {} m", p.to_latlon(), answer.level_m);
+            if answer.reach_id == crate::water::query::NO_REACH {
+                notch_water += 1;
+            }
         } else if authority > 0.0 {
             banks += 1;
         }
     }
     assert!(rivers > 0 && banks > 0, "vacuous sweep: {rivers} river points, {banks} bank points");
+    assert!(notch_water > 0, "vacuous for notches: no river point was a notch's alone");
 }
 
 // ---- the two phases (Ruling C-1) --------------------------------------------------------------
@@ -612,17 +631,24 @@ fn carved_by_its_own_bake(gully: Option<crate::detail::GullyParams>)
     (bare, carved, bake)
 }
 
-/// Points **in** every recorded reach's channel: along every leg at seven interior fractions, each
-/// on the centre line and at 50% and 90% of the half-width to either side -- 35 a leg. Placed on
-/// the leg's own great circle (a normalised blend of its ends) and pushed off it along the arc's
+/// Points **in** every recorded reach's and every notch's channel (Ruling C-35: a notch is a
+/// channel the query answers as water too): along every leg at seven interior fractions, each on
+/// the centre line and at 50% and 90% of the half-width to either side -- 35 a leg. Placed on the
+/// leg's own great circle (a normalised blend of its ends) and pushed off it along the arc's
 /// normal, so "inside the half-width" is by construction rather than by luck of a scatter.
 fn channel_samples(bake: &IndexedRecord) -> Vec<SpherePoint> {
+    let record = bake.record();
+    // (lat, lon, width) along each line, reaches then notches.
+    let lines = record.reaches.iter()
+        .map(|reach| reach.points.iter().map(|p| (p.lat_deg, p.lon_deg, p.width_m)).collect::<Vec<_>>())
+        .chain(record.notches.iter()
+            .map(|notch| notch.points.iter().map(|&(la, lo, _, w)| (la, lo, w)).collect::<Vec<_>>()));
     let mut out = Vec::new();
-    for reach in &bake.record().reaches {
-        for pair in reach.points.windows(2) {
-            let (a, b) = (at(pair[0].lat_deg, pair[0].lon_deg), at(pair[1].lat_deg, pair[1].lon_deg));
+    for line in lines {
+        for pair in line.windows(2) {
+            let (a, b) = (at(pair[0].0, pair[0].1), at(pair[1].0, pair[1].1));
             let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
-            let half = half_of(leg_width_m(pair[0].width_m, pair[1].width_m));
+            let half = half_of(leg_width_m(pair[0].2, pair[1].2));
             for k in 1..8 {
                 let t = f64::from(k) / 8.0;
                 let blend = a.vector.scaled(1.0 - t).add(&b.vector.scaled(t));
@@ -753,8 +779,15 @@ fn a_carve_with_nothing_to_cut_is_its_bare_parent_bit_for_bit() {
 ///
 /// The channel's water is its own leg's `query::along_leg` level at the sample's foot -- a reach's
 /// `bed_m + depth_m` (Ruling C-13), a notch's `surface_m`. Samples a **coarse** lake claims are
-/// Ruling C-17's, not this rule's, and are counted rather than judged; samples the query does not
-/// call water at all (a knife-edge on the channel's rim) are counted too.
+/// Ruling C-17's, not this rule's, and are counted rather than judged.
+///
+/// **A sample inside the channel that the query calls dry is a failure, not a rim (Ruling C-35).**
+/// Only the two outermost samples across a leg (`step = +-4`, exactly on the half-width) are a
+/// knife-edge on the channel's rim, and only those may answer `None`. This test used to skip every
+/// dry sample as a rim, and on these bakes that category was nearly every notch sample: 10 of 12
+/// notches lie 97 km or more from any recorded reach, the query had no notch clause, and so the
+/// notch half of this test judged only ponds. It now also requires that some sample of a notch no
+/// reach runs through was judged.
 ///
 /// Sampled independently of `ponds::drain_deficit_m` -- denser along the leg and across it -- so
 /// this does not merely re-run the rule it pins. At the commit before Ruling C-16 it fails on the
@@ -773,18 +806,23 @@ fn no_channel_is_dammed_by_a_pond_it_drains() {
                                          Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
             .expect("joins its own world");
         let record = bake.record();
-        let mut lines: Vec<(Vec<SpherePoint>, Vec<(f64, f64, f64)>)> = Vec::new(); // points; (water_a-ish parts)
+        // (points; (bed or surface, depth, width) at each; is it a notch)
+        let mut lines: Vec<(Vec<SpherePoint>, Vec<(f64, f64, f64)>, bool)> = Vec::new();
         for reach in &record.reaches {
             lines.push((reach.points.iter().map(|p| at(p.lat_deg, p.lon_deg)).collect(),
-                        reach.points.iter().map(|p| (p.bed_m, p.depth_m, p.width_m)).collect()));
+                        reach.points.iter().map(|p| (p.bed_m, p.depth_m, p.width_m)).collect(),
+                        false));
         }
         for notch in &record.notches {
             lines.push((notch.points.iter().map(|&(la, lo, _, _)| at(la, lo)).collect(),
-                        notch.points.iter().map(|&(_, _, s, w)| (s, 0.0, w)).collect()));
+                        notch.points.iter().map(|&(_, _, s, w)| (s, 0.0, w)).collect(),
+                        true));
         }
-        let (mut judged, mut in_ponds, mut coarse, mut dry, mut worst) = (0usize, 0usize, 0usize, 0usize, f64::NEG_INFINITY);
+        let (mut judged, mut in_ponds, mut coarse, mut rim, mut worst) = (0usize, 0usize, 0usize, 0usize, f64::NEG_INFINITY);
+        let (mut notch_alone, mut dry_inside) = (0usize, 0usize);
         let mut worst_at = String::new();
-        for (points, water) in &lines {
+        let mut dry_at = String::new();
+        for (points, water, is_notch) in &lines {
             for k in 0..points.len().saturating_sub(1) {
                 let (a, b) = (&points[k], &points[k + 1]);
                 let ((bed_a, depth_a, width_a), (bed_b, depth_b, width_b)) = (water[k], water[k + 1]);
@@ -813,11 +851,23 @@ fn no_channel_is_dammed_by_a_pond_it_drains() {
                             }
                             WaterKind::River | WaterKind::Ocean => carved.elevation_m(&p, None),
                             WaterKind::None => {
-                                dry += 1;
+                                if step == 4 || step == -4 {
+                                    rim += 1;
+                                } else {
+                                    dry_inside += 1;
+                                    if dry_at.is_empty() {
+                                        dry_at = format!("{:?} ({} line)", p.to_latlon(),
+                                                         if *is_notch { "a notch" } else { "a reach" });
+                                    }
+                                }
                                 continue;
                             }
                         };
                         judged += 1;
+                        if *is_notch && q.kind == WaterKind::River
+                            && q.reach_id == crate::water::query::NO_REACH {
+                            notch_alone += 1;
+                        }
                         let over = standing - channel;
                         if over > worst {
                             worst = over;
@@ -828,9 +878,18 @@ fn no_channel_is_dammed_by_a_pond_it_drains() {
             }
         }
         eprintln!("earth_like({nodes}): {judged} channel samples judged ({in_ponds} in fine-found \
-                   bodies), {coarse} in coarse lakes (Ruling C-17, not judged), {dry} on a rim; the \
+                   bodies, {notch_alone} in a notch's water alone), {coarse} in coarse lakes (Ruling \
+                   C-17, not judged), {rim} dry on a rim, {dry_inside} dry inside a channel; the \
                    most anything stands above its channel's water: {worst} m at {worst_at}");
         assert!(judged > 10_000, "earth_like({nodes}): vacuous -- only {judged} judged");
+        if dry_inside > 0 {
+            failures.push(format!("earth_like({nodes}): the query calls {dry_inside} samples inside \
+                                   a cut channel dry, the first at {dry_at}"));
+        }
+        if notch_alone == 0 {
+            failures.push(format!("earth_like({nodes}): vacuous for notches -- no sample of a notch \
+                                   no reach runs through was judged"));
+        }
         ponds_judged += in_ponds;
         if worst > tolerance {
             failures.push(format!("earth_like({nodes}): something stands {worst} m above its \

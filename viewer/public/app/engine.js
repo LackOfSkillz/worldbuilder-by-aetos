@@ -168,7 +168,8 @@ export const WB_WATER_KIND = {
 };
 
 /// `bodyId` when the answer belongs to no recorded body (ocean, river, none), and `reachId`
-/// when it belongs to no recorded reach (everything but a river). `u32::MAX`, mirrored from
+/// when it belongs to no recorded reach (everything but a river -- and a river through a notch no
+/// reach claims, which is how a sample says "a notch": Ruling C-35). `u32::MAX`, mirrored from
 /// `water::NO_BODY` and `water::NO_REACH` -- one value, two names, because the two words index
 /// different tables.
 export const WB_NO_BODY = 0xffffffff;
@@ -959,7 +960,9 @@ export class Engine {
   /// Returns `{ kind, levelM, depthM, bodyId, reachId }`, where `kind` is one of
   /// `WB_WATER_KIND`'s names -- `"none"`, `"ocean"`, `"lake"`, `"saltLake"`, `"saltFlat"`,
   /// `"pond"`, `"river"` -- and `bodyId` / `reachId` are `null` where the answer names no
-  /// recorded body or reach rather than the raw `0xffffffff` sentinel.
+  /// recorded body or reach rather than the raw `0xffffffff` sentinel. A `"river"` with a `null`
+  /// `reachId` is a notch's water: a lake's outflow through its rim, too small to be recorded as a
+  /// reach, which the carve cuts and the query therefore answers as water (Ruling C-35).
   ///
   /// **`fresh` is not here**, and is not missing: it belongs to the body or reach the ids name,
   /// so read it out of `bake.words`. See `WB_WATER_STRIDE`.

@@ -560,7 +560,9 @@ impl Surface {
         // `1 - authority` of the features, times `1 - authority` of the layer. Multiplicative,
         // so it commutes, neither authority overrides the other, and either one at zero leaves
         // the other exactly as it was. At full layer authority -- everywhere the query answers
-        // `River` -- the factor is zero, and the ground is the carved bed and nothing else: a
+        // `River`, a notch's water included (Ruling C-35), and also inside a channel on ground at
+        // or below the datum, where the query answers `Ocean` first (`water::layer`'s one
+        // exception) -- the factor is zero, and the ground is the carved bed and nothing else: a
         // texture peak cannot stand in mid-channel and dam the river.
         //
         // With no layer `defer` is `1 - authority`, the very expression this line was before

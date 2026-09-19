@@ -293,8 +293,9 @@ fn midpoint(a: &SpherePoint, b: &SpherePoint) -> SpherePoint {
 ///   by definition.
 /// - **Every notch point**: *no* notch point answers a body -- a notch is a cut through a rim, not
 ///   the lake it drains -- and one that answers the sea must stand at or below the datum on this
-///   test's own landform closure. §8.3's table has no notch row and the query never reads
-///   `Candidates::notches`, so what is left, `River` and `None`, is counted and reported.
+///   test's own landform closure. **And no notch point is dry** (Ruling C-35): a notch carries a
+///   lake's outflow, and the query answers `River` in its footprint -- before C-35 it never read
+///   `Candidates::notches`, and a notch point no reach ran through answered `None`.
 ///
 /// Every count is printed. They are Task 6's verification table, and two of them -- ring vertices
 /// standing above their own recorded level, and vertices claimed by nothing -- are what produced
@@ -533,11 +534,12 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
             }
         }
 
-        // A notch is a cut, not standing water: §8.3's table has no notch row, and the query
-        // never reads `Candidates::notches`. So a notch point answers whatever the *other*
-        // families say there -- the reach that runs through the cut, or nothing.
+        // A notch carries a lake's outflow through its rim, and since Ruling C-35 the query answers
+        // `River` in its footprint -- the reach that runs through the cut where one does, the
+        // notch's own water where none does.
         //
-        // Two of the four outcomes are assertions, not counters. **No notch point answers a
+        // Three of the four outcomes are assertions, not counters. **No notch point is dry**: that
+        // was every notch point no reach ran through, before C-35. **No notch point answers a
         // body**: a notch is cut through a rim to drain a hollow, so standing water at one would
         // say the cut runs through the lake it drains. And a notch point that answers the sea
         // must actually stand at or below the datum -- Ruling Q-4's own clause, checked against
@@ -566,6 +568,9 @@ fn the_query_agrees_with_the_record_at_every_recorded_point() {
         assert_eq!(notch_body, 0,
                    "{name}: {notch_body} notch points stand in a recorded body -- a notch is a \
                     cut through a rim, not the lake it drains");
+        assert_eq!(notch_dry, 0,
+                   "{name}: {notch_dry} of {notch_points} notch points answer dry -- a notch \
+                    carries its lake's outflow (Ruling C-35)");
 
         eprintln!(
             "{name}: {} bodies ({rings} traced rings, {ring_ponds} of them ponds) / {} reaches / \

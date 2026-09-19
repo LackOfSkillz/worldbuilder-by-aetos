@@ -1146,6 +1146,9 @@ pub fn drain_deficit_m(body: &Body, record: &HydroRecord, index: &crate::water::
             consider(&a, &b, half_of(leg_width_m(pa.width_m, pb.width_m)), &water);
         }
     }
+    // A notch's surface is channel water, and since Ruling C-35 the query says so too: it answers
+    // `River` at this same `along_leg` surface across this same half-width, so the drain, the carve
+    // and the query agree about a notch as they do about a reach.
     for &id in &notches {
         let Some(notch) = record.notches.get(id as usize) else { continue }; // cast-ok: a notch id is its position
         for pair in notch.points.windows(2) {

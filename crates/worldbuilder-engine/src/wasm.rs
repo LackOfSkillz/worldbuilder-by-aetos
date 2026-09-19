@@ -5308,13 +5308,14 @@ pub extern "C" fn wb_hydro_free(id: u32) -> u32 {
 /// | 1 | `level_m`, the water surface, `0` where the kind is none |
 /// | 2 | `depth_m`, the water surface less the ground, never below zero, `0` where the kind is none |
 /// | 3 | the recorded **body** id, or `4294967295` (`water::NO_BODY`) for ocean, river and none |
-/// | 4 | the recorded **reach** id, or `4294967295` (`water::NO_REACH`) for everything but a river |
+/// | 4 | the recorded **reach** id, or `4294967295` (`water::NO_REACH`) for everything but a river -- and for a river through a notch no reach claims, which is how a sample says "a notch" (Ruling C-35) |
 ///
 /// **`fresh` is not a sixth word**, deliberately. It is a property of the *thing named in words
 /// 3 and 4*, not of the sample: a caller that needs it reads the body's `fresh` out of the
 /// record entry word 3 names, or the reach's out of the entry word 4 names -- the record it
 /// already holds from `wb_hydro_copy`. Ocean is salt and none is dry, so neither has one to
-/// read. Spelling it per sample would put a copy of a record field in every one of a tile's
+/// read; a river naming no reach is a notch's, a lake's outflow, and is fresh (Ruling C-35).
+/// Spelling it per sample would put a copy of a record field in every one of a tile's
 /// thousands of samples and give a drawing path two places to disagree about one fact.
 pub const WB_WATER_STRIDE: usize = 5;
 

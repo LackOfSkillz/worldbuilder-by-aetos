@@ -24,12 +24,25 @@
 //!
 //! # Where the channel is: the query's answer, not a second one
 //!
-//! Inside a leg's half-width is **exactly** where `water::query` answers `River`, because both ask
-//! the same functions -- `query::leg_foot` for the distance, `query::leg_width_m` for Ruling Q-7's
-//! wider-endpoint width, `query::half_of` for half of it -- and the same index. The layer's
-//! authority is `1` there and nowhere else, so "this is a river" and "this is a channel" cannot
-//! disagree about where the channel is. `the_carve_and_the_query_agree_about_where_the_channel_is`
-//! sweeps for any point where they would.
+//! Inside a reach's **or a notch's** half-width is where `water::query` answers `River`, because
+//! both ask the same functions -- `query::leg_foot` for the distance, `query::leg_width_m` for
+//! Ruling Q-7's wider-endpoint width, `query::half_of` for half of it -- and the same index. The
+//! layer's authority is `1` there, so "this is a river" and "this is a channel" cannot disagree
+//! about where the channel is. `the_carve_and_the_query_agree_about_where_the_channel_is` sweeps a
+//! fixture with reaches and notches for any point where they would. **Notches are in that sentence
+//! since Ruling C-35**: before it the query had no notch clause, and on a real bake almost every
+//! notch lies far from any reach, so the carve cut channels the query called dry.
+//!
+//! **One exception, and it is below the datum.** The query answers `Ocean` before it asks any
+//! reach or notch (Ruling Q-5's precedence): where the landform stands at or under the datum and no
+//! body's extent holds the point, it says `Ocean`, with a depth read off the *uncut* landform --
+//! while the layer, which knows nothing of the sea, still cuts there at authority `1`. So the
+//! agreement is exact everywhere except inside a channel's half-width on ground at or below the
+//! datum: there the layer's authority is `1` and the query says `Ocean`, not `River`. Measured on
+//! `bake_tests::world()` at `earth_like(60_000)` (native, reach mid-leg samples): 3 of 2,169 answered
+//! `Ocean`, 2 of them cut by more than 1 m. The ocean's precedence is deliberate and is not changed
+//! here; this paragraph exists so "exactly" is not claimed where it is false. The converse holds
+//! without exception: wherever the query answers `River`, the layer's authority is `1`.
 //!
 //! **The bed is interpolated along a leg, and so is the query's level (Ruling C-13).** The cut
 //! follows the leg's foot linearly from one recorded `bed_m` to the next -- exact at every recorded
