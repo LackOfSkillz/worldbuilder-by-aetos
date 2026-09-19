@@ -1393,25 +1393,31 @@ jobs:
           # existing `a_carved_world_is_refused_by_the_bake`, so it moves nothing. Re-derived by
           # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`):
           # 903/903/906/1029/1032 listed, 11 ignored in each.
+          # 2026-09-18, WATER 2b Ruling C-13 (the query reads a river's level along the leg):
+          # **892/892/895/1018/1021 -> 893/893/896/1019/1022 with 11 ignored**. One ungated test,
+          # `water/layer_tests.rs::the_querys_water_surface_never_stands_below_the_carved_bed`, so
+          # every row +1 (the rewritten river test in `water/query.rs` replaced, not added).
+          # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`):
+          # 904/904/907/1030/1033 listed, 11 ignored in each.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 892
+            expect: 893
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 892
+            expect: 893
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 895
+            expect: 896
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1018
+            expect: 1019
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1021
+            expect: 1022
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

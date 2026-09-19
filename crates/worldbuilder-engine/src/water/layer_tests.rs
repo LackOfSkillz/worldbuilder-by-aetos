@@ -500,7 +500,7 @@ fn the_join_refuses_a_foreign_record_a_foreign_radius_and_a_bad_block() {
 /// body a reach flows into or through meets its channel.
 fn body_samples(bare: &Surface, bake: &IndexedRecord) -> Vec<(SpherePoint, u32)> {
     let record = bake.record();
-    let mut points = channel_samples_on(bake);
+    let mut points = channel_samples(bake);
     for body in &record.bodies {
         let (mut lat0, mut lat1, mut lon0, mut lon1) = (90.0f64, -90.0f64, 180.0f64, -180.0f64);
         for &(la, lo) in &body.outline {
@@ -533,29 +533,6 @@ fn body_samples(bare: &Surface, bake: &IndexedRecord) -> Vec<(SpherePoint, u32)>
         .collect()
 }
 
-/// [`channel_samples`]'s placement, for the lake tests: 35 points in every leg's channel.
-fn channel_samples_on(bake: &IndexedRecord) -> Vec<SpherePoint> {
-    let mut out = Vec::new();
-    for reach in &bake.record().reaches {
-        for pair in reach.points.windows(2) {
-            let (a, b) = (at(pair[0].lat_deg, pair[0].lon_deg), at(pair[1].lat_deg, pair[1].lon_deg));
-            let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
-            let half = half_of(leg_width_m(pair[0].width_m, pair[1].width_m));
-            for k in 1..8 {
-                let t = f64::from(k) / 8.0;
-                let blend = a.vector.scaled(1.0 - t).add(&b.vector.scaled(t));
-                let Some(on) = SpherePoint::from_vector(&blend) else { continue };
-                for share in [-0.9, -0.5, 0.0, 0.5, 0.9] {
-                    if let Some(p) = SpherePoint::from_vector(&on.vector.add(&normal.scaled(share * half / R))) {
-                        out.push(p);
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 /// **Spec §8.1: lake beds are not cut -- on real bakes where reaches actually enter bodies.** The
 /// fine pond search looks for ponds along reach lines, so a pond sitting on a river is the ordinary
 /// case, and a coarse lake a reach flows into is another. `bake_tests::world()` at
@@ -577,7 +554,7 @@ fn no_body_is_cut_where_reaches_enter_it() {
             .expect("joins its own world");
         let mut cut_bodies: Vec<u32> = Vec::new();
         let (mut samples, mut lowered, mut in_channel, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
-        let channel = channel_samples_on(&bake);
+        let channel = channel_samples(&bake);
         let samples_in = body_samples(&bare, &bake);
         for (p, id) in &samples_in {
             samples += 1;
@@ -610,4 +587,81 @@ fn no_body_is_cut_where_reaches_enter_it() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+// ---- the query's water surface and the carve's bed agree (Ruling C-13) -------------------------
+
+/// `bake_tests::world()`, with or without a gully block, baked bare at `bake_tests::params()` and
+/// then carved by its own record: `(bare, carved, bake)`.
+fn carved_by_its_own_bake(gully: Option<crate::detail::GullyParams>)
+                          -> (Surface, Surface, Arc<IndexedRecord>) {
+    let bare = Surface::with_gully(20_260_904, R, 12, 0.29, None, None, None, None, gully);
+    let baked = crate::hydrology::bake(&bare, &crate::hydrology::bake_tests::params())
+        .expect("the bare world bakes");
+    let bake = Arc::new(IndexedRecord::new(baked, R));
+    let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, gully, None,
+                                     Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+        .expect("a record joined to the world it was baked from");
+    (bare, carved, bake)
+}
+
+/// Points **in** every recorded reach's channel: along every leg at seven interior fractions, each
+/// on the centre line and at 50% and 90% of the half-width to either side -- 35 a leg. Placed on
+/// the leg's own great circle (a normalised blend of its ends) and pushed off it along the arc's
+/// normal, so "inside the half-width" is by construction rather than by luck of a scatter.
+fn channel_samples(bake: &IndexedRecord) -> Vec<SpherePoint> {
+    let mut out = Vec::new();
+    for reach in &bake.record().reaches {
+        for pair in reach.points.windows(2) {
+            let (a, b) = (at(pair[0].lat_deg, pair[0].lon_deg), at(pair[1].lat_deg, pair[1].lon_deg));
+            let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
+            let half = half_of(leg_width_m(pair[0].width_m, pair[1].width_m));
+            for k in 1..8 {
+                let t = f64::from(k) / 8.0;
+                let blend = a.vector.scaled(1.0 - t).add(&b.vector.scaled(t));
+                let Some(on) = SpherePoint::from_vector(&blend) else { continue };
+                for share in [-0.9, -0.5, 0.0, 0.5, 0.9] {
+                    let pushed = on.vector.add(&normal.scaled(share * half / R));
+                    if let Some(p) = SpherePoint::from_vector(&pushed) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The query over a carved world, grounded exactly as `wasm.rs::with_ground` grounds it: the
+/// landform for coarse bodies and reaches, the bare ground at `pond_cell_m` for fine-found ones.
+fn ask_carved(carved: &Surface, bake: &IndexedRecord, p: &SpherePoint) -> crate::water::WaterAt {
+    let cell_m = bake.record().stats.pond_cell_m;
+    let landform = |q: &SpherePoint| carved.structural_m(q);
+    let detail = |q: &SpherePoint| carved.bake_ground_m(q, Some(cell_m));
+    water_at(bake.record(), bake.index(),
+             &Ground { landform_m: Landform(&landform), detail_m: Detail(&detail) }, p)
+}
+
+/// **Ruling C-13: the query's water surface and the carve's bed are one geometry.** Wherever the
+/// query answers `River`, the channel the layer cuts there -- into ground as high as you like --
+/// stands at or under the level the query reports. Before C-13 the query read the nearest recorded
+/// point's level, a step along each reach, and the interpolated bed stood above it: a river that
+/// reads dry in its own channel.
+#[test]
+fn the_querys_water_surface_never_stands_below_the_carved_bed() {
+    let (_, carved, bake) = carved_by_its_own_bake(None);
+    let layer = WaterLayer::new(WaterParams::canonical(), bake.clone());
+    let mut rivers = 0usize;
+    for p in channel_samples(&bake) {
+        let q = ask_carved(&carved, &bake, &p);
+        if q.kind != WaterKind::River {
+            continue; // a mouth handed to a body or the sea: not this reach's surface to report
+        }
+        rivers += 1;
+        let (bed, authority) = layer.cut_m(&p, 1.0e6);
+        assert_eq!(authority, 1.0, "the query says river and the carve says bank at {:?}", p.to_latlon());
+        assert!(bed <= q.level_m, "the bed {bed} m stands above the water {} m at {:?}",
+                q.level_m, p.to_latlon());
+    }
+    assert!(rivers > 1_000, "vacuous: only {rivers} channel samples answered river");
 }

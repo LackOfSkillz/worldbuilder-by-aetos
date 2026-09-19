@@ -31,11 +31,12 @@
 //! disagree about where the channel is. `the_carve_and_the_query_agree_about_where_the_channel_is`
 //! sweeps for any point where they would.
 //!
-//! **The bed is interpolated along a leg; the query's level is not.** Ruling Q-6 has the query
-//! report the nearest recorded point's level, which is a step function along a reach -- right for
-//! an answer, wrong for ground, where it would leave a cliff at every leg's midpoint. So the cut
-//! follows the leg's foot linearly from one recorded `bed_m` to the next. Exact at every recorded
-//! point, continuous between them.
+//! **The bed is interpolated along a leg, and so is the query's level (Ruling C-13).** The cut
+//! follows the leg's foot linearly from one recorded `bed_m` to the next -- exact at every recorded
+//! point, continuous between them -- through `query::along_leg`, the same function the query reads
+//! its river level with. Before C-13 the query reported the nearest recorded point's level, a step
+//! function along a reach, and the interpolated bed stood above it in up to a fifth of all leg
+//! halves on the parity worlds: a river reading dry in its own channel.
 //!
 //! # Three rules, each of which has bitten this project before
 //!
@@ -63,7 +64,8 @@ use crate::hydrology::HydroRecord;
 use crate::sphere::SpherePoint;
 use crate::water::index::{WaterIndex, DEFAULT_CELL_M};
 use crate::water::query::{
-    claim_bodies, half_of, leg_foot, leg_width_m, reach_position, Detail, Ground, Landform,
+    along_leg, claim_bodies, half_of, leg_foot, leg_width_m, reach_position, Detail, Ground,
+    Landform,
 };
 
 /// Spec §8.1's "banks blended over one width either side".
@@ -310,7 +312,8 @@ fn each_leg(point: &SpherePoint, line: &[SpherePoint], at: &dyn Fn(usize) -> (f6
         else {
             continue;
         };
-        take(target_a + along * (target_b - target_a), weight);
+        // Ruling C-13: the query's own interpolation, so its water surface and this bed agree.
+        take(along_leg(target_a, target_b, along), weight);
     }
 }
 

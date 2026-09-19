@@ -78,7 +78,8 @@
 //!   **closes implicitly**: `outline[i]` joins `outline[(i + 1) % len]`, and the first point is
 //!   never repeated. Ruling Q-17: a point **on** a vertex or an edge is inside.
 //! - [`river_claim`] -- within half a reach's width of its centre line, the width of a leg being
-//!   the larger of its two endpoints' (Ruling Q-7).
+//!   the larger of its two endpoints' (Ruling Q-7). Its level and depth are read along the
+//!   claiming leg by [`along_leg`] (Ruling C-13), the function the water layer cuts its bed with.
 //!
 //! Which of the first two runs is decided by `shore_member_count` **and by nothing else** (Ruling
 //! E-8); `kind` says what the water *is*, not how its extent is written down.
@@ -266,27 +267,29 @@ pub fn water_at(
     // Then the reaches. Nearest centre line wins, ties to the lower reach id -- the same
     // "smallest distance, then lowest id" shape Ruling T1-3 fixes for bodies, so that a point a
     // confluence puts inside two channels does not answer by the order a cell lists them in.
-    let mut best_reach: Option<(f64, &ReachLine)> = None;
+    let mut best_reach: Option<(RiverClaim, &ReachLine)> = None;
     for &id in candidates.reaches {
         let Some(reach) = reach_by_id(record, id) else {
             continue;
         };
-        let Some(d) = river_claim(reach, point, radius_m) else {
+        let Some(claim) = river_claim(reach, point, radius_m) else {
             continue;
         };
+        let d = claim.distance_m;
         best_reach = Some(match best_reach {
-            None => (d, reach),
-            Some((best_d, held)) => {
+            None => (claim, reach),
+            Some((held_claim, held)) => {
+                let best_d = held_claim.distance_m;
                 if d < best_d || (d == best_d && reach.id < held.id) {
-                    (d, reach)
+                    (claim, reach)
                 } else {
-                    (best_d, held)
+                    (held_claim, held)
                 }
             }
         });
     }
-    if let Some((_, reach)) = best_reach {
-        return river_answer(reach, point, radius_m);
+    if let Some((claim, reach)) = best_reach {
+        return river_answer(reach, claim);
     }
 
     WaterAt::none()
@@ -557,54 +560,92 @@ fn inside_ring(outline: &[(f64, f64)], point: &SpherePoint) -> bool {
 /// width is the **larger** of its two endpoints', because a leg tapers between recorded points and
 /// the smaller value would answer `none` inside a channel the carve will cut.
 ///
-/// Returns the distance to the nearest claiming leg's centre line, or `None`.
-fn river_claim(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> Option<f64> {
+/// Returns where the nearest claiming leg claimed it -- its distance, which leg, and how far along
+/// it -- or `None`. Ties go to the lower leg, which a strict `<` gives.
+fn river_claim(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> Option<RiverClaim> {
     let points = &reach.points;
     if points.is_empty() {
         return None;
     }
     if points.len() == 1 {
         let d = point.distance_to(&reach_at(reach, 0), radius_m);
-        return if d <= half_of(points[0].width_m) { Some(d) } else { None };
+        return if d <= half_of(points[0].width_m) {
+            Some(RiverClaim { distance_m: d, leg: 0, along: 0.0 })
+        } else {
+            None
+        };
     }
-    let mut best: Option<f64> = None;
+    let mut best: Option<RiverClaim> = None;
     for leg in 0..points.len() - 1 {
         let wider = leg_width_m(points[leg].width_m, points[leg + 1].width_m);
-        let d = distance_to_leg_m(point, &reach_at(reach, leg), &reach_at(reach, leg + 1), radius_m);
+        let (d, along) = leg_foot(point, &reach_at(reach, leg), &reach_at(reach, leg + 1), radius_m);
         if d <= half_of(wider) {
+            let here = RiverClaim { distance_m: d, leg, along };
             best = Some(match best {
-                None => d,
-                Some(held) => if d < held { d } else { held },
+                None => here,
+                Some(held) => if d < held.distance_m { here } else { held },
             });
         }
     }
     best
 }
 
-/// What a claiming reach answers. Ruling Q-6: the depth is the reach's own `depth_m` **at the
-/// nearest recorded point**, and the level is that same point's `bed_m + depth_m` -- not an
-/// interpolation along the leg, which §8.3 does not ask for and the tile batch (Ruling Q-8) is
-/// explicit about not doing. A river belongs to no body.
-fn river_answer(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> WaterAt {
-    let mut nearest = 0usize;
-    let mut best = f64::INFINITY;
-    for i in 0..reach.points.len() {
-        let d = point.distance_to(&reach_at(reach, i), radius_m);
-        if d < best {
-            best = d;
-            nearest = i; // ties to the lower index: a strict `<` keeps the first one scanned
-        }
-    }
-    let rp = &reach.points[nearest];
+/// Where a reach claimed a point: the distance to the claiming leg's centre line, which leg
+/// (`points[leg]` to `points[leg + 1]`; `0` for a one-point reach), and the foot's fraction along
+/// it (`leg_foot`'s second value).
+#[derive(Debug, Clone, Copy)]
+struct RiverClaim {
+    distance_m: f64,
+    leg: usize,
+    along: f64,
+}
+
+/// What a claiming reach answers. **Ruling C-13, superseding Q-6's nearest recorded point:** the
+/// bed and the depth are both read **along the claiming leg**, at the foot of the perpendicular,
+/// by [`along_leg`] -- the same function the water layer cuts its bed with -- and the level is
+/// their sum. So the water surface the query reports and the channel the carve cuts are one
+/// geometry: wherever this answers `River`, the carved bed stands at or under this level.
+///
+/// Q-6's nearest point was a step function along a reach. Measured on the two parity worlds before
+/// this ruling, the carve's interpolated bed stood above that step's level in 252 of 1,702 leg
+/// halves (`hydro/plain`) and 365 of 4,400 (`hydro/ranges`), by up to 40.1 m: a river reading dry
+/// in its own channel. At a recorded point `along` is `0` or `1` and the answer is that point's own
+/// `bed_m + depth_m`, as it was. A river belongs to no body.
+fn river_answer(reach: &ReachLine, claim: RiverClaim) -> WaterAt {
+    let points = &reach.points;
+    let (bed_m, depth_m) = if claim.leg + 1 < points.len() {
+        let (a, b) = (&points[claim.leg], &points[claim.leg + 1]);
+        (along_leg(a.bed_m, b.bed_m, claim.along), along_leg(a.depth_m, b.depth_m, claim.along))
+    } else {
+        (points[claim.leg].bed_m, points[claim.leg].depth_m)
+    };
     WaterAt {
         kind: WaterKind::River,
-        level_m: rp.bed_m + rp.depth_m,
-        depth_m: rp.depth_m,
+        level_m: bed_m + depth_m,
+        depth_m,
         fresh: reach.fresh,
         body_id: NO_BODY,
         // Ruling Q-18: the one branch that names a reach. Which reach answered is not recoverable
         // from anything else in `WaterAt`, and §9.1's drawing needs it to reach `ReachLine::class`.
         reach_id: reach.id,
+    }
+}
+
+/// A recorded quantity read `along` a leg from its value at `a` to its value at `b`: linear, and
+/// **exactly** `at_a` at `along <= 0` and `at_b` at `along >= 1` -- by branch, because
+/// `a + 1.0 * (b - a)` is not `b` in floating point, and a recorded point must answer its own
+/// recorded value.
+///
+/// **One function for the query's level and the carve's bed (Ruling C-13).** `river_answer`
+/// reads a reach's bed and depth with it; `water::layer` cuts to a reach's bed and a notch's
+/// surface with it. Two interpolations would be two water surfaces.
+pub(crate) fn along_leg(at_a: f64, at_b: f64, along: f64) -> f64 {
+    if along <= 0.0 {
+        at_a
+    } else if along >= 1.0 {
+        at_b
+    } else {
+        at_a + along * (at_b - at_a)
     }
 }
 
@@ -639,11 +680,8 @@ pub(crate) fn half_of(width_m: f64) -> f64 {
 /// -- `(a x f) . n >= 0` and `(f x b) . n >= 0` -- rather than by comparing angles, so no
 /// transcendental is spent deciding it. Two coincident or antipodal ends have no arc to be
 /// perpendicular to and fall back to the ends.
-fn distance_to_leg_m(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radius_m: f64) -> f64 {
-    leg_foot(point, a, b, radius_m).0
-}
-
-/// [`distance_to_leg_m`], and **how far along the leg its answer was measured**: `0` at `a`, `1`
+///
+/// The fraction too -- **how far along the leg its answer was measured**: `0` at `a`, `1`
 /// at `b`. The distance is computed here and nowhere else, so the query and the carve cannot
 /// disagree about it.
 ///
@@ -1167,10 +1205,9 @@ pub(crate) mod tests {
         let same = flat(40.0);
         let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
 
-        // On the line, halfway along the first leg. The nearest recorded point there is the one
-        // at lon 120.1 (bed 19 m), 5,560 m away against 5,560 m for lon 120.0 -- so probe a
-        // little east of centre where the nearest point is unambiguous.
-        let on = at(0.0, 120.12);
+        // On the line, at the recorded point at lon 120.1 (bed 19 m, depth 3 m): exactly that
+        // point's own level, which Ruling C-13's interpolation keeps by branch at a leg's ends.
+        let on = at(0.0, 120.1);
         let got = water_at(&record, &index, &g, &on);
         assert_eq!(got.kind, WaterKind::River);
         assert_eq!(got.body_id, NO_BODY, "a river belongs to no body");
@@ -1178,6 +1215,14 @@ pub(crate) mod tests {
         assert_eq!(got.depth_m.to_bits(), 3.0f64.to_bits(), "the reach's own depth");
         assert_eq!(got.level_m.to_bits(), 22.0f64.to_bits(), "bed 19 m plus depth 3 m");
         assert!(got.fresh, "reach 0's chain reaches the ocean");
+
+        // Ruling C-13: between recorded points the level is read along the leg. A fifth of the
+        // way from lon 120.1 (bed 19) to 120.2 (bed 18) the bed is 18.8 m and the level 21.8 m;
+        // Q-6's nearest point would have answered 22 m, a step the carve's bed does not take.
+        let fifth = water_at(&record, &index, &g, &at(0.0, 120.12));
+        assert_eq!(fifth.kind, WaterKind::River);
+        close(fifth.level_m, 21.8, 1.0e-6, "the level a fifth of the way along the second leg");
+        assert_eq!(fifth.depth_m.to_bits(), 3.0f64.to_bits(), "both ends carry 3 m");
 
         // 400 m north of the line: inside the 500 m half width.
         let inside = at(400.0 / M_PER_DEG, 120.12);
