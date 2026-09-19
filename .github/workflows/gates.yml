@@ -1458,25 +1458,34 @@ jobs:
           # binary's trailer, listed 914/914/917/1055/1058 across 18 binaries with 11 ignored;
           # `assert_counts.py cargo-list` printed `count OK` for all five; and each suite run in full
           # with `--no-fail-fast`: 903/903/906/1044/1047 passed, 0 failed, 11 ignored.
+          # 2026-09-19, WATER 2b Ruling C-30 (a table of which cells hold a channel):
+          # **903/903/906/1044/1047 -> 905/905/908/1046/1049**, ignored unchanged at 11. Two tests in
+          # `src/water/index.rs`, ungated, so every row moves by +2: the channel bitmap is exactly the
+          # cells that list a reach or notch (every cell of the fixture and of a real bake, both
+          # ways), and `channel_candidates` is `candidates` where a channel is listed and `None`
+          # elsewhere. Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and
+          # `--ignored`) per configuration, summing each binary's trailer: listed
+          # 916/916/919/1057/1060 across 18 binaries; `assert_counts.py cargo-list` printed
+          # `count OK` for all five.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 903
+            expect: 905
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 903
+            expect: 905
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 906
+            expect: 908
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1044
+            expect: 1046
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1047
+            expect: 1049
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4

@@ -514,6 +514,8 @@ before it existed. That is why `GENERATOR_VERSION` was **not** bumped (§7's ver
   record 7.1 MB, decoded record 7.0 MB, index 44.3 MB, projected points 2.9 MB). **The headers cost
   memory, not the performance target below:** plan 2b measured the lookup's cost as one cache miss
   into any per-cell table this size, and a packed offsets table would recover about 18 ns of it.
+  **The channel bitmap (Ruling C-30)** is `cell_count / 8` bytes beside them — 54 KB at the
+  owner's radius — and is what the water layer reads first.
 - **A body's shore points are dilated by its `shore_reach_m` before it is assigned to cells.**
   §8.3's test puts a point inside a body when it is within `shore_reach_m` of a shore member, so a
   cell must list every body whose shore points come within `shore_reach_m` **of the cell**, not
@@ -527,14 +529,17 @@ before it existed. That is why `GENERATOR_VERSION` was **not** bumped (§7's ver
 - **Performance target:** on the owner's world with its full record, the median cost of
   `elevation_m` rises by no more than 20% over the same world with no water. With 1,000 painted
   features, it is at least 10× faster than today's linear scan.
-- **Measured in plan 2b, and MISSED** (verification report `2026-09-14-water-2b-verification.md`):
-  on the owner's world carved by its own 86,000-wetness bake, over 200,000 area-uniform points, the
-  median native `elevation_m` rose by **30–37%** (ratio of medians, four passes) and the median
-  per-point ratio by **27–30%**. The cost that stands between the layer and the target is the
-  **fixed per-sample index lookup** that every sample pays, touched or not — about 150 ns of a
-  ~630 ns sample, most of it one cache miss into a 434,626-cell table — not `inside_ring` (Ruling
-  Q-23), which runs on 0.02% of samples. The painted-feature half of this target is not measured:
-  painted features are still not in the index.
+- **Measured in plan 2b: met natively, not shown in wasm** (verification report
+  `2026-09-14-water-2b-verification.md`). On the owner's world carved by its own 86,000-wetness
+  bake, over 200,000 area-uniform points, the median native `elevation_m` first rose **30–37%**
+  (ratio of medians; median per-point ratio 27–30%). The cause was measured as the **fixed
+  per-sample index lookup** — one cache miss into a 434,626-cell table — not `inside_ring` (Ruling
+  Q-23), which runs on 0.02% of samples. **Ruling C-30** added a channel bitmap to the index (one
+  bit per cell, set exactly where a reach or notch is listed), which the layer reads first. After
+  it, the native median rises **11–12%**, a pass, with every carved elevation bit-identical. In
+  wasm the lookup is bounded by `to_latlon`'s `asin`/`atan2` rather than memory, and the best
+  per-sample reading is 1.22–1.24, on a clock too coarse to call it. The painted-feature half of
+  this target is not measured: painted features are still not in the index.
 
 ### 8.3 The query
 

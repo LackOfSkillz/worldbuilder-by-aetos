@@ -139,6 +139,18 @@ pub struct WaterIndex {
     bodies: Vec<Vec<u32>>,
     reaches: Vec<Vec<u32>>,
     notches: Vec<Vec<u32>>,
+    /// One bit per cell: set **exactly** when that cell lists at least one reach or notch.
+    ///
+    /// **A summary of `reaches` and `notches`, derived from them once they are final and written
+    /// nowhere else**, so it cannot drift from them --
+    /// `the_channel_bitmap_is_exactly_the_cells_that_list_a_channel` checks every cell. It exists
+    /// for speed alone (Ruling C-30): the water layer asks it first, and most of a planet lists no
+    /// channel. Plan 2b's Task 8 measured the carved world's fixed per-sample cost as one cache
+    /// miss into the per-cell lists (about 110 ns of a ~630 ns sample on the owner's world); this
+    /// table is `cell_count / 8` bytes -- 54 KB at 434,626 cells -- small enough to stay cached
+    /// between samples. A false negative would skip a channel and leave a river uncut, which is a
+    /// wrong world rather than a slow one; hence "exactly", and the test.
+    channels: Vec<u64>,
 }
 
 impl WaterIndex {
@@ -178,7 +190,36 @@ impl WaterIndex {
                 cell.dedup();
             }
         }
-        WaterIndex { grid, radius_m, bodies, reaches, notches }
+        let mut channels = vec![0u64; cells.div_ceil(64)];
+        for cell in 0..cells {
+            if !reaches[cell].is_empty() || !notches[cell].is_empty() {
+                channels[cell >> 6] |= 1u64 << (cell & 63);
+            }
+        }
+        WaterIndex { grid, radius_m, bodies, reaches, notches, channels }
+    }
+
+    /// Whether `cell` lists any reach or notch, read from the bitmap alone.
+    fn lists_a_channel(&self, cell: usize) -> bool {
+        (self.channels[cell >> 6] >> (cell & 63)) & 1 == 1
+    }
+
+    /// [`WaterIndex::candidates`], **or `None` where the cell lists no reach and no notch** --
+    /// answered from the channel bitmap without touching the per-cell lists.
+    ///
+    /// For the water layer, which can cut nothing where no channel is listed and so needs no
+    /// candidate at all there: the cell is found once, and the three lists are read only when a
+    /// channel is present. `Some` carries exactly what `candidates` would, bodies included.
+    pub fn channel_candidates(&self, point: &SpherePoint) -> Option<Candidates<'_>> {
+        let cell = self.grid.cell_of(point);
+        if !self.lists_a_channel(cell) {
+            return None;
+        }
+        Some(Candidates {
+            bodies: &self.bodies[cell],
+            reaches: &self.reaches[cell],
+            notches: &self.notches[cell],
+        })
     }
 
     /// Every item whose influence may reach `point`, ascending by id, deduplicated.
@@ -279,7 +320,8 @@ impl WaterIndex {
     /// same empty headers a fourth time.
     ///
     /// It is a proxy, summed from each `Vec`'s own reported size, not sampled from an allocator:
-    /// allocator rounding and the three `Vec` fields of `WaterIndex` itself are not in it.
+    /// allocator rounding and the three `Vec` fields of `WaterIndex` itself are not in it. Nor is
+    /// the channel bitmap, `cell_count / 8` bytes rounded up to a whole `u64`.
     pub fn memory_bytes(&self) -> (usize, usize, usize) {
         let header = core::mem::size_of::<Vec<u32>>();
         let entry = core::mem::size_of::<u32>();
@@ -777,6 +819,67 @@ mod tests {
         // The five bodies' bounding circles cover far more cells than the twenty-five outline points
         // a bare per-point index would have stored one entry each for.
         assert!(bodies > 15, "the bounding circles store more than one entry per point: {bodies}");
+    }
+
+    /// Ruling C-30's guard: the bitmap summarises the lists and must never disagree with them.
+    /// Every cell is checked both ways -- a flag with no channel listed (a wasted lookup) and, the
+    /// one that matters, a channel listed with no flag (a river the layer would skip). Not
+    /// vacuous: both kinds of cell must occur.
+    fn assert_bitmap_is_exact(index: &WaterIndex, what: &str) {
+        let (mut flagged, mut clear) = (0usize, 0usize);
+        for cell in 0..index.cell_count() {
+            let listed = !index.reaches[cell].is_empty() || !index.notches[cell].is_empty();
+            assert_eq!(index.lists_a_channel(cell), listed,
+                       "{what}: cell {cell}'s flag disagrees with its lists ({} reaches, {} notches)",
+                       index.reaches[cell].len(), index.notches[cell].len());
+            if listed { flagged += 1 } else { clear += 1 }
+        }
+        assert!(flagged > 0 && clear > 0, "{what}: {flagged} flagged, {clear} clear");
+        // No bit is set past the last cell.
+        let tail = index.cell_count() & 63;
+        if tail != 0 {
+            let last = index.channels[index.channels.len() - 1];
+            assert_eq!(last >> tail, 0, "{what}: bits set beyond the last cell");
+        }
+    }
+
+    #[test]
+    fn the_channel_bitmap_is_exactly_the_cells_that_list_a_channel() {
+        assert_bitmap_is_exact(&built(), "fixture");
+        let (world, params) =
+            (crate::hydrology::bake_tests::world(), crate::hydrology::bake_tests::params());
+        let record = crate::hydrology::bake(&world, &params).expect("bake");
+        assert_bitmap_is_exact(&WaterIndex::build(&record, R, CELL), "a real bake");
+    }
+
+    #[test]
+    fn channel_candidates_is_candidates_where_a_channel_is_listed_and_none_elsewhere() {
+        let index = built();
+        let (mut some, mut none) = (0usize, 0usize);
+        for i in 0..20_000usize {
+            let lat = -89.0 + 178.0 * ((i * 7_919) % 20_000) as f64 / 20_000.0;
+            let lon = -180.0 + 360.0 * ((i * 104_729) % 20_000) as f64 / 20_000.0;
+            let p = at(lat, lon);
+            let full = index.candidates(&p);
+            match index.channel_candidates(&p) {
+                Some(got) => {
+                    some += 1;
+                    assert_eq!((got.bodies, got.reaches, got.notches),
+                               (full.bodies, full.reaches, full.notches), "at {lat},{lon}");
+                }
+                None => {
+                    none += 1;
+                    assert!(full.reaches.is_empty() && full.notches.is_empty(),
+                            "a channel is listed at {lat},{lon} and the bitmap said none");
+                }
+            }
+        }
+        // On the fixture's own channels, so the `Some` arm is not left to chance.
+        for (lat, lon) in [(0.0, 100.3), (0.0, -97.5), (40.0, 179.9), (-30.0, 50.15)] {
+            assert!(index.channel_candidates(&at(lat, lon)).is_some(), "channel at {lat},{lon}");
+            some += 1;
+        }
+        assert!(some > 0 && none > 0, "{some} with a channel, {none} without");
     }
 
     #[test]

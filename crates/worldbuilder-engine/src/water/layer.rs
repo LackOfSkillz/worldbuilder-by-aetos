@@ -239,7 +239,13 @@ impl WaterLayer {
     pub fn cut_with(&self, point: &SpherePoint, ground_m: f64, detail: &Detail) -> (f64, f64) {
         let bake = &*self.bake;
         let radius_m = bake.index.radius_m();
-        let candidates = bake.index.candidates(point);
+        // Ruling C-30: most of a planet lists no channel, and there the layer can cut nothing. The
+        // index answers that from its channel bitmap without reading the per-cell lists, so an
+        // uncut sample pays one bit rather than a cache miss into them. `None` is exactly the
+        // `!touched` return below reached with no candidate to visit: the same ground, the same 0.
+        let Some(candidates) = bake.index.channel_candidates(point) else {
+            return (ground_m, 0.0); // rule 3: the ground exactly as it came in
+        };
         let bank_widths = self.params.bank_widths;
 
         // Rule 2 lives in this seed: the answer starts as the ground itself and only a strictly

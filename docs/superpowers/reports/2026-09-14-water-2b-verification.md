@@ -16,13 +16,18 @@ report, the run is the source and the earlier one is cited only to say whether i
 
 **Read these three results first.**
 
-1. **Spec §8.2's performance target is MISSED.** The median native `elevation_m` on the owner's
-   world rises **30–37%**, against a limit of 20%. The median per-point ratio rises **27–30%**.
-   **What dominates is measured, and it is neither of the two ledgered suspects.** It is the fixed
-   index lookup that every sample pays, touched or not: about 150 ns of a ~630 ns sample, most of
-   it one cache miss. It is not `inside_ring`, which runs on 0.02% of samples. It is not the empty
-   `Vec` headers either: a packed table of the same cell count costs within 18 ns of the real
-   index.
+1. **Spec §8.2's performance target: missed as first built, and met natively after Ruling C-30.**
+   As first built, the median native `elevation_m` on the owner's world rose **30–37%** (the
+   median per-point ratio 27–30%), against a limit of 20%. **What dominated was measured, and it
+   was neither of the two ledgered suspects.** It was the fixed index lookup that every sample
+   pays, touched or not: about 150 ns of a ~630 ns sample, most of it one cache miss. It was not
+   `inside_ring`, which runs on 0.02% of samples. It was not the empty `Vec` headers either: a
+   packed table of the same cell count costs within 18 ns of the real index. **With a 54 KB
+   bitmap of the cells that hold a channel (Ruling C-30), the native median rises 11–12%: a
+   PASS.** Every carved elevation is bit-identical to before. **In wasm, the studio's host, the
+   evidence is weaker and does not show a pass.** The paired per-sample harness reads 1.22–1.24,
+   a miss by 2–4 points. What remains there is the arithmetic of finding the cell (`asin` and
+   `atan2` in pure-Rust libm), not memory. See §1's last part.
 2. **The inland sea survives the carve untouched.** The query answers it identically, all
    400,000 samples on both worlds, and its ground is bit-identical. It still drains by the same
    chain to the ocean at 25.938°S 30.106°W.
@@ -90,7 +95,7 @@ Bake time is host-variable here and carries no claim.
 
 ---
 
-## 1. Spec §8.2's performance target — MISSED
+## 1. Spec §8.2's performance target — missed as first built; met natively after Ruling C-30
 
 > On the owner's world with its full record, the median cost of `elevation_m` rises by no more than
 > 20% over the same world with no water.
@@ -175,15 +180,13 @@ count**.
   there is the **coarse body test**, **45.7–49.5 µs**: `body_claim` scans every shore member and
   collar point of every coarse body listed, and the great lake alone records 2,835 points.
 
-**What would plausibly meet the target — an inference, not measured.** A per-cell occupancy
-bitmap would let `cut_with` return before touching the index at all. It needs one bit per cell,
-set where any reach or notch is listed: 54 KB at this radius, small enough to stay in cache. Read
-after an elevation sample, it cost 68–90 ns, against the index's 176–179 ns — a saving of roughly
-90–110 ns on the 89% of samples it would reject. That would take the fixed overhead from ~27% to
-somewhere near 10% at the median. **This is an estimate from the microbenchmark, not a
-measurement of a changed engine.** It is not built here: it changes `water/index.rs` and
-`layer.rs`, moves the wasm, and needs its own tests and parity run, so it is not a small, contained
-fix inside a report task. **It is the follow-up this finding asks for.**
+**What would plausibly meet the target — estimated here, then built and measured below.** A
+per-cell occupancy bitmap would let `cut_with` return before touching the index at all. It needs
+one bit per cell, set where any reach or notch is listed: 54 KB at this radius, small enough to
+stay in cache. Read after an elevation sample, it cost 68–90 ns, against the index's 176–179 ns —
+a saving of roughly 90–110 ns on the 89% of samples it would reject. The estimate was that this
+would take the fixed overhead from ~27% to somewhere near 10% at the median. Ruling C-30 had it
+built; the measured result is in "Ruling C-30" below.
 
 **Attribution method, and its limit.** The layer's pieces were timed separately on the same
 points, through the public API:
@@ -219,6 +222,109 @@ bake})` from a held 86,000-wetness bake for carving.
 
 **A tile wherever a river is in view costs 2.5–4.5× its bare cost.** Carved tiles are filled on
 the main thread (Task 6), so this is the cost the owner feels as they fly along a river.
+
+### Ruling C-30: a table of which cells hold a channel — the target re-measured
+
+**What was built.** `WaterIndex` gains `channels`, one bit per cell (434,626 cells, 54,336 bytes
+at the owner's radius). A bit is set **exactly** when that cell lists at least one reach or
+notch. It is derived from the finished per-cell lists at the end of `build`, and nothing else
+writes it. `WaterIndex::channel_candidates(point)` finds the cell once and returns `None` from
+the bit alone when the cell lists no channel; otherwise it returns exactly what `candidates`
+returns. `WaterLayer::cut_with` calls it first and returns the ground untouched on `None`. That
+return is what the old code reached anyway with no channel candidate to visit (`!touched`), so
+the change is a pure acceleration. The query (`water_at`) is untouched.
+
+**Exactness, and the test seen failing.**
+`water::index::tests::the_channel_bitmap_is_exactly_the_cells_that_list_a_channel` checks every
+cell both ways, over the index fixture and over a real bake (`bake_tests::world()` at
+`bake_tests::params()`). It also checks that no bit is set past the last cell, and that both
+flagged and clear cells occur. `channel_candidates_is_candidates_where_a_channel_is_listed_and_none_elsewhere`
+compares the two lookups at 20,000 points plus four on the fixture's own channels. Two
+deliberate breakages were applied to `build` and reverted:
+- **one set flag cleared** (the false negative that would leave a river uncut): the exactness
+  test failed — `fixture: cell 51113's flag disagrees with its lists (0 reaches, 1 notches)` —
+  and so did six layer tests (`a_notch_is_cut_the_same_way_to_its_own_cut_surface`,
+  `the_carve_and_the_query_agree_about_where_the_channel_is`,
+  `the_querys_water_surface_never_stands_below_the_carved_bed`,
+  `no_detail_sample_rises_above_the_water_along_a_channel`,
+  `a_carved_world_fingerprints_exactly_as_its_bare_parent`,
+  `a_feature_over_a_channel_damps_detail_by_the_product_of_the_two_authorities`);
+- **one clear flag set** (a false positive, which costs only speed): **only** the exactness test
+  failed, `fixture: cell 0's flag disagrees with its lists (0 reaches, 0 notches)`. That is the
+  case the layer tests cannot see, and the reason the exactness test exists.
+
+**Output unchanged, measured three ways.**
+- The native parity dump is **byte-identical** to the one taken before the change (`cmp`).
+- Parity is **179,086 compared / 0 divergent**, and all eight controls are unmoved: seed
+  170,363, erosion-k 216, water-pond 60, tectonic-warp 39,702, coast-amplitude 13,128,
+  gully-steer 3,752, climate-samples 648, carve-bank 12. Each passed `assert_counts.py`.
+- **On the owner's world** (Node, the old artifact against the new, each with its own held
+  86,000-wetness bake for carving), 1,000,000 area-uniform points gave **0 carved elevations
+  that differ**. So did **343,374 points** on every recorded reach point and 0.002° either side
+  of it, where the cut is.
+
+**§8.2 re-measured natively.** The same population, method and host as the table at the top of
+this section: 200,000 points, two runs of two passes.
+
+| pass | median absent | median present | **ratio of medians** | **median per-point ratio** | ratio of means |
+|---|---:|---:|---:|---:|---:|
+| run 1, pass 0 | 610 ns | 681 ns | **1.117** | **1.113** | 1.510 |
+| run 1, pass 1 | 592 ns | 666 ns | **1.124** | **1.111** | 1.499 |
+| run 2, pass 0 | 610 ns | 679 ns | **1.113** | **1.110** | 1.504 |
+| run 2, pass 1 | 618 ns | 694 ns | **1.122** | **1.110** | 1.498 |
+
+**PASS natively, with 8–9 points to spare.** On the 89.2% of points whose cell lists no channel,
+the overhead fell from 27% to **8%** (ratio of medians 1.080–1.081, per-point 1.087–1.090). The
+mean is barely changed (1.50 against 1.63–1.67), because it is carried by the 10.8% of points in
+channel cells, which still pay the leg walk (ratio ~4.4 there, unchanged). **Two statistics
+still fail, and they are reported rather than hidden:**
+- **the land-only median** rises 39–51% (per-point 1.15). A land sample is far more often in a
+  channel cell, and the 4× leg walk moves the land median;
+- **the mean** rises about 50%.
+
+The spec's target is the median over the world, which passes.
+
+**§8.2 in the studio's host (wasm): not shown to pass.** Three measurements, and they do not
+agree well enough to call it.
+- **The paired per-sample harness** (as above, `process.hrtime.bigint()` around each call,
+  100 ns steps), read by the grouped median, which interpolates inside the 100 ns step that holds
+  the median:
+  - the old artifact read **1.303 and 1.249**;
+  - the new artifact read **1.235 and 1.220**.
+
+  That is a miss by 2–4 points. The raw step-floor medians (1,300 → 1,500 ns) give 1.154, but
+  with two clock steps between the numbers that is not a measurement.
+- **A four-way interleaved harness** (old bare, old carved, new bare and new carved, all per
+  point in one process) read the old artifact at **0.99–1.06** and the new at **0.93–0.99**. In
+  that harness the other instances' calls evict the cache for the bare world too, so it
+  measures a different thing. It is recorded to show how far the harness moves the answer.
+- **A clock-free loop inside wasm** (a scratch `cdylib` over the same engine, timing 200,000
+  `wb_elevation_m` calls per export call, 12 rounds, the median round), over the points whose
+  cell lists no channel, which is the population holding the median sample:
+  - the old engine read **1.16 and 1.14**;
+  - the new engine read **1.12, 1.10 and 1.14**.
+
+  Round-to-round spread is ±10–15%.
+
+**What dominates in wasm now — measured with the same clock-free loop.** Each mode adds one
+operation to a bare `elevation_m` sample; the figures are extra ns per sample, as the median of
+16 rounds:
+
+| added operation | extra ns per sample |
+|---|---:|
+| `to_latlon` alone | +151 |
+| `BucketIndex::cell_of` (`to_latlon` + row/column) | +210 |
+| `channel_candidates` (the bitmap path) | +256 |
+| `candidates` (the old path) | +466 |
+| a whole carved sample over bare, all points (includes the leg walk) | +506 |
+
+**In wasm the lookup is arithmetic-bound, not memory-bound.** The bitmap removed ~210 ns of
+list access. The ~210 ns left is the point-to-cell arithmetic, and ~150 ns of that is
+`to_latlon`'s `asin` and `atan2` in the pure-Rust libm that determinism requires. Natively the
+same arithmetic is ~40 ns, which is why the native host passes and wasm is marginal. **What
+could still help in wasm (an inference):** a key for the bitmap that avoids `atan2`, for example
+row from `z` directly. That is a second grid that must be proved conservative against this one,
+so it is not a small change, and it is not built.
 
 ---
 
@@ -512,9 +618,27 @@ also run in full with `--no-fail-fast`:
 
 Every parity figure was checked by `assert_counts.py parity`, which printed `count OK` for the corpus and each of the eight controls. The native dump came from `cargo run --release -p worldbuilder-engine --example parity_dump --features wasm`, the replay from the committed `.wasm`.
 
-**No pin moved.** This task changes no source, no test and no parity record: only this report, the
-spec and a dated comment in `.github/workflows/gates.yml` saying the rows were re-derived and are
-unchanged. The wasm was not rebuilt, because nothing under `src/` changed.
+**At the report's first commit (`872458f`), no pin moved.** That commit changed no source, no
+test and no parity record.
+
+**Ruling C-30 moved the engine rows by +2 each.** Two tests in `src/water/index.rs`, ungated. They
+were re-derived by `--list` / `--list --ignored`, summing trailers, through
+`assert_counts.py cargo-list` (`count OK` at all five), and `gates.yml` was moved with a dated
+comment:
+
+| configuration | listed | ignored | **run (`expect`)** |
+|---|---:|---:|---:|
+| `--no-default-features` | 916 | 11 | **905** (was 903) |
+| default | 916 | 11 | **905** (was 903) |
+| `--features python` | 919 | 11 | **908** (was 906) |
+| `--features wasm` | 1,057 | 11 | **1,046** (was 1,044) |
+| `--features python,wasm` | 1,060 | 11 | **1,049** (was 1,047) |
+
+The `python,wasm` suite was run in full at that commit: 1,049 passed, 0 failed, 11 ignored.
+
+**Parity and every control are unmoved by C-30,** and the native dump is byte-identical (§1). The
+wasm was rebuilt: artifact-sha256 `3fd8a3bc…5b6f`, 484,383 bytes, source fingerprint
+`04c9a6c9…d6ae` over 72 inputs. `check:wasm` reports it current.
 
 **Where pins live.** Pins live in **three** places, not the two Ruling C-4 named:
 - this report is the record;
@@ -529,11 +653,14 @@ three.
 
 ## 9. What this plan did not resolve
 
-- **The performance target (§1).** The median `elevation_m` rises 27–37% against a limit of 20%.
-  The fixed index lookup is the cause, measured. An occupancy bitmap is the likely fix; that is an
-  estimate, not built. The touched minority pays 16–100 µs per sample, dominated by `body_claim`'s
-  full outline scan of coarse bodies. That tail is what a river-in-view tile pays: 2.5–4.5× in
-  wasm.
+- **The performance target (§1) is met natively and not shown in wasm.** After Ruling C-30's
+  bitmap, the native median rises 11–12% (it was 27–37%). In the studio's host the best
+  per-sample reading is 1.22–1.24, a miss by 2–4 points, on a clock too coarse to be sure. What
+  remains there is `to_latlon`'s arithmetic in finding the cell. Two statistics still fail
+  natively: the land-only median (+39–51%) and the mean (+50%). Both are carried by the 10.8% of
+  samples in channel cells, which pay the leg walk (~4×). And the touched minority pays
+  16–100 µs per sample, dominated by `body_claim`'s full outline scan of coarse bodies. That
+  tail is what a river-in-view tile pays: 2.5–4.5× in wasm.
 - **Turning the carve on freezes the studio for minutes.** Task 6 measured 207 s for the whole
   turn-on on the default world. On the owner's world, this report's studio run spent **135.5 s**
   in the main-thread carving bake alone. The ordinary bake for the pond account runs in a worker;
