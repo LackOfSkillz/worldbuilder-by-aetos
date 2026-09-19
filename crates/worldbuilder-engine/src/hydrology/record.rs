@@ -88,6 +88,13 @@ use crate::vectors::Vec3;
 /// `fall_max_run_m`, `meander_wavelength_widths`, `meander_amplitude_widths`,
 /// `meander_max_slope`). Earlier schemas are refused outright -- `decode` never adapts an old
 /// record to the new shape.
+///
+/// **Layout versions step by two, and the next one is 9, not 8.** Word 0 also carries whether a
+/// record was baked for carving (Ruling C-20): [`SCHEMA_CARVE`] is always `SCHEMA + 1`, the same
+/// layout drained for a carved world. So 8 is already spoken for, as "layout 7, carved", and a
+/// layout change that took it would make a carving record of the old shape read as an ordinary
+/// record of the new one. Keep `SCHEMA` odd and `SCHEMA_CARVE` one above it;
+/// `the_schema_and_its_carving_variant_cannot_collide` fails the moment either is broken.
 pub const SCHEMA: f64 = 7.0;
 
 /// **Ruling C-20: word 0 of a record baked for carving** (`BakeStats::drained_for_carve`,
@@ -1014,6 +1021,18 @@ mod tests {
         padded.push(0.0);
         assert_eq!(decode(&padded), None, "trailing word");
         assert_eq!(decode(&[]), None, "empty");
+    }
+
+    /// Ruling C-23. The schema word doubles as the carving flag, so a genuine layout change must
+    /// not land on the carving variant's number. This fails at the point of the mistake -- the
+    /// next person to bump `SCHEMA` -- rather than leaving it to be discovered when a carving
+    /// record of the old shape is read as an ordinary record of the new one.
+    #[test]
+    fn the_schema_and_its_carving_variant_cannot_collide() {
+        let layout = SCHEMA as i64; // cast-ok: SCHEMA is a small integral constant, asserted exact on the next line
+        assert_eq!(layout as f64, SCHEMA, "SCHEMA must be integral"); // cast-ok: the i64 just taken from it
+        assert_eq!(layout % 2, 1, "layout versions step by two: SCHEMA must be odd, so the next is {}", layout + 2);
+        assert_eq!(SCHEMA_CARVE, SCHEMA + 1.0, "SCHEMA_CARVE must be exactly one above SCHEMA");
     }
 
     #[test]

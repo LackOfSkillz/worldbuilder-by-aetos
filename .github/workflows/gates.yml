@@ -1419,25 +1419,32 @@ jobs:
           # bake keeps every pond it kept before the drain), so every row +3. Re-derived by
           # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`):
           # 913/913/916/1039/1042 listed, 11 ignored in each.
+          # 2026-09-18, WATER 2b Task 4b review (Ruling C-23): **902/902/905/1028/1031 ->
+          # 903/903/906/1029/1032**, ignored unchanged at 11. One ungated test in
+          # `hydrology::record`, `the_schema_and_its_carving_variant_cannot_collide`: the schema
+          # word doubles as the carving flag (7 ordinary, 8 carving), so it pins SCHEMA odd and
+          # SCHEMA_CARVE = SCHEMA + 1 -- a genuine layout bump must go to 9, not 8. Re-derived by
+          # `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
+          # configuration, summing each binary's trailer: listed 914/914/917/1040/1043.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 902
+            expect: 903
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 902
+            expect: 903
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 905
+            expect: 906
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1028
+            expect: 1029
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1031
+            expect: 1032
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4
