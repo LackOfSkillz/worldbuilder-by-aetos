@@ -184,6 +184,144 @@ rather than quietly fixed.
 The two `worldc` records name one configuration under two names for the same reason the `worldt`
 pair does.
 
+### The two carve rows (plan 2b Task 7), and the version left alone
+
+Until these rows the corpus proved only that the carve **stays out of the canonical path**: the
+water block is opt-in and every group ran with it absent. `carve/plain` and `carve/ranges` compare
+the carve itself. Each `WC` record bakes its world through `wb_hydro_bake` with the thirteen-word
+params layout (word 12, `drain_for_carve`, = 1; `ranges` carries its forced-outlet pair after it),
+builds the carved world through `wb_world_new_water` over that **held** bake with
+`wb_water_preset`'s canonical block, and compares `wb_water_check`'s status plus `wb_elevation_m`
+at 250 m on the carved handle — the real door, not a native shortcut.
+
+The points are chosen **from the record** (Ruling Q-21's rule applied to the carve) and held by
+the layer itself, asked natively beside the door, to what they were chosen for:
+
+| category | chosen as | held to | `plain` | `ranges` |
+|---|---|---|---|---|
+| channel | middle recorded point of each lowest-id reach with ≥ 3 points | query says `River`, layer authority exactly 1, carved **= that point's `bed_m` bit for bit**, below bare | 6, cut 5.70–219.16 m | 6, cut 7.10–91.69 m |
+| bank | one channel width off the same reach's middle leg, perpendicular | authority strictly in (0, 1), query says dry, layer lowered the landform, carved ≠ bare | 6, bare − carved −12.15–26.30 m | 6, −8.08–4.32 m |
+| body | lowest-id bodies holding a recorded reach point whose bed is **below** the landform | carved **= bare bit for bit** (the lake-bed rule) | 5, 0 m (the rule refused up to 2.24 m) | 5, 0 m (refused up to 14.58 m) |
+| notch | middle point of each lowest-position notch, outside every body | carved below bare | 2, cut 35.07–64.13 m | 6, cut 6.70–13.73 m |
+| clear | a fixed scatter's first land points, query dry, index offering no reach or notch | carved **= bare bit for bit** | 6, 0 m | 6, 0 m |
+
+`plain` is 1 + 25 = 26 values, `ranges` 1 + 29 = 30. Every carved value is also recomputed
+through the library's own `Surface::with_water` over the same decoded record, and the dump fails
+if the two disagree. **It refuses to write the corpus if any category has no qualifying point**,
+the guard `water_point/*` already carries.
+
+A bank point can stand **above** its bare parent: detail on a bank is damped by `1 − authority`,
+not removed, so where the bare world's roughness dips, the blended bank is higher. Measured, not
+assumed — the first draft required "carved below bare" there and the dump refused its own corpus.
+
+**Seen failing, wasm side only.** A wasm built with the lake-bed rule disabled
+(`claims.best.is_some() && false`) diverges at exactly the 5 body points of each group and
+nowhere else in the corpus; one with the bank fall-off scaled by 0.999999 at exactly the 6 bank
+points of each. Feeding the wasm door `bank_widths = 2` instead of 1 moves the same 6 bank points
+per group; flipping word 12 to 0 makes the wasm door refuse with `WB_ERR_NOT_BAKED_FOR_CARVING`
+(9) and every value of both groups diverges.
+
+**Controls.** `--mutate seed` moves every point of both groups (29 of 30, 25 of 26 — the door's
+status is `WB_OK` either way, since each planet is joined to its own bake). `--mutate
+tectonic-warp` moves `carve/ranges` by 12 of 30 (channel 4, bank 3, body 1, notch 4, clear 0),
+and **`TCTL`'s eighth field predicts it natively** by running the same door over a bake of the
+warp-0 world; `carve/plain` has no tectonic block and must stay at 0. Every other control leaves
+both groups at 0.
+
+**The eighth control, `--mutate carve-bank` (fix round).** The hand-run mutations above proved
+once that these groups can see a divergence; this proves it on every run. It rewrites word 0 of
+every `WC` record's water block, `bank_widths`, from 1 to the `CBANK` record's 2 and touches
+nothing else. `examples/parity_dump.rs` predicts it natively (`CBCTL`) by building the same door
+with the wider block over the same held bake and asking the recorded points again — and asserts
+there that **the points that move are exactly the bank points**: a channel point is at full
+authority at any bank width, a notch point is on its line, and body and clear points are cut by
+nothing. Measured: `carve/ranges` 6 of 30, `carve/plain` 6 of 26, and every other group —
+both carving records included, since the block is not a bake input — at 0. With `CBCTL` edited
+from `6 6` to `5 6` it fails: *`FAIL: group carve/ranges moved 6 values; the native side
+predicted 5`*. With `CBANK` set back to the canonical 1 it fails as a control that changes nothing.
+
+### The two carving records (fix round)
+
+`hydro_carve/ranges` (16,971 values) and `hydro_carve/plain` (6,040) are the bakes the carve groups
+join, compared **word for word** in `H`'s own layout (`HC` records): status, length, every word.
+The drain (Task 4b) runs inside the wasm bake whenever the studio carves, and before these the
+only cross-boundary check on it was the carved elevations at their own points — a pond drained on
+one side and kept on the other, away from those points, would have passed unseen.
+
+The dump also checks, natively, that each carving record differs from its ordinary twin
+(`hydro/*`, same world, same params but word 12) **only where the drain says**: word 0 (`SCHEMA` 7
+against `SCHEMA_CARVE` 8); the fine-found bodies `ponds::drain_deficit_m` drops at the bake's own
+step and tolerance — re-derived against the carving record's channels, not read off the diff —
+plus any find a freed density cell let in, which must not be drained itself; and `ponds_kept`.
+Every reach, notch and fall, the ground fingerprint, every coarse body with its id, every other
+header field, and every kept pond in its original order are asserted equal, and the dump refuses
+a pair where the drain dropped nothing. Measured: `ranges` drops 4 of 22 fine-found bodies and
+admits 1 other find (`ponds_kept` 22 → 19, 17,101 → 16,969 words); `plain` drops 1 of 4 (4 → 3,
+6,074 → 6,038 words), admitting none.
+
+Both records move under `--mutate seed` (16,922 of 16,971 and 5,992 of 6,040), and
+`hydro_carve/ranges` moves under `--mutate tectonic-warp` by 16,691 — **`TCTL`'s ninth field**,
+predicted natively under rule (a) over a bake of the warp-0 world, as `hydro/ranges`' own is.
+
+**`GENERATOR_VERSION` is not bumped, and these rows are why that is safe to say.** Its bump test
+(`lib.rs`) is "the same seed *and the same parameters*, run through the new code, would produce a
+different world" — and names "a new generator stage that is off unless explicitly requested" as
+a change that does not bump it. The carve is exactly that for **terrain**: with the block absent
+every world's ground is bit-identical, which is what every other group in this corpus shows,
+unmoved. **It is not true of everything this branch touches, and the decision does not rest on
+it being so.** Two other things changed on every world, block or no block:
+
+- **Every ordinary bake's record changed.** SCHEMA 6 → 7 and four words of ground fingerprint in
+  the header (plan 2b Task 1). That is versioned by the record's own `SCHEMA` word, which every
+  reader checks and refuses when unknown — the record's version, not the generator's.
+- **The water query's answers moved.** Ruling C-13 reads a river's level along the claiming leg
+  rather than at the nearest recorded point, which moves the level between recorded points on
+  every world with a river; Ruling C-35 answers `River` in a notch's footprint, which moves the
+  answer at every notch no reach runs through from `none` to water. The corpus did not see
+  either change when it was made: every `water_point` river probe sits on a recorded point, and no
+  `water_at` grid sample falls in a notch's footprint (the native dump was byte-identical across
+  C-35). Since Ruling C-37 a `Notch` probe compares C-35's answer across the boundary (below); it
+  was added after the change, so it pins the new behaviour, not the move. The query is a reading of
+  a world, not the world: it generates no terrain, and `GENERATOR_VERSION` versions what the
+  generator makes from a seed and parameters.
+
+So the version stays because the generator's output from the same seed and parameters is
+unchanged; the record's changes are carried by `SCHEMA`, and the query's are behaviour changes of
+a reader. A bump becomes right the day the block's default changes, a separate act that
+invalidates every saved world.
+
+## The notch branch across the boundary (Ruling C-37)
+
+Ruling C-35 gave the water query a notch clause: inside a notch's footprint it answers `River`
+with `reach_id` at the `NO_REACH` sentinel, which now *means* "a notch". The clause has its own
+candidate walk, tie-break and depth arithmetic, and before C-37 no compared value ran it — the
+dump even refused a `River` probe carrying the sentinel. Ruling Q-21 counts branches, not kinds,
+so each `water_point` group now carries a sixth point, **`Notch`**: the midpoint of the middle leg
+of the lowest-id notch (a notch's id is its position) whose answer there is `River` with
+`NO_REACH`. The `River` probe still refuses the sentinel; the `Notch` probe requires it. **The
+dump refuses to write the corpus if either bake offers no such notch.**
+
+| group | notch chosen | answer |
+|---|---|---|
+| `water_point/plain` | notch 0 (2 points), leg 0 midpoint at 75.076694, −10.805361 | River, level 89.563 m (ends 110.345 and 68.780), depth 0, body and reach NO_BODY/NO_REACH |
+| `water_point/ranges` | notch 1 (3 points), leg 0 midpoint at 9.971640, 32.375525 | River, level 669.961 m (ends 669.966 and 669.956), depth 0, NO_BODY/NO_REACH |
+
+Each group went 30 → 36 values, the corpus **179,086 → 179,098**, and `--mutate seed` **170,363
+→ 170,369**. Every other control is unchanged; under `--mutate tectonic-warp`,
+`water_point/ranges` moves 2 of 36, as `TCTL` predicts.
+
+**It discriminates.** Two wasm-only mutants of the notch clause, replayed against the unchanged
+native dump with `--wasm … --no-provenance`, each diverged **only** in the two `water_point`
+groups, only at the `Notch` point:
+
+- the level read at the leg's first recorded point instead of along the leg: 3 values — `ranges`
+  level; `plain` level and depth (the wrong level rose above the landform, so the depth branch
+  moved too);
+- the dry-depth branch returning 0.5 instead of 0: 2 values, the depth in each group.
+
+Both chosen points answer depth 0 on the correct build, so the `level > landform` depth branch is
+exercised by the first mutant, not by the corpus's own answers.
+
 ## Running it
 
 ```sh
@@ -193,6 +331,10 @@ node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed      
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate erosion-k   # control 2 (slice 5a): one ULP of erodibility
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate water-pond # control 3 (slice 5b): one field of the manifest
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate tectonic-warp # control 4 (mountains): one word of the block
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate coast-amplitude # control 5 (photoreal)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate gully-steer      # control 6 (gully)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate climate-samples  # control 7 (climate)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate carve-bank       # control 8 (water 2b): one word of the water block
 ```
 
 `--mutate erosion-k` bumps `erodibility_per_yr` by exactly one ULP before replaying the
@@ -229,11 +371,6 @@ the run, and **two of the five predictions are zero on purpose**: the gully term
 and `structural_m` is the very signal its steering lattice reads. A structural value that moved
 under this control would mean the term had escaped its layer and was feeding its own input --
 and that substitution, tried as a source mutation on the Rust side, **does not terminate**.
-
-```sh
-node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate coast-amplitude # control 5 (photoreal)
-node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate gully-steer      # control 6 (gully)
-```
 
 `--wasm <path>` overrides the artifact; the default is the committed
 `viewer/public/wasm/worldbuilder_engine.wasm`, i.e. the bytes a browser loads.

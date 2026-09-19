@@ -26,6 +26,10 @@ pub struct BakeStages {
     pub routing: routing::Routing,
     pub flow: Vec<f64>,
     pub closure: flow::Closure,
+    /// `record::ground_fingerprint` of the surface these stages were sampled from, taken here
+    /// because this is the last point that holds the surface, so `record_of` -- and the survey,
+    /// which calls it directly -- carry the real digest rather than a placeholder to fill later.
+    pub ground: [u8; 16],
 }
 
 /// A threshold-like parameter must be a finite positive number; `name` is the field name, for
@@ -146,7 +150,16 @@ pub(crate) fn downstream_is_fresh(bodies: &[Body], reach_downstream: &[Downstrea
 /// The bake up to the lake closure: validation, `LandGraph::sample` -> `flood(ocean_seeds)` ->
 /// `find_hollows` + `judge` -> `route` -> `close_lakes`, then `flow::drainage_check` (Ruling
 /// C1-c), which refuses a routing where any node's water fails to reach the sea or a sink.
+///
+/// **A carved surface is refused before anything else is looked at** (Ruling C-1,
+/// [`HydroError::Carved`]). The bake reads the ground in more places than `bake_ground_m` --
+/// the wetness march samples `elevation_m` through `Surface::moisture_index` -- so skipping the
+/// layer in one reader would not make the bake layer-free; refusing the surface does. `bake`
+/// begins here, so it refuses too.
 pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages, HydroError> {
+    if surface.is_carved() {
+        return Err(HydroError::Carved);
+    }
     if params.total_nodes < 2 || params.total_nodes > crate::stream::MAX_NODES {
         return Err(HydroError::Params("total_nodes must be in 2..=stream::MAX_NODES"));
     }
@@ -239,13 +252,14 @@ pub fn bake_stages(surface: &Surface, params: &HydroParams) -> Result<BakeStages
     let mut routing = route(&graph, &global_flood, &mut hollows, params);
     let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, params);
     drainage_check(&graph, &routing).map_err(HydroError::Drainage)?;
-    Ok(BakeStages { graph, hollows, routing, flow, closure })
+    let ground = crate::hydrology::record::ground_fingerprint(surface);
+    Ok(BakeStages { graph, hollows, routing, flow, closure, ground })
 }
 
 /// Folds a drained `BakeStages` into the public record: reaches (`extract`, on the effective
 /// thresholds), bodies, the recorded notches and the stats.
 pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
-    let BakeStages { graph, hollows, routing, flow, closure } = stages;
+    let BakeStages { graph, hollows, routing, flow, closure, ground } = stages;
 
     // Ruling 12b-1: the effective thresholds a graph this coarse can actually resolve. Sorted,
     // deterministic median of the land-node areas (the lower of the two middles on an even
@@ -571,6 +585,7 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     };
 
     let stats = BakeStats {
+        drained_for_carve: params.drain_for_carve,
         nodes: graph.len() as u32, // cast-ok: bounded by stream::MAX_NODES, validated above
         land_nodes: land_nodes as u32, // cast-ok: bounded by node count
         hollows: hollows.len() as u32, // cast-ok: at most one hollow per node
@@ -629,6 +644,6 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
         collar_points,
     };
 
-    HydroRecord { bodies, reaches: reach_lines, notches, falls, stats }
+    HydroRecord { bodies, reaches: reach_lines, notches, falls, stats, ground: *ground }
 }
 

@@ -81,6 +81,14 @@ export const WATER_FIELDS = ["waterNodes", "waterEnabled"];
 /// new terrain provider and a cold cache, but no new world and no new water.
 export const TILING_FIELDS = ["size", "maxLevel", "featureCeiling"];
 
+/// The carve (plan 2b): the water block, or `null` with the carve off. **Its own class, and not a
+/// `WORLD_FIELDS` member**, because it moves the drawn surface without moving the ground anything
+/// else reads: the pool's workers keep the BARE world (the manifest, the climate and every bake
+/// read bare ground, Ruling C-1), so a carve change rebuilds only the main thread's carved worlds
+/// and the providers over them -- no worker rebuild and no water solve. A bank-width drag is this
+/// class, and so costs a new carved world from the held bake, never a new bake.
+export const CARVE_FIELDS = ["carve"];
+
 /// Structural equality over the JSON-shaped values a spec carries: numbers, strings, `null`,
 /// arrays of flat objects, flat objects. Deliberately not a deep-equal library and deliberately
 /// not `JSON.stringify` comparison -- key order would then decide the answer, and `tectonicToParams`
@@ -138,9 +146,11 @@ export function swapPlan(previous, next) {
   const world = changedFields(previous.spec, next.spec, WORLD_FIELDS);
   const water = changedFields(previous, next, WATER_FIELDS);
   const tiling = changedFields(previous, next, TILING_FIELDS);
+  const carve = changedFields(previous, next, CARVE_FIELDS);
   const worldChanged = world.length > 0;
   const waterChanged = water.length > 0;
-  const changed = [...world, ...water, ...tiling];
+  const carveChanged = carve.length > 0;
+  const changed = [...world, ...water, ...tiling, ...carve];
 
   if (changed.length === 0) {
     return {
@@ -152,22 +162,26 @@ export function swapPlan(previous, next) {
   // `?lakes=0` there is no manifest to be wrong, so a surface change costs a rebuild and no solve.
   const lakesOff = next.waterEnabled === false;
   const resolveWater = !lakesOff && !waterSolveIsOptional({ worldChanged, waterChanged });
-  const kind = worldChanged ? "world" : waterChanged ? "water" : "tiling";
+  const kind = worldChanged ? "world" : waterChanged ? "water" : carveChanged ? "carve" : "tiling";
   return {
     kind,
     changed,
     rebuildWorld: worldChanged,
+    /// The carved worlds are rebuilt whenever the ground under them or the block itself moved.
+    rebuildCarve: worldChanged || carveChanged,
     resolveWater,
     /// Terrain and imagery both re-request whenever the surface or the sampling moved; a
     /// water-only change leaves the terrain mesh alone and re-rasters the imagery only.
     rebuildProviders: true,
-    rebuildTerrain: worldChanged || tiling.length > 0,
+    rebuildTerrain: worldChanged || carveChanged || tiling.length > 0,
     reason: worldChanged
       ? `surface moved (${world.join(", ")})${
         lakesOff ? "; lakes are off, so no water solve" : "; the water manifest moves with it"}`
       : waterChanged
         ? `water only (${water.join(", ")}); the surface and every cached tile survive`
-        : `sampling only (${tiling.join(", ")}); the same world, resampled`,
+        : carveChanged
+          ? "the carve only; the workers' bare world, the water and the held bake survive"
+          : `sampling only (${tiling.join(", ")}); the same world, resampled`,
   };
 }
 

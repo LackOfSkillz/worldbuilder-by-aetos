@@ -901,28 +901,29 @@ fn the_surface_is_built_once_per_world_and_never_per_sample() {
         .filter(|l| !l.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    // **The constructor is `Surface::with_peaks`, and EVERY name is asserted.** The one call
-    // has now moved three times -- to `with_coast` when the coast channel opened, to
-    // `with_gully` when the gully channel did, and to `with_peaks` when the peak channel did.
-    // Each time the previous widest door delegates to the new one with a `None`, so the
-    // canonical path is the same code either way and the widest door is the only one that
-    // reaches the constructor. Counting only the current name would let a second, older-shaped
-    // build reappear beside it without this noticing; counting all four is the property this
-    // test actually means, which is that `wasm.rs` builds a `Surface` exactly once, anywhere,
-    // by any name.
-    let builds = code.matches("Surface::with_peaks").count();
-    let legacy = code.matches("Surface::with_gully").count()
+    // **The constructor is `Surface::with_water`, and EVERY name is asserted.** The one call
+    // has now moved four times -- to `with_coast` when the coast channel opened, to
+    // `with_gully` when the gully channel did, to `with_peaks` when the peak channel did, and to
+    // `with_water` when the carve did (plan 2b Task 5). Each time the previous widest door
+    // delegates to the new one with a `None`, so the canonical path is the same code either way
+    // and the widest door is the only one that reaches the constructor. Counting only the current
+    // name would let a second, older-shaped build reappear beside it without this noticing;
+    // counting all five is the property this test actually means, which is that `wasm.rs` builds
+    // a `Surface` exactly once, anywhere, by any name.
+    let builds = code.matches("Surface::with_water").count();
+    let legacy = code.matches("Surface::with_peaks").count()
+        + code.matches("Surface::with_gully").count()
         + code.matches("Surface::with_coast").count()
         + code.matches("Surface::new").count();
     assert_eq!(
         builds, 1,
         "wasm.rs builds a Surface {builds} times; a sampling path that rebuilds costs ~10^3x"
     );
-    assert_eq!(legacy, 0, "a second Surface constructor appeared beside the one in build_world");
-    let before = &code[..code.find("Surface::with_peaks").expect("one build")];
+    assert_eq!(legacy, 0, "a second Surface constructor appeared beside the one in build_surface");
+    let before = &code[..code.find("Surface::with_water").expect("one build")];
     assert!(
         before.contains("fn wb_world_new"),
-        "the one Surface::with_peaks is not inside the wb_world_new family"
+        "the one Surface::with_water is not inside the wb_world_new family"
     );
 }
 
@@ -6020,10 +6021,22 @@ fn a_hydro_bake_is_held_copied_and_freed() {
     let status = wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut id); // cast-ok: a 12-word buffer
     assert_eq!(status, WB_OK);
     let len = wb_hydro_len(id);
-    assert!(len >= 56, "at least the header (plan 1b-4 Task 1: 56 words at schema 6)");
+    assert!(len >= 60, "at least the header (plan 2b Task 1: 60 words at schema 7)");
     let mut words = vec![0.0f64; len as usize];
     assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
-    assert_eq!(words[0], 6.0, "schema 6");
+    // Word 0 is 7, not `SCHEMA_CARVE`'s 8: the wasm door bakes an ORDINARY record (Ruling C-20),
+    // bit for bit the record it baked before the drain for carving existed. A door that asks for a
+    // bake for carving is plan 2b Task 5's; until then no wasm record is one.
+    assert_eq!(words[0], worldbuilder_engine::hydrology::record::SCHEMA, "schema 7: an ordinary bake");
+    assert_eq!(words[0], 7.0, "schema 7");
+    // Words 56-59: the ground fingerprint of the world the bake was handed, four little-endian
+    // bytes a word -- the same digest the engine computes for that world directly.
+    let ground = worldbuilder_engine::hydrology::record::ground_fingerprint(
+        &Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None));
+    for (k, chunk) in ground.chunks_exact(4).enumerate() {
+        let want = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        assert_eq!(words[56 + k], f64::from(want), "ground word {}", 56 + k);
+    }
     let mut short = vec![0.0f64; len as usize - 1];
     assert_eq!(wb_hydro_copy(id, short.as_mut_ptr(), len - 1), WB_ERR_BUFFER);
     assert_eq!(wb_hydro_free(id), WB_OK);
@@ -6346,17 +6359,15 @@ fn the_index_cache_is_freed_with_its_bake_rather_than_outliving_it() {
 }
 
 #[test]
-fn a_second_radius_rebuilds_the_cached_index_rather_than_reusing_the_first() {
-    // The cache is keyed by bake id, and the index it holds is built at the radius of the world
-    // the query came through -- which is NOT the record's, because the record carries none. So
-    // the same bake asked through a second world of a different size must be ANSWERED, off an
-    // index rebuilt for that size, and not served the first world's grid.
+fn a_bake_asked_through_a_world_of_another_radius_is_refused_and_its_cache_survives() {
+    // Plan 2a pinned the opposite here: the same bake asked through a world of half the radius
+    // was ANSWERED, off an index rebuilt for that radius, with a note that the answer was wrong
+    // and the rebuild only removed "one inconsistency of two". Plan 2b's fingerprint removes the
+    // other: the record now names its ground, so the pairing is refused with its own status.
     //
-    // What this does NOT assert is that the answer is right. It is not: the record's levels,
-    // extents and shore bands were measured on the first planet, and no rebuild can undo that.
-    // The rebuild removes one inconsistency of two. Ruling Q-20 is the real defence -- the
-    // viewer hands out the handle and the bake id together -- and this test exists so that a
-    // radius change is a rebuild rather than a silent reuse of the wrong grid.
+    // A radius change is the weak case -- the same-radius test below is the one that matters --
+    // but it is kept for what it adds: the refusal must not corrupt the cached slot the first
+    // world's index lives in, so going back to the first world answers exactly what it did.
     let (world, bake, record) = baked_plain_world();
     let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
     let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
@@ -6368,17 +6379,878 @@ fn a_second_radius_rebuilds_the_cached_index_rather_than_reusing_the_first() {
     let smaller = wb_world_new(SEED, RADIUS_M / 2.0, PLATES, LAND, core::ptr::null(), 0);
     assert_ne!(smaller, 0);
     let mut other = [UNWRITTEN; WB_WATER_STRIDE];
-    assert_eq!(wb_water_at(smaller, bake, lat, lon, other.as_mut_ptr(), stride), WB_OK,
-               "a second radius must rebuild and answer, not refuse");
-    assert!(other.iter().any(|w| *w != UNWRITTEN), "the second radius wrote nothing");
+    assert_eq!(wb_water_at(smaller, bake, lat, lon, other.as_mut_ptr(), stride), WB_ERR_WRONG_WORLD,
+               "a bake from another radius must be refused, not answered");
+    assert!(other.iter().all(|w| *w == UNWRITTEN), "a refusal wrote: {other:?}");
 
-    // And back to the first world: still answered, and still the same answer, so the rebuild is
-    // a rebuild and not a corruption of whatever slot the first index lived in.
     let mut again = [UNWRITTEN; WB_WATER_STRIDE];
     assert_eq!(wb_water_at(world, bake, lat, lon, again.as_mut_ptr(), stride), WB_OK);
     assert_eq!(first.map(f64::to_bits), again.map(f64::to_bits));
 
     assert_eq!(wb_hydro_free(bake), WB_OK);
     wb_world_free(smaller);
+    wb_world_free(world);
+}
+
+/// The ground words 56-59 of a bake made on `world` through the shipped door, as the 16-byte
+/// digest -- so a test can prove a native `Surface` is the same world a handle names, rather
+/// than assume two constructors agree.
+fn baked_ground(world: u32) -> [u8; 16] {
+    let params = hydro_params(12_000);
+    let mut bake: u32 = 0;
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), params.len() as u32, &mut bake), WB_OK); // cast-ok: a 12-word buffer
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    worldbuilder_engine::hydrology::record::decode(&words).expect("decodes").ground
+}
+
+#[test]
+fn a_bake_is_refused_by_another_world_of_the_same_radius_at_every_door() {
+    // **The hole plan 2b's Task 2 closes.** Before it, a bake asked through a different world of
+    // the SAME radius answered that world's ground against this record's levels -- a wrong
+    // answer, not an error -- and no radius check could have caught it. Two such worlds: one
+    // differs in its seed, the other only in its relief block, the change a structure-only
+    // fingerprint could not see (Ruling C-7).
+    //
+    // The same record's words are also read by the native door (`record::decode_for`) against
+    // each world's own digest, and the two doors must agree: wasm refuses exactly where native
+    // refuses. The Python door cannot be handed a foreign bake at all -- it bakes and answers on
+    // one surface in one call -- so it has no mismatch to agree about; see `bindings.rs`.
+    use worldbuilder_engine::detail::ReliefParams;
+    use worldbuilder_engine::hydrology::record::{decode_for, ground_fingerprint, ReadError};
+
+    let (world, bake, record) = baked_plain_world();
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize];
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    // Asked through its own world first, so the index is cached for this bake at this radius and
+    // every foreign world below reaches the WARM slot -- the path that needs no rebuild, and so
+    // the one a check made only when building would miss.
+    let mut warm = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, warm.as_mut_ptr(), stride), WB_OK);
+
+    let other_seed = wb_world_new(SEED + 1, RADIUS_M, PLATES, LAND, core::ptr::null(), 0);
+    let other_relief = world_with_relief(&hills_record());
+    assert_ne!(other_seed, 0);
+    assert_ne!(other_relief, 0);
+    // Both built at RADIUS_M, the plain world's own radius: the same-radius case is the point.
+    let foreign = [
+        ("seed", other_seed, Surface::new(SEED + 1, RADIUS_M, 12, LAND, None, None, None)),
+        ("relief", other_relief,
+         Surface::new(SEED, RADIUS_M, 12, LAND, None, Some(ReliefParams::hills()), None)),
+    ];
+    for (name, handle, surface) in &foreign {
+        // The native surface is the world the handle names: a bake through the handle carries
+        // exactly the native digest.
+        let digest = ground_fingerprint(surface);
+        assert_eq!(baked_ground(*handle), digest, "{name}: native and wasm worlds differ");
+
+        let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+        assert_eq!(wb_water_at(*handle, bake, lat, lon, out.as_mut_ptr(), stride), WB_ERR_WRONG_WORLD,
+                   "{name}: wb_water_at answered a record from another world");
+        assert!(out.iter().all(|w| *w == UNWRITTEN), "{name}: a refusal wrote: {out:?}");
+        let mut tile = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+        assert_eq!(
+            wb_water_tile(*handle, bake, lat, lon, lat - 0.1, lon + 0.1, 2, 2, tile.as_mut_ptr(), 4 * stride),
+            WB_ERR_WRONG_WORLD,
+            "{name}: wb_water_tile answered a record from another world",
+        );
+        assert!(tile.iter().all(|w| *w == UNWRITTEN), "{name}: a refused tile was written");
+
+        assert!(matches!(decode_for(&words, &digest), Err(ReadError::Foreign(_))),
+                "{name}: the native door must refuse what the wasm door refuses");
+    }
+
+    // Its own world is accepted by both doors, or the refusals above prove nothing.
+    let home = ground_fingerprint(&Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None));
+    assert_eq!(decode_for(&words, &home).as_ref(), Ok(&record));
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, out.as_mut_ptr(), stride), WB_OK);
+    assert_eq!(out.map(f64::to_bits), warm.map(f64::to_bits), "the refusals disturbed the cache");
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(other_relief);
+    wb_world_free(other_seed);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_world_recreated_from_the_same_parameters_still_answers_its_bake() {
+    // Ruling Q-20, which plan 2a left for this fingerprint to honour: handles are never reused
+    // and the studio re-creates one on every slider change, so a check keyed on the handle would
+    // refuse every held bake after every re-creation, bit-identical ones included. The check is
+    // keyed on the ground, so the old handle freed and a new one made from the same parameters
+    // must answer exactly as the old one did -- through both exports.
+    let (world, bake, record) = baked_plain_world();
+    let (_body_id, _kind, lat, lon) = a_wet_shore_member(world, &record);
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+    let mut before = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(world, bake, lat, lon, before.as_mut_ptr(), stride), WB_OK);
+    let mut tile_before = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+    assert_eq!(wb_water_tile(world, bake, lat, lon, lat - 0.1, lon + 0.1, 2, 2,
+                             tile_before.as_mut_ptr(), 4 * stride), WB_OK);
+
+    assert_eq!(wb_world_free(world), WB_OK);
+    let recreated = plain_world();
+    assert_ne!(recreated, world, "handles are never reused, which is the whole point");
+
+    let mut after = [UNWRITTEN; WB_WATER_STRIDE];
+    assert_eq!(wb_water_at(recreated, bake, lat, lon, after.as_mut_ptr(), stride), WB_OK,
+               "a bit-identical re-creation must still answer its bake");
+    assert_eq!(before.map(f64::to_bits), after.map(f64::to_bits));
+    let mut tile_after = [UNWRITTEN; 4 * WB_WATER_STRIDE];
+    assert_eq!(wb_water_tile(recreated, bake, lat, lon, lat - 0.1, lon + 0.1, 2, 2,
+                             tile_after.as_mut_ptr(), 4 * stride), WB_OK);
+    assert_eq!(tile_before.map(f64::to_bits), tile_after.map(f64::to_bits));
+
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    wb_world_free(recreated);
+}
+
+// ============================================================ the carve's door
+//
+// Plan 2b Task 5: `wb_world_new_water` / `wb_water_preset` / `wb_water_check`, the browser's
+// door onto `Surface::with_water`. Everything the peak channel pins is pinned here -- the preset
+// is the engine's own, the domain is refused just outside and admitted just inside, a sweep never
+// aborts, the checker and the constructor agree, the default path is the untouched world, a bad
+// buffer is refused rather than read -- plus what only this door has: it takes a HELD bake by id
+// (Ruling C-2), it names four refusals a host must tell apart (Ruling C-3), a carved handle
+// refuses every bake-like export (Rulings C-1 and C-24), and the studio can ask for a bake for
+// carving at all (`WB_HYDRO_PARAMS_CARVE_STRIDE`).
+//
+// **There is no field-swap test**, and not by omission: the block has one field, so there are no
+// two slots to swap. See `WB_WATER_BLOCK_STRIDE`'s doc.
+
+use worldbuilder_engine::hydrology::record::{decode, SCHEMA, SCHEMA_CARVE};
+use worldbuilder_engine::water::layer::{Carve, IndexedRecord, WaterParams};
+
+/// `hydro_params`' twelve words with the carving flag appended: the thirteen-word layout.
+fn hydro_params_for_carving(total: u32) -> Vec<f64> {
+    let mut words = hydro_params(total);
+    words.push(1.0);
+    words
+}
+
+/// Bake `world` through the shipped door with `params`, returning the held id.
+fn bake_with(world: u32, params: &[f64]) -> u32 {
+    let mut bake: u32 = 0;
+    let len = u32::try_from(params.len()).expect("a short params buffer");
+    assert_eq!(wb_hydro_bake(world, params.as_ptr(), len, &mut bake), WB_OK);
+    bake
+}
+
+/// A held bake's words, copied out.
+fn held_words(bake: u32) -> Vec<f64> {
+    let len = wb_hydro_len(bake);
+    let mut words = vec![0.0f64; len as usize]; // cast-ok: a record length that fits memory
+    assert_eq!(wb_hydro_copy(bake, words.as_mut_ptr(), len), WB_OK);
+    words
+}
+
+fn water_preset_record(selector: u32) -> [f64; WB_WATER_BLOCK_STRIDE] {
+    let mut record = [0.0; WB_WATER_BLOCK_STRIDE];
+    let status = wb_water_preset(selector, record.as_mut_ptr(), WB_WATER_BLOCK_STRIDE as u32); // cast-ok: a one-word stride constant
+    assert_eq!(status, WB_OK, "water preset {selector} must be readable");
+    record
+}
+
+/// One world through BOTH halves of the door: the checker's status and the constructor's handle,
+/// **asserted to agree** on every call -- `WB_OK` if and only if a handle comes back. Every test in
+/// this section goes through here, so none of them can see one half without the other.
+///
+/// `seed` and `relief` are the two ways the tests below build another world of the same radius.
+fn water_door_raw(
+    seed: i64,
+    relief: Option<&[f64; WB_RELIEF_STRIDE]>,
+    block_ptr: *const f64,
+    block_len: u32,
+    bake: u32,
+) -> (u32, u32) {
+    let null = core::ptr::null();
+    let (relief_ptr, relief_len) = match relief {
+        Some(record) => (record.as_ptr(), WB_RELIEF_STRIDE as u32), // cast-ok: a ten-word stride constant
+        None => (null, 0),
+    };
+    let status = wb_water_check(seed, RADIUS_M, PLATES, LAND, null, 0, relief_ptr, relief_len,
+                                null, 0, null, 0, null, 0, null, 0, block_ptr, block_len, bake);
+    let handle = wb_world_new_water(seed, RADIUS_M, PLATES, LAND, null, 0, relief_ptr, relief_len,
+                                    null, 0, null, 0, null, 0, null, 0, block_ptr, block_len, bake);
+    assert_eq!(status == WB_OK, handle != 0,
+               "the checker said {status} and the constructor returned handle {handle}");
+    (status, handle)
+}
+
+fn water_door(seed: i64, relief: Option<&[f64; WB_RELIEF_STRIDE]>, block: &[f64], bake: u32) -> (u32, u32) {
+    let len = u32::try_from(block.len()).expect("a short block");
+    water_door_raw(seed, relief, block.as_ptr(), len, bake)
+}
+
+/// The plain world carved with `bank_widths` by `bake`: a handle, or a panic naming the refusal.
+fn carved_plain(bank_widths: f64, bake: u32) -> u32 {
+    let (status, handle) = water_door(SEED, None, &[bank_widths], bake);
+    assert_eq!(status, WB_OK, "bank_widths {bank_widths} over bake {bake} was refused");
+    handle
+}
+
+/// Points in and beside the channels of `record`: every `step`th recorded reach point, and the
+/// same point moved north by `widths` of its own channel width for each entry of `offsets`. The
+/// offsets reach into the bank a wider block blends and a narrower one does not.
+fn channel_probes(record: &worldbuilder_engine::hydrology::HydroRecord, step: usize, offsets: &[f64]) -> Vec<(f64, f64)> {
+    const M_PER_DEG: f64 = core::f64::consts::PI * RADIUS_M / 180.0;
+    let mut out = Vec::new();
+    for reach in &record.reaches {
+        for point in reach.points.iter().step_by(step) {
+            out.push((point.lat_deg, point.lon_deg));
+            for widths in offsets {
+                out.push((point.lat_deg + widths * point.width_m / M_PER_DEG, point.lon_deg));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_status_is_distinct_and_the_viewer_names_every_one() {
+    // Ruling C-3: a refusal a host cannot name gets swallowed as "engine unavailable". So every
+    // status is its own number, and `engine.js`'s table -- the viewer's only way to turn a number
+    // into a sentence -- names every one of them by the value this file declares.
+    let statuses = [
+        ("WB_OK", WB_OK),
+        ("WB_ERR_HANDLE", WB_ERR_HANDLE),
+        ("WB_ERR_BUFFER", WB_ERR_BUFFER),
+        ("WB_ERR_GRID", WB_ERR_GRID),
+        ("WB_ERR_SUBSTRATE", WB_ERR_SUBSTRATE),
+        ("WB_ERR_PARAM", WB_ERR_PARAM),
+        ("WB_ERR_GRAPH", WB_ERR_GRAPH),
+        ("WB_ERR_DRAINAGE", WB_ERR_DRAINAGE),
+        ("WB_ERR_WRONG_WORLD", WB_ERR_WRONG_WORLD),
+        ("WB_ERR_NOT_BAKED_FOR_CARVING", WB_ERR_NOT_BAKED_FOR_CARVING),
+        ("WB_ERR_CARVED", WB_ERR_CARVED),
+        ("WB_ERR_NOT_CARVED_FROM", WB_ERR_NOT_CARVED_FROM),
+    ];
+    for (index, (name, value)) in statuses.iter().enumerate() {
+        assert_eq!(*value as usize, index, "{name} is not the next number"); // cast-ok: a status code, a small u32
+    }
+    // And every `pub const WB_ERR_` in the source is in the list above, so a thirteenth cannot
+    // arrive without this test (and so the viewer) hearing of it.
+    let source = include_str!("../src/wasm.rs");
+    let declared = source.lines().filter(|l| l.starts_with("pub const WB_ERR_")).count();
+    assert_eq!(declared + 1, statuses.len(), "a status was declared that this test does not list");
+
+    let engine = include_str!("../../../viewer/public/app/engine.js");
+    for (name, value) in statuses {
+        assert!(engine.contains(&format!("export const {name} = {value};")),
+                "engine.js does not export {name} = {value}");
+        assert!(engine.contains(&format!("  {value}: \"{name}\",")),
+                "engine.js's STATUS_NAMES does not name {value} as {name}");
+    }
+}
+
+#[test]
+fn a_bake_for_carving_is_one_more_word_and_an_ordinary_bake_is_unchanged() {
+    use worldbuilder_engine::hydrology::{self, HydroParams};
+    let world = plain_world();
+
+    // The 12-word record is exactly the engine's own ordinary bake of the same world and params,
+    // word for word -- so the door's decoder did not move a field when it grew a thirteenth.
+    let ordinary = held_words(bake_with(world, &hydro_params(12_000)));
+    let mut params = HydroParams::earth_like(12_000);
+    params.wetness_nodes = 500;
+    params.stream_flow_m2 = 3.0e10;
+    params.river_flow_m2 = 3.0e11;
+    params.great_flow_m2 = 3.0e12;
+    let native = hydrology::record::encode(
+        &hydrology::bake(&Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None), &params)
+            .expect("the plain world bakes"));
+    assert_eq!(ordinary.len(), native.len());
+    assert!(ordinary.iter().zip(&native).all(|(a, b)| a.to_bits() == b.to_bits()),
+            "the 12-word door no longer bakes the engine's ordinary record");
+    assert_eq!(ordinary[0], SCHEMA, "an ordinary bake is SCHEMA 7");
+
+    // The flag spelled 0.0 is the ordinary bake the long way, byte for byte -- with and without a
+    // forced outlet, since the thirteen-word layout moves the pairs from word 12 to word 13 and a
+    // reader that took them from the old place would move the outlet.
+    let mut long_way = hydro_params(12_000);
+    long_way.push(0.0);
+    assert_eq!(held_words(bake_with(world, &long_way)).iter().map(|w| w.to_bits()).collect::<Vec<_>>(),
+               ordinary.iter().map(|w| w.to_bits()).collect::<Vec<_>>(),
+               "a thirteen-word buffer with the flag clear is not the ordinary bake");
+    //
+    // The outlet is forced at an ENCLOSED basin's anchor, where forcing one changes the record
+    // (the basin is recorded `forced`), and that is asserted: an outlet in open country changes
+    // nothing, and a test forcing one there passed with the pairs read from the wrong word.
+    let pocket = decode(&ordinary).expect("decodes").bodies.into_iter().find(|b| b.enclosed)
+        .expect("the plain world has an enclosed basin to force");
+    let (lat, lon) = pocket.anchor;
+    let mut forced_short = hydro_params(12_000);
+    forced_short[11] = 1.0;
+    forced_short.extend([lat, lon]);
+    let mut forced_long = hydro_params(12_000);
+    forced_long[11] = 1.0;
+    forced_long.extend([0.0, lat, lon]);
+    let short_words = held_words(bake_with(world, &forced_short));
+    let long_words = held_words(bake_with(world, &forced_long));
+    assert!(decode(&short_words).expect("decodes").bodies.iter().any(|b| b.forced),
+            "fixture: forcing an outlet at ({lat}, {lon}) forced nothing, so this cannot see the pairs");
+    assert_eq!(short_words.iter().map(|w| w.to_bits()).collect::<Vec<_>>(),
+               long_words.iter().map(|w| w.to_bits()).collect::<Vec<_>>(),
+               "the forced outlet was read from another word in the thirteen-word layout");
+    params.forced_outlets = vec![SpherePoint::from_latlon(lat, lon)];
+    let native_forced = hydrology::record::encode(
+        &hydrology::bake(&Surface::new(SEED, RADIUS_M, 12, LAND, None, None, None), &params)
+            .expect("the plain world bakes with a forced outlet"));
+    assert!(short_words.iter().zip(&native_forced).all(|(a, b)| a.to_bits() == b.to_bits())
+            && short_words.len() == native_forced.len(),
+            "the forced outlet did not reach the bake");
+
+    // The flag set: a record baked for carving, `SCHEMA_CARVE` in word 0.
+    let carving = held_words(bake_with(world, &hydro_params_for_carving(12_000)));
+    assert_eq!(carving[0], SCHEMA_CARVE, "a bake for carving is SCHEMA_CARVE");
+    assert!(decode(&carving).expect("decodes").stats.drained_for_carve);
+
+    // Anything but 0 or 1 in the flag word is refused, and so is a length that fits neither
+    // layout's own `forced_count`.
+    let mut id: u32 = 77;
+    for flag in [0.5, 2.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mut bad = hydro_params(12_000);
+        bad.push(flag);
+        assert_eq!(wb_hydro_bake(world, bad.as_ptr(), 13, &mut id), WB_ERR_PARAM, "flag {flag}");
+    }
+    let mut fourteen = hydro_params_for_carving(12_000);
+    fourteen.push(1.0);
+    assert_eq!(wb_hydro_bake(world, fourteen.as_ptr(), 14, &mut id), WB_ERR_PARAM);
+    assert_eq!(id, 77, "a refused bake wrote an id");
+    wb_world_free(world);
+}
+
+#[test]
+fn wb_water_preset_hands_back_the_engines_own_block() {
+    let record = water_preset_record(WB_WATER_CANONICAL);
+    assert_eq!(record[0].to_bits(), WaterParams::canonical().bank_widths.to_bits());
+    assert_eq!(WaterParams::canonical().bank_widths, 1.0, "spec §8.1: one width either side");
+
+    let mut out = [7.0; WB_WATER_BLOCK_STRIDE];
+    for unknown in [1u32, 2, u32::MAX] {
+        assert_eq!(wb_water_preset(unknown, out.as_mut_ptr(), 1), WB_ERR_PARAM);
+    }
+    assert!(out.iter().all(|v| *v == 7.0), "a refused selector wrote into the buffer");
+    assert_eq!(wb_water_preset(WB_WATER_CANONICAL, core::ptr::null_mut(), 1), WB_ERR_BUFFER);
+    for length in [0u32, 2, u32::MAX] {
+        assert_eq!(wb_water_preset(WB_WATER_CANONICAL, out.as_mut_ptr(), length), WB_ERR_BUFFER);
+    }
+    let mut bytes = [0u8; 16];
+    let misaligned = unsafe { bytes.as_mut_ptr().add(1) } as *mut f64; // cast-ok: a deliberately misaligned pointer for the alignment check
+    assert_eq!(wb_water_preset(WB_WATER_CANONICAL, misaligned, 1), WB_ERR_BUFFER);
+
+    // The preset is a block the door accepts: a button that produced a refusal would be a blank
+    // viewer.
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    let (status, handle) = water_door(SEED, None, &record, bake);
+    assert_eq!(status, WB_OK);
+    wb_world_free(handle);
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+#[test]
+fn the_bank_width_is_accepted_just_inside_its_bounds_and_refused_just_outside() {
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    // The floor is EXCLUSIVE: zero itself is refused, as the layer refuses it.
+    let low = WB_MIN_WATER_BANK_WIDTHS;
+    let high = WB_MAX_WATER_BANK_WIDTHS;
+    assert_eq!(low, 0.0);
+    assert_eq!(high, worldbuilder_engine::water::layer::MAX_BANK_WIDTHS, "the width the index is built to");
+    let cases = [
+        (low, WB_ERR_PARAM, "the exclusive floor itself"),
+        (-f64::MIN_POSITIVE, WB_ERR_PARAM, "just below the floor"),
+        (5.0e-324, WB_OK, "the smallest positive value, just inside the floor"),
+        (1.0e-9, WB_OK, "a hair above the floor"),
+        (high, WB_OK, "the inclusive ceiling"),
+        (high * (1.0 - 1.0e-9), WB_OK, "just inside the ceiling"),
+        (f64::from_bits(high.to_bits() + 1), WB_ERR_PARAM, "one ULP over the ceiling"),
+        (high * (1.0 + 1.0e-9), WB_ERR_PARAM, "just outside the ceiling"),
+        (f64::NAN, WB_ERR_PARAM, "NaN"),
+        (-f64::NAN, WB_ERR_PARAM, "negative NaN"),
+        (f64::INFINITY, WB_ERR_PARAM, "infinity"),
+        (f64::NEG_INFINITY, WB_ERR_PARAM, "negative infinity"),
+    ];
+    for (value, expected, name) in cases {
+        let (status, handle) = water_door(SEED, None, &[value], bake);
+        assert_eq!(status, expected, "bank_widths {value} ({name})");
+        if handle != 0 {
+            assert_eq!(wb_world_free(handle), WB_OK);
+        }
+    }
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+#[test]
+fn every_bank_width_swept_never_aborts_and_the_boundary_refuses_exactly_what_the_layer_does() {
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    let record = decode(&held_words(bake)).expect("decodes");
+    let probes = channel_probes(&record, 7, &[0.75, 2.0, 4.5]);
+    assert!(probes.len() >= 30, "the bake has too few channels to probe: {}", probes.len());
+
+    let (low, high) = (WB_MIN_WATER_BANK_WIDTHS, WB_MAX_WATER_BANK_WIDTHS);
+    let mut values: Vec<f64> = HOSTILE.to_vec();
+    for bound in [low, high] {
+        values.extend_from_slice(&[bound, bound * 0.5, bound * 2.0, -bound,
+                                   f64::from_bits(bound.to_bits().wrapping_add(1)),
+                                   bound - f64::EPSILON, bound + f64::EPSILON]);
+    }
+    for step in 0..=24 {
+        values.push(high * f64::from(step) / 24.0);
+    }
+    let (mut accepted, mut refused) = (0usize, 0usize);
+    for value in values {
+        let (status, handle) = water_door(SEED, None, &[value], bake);
+        // The door refuses exactly what `WaterParams::is_admissible` refuses: no value the layer
+        // would take is turned away here, and none it would refuse reaches it.
+        let layer_says = WaterParams { bank_widths: value }.is_admissible();
+        assert_eq!(status == WB_OK, layer_says, "bank_widths {value}: door {status}, layer {layer_says}");
+        if status == WB_OK {
+            for (lat, lon) in &probes {
+                let height = wb_elevation_m(handle, *lat, *lon, RES_M);
+                assert!(height.is_finite(), "bank_widths {value} gave {height} at ({lat}, {lon})");
+                assert!(wb_structural_m(handle, *lat, *lon).is_finite());
+            }
+            assert_eq!(wb_world_free(handle), WB_OK);
+            accepted += 1;
+        } else {
+            assert_eq!(status, WB_ERR_PARAM, "a well-formed buffer refused for another reason: {value}");
+            refused += 1;
+        }
+    }
+    assert!(accepted >= 20, "only {accepted} accepted; the sweep is not exercising the carve");
+    assert!(refused >= 15, "only {refused} refused; the validator is not doing its job");
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_wrongly_sized_or_misaligned_water_block_is_refused_rather_than_read() {
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    let block = water_preset_record(WB_WATER_CANONICAL);
+    let null = core::ptr::null();
+    // Null with a length, and non-null with a length of zero.
+    assert_eq!(water_door_raw(SEED, None, null, 1, bake).0, WB_ERR_BUFFER);
+    assert_eq!(water_door_raw(SEED, None, block.as_ptr(), 0, bake).0, WB_ERR_BUFFER);
+    let long = [1.0, 1.0, 1.0];
+    for length in [2u32, 3] {
+        assert_eq!(water_door_raw(SEED, None, long.as_ptr(), length, bake).0, WB_ERR_BUFFER,
+                   "a {length}-word water block is not a water block");
+    }
+    assert_eq!(water_door_raw(SEED, None, long.as_ptr(), u32::MAX, bake).0, WB_ERR_BUFFER);
+    let mut bytes = [0u8; 16];
+    let misaligned = unsafe { bytes.as_mut_ptr().add(1) } as *const f64; // cast-ok: a deliberately misaligned pointer for the alignment check
+    assert_eq!(water_door_raw(SEED, None, misaligned, 1, bake).0, WB_ERR_BUFFER);
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+#[test]
+fn the_water_checker_and_the_constructor_agree_on_every_refusal_and_name_each_one() {
+    // Ruling C-3's four, and every other way this door says no. `water_door` asserts the two
+    // halves agree on OK-or-not; this asserts WHICH status, per case, and that the four a host
+    // must tell apart are four different numbers.
+    let world = plain_world();
+    let for_carving = bake_with(world, &hydro_params_for_carving(12_000));
+    let ordinary = bake_with(world, &hydro_params(12_000));
+    let freed = bake_with(world, &hydro_params_for_carving(12_000));
+    assert_eq!(wb_hydro_free(freed), WB_OK);
+    let hills = hills_record();
+    let good = water_preset_record(WB_WATER_CANONICAL);
+    let null = core::ptr::null();
+
+    let cases: Vec<(&str, i64, Option<&[f64; WB_RELIEF_STRIDE]>, *const f64, u32, u32, u32)> = vec![
+        ("its own world", SEED, None, good.as_ptr(), 1, for_carving, WB_OK),
+        ("no block and no bake: the bare world", SEED, None, null, 0, 0, WB_OK),
+        ("a malformed block", SEED, None, [0.0].as_ptr(), 1, for_carving, WB_ERR_PARAM),
+        // The block is judged before the bake is looked at, so a panel validating a block needs
+        // no live bake -- and a zero bank width is refused by THIS boundary, not left for the
+        // layer to refuse after an index has been built (the layer would name it the same, so
+        // only the order can tell the two apart).
+        ("a malformed block with no bake", SEED, None, [0.0].as_ptr(), 1, 0, WB_ERR_PARAM),
+        ("a malformed block with a freed bake", SEED, None, [0.0].as_ptr(), 1, freed, WB_ERR_PARAM),
+        ("a block of the wrong length", SEED, None, good.as_ptr(), 2, for_carving, WB_ERR_BUFFER),
+        ("a bake with no block", SEED, None, null, 0, for_carving, WB_ERR_PARAM),
+        ("a block with no bake", SEED, None, good.as_ptr(), 1, 0, WB_ERR_HANDLE),
+        ("a freed bake", SEED, None, good.as_ptr(), 1, freed, WB_ERR_HANDLE),
+        ("a bake never issued", SEED, None, good.as_ptr(), 1, 9_999, WB_ERR_HANDLE),
+        ("an ordinary bake of its own world", SEED, None, good.as_ptr(), 1, ordinary,
+         WB_ERR_NOT_BAKED_FOR_CARVING),
+        // Named for its kind, not its ground: the flag is checked first.
+        ("an ordinary bake of another world", SEED + 1, None, good.as_ptr(), 1, ordinary,
+         WB_ERR_NOT_BAKED_FOR_CARVING),
+        ("a bake for carving of another seed", SEED + 1, None, good.as_ptr(), 1, for_carving,
+         WB_ERR_WRONG_WORLD),
+        ("a bake for carving of another relief", SEED, Some(&hills), good.as_ptr(), 1, for_carving,
+         WB_ERR_WRONG_WORLD),
+    ];
+    for (name, seed, relief, ptr, len, bake, expected) in cases {
+        let (status, handle) = water_door_raw(seed, relief, ptr, len, bake);
+        assert_eq!(status, expected, "{name}: status {status}, expected {expected}");
+        if handle != 0 {
+            assert_eq!(wb_world_free(handle), WB_OK);
+        }
+    }
+    // A world parameter outside its domain is refused before any bake is looked at.
+    let bad_radius = wb_water_check(SEED, f64::NAN, PLATES, LAND, null, 0, null, 0, null, 0, null,
+                                    0, null, 0, null, 0, good.as_ptr(), 1, for_carving);
+    assert_eq!(bad_radius, WB_ERR_PARAM);
+    assert_eq!(wb_world_new_water(SEED, f64::NAN, PLATES, LAND, null, 0, null, 0, null, 0, null,
+                                  0, null, 0, null, 0, good.as_ptr(), 1, for_carving), 0);
+
+    let named = [WB_ERR_PARAM, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING, WB_ERR_CARVED];
+    for (i, a) in named.iter().enumerate() {
+        for b in &named[i + 1..] {
+            assert_ne!(a, b, "two of Ruling C-3's refusals share a number");
+        }
+    }
+    wb_hydro_free(ordinary);
+    wb_hydro_free(for_carving);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_record_from_another_world_of_the_same_radius_is_refused_at_the_door() {
+    // THE PIN THIS TASK EXISTS FOR, beside the next. A record baked for carving on the plain world,
+    // offered to two other worlds of the SAME radius -- one differing in its seed, one only in its
+    // relief block (Ruling C-7's case, which a structure-only fingerprint could not see) -- is
+    // refused with WB_ERR_WRONG_WORLD by both halves of the door. And its own world, from the same
+    // arguments, is accepted and really carved, or the refusals prove nothing.
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    let record = decode(&held_words(bake)).expect("decodes");
+    let block = water_preset_record(WB_WATER_CANONICAL);
+    let hills = hills_record();
+
+    for (name, seed, relief) in [("another seed", SEED + 1, None), ("another relief", SEED, Some(&hills))] {
+        let (status, handle) = water_door(seed, relief, &block, bake);
+        assert_eq!(status, WB_ERR_WRONG_WORLD, "{name}: a record from another world was not refused");
+        assert_eq!(handle, 0, "{name}: a world was built on another world's record");
+    }
+
+    let (status, carved) = water_door(SEED, None, &block, bake);
+    assert_eq!(status, WB_OK, "its own world must be accepted");
+    let probes = channel_probes(&record, 1, &[]);
+    let lowered = probes.iter()
+        .filter(|(lat, lon)| wb_elevation_m(carved, *lat, *lon, RES_M) < wb_elevation_m(world, *lat, *lon, RES_M))
+        .count();
+    assert!(lowered > 0, "its own world was accepted but nothing was cut at {} reach points", probes.len());
+
+    wb_world_free(carved);
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_record_not_baked_for_carving_is_refused_at_the_door_with_its_own_status() {
+    // Ruling C-20 at the door: an ORDINARY bake of this very world -- right ground, right radius,
+    // well-formed block -- is refused, and with its own number, so the studio can say "re-bake
+    // for carving" rather than "wrong world" or "bad parameter". The same world baked for carving
+    // is accepted from the same arguments.
+    let world = plain_world();
+    let ordinary = bake_with(world, &hydro_params(12_000));
+    let for_carving = bake_with(world, &hydro_params_for_carving(12_000));
+    let block = water_preset_record(WB_WATER_CANONICAL);
+    assert_eq!(held_words(ordinary)[0], SCHEMA, "the fixture must be an ordinary record");
+
+    let (status, handle) = water_door(SEED, None, &block, ordinary);
+    assert_eq!(status, WB_ERR_NOT_BAKED_FOR_CARVING);
+    assert_eq!(handle, 0);
+    assert_ne!(status, WB_ERR_PARAM);
+    assert_ne!(status, WB_ERR_WRONG_WORLD);
+
+    let (status, handle) = water_door(SEED, None, &block, for_carving);
+    assert_eq!(status, WB_OK, "the same world baked for carving must be accepted");
+    wb_world_free(handle);
+    wb_hydro_free(for_carving);
+    wb_hydro_free(ordinary);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_canonical_block_over_a_record_with_no_reaches_is_the_untouched_world() {
+    // The carve's own statement of Ruling 1: a carve with nothing to cut changes nothing. The
+    // record must hold no reach AND no notch, since a notch is cut too. Flow thresholds no node
+    // reaches (1e20 m^2, the domain's ceiling, against a planet of 5.1e14 m^2) record no reach, but
+    // a hollow the bake does not keep is notched regardless; keeping every hollow (depth and area
+    // floors of 1e-6) and letting evaporation outweigh every inflow (so no enclosed basin is
+    // freshened and cut an outlet) still left 1-5 notches on every one of ten seeds at land 0.29,
+    // and none on this seed at 0.2. So this world is `NO_CUT_SEED` at `NO_CUT_LAND`, found by that
+    // survey rather than chosen, and it keeps 21 bodies -- which the layer does not cut either, so
+    // they are part of what must not move. Carved by that record through the door, it must be
+    // `wb_world_new`'s world, bit for bit, everywhere.
+    const NO_CUT_SEED: i64 = SEED + 2;
+    const NO_CUT_LAND: f64 = 0.2;
+    let null = core::ptr::null();
+    let world = wb_world_new(NO_CUT_SEED, RADIUS_M, PLATES, NO_CUT_LAND, null, 0);
+    assert_ne!(world, 0);
+    let mut params = hydro_params_for_carving(12_000);
+    params[2] = 1.0e-6;
+    params[3] = 1.0e-6;
+    params[5] = 1.0e20;
+    params[6] = 1.0e20;
+    params[7] = 1.0e20;
+    params[9] = 1.0e12;
+    let bake = bake_with(world, &params);
+    let record = decode(&held_words(bake)).expect("decodes");
+    assert!(record.reaches.is_empty(), "fixture: {} reaches recorded", record.reaches.len());
+    assert!(record.notches.is_empty(), "fixture: {} notches recorded", record.notches.len());
+    assert!(!record.bodies.is_empty(), "fixture: no bodies, so the layer's lake rule is not in play");
+    assert!(record.stats.drained_for_carve, "fixture: not a bake for carving");
+
+    let block = water_preset_record(WB_WATER_CANONICAL);
+    let door = |block_ptr: *const f64, block_len: u32, bake: u32| {
+        let status = wb_water_check(NO_CUT_SEED, RADIUS_M, PLATES, NO_CUT_LAND, null, 0, null, 0,
+                                    null, 0, null, 0, null, 0, null, 0, block_ptr, block_len, bake);
+        let handle = wb_world_new_water(NO_CUT_SEED, RADIUS_M, PLATES, NO_CUT_LAND, null, 0, null,
+                                        0, null, 0, null, 0, null, 0, null, 0, block_ptr, block_len,
+                                        bake);
+        assert_eq!(status, WB_OK);
+        assert_ne!(handle, 0);
+        handle
+    };
+    let carved = door(block.as_ptr(), 1, bake);
+    // The premise, asserted: the handle IS carved -- the layer is on it -- so the comparison
+    // below is the layer finding nothing to cut, not the door quietly building the bare world.
+    let mut id: u32 = 0;
+    let twelve = hydro_params(12_000);
+    assert_eq!(wb_hydro_bake(carved, twelve.as_ptr(), 12, &mut id), WB_ERR_CARVED,
+               "the handle is not carved, so this test would compare the bare world with itself");
+    // And the uncarved path of the same door (no block, no bake) is the bare world too.
+    let bare = door(null, 0, 0);
+
+    let mut compared = 0usize;
+    let mut latitude = -88.0;
+    while latitude <= 88.0 {
+        let mut longitude = -180.0;
+        while longitude < 180.0 {
+            for resolution in [RES_M, CANONICAL_RESOLUTION_FOR_TESTS] {
+                let expected = wb_elevation_m(world, latitude, longitude, resolution).to_bits();
+                assert_eq!(wb_elevation_m(carved, latitude, longitude, resolution).to_bits(), expected,
+                           "the empty carve moved ({latitude}, {longitude}) at {resolution}");
+                assert_eq!(wb_elevation_m(bare, latitude, longitude, resolution).to_bits(), expected,
+                           "the uncarved door moved ({latitude}, {longitude}) at {resolution}");
+            }
+            let structural = wb_structural_m(world, latitude, longitude).to_bits();
+            assert_eq!(wb_structural_m(carved, latitude, longitude).to_bits(), structural);
+            assert_eq!(wb_structural_m(bare, latitude, longitude).to_bits(), structural);
+            compared += 1;
+            longitude += 4.0;
+        }
+        latitude += 4.0;
+    }
+    assert!(compared > 4_000, "the grid comparison did not run: only {compared} points");
+    // And on the bodies themselves, where the layer's lake rule runs: every body's shore outline.
+    let mut on_bodies = 0usize;
+    for body in &record.bodies {
+        for &(lat, lon) in &body.outline {
+            assert_eq!(wb_elevation_m(carved, lat, lon, RES_M).to_bits(),
+                       wb_elevation_m(world, lat, lon, RES_M).to_bits(),
+                       "the empty carve moved body {}'s outline at ({lat}, {lon})", body.id);
+            on_bodies += 1;
+        }
+    }
+    assert!(on_bodies > 0);
+
+    for handle in [carved, bare] {
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+/// `wb_elevation_m`'s sentinel for canonical ground truth (`resolution`'s doc): any non-positive
+/// value. Named so the grid above visibly compares both scales.
+const CANONICAL_RESOLUTION_FOR_TESTS: f64 = -1.0;
+
+#[test]
+fn the_door_carves_exactly_what_the_engine_carves_with_the_block_it_was_given() {
+    // The door forwards the block and the record, and forwards them RIGHT: a carved world through
+    // the door samples bit for bit as `Surface::with_water` built natively from the same record
+    // and block -- at a bank width that is not the canonical one, on probes in the channel and in
+    // the bank, where a door that dropped the block for `canonical()` would differ.
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    let record = decode(&held_words(bake)).expect("decodes");
+    let probes = channel_probes(&record, 3, &[0.75, 1.5, 2.5]);
+
+    let wide = 2.5;
+    let door = carved_plain(wide, bake);
+    let canonical = carved_plain(1.0, bake);
+    let native = Surface::with_water(
+        SEED, RADIUS_M, 12, LAND, None, None, None, None, None, None,
+        Some(Carve { params: WaterParams { bank_widths: wide },
+                     bake: std::sync::Arc::new(IndexedRecord::new(record.clone(), RADIUS_M)) }),
+    ).expect("the native join accepts the plain world's own bake for carving");
+
+    let mut widened = 0usize;
+    for (lat, lon) in &probes {
+        let point = SpherePoint::from_latlon(*lat, *lon);
+        let through_door = wb_elevation_m(door, *lat, *lon, RES_M);
+        assert_eq!(through_door.to_bits(), native.elevation_m(&point, Some(RES_M)).to_bits(),
+                   "the door's carve differs from the engine's at ({lat}, {lon})");
+        if through_door.to_bits() != wb_elevation_m(canonical, *lat, *lon, RES_M).to_bits() {
+            widened += 1;
+        }
+    }
+    assert!(widened > 0,
+            "no probe tells a 2.5-width bank from a 1-width one, so this test cannot see the block");
+
+    wb_world_free(canonical);
+    wb_world_free(door);
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+#[test]
+fn a_carved_world_refuses_every_bake_like_export_and_answers_every_sampling_one() {
+    // Rulings C-1 and C-24: the bake, the erosion run and plan 1a's water run all compute FROM the
+    // ground, so each refuses a carved handle with WB_ERR_CARVED -- while the bare world from the
+    // same parameters answers all three, so the refusal is about the carve and nothing else.
+    let world = plain_world();
+    let bake = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, bake);
+
+    let twelve = hydro_params(12_000);
+    let mut id: u32 = 77;
+    assert_eq!(wb_hydro_bake(carved, twelve.as_ptr(), 12, &mut id), WB_ERR_CARVED);
+    let thirteen = hydro_params_for_carving(12_000);
+    assert_eq!(wb_hydro_bake(carved, thirteen.as_ptr(), 13, &mut id), WB_ERR_CARVED);
+    assert_eq!(id, 77, "a refused bake wrote an id");
+
+    let (nodes, uplift, k, dt, threshold, iterations) = erosion_defaults();
+    let (status, heights, _, _) = call_erosion_run(carved, nodes, uplift, k, dt, threshold, iterations);
+    assert_eq!(status, WB_ERR_CARVED, "erosion ran over carved ground");
+    assert!(heights.is_empty());
+    let (status, rows, _) = water_run(carved, 3_000, 0.0, 1.0e5);
+    assert_eq!(status, WB_ERR_CARVED, "the water run filled carved ground");
+    assert!(rows.is_empty(), "a refused water run reported rows");
+
+    // The bare world answers all three.
+    let (status, _, _, _) = call_erosion_run(world, nodes, uplift, k, dt, threshold, iterations);
+    assert_eq!(status, WB_OK);
+    assert_eq!(water_run(world, 3_000, 0.0, 1.0e5).0, WB_OK);
+
+    // And the carved world still samples, and still answers a query of its own bake -- it
+    // fingerprints as its bare parent, so the record is of its ground.
+    assert!(wb_elevation_m(carved, 12.0, 34.0, RES_M).is_finite());
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    let stride = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+    assert_eq!(wb_water_at(carved, bake, 29.0, -3.0, out.as_mut_ptr(), stride), WB_OK);
+
+    wb_world_free(carved);
+    wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+// ---- Ruling C-36: a carved world is tied to the bake it was carved from ----------------------
+//
+// A carved world fingerprints as its bare parent, so the ground check accepts every bake of that
+// ground. Before C-36 the final whole-branch review got `WB_OK` from `wb_water_at` on a carved
+// world through an ordinary bake and through a second carving bake, and the query answered from a
+// record the terrain was not cut from: drained ponds standing in cut channels, rivers where
+// nothing was cut. The tie is identity of record -- the `Arc` the carved world holds -- so the
+// three tests below are split by pairing, and each refusal fails on its own before the fix.
+
+const STRIDE_U32: u32 = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+/// `wb_water_at` at one fixed point: the status and the buffer, which starts `UNWRITTEN`.
+fn water_point(world: u32, bake: u32) -> (u32, [f64; WB_WATER_STRIDE]) {
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    let status = wb_water_at(world, bake, 29.0, -3.0, out.as_mut_ptr(), STRIDE_U32);
+    (status, out)
+}
+
+/// `wb_water_tile` over a fixed 4x4 grid: the status and the buffer, which starts `UNWRITTEN`.
+fn water_grid(world: u32, bake: u32) -> (u32, Vec<f64>) {
+    let mut out = vec![UNWRITTEN; 4 * 4 * WB_WATER_STRIDE];
+    let len = u32::try_from(out.len()).expect("a small tile");
+    let status = wb_water_tile(world, bake, 30.0, -4.0, 28.0, -2.0, 4, 4, out.as_mut_ptr(), len);
+    (status, out)
+}
+
+/// A carved world asked through `bake` is refused with `WB_ERR_NOT_CARVED_FROM` at the point and
+/// the tile, with nothing written; its bare parent asked through the same bake is answered.
+fn assert_refused_for_the_carve_only(world: u32, carved: u32, bake: u32, what: &str) {
+    let (status, out) = water_point(carved, bake);
+    assert_eq!(status, WB_ERR_NOT_CARVED_FROM, "{what}: the point query was not refused");
+    assert!(out.iter().all(|w| *w == UNWRITTEN), "{what}: a refused point query wrote");
+    let (status, out) = water_grid(carved, bake);
+    assert_eq!(status, WB_ERR_NOT_CARVED_FROM, "{what}: the tile was not refused");
+    assert!(out.iter().all(|w| *w == UNWRITTEN), "{what}: a refused tile wrote");
+    assert_eq!(water_point(world, bake).0, WB_OK,
+               "{what}: the bare parent is judged by its ground alone (Ruling Q-20)");
+}
+
+#[test]
+fn a_carved_world_refuses_the_water_query_through_an_ordinary_bake_of_its_ground() {
+    let world = plain_world();
+    let own = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, own);
+    let ordinary = bake_with(world, &hydro_params(12_000));
+    assert_refused_for_the_carve_only(world, carved, ordinary, "an ordinary bake");
+    for bake in [own, ordinary] {
+        wb_hydro_free(bake);
+    }
+    wb_world_free(carved);
+    wb_world_free(world);
+}
+
+/// Another wetness, and the very same params: the second is bit-identical words in another record,
+/// and is refused as well, because the tie is identity of record and not equal content.
+#[test]
+fn a_carved_world_refuses_the_water_query_through_a_second_carving_bake_of_its_ground() {
+    let world = plain_world();
+    let own = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, own);
+    let mut wetter = hydro_params_for_carving(12_000);
+    wetter[1] = 900.0;
+    let second = bake_with(world, &wetter);
+    let twin = bake_with(world, &hydro_params_for_carving(12_000));
+    assert_eq!(held_words(twin), held_words(own), "fixture is wrong: the twin should be the same words");
+    assert_refused_for_the_carve_only(world, carved, second, "a second carving bake");
+    assert_refused_for_the_carve_only(world, carved, twin, "a bit-identical re-bake");
+    for bake in [own, second, twin] {
+        wb_hydro_free(bake);
+    }
+    wb_world_free(carved);
+    wb_world_free(world);
+}
+
+/// The accepted case: its own bake, point and tile, and the bare parent through it. And the tie
+/// survives a refused carve of the same bake on another planet, whose index build at the other
+/// radius must not evict the record the carved world holds.
+#[test]
+fn a_carved_world_answers_the_water_query_through_the_bake_it_was_carved_from() {
+    let world = plain_world();
+    let own = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, own);
+    assert_eq!(water_point(carved, own).0, WB_OK, "a carved world answers against its own bake");
+    assert_eq!(water_grid(carved, own).0, WB_OK);
+    assert_eq!(water_point(world, own).0, WB_OK, "the bare parent answers against it too");
+
+    let null = core::ptr::null();
+    let block = [1.0f64];
+    let elsewhere = wb_world_new_water(SEED, 6_000_000.0, PLATES, LAND, null, 0, null, 0, null, 0,
+                                       null, 0, null, 0, null, 0, block.as_ptr(), 1, own);
+    assert_eq!(elsewhere, 0, "fixture is wrong: another planet was carved by this bake");
+    assert_eq!(water_point(carved, own).0, WB_OK, "the carved world lost its tie to its own bake");
+    assert_eq!(water_grid(carved, own).0, WB_OK);
+
+    wb_hydro_free(own);
+    wb_world_free(carved);
     wb_world_free(world);
 }

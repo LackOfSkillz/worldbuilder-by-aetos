@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  Engine, WB_WATER_STRIDE, decodeWaterSample, waterTileBytes,
+  Engine, WB_WATER_STRIDE, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING, WB_ERR_CARVED,
+  WB_ERR_NOT_CARVED_FROM,
+  decodeWaterSample, statusName, waterTileBytes,
 } from "../public/app/engine.js";
 // The record decoder lives with the preview drawing, not with the boundary: the query answers
 // name bodies by id, and this is the reader that turns the record into entries to look them up
@@ -20,11 +22,11 @@ const PARAMS = {
   evaporationFactor: 1, saltFlatShare: 0.1, forcedOutlets: [],
 };
 
-test("a bake comes back with a schema-6 header and counts that add up", () => {
+test("a bake comes back with a schema-7 header and counts that add up", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
   const s = engine.hydroSummary(words);
-  assert.equal(s.schema, 6);
+  assert.equal(s.schema, 7);
   assert.equal(s.nodes, 12000);
   assert.ok(s.landNodes > 0 && s.landNodes < 12000);
   assert.equal(s.kept + s.notched, s.hollows);
@@ -98,15 +100,48 @@ test("hydroSummary reads the SCHEMA 5/6 params echo, forced-outlet matches, cros
   assert.ok(s.collarPoints > 0, "sanity: this world's coarse bodies carry a collar");
 });
 
-test("hydroSummary throws on a schema other than 6 rather than misreading the header", () => {
+test("hydroSummary throws on a schema other than 7 rather than misreading the header", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
-  for (const schema of [2, 3, 4, 5, Number.NaN]) {
+  for (const schema of [2, 3, 4, 5, 6, 9, Number.NaN]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => engine.hydroSummary(tampered), /schema/);
   }
-  assert.equal(engine.hydroSummary(words).schema, 6);
+  assert.equal(engine.hydroSummary(words).schema, 7);
+  assert.equal(engine.hydroSummary(words).drainedForCarve, false, "an ordinary bake");
+  // Ruling C-20: word 0 = 8 is the same layout baked for carving, read the same way.
+  const carving = words.slice();
+  carving[0] = 8;
+  const summary = engine.hydroSummary(carving);
+  assert.equal(summary.drainedForCarve, true);
+  assert.deepEqual({ ...summary, schema: 7, drainedForCarve: false }, engine.hydroSummary(words));
+  // A fingerprint word that is not a u32 cannot be four bytes.
+  for (const bogus of [0.5, -1, 4294967296, Number.NaN]) {
+    const tampered = words.slice();
+    tampered[57] = bogus;
+    assert.throws(() => engine.hydroSummary(tampered), /ground fingerprint/);
+  }
+});
+
+// Plan 2b Task 1: the record carries a fingerprint of the ground it was baked from (words
+// 56-59). These pin that it is there, that it is a property of the world and not of the bake's
+// params, and that a different world moves it; Task 2's refusal is pinned further down.
+test("a bake's ground fingerprint is the world's, not the params'", () => {
+  const world = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
+  const handle = engine.newWorld(world);
+  const s = engine.hydroSummary(engine.hydroBake({ handle, params: PARAMS }));
+  assert.match(s.ground, /^[0-9a-f]{32}$/);
+  // The same world through a fresh handle, baked with different params: same ground.
+  const again = engine.newWorld(world);
+  const coarser = engine.hydroSummary(engine.hydroBake({ handle: again, params: { ...PARAMS, totalNodes: 8000 } }));
+  assert.equal(coarser.ground, s.ground);
+  // Another seed and another radius are other ground.
+  for (const other of [{ ...world, seed: world.seed + 1 }, { ...world, radiusM: 9309000 }]) {
+    const h = engine.newWorld(other);
+    assert.notEqual(engine.hydroSummary(engine.hydroBake({ handle: h, params: PARAMS })).ground, s.ground,
+                    JSON.stringify(other));
+  }
 });
 
 test("the same bake twice is the same words", () => {
@@ -198,6 +233,55 @@ test("a freed bake stops answering rather than being served from the index it le
   engine.hydroFree(bake);
   assert.throws(() => engine.waterAt({ bake, latitudeDeg: 0, longitudeDeg: 0 }), /WB_ERR_HANDLE/);
   assert.throws(() => engine.hydroFree(bake), /WB_ERR_HANDLE/);
+});
+
+// Plan 2b Task 5: the carve's door adds two refusals a host must be able to tell apart from "bad
+// parameter" and "wrong world" -- a bake that was not made for carving, and a bake-like question
+// asked of a carved world. Ruling C-3: a status the viewer cannot name is swallowed as "engine
+// unavailable". The door's three exports are in the shipped module; Task 6 wires them.
+test("the carve's two new refusals have names, and the shipped module has the door", () => {
+  assert.equal(WB_ERR_NOT_BAKED_FOR_CARVING, 9);
+  assert.equal(statusName(WB_ERR_NOT_BAKED_FOR_CARVING), "WB_ERR_NOT_BAKED_FOR_CARVING");
+  assert.equal(WB_ERR_CARVED, 10);
+  assert.equal(statusName(WB_ERR_CARVED), "WB_ERR_CARVED");
+  // Ruling C-36: a carved world queried through a bake it was not carved from.
+  assert.equal(WB_ERR_NOT_CARVED_FROM, 11);
+  assert.equal(statusName(WB_ERR_NOT_CARVED_FROM), "WB_ERR_NOT_CARVED_FROM");
+  for (const name of ["wb_world_new_water", "wb_water_preset", "wb_water_check"]) {
+    assert.equal(typeof instance.exports[name], "function", `${name} is not exported`);
+  }
+});
+
+// Plan 2b Task 2: a bake asked through a world of other ground is refused, by name. The case that
+// matters is the SAME radius -- no declared field could have told those two worlds apart -- and
+// the case that must still work is Ruling Q-20's: the world re-created from the same parameters,
+// through a new handle, as the studio does on every slider change.
+test("a bake asked through another world of the same radius throws WB_ERR_WRONG_WORLD", () => {
+  const world = { seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 };
+  const handle = engine.newWorld(world);
+  const bake = engine.hydroHold({ handle, params: PARAMS });
+  try {
+    assert.equal(WB_ERR_WRONG_WORLD, 8);
+    assert.equal(statusName(WB_ERR_WRONG_WORLD), "WB_ERR_WRONG_WORLD");
+    const box = { lat0: 31, lon0: -5, lat1: 27, lon1: -1 };
+    const mine = engine.waterTile({ bake, box, rows: 4, columns: 4 });
+
+    const other = engine.newWorld({ ...world, seed: world.seed + 1 });
+    const drifted = { ...bake, handle: other };
+    assert.throws(() => engine.waterAt({ bake: drifted, latitudeDeg: 29, longitudeDeg: -3 }),
+                  /wb_water_at returned WB_ERR_WRONG_WORLD/);
+    assert.throws(() => engine.waterTile({ bake: drifted, box, rows: 4, columns: 4 }),
+                  /wb_water_tile returned WB_ERR_WRONG_WORLD/);
+
+    // Ruling Q-20: the same world through a fresh handle is the same ground, and answers the
+    // same tile word for word.
+    const again = engine.newWorld(world);
+    assert.notEqual(again, handle);
+    assert.deepEqual(Array.from(engine.waterTile({ bake: { ...bake, handle: again }, box, rows: 4, columns: 4 })),
+                     Array.from(mine));
+  } finally {
+    engine.hydroFree(bake);
+  }
 });
 
 test("hydroBake still frees its own bake, so the old shape leaks nothing", () => {

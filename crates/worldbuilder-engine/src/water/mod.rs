@@ -53,15 +53,18 @@
 //! | this file's own items ([`fill_basins`], [`basins_of`], [`resolve_outflow_edges`], ...) | slice 5b's **bake**: fill each lake basin to its spill point and resolve the lake super-graph | a `stream::StreamGraph` | `Lake::level_m`, `Lake::outflow_lake` |
 //! | [`index`] | plan 2a Task 1: a spatial index over a **baked record**, so a sample tests a handful of candidates | a `hydrology::HydroRecord` | nothing |
 //! | [`query`] | plan 2a Task 2: spec §8.3's [`water_at`] -- ocean, lake, pond, river or none at a point | a `hydrology::HydroRecord`, that index, and a landform closure | nothing |
+//! | [`layer`] | plan 2b Task 3: spec §8.1's **water layer** -- the stage in `Surface::elevation_m` that cuts channels and notches | a `hydrology::HydroRecord` as lines, through that index and the query's own leg geometry | nothing; `Surface` spends its answer |
 //!
 //! Nothing in the query half touches a `StreamGraph`, and nothing in the bake half touches a
 //! `HydroRecord`. The two halves share one module because `water.rs` was already `crate::water`
 //! when the query arrived, and Rust has one module per path (Ruling Q-9).
 
 pub mod index;
+pub mod layer;
 pub mod query;
 
 pub use query::{water_at, Detail, Ground, Landform, WaterAt, WaterKind, NO_BODY, NO_REACH};
+pub use layer::{Carve, CarveRefused, IndexedRecord, WaterLayer, WaterParams};
 
 #[cfg(test)]
 mod query_tests;

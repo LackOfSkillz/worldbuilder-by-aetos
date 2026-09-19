@@ -6,7 +6,7 @@
 // `hydro.test.mjs` does; `drawPreview` is the only export that touches Cesium.
 //
 // The wire format is `crates/worldbuilder-engine/src/hydrology/record.rs`'s `encode`/`decode`
-// pair -- schema 6, Task 1 (plan 1b-4)'s 56-word header. This file is the JS side of that
+// pair -- schema 7, Task 1 (plan 2b)'s 60-word header. This file is the JS side of that
 // contract and mirrors its field order and its refusals (a truncated record, a wrong schema, a
 // trailing word, an index or count word outside u32) rather than trusting the words blindly.
 //
@@ -20,7 +20,10 @@
 
 import { showLayer } from "./globe-layers.js";
 
-const SCHEMA = 6;
+const SCHEMA = 7;
+/// Word 0 of a record baked for carving (Ruling C-20, `record.rs`'s `SCHEMA_CARVE`): SCHEMA 7's
+/// layout word for word, so it decodes the same way and says `drainedForCarve`.
+const SCHEMA_CARVE = 8;
 
 /// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
 const U32_MAX = 4294967295;
@@ -115,6 +118,17 @@ class Cursor {
   }
 }
 
+/// Four u32 words, four little-endian bytes each, as 32 hex digits in byte order.
+function groundHex(words) {
+  let hex = "";
+  for (const w of words) {
+    for (let shift = 0; shift < 32; shift += 8) {
+      hex += ((w >>> shift) & 0xff).toString(16).padStart(2, "0");
+    }
+  }
+  return hex;
+}
+
 function readDownstream(cursor) {
   const kindWord = cursor.word();
   const idWord = cursor.word();
@@ -141,15 +155,16 @@ function readDownstream(cursor) {
   throw new Error(`hydro record: bad downstream kind ${kindWord}`);
 }
 
-/// Decode a `hydroBake` record. Throws on a schema other than 6, on a truncated array, or on
+/// Decode a `hydroBake` record. Throws on a schema other than 7 (or 8, the same layout baked for
+/// carving -- Ruling C-20), on a truncated array, or on
 /// a length mismatch (extra trailing words, or a count that does not add up) -- never returns
 /// a partial record.
 export function decodeHydro(words) {
   const cursor = new Cursor(words);
 
   const schema = cursor.word();
-  if (schema !== SCHEMA) {
-    throw new Error(`hydro record: unsupported schema ${schema} (expected ${SCHEMA})`);
+  if (schema !== SCHEMA && schema !== SCHEMA_CARVE) {
+    throw new Error(`hydro record: unsupported schema ${schema} (expected ${SCHEMA} or ${SCHEMA_CARVE})`);
   }
 
   const bodyCount = cursor.u32();
@@ -159,6 +174,7 @@ export function decodeHydro(words) {
 
   const header = {
     schema,
+    drainedForCarve: schema === SCHEMA_CARVE,
     bodies: bodyCount,
     reaches: reachCount,
     notches: notchCount,
@@ -240,6 +256,12 @@ export function decodeHydro(words) {
     // any coarse body in it both are positive.
     shoreMembers: cursor.u32(),
     collarPoints: cursor.u32(),
+    // SCHEMA 7, plan 2b, Task 1 (words 56-59): the ground fingerprint -- BLAKE2b-128 over 64
+    // millimetre-rounded samples of the ground the bake read -- `Surface::bake_ground_m`,
+    // elevation with detail and without the water layer (`record.rs::ground_fingerprint`).
+    // Each word is a u32 holding four digest bytes little-endian; `ground` is the 16 bytes as 32
+    // lowercase hex digits in byte order, the same string `engine.js::hydroSummary` returns.
+    ground: groundHex([cursor.u32(), cursor.u32(), cursor.u32(), cursor.u32()]),
   };
 
   const bodies = [];

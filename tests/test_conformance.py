@@ -7830,6 +7830,29 @@ def test_water_at_answers_a_different_kind_at_each_pinned_point():
     assert [c[3] for c in WATER_ANSWERS].count("lake") == 2, "the fine-found body is a lake too"
 
 
+def test_water_at_makes_the_fingerprint_check_and_names_its_refusal():
+    """
+    Plan 2b, Task 2: every door where a hydrology record meets a world refuses a record baked from
+    other ground. This door cannot be handed one -- it bakes and answers on the same surface in
+    one call -- so no mismatch is invented here; what is pinned is that the check is in place.
+
+    The refusal has its own class, the Python face of wasm's WB_ERR_WRONG_WORLD: a ValueError, so
+    a caller already catching ValueError still does, but not a HydroBakeError, because nothing
+    about the params was wrong. And the check runs on every first pairing: a population this
+    process has not baked yet (another node count, so a fresh cache entry) goes through the bake,
+    the check and the cache, and is answered rather than refused -- its own world is its own.
+    The refusing branch of the same function is pinned natively, in bindings.rs.
+    """
+    assert issubclass(engine.WrongWorldError, ValueError)
+    assert not issubclass(engine.WrongWorldError, engine.HydroBakeError)
+    v = SpherePoint.from_latlon(WATER_ANSWERS[0][1], WATER_ANSWERS[0][2]).vector
+    got = engine.water_at(
+        WATER_WORLD_SEED, WATER_RADIUS_M, WATER_PLATE_COUNT, WATER_LAND_FRACTION,
+        v.x, v.y, v.z, 12_000, **WATER_PARAMS_OVERRIDES,
+    )
+    assert got[0] in {"none", "ocean", "lake", "salt_lake", "salt_flat", "pond", "river"}
+
+
 def test_water_at_refuses_a_seed_outside_the_i64_domain():
     """
     `water_at` takes the same `world_seed` domain `surface_structural_m` does (both build

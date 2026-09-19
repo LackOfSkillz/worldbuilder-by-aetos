@@ -21,6 +21,9 @@ import { tectonicFromParams } from "./tectonic-params.js";
 import { coastFromParams } from "./coast-params.js";
 import { gullyFromParams } from "./gully-params.js";
 import { peakFromParams, peakBootPlan } from "./peak-params.js";
+import { waterFromParams } from "./water-params.js";
+import { CarveSession } from "./carve-session.js";
+import { PREVIEW_PARAMS, forcedOutletsFromParams } from "./water-preview.js";
 import { applyAtmosphere, formatAtmosphere } from "./atmosphere-params.js";
 import {
   biomeColourEnabled, engineClimateEnabled, createReliefImageryProvider,
@@ -239,6 +242,15 @@ async function boot() {
   const peaksRefused = peaksPlan.refused;
   spec.peaks = peaksPlan.forConstructor;
 
+  // The carve (plan 2b), and it is NOT in `spec`. `spec` is cloned to every pool worker, and a
+  // carve names a held bake by an id that means something only in THIS engine instance -- so the
+  // workers keep the bare world (which the manifest, the climate and every bake read anyway, Ruling
+  // C-1) and the carve is built on the main thread beside it. `null` is no carve: `waterFromParams`
+  // returns it unless the query says `carve=1`, so a page with no water parameter takes the absent
+  // path. The canonical block is read FROM THE ENGINE; nothing here writes a bank width down.
+  const waterCanonical = engine.waterPreset("canonical");
+  const carveRequested = waterFromParams(params, waterCanonical);
+
   const size = number("size", HEIGHTMAP_SIZE);
   const maxLevel = number("maxLevel", MAX_LEVEL);
 
@@ -281,6 +293,8 @@ async function boot() {
     state: null, world: 0, reference: 0, provider: null, cache: null, availability: null,
     reliefProvider: null, reliefLayer: null, cloudProvider: null, cloudLayer: null,
     water: null, climate: null, swaps: 0, lastSwap: null,
+    /// The last carve outcome (`CarveSession.carve`'s), or `null` with the carve off.
+    carve: null,
   };
 
   /// The two world handles, owned. `reference` is what the checks compare against and is always
@@ -301,6 +315,76 @@ async function boot() {
   /// are bit-identical, which the engine's determinism makes an identity rather than a hope.
   const worldSwapper = new WorldSwapper(engine);
   const referenceSwapper = new WorldSwapper(engine);
+
+  /// **The carved worlds, and the session that bakes for them.** With the carve on, `world` and
+  /// `reference` are these -- two worlds from one held bake, which share its record and index
+  /// (Task 5) -- while `worldSwapper` keeps the BARE world the bake and the main-thread water solve
+  /// read. With the carve off they are freed and `world`/`reference` are the bare pair again, so
+  /// the uncarved page is exactly the page before this channel.
+  const carvedSwapper = new WorldSwapper(engine);
+  const carvedReferenceSwapper = new WorldSwapper(engine);
+  const carveSession = new CarveSession(engine, {
+    // The water preview's own params, so the carve cuts the record the preview draws.
+    params: { ...PREVIEW_PARAMS, forcedOutlets: forcedOutletsFromParams(params) },
+    // The ordinary bake the pond account compares against runs in a worker, beside the main
+    // thread's bake for carving, when there is a pool: the workers hold this same bare ground.
+    ordinaryBake: pool && !fault ? (bakeParams) => pool.hydro({ params: bakeParams }).then((r) => r.words) : null,
+    // **The wait is made visible before the main thread blocks.** The status line and the panel
+    // (through `wb-carve-wait`) say what is happening and roughly how long, and two frames are
+    // let through so that text is actually painted -- a message set and then frozen behind a
+    // minute of synchronous bake is a message nobody sees.
+    wait: async (message) => {
+      if (status) status.textContent = message;
+      window.dispatchEvent(new CustomEvent("wb-carve-wait", { detail: { message } }));
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 250);
+        requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); }));
+      });
+    },
+  });
+
+  /// Build (or drop) the carve for `nextState`, over the bare world `worldSwapper` holds, and point
+  /// `installed.world`/`installed.reference` at whatever is to be drawn. **Never throws for an
+  /// engine refusal**: the session names it and the bare world is drawn instead -- the peak
+  /// channel's boot lesson, where a refusal thrown out of `boot()` was read as "engine unavailable".
+  async function installCarve(nextState) {
+    const bareWorld = () => {
+      carvedSwapper.free();
+      carvedReferenceSwapper.free();
+      installed.world = worldSwapper.handle;
+      installed.reference = referenceSwapper.handle;
+    };
+    if (nextState.carve === null || nextState.carve === undefined) {
+      bareWorld();
+      return null;
+    }
+    if (fault) {
+      // Under `?fault=wrong-world` the drawn world is another planet by design, and a bake of it
+      // cannot carve the stated one. No fault has a check that covers a carve, so it is refused
+      // here, by name, rather than attempted.
+      bareWorld();
+      return {
+        carved: false, notes: [], ponds: null, baked: false, bakeMs: 0,
+        refusal: { status: null, name: "fault", text: `fault: carving is off under ?fault=${fault}.` },
+      };
+    }
+    const outcome = await carveSession.carve({
+      spec: nextState.spec,
+      water: nextState.carve,
+      bare: worldSwapper.handle,
+      build: (carvedSpec) => {
+        carvedReferenceSwapper.swap(carvedSpec);
+        carvedSwapper.swap(carvedSpec);
+      },
+    });
+    if (outcome.carved) {
+      installed.world = carvedSwapper.handle;
+      installed.reference = carvedReferenceSwapper.handle;
+    } else {
+      bareWorld();
+    }
+    return outcome;
+  }
 
   /// The tiling scheme availability is computed against. One per page: it holds no world state.
   const tilingSchemeForAvailability = new Cesium.GeographicTilingScheme();
@@ -372,7 +456,9 @@ async function boot() {
     const request = {};
     const started = performance.now();
     if (!pool || fault || params.get("climateWorker") === "0") {
-      const climate = engine.climateCalibration({ handle: installed.world, ...request });
+      // The BARE world: with the carve on, `installed.world` is carved, and the workers that
+      // answer this on the pool path hold the bare one -- the two paths must read one ground.
+      const climate = engine.climateCalibration({ handle: worldSwapper.handle, ...request });
       return { ...climate, ms: performance.now() - started, worker: null };
     }
     const result = await pool.climate(request);
@@ -393,7 +479,9 @@ async function boot() {
     const request = { nodeCount: nextState.waterNodes };
     const started = performance.now();
     if (!pool || fault || params.get("waterWorker") === "0") {
-      const water = engine.waterRun({ handle: installed.world, ...request });
+      // The BARE world, never the carved one: `wb_water_run` reads the ground and refuses a carved
+      // world with WB_ERR_CARVED (Ruling C-24), and the pool path's workers hold the bare world.
+      const water = engine.waterRun({ handle: worldSwapper.handle, ...request });
       return { ...water, ms: performance.now() - started, worker: null };
     }
     const result = await pool.water(request);
@@ -426,6 +514,7 @@ async function boot() {
     const rebuildWorld = plan === null || plan.rebuildWorld;
     const rebuildTerrain = plan === null || plan.rebuildTerrain;
     const resolveWater = plan === null ? nextState.waterEnabled : plan.resolveWater;
+    const rebuildCarve = plan === null || plan.rebuildCarve;
 
     if (rebuildWorld) {
       // Built before the old one is freed -- `WorldSwapper.swap`'s own rule -- so a refused block
@@ -441,6 +530,16 @@ async function boot() {
       // from the world the slider moved away from, and the globe would still look like a globe.
       if (pool) await pool.rebuild(nextSpec);
     }
+    // **The carve, over the bare world just built** -- or over the one already there, for a
+    // carve-only change such as a bank-width release, which rebuilds nothing but the carved pair.
+    if (rebuildCarve) {
+      installed.carve = await installCarve(nextState);
+      window.dispatchEvent(new CustomEvent("wb-carve-changed", { detail: { carved: !!(installed.carve && installed.carve.carved) } }));
+    }
+    // A carved world lives only in THIS engine instance, so its tiles are filled here: the
+    // workers hold the bare world, and a tile from one of them would be the uncarved planet --
+    // the `wrong-world` fault arrived at by accident. Water, climate and clouds still use the pool.
+    const tilePool = installed.carve && installed.carve.carved ? null : pool;
 
     // **The water manifest, re-resolved whenever the surface moved -- measured, not assumed.**
     //
@@ -503,7 +602,8 @@ async function boot() {
         size,
         maxLevel,
         fault,
-        pool,
+        // `null` while the carve is drawn: see `tilePool` above.
+        pool: tilePool,
         cache: installed.cache,
         availability: installed.availability,
         credit: `worldbuilder engine, generator v${engine.generatorVersion()}`,
@@ -648,7 +748,9 @@ async function boot() {
         // The same pool the terrain mesh uses, and the same `?workers=0` escape hatch. One
         // pool and not two: the contention that matters is engine instances per core, and a
         // second pool of eight would double the workers without doubling the cores.
-        pool,
+        // ...except while the carve is drawn, when the relief of the CARVED ground is rasterised
+        // here, for the reason `tilePool` gives.
+        pool: tilePool,
       });
       installed.reliefLayer = viewer.imageryLayers.addImageryProvider(installed.reliefProvider);
       // **Order is the composite, and `addImageryProvider` appends.** On a swap the cloud deck is
@@ -745,6 +847,10 @@ async function boot() {
     size,
     maxLevel,
     featureCeiling: number("featureCeiling", FEATURE_CEILING),
+    // The water block as the query asked for it, or `null`. Refused blocks are NOT filtered out
+    // here the way `peakBootPlan` filters a peak block: `installCarve` cannot throw for a refusal,
+    // so the block goes in as asked and comes back named in `installed.carve.refusal`.
+    carve: carveRequested,
   };
   // **The river, carved into the ground before the world is built.**
   //
@@ -1031,7 +1137,14 @@ async function boot() {
         // see it, because that sweep was over code and this is a comment.)
         ? `dens ${s.peaks.density.toFixed(2)} height ${s.peaks.height_m} m reach ${
           s.peaks.reach_m} m depth ${s.peaks.min_depth_m} m lattice ${s.peaks.lattice_m} m`
-        : "canonical"} | terrain=${provider.constructor.name} ` +
+        : "canonical"} carve=${
+      // The carve: its one field, whether it is drawn, and where the tiles come from -- a carved
+      // world is filled on the main thread, which a screenshot's caption should not hide.
+      installed.carve === null
+        ? "off"
+        : installed.carve.carved
+          ? `bank ${installed.state.carve.bank_widths} widths (tiles on MAIN THREAD)`
+          : `REFUSED ${installed.carve.refusal ? installed.carve.refusal.name : "?"}`} | terrain=${provider.constructor.name} ` +
     `${provider.worldbuilder.size}x${provider.worldbuilder.size} ground cap=` +
     `${provider.worldbuilder.maxLevel} feature cap=${availability.featureMaxLevel} | ` +
     `workers=${pool ? pool.ready.length : 0} cache=${cache ? cache.capacity : "off"} | ` +
@@ -1175,6 +1288,11 @@ async function boot() {
     get provider() { return installed.provider; },
     get world() { return installed.world; },
     get reference() { return installed.reference; },
+    /// **The bare world**: `world` itself with the carve off, and the uncarved twin of it with
+    /// the carve on. Anything that BAKES or otherwise computes from the ground -- the water
+    /// preview, a hydro bake, an erosion or water run -- must be handed this and not `world`:
+    /// the engine refuses such a call on a carved world with WB_ERR_CARVED (Rulings C-1, C-24).
+    get bareWorld() { return worldSwapper.handle; },
     get cache() { return installed.cache; },
     get availability() { return installed.availability; },
     /// The live swap itself, plus what it has cost. `swaps` counts the swaps that did work;
@@ -1224,6 +1342,18 @@ async function boot() {
       canonical: reliefCanonical,
       hills: engine.reliefPreset("hills"),
       get chosen() { return installed.state.spec.relief; },
+    },
+    /// The carve (plan 2b). `canonical` is `wb_water_preset`'s block, read across the boundary --
+    /// the bank-width slider starts there and the panel holds no bank width of its own. `chosen`
+    /// is the block the drawn state asked for (`null` with the carve off), refused or not, so the
+    /// panel shows what was asked; `last` is the session's outcome for it, whose `refusal` and
+    /// `notes` are the named refusals and whose `ponds` is the pond account. `session` is the
+    /// `CarveSession` itself, for its counters.
+    carve: {
+      canonical: waterCanonical,
+      get chosen() { return installed.state.carve ?? null; },
+      get last() { return installed.carve; },
+      session: carveSession,
     },
     /// The engine's own tectonic presets, read across the boundary at boot. `controls.js`
     /// anchors all six mountain sliders on `canonical` and fills them from `ranges` when the

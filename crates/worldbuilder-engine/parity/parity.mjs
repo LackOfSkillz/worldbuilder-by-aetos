@@ -6,7 +6,7 @@
 // f64 is carried as its 16-hex-digit bit pattern, so no decimal text is parsed and the
 // comparison is exact.
 //
-//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples] [--no-provenance]
+//   node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples|carve-bank] [--no-provenance]
 //
 // `--mutate seed` is the falsification control: it builds every world with `world_seed + 1`
 // and changes nothing else. It must report a large divergent count. A harness that cannot
@@ -85,13 +85,13 @@ const flag = (name) => {
 };
 const dumpPath = positional[0];
 if (!dumpPath) {
-  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples] [--no-provenance]');
+  console.error('usage: node parity.mjs <native.txt> [--wasm <path>] [--mutate seed|erosion-k|water-pond|tectonic-warp|coast-amplitude|gully-steer|climate-samples|carve-bank] [--no-provenance]');
   process.exit(2);
 }
 // The *shipped* artifact by default -- the bytes a browser loads, not a fresh build.
 const wasmPath = flag('wasm') ?? resolve(here, '../../../viewer/public/wasm/worldbuilder_engine.wasm');
 const mutate = flag('mutate');
-const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude', 'gully-steer', 'climate-samples'];
+const MUTATIONS = ['seed', 'erosion-k', 'water-pond', 'tectonic-warp', 'coast-amplitude', 'gully-steer', 'climate-samples', 'carve-bank'];
 
 /// f64 per gully record, mirroring `wasm.rs`'s `WB_GULLY_STRIDE`. Ten until the second
 /// harmonic shipped, twelve since -- and written once here rather than at each of the six
@@ -204,6 +204,11 @@ let coastControl = null;
 // the corpus rather than written here, for the reason `TWARP`/`TCTL` are.
 let gullySteer = null;
 let gullyControl = null;
+// `CBANK` carries the bank width `--mutate carve-bank` writes into word 0 of every `WC` record's
+// water block, and `CBCTL` the per-group counts the native side predicts will move -- the bank
+// points of each carve group and nothing else. Same discipline as `TWARP`/`TCTL`.
+let carveBank = null;
+let carveBankControl = null;
 
 let compared = 0;
 let divergent = 0;
@@ -715,6 +720,28 @@ for (const raw of lines) {
       };
       break;
     }
+    case 'CBANK': {
+      // CBANK <bank_widths_hex>
+      //
+      // The value `--mutate carve-bank` writes into word 0, `bank_widths`, of every `WC` record's
+      // water block -- twice the canonical width, inside the admissible (0, 4]. Carried rather
+      // than written here, and it arrives before the first `WC` record because that is where it is
+      // used. Not a compared value.
+      carveBank = f64of(f[1]);
+      break;
+    }
+    case 'CBCTL': {
+      // CBCTL <carve/ranges> <carve/plain>
+      //
+      // Prediction, not a compared value. Computed natively by building the same door with the
+      // wider block over the same held bake and asking the recorded points again -- and the dump
+      // asserts there that the points which move are EXACTLY the bank points: a channel point is
+      // at full authority at any bank width, a notch point is on its line, and a body or clear
+      // point is cut by nothing.
+      if (f.length !== 3) throw new Error(`CBCTL carries two predictions, not ${f.length - 1}`);
+      carveBankControl = { 'carve/ranges': Number(f[1]), 'carve/plain': Number(f[2]) };
+      break;
+    }
     case 'TWARP': {
       // TWARP <warp_hex>
       //
@@ -745,6 +772,17 @@ for (const raw of lines) {
       // control that has stopped being one. The native side asks the same recorded points of a
       // bake on the warp-0 world and counts the values that differ. `water_point/plain` has no
       // entry and therefore a prediction of zero -- the `plain` world carries no tectonic block.
+      //
+      // The eighth, `carve/ranges`, is plan 2b Task 7's, for the same reason again: the warp
+      // moves the ground the `ranges` bake for carving runs on and the ground the door carves,
+      // so carved elevations must move. The native side builds the same door over a bake of the
+      // warp-0 world and counts, as this script does, the door's status and each point.
+      // `carve/plain` has no entry and therefore a prediction of zero.
+      //
+      // The ninth, `hydro_carve/ranges`, is the fix round's: the carving record on the same world,
+      // compared whole, moves with its ground exactly as `hydro/ranges` does, and the native side
+      // predicts it the same way (rule (a) over a bake of the warp-0 world).
+      if (f.length !== 10) throw new Error(`TCTL carries nine predictions, not ${f.length - 1}`);
       tectonicControl = {
         'elevation/ranges': Number(f[1]),
         'structural/ranges': Number(f[2]),
@@ -753,6 +791,8 @@ for (const raw of lines) {
         'tile/belt': Number(f[5]),
         'hydro/ranges': Number(f[6]),
         'water_point/ranges': Number(f[7]),
+        'carve/ranges': Number(f[8]),
+        'hydro_carve/ranges': Number(f[9]),
       };
       break;
     }
@@ -876,7 +916,13 @@ for (const raw of lines) {
       };
       break;
     }
-    case 'H': {
+    case 'H':
+    case 'HC': {
+      // `HC` (plan 2b Task 7, fix round) is `H` for a bake FOR CARVING -- the thirteen-word
+      // params layout, word 12 = 1 -- in the same layout and compared the same way, word for
+      // word. The drain (Task 4b) runs inside the wasm bake whenever the studio carves, and
+      // `examples/parity_dump.rs` checks natively that this record differs from the ordinary one
+      // only where the drain says it should. It tallies as `hydro_carve/<world>`.
       // H <world> <params_len> <params hex...> <status> <len> <record hex...>
       //
       // Task 11's hydrology bake, through `wb_hydro_bake` / `wb_hydro_len` / `wb_hydro_copy` /
@@ -898,7 +944,7 @@ for (const raw of lines) {
       if (pp === 0 || idp === 0) throw new Error('wb_alloc refused a hydro input buffer');
       new Float64Array(wb.memory.buffer, pp, pl).set(params);
       const got = wb.wb_hydro_bake(h, pp, pl, idp);
-      group = `hydro/${f[1]}`;
+      group = `${f[0] === 'HC' ? 'hydro_carve' : 'hydro'}/${f[1]}`;
       tally(String(got) === status);
       if (String(got) !== status) note(`hydro status ${f[1]}`, status, String(got));
       if (got !== 0) {
@@ -1111,6 +1157,110 @@ for (const raw of lines) {
       wb.wb_dealloc(idp, 4);
       break;
     }
+    case 'WC': {
+      // WC <name> <seed> <radius_hex> <plates> <land_hex> <tlen> <tectonic hex...> <params_len>
+      //    <params hex...> <block_len> <block hex...> <res_hex> <status> <count>
+      //    [<lat> <lon> <carved elevation>] x count
+      //
+      // **Plan 2b Task 7: the carve itself, across the boundary.** Every earlier group proved
+      // only that the carve STAYS OUT of the canonical path. This one builds a carved world
+      // through the real door -- `wb_hydro_bake` with the thirteen-word params layout (word 12,
+      // `drain_for_carve`, = 1), then `wb_world_new_water` over that held bake with the water
+      // block -- and compares `wb_elevation_m` on it at points `examples/parity_dump.rs` chose
+      // from the record, by category: inside a channel (cut to the bed), on a bank blend, inside
+      // a body (uncut, the lake-bed rule), at a notch, and well clear of water (untouched). The
+      // dump refuses to write the corpus if any category stops being covered.
+      //
+      // `wb_water_check`'s status is tallied as the group's first value, so a door that refuses
+      // on this side -- a record judged foreign, or not baked for carving -- is a named
+      // divergence rather than a thrown error; every point then counts divergent without reading
+      // anything, the rule `WQ`'s refusal branch follows.
+      //
+      // `--mutate seed` reaches this group through `seed` here AND through the base world the
+      // bake runs on, so the join stays consistent (a world and its own bake) and it is another
+      // planet's carved ground that moves. `--mutate tectonic-warp` rewrites word 14 of a
+      // non-empty tectonic block here exactly as `worldt` does -- the `ranges` bake runs on the
+      // warp-0 world, so the door must build that world too or it would refuse the pairing --
+      // and `TCTL`'s eighth field predicts the result.
+      const name = f[1];
+      const seed = BigInt(f[2]) + (mutate === 'seed' ? 1n : 0n);
+      const radius = f64of(f[3]);
+      const plates = Number(f[4]);
+      const land = f64of(f[5]);
+      let at = 6;
+      const tlen = Number(f[at]); at += 1;
+      const tectonic = f.slice(at, at + tlen); at += tlen;
+      const pl = Number(f[at]); at += 1;
+      const params = f.slice(at, at + pl).map(f64of); at += pl;
+      const blen = Number(f[at]); at += 1;
+      const block = f.slice(at, at + blen); at += blen;
+      if (blen !== 1) throw new Error(`WC ${name}: a water block is one f64, not ${blen}`);
+      const res = f64of(f[at]); at += 1;
+      const status = f[at]; at += 1;
+      const count = Number(f[at]); at += 1;
+      const rest = f.slice(at);
+      if (tlen !== 0 && tlen !== 16) throw new Error(`WC ${name}: a tectonic block is sixteen f64, not ${tlen}`);
+      if (rest.length !== count * 3) {
+        throw new Error(`WC line holds ${rest.length} fields for ${count} points, not ${count * 3}`);
+      }
+      const base = worlds.get(name);
+      if (base === undefined) throw new Error(`WC ${name}: no world of that name to bake on`);
+      group = `carve/${name}`;
+
+      const pp = wb.wb_alloc(pl * 8);
+      const idp = wb.wb_alloc(4);
+      const bp = wb.wb_alloc(blen * 8);
+      const tp = tlen === 0 ? 0 : wb.wb_alloc(tlen * 8);
+      if (pp === 0 || idp === 0 || bp === 0 || (tlen !== 0 && tp === 0)) {
+        throw new Error('wb_alloc refused a WC input buffer');
+      }
+      new Float64Array(wb.memory.buffer, pp, pl).set(params);
+      {
+        const view = mem();
+        block.forEach((hex, i) => view.setBigUint64(bp + i * 8, BigInt('0x' + hex), true));
+        tectonic.forEach((hex, i) => view.setBigUint64(tp + i * 8, BigInt('0x' + hex), true));
+        if (mutate === 'carve-bank') {
+          if (carveBank === null) throw new Error('--mutate carve-bank needs a CBANK record');
+          view.setFloat64(bp, carveBank, true);
+        }
+        if (tlen !== 0 && mutate === 'tectonic-warp') {
+          if (tectonicWarp === null) throw new Error('--mutate tectonic-warp needs a TWARP record');
+          view.setFloat64(tp + 14 * 8, tectonicWarp, true);
+        }
+      }
+      // Not tallied, refused: the bake is what the join is made of, and a carve over a bake that
+      // did not happen would compare whatever the allocator left behind.
+      const baked = wb.wb_hydro_bake(base, pp, pl, idp);
+      if (baked !== 0) {
+        throw new Error(`WC ${name}: wb_hydro_bake returned ${baked}; there is no record to carve with`);
+      }
+      const id = mem().getUint32(idp, true);
+      const door = [seed, radius, plates, land, 0, 0, 0, 0, tp, tlen, 0, 0, 0, 0, 0, 0, bp, blen, id];
+      const checked = wb.wb_water_check(...door);
+      tally(String(checked) === status);
+      if (String(checked) !== status) note(`carve ${name} door status`, status, String(checked));
+      const handle = wb.wb_world_new_water(...door);
+      for (let p = 0; p < count; p += 1) {
+        const lat = f64of(rest[p * 3]);
+        const lon = f64of(rest[p * 3 + 1]);
+        const want = rest[p * 3 + 2];
+        if (handle !== 0) {
+          const bits = bitsOf(wb.wb_elevation_m(handle, lat, lon, res));
+          tally(bits === want);
+          if (bits !== want) note(`carve ${name} point ${p}`, want, bits);
+        } else {
+          tally(false);
+          note(`carve ${name} point ${p}`, want, '<the door refused>');
+        }
+      }
+      if (handle !== 0) wb.wb_world_free(handle);
+      wb.wb_hydro_free(id);
+      wb.wb_dealloc(pp, pl * 8);
+      wb.wb_dealloc(idp, 4);
+      wb.wb_dealloc(bp, blen * 8);
+      if (tlen !== 0) wb.wb_dealloc(tp, tlen * 8);
+      break;
+    }
     case 'version': {
       const got = String(wb.wb_generator_version());
       group = 'version';
@@ -1312,6 +1462,43 @@ if (mutate) {
   // one step, which does march. So that tile is expected to move too, and the assertion is
   // a lower bound on the moisture groups rather than an equality: what is asserted exactly
   // is the zeros.
+  // THE CARVE CONTROL CHECKS ITS OWN PREDICTION TOO, group by group. `bank_widths` is the one
+  // word of the water block: it reaches a carved world's blended banks and nothing else in this
+  // corpus -- not a bake (the block is not a bake input, so both `hydro_carve` records must sit at
+  // zero), not a query, and not a world built without a block. Before this control the carve
+  // groups' ability to see a divergence rested on a hand-run mutation recorded in a report.
+  if (mutate === 'carve-bank') {
+    if (carveBankControl === null) {
+      console.error('FAIL: --mutate carve-bank ran with no CBCTL record in the corpus');
+      process.exit(1);
+    }
+    let bad = false;
+    for (const [name, g] of groups) {
+      const expected = carveBankControl[name] ?? 0;
+      if (g.divergent !== expected) {
+        console.error(
+          `FAIL: group ${name} moved ${g.divergent} values; the native side predicted ${expected}`);
+        bad = true;
+      }
+    }
+    if (bad) {
+      console.error('  The carve control widens the blended bank and touches nothing else. It');
+      console.error('  reaches the bank points of a carved world and nothing else in this corpus --');
+      console.error('  not a channel, a body, a notch or clear ground, not a bake, not a world');
+      console.error('  without a block. A count other than the prediction means either the two');
+      console.error('  sides decode the block differently or the width now reaches something it');
+      console.error('  does not name, and either is a finding rather than a tolerance to widen.');
+      process.exit(1);
+    }
+    const named = Object.entries(carveBankControl)
+      .map(([name, n]) => `${name} ${n}/${groups.get(name)?.compared ?? '?'}`)
+      .join(', ');
+    console.log(
+      `control OK: ${named} moved, exactly the bank points the native side predicted, and every ` +
+      'other group -- both carving records, every channel, body, notch and clear point, and every ' +
+      'world without a water block -- moved nothing at all');
+    process.exit(0);
+  }
   if (mutate === 'climate-samples') {
     let bad = false;
     let moistMoved = 0;

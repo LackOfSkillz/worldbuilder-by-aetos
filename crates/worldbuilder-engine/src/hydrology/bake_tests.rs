@@ -9,6 +9,10 @@ use crate::hydrology::record::{decode, encode};
 use crate::sphere::SpherePoint;
 use crate::surface::Surface;
 
+/// The ground fingerprint of a hand-built graph: there is no surface behind one, so there is
+/// nothing to sample. None of the tests that use it read the digest.
+const NO_SURFACE: [u8; 16] = [0; 16];
+
 pub(crate) fn world() -> Surface {
     Surface::new(20_260_904, 6_371_000.0, 12, 0.29, None, None, None)
 }
@@ -125,7 +129,7 @@ fn the_record_keeps_only_notches_that_matter() {
         }
     }
 
-    let stages = BakeStages { graph, hollows, routing, flow, closure };
+    let stages = BakeStages { graph, hollows, routing, flow, closure, ground: NO_SURFACE };
     let record = record_of(&stages, &p);
     assert!(!record.notches.is_empty(), "sanity: this fixture must record at least one notch");
 
@@ -334,7 +338,7 @@ fn a_notch_line_splits_where_the_filter_opens_a_gap() {
         fresh_enclosed: Vec::new(),
         outlet_notch: Vec::new(),
     };
-    let stages = BakeStages { graph, hollows: Vec::new(), routing, flow: vec![0.0; n], closure };
+    let stages = BakeStages { graph, hollows: Vec::new(), routing, flow: vec![0.0; n], closure, ground: NO_SURFACE };
 
     let p = HydroParams::earth_like(0);
     let record = record_of(&stages, &p);
@@ -429,7 +433,7 @@ fn forced_outlets_report_how_many_matched() {
     judge(&mut hollows, &hollows::forced_nodes(&g, &p), &p);
     let mut routing = route(&g, &f, &mut hollows, &p);
     let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
-    let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+    let stages = BakeStages { graph: g, hollows, routing, flow, closure, ground: NO_SURFACE };
     let record = record_of(&stages, &p);
 
     assert_eq!(record.stats.forced_requested, 2);
@@ -470,7 +474,7 @@ fn a_reach_into_a_closed_lake_is_not_fresh() {
     let mut routing = route(&g, &f, &mut hollows, &p);
     let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
     assert_eq!(drainage_check(&g, &routing), Ok(()));
-    let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+    let stages = BakeStages { graph: g, hollows, routing, flow, closure, ground: NO_SURFACE };
     let record = record_of(&stages, &p);
 
     assert_eq!(record.bodies.len(), 1, "sanity: one lake");
@@ -729,7 +733,7 @@ fn no_closed_body_has_an_outlet_reach() {
     judge(&mut hollows, &hollows::forced_nodes(&g, &p), &p);
     let mut routing = route(&g, &f, &mut hollows, &p);
     let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
-    let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+    let stages = BakeStages { graph: g, hollows, routing, flow, closure, ground: NO_SURFACE };
     let record = record_of(&stages, &p);
     assert_eq!(record.bodies.len(), 1);
     assert!(!record.bodies[0].fresh, "sanity: wetness 0.05 closes the lake");
@@ -946,7 +950,7 @@ fn an_open_lake_may_drain_into_a_closed_lake() {
     let mut routing = route(&g, &f, &mut hollows, &p);
     let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
     assert_eq!(drainage_check(&g, &routing), Ok(()), "the bake is Ok: everything drains");
-    let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+    let stages = BakeStages { graph: g, hollows, routing, flow, closure, ground: NO_SURFACE };
     let record = record_of(&stages, &p);
 
     let forced = record.bodies.iter().find(|b| b.forced).expect("sanity: the forced lake is kept");
@@ -1069,7 +1073,7 @@ fn a_lake_drains_straight_into_another_lake_with_no_reach_between() {
     assert_eq!(hollows[lake_a].outlet, 3, "sanity: lake A spills over node 3, not the far peak");
     assert_eq!(routing.receiver[3], 2, "sanity: node 3's steepest neighbour is lake B's surface");
     let (flow, closure) = close_lakes(&g, &mut routing, &hollows, &p);
-    let stages = BakeStages { graph: g, hollows, routing, flow, closure };
+    let stages = BakeStages { graph: g, hollows, routing, flow, closure, ground: NO_SURFACE };
     let record = record_of(&stages, &p);
 
     assert!(record.reaches.is_empty(), "sanity: nothing here clears the stream threshold");
@@ -1114,7 +1118,7 @@ fn line_stages(heights: &[f64], params: &HydroParams) -> BakeStages {
     let mut routing = route(&graph, &global, &mut hollows, params);
     let (flow, closure) = close_lakes(&graph, &mut routing, &hollows, params);
     drainage_check(&graph, &routing).expect("the fixture drains");
-    BakeStages { graph, hollows, routing, flow, closure }
+    BakeStages { graph, hollows, routing, flow, closure, ground: NO_SURFACE }
 }
 
 /// Carry-forward I3: the record says how many capped basins there were and what they kept, so
@@ -1138,10 +1142,10 @@ fn the_record_echoes_the_refinement_params() {
     assert_eq!(record.stats.refine_step_m, p.refine_step_m);
     assert_eq!(record.stats.meander_max_slope, p.meander_max_slope);
     let words = crate::hydrology::record::encode(&record);
-    assert_eq!(words[0], 6.0);
+    assert_eq!(words[0], 7.0);
     assert_eq!(words[32], f64::from(record.stats.capped_basins));
     assert_eq!(words[42], p.meander_max_slope);
-    // SCHEMA 5's two crossing counts, still at the same offsets under SCHEMA 6.
+    // SCHEMA 5's two crossing counts, still at the same offsets under SCHEMAs 6 and 7.
     assert_eq!(words[43], f64::from(record.stats.crossings_coarse));
     assert_eq!(words[44], f64::from(record.stats.crossings_left));
 }
@@ -1696,7 +1700,7 @@ fn the_record_echoes_the_pond_params() {
     assert_eq!(words[51], p.pond_wetness_share);
     assert_eq!(words[52], p.pond_max_slope);
     assert_eq!(words[53], p.pond_density_area_m2);
-    assert_eq!(decode(&words).as_ref(), Some(&record), "words 45-53 of the 56-word SCHEMA 6 header");
+    assert_eq!(decode(&words).as_ref(), Some(&record), "words 45-53, unmoved in the 60-word SCHEMA 7 header");
 }
 
 /// Rulings E-1, E-2 and E-3 on a real bake: every coarse body carries a shore-point set, every

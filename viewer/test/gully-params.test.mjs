@@ -472,10 +472,10 @@ test("the crest floor closes an infinite-height hazard, and the engine is what s
   // page with a handle of 0.
   assert.throws(
     () => engine.newWorld({ ...DEFAULT_WORLD, gully: { ...drainage, crestSharpness: -0.5 } }),
-    // **The constructor's name moved again, with the peak channel's door**, and this regex moved
-    // with it: `newWorld` now calls `wb_world_new_peak` for every path. What this assertion is
+    // **The constructor's name moved again, with the carve channel's door**, and this regex moved
+    // with it: `newWorld` now calls `wb_world_new_water` for every path. What this assertion is
     // about is unchanged: a refused world says WHICH channel refused it.
-    /wb_world_new_peak refused.*gully=WB_ERR_PARAM/s,
+    /wb_world_new_water refused.*gully=WB_ERR_PARAM/s,
   );
 });
 
@@ -553,9 +553,9 @@ test("no gully number is written down twice in the viewer", () => {
   // **And the constructor really is the widened one.** This is the line that makes the channel
   // reachable at all; a viewer that imported the module and still called `wb_world_new_coast`
   // would pass every other assertion in this file except the ones that build a world. The peak
-  // channel widened the door once more, past this one -- see `peak-params.test.mjs` for the
-  // assertion that `newWorld` now calls `wb_world_new_peak`.
-  assert.match(appFile("engine.js"), /wb_world_new_(gully|peak)/);
+  // and carve channels widened the door twice more, past this one -- see
+  // `water-params.test.mjs` for the assertion that `newWorld` now calls `wb_world_new_water`.
+  assert.match(appFile("engine.js"), /wb_world_new_water\(/);
 });
 
 test("every driven gully field appears somewhere the owner can see it", () => {

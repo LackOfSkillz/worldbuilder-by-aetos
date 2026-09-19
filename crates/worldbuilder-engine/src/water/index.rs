@@ -58,26 +58,39 @@
 //!   **Why not a band around each shore member**, which is what spec §8.2 describes and what
 //!   this index shipped with first: it satisfies clause 2 and nothing else. A body wider than
 //!   about twice its band has interior cells that list it nowhere, and the query answers `Ocean`
-//!   there. The owner's great lake is 3,627 km across with a 58 km band, so a query in the
-//!   middle of it answered `Ocean` over a region 1,700 km wide. Task 6 corrects §8.2's text.
-//! - **A reach or a notch** is listed in every cell within half its width of its centre line,
-//!   along every recorded leg. Ruling Q-7: the width of a leg is the **larger** of its two
-//!   endpoints', because a leg tapers between recorded points and the smaller value would put
-//!   the wide end of the taper outside the index.
+//!   there. The owner's great lake (body 63, 4.13e7 km²; a circle of that area has a radius of
+//!   3,627 km) records its nearest shore point 1,196 km from its anchor and its farthest 7,555 km,
+//!   with a 61.6 km band. Measured in plan 2b's verification: of the lake's interior sampled by
+//!   clause 1, 86% lies more than a band plus a cell diagonal from every shore member, the deepest
+//!   point 1,890 km from one -- so a band-only index leaves most of the lake listed nowhere and the
+//!   query answered `Ocean` there. Task 6 corrects §8.2's text.
+//! - **A reach or a notch** is listed in every cell within its **footprint** of its centre line,
+//!   along every recorded leg: [`crate::water::layer::footprint_m`], which is half its width
+//!   plus the widest bank the water layer may blend (plan 2b). Ruling Q-7: the width of a leg is
+//!   the **larger** of its two endpoints', because a leg tapers between recorded points and the
+//!   smaller value would put the wide end of the taper outside the index.
+//!
+//!   **Why the footprint and not half the width, which is what plan 2a shipped.** The query
+//!   claims a river only within half the width, so for the query alone half the width was
+//!   enough. The carve reaches further: it blends a bank out beyond the channel's edge, and a
+//!   bank point in a cell that did not list its reach would be left uncut while its neighbour
+//!   across the cell line was cut -- a cliff along a cell boundary. One footprint serves both:
+//!   the query rejects the extra candidates by distance, which costs it a comparison and can
+//!   never cost it an answer, and the layer shares the index rather than holding a second one.
 //!
 //! # How a leg's cells are enumerated, and what that guarantees
 //!
 //! Walking a leg cell by cell is exact and fiddly on a sphere; this samples instead. Each leg is
-//! sampled at no more than **half a cell** apart, and every sample is dilated by half the width
+//! sampled at no more than **half a cell** apart, and every sample is dilated by the footprint
 //! **plus half of the widest gap between neighbouring samples on that leg** -- a gap that is
 //! measured from the samples actually produced, not assumed from the step. So:
 //!
-//! > **Guarantee.** Every cell holding any point within half the width of the polyline is listed
+//! > **Guarantee.** Every cell holding any point within the footprint of the polyline is listed
 //! > for that reach or notch.
 //!
-//! The proof is two steps. A point `x` within half the width of the line has a nearest point `y`
+//! The proof is two steps. A point `x` within the footprint of the line has a nearest point `y`
 //! on it; `y` lies on some leg between two neighbouring samples, so it is within half that leg's
-//! widest gap of one of them, call it `s`; hence `d(x, s) <= half_width + widest/2`, the reach
+//! widest gap of one of them, call it `s`; hence `d(x, s) <= footprint + widest/2`, the reach
 //! `s` was dilated by. And `cells_within` lists every cell holding a point within its reach (it
 //! sweeps a whole row/column range, so it lists more than that and never less).
 //!
@@ -102,6 +115,8 @@ use crate::detmath as m;
 use crate::hydrology::buckets::BucketIndex;
 use crate::hydrology::{Body, HydroRecord};
 use crate::sphere::SpherePoint;
+use crate::water::layer::footprint_m;
+use crate::water::query::leg_width_m;
 
 /// About 50 km, spec §8.2. A cell holds every item whose influence reaches it.
 pub const DEFAULT_CELL_M: f64 = 50_000.0;
@@ -128,6 +143,18 @@ pub struct WaterIndex {
     bodies: Vec<Vec<u32>>,
     reaches: Vec<Vec<u32>>,
     notches: Vec<Vec<u32>>,
+    /// One bit per cell: set **exactly** when that cell lists at least one reach or notch.
+    ///
+    /// **A summary of `reaches` and `notches`, derived from them once they are final and written
+    /// nowhere else**, so it cannot drift from them --
+    /// `the_channel_bitmap_is_exactly_the_cells_that_list_a_channel` checks every cell. It exists
+    /// for speed alone (Ruling C-30): the water layer asks it first, and most of a planet lists no
+    /// channel. Plan 2b's Task 8 measured the carved world's fixed per-sample cost as one cache
+    /// miss into the per-cell lists (about 110 ns of a ~630 ns sample on the owner's world); this
+    /// table is `cell_count / 8` bytes -- 54 KB at 434,626 cells -- small enough to stay cached
+    /// between samples. A false negative would skip a channel and leave a river uncut, which is a
+    /// wrong world rather than a slow one; hence "exactly", and the test.
+    channels: Vec<u64>,
 }
 
 impl WaterIndex {
@@ -167,7 +194,36 @@ impl WaterIndex {
                 cell.dedup();
             }
         }
-        WaterIndex { grid, radius_m, bodies, reaches, notches }
+        let mut channels = vec![0u64; cells.div_ceil(64)];
+        for cell in 0..cells {
+            if !reaches[cell].is_empty() || !notches[cell].is_empty() {
+                channels[cell >> 6] |= 1u64 << (cell & 63);
+            }
+        }
+        WaterIndex { grid, radius_m, bodies, reaches, notches, channels }
+    }
+
+    /// Whether `cell` lists any reach or notch, read from the bitmap alone.
+    fn lists_a_channel(&self, cell: usize) -> bool {
+        (self.channels[cell >> 6] >> (cell & 63)) & 1 == 1
+    }
+
+    /// [`WaterIndex::candidates`], **or `None` where the cell lists no reach and no notch** --
+    /// answered from the channel bitmap without touching the per-cell lists.
+    ///
+    /// For the water layer, which can cut nothing where no channel is listed and so needs no
+    /// candidate at all there: the cell is found once, and the three lists are read only when a
+    /// channel is present. `Some` carries exactly what `candidates` would, bodies included.
+    pub fn channel_candidates(&self, point: &SpherePoint) -> Option<Candidates<'_>> {
+        let cell = self.grid.cell_of(point);
+        if !self.lists_a_channel(cell) {
+            return None;
+        }
+        Some(Candidates {
+            bodies: &self.bodies[cell],
+            reaches: &self.reaches[cell],
+            notches: &self.notches[cell],
+        })
     }
 
     /// Every item whose influence may reach `point`, ascending by id, deduplicated.
@@ -178,6 +234,32 @@ impl WaterIndex {
             reaches: &self.reaches[cell],
             notches: &self.notches[cell],
         }
+    }
+
+    /// Every reach and every notch listed in **any** cell within `reach_m` of `point`, as two
+    /// ascending, deduplicated id lists. [`WaterIndex::candidates`] answers one point; this answers
+    /// a disc, and it is airtight in the way that matters to a caller asking about an area: an
+    /// item whose footprint reaches any point of the disc is listed in that point's cell, and
+    /// `cells_within` lists every cell holding a point of the disc (more, never fewer).
+    pub fn candidates_within(&self, point: &SpherePoint, reach_m: f64) -> (Vec<u32>, Vec<u32>) {
+        let mut reaches: Vec<u32> = Vec::new();
+        let mut notches: Vec<u32> = Vec::new();
+        let mut take = |cell: usize| {
+            reaches.extend_from_slice(&self.reaches[cell]);
+            notches.extend_from_slice(&self.notches[cell]);
+        };
+        if reach_m > 0.0 {
+            for cell in self.grid.cells_within(point, reach_m) {
+                take(cell);
+            }
+        } else {
+            take(self.grid.cell_of(point));
+        }
+        reaches.sort_unstable();
+        reaches.dedup();
+        notches.sort_unstable();
+        notches.dedup();
+        (reaches, notches)
     }
 
     /// The cell this index **realised**, which is the one it was asked for only when that was at
@@ -242,7 +324,8 @@ impl WaterIndex {
     /// same empty headers a fourth time.
     ///
     /// It is a proxy, summed from each `Vec`'s own reported size, not sampled from an allocator:
-    /// allocator rounding and the three `Vec` fields of `WaterIndex` itself are not in it.
+    /// allocator rounding and the three `Vec` fields of `WaterIndex` itself are not in it. Nor is
+    /// the channel bitmap, `cell_count / 8` bytes rounded up to a whole `u64`.
     pub fn memory_bytes(&self) -> (usize, usize, usize) {
         let header = core::mem::size_of::<Vec<u32>>();
         let entry = core::mem::size_of::<u32>();
@@ -306,32 +389,26 @@ fn add_point(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, point: &Sphere
     }
 }
 
-/// List `id` along a polyline, half a width either side. See the module doc for the guarantee.
+/// List `id` along a polyline, its footprint either side. See the module doc for the guarantee.
 fn add_line(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, line: &[SpherePoint],
             widths: &[f64], radius_m: f64) {
     if line.is_empty() {
         return;
     }
     if line.len() == 1 {
-        add_point(grid, cells, id, &line[0], half_of(widths[0]));
+        add_point(grid, cells, id, &line[0], footprint_m(widths[0]));
         return;
     }
     for leg in 0..line.len() - 1 {
         // Ruling Q-7: the wider of the two endpoints, because a leg tapers between them and the
         // narrower value would leave the wide end of the taper out of the index.
-        let (a, b) = (widths[leg], widths[leg + 1]);
-        let wider = if b > a { b } else { a };
-        add_leg(grid, cells, id, &line[leg], &line[leg + 1], half_of(wider), radius_m);
+        let wider = leg_width_m(widths[leg], widths[leg + 1]);
+        add_leg(grid, cells, id, &line[leg], &line[leg + 1], footprint_m(wider), radius_m);
     }
 }
 
-/// Half a width, and zero for a width that is negative or not a number.
-fn half_of(width_m: f64) -> f64 {
-    if width_m > 0.0 { width_m * 0.5 } else { 0.0 }
-}
-
 fn add_leg(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, a: &SpherePoint, b: &SpherePoint,
-           half_width_m: f64, radius_m: f64) {
+           footprint_m: f64, radius_m: f64) {
     let length_m = a.distance_to(b, radius_m);
     let step_m = grid.cell_m() * 0.5;
     let raw = length_m / step_m;
@@ -355,7 +432,7 @@ fn add_leg(grid: &BucketIndex, cells: &mut [Vec<u32>], id: u32, a: &SpherePoint,
             widest_gap_m = gap;
         }
     }
-    let reach_m = half_width_m + widest_gap_m * 0.5;
+    let reach_m = footprint_m + widest_gap_m * 0.5;
     for sample in &samples {
         add_point(grid, cells, id, sample, reach_m);
     }
@@ -436,6 +513,7 @@ mod tests {
     fn stats() -> BakeStats {
         let p = HydroParams::earth_like(1_000);
         BakeStats {
+            drained_for_carve: false,
             nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
             streams: 0, rivers: 0, great: 0, max_order: 0,
             bifurcation_min: 0.0, bifurcation_max: 0.0,
@@ -479,8 +557,8 @@ mod tests {
         let bandless = body(2, BodyKind::SaltFlat, 1, 0.0, vec![(20.0, 20.0), (20.1, 20.0)]);
         // Body 3: a lake far wider than its band. Four members on a 3-degree cross -- 333 km,
         // more than six cells out from the anchor -- with a collar half a degree beyond each.
-        // The owner's great lake is this shape at ten times the size: 3,627 km across against a
-        // 58 km band, and nothing within 1,750 km of its middle is a recorded point.
+        // The owner's great lake is this shape far larger: its nearest recorded point is 1,196 km
+        // from its anchor (its farthest 7,555 km) against a 61.6 km band.
         let mut wide = body(3, BodyKind::Lake, 4, BAND_M,
                             vec![(-53.0, -30.0), (-47.0, -30.0), (-50.0, -34.67), (-50.0, -25.33),
                                  (-53.5, -30.0), (-46.5, -30.0), (-50.0, -35.45), (-50.0, -24.55)]);
@@ -519,6 +597,7 @@ mod tests {
             notches: vec![notch],
             falls: Vec::new(),
             stats: stats(),
+            ground: [0; 16],
         }
     }
 
@@ -564,7 +643,8 @@ mod tests {
     /// throughout a body's interior however far that is from any recorded point. A rule that only
     /// dilated each member by `shore_reach_m` therefore listed a body nowhere in the middle of
     /// anything wider than about twice its band, and the query answered `Ocean` there -- on the
-    /// owner's great lake, 3,627 km across with a 58 km band, over a region 1,700 km wide.
+    /// owner's great lake -- whose interior reaches 1,890 km from any shore member, against a
+    /// 61.6 km band -- over most of the lake.
     ///
     /// The index's job is to offer a superset; the query is what decides. So the body is listed
     /// in every cell within its **bounding circle**: the greatest distance from its anchor to any
@@ -744,6 +824,67 @@ mod tests {
         // The five bodies' bounding circles cover far more cells than the twenty-five outline points
         // a bare per-point index would have stored one entry each for.
         assert!(bodies > 15, "the bounding circles store more than one entry per point: {bodies}");
+    }
+
+    /// Ruling C-30's guard: the bitmap summarises the lists and must never disagree with them.
+    /// Every cell is checked both ways -- a flag with no channel listed (a wasted lookup) and, the
+    /// one that matters, a channel listed with no flag (a river the layer would skip). Not
+    /// vacuous: both kinds of cell must occur.
+    fn assert_bitmap_is_exact(index: &WaterIndex, what: &str) {
+        let (mut flagged, mut clear) = (0usize, 0usize);
+        for cell in 0..index.cell_count() {
+            let listed = !index.reaches[cell].is_empty() || !index.notches[cell].is_empty();
+            assert_eq!(index.lists_a_channel(cell), listed,
+                       "{what}: cell {cell}'s flag disagrees with its lists ({} reaches, {} notches)",
+                       index.reaches[cell].len(), index.notches[cell].len());
+            if listed { flagged += 1 } else { clear += 1 }
+        }
+        assert!(flagged > 0 && clear > 0, "{what}: {flagged} flagged, {clear} clear");
+        // No bit is set past the last cell.
+        let tail = index.cell_count() & 63;
+        if tail != 0 {
+            let last = index.channels[index.channels.len() - 1];
+            assert_eq!(last >> tail, 0, "{what}: bits set beyond the last cell");
+        }
+    }
+
+    #[test]
+    fn the_channel_bitmap_is_exactly_the_cells_that_list_a_channel() {
+        assert_bitmap_is_exact(&built(), "fixture");
+        let (world, params) =
+            (crate::hydrology::bake_tests::world(), crate::hydrology::bake_tests::params());
+        let record = crate::hydrology::bake(&world, &params).expect("bake");
+        assert_bitmap_is_exact(&WaterIndex::build(&record, R, CELL), "a real bake");
+    }
+
+    #[test]
+    fn channel_candidates_is_candidates_where_a_channel_is_listed_and_none_elsewhere() {
+        let index = built();
+        let (mut some, mut none) = (0usize, 0usize);
+        for i in 0..20_000usize {
+            let lat = -89.0 + 178.0 * ((i * 7_919) % 20_000) as f64 / 20_000.0;
+            let lon = -180.0 + 360.0 * ((i * 104_729) % 20_000) as f64 / 20_000.0;
+            let p = at(lat, lon);
+            let full = index.candidates(&p);
+            match index.channel_candidates(&p) {
+                Some(got) => {
+                    some += 1;
+                    assert_eq!((got.bodies, got.reaches, got.notches),
+                               (full.bodies, full.reaches, full.notches), "at {lat},{lon}");
+                }
+                None => {
+                    none += 1;
+                    assert!(full.reaches.is_empty() && full.notches.is_empty(),
+                            "a channel is listed at {lat},{lon} and the bitmap said none");
+                }
+            }
+        }
+        // On the fixture's own channels, so the `Some` arm is not left to chance.
+        for (lat, lon) in [(0.0, 100.3), (0.0, -97.5), (40.0, 179.9), (-30.0, 50.15)] {
+            assert!(index.channel_candidates(&at(lat, lon)).is_some(), "channel at {lat},{lon}");
+            some += 1;
+        }
+        assert!(some > 0 && none > 0, "{some} with a channel, {none} without");
     }
 
     #[test]

@@ -98,7 +98,10 @@ planet params + painted features
         v
   HYDRO RECORD  (versioned, fingerprinted, stored in the worldfile)
         |
-        +--> WATER LAYER in Surface: cuts channels and notches, damps detail, via a spatial index
+        +--> WATER LAYER in Surface (opt-in, §8.1): a SECOND world built from the same params
+        |        plus a water block plus this record, joined by the record's ground fingerprint;
+        |        cuts channels and notches, not lake beds, damps detail, via a spatial index.
+        |        The bake above always reads the BARE world (`bake_ground_m`), never a carved one.
         +--> water_at(point): ocean | lake | pond | river | none, level, depth, fresh, body id
                  |-- studio: per-texel drawing, water panel
                  |-- Python generator: fresh water, docks, ferries, dry-ground checks
@@ -407,20 +410,60 @@ hydrology: {
 - **Versioning:** the bake and the water layer change what a seed produces, so
   `GENERATOR_VERSION` is bumped per VERSION-001 (`lib.rs:44–90`). A worldfile from before the
   bump opens with no `hydrology` block. It is treated as out of date, and nothing is inferred.
+  **Not as built (plan 2b, Task 7):** the water layer is opt-in — a world is carved only when its
+  owner supplies a water block and a bake for carving — and with no block every world is
+  bit-identical to the one before the layer existed, so the bump test ("the same seed and the same
+  parameters through the new code would produce a different world") is not met and
+  `GENERATOR_VERSION` stays 1. The decision is recorded in `parity/README.md`.
 
 ## 8. Water in the ground
 
 ### 8.1 The water layer
 
-This is a new stage in `Surface`, after features and before detail:
-- **River channels:** a trapezoid cut to `bed_m` along each refined reach. It is `width_m` wide
-  at the bank, with banks blended over one width either side.
-- **Notches:** cut the same way.
-- **Lake beds:** not cut. A kept lake is an existing hollow; the lake's outline and level decide
-  the water surface.
-- **Detail damping:** the layer's authority (1 inside a channel, falling to 0 at the blended bank)
-  multiplies detail amplitude by `1 − authority`, exactly as `Features::apply` does. So texture
-  cannot dam a river or raise an island in mid-channel.
+This is a new stage in `Surface`, after features and before detail — **opt-in, as built in plan
+2b**: only `Surface::with_water` (and the wasm door `wb_world_new_water` over a held bake) attaches
+it, every other constructor leaves it absent, and an absent layer is bit-identical to the world
+before it existed. That is why `GENERATOR_VERSION` was **not** bumped (§7's versioning note).
+
+- **Two phases, bake then carve (Ruling C-1).** The pond search reads the ground and the layer
+  writes it, so a bake over a carved world would find ponds in terrain shaped by its own output.
+  So the bake always runs on the **bare** world, reading `Surface::bake_ground_m` — `elevation_m`
+  with the water layer skipped and nothing else — and a carved world is **built from the same
+  parameters as the bare one, plus the water block, plus the record**. A bake, `LandGraph::sample`,
+  `wb_erosion_run` and `wb_water_run` all refuse a carved world (`HydroError::Carved`,
+  `WB_ERR_CARVED` = 10; Rulings C-1 and C-24).
+- **The join is checked, once.** `with_water` refuses, by name, an inadmissible block, a record
+  indexed at another radius, a record **not baked for carving** (`WB_ERR_NOT_BAKED_FOR_CARVING` = 9,
+  checked before the ground), and a record from **other ground** (`WB_ERR_WRONG_WORLD` = 8): the
+  bare parent's ground fingerprint (64 canonical `bake_ground_m` probes, Ruling C-7) must equal the
+  record's header words 56–59. The layer never changes `bake_ground_m`, so a carved world
+  fingerprints exactly as its bare parent does. The record and its index are one shared
+  `Arc<IndexedRecord>`, not copied per world (Ruling C-2).
+- **River channels:** cut to the bed **interpolated along each leg** (`query::along_leg`, the same
+  function the query reads a river's level with — Ruling C-13), at full depth within half the
+  leg's width (authority 1) and blended linearly back to the ground over `bank_widths` widths
+  either side (canonical 1, admissible (0, 4]). Where channels overlap the deepest cut wins; the
+  layer never raises ground.
+- **Notches:** cut the same way, to the notch's cut surface.
+- **Lake beds:** not cut (Ruling C-15). A point the query's own body test claims (`claim_bodies`:
+  inside the extent and at or under the level — the landform for a coarse body, `bake_ground_m` at
+  `pond_cell_m` for a fine-found one) is returned untouched with authority 0, so "this is a lake"
+  and "this is not a channel" are one test.
+- **The drain: a record baked for carving drops the ponds its channels drain (Rulings C-16 and
+  C-20).** A fine-found pond found on a ridge top that a recorded notch or reach cuts through is a
+  hollow in the bare world and not one once the cut is made; with lake beds uncut it would stand as
+  a dam across its own channel. So a bake with `HydroParams::drain_for_carve` set does not keep a
+  fine-found pond whose ring a channel crosses with water more than `refine_vertical_m` below the
+  pond's level, and its density cell is freed. That record is `SCHEMA_CARVE` = 8, SCHEMA 7's layout
+  word for word (the flag rides in word 0). An ordinary bake is unchanged, and only a carving record
+  can carve. On the owner's world it drains 1,311 ponds and admits 903 others (plan 2b's
+  verification report).
+- **Detail damping:** the roughness amplitude and the gully term are both multiplied by
+  `(1 − a_features) × (1 − a_water)` (Ruling C-14) — multiplicative, so either authority at zero
+  leaves the other exactly as it was. At full layer authority the ground is the carved bed and
+  nothing else, so texture cannot dam a river or raise an island in mid-channel. **Inside a body
+  the layer's authority is 0, so a lake floor keeps its detail** (Ruling C-18); plan 2b's report
+  measures how often that texture stands above a coarse lake's level.
 
 ### 8.2 Spatial index
 
@@ -445,13 +488,26 @@ This is a new stage in `Surface`, after features and before detail:
   is never recorded or transmitted. In wasm it is built on the first query against a held bake and
   cached beside it; freeing the bake frees it. The record is the contract; an index on the wire
   would be a second copy to keep honest. Measured cost of that first build: 0.04 to 0.12 s.
+  **Since plan 2b the query and every carved world share one index:** the decoded record, its
+  index and every reach and notch point projected once are one `Arc<IndexedRecord>` (Task 5), and
+  a reach or notch is listed in every cell its **whole bank footprint** reaches
+  (`layer::footprint_m`: half the width plus `MAX_BANK_WIDTHS` widths either side), not only its
+  channel, so the carve does not stop at a cell line (Task 3). No query answer moved.
 - **A body is listed in every cell within its bounding circle (Ruling Q-13)** — the greatest
   anchor-to-recorded-point distance plus `shore_reach_m` — and `index::body_circle_m` is the single
   statement of that rule. **It supersedes the shore-band dilation below as the *implementation*,
   though not the reason for it.** A band around the shore satisfies §8.3's clause 2 and nothing
   else, so a body wider than about twice its band has interior cells that list it nowhere and the
-  query answers `Ocean` there: the owner's great lake is 3,627 km across with a 58 km band, and the
-  band-only form answered `Ocean` over a region 1,700 km wide.
+  query answers `Ocean` there. **Corrected in plan 2b:** this line said the owner's great lake was
+  "3,627 km across with a 58 km band" and that the band-only form answered `Ocean` "over a region
+  1,700 km wide". 3,627 km is the **radius** of a circle of the lake's area (4.13 × 10⁷ km²), not a
+  width and not the bounding circle, which is 7,616 km (farthest recorded point 7,555 km from the
+  anchor, plus the band). The band is 61.6 km for this body (58 km was the median over all bodies).
+  Re-measured: the nearest shore member is 1,196 km from the anchor, the deepest interior point is
+  1,890 km from any shore member, and 86% of the interior clause 1 admits lies beyond a band plus a
+  cell diagonal of every shore member. So the band-only form left **most of the lake** listed
+  nowhere, not a 1,700 km region; the 1,700 km figure could not be re-derived. The conclusion — the
+  band alone is not enough — is stronger than the old wording said.
 - **The circle is affordable, measured (plan 2a Task 6, three 1,000,000-node stand-ins, 10,000
   area-uniform sample points each):** mean candidates per query **0.17 / 0.24 / 0.41** against this
   section's gate of 50, and the **largest single cell in any of the three indexes holds 20 items**
@@ -460,7 +516,14 @@ This is a new stage in `Surface`, after features and before detail:
 - **A known cost, ledgered for plan 2b:** the index occupies about **20 MB** at 50 km cells, of
   which **439 KB** is listed entries and the rest is empty per-cell `Vec` headers — three families
   in `WaterIndex` plus a fourth in the `BucketIndex` it never inserts into. Affordable today
-  (derived state, dropped with the bake), and the wrong container.
+  (derived state, dropped with the bake), and the wrong container. **Measured at the owner's radius
+  (plan 2b, native, counting allocator):** 44.3 MB over 434,626 cells, of which 2.6 MB is entries
+  and 31.3 MB empty headers; a held carving bake of the owner's world costs 61.4 MB in all (wire
+  record 7.1 MB, decoded record 7.0 MB, index 44.3 MB, projected points 2.9 MB). **The headers cost
+  memory, not the performance target below:** plan 2b measured the lookup's cost as one cache miss
+  into any per-cell table this size, and a packed offsets table would recover about 18 ns of it.
+  **The channel bitmap (Ruling C-30)** is `cell_count / 8` bytes beside them — 54 KB at the
+  owner's radius — and is what the water layer reads first.
 - **A body's shore points are dilated by its `shore_reach_m` before it is assigned to cells.**
   §8.3's test puts a point inside a body when it is within `shore_reach_m` of a shore member, so a
   cell must list every body whose shore points come within `shore_reach_m` **of the cell**, not
@@ -474,6 +537,17 @@ This is a new stage in `Surface`, after features and before detail:
 - **Performance target:** on the owner's world with its full record, the median cost of
   `elevation_m` rises by no more than 20% over the same world with no water. With 1,000 painted
   features, it is at least 10× faster than today's linear scan.
+- **Measured in plan 2b: met natively, not shown in wasm** (verification report
+  `2026-09-14-water-2b-verification.md`). On the owner's world carved by its own 86,000-wetness
+  bake, over 200,000 area-uniform points, the median native `elevation_m` first rose **30–37%**
+  (ratio of medians; median per-point ratio 27–30%). The cause was measured as the **fixed
+  per-sample index lookup** — one cache miss into a 434,626-cell table — not `inside_ring` (Ruling
+  Q-23), which runs on 0.02% of samples. **Ruling C-30** added a channel bitmap to the index (one
+  bit per cell, set exactly where a reach or notch is listed), which the layer reads first. After
+  it, the native median rises **11–12%**, a pass, with every carved elevation bit-identical. In
+  wasm the lookup is bounded by `to_latlon`'s `asin`/`atan2` rather than memory, and the best
+  per-sample reading is 1.22–1.24, on a clock too coarse to call it. The painted-feature half of
+  this target is not measured: painted features are still not in the index.
 
 ### 8.3 The query
 
@@ -569,13 +643,19 @@ Q-11)**; at a confluence the answer names one of two touching reaches.
   workers (Ruling Q-8's rectangle, at Ruling Q-18's five words a sample), and a PyO3 binding
   `water_at`. All three shipped in plan 2a and all three are compared native-against-wasm by the
   parity corpus.
-- **A bake is not tied to the world handle it was made from, and a mismatch is not refused (Ruling
-  Q-20).** Handles are never reused and the studio re-creates one on every slider change, so handle
-  equality would invalidate every held bake on every re-creation, including bit-identical ones.
-  Content, not identity, is the right key, and that is plan 2b's fingerprint. Until then a bake
-  queried against a genuinely different world of the same radius answers wrongly rather than
-  erroring; `hydroHold` returns the id and the handle together so a call site cannot drift them
-  apart, and both exports say so in as many words.
+- **A bake is not tied to the world handle it was made from (Ruling Q-20) — and since plan 2b a
+  mismatch IS refused, by content.** Handles are never reused and the studio re-creates one on every
+  slider change, so handle equality would invalidate every held bake on every re-creation, including
+  bit-identical ones. Content, not identity, is the right key. **Resolved in plan 2b (Tasks 1 and
+  2):** the record carries a ground fingerprint (header words 56–59: a digest of `bake_ground_m` at
+  64 canonical probes, Ruling C-7), each world's own fingerprint is taken once and held with its
+  handle, and `wb_water_at`, `wb_water_tile`, `wb_world_new_water` and the PyO3 door refuse a record
+  from other ground — another seed, relief block or radius, or the same radius and any other ground
+  — with `WB_ERR_WRONG_WORLD` (8) / `WrongWorldError`, once per call and never per sample (Ruling
+  C-10). The sentence that stood here ("answers wrongly rather than erroring") is no longer true. A
+  world re-created from identical parameters fingerprints identically and is accepted.
+  `hydroHold` still returns the id and the handle together, so a correct caller never meets the
+  refusal.
 - **What this section used to say about `surface_open`, and what is actually true.** The line here
   read *"The PyO3 work adds the missing `surface_open` family the Python oracle already calls"*, and
   §2's bullet still says the oracle "calls a binding that is missing from this checkout's

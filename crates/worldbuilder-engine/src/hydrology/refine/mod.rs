@@ -431,6 +431,7 @@ mod tests {
     /// a refinement test drives directly, with no bake behind it.
     fn stats_for(p: &HydroParams) -> BakeStats {
         BakeStats {
+            drained_for_carve: false,
             nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
             streams: 0, rivers: 0, great: 0, max_order: 0,
             bifurcation_min: 0.0, bifurcation_max: 0.0,
@@ -510,6 +511,7 @@ mod tests {
             notches: Vec::new(),
             falls: Vec::new(),
             stats: stats_for(&params()),
+            ground: [0; 16],
         };
         refine(&mut record, &ground, &params());
         let lines: Vec<Vec<ReachPoint>> = record.reaches.iter().map(|r| r.points.clone()).collect();
@@ -566,6 +568,7 @@ mod tests {
             notches: Vec::new(),
             falls: Vec::new(),
             stats: stats_for(&params()),
+            ground: [0; 16],
         };
         refine(&mut record, &ground, &params());
         assert_eq!(record.stats.crossings_left, 0, "the pass still clears the crossing");

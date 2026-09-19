@@ -38,7 +38,16 @@ pub struct LandGraph {
 }
 
 impl LandGraph {
+    /// `None` for a sampling that cannot be made -- and, **before anything else, for a carved
+    /// surface** (Ruling C-1). The wetness below is read through `Surface::moisture_index`, which
+    /// samples `elevation_m`, the ground the water layer writes; a graph sampled over a carved
+    /// world would feed a bake the output of the bake before it. `hydrology::bake_stages` refuses a
+    /// carved world first and names why (`HydroError::Carved`); this refuses too because it is
+    /// public, and every public door to a bake's inputs must hold the rule, not only the main one.
     pub fn sample(surface: &Surface, total_nodes: u32, wetness_nodes: u32) -> Option<Self> {
+        if surface.is_carved() {
+            return None;
+        }
         let radius_m = surface.radius_m;
         let seed = surface.world_seed as u64; // cast-ok: two's-complement reinterpretation, as Surface::new makes
         let sampling = sample_nodes(seed, total_nodes, radius_m)?;

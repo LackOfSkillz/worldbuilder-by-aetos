@@ -14,6 +14,8 @@ import {
   clearPainted, paintedWork,
   savedWorlds, searchFromPlanet, startAutosave, suspectValues, trail, urlFor,
 } from "./worlds.js";
+import { carveRefusal } from "./water-params.js";
+import { previewRecord } from "./carve-session.js";
 import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
 import { enablePicking, flyFragment, markPick, pickAt } from "./pick-point.js";
@@ -580,6 +582,9 @@ export function mountWorldPanel(parent, getViewer) {
   // (`wb-world-rebuilt`) leaves a stale preview floating over new terrain, which looks like a
   // river that moved on its own rather than like a picture nobody re-drew.
   window.addEventListener("wb-world-rebuilt", () => dropPreview("water preview cleared - the world changed"));
+  // Turning the carve on or off changes which record the preview should draw (below), and a
+  // commit that only swaps the carve does not rebuild the ground, so it gets its own event.
+  window.addEventListener("wb-carve-changed", () => dropPreview("water preview cleared - the carve changed"));
 
   previewButton.addEventListener("click", async () => {
     if (previewLayer) {
@@ -599,12 +604,16 @@ export function mountWorldPanel(parent, getViewer) {
         ...PREVIEW_PARAMS,
         forcedOutlets: forcedOutletsFromParams(new URLSearchParams(location.search)),
       };
-      let words;
-      if (wb.pool) {
+      let words = previewRecord(wb.carve && wb.carve.last, wb.carve && wb.carve.session);
+      if (words) {
+        previewNote.textContent = "drawing the record the carve cut from (baked for carving)";
+      } else if (wb.pool) {
         words = (await wb.pool.hydro({ params })).words;
       } else {
         previewNote.textContent += " - no worker pool (?workers=0), running on the main thread";
-        words = wb.engine.hydroBake({ handle: wb.world, params });
+        // The BARE world: with the carve on, `wb.world` is carved, and a bake of it is refused
+        // (WB_ERR_CARVED) -- the pool path above bakes the workers' bare world, and so must this.
+        words = wb.engine.hydroBake({ handle: wb.bareWorld ?? wb.world, params });
       }
       const decoded = decodeHydro(words);
       previewLayer = drawPreview(viewer, Cesium, decoded);
@@ -635,7 +644,10 @@ export function mountWorldPanel(parent, getViewer) {
         + outletText + forcedText;
       previewButton.textContent = "hide water preview";
     } catch (error) {
-      previewNote.textContent = `water preview failed: ${error.message}`;
+      // A refusal is named in the carve's own words, so WB_ERR_CARVED reads as a sentence.
+      previewNote.textContent = typeof error.status === "number"
+        ? `water preview refused: ${carveRefusal(error.status).text}`
+        : `water preview failed: ${error.message}`;
     } finally {
       previewButton.disabled = false;
     }

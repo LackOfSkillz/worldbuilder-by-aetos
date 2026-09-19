@@ -23,7 +23,7 @@
 //!   ocean. Every level, bed and datum crossing in the record is landform-derived, and a query
 //!   that asked the detail field instead would put the shoreline wherever the texture noise
 //!   happened to cross the level.
-//! - **Ruling Q-16, the detail field** (`Surface::elevation_m` at `pond_cell_m` -- exactly
+//! - **Ruling Q-16, the detail field** (`Surface::bake_ground_m` at `pond_cell_m` -- exactly
 //!   `hydrology::ponds::pond_ground`), for a body the §6.6 fine search found. **Ruling S-9 made
 //!   that search read the detail field**, because the landform is smooth at 250 m: the deepest
 //!   landform dip on the owner's world is 18 mm, so a pond levelled off `structural_m` would have
@@ -51,7 +51,7 @@
 //! no graph to re-run connectivity on. So the shape is
 //!
 //! > a body claimed it, **else if** the landform is at or below the datum **and no body's extent
-//! > held it**, ocean, **else** a reach, **else** none
+//! > held it**, ocean, **else** a reach, **else** a notch, **else** none
 //!
 //! which yields the table's precedence while letting a body at or under the datum -- the owner's
 //! inland sea, every enclosed basin -- answer as itself rather than as sea.
@@ -78,7 +78,10 @@
 //!   **closes implicitly**: `outline[i]` joins `outline[(i + 1) % len]`, and the first point is
 //!   never repeated. Ruling Q-17: a point **on** a vertex or an edge is inside.
 //! - [`river_claim`] -- within half a reach's width of its centre line, the width of a leg being
-//!   the larger of its two endpoints' (Ruling Q-7).
+//!   the larger of its two endpoints' (Ruling Q-7). Its level and depth are read along the
+//!   claiming leg by [`along_leg`] (Ruling C-13), the function the water layer cuts its bed with.
+//! - [`notch_claim`] -- the same test over a notch line, asked only where no reach claimed the
+//!   point (Ruling C-35).
 //!
 //! Which of the first two runs is decided by `shore_member_count` **and by nothing else** (Ruling
 //! E-8); `kind` says what the water *is*, not how its extent is written down.
@@ -100,14 +103,25 @@
 //! and both are already in hand where the answer is built. `NO_BODY` and `NO_REACH` are separate
 //! names for the same sentinel value, because the two fields index different tables.
 //!
-//! # Notches are not a kind
+//! # A notch answers `River` (Ruling C-35)
 //!
-//! The index carries notches because the *water layer* (plan 2b) cuts them into the ground. §8.3's
-//! table has no notch row -- a cut channel is answered by the reach that runs through it -- so
-//! this query never reads `Candidates::notches`.
+//! A notch is where a lake spills through its rim, and the water layer (plan 2b) cuts it into the
+//! ground exactly as it cuts a reach. §8.3's table has no notch row, and before Ruling C-35 this
+//! query never read `Candidates::notches`, on the assumption that a reach always runs through a
+//! cut channel. It does not. Measured natively on `bake_tests::world()` baked for carving at
+//! `earth_like(30_000)` and `earth_like(60_000)`: 10 of the 12 notches lie 97 km to 1,732 km from
+//! any recorded reach point (nearest recorded notch point to nearest recorded reach point), because
+//! the outflow is below the stream threshold; the carved world stands 11.2 m to 55.8 m under the
+//! bare one at their recorded points (the deepest point per notch). The query called every point
+//! of them dry.
+//!
+//! So [`notch_claim`] runs after the reaches: within half a notch leg's width of its line -- the
+//! same [`line_claim`] as a reach, so the same footprint the layer cuts at full authority -- the
+//! answer is `River` at the notch's cut surface read by [`along_leg`], with `reach_id` left at
+//! [`NO_REACH`]. See [`notch_answer`] for its depth and why the kind set did not grow.
 
 use crate::detmath as m;
-use crate::hydrology::{Body, BodyKind, HydroRecord, ReachLine};
+use crate::hydrology::{Body, BodyKind, HydroRecord, NotchLine, ReachLine};
 use crate::sphere::SpherePoint;
 use crate::vectors::{Vec3, DEGENERATE, NORTH_AXIS, POLAR_FALLBACK};
 use crate::water::index::WaterIndex;
@@ -115,7 +129,8 @@ use crate::water::index::WaterIndex;
 /// `WaterAt::body_id` when the answer belongs to no recorded body: ocean, river and none.
 pub const NO_BODY: u32 = u32::MAX;
 
-/// `WaterAt::reach_id` when the answer belongs to no recorded reach -- everything but a river.
+/// `WaterAt::reach_id` when the answer belongs to no recorded reach -- everything but a river, and
+/// a river through a notch no reach claims (Ruling C-35).
 /// The same value as [`NO_BODY`], and deliberately a separate name: the two fields index
 /// different tables, and a reader who sees one sentinel doing double duty will eventually pass a
 /// body id where a reach id belongs.
@@ -150,7 +165,8 @@ pub struct WaterAt {
     /// The body this answer belongs to, or [`NO_BODY`] for ocean, river and none.
     pub body_id: u32,
     /// **Ruling Q-18.** The reach this answer belongs to, or [`NO_REACH`] for everything that is
-    /// not a `River`.
+    /// not a `River` -- **and for a `River` through a notch no reach claims** (Ruling C-35), which
+    /// is how an answer says "a notch" without a kind of its own.
     ///
     /// Set because an answer of `River` is otherwise a dead end: spec §9.1 tints a river **by
     /// class**, and `class` lives on the `ReachLine`, so without this a drawing path would have to
@@ -190,10 +206,12 @@ impl WaterAt {
 /// dry and lake edges wander with the detail slider.
 pub struct Landform<'a>(pub &'a dyn Fn(&SpherePoint) -> f64);
 
-/// `Surface::elevation_m(point, Some(pond_cell_m))` -- the landform **plus** the detail field, at
-/// the fine search's own cell size. This is exactly `hydrology::ponds::pond_ground`, and passing
-/// anything else means comparing a fine-found body's level against a surface it was never
-/// levelled from. Ruling Q-16. Used only for a body with `shore_member_count == 0`.
+/// `Surface::bake_ground_m(point, Some(pond_cell_m))` -- the landform **plus** the detail field, at
+/// the fine search's own cell size, and **without** the water layer (Ruling C-9). This is exactly
+/// `hydrology::ponds::pond_ground`, and passing anything else means comparing a fine-found body's
+/// level against a surface it was never levelled from -- `elevation_m` included, which on a carved
+/// world has a channel cut into it. Ruling Q-16. Used only for a body with
+/// `shore_member_count == 0`.
 ///
 /// A newtype for the same reason as [`Landform`]; see there.
 pub struct Detail<'a>(pub &'a dyn Fn(&SpherePoint) -> f64);
@@ -237,13 +255,111 @@ pub fn water_at(
 ) -> WaterAt {
     let radius_m = index.radius_m();
     let landform = ground.landform_m.at(point);
-    // Ruling Q-16's second surface, read only if a ring body is actually a candidate here. Most
-    // samples never touch one, and a detail sample is the more expensive of the two.
-    let mut detail: Option<f64> = None;
     let candidates = index.candidates(point);
 
     // Bodies first, though the table lists the ocean first: Ruling Q-4, a recorded body's extent
-    // beats the ocean's. Ruling T1-3 picks between claimants -- smaller `dm`, ties to lower id.
+    // beats the ocean's. See [`claim_bodies`] for the claim and for Ruling Q-12's two questions.
+    let BodyClaims { best, in_an_extent } =
+        claim_bodies(&record.bodies, candidates.bodies, ground, point, radius_m, landform);
+    if let Some((_, body, here)) = best {
+        return body_answer(body, here);
+    }
+
+    // "a body claimed it, else if the landform is at or below the datum AND no body's extent held
+    // it, ocean" (Rulings Q-4 and Q-12). The datum is a landform crossing: the coastline is locked
+    // to `structural_m` (spec §11) and never moves with the texture, whatever a pond does.
+    if landform <= DATUM_M && !in_an_extent {
+        return WaterAt {
+            kind: WaterKind::Ocean,
+            level_m: DATUM_M,
+            depth_m: DATUM_M - landform,
+            fresh: false,
+            body_id: NO_BODY,
+            reach_id: NO_REACH,
+        };
+    }
+
+    // Then the reaches. Nearest centre line wins, ties to the lower reach id -- the same
+    // "smallest distance, then lowest id" shape Ruling T1-3 fixes for bodies, so that a point a
+    // confluence puts inside two channels does not answer by the order a cell lists them in.
+    let mut best_reach: Option<(RiverClaim, &ReachLine)> = None;
+    for &id in candidates.reaches {
+        let Some(reach) = reach_by_id(record, id) else {
+            continue;
+        };
+        let Some(claim) = river_claim(reach, point, radius_m) else {
+            continue;
+        };
+        let d = claim.distance_m;
+        best_reach = Some(match best_reach {
+            None => (claim, reach),
+            Some((held_claim, held)) => {
+                let best_d = held_claim.distance_m;
+                if d < best_d || (d == best_d && reach.id < held.id) {
+                    (claim, reach)
+                } else {
+                    (held_claim, held)
+                }
+            }
+        });
+    }
+    if let Some((claim, reach)) = best_reach {
+        return river_answer(reach, claim);
+    }
+
+    // Then the notches (Ruling C-35): a lake's outflow through its rim, which the water layer cuts
+    // exactly as it cuts a reach. Asked only where no reach claimed the point, so a notch that runs
+    // under a reach -- where the two share a node, the notch's surface is the reach's water -- is
+    // answered by the reach and keeps its id. The same "nearest centre line, then lowest id" shape,
+    // where a notch's id is its position in `record.notches` (the index lists it so).
+    let mut best_notch: Option<(RiverClaim, &NotchLine, u32)> = None;
+    for &id in candidates.notches {
+        let position = id as usize; // cast-ok: a notch's candidate id IS its position (index.rs); `get` below checks it
+        let Some(notch) = record.notches.get(position) else {
+            continue;
+        };
+        let Some(claim) = notch_claim(notch, point, radius_m) else {
+            continue;
+        };
+        let d = claim.distance_m;
+        best_notch = Some(match best_notch {
+            None => (claim, notch, id),
+            Some((held_claim, held, held_id)) => {
+                if d < held_claim.distance_m || (d == held_claim.distance_m && id < held_id) {
+                    (claim, notch, id)
+                } else {
+                    (held_claim, held, held_id)
+                }
+            }
+        });
+    }
+    if let Some((claim, notch, _)) = best_notch {
+        return notch_answer(notch, claim, landform);
+    }
+
+    WaterAt::none()
+}
+
+// ---- the body clauses -------------------------------------------------------------------
+
+/// What the recorded bodies say about `point`: **which body claims it**, if any, and whether it
+/// stands **inside any body's extent** at all -- §8.3's body rows, and Ruling Q-12's two separate
+/// questions. `ids` is the index's candidate list here, resolved against `bodies` (a record's
+/// `bodies`, or any slice of bodies -- the pond search asks it of one candidate); `landform` is
+/// `ground.landform_m` at `point`, already read by the caller.
+///
+/// **Shared with the water layer**, which asks it whether a point is in a lake before cutting a
+/// channel there (spec §8.1, "lake beds: not cut"): "this is a lake" and "this is not a channel"
+/// are one test, so the carve can never cut a place the query answers as standing water.
+pub(crate) fn claim_bodies<'r>(
+    bodies: &'r [Body],
+    ids: &[u32],
+    ground: &Ground,
+    point: &SpherePoint,
+    radius_m: f64,
+    landform: f64,
+) -> BodyClaims<'r> {
+    // Ruling T1-3 picks between claimants -- smaller `dm`, ties to lower id.
     //
     // Ruling Q-12: **two different questions, tracked separately.** `in_an_extent` is "some
     // candidate body's extent held this point", which is what suppresses the ocean (Q-4's own
@@ -253,10 +369,14 @@ pub fn water_at(
     // is above the body's level and still under the sea's -- gating the ocean on the *claim* would
     // flood an enclosed basin's dry shore. It is inside the salt flat's extent, so it is not sea;
     // it is above the salt flat's level, so it is not water either. It is `none`.
+    //
+    // Ruling Q-16's second surface, read only if a ring body is actually a candidate here. Most
+    // samples never touch one, and a detail sample is the more expensive of the two.
+    let mut detail: Option<f64> = None;
     let mut in_an_extent = false;
-    let mut best: Option<(f64, &Body, f64)> = None;
-    for &id in candidates.bodies {
-        let Some(body) = body_by_id(record, id) else {
+    let mut best: Option<(f64, &'r Body, f64)> = None;
+    for &id in ids {
+        let Some(body) = body_by_id(bodies, id) else {
             continue; // an index built over a different record; refuse it, never index blindly
         };
         let Some(dm) = extent_claim(body, point, radius_m) else {
@@ -287,54 +407,16 @@ pub fn water_at(
             }
         });
     }
-    if let Some((_, body, here)) = best {
-        return body_answer(body, here);
-    }
-
-    // "a body claimed it, else if the landform is at or below the datum AND no body's extent held
-    // it, ocean" (Rulings Q-4 and Q-12). The datum is a landform crossing: the coastline is locked
-    // to `structural_m` (spec §11) and never moves with the texture, whatever a pond does.
-    if landform <= DATUM_M && !in_an_extent {
-        return WaterAt {
-            kind: WaterKind::Ocean,
-            level_m: DATUM_M,
-            depth_m: DATUM_M - landform,
-            fresh: false,
-            body_id: NO_BODY,
-            reach_id: NO_REACH,
-        };
-    }
-
-    // Then the reaches. Nearest centre line wins, ties to the lower reach id -- the same
-    // "smallest distance, then lowest id" shape Ruling T1-3 fixes for bodies, so that a point a
-    // confluence puts inside two channels does not answer by the order a cell lists them in.
-    let mut best_reach: Option<(f64, &ReachLine)> = None;
-    for &id in candidates.reaches {
-        let Some(reach) = reach_by_id(record, id) else {
-            continue;
-        };
-        let Some(d) = river_claim(reach, point, radius_m) else {
-            continue;
-        };
-        best_reach = Some(match best_reach {
-            None => (d, reach),
-            Some((best_d, held)) => {
-                if d < best_d || (d == best_d && reach.id < held.id) {
-                    (d, reach)
-                } else {
-                    (best_d, held)
-                }
-            }
-        });
-    }
-    if let Some((_, reach)) = best_reach {
-        return river_answer(reach, point, radius_m);
-    }
-
-    WaterAt::none()
+    BodyClaims { best, in_an_extent }
 }
 
-// ---- the body clauses -------------------------------------------------------------------
+/// [`claim_bodies`]'s answer: the claiming body as `(dm, body, the ground its level was compared
+/// against)`, and whether any candidate's extent held the point.
+pub(crate) struct BodyClaims<'r> {
+    pub(crate) best: Option<(f64, &'r Body, f64)>,
+    pub(crate) in_an_extent: bool,
+}
+
 
 /// What a claiming body answers: its own kind and level, its own `fresh`, and a depth that is the
 /// level minus the ground, floored at zero (Ruling Q-6 -- a *ground* depth, not a bathymetric one,
@@ -524,50 +606,90 @@ fn inside_ring(outline: &[(f64, f64)], point: &SpherePoint) -> bool {
 /// width is the **larger** of its two endpoints', because a leg tapers between recorded points and
 /// the smaller value would answer `none` inside a channel the carve will cut.
 ///
-/// Returns the distance to the nearest claiming leg's centre line, or `None`.
-fn river_claim(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> Option<f64> {
-    let points = &reach.points;
-    if points.is_empty() {
+/// Returns where the nearest claiming leg claimed it -- its distance, which leg, and how far along
+/// it -- or `None`. Ties go to the lower leg, which a strict `<` gives.
+fn river_claim(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> Option<RiverClaim> {
+    let at = |k: usize| (reach_at(reach, k), reach.points[k].width_m);
+    line_claim(reach.points.len(), &at, point, radius_m)
+}
+
+/// The notch clause's claim (Ruling C-35): [`river_claim`] over a notch line -- the same legs, the
+/// same Ruling Q-7 width, the same half of it, the same `leg_foot` -- so a point is in a notch's
+/// water exactly where the water layer cuts it at full authority.
+fn notch_claim(notch: &NotchLine, point: &SpherePoint, radius_m: f64) -> Option<RiverClaim> {
+    let at = |k: usize| {
+        let (lat, lon, _, width_m) = notch.points[k];
+        (SpherePoint::from_latlon(lat, lon), width_m)
+    };
+    line_claim(notch.points.len(), &at, point, radius_m)
+}
+
+/// One polyline's claim on `point`: `at(k)` is recorded point `k` on the sphere and its width, and
+/// `len` how many there are. **One body for a reach and a notch**, so the two clauses cannot come
+/// to disagree about what "within half the width" means.
+fn line_claim(len: usize, at: &dyn Fn(usize) -> (SpherePoint, f64), point: &SpherePoint,
+              radius_m: f64) -> Option<RiverClaim> {
+    if len == 0 {
         return None;
     }
-    if points.len() == 1 {
-        let d = point.distance_to(&reach_at(reach, 0), radius_m);
-        return if d <= half_of(points[0].width_m) { Some(d) } else { None };
+    if len == 1 {
+        let (only, width_m) = at(0);
+        let d = point.distance_to(&only, radius_m);
+        return if d <= half_of(width_m) {
+            Some(RiverClaim { distance_m: d, leg: 0, along: 0.0 })
+        } else {
+            None
+        };
     }
-    let mut best: Option<f64> = None;
-    for leg in 0..points.len() - 1 {
-        let (a, b) = (points[leg].width_m, points[leg + 1].width_m);
-        let wider = if b > a { b } else { a };
-        let d = distance_to_leg_m(point, &reach_at(reach, leg), &reach_at(reach, leg + 1), radius_m);
+    let mut best: Option<RiverClaim> = None;
+    for leg in 0..len - 1 {
+        let ((a, width_a), (b, width_b)) = (at(leg), at(leg + 1));
+        let wider = leg_width_m(width_a, width_b);
+        let (d, along) = leg_foot(point, &a, &b, radius_m);
         if d <= half_of(wider) {
+            let here = RiverClaim { distance_m: d, leg, along };
             best = Some(match best {
-                None => d,
-                Some(held) => if d < held { d } else { held },
+                None => here,
+                Some(held) => if d < held.distance_m { here } else { held },
             });
         }
     }
     best
 }
 
-/// What a claiming reach answers. Ruling Q-6: the depth is the reach's own `depth_m` **at the
-/// nearest recorded point**, and the level is that same point's `bed_m + depth_m` -- not an
-/// interpolation along the leg, which §8.3 does not ask for and the tile batch (Ruling Q-8) is
-/// explicit about not doing. A river belongs to no body.
-fn river_answer(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> WaterAt {
-    let mut nearest = 0usize;
-    let mut best = f64::INFINITY;
-    for i in 0..reach.points.len() {
-        let d = point.distance_to(&reach_at(reach, i), radius_m);
-        if d < best {
-            best = d;
-            nearest = i; // ties to the lower index: a strict `<` keeps the first one scanned
-        }
-    }
-    let rp = &reach.points[nearest];
+/// Where a reach claimed a point: the distance to the claiming leg's centre line, which leg
+/// (`points[leg]` to `points[leg + 1]`; `0` for a one-point reach), and the foot's fraction along
+/// it (`leg_foot`'s second value).
+#[derive(Debug, Clone, Copy)]
+struct RiverClaim {
+    distance_m: f64,
+    leg: usize,
+    along: f64,
+}
+
+/// What a claiming reach answers. **Ruling C-13, superseding Q-6's nearest recorded point:** the
+/// bed and the depth are both read **along the claiming leg**, at the foot of the perpendicular,
+/// by [`along_leg`] -- the same function the water layer cuts its bed with -- and the level is
+/// their sum. So the water surface the query reports and the channel the carve cuts are one
+/// geometry: wherever this answers `River`, the carved bed stands at or under this level.
+///
+/// Q-6's nearest point was a step function along a reach. Measured on the two parity worlds before
+/// this ruling, the carve's interpolated bed stood above that step's level in 252 of 1,702 leg
+/// halves (`hydro/plain`) and 365 of 4,400 (`hydro/ranges`), by up to 40.1 m: a river reading dry
+/// in its own channel. At a recorded point `along` is `0` or `1` and the answer is that point's own
+/// `bed_m + depth_m`, as it was. A river belongs to no body.
+fn river_answer(reach: &ReachLine, claim: RiverClaim) -> WaterAt {
+    let points = &reach.points;
+    let (bed_m, depth_m) = if claim.leg + 1 < points.len() {
+        let (a, b) = (&points[claim.leg], &points[claim.leg + 1]);
+        (along_leg(a.bed_m, b.bed_m, claim.along), along_leg(a.depth_m, b.depth_m, claim.along))
+    } else {
+        (points[claim.leg].bed_m, points[claim.leg].depth_m)
+    };
     WaterAt {
         kind: WaterKind::River,
-        level_m: rp.bed_m + rp.depth_m,
-        depth_m: rp.depth_m,
+        level_m: bed_m + depth_m,
+        depth_m,
         fresh: reach.fresh,
         body_id: NO_BODY,
         // Ruling Q-18: the one branch that names a reach. Which reach answered is not recoverable
@@ -576,13 +698,80 @@ fn river_answer(reach: &ReachLine, point: &SpherePoint, radius_m: f64) -> WaterA
     }
 }
 
+/// What a claiming notch answers (Ruling C-35): **`River`, at the notch's cut surface read along
+/// the claiming leg** by [`along_leg`] -- the very target the water layer cuts that leg to, so the
+/// carve stands at or under this level wherever this answers (Ruling C-13's guarantee, extended).
+///
+/// - **`reach_id` is [`NO_REACH`], and that is how the answer says "a notch".** Every other `River`
+///   names its reach (Ruling Q-18), so a `River` naming none is a notch's and nothing else's; the
+///   published kinds and the five-word sample stay as they are. A notch has no id of its own in the
+///   record -- it is a position in `notches` -- and no reader needs one: §9.1 tints by a reach's
+///   class, which a notch does not have.
+/// - **The depth is the level over the landform, and zero where the landform stands higher.** A
+///   notch records no channel depth: its word 3 is the water surface itself, the ground lowered to
+///   it (Ruling F-2), so on cut ground the water is a film on the cut. Where the notch runs over
+///   ground already lower than its surface -- the route walked over it without lowering -- the
+///   water stands that much over it, measured as the ocean and a coarse lake measure theirs.
+/// - **`fresh` is true**: a notch is the outlet that makes the hollow behind it not closed, which
+///   is what `fresh` means for a body, and the water leaving through it is that hollow's outflow.
+/// - It belongs to no body: the lake it drains answers for itself, inside its own extent.
+fn notch_answer(notch: &NotchLine, claim: RiverClaim, landform_m: f64) -> WaterAt {
+    let points = &notch.points;
+    let level_m = if claim.leg + 1 < points.len() {
+        along_leg(points[claim.leg].2, points[claim.leg + 1].2, claim.along)
+    } else {
+        points[claim.leg].2
+    };
+    let depth_m = if level_m > landform_m { level_m - landform_m } else { 0.0 };
+    WaterAt {
+        kind: WaterKind::River,
+        level_m,
+        depth_m,
+        fresh: true,
+        body_id: NO_BODY,
+        reach_id: NO_REACH,
+    }
+}
+
+/// A recorded quantity read `along` a leg from its value at `a` to its value at `b`: linear, and
+/// **exactly** `at_a` at `along <= 0` and `at_b` at `along >= 1` -- by branch, because
+/// `a + 1.0 * (b - a)` is not `b` in floating point, and a recorded point must answer its own
+/// recorded value.
+///
+/// **One function for the query's level and the carve's bed (Ruling C-13).** `river_answer`
+/// reads a reach's bed and depth with it; `water::layer` cuts to a reach's bed and a notch's
+/// surface with it. Two interpolations would be two water surfaces.
+pub(crate) fn along_leg(at_a: f64, at_b: f64, along: f64) -> f64 {
+    if along <= 0.0 {
+        at_a
+    } else if along >= 1.0 {
+        at_b
+    } else {
+        at_a + along * (at_b - at_a)
+    }
+}
+
 fn reach_at(reach: &ReachLine, i: usize) -> SpherePoint {
     SpherePoint::from_latlon(reach.points[i].lat_deg, reach.points[i].lon_deg)
 }
 
+// ---- leg geometry, shared with the water layer ------------------------------------------------
+//
+// **The query's "this is a river" and the carve's "this is a channel" are one test.** Plan 2b's
+// water layer (`water::layer`) cuts a channel wherever this module would answer `River`, and it
+// finds that place with the functions below rather than with a copy of them: the same Ruling Q-7
+// width, the same half of it, the same distance to the same arc. A second version would be a
+// second place for the channel to be.
+
+/// Ruling Q-7: a leg's width is the **larger** of its two endpoints', because a leg tapers between
+/// recorded points and the smaller value would answer `none` inside a channel the carve cuts.
+pub(crate) fn leg_width_m(width_a_m: f64, width_b_m: f64) -> f64 {
+    if width_b_m > width_a_m { width_b_m } else { width_a_m }
+}
+
 /// Half a width, and zero for a width that is negative or not a number -- `index.rs`'s own rule,
 /// so the index and the query agree on what a malformed width means.
-fn half_of(width_m: f64) -> f64 {
+pub(crate) fn half_of(width_m: f64) -> f64 {
     if width_m > 0.0 { width_m * 0.5 } else { 0.0 }
 }
 
@@ -593,10 +782,24 @@ fn half_of(width_m: f64) -> f64 {
 /// -- `(a x f) . n >= 0` and `(f x b) . n >= 0` -- rather than by comparing angles, so no
 /// transcendental is spent deciding it. Two coincident or antipodal ends have no arc to be
 /// perpendicular to and fall back to the ends.
-fn distance_to_leg_m(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radius_m: f64) -> f64 {
+///
+/// The fraction too -- **how far along the leg its answer was measured**: `0` at `a`, `1`
+/// at `b`. The distance is computed here and nowhere else, so the query and the carve cannot
+/// disagree about it.
+///
+/// The fraction needs no transcendental either. `before` and `after` are the two sign tests'
+/// own values, and on unit vectors they are `|a x b|` times the sines of the angles `a`-foot and
+/// foot-`b`; their ratio is therefore the foot's position by the sines of its two angles, which
+/// is exact at both ends and monotone along the leg, and it departs from the angular fraction
+/// only by the difference between an angle and its sine -- second order in a leg a few hundred
+/// metres long on a planet thousands of kilometres round. Where the foot falls off the leg, the
+/// distance is to the nearer end and so is the fraction: `0` for `a`, `1` for `b`, and `b` on a
+/// tie, because `ends` below keeps `db` when `da == db`.
+pub(crate) fn leg_foot(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radius_m: f64)
+                       -> (f64, f64) {
     let da = point.distance_to(a, radius_m);
     let db = point.distance_to(b, radius_m);
-    let ends = if da < db { da } else { db };
+    let ends = if da < db { (da, 0.0) } else { (db, 1.0) };
 
     let across = a.vector.cross(&b.vector);
     if across.length() < DEGENERATE {
@@ -618,7 +821,9 @@ fn distance_to_leg_m(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radi
     // `.abs()`, and capped rather than `.clamp(`ed, per the house rules.
     let magnitude = if off_plane < 0.0 { -off_plane } else { off_plane };
     let capped = if magnitude > 1.0 { 1.0 } else { magnitude };
-    m::asin(capped) * radius_m
+    let span = before + after;
+    let along = if span > 0.0 { before / span } else { 0.0 };
+    (m::asin(capped) * radius_m, along)
 }
 
 // ---- resolving what the index handed back ----------------------------------------------------
@@ -628,31 +833,41 @@ fn distance_to_leg_m(point: &SpherePoint, a: &SpherePoint, b: &SpherePoint, radi
 /// when the body sitting there actually carries that id. A record whose ids and positions disagree
 /// -- or an index built over a different record entirely -- answers correctly or answers nothing,
 /// and never indexes blindly.
-fn body_by_id(record: &HydroRecord, id: u32) -> Option<&Body> {
+fn body_by_id(bodies: &[Body], id: u32) -> Option<&Body> {
     let position = id as usize; // cast-ok: a recorded id used as a position, verified on the line below
-    if let Some(body) = record.bodies.get(position) {
+    if let Some(body) = bodies.get(position) {
         if body.id == id {
             return Some(body);
         }
     }
-    record.bodies.iter().find(|body| body.id == id)
+    bodies.iter().find(|body| body.id == id)
 }
 
 /// The reach with this **id**, on the same terms as [`body_by_id`].
 fn reach_by_id(record: &HydroRecord, id: u32) -> Option<&ReachLine> {
+    reach_position(record, id).map(|position| &record.reaches[position])
+}
+
+/// Where in `record.reaches` the reach with this **id** sits, on [`reach_by_id`]'s terms -- the
+/// position tried first as a fast path, then a scan for the first reach carrying the id. Shared
+/// with the water layer, which keeps each reach's points pre-projected by position and must
+/// resolve an index candidate to the same reach the query would.
+pub(crate) fn reach_position(record: &HydroRecord, id: u32) -> Option<usize> {
     let position = id as usize; // cast-ok: a recorded id used as a position, verified on the line below
     if let Some(reach) = record.reaches.get(position) {
         if reach.id == id {
-            return Some(reach);
+            return Some(position);
         }
     }
-    record.reaches.iter().find(|reach| reach.id == id)
+    record.reaches.iter().position(|reach| reach.id == id)
 }
 
 // ---- tests -----------------------------------------------------------------------------
 
+/// `pub(crate)` for [`stats`] alone: `water::layer`'s tests drive hand-written records too, and
+/// a second copy of that forty-field fixture would be a second thing to keep in step.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::hydrology::{
         BakeStats, Body, BodyKind, Downstream, HydroParams, HydroRecord, ReachClass, ReachLine,
@@ -714,9 +929,10 @@ mod tests {
 
     /// Every count zero: a `HydroRecord` driven directly, with no bake behind it. The query
     /// reads nothing from `stats`.
-    fn stats() -> BakeStats {
+    pub(crate) fn stats() -> BakeStats {
         let p = HydroParams::earth_like(1_000);
         BakeStats {
+            drained_for_carve: false,
             nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
             streams: 0, rivers: 0, great: 0, max_order: 0,
             bifurcation_min: 0.0, bifurcation_max: 0.0,
@@ -846,7 +1062,7 @@ mod tests {
                              reach_point(-200.0 / M_PER_DEG, 140.2, 60.0, 2_000.0, 5.0)],
             },
         ];
-        HydroRecord { bodies, reaches, notches: Vec::new(), falls: Vec::new(), stats: stats() }
+        HydroRecord { bodies, reaches, notches: Vec::new(), falls: Vec::new(), stats: stats(), ground: [0; 16] }
     }
 
     fn built(record: &HydroRecord) -> WaterIndex {
@@ -1092,10 +1308,9 @@ mod tests {
         let same = flat(40.0);
         let g = Ground { landform_m: Landform(&same), detail_m: Detail(&same) };
 
-        // On the line, halfway along the first leg. The nearest recorded point there is the one
-        // at lon 120.1 (bed 19 m), 5,560 m away against 5,560 m for lon 120.0 -- so probe a
-        // little east of centre where the nearest point is unambiguous.
-        let on = at(0.0, 120.12);
+        // On the line, at the recorded point at lon 120.1 (bed 19 m, depth 3 m): exactly that
+        // point's own level, which Ruling C-13's interpolation keeps by branch at a leg's ends.
+        let on = at(0.0, 120.1);
         let got = water_at(&record, &index, &g, &on);
         assert_eq!(got.kind, WaterKind::River);
         assert_eq!(got.body_id, NO_BODY, "a river belongs to no body");
@@ -1103,6 +1318,14 @@ mod tests {
         assert_eq!(got.depth_m.to_bits(), 3.0f64.to_bits(), "the reach's own depth");
         assert_eq!(got.level_m.to_bits(), 22.0f64.to_bits(), "bed 19 m plus depth 3 m");
         assert!(got.fresh, "reach 0's chain reaches the ocean");
+
+        // Ruling C-13: between recorded points the level is read along the leg. A fifth of the
+        // way from lon 120.1 (bed 19) to 120.2 (bed 18) the bed is 18.8 m and the level 21.8 m;
+        // Q-6's nearest point would have answered 22 m, a step the carve's bed does not take.
+        let fifth = water_at(&record, &index, &g, &at(0.0, 120.12));
+        assert_eq!(fifth.kind, WaterKind::River);
+        close(fifth.level_m, 21.8, 1.0e-6, "the level a fifth of the way along the second leg");
+        assert_eq!(fifth.depth_m.to_bits(), 3.0f64.to_bits(), "both ends carry 3 m");
 
         // 400 m north of the line: inside the 500 m half width.
         let inside = at(400.0 / M_PER_DEG, 120.12);
@@ -1159,6 +1382,48 @@ mod tests {
                 "fixture is wrong: reach 0 is not a candidate, so `none` proves nothing");
         assert_eq!(water_at(&record, &index, &g, &past_end), WaterAt::none(),
                    "556 m beyond the last recorded point of a 1,000 m channel");
+    }
+
+    /// **Ruling C-35: a notch no reach runs through answers `River`**, at its cut surface read along
+    /// the leg, naming no reach and no body; it stops at its half-width as a reach does; and where
+    /// a reach also claims the point, the reach answers and keeps its id.
+    #[test]
+    fn a_notch_answers_river_at_its_cut_surface_and_names_no_reach() {
+        let mut record = fixture();
+        record.notches = vec![
+            // A lone notch, 200 m wide, its surface falling 30 -> 20 m along one 11 km leg.
+            NotchLine { points: vec![(10.0, 150.0, 30.0, 200.0), (10.0, 150.1, 20.0, 200.0)] },
+            // A notch across reach 0's middle point, its surface at that reach's water.
+            NotchLine { points: vec![(0.01, 120.1, 22.0, 400.0), (-0.01, 120.1, 22.0, 400.0)] },
+        ];
+        let index = built(&record);
+        let ground = flat(25.0);
+        let g = Ground { landform_m: Landform(&ground), detail_m: Detail(&ground) };
+
+        let mid = water_at(&record, &index, &g, &at(10.0, 150.05));
+        assert_eq!(mid.kind, WaterKind::River, "mid-notch is water");
+        assert_eq!(mid.reach_id, NO_REACH, "a notch names no reach");
+        assert_eq!(mid.body_id, NO_BODY);
+        assert!(mid.fresh);
+        close(mid.level_m, 25.0, 1.0e-3, "halfway along, the surface is halfway from 30 to 20");
+        let cut = water_at(&record, &index, &g, &at(10.0, 150.075));
+        close(cut.level_m, 22.5, 1.0e-3, "three quarters along");
+        assert_eq!(cut.depth_m, 0.0, "landform 25 m over a 22.5 m surface: the water stands on the cut");
+
+        let end = water_at(&record, &index, &g, &at(10.0, 150.0));
+        assert_eq!(end.level_m.to_bits(), 30.0f64.to_bits(), "a recorded point answers its own surface");
+        assert_eq!(end.depth_m, 5.0, "surface 30 m over landform 25 m");
+
+        let inside = water_at(&record, &index, &g, &at(10.0 + 90.0 / M_PER_DEG, 150.05));
+        assert_eq!(inside.kind, WaterKind::River, "90 m off a 200 m notch's line");
+        let outside = at(10.0 + 110.0 / M_PER_DEG, 150.05);
+        assert!(index.candidates(&outside).notches.contains(&0),
+                "fixture is wrong: the notch is not a candidate, so `none` proves nothing");
+        assert_eq!(water_at(&record, &index, &g, &outside), WaterAt::none(), "110 m off it");
+
+        let shared = water_at(&record, &index, &g, &at(0.0, 120.1));
+        assert_eq!(shared.kind, WaterKind::River);
+        assert_eq!(shared.reach_id, 0, "the reach answers where it runs through a notch");
     }
 
     // ---- 9. Ocean --------------------------------------------------------------------------------

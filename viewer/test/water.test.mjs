@@ -467,8 +467,13 @@ test("the boot path resolves the manifest before the provider exists, and can be
   // to make is now these three. The property is unchanged: the export is called, with THIS
   // world's handle and THIS state's node count.
   assert.match(main, /const request = \{ nodeCount: nextState\.waterNodes \};/);
-  assert.match(main, /engine\.waterRun\(\{ handle: installed\.world, \.\.\.request \}\)/,
-    "the main-thread fallback must still solve against the world that is drawn");
+  // **And a third time, with the carve (plan 2b).** With the carve on, `installed.world` is a
+  // CARVED world, which `wb_water_run` refuses (WB_ERR_CARVED, Ruling C-24) because it reads the
+  // ground -- and the pool path's workers hold the bare world. So the main-thread fallback solves
+  // against `worldSwapper.handle`, the bare world: the drawn world itself with the carve off, which
+  // is every page this test was written about, and the carve's own bare ground with it on.
+  assert.match(main, /engine\.waterRun\(\{ handle: worldSwapper\.handle, \.\.\.request \}\)/,
+    "the main-thread fallback must solve against the bare world the workers hold");
   assert.match(main, /await pool\.water\(request\)/,
     "the pooled path must send the same request rather than assembling a second one");
   // **The three conditions that keep the solve on the main thread, named in one place.** Two are

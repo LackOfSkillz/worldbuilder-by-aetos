@@ -45,7 +45,11 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
   assert.equal(decoded.reaches.length, summary.reaches);
   assert.equal(decoded.notches, summary.notches);
   assert.equal(decoded.falls.length, summary.falls);
-  assert.equal(decoded.header.schema, 6);
+  assert.equal(decoded.header.schema, 7);
+  // SCHEMA 7, plan 2b Task 1 (words 56-59): both twins read the ground fingerprint to the same
+  // 32 hex digits.
+  assert.match(decoded.header.ground, /^[0-9a-f]{32}$/);
+  assert.equal(decoded.header.ground, summary.ground);
   assert.equal(decoded.header.nodes, summary.nodes);
   assert.equal(decoded.header.forcedRequested, summary.forcedRequested);
   assert.equal(decoded.header.forcedMatched, summary.forcedMatched);
@@ -94,8 +98,8 @@ test("decodeHydro's body and reach counts match hydroSummary's, and it consumes 
                  `${body.outline.length} outline points -- no collar`);
     }
   }
-  // The header is 56 words, so word 56 is the first body's id.
-  assert.equal(words[56], decoded.bodies[0].id);
+  // The header is 60 words, so word 60 is the first body's id.
+  assert.equal(words[60], decoded.bodies[0].id);
 });
 
 test("every pond the record kept is a traced ring at the end of bodies", () => {
@@ -114,7 +118,7 @@ test("every pond the record kept is a traced ring at the end of bodies", () => {
   }
 });
 
-test("decodeHydro consumes a real SCHEMA 6 bake exactly, reach fresh and body downstream included", () => {
+test("decodeHydro consumes a real SCHEMA 7 bake exactly, reach fresh and body downstream included", () => {
   const decoded = decodeHydro(bake());
   assert.ok(decoded.reaches.length > 0, "sanity: this world has reaches");
   for (const reach of decoded.reaches) {
@@ -132,23 +136,32 @@ test("decodeHydro throws on a truncated array", () => {
   assert.throws(() => decodeHydro(new Float64Array(0)), /truncated|ran out of words/);
 });
 
-test("decodeHydro throws on a schema-2, schema-4 or schema-5 header", () => {
+test("decodeHydro throws on a schema-2, -4, -5 or -6 header", () => {
   const words = bake();
-  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, which is itself a prefix of SCHEMA
-  // 6's 56, so a decoder that adapted rather than refused would read a body's first words as
-  // later header words.
-  for (const schema of [2, 4, 5]) {
+  // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, which is a prefix of SCHEMA 6's 56,
+  // which is a prefix of SCHEMA 7's 60, so a decoder that adapted rather than refused would read
+  // a body's first words as later header words -- under SCHEMA 6, as a ground fingerprint.
+  for (const schema of [2, 4, 5, 6, 9]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => decodeHydro(tampered), /unsupported schema/);
   }
+  // Ruling C-20: 8 is SCHEMA 7's layout baked for carving -- decoded the same, and saying so.
+  const carving = words.slice();
+  carving[0] = 8;
+  const a = decodeHydro(words);
+  const b = decodeHydro(carving);
+  assert.equal(a.header.drainedForCarve, false);
+  assert.equal(b.header.drainedForCarve, true);
+  assert.deepEqual({ ...b, header: { ...b.header, schema: 7, drainedForCarve: false } }, a);
 });
 
 test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {
   const words = bake();
   const U32_MAX = 4294967295;
-  // The header's length, which Task 1 of plan 1b-4 took from 54 words to 56.
-  const HEADER = 56;
+  // The header's length, which Task 1 of plan 1b-4 took from 54 words to 56 and Task 1 of
+  // plan 2b to 60.
+  const HEADER = 60;
 
   // The boundary itself is a valid u32: word 5 (`nodes`) at exactly u32::MAX still decodes.
   const atMax = words.slice();
@@ -160,22 +173,22 @@ test("decodeHydro refuses an index or count word above 4294967295, as record.rs'
   header[5] = U32_MAX + 1;
   assert.throws(() => decodeHydro(header), /bad count\/index word/);
 
-  // ...in a body's optional outlet reach (body 0's word 8, record word 64)...
+  // ...in a body's optional outlet reach (body 0's word 8, record word 68)...
   assert.ok(words[1] > 0, "sanity: this world has a body to tamper with");
   const outlet = words.slice();
   outlet[HEADER + 8] = U32_MAX + 1;
   assert.throws(() => decodeHydro(outlet), /bad optional index word/);
 
-  // ...and in a downstream id (body 0's words 11-12, record words 67-68, made a body link).
+  // ...and in a downstream id (body 0's words 11-12, record words 71-72, made a body link).
   const downstream = words.slice();
   downstream[HEADER + 11] = 1;
   downstream[HEADER + 12] = U32_MAX + 1;
   assert.throws(() => decodeHydro(downstream), /bad downstream body id/);
 });
 
-// A body's 16 fixed words start after the 56-word header: `shoreMemberCount` is word 13 of
+// A body's 16 fixed words start after the 60-word header: `shoreMemberCount` is word 13 of
 // them, `shoreReachM` word 14 and `outlineLen` word 15.
-const BODY_0 = 56;
+const BODY_0 = 60;
 const SHORE_MEMBER_COUNT = BODY_0 + 13;
 const SHORE_REACH_M = BODY_0 + 14;
 const OUTLINE_LEN = BODY_0 + 15;

@@ -1,0 +1,1050 @@
+//! Tests for spec §8.1's water layer (plan 2b Task 3), and for the two-phase architecture it rests
+//! on (Ruling C-1): a bake never runs on a carved world, and a carved world fingerprints exactly as
+//! its bare parent does.
+//!
+//! `pub(crate)` for [`carved_home`] alone: `wasm.rs` pins Ruling C-9 against the same carved world,
+//! and a second copy of the join would be a second thing to keep in step.
+
+use super::*;
+use crate::detmath as m;
+use crate::hydrology::record::{ground_fingerprint, probe_point};
+use crate::hydrology::{
+    Body, BodyKind, Downstream, HydroError, HydroRecord, NotchLine, ReachClass, ReachLine,
+    ReachPoint,
+};
+use crate::surface::Surface;
+use crate::water::query::{water_at, Detail, Ground, Landform, WaterKind};
+
+const R: f64 = 6_371_000.0;
+/// Metres per degree of latitude on `R`.
+const M_PER_DEG: f64 = core::f64::consts::PI * R / 180.0;
+
+/// The fixture channel: 100 m wide, bed at 5 m, cut into ground standing at 25 m.
+const WIDTH_M: f64 = 100.0;
+const BED_M: f64 = 5.0;
+const GROUND_M: f64 = 25.0;
+
+fn at(lat: f64, lon: f64) -> SpherePoint {
+    SpherePoint::from_latlon(lat, lon)
+}
+
+fn reach_point(lat: f64, lon: f64, bed_m: f64, width_m: f64) -> ReachPoint {
+    ReachPoint { lat_deg: lat, lon_deg: lon, bed_m, width_m, depth_m: 2.0, flow_m2: 1.0 }
+}
+
+fn reach(id: u32, points: Vec<ReachPoint>) -> ReachLine {
+    ReachLine {
+        id, class: ReachClass::River, order: 1, downstream: Downstream::Ocean, fresh: true, points,
+    }
+}
+
+/// A hand-written record. Marked **baked for carving** (Ruling C-20), because nearly every record
+/// here is joined to a carved world; the one test that needs an ordinary record clears the flag.
+fn record(reaches: Vec<ReachLine>, notches: Vec<NotchLine>, bodies: Vec<Body>) -> HydroRecord {
+    let mut stats = crate::water::query::tests::stats();
+    stats.drained_for_carve = true;
+    HydroRecord { bodies, reaches, notches, falls: Vec::new(), stats, ground: [0; 16] }
+}
+
+/// `params` with Ruling C-20's flag set: a bake for a world that will be carved.
+fn for_carving(mut params: crate::hydrology::HydroParams) -> crate::hydrology::HydroParams {
+    params.drain_for_carve = true;
+    params
+}
+
+fn layer_over(record: HydroRecord) -> WaterLayer {
+    WaterLayer::new(WaterParams::canonical(), Arc::new(IndexedRecord::new(record, R)))
+}
+
+/// One straight channel along the equator, lon 0.0 -> 0.1 -> 0.2 (two legs of 11.1 km), bed and
+/// width constant so a mid-channel point's target is `BED_M` whatever the interpolation does.
+fn straight() -> WaterLayer {
+    straight_at(BED_M)
+}
+
+fn straight_at(bed_m: f64) -> WaterLayer {
+    layer_over(record(
+        vec![reach(0, vec![reach_point(0.0, 0.0, bed_m, WIDTH_M),
+                           reach_point(0.0, 0.1, bed_m, WIDTH_M),
+                           reach_point(0.0, 0.2, bed_m, WIDTH_M)])],
+        Vec::new(), Vec::new()))
+}
+
+/// A point `metres` north of the equator at `lon`: its distance from the equatorial channel's
+/// centre line is `metres`, to rounding.
+fn north_of(lon: f64, metres: f64) -> SpherePoint {
+    at(metres / M_PER_DEG, lon)
+}
+
+/// Area-uniform over a latitude/longitude box: stratified evenly in `sin(latitude)` and in
+/// longitude, which is equal-area on a sphere, `n` by `n` cells, one sample at each cell's centre.
+fn area_uniform(lat0: f64, lat1: f64, lon0: f64, lon1: f64, n: usize) -> Vec<SpherePoint> {
+    let to_rad = core::f64::consts::PI / 180.0;
+    let (z0, z1) = (m::sin(lat0 * to_rad), m::sin(lat1 * to_rad));
+    let mut out = Vec::with_capacity(n * n);
+    for i in 0..n {
+        let z = z0 + (z1 - z0) * (i as f64 + 0.5) / n as f64;
+        let lat = m::asin(z) / to_rad;
+        for j in 0..n {
+            let lon = lon0 + (lon1 - lon0) * (j as f64 + 0.5) / n as f64;
+            out.push(at(lat, lon));
+        }
+    }
+    out
+}
+
+// ---- the cross-section ---------------------------------------------------------------------
+
+/// Twice: once on the fixture's round numbers, and once on a bed and a ground for which
+/// `ground - (ground - bed)` is **not** `bed` in floating point -- the premise is asserted -- so
+/// "exactly" is tested against the arithmetic that would miss it, not only against numbers where
+/// any formula lands.
+#[test]
+fn a_point_in_mid_channel_sits_at_the_bed_exactly() {
+    let (awkward_bed, awkward_ground): (f64, f64) = (3.3, 294.98674393933334);
+    assert_ne!((awkward_ground - (awkward_ground - awkward_bed)).to_bits(), awkward_bed.to_bits(),
+               "fixture is wrong: plain arithmetic already lands on this bed");
+    for (bed, ground) in [(BED_M, GROUND_M), (awkward_bed, awkward_ground)] {
+        let layer = straight_at(bed);
+        // On the centre line mid-leg, on a recorded point, and 40 m off the line -- all inside the
+        // 50 m half-width. Every one is the bed to the bit, not to a tolerance.
+        for (name, point) in [("mid-leg", at(0.0, 0.05)), ("on a recorded point", at(0.0, 0.1)),
+                              ("40 m off the line", north_of(0.15, 40.0))] {
+            let (cut, authority) = layer.cut_m(&point, ground);
+            assert_eq!(cut.to_bits(), bed.to_bits(), "{name}: cut to {cut}, not the bed {bed}");
+            assert_eq!(authority.to_bits(), 1.0f64.to_bits(), "{name}: full authority in the channel");
+        }
+    }
+}
+
+#[test]
+fn a_point_one_width_beyond_the_bank_is_untouched_bit_for_bit() {
+    let layer = straight();
+    // The bank is at half the width, 50 m; one width beyond it is 150 m. The probe is placed a
+    // hair past that and its distance is MEASURED rather than assumed, so the premise is checked.
+    let probe = north_of(0.05, 1.5 * WIDTH_M + 1.0e-3);
+    let (d, _) = leg_foot(&probe, &at(0.0, 0.0), &at(0.0, 0.1), R);
+    assert!(d >= 0.5 * WIDTH_M + WIDTH_M, "fixture is wrong: the probe is {d} m out, inside the bank");
+    assert!(!layer.bake().index().candidates(&probe).reaches.is_empty(),
+            "fixture is wrong: the reach is not even a candidate, so `untouched` proves nothing");
+    // Every ground value comes back as the same bits -- including -0.0, which a "zero cut"
+    // (`ground + 0.0`) would turn into +0.0, and NaN, which arithmetic would re-quiet.
+    for ground in [GROUND_M, -0.0, 0.0, -4_600.0, 1.0e300, f64::NAN] {
+        let (cut, authority) = layer.cut_m(&probe, ground);
+        assert_eq!(cut.to_bits(), ground.to_bits(), "ground {ground} came back as {cut}");
+        assert_eq!(authority.to_bits(), 0.0f64.to_bits(), "no authority past the bank");
+    }
+    // And a point in a cell the index lists nothing in.
+    let far = at(30.0, 30.0);
+    assert!(layer.bake().index().candidates(&far).reaches.is_empty());
+    assert_eq!(layer.cut_m(&far, -0.0).0.to_bits(), (-0.0f64).to_bits());
+}
+
+/// The bank, sampled every half metre from the centre line out past the far edge. The cut must
+/// never fall as the point moves out (monotone), and must never move by more than the bank's own
+/// gradient allows in one step.
+///
+/// **The bound is derived here, not written down**: spec §8.1 blends the bank over one width, so
+/// the ground climbs `GROUND_M - BED_M` over `WIDTH_M` of distance, and a step of `STEP_M` can
+/// move it at most `(GROUND_M - BED_M) * STEP_M / WIDTH_M` -- plus a part in 10^9 for the rounding
+/// of the distances themselves. Change the fixture's bed, width or step and the bound follows.
+#[test]
+fn the_bank_blend_is_monotone_and_never_steeper_than_the_bank() {
+    const STEP_M: f64 = 0.5;
+    assert_eq!(WaterParams::canonical().bank_widths, 1.0, "spec §8.1: one width either side");
+    let bound = (GROUND_M - BED_M) * STEP_M / WIDTH_M * (1.0 + 1.0e-9);
+    let layer = straight();
+    let far_edge = 0.5 * WIDTH_M + WIDTH_M;
+    let steps = ((far_edge + 10.0) / STEP_M) as usize; // cast-ok: a small positive whole count
+    let mut previous: Option<(f64, f64)> = None;
+    let mut between = 0usize;
+    for k in 0..=steps {
+        let (cut, authority) = layer.cut_m(&north_of(0.05, k as f64 * STEP_M), GROUND_M);
+        if k == 0 {
+            assert_eq!(cut.to_bits(), BED_M.to_bits(), "the centre line is the bed");
+        }
+        if cut > BED_M && cut < GROUND_M {
+            between += 1;
+        }
+        if let Some((was_cut, was_authority)) = previous {
+            assert!(cut >= was_cut, "step {k}: the cut fell from {was_cut} to {cut} moving out");
+            assert!(authority <= was_authority, "step {k}: authority rose moving out");
+            assert!(cut - was_cut <= bound,
+                    "step {k}: the cut moved {} m in {STEP_M} m, over the bank's {bound} m",
+                    cut - was_cut);
+        }
+        previous = Some((cut, authority));
+    }
+    let (last, _) = previous.expect("at least one sample");
+    assert_eq!(last.to_bits(), GROUND_M.to_bits(), "past the far edge the ground is untouched");
+    // Not vacuous: the blend actually spans the bank rather than jumping across it.
+    let expected = (WIDTH_M / STEP_M) as usize - 2; // cast-ok: a small positive whole count
+    assert!(between >= expected, "only {between} samples lay on the bank, wanted {expected}");
+}
+
+#[test]
+fn a_notch_is_cut_the_same_way_to_its_own_cut_surface() {
+    let layer = layer_over(record(
+        Vec::new(),
+        vec![NotchLine { points: vec![(-20.0, 40.0, 7.0, 60.0), (-20.0, 40.1, 7.0, 60.0)] }],
+        Vec::new()));
+    let (cut, authority) = layer.cut_m(&at(-20.0, 40.05), GROUND_M);
+    assert_eq!(cut.to_bits(), 7.0f64.to_bits(), "mid-notch is the notch's cut surface");
+    assert_eq!(authority, 1.0);
+    let (bank, bank_authority) = layer.cut_m(&at(-20.0 + 60.0 / M_PER_DEG, 40.05), GROUND_M);
+    assert!(bank > 7.0 && bank < GROUND_M, "30 m past the notch's edge is on its bank: {bank}");
+    assert!(bank_authority > 0.0 && bank_authority < 1.0);
+}
+
+/// Spec §8.1's explicit exception, and the one a layer written by symmetry with reaches gets
+/// wrong: **a lake's bed is not cut.** Both kinds of extent -- a shore-point lake and a traced
+/// pond -- with the ground inside each standing a metre under its level, as a lake's floor does.
+#[test]
+fn a_lakes_interior_is_not_cut() {
+    let lake = Body {
+        id: 0, kind: BodyKind::Lake, fresh: true, enclosed: false, forced: false,
+        level_m: 30.0, area_m2: 1.0e8, depth_m: 12.0, outlet_reach: None,
+        anchor: (10.0, 10.0),
+        outline: vec![(9.9, 10.0), (10.1, 10.0), (10.0, 9.9), (10.0, 10.1),
+                      (9.8, 10.0), (10.2, 10.0), (10.0, 9.8), (10.0, 10.2)],
+        downstream: Downstream::Ocean, shore_member_count: 4, shore_reach_m: 5_000.0,
+    };
+    let pond = Body {
+        id: 1, kind: BodyKind::Pond, fresh: true, enclosed: false, forced: false,
+        level_m: 30.0, area_m2: 1.0e6, depth_m: 3.0, outlet_reach: None,
+        anchor: (20.0, 20.0),
+        outline: vec![(20.0, 20.0), (20.01, 20.0), (20.01, 20.01), (20.0, 20.01)],
+        downstream: Downstream::Sink, shore_member_count: 0, shore_reach_m: 0.0,
+    };
+    let fixture = record(Vec::new(), Vec::new(), vec![lake, pond]);
+    let layer = layer_over(fixture.clone());
+    let index = layer.bake().index();
+    for (id, probe) in [(0u32, at(10.0, 10.0)), (1u32, at(20.005, 20.005))] {
+        assert!(index.candidates(&probe).bodies.contains(&id),
+                "fixture is wrong: body {id} is not a candidate, so `not cut` proves nothing");
+        // The query agrees this is inside the body, so the probe really is a lake's interior.
+        let floor = fixture.bodies[id as usize].level_m - 1.0; // cast-ok: a two-body fixture id, 0 or 1, used as its position
+        let flat = move |_: &SpherePoint| floor;
+        let answer = water_at(&fixture, index,
+                              &Ground { landform_m: Landform(&flat), detail_m: Detail(&flat) }, &probe);
+        assert_eq!(answer.body_id, id, "fixture is wrong: the query does not put the probe in body {id}");
+        let (cut, authority) = layer.cut_m(&probe, floor);
+        assert_eq!(cut.to_bits(), floor.to_bits(), "body {id}'s floor was cut to {cut}");
+        assert_eq!(authority.to_bits(), 0.0f64.to_bits(), "a lake is not a channel");
+    }
+}
+
+/// **The index lists a channel wherever its bank reaches, not only where its water does.** Plan
+/// 2a's index listed a reach within half its width, which is all the query needs; the carve
+/// reaches a bank further. A channel just south of a cell line has its bank spill across it, and a
+/// bank point in the northern cell must still be cut -- or the carve stops dead at the cell line,
+/// a cliff along a boundary nobody drew. Both shapes the index lists: a one-point reach (a disc)
+/// and a short leg, each 2 km wide, each 2.2 km south of the line, probed 0.6 km north of it.
+#[test]
+fn a_bank_across_a_cell_line_from_its_channel_is_still_cut() {
+    // Find a row boundary by walking north from the equator in 10 m steps.
+    let grid = crate::hydrology::buckets::BucketIndex::new(R, DEFAULT_CELL_M);
+    let start = grid.cell_of(&at(0.0, 0.0));
+    let mut metres = 0.0;
+    while grid.cell_of(&north_of(0.0, metres)) == start {
+        metres += 10.0;
+    }
+    // 2.2 km south of the line and 0.6 km north of it: 2.8 km apart, inside a 2 km channel's
+    // 1 km half-width plus its 2 km bank, and farther past the line than half the width plus half
+    // a short leg's sample gap -- which is all plan 2a's index dilated a leg by.
+    let channel_lat = (metres - 2_200.0) / M_PER_DEG;
+    let probe = north_of(0.0, metres + 600.0);
+    assert_ne!(grid.cell_of(&probe), grid.cell_of(&at(channel_lat, 0.0)),
+               "fixture is wrong: the probe is in the channel's own cell");
+    for (name, points) in [
+        ("a one-point reach", vec![reach_point(channel_lat, 0.0, BED_M, 2_000.0)]),
+        ("a short leg", vec![reach_point(channel_lat, -0.005, BED_M, 2_000.0),
+                             reach_point(channel_lat, 0.005, BED_M, 2_000.0)]),
+    ] {
+        let layer = layer_over(record(vec![reach(0, points)], Vec::new(), Vec::new()));
+        let (cut, authority) = layer.cut_m(&probe, GROUND_M);
+        // 2.8 km from a 2 km channel's centre: past its 1 km half-width, inside its 2 km bank.
+        assert!(authority > 0.0 && authority < 1.0, "{name}: authority {authority} on the bank");
+        assert!(cut < GROUND_M, "{name}: the bank across the cell line was not cut");
+    }
+}
+
+// ---- a cut never raises -----------------------------------------------------------------------
+
+/// **A raising cut is a dam.** A reach whose bed rises above the ground at its last step -- Ruling
+/// R-4's mouth, stood up deliberately here -- and a notch whose cut surface stands 40 m above the
+/// ground it crosses, under ground that is not flat, swept area-uniformly over the whole neighbourhood.
+#[test]
+fn the_layer_never_raises_ground_across_a_rising_mouth() {
+    let layer = layer_over(record(
+        vec![reach(0, vec![reach_point(0.0, 0.0, 5.0, 150.0),
+                           reach_point(0.0, 0.01, 4.0, 150.0),
+                           reach_point(0.0, 0.02, 30.0, 150.0)])],
+        vec![NotchLine { points: vec![(0.004, 0.0, 50.0, 80.0), (0.004, 0.02, 50.0, 80.0)] }],
+        Vec::new()));
+    // Ground rising gently eastward from 8 m to about 12 m: under the mouth's 30 m bed, and
+    // under the notch's 50 m surface everywhere.
+    let ground = |p: &SpherePoint| 8.0 + 200.0 * p.to_latlon().1;
+    let (mut lowered, mut held_in_channel, mut on_bank) = (0usize, 0usize, 0usize);
+    for p in area_uniform(-0.006, 0.008, -0.004, 0.024, 160) {
+        let g = ground(&p);
+        let (cut, authority) = layer.cut_m(&p, g);
+        assert!(cut <= g, "raised {} m at {:?}", cut - g, p.to_latlon());
+        if cut < g {
+            lowered += 1;
+        }
+        if authority == 1.0 && cut == g {
+            held_in_channel += 1; // in a channel whose target stands above the ground: the clamp
+        }
+        if authority > 0.0 && authority < 1.0 {
+            on_bank += 1;
+        }
+    }
+    assert!(lowered > 0 && on_bank > 0, "vacuous sweep: {lowered} lowered, {on_bank} on a bank");
+    assert!(held_in_channel > 0, "the sweep never stood in the rising mouth or the notch");
+}
+
+/// The same property on a real bake: every reach and notch of `bake_tests::world()`, its own
+/// ground at canonical resolution, swept area-uniformly around every recorded leg -- and over the
+/// whole planet, where nearly every point is out of reach and must come back bit for bit.
+#[test]
+fn the_layer_never_raises_ground_on_a_real_bake() {
+    let world = crate::hydrology::bake_tests::world();
+    let baked = crate::hydrology::bake(&world, &crate::hydrology::bake_tests::params())
+        .expect("bake");
+    let layer = layer_over(baked.clone());
+    let mut lowered = 0usize;
+    let mut legs = 0usize;
+    let mut sweep = |p: &SpherePoint| {
+        let g = world.bake_ground_m(p, None);
+        let (cut, authority) = layer.cut_m(p, g);
+        assert!(cut <= g, "raised {} m at {:?}", cut - g, p.to_latlon());
+        if authority == 0.0 {
+            assert_eq!(cut.to_bits(), g.to_bits(), "no authority, yet the ground moved");
+        }
+        if cut < g {
+            lowered += 1;
+        }
+    };
+    let lines = baked.reaches.iter()
+        .map(|r| r.points.iter().map(|p| (p.lat_deg, p.lon_deg, p.width_m)).collect::<Vec<_>>())
+        .chain(baked.notches.iter()
+            .map(|n| n.points.iter().map(|&(la, lo, _, w)| (la, lo, w)).collect::<Vec<_>>()));
+    for line in lines {
+        for pair in line.windows(2) {
+            let ((la, lo, wa), (lb, lob, wb)) = (pair[0], pair[1]);
+            if (lo - lob) > 180.0 || (lob - lo) > 180.0 {
+                continue; // a leg across the seam: a lat/lon box around it would span the planet
+            }
+            legs += 1;
+            let pad = footprint_m(leg_width_m(wa, wb)) / M_PER_DEG;
+            let (lat0, lat1) = if la < lb { (la, lb) } else { (lb, la) };
+            let (lon0, lon1) = if lo < lob { (lo, lob) } else { (lob, lo) };
+            for p in area_uniform(lat0 - pad, lat1 + pad, lon0 - pad, lon1 + pad, 6) {
+                sweep(&p);
+            }
+        }
+    }
+    // The whole planet, area-uniformly.
+    for p in area_uniform(-90.0, 90.0, -180.0, 180.0, 100) {
+        sweep(&p);
+    }
+    assert!(legs > 100, "vacuous: only {legs} recorded legs were swept");
+    assert!(lowered > 0, "vacuous: nothing on {legs} legs was cut at all");
+}
+
+// ---- the carve and the query agree ------------------------------------------------------------
+
+/// **"This is a river" and "this is a channel" are one test.** A tapering reach (Ruling Q-7's
+/// wider-endpoint width is only visible on a taper), a bend, a one-point reach, and **notches**
+/// (Ruling C-35) -- a tapering two-leg notch that no reach runs through, a notch that crosses a
+/// reach, and a one-point notch -- swept area-uniformly: the query answers `River` exactly where
+/// the layer's authority is 1, and wherever it does, the carve stands at or under the level it
+/// reports (Ruling C-13).
+///
+/// **The notches are the point.** On a real bake 10 of 12 notches lie 97 km or more from any
+/// recorded reach (a lake's outflow below the stream threshold), and before C-35 the query had no
+/// notch clause: it called every point of those channels dry while the carve cut them. This
+/// fixture had no notch, so it could not see that.
+#[test]
+fn the_carve_and_the_query_agree_about_where_the_channel_is() {
+    let fixture = record(
+        vec![reach(0, vec![reach_point(0.0, 0.0, 5.0, 80.0),
+                           reach_point(0.0, 0.004, 4.0, 240.0),
+                           reach_point(0.003, 0.007, 3.0, 120.0)]),
+             reach(1, vec![reach_point(-0.002, 0.002, 6.0, 90.0)])],
+        vec![NotchLine { points: vec![(-0.0033, 0.004, 9.0, 60.0), (-0.0033, 0.0060, 8.0, 110.0),
+                                      (-0.0020, 0.0080, 7.5, 70.0)] },
+             NotchLine { points: vec![(0.0012, 0.0010, 6.5, 50.0), (-0.0010, 0.0010, 6.0, 50.0)] },
+             NotchLine { points: vec![(0.0040, 0.0000, 8.0, 80.0)] }],
+        Vec::new());
+    let layer = layer_over(fixture.clone());
+    let index = layer.bake().index();
+    let high = |_: &SpherePoint| 100.0;
+    let ground = Ground { landform_m: Landform(&high), detail_m: Detail(&high) };
+    let (mut rivers, mut banks, mut notch_water) = (0usize, 0usize, 0usize);
+    for p in area_uniform(-0.004, 0.005, -0.002, 0.009, 180) {
+        let answer = water_at(&fixture, index, &ground, &p);
+        let is_river = answer.kind == WaterKind::River;
+        let (cut, authority) = layer.cut_m(&p, 100.0);
+        assert_eq!(is_river, authority == 1.0,
+                   "at {:?} the query says river={is_river} and the carve's authority is {authority}",
+                   p.to_latlon());
+        if is_river {
+            rivers += 1;
+            assert!(cut <= answer.level_m, "at {:?} the carve stands at {cut} m, over the water \
+                    the query reports at {} m", p.to_latlon(), answer.level_m);
+            if answer.reach_id == crate::water::query::NO_REACH {
+                notch_water += 1;
+            }
+        } else if authority > 0.0 {
+            banks += 1;
+        }
+    }
+    assert!(rivers > 0 && banks > 0, "vacuous sweep: {rivers} river points, {banks} bank points");
+    assert!(notch_water > 0, "vacuous for notches: no river point was a notch's alone");
+}
+
+// ---- the two phases (Ruling C-1) --------------------------------------------------------------
+
+/// The world `bake_tests` bakes: seed 20,260,904, 6,371 km, 12 plates, 0.29 land.
+pub(crate) fn home() -> Surface {
+    Surface::new(20_260_904, R, 12, 0.29, None, None, None)
+}
+
+/// `home()`, carved by a hand-written record whose one reach runs straight across fingerprint
+/// probe 0 with its bed 50 m under the ground there -- so if the carve reached the fingerprint,
+/// the digest would move. Returns `(bare, carved, probe 0)`.
+pub(crate) fn carved_home() -> (Surface, Surface, SpherePoint) {
+    let bare = home();
+    let probe = probe_point(0);
+    let (lat, lon) = probe.to_latlon();
+    let bed = bare.elevation_m(&probe, None) - 50.0;
+    let mut joined = record(
+        vec![reach(0, vec![reach_point(lat, lon - 0.01, bed, 200.0),
+                           reach_point(lat, lon + 0.01, bed, 200.0)])],
+        Vec::new(), Vec::new());
+    joined.ground = ground_fingerprint(&bare);
+    let carve = Carve { params: WaterParams::canonical(), bake: Arc::new(IndexedRecord::new(joined, R)) };
+    let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                                     Some(carve))
+        .expect("a record joined to its own world");
+    (bare, carved, probe)
+}
+
+#[test]
+fn an_absent_block_leaves_structural_and_elevation_bit_identical() {
+    let plain = home();
+    let absent = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None, None)
+        .expect("None never refuses");
+    assert!(!absent.is_carved());
+    for p in area_uniform(-90.0, 90.0, -180.0, 180.0, 40) {
+        assert_eq!(absent.structural_m(&p).to_bits(), plain.structural_m(&p).to_bits());
+        for resolution in [None, Some(250.0), Some(20_000.0)] {
+            assert_eq!(absent.elevation_m(&p, resolution).to_bits(),
+                       plain.elevation_m(&p, resolution).to_bits(),
+                       "elevation at {:?}, resolution {resolution:?}", p.to_latlon());
+            assert_eq!(absent.bake_ground_m(&p, resolution).to_bits(),
+                       plain.elevation_m(&p, resolution).to_bits());
+        }
+    }
+}
+
+/// **The bake cannot be computed on a carved surface** -- refused, not merely documented against.
+#[test]
+fn a_carved_world_is_refused_by_the_bake() {
+    let (bare, carved, _) = carved_home();
+    assert!(carved.is_carved() && !bare.is_carved());
+    let params = crate::hydrology::bake_tests::params();
+    assert_eq!(crate::hydrology::bake(&carved, &params).err(), Some(HydroError::Carved));
+    assert_eq!(crate::hydrology::bake_stages(&carved, &params).err(), Some(HydroError::Carved));
+    // The land graph is a bake's input and a public door of its own: it reads carved ground
+    // through `moisture_index`, so it refuses too -- and the bare parent still samples.
+    let graph = |s: &Surface| {
+        crate::hydrology::landgraph::LandGraph::sample(s, params.total_nodes, params.wetness_nodes)
+    };
+    assert!(graph(&carved).is_none(), "LandGraph::sample sampled a carved world");
+    assert!(graph(&bare).is_some(), "the bare parent must still sample, or the refusal proves nothing");
+}
+
+/// **A carved world and its bare parent fingerprint identically** -- which is what lets a record be
+/// checked against the carved world at all (plan 2b Task 2). Not vacuous: the carve moves the
+/// ground at probe 0 by tens of metres, so a fingerprint that read the carved ground would differ.
+#[test]
+fn a_carved_world_fingerprints_exactly_as_its_bare_parent() {
+    let (bare, carved, probe) = carved_home();
+    let moved = bare.elevation_m(&probe, None) - carved.elevation_m(&probe, None);
+    assert!(moved > 1.0, "fixture is wrong: the carve moved probe 0 by only {moved} m");
+    assert_eq!(ground_fingerprint(&carved), ground_fingerprint(&bare));
+    // Why: `structural_m` does not see the layer, and `bake_ground_m` is the bare parent's
+    // `elevation_m` bit for bit -- in the channel, on its bank and far from it.
+    let (lat, lon) = probe.to_latlon();
+    let mut points = area_uniform(lat - 0.01, lat + 0.01, lon - 0.012, lon + 0.012, 30);
+    points.push(probe);
+    for p in points {
+        assert_eq!(carved.structural_m(&p).to_bits(), bare.structural_m(&p).to_bits());
+        for resolution in [None, Some(250.0)] {
+            assert_eq!(carved.bake_ground_m(&p, resolution).to_bits(),
+                       bare.elevation_m(&p, resolution).to_bits(),
+                       "bake ground at {:?}, resolution {resolution:?}", p.to_latlon());
+        }
+    }
+}
+
+/// The join is where the refusals live: a record from other ground, an index built at another
+/// radius, and a block that is not admissible are each refused, and each by name.
+#[test]
+fn the_join_refuses_a_foreign_record_a_foreign_radius_and_a_bad_block() {
+    let bare = home();
+    let good = {
+        let mut r = record(Vec::new(), Vec::new(), Vec::new());
+        r.ground = ground_fingerprint(&bare);
+        r
+    };
+    let join = |params: WaterParams, record: HydroRecord, radius_m: f64| {
+        Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                            Some(Carve { params, bake: Arc::new(IndexedRecord::new(record, radius_m)) }))
+            .err()
+    };
+    assert_eq!(join(WaterParams::canonical(), good.clone(), R), None, "its own world joins");
+    let mut foreign = good.clone();
+    foreign.ground[0] ^= 1;
+    assert!(matches!(join(WaterParams::canonical(), foreign, R), Some(CarveRefused::Foreign(_))));
+    assert_eq!(join(WaterParams::canonical(), good.clone(), 6_000_000.0), Some(CarveRefused::Radius));
+    for bank_widths in [0.0, -1.0, MAX_BANK_WIDTHS * 1.01, f64::NAN, f64::INFINITY] {
+        assert_eq!(join(WaterParams { bank_widths }, good.clone(), R), Some(CarveRefused::Params),
+                   "bank_widths {bank_widths}");
+    }
+    assert_eq!(join(WaterParams { bank_widths: MAX_BANK_WIDTHS }, good, R), None);
+}
+
+// ---- a lake's bed is not a river's channel (Task 3 review blocker) ------------------------------
+
+/// Every sample of a real bake that the query answers as a body -- a lake, a pond, a salt lake or a
+/// salt flat -- together with the id that answered: an area-uniform 40 by 40 grid over every body's
+/// outline box (padded by its shore band), plus 35 points in every reach's channel, which is where a
+/// body a reach flows into or through meets its channel.
+fn body_samples(bare: &Surface, bake: &IndexedRecord) -> Vec<(SpherePoint, u32)> {
+    let record = bake.record();
+    let mut points = channel_samples(bake);
+    for body in &record.bodies {
+        let (mut lat0, mut lat1, mut lon0, mut lon1) = (90.0f64, -90.0f64, 180.0f64, -180.0f64);
+        for &(la, lo) in &body.outline {
+            if la < lat0 { lat0 = la; }
+            if la > lat1 { lat1 = la; }
+            if lo < lon0 { lon0 = lo; }
+            if lo > lon1 { lon1 = lo; }
+        }
+        if body.outline.is_empty() || lon1 - lon0 > 180.0 {
+            continue; // no outline, or a box across the seam that would span the planet
+        }
+        let pad = body.shore_reach_m / M_PER_DEG;
+        let (lat0, lat1) = (if lat0 - pad < -90.0 { -90.0 } else { lat0 - pad },
+                            if lat1 + pad > 90.0 { 90.0 } else { lat1 + pad });
+        points.extend(area_uniform(lat0, lat1, lon0 - pad, lon1 + pad, 40));
+    }
+    let cell_m = record.stats.pond_cell_m;
+    let landform = |q: &SpherePoint| bare.structural_m(q);
+    let detail = |q: &SpherePoint| bare.bake_ground_m(q, Some(cell_m));
+    let ground = Ground { landform_m: Landform(&landform), detail_m: Detail(&detail) };
+    points.into_iter()
+        .filter_map(|p| {
+            let q = water_at(record, bake.index(), &ground, &p);
+            match q.kind {
+                WaterKind::Lake | WaterKind::Pond | WaterKind::SaltLake | WaterKind::SaltFlat =>
+                    Some((p, q.body_id)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// **Spec §8.1: lake beds are not cut -- on real bakes where reaches actually enter bodies.** The
+/// fine pond search looks for ponds along reach lines, so a pond sitting on a river is the ordinary
+/// case, and a coarse lake a reach flows into is another. `bake_tests::world()` at
+/// `earth_like(30_000)` and `earth_like(60_000)`: every sample the query answers as a body keeps
+/// its ground to the bit, carved world against bare, and the layer claims no authority there.
+///
+/// Not vacuous: each bake must put channel samples inside bodies -- the population the first lake
+/// test could not reach, because no reach came near its lakes.
+#[test]
+fn no_body_is_cut_where_reaches_enter_it() {
+    let mut failures: Vec<String> = Vec::new();
+    for nodes in [30_000u32, 60_000] {
+        let bare = home();
+        let baked = crate::hydrology::bake(&bare, &for_carving(crate::hydrology::HydroParams::earth_like(nodes)))
+            .expect("the bare world bakes");
+        let bake = Arc::new(IndexedRecord::new(baked, R));
+        let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                                         Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+            .expect("joins its own world");
+        let mut cut_bodies: Vec<u32> = Vec::new();
+        let (mut samples, mut lowered, mut in_channel, mut worst) = (0usize, 0usize, 0usize, 0.0f64);
+        let channel = channel_samples(&bake);
+        let samples_in = body_samples(&bare, &bake);
+        for (p, id) in &samples_in {
+            samples += 1;
+            if channel.iter().any(|c| c.vector == p.vector) {
+                in_channel += 1;
+            }
+            let was = bare.elevation_m(p, None);
+            let now = carved.elevation_m(p, None);
+            if now.to_bits() != was.to_bits() {
+                if !cut_bodies.contains(id) {
+                    cut_bodies.push(*id);
+                }
+                if was - now > 0.5 {
+                    lowered += 1;
+                }
+                if was - now > worst {
+                    worst = was - now;
+                }
+            }
+        }
+        eprintln!("earth_like({nodes}): {} bodies, {samples} body samples ({in_channel} in a channel), \
+                   {} bodies cut, {lowered} samples lowered > 0.5 m, deepest {worst} m",
+                  bake.record().bodies.len(), cut_bodies.len());
+        assert!(in_channel > 0, "earth_like({nodes}): vacuous, no reach's channel enters a body");
+        if !cut_bodies.is_empty() {
+            failures.push(format!(
+                "earth_like({nodes}): {} of {} bodies cut ({cut_bodies:?}), {lowered} samples \
+                 lowered by more than 0.5 m, deepest {worst} m",
+                cut_bodies.len(), bake.record().bodies.len()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+// ---- texture defers to a channel (plan 2b Task 4; Rulings C-13 and C-14) -----------------------
+
+/// `bake_tests::world()`, with or without a gully block, baked bare at `bake_tests::params()` and
+/// then carved by its own record: `(bare, carved, bake)`.
+fn carved_by_its_own_bake(gully: Option<crate::detail::GullyParams>)
+                          -> (Surface, Surface, Arc<IndexedRecord>) {
+    let bare = Surface::with_gully(20_260_904, R, 12, 0.29, None, None, None, None, gully);
+    let baked = crate::hydrology::bake(&bare, &for_carving(crate::hydrology::bake_tests::params()))
+        .expect("the bare world bakes");
+    let bake = Arc::new(IndexedRecord::new(baked, R));
+    let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, gully, None,
+                                     Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+        .expect("a record joined to the world it was baked from");
+    (bare, carved, bake)
+}
+
+/// Points **in** every recorded reach's and every notch's channel (Ruling C-35: a notch is a
+/// channel the query answers as water too): along every leg at seven interior fractions, each on
+/// the centre line and at 50% and 90% of the half-width to either side -- 35 a leg. Placed on the
+/// leg's own great circle (a normalised blend of its ends) and pushed off it along the arc's
+/// normal, so "inside the half-width" is by construction rather than by luck of a scatter.
+fn channel_samples(bake: &IndexedRecord) -> Vec<SpherePoint> {
+    let record = bake.record();
+    // (lat, lon, width) along each line, reaches then notches.
+    let lines = record.reaches.iter()
+        .map(|reach| reach.points.iter().map(|p| (p.lat_deg, p.lon_deg, p.width_m)).collect::<Vec<_>>())
+        .chain(record.notches.iter()
+            .map(|notch| notch.points.iter().map(|&(la, lo, _, w)| (la, lo, w)).collect::<Vec<_>>()));
+    let mut out = Vec::new();
+    for line in lines {
+        for pair in line.windows(2) {
+            let (a, b) = (at(pair[0].0, pair[0].1), at(pair[1].0, pair[1].1));
+            let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
+            let half = half_of(leg_width_m(pair[0].2, pair[1].2));
+            for k in 1..8 {
+                let t = f64::from(k) / 8.0;
+                let blend = a.vector.scaled(1.0 - t).add(&b.vector.scaled(t));
+                let Some(on) = SpherePoint::from_vector(&blend) else { continue };
+                for share in [-0.9, -0.5, 0.0, 0.5, 0.9] {
+                    let pushed = on.vector.add(&normal.scaled(share * half / R));
+                    if let Some(p) = SpherePoint::from_vector(&pushed) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The query over a carved world, grounded exactly as `wasm.rs::with_ground` grounds it: the
+/// landform for coarse bodies and reaches, the bare ground at `pond_cell_m` for fine-found ones.
+fn ask_carved(carved: &Surface, bake: &IndexedRecord, p: &SpherePoint) -> crate::water::WaterAt {
+    let cell_m = bake.record().stats.pond_cell_m;
+    let landform = |q: &SpherePoint| carved.structural_m(q);
+    let detail = |q: &SpherePoint| carved.bake_ground_m(q, Some(cell_m));
+    water_at(bake.record(), bake.index(),
+             &Ground { landform_m: Landform(&landform), detail_m: Detail(&detail) }, p)
+}
+
+/// **Ruling C-13: the query's water surface and the carve's bed are one geometry.** Wherever the
+/// query answers `River`, the channel the layer cuts there -- into ground as high as you like --
+/// stands at or under the level the query reports. Before C-13 the query read the nearest recorded
+/// point's level, a step along each reach, and the interpolated bed stood above it: a river that
+/// reads dry in its own channel.
+#[test]
+fn the_querys_water_surface_never_stands_below_the_carved_bed() {
+    let (_, carved, bake) = carved_by_its_own_bake(None);
+    let layer = WaterLayer::new(WaterParams::canonical(), bake.clone());
+    let mut rivers = 0usize;
+    for p in channel_samples(&bake) {
+        let q = ask_carved(&carved, &bake, &p);
+        if q.kind != WaterKind::River {
+            continue; // a mouth handed to a body or the sea: not this reach's surface to report
+        }
+        rivers += 1;
+        let (bed, authority) = layer.cut_m(&p, 1.0e6);
+        assert_eq!(authority, 1.0, "the query says river and the carve says bank at {:?}", p.to_latlon());
+        assert!(bed <= q.level_m, "the bed {bed} m stands above the water {} m at {:?}",
+                q.level_m, p.to_latlon());
+    }
+    assert!(rivers > 1_000, "vacuous: only {rivers} channel samples answered river");
+}
+
+/// **Texture cannot dam a river.** Over the whole length of every channel of a real bake, no
+/// sample of the carved world's ground -- detail and all, canonical and at a viewer's 250 m --
+/// stands above the water level the query reports there. That is the property; "the amplitude
+/// was multiplied by `1 - authority`" is only how it is kept.
+///
+/// Run on two worlds: the plain one, and the same world with the gully block on, because the
+/// gully term is a second texture with its own damping and a channel with a gully across it is
+/// dammed too.
+///
+/// **Not vacuous**, and asserted rather than hoped: at a good share of these very samples the bare
+/// world's own texture (its `elevation_m` less its `structural_m`) stands taller than the water
+/// is deep, so the same texture laid on the carved bed undamped would break the surface.
+#[test]
+fn no_detail_sample_rises_above_the_water_along_a_channel() {
+    for (name, gully) in [("plain", None), ("gullied", Some(crate::detail::GullyParams::drainage()))] {
+        let (bare, carved, bake) = carved_by_its_own_bake(gully);
+        let layer = WaterLayer::new(WaterParams::canonical(), bake.clone());
+        let (mut rivers, mut would_dam) = (0usize, 0usize);
+        for p in channel_samples(&bake) {
+            let q = ask_carved(&carved, &bake, &p);
+            if q.kind != WaterKind::River {
+                continue;
+            }
+            rivers += 1;
+            for resolution in [None, Some(250.0)] {
+                let ground = carved.elevation_m(&p, resolution);
+                assert!(ground <= q.level_m,
+                        "{name}: ground {ground} m over water {} m at {:?}, resolution {resolution:?}",
+                        q.level_m, p.to_latlon());
+            }
+            let texture = bare.elevation_m(&p, None) - bare.structural_m(&p);
+            let bed = layer.cut_m(&p, bare.structural_m(&p)).0;
+            if bed + texture > q.level_m {
+                would_dam += 1;
+            }
+        }
+        assert!(rivers > 1_000, "{name}: vacuous, only {rivers} channel samples answered river");
+        assert!(would_dam * 10 > rivers,
+                "{name}: the premise is weak -- undamped texture would break the surface at only \
+                 {would_dam} of {rivers} samples");
+    }
+}
+
+/// A carve with nothing to cut is its bare parent, bit for bit -- elevation and the gully term
+/// alike -- because an uncut point's damping factor is `(1 - a) * 1.0`, which is `1 - a` exactly.
+/// What lets a carved world differ from its parent only where water runs.
+#[test]
+fn a_carve_with_nothing_to_cut_is_its_bare_parent_bit_for_bit() {
+    for gully in [None, Some(crate::detail::GullyParams::drainage())] {
+        let bare = Surface::with_gully(20_260_904, R, 12, 0.29, None, None, None, None, gully);
+        let mut empty = record(Vec::new(), Vec::new(), Vec::new());
+        empty.ground = ground_fingerprint(&bare);
+        let carve = Carve { params: WaterParams::canonical(), bake: Arc::new(IndexedRecord::new(empty, R)) };
+        let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, gully, None,
+                                         Some(carve))
+            .expect("joins");
+        for p in area_uniform(-90.0, 90.0, -180.0, 180.0, 30) {
+            for resolution in [None, Some(250.0)] {
+                assert_eq!(carved.elevation_m(&p, resolution).to_bits(),
+                           bare.elevation_m(&p, resolution).to_bits(),
+                           "gully {}: {:?}", gully.is_some(), p.to_latlon());
+            }
+        }
+    }
+}
+
+// ---- a pond a channel drains is not a pond (plan 2b Task 4b; Rulings C-16 and C-19) -----------
+
+/// **The dam test.** `bake_tests::world()` at `earth_like(30_000)` and `earth_like(60_000)`, each
+/// carved by its own record. Along every reach and every notch -- 17 stations a leg, 9 across the
+/// channel from edge to edge -- nothing stands above the water that channel carries there, beyond
+/// the record's own vertical precision (`refine_vertical_m`, Ruling C-16):
+///
+/// - where the query answers a **fine-found body**, that body's water surface is what stands in
+///   the channel, and it may not stand above the channel's water: a pond kept across a notch is a
+///   wall across the river;
+/// - anywhere else the query calls water, the carved ground itself.
+///
+/// The channel's water is its own leg's `query::along_leg` level at the sample's foot -- a reach's
+/// `bed_m + depth_m` (Ruling C-13), a notch's `surface_m`. Samples a **coarse** lake claims are
+/// Ruling C-17's, not this rule's, and are counted rather than judged.
+///
+/// **A sample inside the channel that the query calls dry is a failure, not a rim (Ruling C-35).**
+/// Only the two outermost samples across a leg (`step = +-4`, exactly on the half-width) are a
+/// knife-edge on the channel's rim, and only those may answer `None`. This test used to skip every
+/// dry sample as a rim, and on these bakes that category was nearly every notch sample: 10 of 12
+/// notches lie 97 km or more from any recorded reach, the query had no notch clause, and so the
+/// notch half of this test judged only ponds. It now also requires that some sample of a notch no
+/// reach runs through was judged.
+///
+/// Sampled independently of `ponds::drain_deficit_m` -- denser along the leg and across it -- so
+/// this does not merely re-run the rule it pins. At the commit before Ruling C-16 it fails on the
+/// 30,000-node bake's 190 m wall.
+#[test]
+fn no_channel_is_dammed_by_a_pond_it_drains() {
+    let mut failures: Vec<String> = Vec::new();
+    let mut ponds_judged = 0usize;
+    for nodes in [30_000u32, 60_000] {
+        let bare = home();
+        let baked = crate::hydrology::bake(&bare, &for_carving(crate::hydrology::HydroParams::earth_like(nodes)))
+            .expect("the bare world bakes");
+        let tolerance = baked.stats.refine_vertical_m;
+        let bake = Arc::new(IndexedRecord::new(baked, R));
+        let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                                         Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+            .expect("joins its own world");
+        let record = bake.record();
+        // (points; (bed or surface, depth, width) at each; is it a notch)
+        let mut lines: Vec<(Vec<SpherePoint>, Vec<(f64, f64, f64)>, bool)> = Vec::new();
+        for reach in &record.reaches {
+            lines.push((reach.points.iter().map(|p| at(p.lat_deg, p.lon_deg)).collect(),
+                        reach.points.iter().map(|p| (p.bed_m, p.depth_m, p.width_m)).collect(),
+                        false));
+        }
+        for notch in &record.notches {
+            lines.push((notch.points.iter().map(|&(la, lo, _, _)| at(la, lo)).collect(),
+                        notch.points.iter().map(|&(_, _, s, w)| (s, 0.0, w)).collect(),
+                        true));
+        }
+        let (mut judged, mut in_ponds, mut coarse, mut rim, mut worst) = (0usize, 0usize, 0usize, 0usize, f64::NEG_INFINITY);
+        let (mut notch_alone, mut dry_inside) = (0usize, 0usize);
+        let mut worst_at = String::new();
+        let mut dry_at = String::new();
+        for (points, water, is_notch) in &lines {
+            for k in 0..points.len().saturating_sub(1) {
+                let (a, b) = (&points[k], &points[k + 1]);
+                let ((bed_a, depth_a, width_a), (bed_b, depth_b, width_b)) = (water[k], water[k + 1]);
+                let Some(normal) = a.vector.cross(&b.vector).normalised() else { continue };
+                let half = half_of(leg_width_m(width_a, width_b));
+                for station in 0..=16 {
+                    let t = f64::from(station) / 16.0;
+                    let Some(on) = SpherePoint::from_vector(&a.vector.scaled(1.0 - t).add(&b.vector.scaled(t)))
+                    else { continue };
+                    for step in -4i32..=4 {
+                        let share = f64::from(step) / 4.0;
+                        let Some(p) = SpherePoint::from_vector(&on.vector.add(&normal.scaled(share * half / R)))
+                        else { continue };
+                        let along = leg_foot(&p, a, b, R).1;
+                        let channel = along_leg(bed_a, bed_b, along) + along_leg(depth_a, depth_b, along);
+                        let q = ask_carved(&carved, &bake, &p);
+                        let standing = match q.kind {
+                            WaterKind::Lake | WaterKind::Pond | WaterKind::SaltLake | WaterKind::SaltFlat => {
+                                let body = record.bodies.iter().find(|b| b.id == q.body_id).expect("answered");
+                                if body.shore_member_count > 0 {
+                                    coarse += 1;
+                                    continue;
+                                }
+                                in_ponds += 1;
+                                body.level_m
+                            }
+                            WaterKind::River | WaterKind::Ocean => carved.elevation_m(&p, None),
+                            WaterKind::None => {
+                                if step == 4 || step == -4 {
+                                    rim += 1;
+                                } else {
+                                    dry_inside += 1;
+                                    if dry_at.is_empty() {
+                                        dry_at = format!("{:?} ({} line)", p.to_latlon(),
+                                                         if *is_notch { "a notch" } else { "a reach" });
+                                    }
+                                }
+                                continue;
+                            }
+                        };
+                        judged += 1;
+                        if *is_notch && q.kind == WaterKind::River
+                            && q.reach_id == crate::water::query::NO_REACH {
+                            notch_alone += 1;
+                        }
+                        let over = standing - channel;
+                        if over > worst {
+                            worst = over;
+                            worst_at = format!("{:?} ({:?} {})", p.to_latlon(), q.kind, q.body_id);
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("earth_like({nodes}): {judged} channel samples judged ({in_ponds} in fine-found \
+                   bodies, {notch_alone} in a notch's water alone), {coarse} in coarse lakes (Ruling \
+                   C-17, not judged), {rim} dry on a rim, {dry_inside} dry inside a channel; the \
+                   most anything stands above its channel's water: {worst} m at {worst_at}");
+        assert!(judged > 10_000, "earth_like({nodes}): vacuous -- only {judged} judged");
+        if dry_inside > 0 {
+            failures.push(format!("earth_like({nodes}): the query calls {dry_inside} samples inside \
+                                   a cut channel dry, the first at {dry_at}"));
+        }
+        if notch_alone == 0 {
+            failures.push(format!("earth_like({nodes}): vacuous for notches -- no sample of a notch \
+                                   no reach runs through was judged"));
+        }
+        ponds_judged += in_ponds;
+        if worst > tolerance {
+            failures.push(format!("earth_like({nodes}): something stands {worst} m above its \
+                                   channel's water at {worst_at}, over the record's {tolerance} m"));
+        }
+    }
+    // Not vacuous in the case the rule is about: some pond a channel runs through is still kept
+    // (its water at or above the channel's, within the record's precision) and was judged here.
+    assert!(ponds_judged > 0, "vacuous: no channel sample fell in a kept fine-found body");
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+/// A ring pond at level 50 m and three channels, through `ponds::is_drained` exactly as the pond
+/// search asks it: **a river through the pond at its own level survives** (water 0.5 m under the
+/// level, inside the record's 1 m precision); a river 1.5 m under it drains it, and so does a notch
+/// 30 m under it; a river running past the ring, however low, is not a crossing.
+#[test]
+fn a_pond_a_river_runs_through_at_its_own_level_survives() {
+    let params = crate::hydrology::HydroParams::earth_like(1_000);
+    assert_eq!(params.refine_vertical_m, 1.0, "the fixture's margins are laid out against 1 m");
+    let pond = Body {
+        id: 0, kind: BodyKind::Pond, fresh: true, enclosed: false, forced: false,
+        level_m: 50.0, area_m2: 1.2e6, depth_m: 3.0, outlet_reach: None, anchor: (5.005, 5.005),
+        outline: vec![(5.0, 5.0), (5.01, 5.0), (5.01, 5.01), (5.0, 5.01)],
+        downstream: Downstream::Sink, shore_member_count: 0, shore_reach_m: 0.0,
+    };
+    let river = |water_m: f64, lat: f64| reach(0, vec![reach_point(lat, 4.99, water_m - 2.0, 40.0),
+                                                       reach_point(lat, 5.02, water_m - 2.0, 40.0)]);
+    let drained = |reaches: Vec<ReachLine>, notches: Vec<NotchLine>| {
+        let r = record(reaches, notches, Vec::new());
+        let index = crate::water::index::WaterIndex::build(&r, R, 200_000.0);
+        crate::hydrology::ponds::is_drained(&pond, &r, &index, &params)
+    };
+    assert!(!drained(vec![river(49.5, 5.005)], Vec::new()), "a river through it at its own level");
+    assert!(!drained(vec![river(60.0, 5.005)], Vec::new()), "a river through it above its level");
+    assert!(drained(vec![river(48.5, 5.005)], Vec::new()), "a river 1.5 m under its level drains it");
+    assert!(drained(Vec::new(), vec![NotchLine { points: vec![(5.005, 4.99, 20.0, 30.0),
+                                                              (5.005, 5.02, 20.0, 30.0)] }]),
+            "a notch cut 30 m under its level drains it");
+    assert!(!drained(vec![river(10.0, 5.02)], Vec::new()), "a river 1.1 km past the ring crosses nothing");
+    // Ruling Q-7's width is the channel: a river whose centre line misses the ring by 15 m, but
+    // whose 40 m channel reaches into it, still crosses it.
+    let clipping = 5.01 + 15.0 / M_PER_DEG;
+    assert!(drained(vec![river(10.0, clipping)], Vec::new()), "a channel clipping the ring's side");
+}
+
+/// **Ruling C-19: the two authorities compose multiplicatively.** A carving feature laid over a
+/// channel's bank, at a point where the feature's authority and the layer's are **both** strictly
+/// between 0 and 1: there `(1 - a_f)(1 - a_w)` and the additive `1 - a_f - a_w` differ, and the
+/// carved world's `elevation_m` must be the multiplicative one to the bit. Every other test has one
+/// of the two authorities at 0 or 1, where the forms agree -- which is why the additive form used
+/// to pass the whole suite.
+#[test]
+fn a_feature_over_a_channel_damps_detail_by_the_product_of_the_two_authorities() {
+    use crate::features::Feature;
+    use crate::surface::FeatureInput;
+    // A land point, found rather than assumed: the first of a coarse scan standing 100-600 m up.
+    let plain = home();
+    let mut land = None;
+    'scan: for i in 0..60 {
+        for j in 0..120 {
+            let p = at(-60.0 + f64::from(i) * 2.0, -180.0 + f64::from(j) * 3.0);
+            let h = plain.structural_m(&p);
+            if h > 100.0 && h < 600.0 {
+                land = Some(p);
+                break 'scan;
+            }
+        }
+    }
+    let centre = land.expect("the home world has land");
+    let (lat, lon) = centre.to_latlon();
+    let feature = Feature {
+        kind: "cut".to_string(), at: centre, target_m: plain.structural_m(&centre) - 30.0,
+        length_m: 3_000.0, width_m: 3_000.0, bearing_deg: 0.0,
+        compose: crate::features::CARVE.to_string(), marked: false, substrate: None,
+    };
+    let bare = Surface::new(20_260_904, R, 12, 0.29, Some(FeatureInput::Loose(vec![feature.clone()])), None, None);
+    // A 200 m channel 1,700 m north of the feature's centre, its bed well under the ground; the
+    // probe stands 200 m off its line -- past the 100 m half-width, half way across the 200 m bank
+    // -- and 1,500 m from the feature's centre, where its weight is partial.
+    let line_lat = lat + 1_700.0 / M_PER_DEG;
+    let bed = plain.structural_m(&centre) - 80.0;
+    let mut joined = record(vec![reach(0, vec![reach_point(line_lat, lon - 0.02, bed, 200.0),
+                                               reach_point(line_lat, lon + 0.02, bed, 200.0)])],
+                            Vec::new(), Vec::new());
+    joined.ground = ground_fingerprint(&bare);
+    let bake = Arc::new(IndexedRecord::new(joined, R));
+    let carved = Surface::with_water(20_260_904, R, 12, 0.29, Some(FeatureInput::Loose(vec![feature])),
+                                     None, None, None, None, None,
+                                     Some(Carve { params: WaterParams::canonical(), bake: bake.clone() }))
+        .expect("joins");
+    let probe = at(line_lat - 200.0 / M_PER_DEG, lon);
+
+    // The pipeline's own pieces, so the two forms can be told apart at this very point.
+    let reading = carved.shelf.evaluate(&probe);
+    let (shaped, a_f) = carved.features.apply(&probe, reading.elevation_m);
+    let cell_m = bake.record().stats.pond_cell_m;
+    let bare_detail = |q: &SpherePoint| carved.bake_ground_m(q, Some(cell_m));
+    let layer = WaterLayer::new(WaterParams::canonical(), bake.clone());
+    let (cut, a_w) = layer.cut_with(&probe, shaped, &Detail(&bare_detail));
+    assert!(a_f > 0.05 && a_f < 0.95, "fixture is wrong: the feature's authority here is {a_f}");
+    assert!(a_w > 0.05 && a_w < 0.95, "fixture is wrong: the layer's authority here is {a_w}");
+    let amplitude = carved.detail.amplitude_m(&probe, cut, reading.weight, reading.tectonic_m);
+    let product = cut + carved.detail.offset_m(&probe, amplitude * ((1.0 - a_f) * (1.0 - a_w)), None);
+    let additive = cut + carved.detail.offset_m(&probe, amplitude * (1.0 - a_f - a_w), None);
+    let gap = if product > additive { product - additive } else { additive - product };
+    assert!(gap > 1.0e-3, "fixture is wrong: the two forms differ by only {gap} m here");
+    assert_eq!(carved.elevation_m(&probe, None).to_bits(), product.to_bits(),
+               "elevation {} m is not the multiplicative {product} m (additive would be {additive} m)",
+               carved.elevation_m(&probe, None));
+}
+
+// ---- Ruling C-20: the drain is for a world that will be carved -------------------------------
+
+/// **A carved world refuses a record not baked for carving**, by name. Such a record keeps the
+/// hollows its own channels drain, so carving with it brings the dams straight back. A real
+/// ordinary bake of `bake_tests::world()` at `earth_like(30_000)` -- the one with the 194 m wall --
+/// is refused; the same world's bake for carving joins.
+#[test]
+fn a_carved_world_refuses_a_record_not_baked_for_carving() {
+    let bare = home();
+    let join = |params: crate::hydrology::HydroParams| {
+        let baked = crate::hydrology::bake(&bare, &params).expect("the bare world bakes");
+        let bake = Arc::new(IndexedRecord::new(baked, R));
+        Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                            Some(Carve { params: WaterParams::canonical(), bake }))
+            .err()
+    };
+    let params = crate::hydrology::HydroParams::earth_like(30_000);
+    assert_eq!(join(params.clone()), Some(CarveRefused::NotBakedForCarving),
+               "an ordinary record must be refused, not carved");
+    assert_eq!(join(for_carving(params)), None, "the bake for carving joins");
+}
+
+/// **Ruling C-20: an ordinary bake is what it was before the drain existed.** With the flag unset,
+/// `bake_tests::world()` keeps exactly the bodies it kept at `e37575b` -- 14 (5 fine-found) at
+/// `earth_like(30_000)` and 43 (22 fine-found) at `earth_like(60_000)`, counted there -- and its
+/// record says it is ordinary (SCHEMA 7). Not vacuous: some of those kept finds are ones the
+/// drain rule would drop, so it is the flag, and not an absence of drained ponds, that spares them.
+#[test]
+fn an_ordinary_bake_keeps_every_pond_it_kept_before_the_drain() {
+    use crate::hydrology::ponds::is_drained;
+    for (nodes, bodies, fine) in [(30_000u32, 14usize, 5usize), (60_000, 43, 22)] {
+        let params = crate::hydrology::HydroParams::earth_like(nodes);
+        assert!(!params.drain_for_carve, "earth_like is an ordinary bake");
+        let baked = crate::hydrology::bake(&home(), &params).expect("bakes");
+        let found = baked.bodies.iter().filter(|b| b.shore_member_count == 0).count();
+        assert_eq!((baked.bodies.len(), found), (bodies, fine),
+                   "earth_like({nodes}): the ordinary bake's bodies moved from e37575b's");
+        assert!(!baked.stats.drained_for_carve);
+        assert_eq!(crate::hydrology::record::encode(&baked)[0], crate::hydrology::record::SCHEMA);
+        let index = crate::water::index::WaterIndex::build(&baked, R, 200_000.0);
+        let spared = baked.bodies.iter()
+            .filter(|b| b.shore_member_count == 0 && is_drained(b, &baked, &index, &params))
+            .count();
+        assert!(spared > 0, "earth_like({nodes}): vacuous, no kept find is one the drain would drop");
+    }
+}
