@@ -1451,6 +1451,13 @@ jobs:
           # Re-derived by `cargo test -p worldbuilder-engine <cfg> -- --list` (and `--ignored`) per
           # configuration, summing each binary's trailer: listed 914/914/917/1055/1058, and
           # `assert_counts.py cargo-list` printed `count OK` for all five.
+          # 2026-09-19, WATER 2b Task 8 (the carve measured; the owner's world sounded):
+          # **903/903/906/1044/1047, UNCHANGED**, ignored unchanged at 11. The task adds a report and
+          # spec corrections, no test and no source. Re-derived rather than carried: `cargo test -p
+          # worldbuilder-engine <cfg> -- --list` (and `--ignored`) per configuration, summing each
+          # binary's trailer, listed 914/914/917/1055/1058 across 18 binaries with 11 ignored;
+          # `assert_counts.py cargo-list` printed `count OK` for all five; and each suite run in full
+          # with `--no-fail-fast`: 903/903/906/1044/1047 passed, 0 failed, 11 ignored.
           - name: no-default-features
             features: "--no-default-features"
             expect: 903
@@ -1748,6 +1755,10 @@ jobs:
       # wasm-only and adds no Python test. Re-counted by `pytest tests/ -q --collect-only` (577),
       # then run against a wheel rebuilt from this tree: 576 passed, 1 failed, the same
       # test_installation property.
+      # 2026-09-19, WATER 2b Task 8: **577, conformance 168, both unchanged**. Re-counted by
+      # `pytest tests/ -q --collect-only` (577) and on tests/test_conformance.py (168), then run with
+      # WORLDBUILDER_REQUIRE_ENGINE=1 under the repo .venv (its extension rebuilt from this tree in
+      # Task 7's fix round; nothing under src/ has changed since): 577 passed.
       - name: Assert the suite -- 577 tests, 168 of them conformance
         shell: bash
         run: |
