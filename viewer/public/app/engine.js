@@ -34,6 +34,10 @@ import {
 import {
   PEAK_STRIDE, PEAK_PRESET, peakToRecord, peakFromRecord,
 } from "./peak-params.js";
+import {
+  WATER_STRIDE, WATER_PRESET, waterToRecord, waterFromRecord, hydroParamsWords,
+  HYDRO_PARAMS_STRIDE, HYDRO_PARAMS_CARVE_STRIDE,
+} from "./water-params.js";
 
 /// Status codes, mirrored from `wasm.rs`. Kept as names so a failure reads as a sentence.
 export const WB_OK = 0;
@@ -134,7 +138,14 @@ export const WB_MAX_CLIMATE_MARCH_SAMPLES = 1024;
 /// `streamFlowM2`, `riverFlowM2`, `greatFlowM2`, `notchFallM`, `evaporationFactor`,
 /// `saltFlatShare`, `forcedCount`, followed by `forcedCount` pairs of
 /// `[latitudeDeg, longitudeDeg]`. Mirrored from `WB_HYDRO_PARAMS_STRIDE`.
-export const WB_HYDRO_PARAMS_STRIDE = 12;
+export const WB_HYDRO_PARAMS_STRIDE = HYDRO_PARAMS_STRIDE;
+
+/// The same record **for a bake for carving**: the twelve words above, then word 12 =
+/// `drain_for_carve`, exactly 1, then the forced-outlet pairs. Mirrored from
+/// `WB_HYDRO_PARAMS_CARVE_STRIDE`; the two layouts are told apart by the length's parity, so no
+/// tag word exists. `hydroHold` writes it when `params.forCarving` is true, through
+/// `water-params.js`'s `hydroParamsWords`, which is the one place either layout is laid out.
+export const WB_HYDRO_PARAMS_CARVE_STRIDE = HYDRO_PARAMS_CARVE_STRIDE;
 
 /// The export's own ceiling on `totalNodes` and `wetnessNodes`, mirrored from
 /// `WB_MAX_HYDRO_NODES` (1.3M since the water 1a final review: the measured heap at 1M is
@@ -195,7 +206,8 @@ export class Engine {
       "wb_world_new_tectonic", "wb_tectonic_preset", "wb_tectonic_check",
       "wb_world_new_coast", "wb_coast_preset", "wb_coast_check",
       "wb_world_new_gully", "wb_gully_preset", "wb_gully_check",
-      "wb_world_new_peak", "wb_peak_preset", "wb_peak_check", "wb_world_free",
+      "wb_world_new_peak", "wb_peak_preset", "wb_peak_check",
+      "wb_world_new_water", "wb_water_preset", "wb_water_check", "wb_world_free",
       "wb_world_count", "wb_elevation_m", "wb_structural_m", "wb_bottom_at",
       "wb_fill_tile_f32", "wb_water_run",
       "wb_hydro_bake", "wb_hydro_len", "wb_hydro_copy", "wb_hydro_free",
@@ -452,6 +464,28 @@ export class Engine {
     }
   }
 
+  /// The water block of a named preset, as an object keyed by `WATER_FIELDS`.
+  ///
+  /// **The only way the viewer learns a water number, and this comment does not restate one.**
+  /// The bank-width slider starts here when the carve is first turned on, so `water/layer.rs`
+  /// stays the single place the canonical width is written. `name` is a key of `WATER_PRESET`.
+  waterPreset(name = "canonical") {
+    const selector = WATER_PRESET[name];
+    if (selector === undefined) throw new Error(`unknown water preset "${name}"`);
+    const bytes = WATER_STRIDE * 8;
+    const ptr = this.exports.wb_alloc(bytes);
+    if (ptr === 0) throw new Error("wb_alloc refused the water preset buffer");
+    try {
+      const status = this.exports.wb_water_preset(selector, ptr, WATER_STRIDE) >>> 0;
+      if (status !== WB_OK) {
+        throw new Error(`wb_water_preset(${name}) returned ${statusName(status)}`);
+      }
+      return waterFromRecord(Array.from(new Float64Array(this.memory.buffer, ptr, WATER_STRIDE)));
+    } finally {
+      this.exports.wb_dealloc(ptr, bytes);
+    }
+  }
+
   /// `relief` is `null`/absent for the canonical path — a null pointer and a length of zero,
   /// which is the same `None` `wb_world_new` passes and is byte-for-byte today's world. An
   /// object keyed by `RELIEF_FIELDS` asks for a different one.
@@ -465,114 +499,113 @@ export class Engine {
   /// `Surface::with_gully` builds **no steering lattice at all** and `elevation_m` takes a
   /// different branch -- so the canonical path is structurally the old one rather than the new one
   /// plus zero. An object keyed by `GULLY_FIELDS` asks for the drainage texture.
-  /// `peaks` is the sixth and last: `null`/absent is `None`, and on this channel that means
+  /// `peaks` is the sixth: `null`/absent is `None`, and on this channel that means
   /// `Tectonics::peak_offset_m` returns 0.0 on its very first line rather than evaluating the
   /// term at all. An object keyed by `PEAK_FIELDS` asks for the seamount field.
-  newWorld({
+  /// `water` is the seventh, and **it is not a surface block like the six above**: it carves the
+  /// channels of a HELD BAKE into the ground (plan 2b, Ruling C-1's second phase), so it travels
+  /// with `bake`, the `{ id, handle, words }` object `hydroHold` handed back -- baked on the bare
+  /// world of this same spec, **for carving**. `null`/absent for both is the uncarved path: a null
+  /// block, a length of zero and a bake id of 0, which `wb_world_new_water` builds as the bare
+  /// world, bit-identical to `wb_world_new_peak`'s. A block without a bake, or a bake without a
+  /// block, is a caller bug and is refused by the engine rather than guessed at here.
+  ///
+  /// **A refused world throws an `Error` with `.status`**, the named status the handle of 0 could
+  /// not carry. With a water block in the call that status is asked of `wb_water_check` -- which
+  /// costs a whole world build (and a fingerprint), so it is asked here, **after** a refusal, and
+  /// never before a build (Task 5's carry-forward). Without one, the six older checkers name the
+  /// block they can judge alone, as before.
+  newWorld(spec) {
+    const { seed, radiusM, plateCount, landFraction, features = [], water = null, bake = null } = spec;
+    return this.worldCall(spec, (args) => {
+      // ONE constructor for all paths, and `wb_world_new_water` is now it. With all six blocks
+      // null and no bake this is six `None`s -- the world `wb_world_new` builds, which the
+      // engine-side tests pin bit for bit, including Task 5's
+      // `a_canonical_block_over_a_record_with_no_reaches_is_the_untouched_world` and the door's
+      // own null-block path. Calling the widest door unconditionally rather than choosing is
+      // deliberate, as it was when `wb_world_new_peak` became the door: a branch here would send
+      // the default path and the carved path through different exports, and the byte-identity
+      // the digest control holds would stop covering what the viewer actually calls.
+      const handle = this.exports.wb_world_new_water(...args) >>> 0;
+      if (handle !== 0) return handle;
+      // A refused world is a blank viewer, so the message has to name the reason.
+      let status = null;
+      let why = "";
+      if (water !== null || bake !== null) {
+        status = this.exports.wb_water_check(...args) >>> 0;
+        why = ` water=${statusName(status)}`;
+      } else {
+        why =
+          (spec.relief ? ` relief=${statusName(this.checkRelief(spec.relief))}` : "") +
+          (spec.tectonics ? ` tectonics=${statusName(this.checkTectonic(spec.tectonics))}` : "") +
+          (spec.coast ? ` coast=${statusName(this.checkCoast(spec.coast))}` : "") +
+          (spec.gully ? ` gully=${statusName(this.checkGully(spec.gully))}` : "") +
+          (spec.peaks ? ` peaks=${statusName(this.checkPeak(spec.peaks))}` : "");
+      }
+      const error = new Error(
+        `wb_world_new_water refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
+        `land=${landFraction} features=${features.length}${why}`,
+      );
+      error.status = status;
+      throw error;
+    });
+  }
+
+  /// Ask whether `newWorld(spec)` would build, **and if not, why**: `wb_water_check` over exactly
+  /// the arguments `newWorld` would send. Returns a `WB_*` status.
+  ///
+  /// **It costs what the constructor costs** -- a world build, plus a fingerprint for a carve --
+  /// because whether a record belongs to a world cannot be judged without the world. So it is not
+  /// the peak channel's cheap `checkPeak`: call it after a refusal, or once before a bake that
+  /// would otherwise be wasted, **never on a slider drag**. A malformed block is judged before the
+  /// world is looked at, so `bake: null` with a block answers `WB_ERR_PARAM` at no build cost for a
+  /// malformed block, and `WB_ERR_HANDLE` (after one bare build and no index) for an admissible one.
+  checkWater(spec) {
+    return this.worldCall(spec, (args) => this.exports.wb_water_check(...args) >>> 0);
+  }
+
+  /// Lay a world spec out in linear memory as `wb_world_new_water`'s nineteen arguments, hand them
+  /// to `call`, and free every buffer on the way out whatever `call` did. The one marshaller for
+  /// the constructor and its checker, so the two cannot be handed different arguments.
+  worldCall({
     seed, radiusM, plateCount, landFraction, features = [], relief = null, tectonics = null,
-    coast = null, gully = null, peaks = null,
-  }) {
-    let ptr = 0;
-    let bytes = 0;
-    let reliefPtr = 0;
-    let reliefBytes = 0;
-    let tectonicPtr = 0;
-    let tectonicBytes = 0;
-    let coastPtr = 0;
-    let coastBytes = 0;
-    let gullyPtr = 0;
-    let gullyBytes = 0;
-    let peakPtr = 0;
-    let peakBytes = 0;
+    coast = null, gully = null, peaks = null, water = null, bake = null,
+  }, call) {
+    const held = [];
+    const place = (words, what) => {
+      const bytes = words.length * 8;
+      const ptr = this.exports.wb_alloc(bytes);
+      if (ptr === 0) throw new Error(`wb_alloc refused the ${what} buffer`);
+      held.push([ptr, bytes]);
+      // The view is created after the allocation and used at once -- the module doc's rule 1.
+      new Float64Array(this.memory.buffer, ptr, words.length).set(words);
+      return ptr;
+    };
     try {
-      if (peaks) {
-        peakBytes = PEAK_STRIDE * 8;
-        peakPtr = this.exports.wb_alloc(peakBytes);
-        if (peakPtr === 0) throw new Error("wb_alloc refused the peak buffer");
-        new Float64Array(this.memory.buffer, peakPtr, PEAK_STRIDE).set(peakToRecord(peaks));
-      }
-      if (gully) {
-        gullyBytes = GULLY_STRIDE * 8;
-        gullyPtr = this.exports.wb_alloc(gullyBytes);
-        if (gullyPtr === 0) throw new Error("wb_alloc refused the gully buffer");
-        new Float64Array(this.memory.buffer, gullyPtr, GULLY_STRIDE).set(gullyToRecord(gully));
-      }
-      if (coast) {
-        coastBytes = COAST_STRIDE * 8;
-        coastPtr = this.exports.wb_alloc(coastBytes);
-        if (coastPtr === 0) throw new Error("wb_alloc refused the coast buffer");
-        new Float64Array(this.memory.buffer, coastPtr, COAST_STRIDE).set(coastToRecord(coast));
-      }
-      if (tectonics) {
-        tectonicBytes = TECTONIC_STRIDE * 8;
-        tectonicPtr = this.exports.wb_alloc(tectonicBytes);
-        if (tectonicPtr === 0) throw new Error("wb_alloc refused the tectonic buffer");
-        new Float64Array(this.memory.buffer, tectonicPtr, TECTONIC_STRIDE)
-          .set(tectonicToRecord(tectonics));
-      }
-      if (relief) {
-        reliefBytes = RELIEF_STRIDE * 8;
-        reliefPtr = this.exports.wb_alloc(reliefBytes);
-        if (reliefPtr === 0) throw new Error("wb_alloc refused the relief buffer");
-        new Float64Array(this.memory.buffer, reliefPtr, RELIEF_STRIDE).set(toRecord(relief));
-      }
-      if (features.length > 0) {
-        bytes = features.length * WB_FEATURE_STRIDE * 8;
-        ptr = this.exports.wb_alloc(bytes);
-        if (ptr === 0) throw new Error("wb_alloc refused the feature buffer");
-        const words = new Float64Array(this.memory.buffer, ptr, features.length * WB_FEATURE_STRIDE);
-        features.forEach((f, i) => {
-          words.set([
-            f.latitudeDeg, f.longitudeDeg, f.targetM, f.lengthM, f.widthM, f.bearingDeg,
-            COMPOSE[f.compose] ?? f.compose, SUBSTRATE[f.substrate ?? "derive"] ?? f.substrate,
-          ], i * WB_FEATURE_STRIDE);
-        });
-      }
-      // ONE constructor for all EIGHTEEN paths, and `wb_world_new_peak` is now it. With all five
-      // blocks null this is `(null, 0, null, 0, null, 0, null, 0, null, 0)`, which the engine
-      // reads as five `None`s — the same world `wb_world_new` builds, which the engine-side tests
-      // `the_relief_channel_default_path_is_the_untouched_world`,
-      // `the_tectonic_channel_default_path_is_the_untouched_world`,
-      // `the_coast_channel_default_path_is_the_untouched_world`,
-      // `gully_none_matches_gully_some_canonical_bit_for_bit` and the peak channel's own parity
-      // test pin bit for bit.
-      //
-      // Calling the widest door unconditionally rather than choosing between six is
-      // deliberate: a branch here would mean the default path and the chosen path went
-      // through different exports, and the byte-identity those tests assert would stop
-      // covering what the viewer actually calls. **This line moving from `wb_world_new_gully` to
-      // `wb_world_new_peak` is the whole of the peak channel's wiring**, and it is the line the
-      // digest control exists to hold: the default picture must not move because of it.
-      const handle = this.exports.wb_world_new_peak(
-        BigInt(seed), radiusM, plateCount, landFraction, ptr, features.length,
-        reliefPtr, relief ? RELIEF_STRIDE : 0,
-        tectonicPtr, tectonics ? TECTONIC_STRIDE : 0,
-        coastPtr, coast ? COAST_STRIDE : 0,
-        gullyPtr, gully ? GULLY_STRIDE : 0,
-        peakPtr, peaks ? PEAK_STRIDE : 0,
-      ) >>> 0;
-      if (handle === 0) {
-        // A refused world is a blank viewer, so the message has to name the reason. The five
-        // parameter blocks are the arguments here with checkers that can say which field.
-        const why =
-          (relief ? ` relief=${statusName(this.checkRelief(relief))}` : "") +
-          (tectonics ? ` tectonics=${statusName(this.checkTectonic(tectonics))}` : "") +
-          (coast ? ` coast=${statusName(this.checkCoast(coast))}` : "") +
-          (gully ? ` gully=${statusName(this.checkGully(gully))}` : "") +
-          (peaks ? ` peaks=${statusName(this.checkPeak(peaks))}` : "");
-        throw new Error(
-          `wb_world_new_peak refused seed=${seed} radius=${radiusM} plates=${plateCount} ` +
-          `land=${landFraction} features=${features.length}${why}`,
+      const block = (value, stride, toRecord, what) =>
+        (value ? [place(toRecord(value), what), stride] : [0, 0]);
+      const featureWords = [];
+      features.forEach((f) => {
+        featureWords.push(
+          f.latitudeDeg, f.longitudeDeg, f.targetM, f.lengthM, f.widthM, f.bearingDeg,
+          COMPOSE[f.compose] ?? f.compose, SUBSTRATE[f.substrate ?? "derive"] ?? f.substrate,
         );
-      }
-      return handle;
+      });
+      const featurePtr = features.length > 0 ? place(featureWords, "feature") : 0;
+      const args = [
+        BigInt(seed), radiusM, plateCount, landFraction, featurePtr, features.length,
+        ...block(relief, RELIEF_STRIDE, toRecord, "relief"),
+        ...block(tectonics, TECTONIC_STRIDE, tectonicToRecord, "tectonic"),
+        ...block(coast, COAST_STRIDE, coastToRecord, "coast"),
+        ...block(gully, GULLY_STRIDE, gullyToRecord, "gully"),
+        ...block(peaks, PEAK_STRIDE, peakToRecord, "peak"),
+        ...block(water, WATER_STRIDE, waterToRecord, "water"),
+        // The held bake's id, or 0 -- Ruling C-2: the record is referenced, never copied.
+        bake === null ? 0 : bake.id,
+      ];
+      return call(args);
     } finally {
-      if (ptr !== 0) this.exports.wb_dealloc(ptr, bytes);
-      if (reliefPtr !== 0) this.exports.wb_dealloc(reliefPtr, reliefBytes);
-      if (tectonicPtr !== 0) this.exports.wb_dealloc(tectonicPtr, tectonicBytes);
-      if (coastPtr !== 0) this.exports.wb_dealloc(coastPtr, coastBytes);
-      if (gullyPtr !== 0) this.exports.wb_dealloc(gullyPtr, gullyBytes);
-      if (peakPtr !== 0) this.exports.wb_dealloc(peakPtr, peakBytes);
+      for (const [ptr, bytes] of held) this.exports.wb_dealloc(ptr, bytes);
     }
   }
 
@@ -773,10 +806,13 @@ export class Engine {
         bodyPtr, words, scalarPtr, scalarPtr + 8,
       ) >>> 0;
       if (status !== WB_OK) {
-        throw new Error(
+        const error = new Error(
           `wb_water_run returned ${statusName(status)} for nodeCount=${nodeCount} ` +
           `seaLevel=${seaLevelM} pondMax=${pondMaxSurfaceAreaM2}`,
         );
+        // `.status`, so `WB_ERR_CARVED` (Ruling C-24: the run reads the ground) can be named.
+        error.status = status;
+        throw error;
       }
       // Views after the allocation, read immediately, never cached -- the module doc's rule 1.
       const bodyCount = new Uint32Array(this.memory.buffer, scalarPtr, 1)[0] >>> 0;
@@ -845,9 +881,14 @@ export class Engine {
   /// bake-and-free shape above. The record comes back anyway, and not as a second copy step,
   /// because the answers name bodies and reaches by **id**: `fresh`, a river's class and a
   /// body's kind are read out of the record entry the id points at.
+  ///
+  /// **`params.forCarving: true` bakes the record FOR CARVING** (Ruling C-20): the 13-word layout
+  /// with word 12 set, a SCHEMA 8 record whose ponds a channel is cut beneath are drained. Only such
+  /// a record can carve a world (`newWorld`'s `bake`); anything else is the ordinary 12-word bake,
+  /// byte for byte the buffer this method sent before the flag existed.
   hydroHold({ handle, params }) {
-    const forced = params.forcedOutlets ?? [];
-    const stride = WB_HYDRO_PARAMS_STRIDE + 2 * forced.length;
+    const paramWords = hydroParamsWords(params);
+    const stride = paramWords.length;
     const paramsBytes = stride * 8;
     const paramsPtr = this.exports.wb_alloc(paramsBytes);
     if (paramsPtr === 0) throw new Error("wb_alloc refused the hydro params buffer");
@@ -862,18 +903,14 @@ export class Engine {
     let wordsBytes = 0;
     let held = false;
     try {
-      const words = new Float64Array(this.memory.buffer, paramsPtr, stride);
-      words.set([
-        params.totalNodes, params.wetnessNodes, params.keepDepthM, params.keepAreaM2,
-        params.pondMaxAreaM2, params.streamFlowM2, params.riverFlowM2, params.greatFlowM2,
-        params.notchFallM, params.evaporationFactor, params.saltFlatShare, forced.length,
-      ]);
-      forced.forEach((outlet, i) => {
-        words.set([outlet.latitudeDeg, outlet.longitudeDeg], WB_HYDRO_PARAMS_STRIDE + 2 * i);
-      });
+      new Float64Array(this.memory.buffer, paramsPtr, stride).set(paramWords);
       const status = this.exports.wb_hydro_bake(handle, paramsPtr, stride, idPtr) >>> 0;
       if (status !== WB_OK) {
-        throw new Error(`wb_hydro_bake returned ${statusName(status)}`);
+        // `.status` so a caller can name the refusal -- `WB_ERR_CARVED` above all, which is what
+        // a bake asked of a carved world answers (Rulings C-1 and C-24).
+        const error = new Error(`wb_hydro_bake returned ${statusName(status)}`);
+        error.status = status;
+        throw error;
       }
       id = new Uint32Array(this.memory.buffer, idPtr, 1)[0] >>> 0;
       const len = this.exports.wb_hydro_len(id) >>> 0;

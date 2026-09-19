@@ -14,6 +14,7 @@ import {
   clearPainted, paintedWork,
   savedWorlds, searchFromPlanet, startAutosave, suspectValues, trail, urlFor,
 } from "./worlds.js";
+import { carveRefusal } from "./water-params.js";
 import { drawAreas } from "./area-markers.js";
 import { findLakeIslands, flyTo } from "./find-places.js";
 import { enablePicking, flyFragment, markPick, pickAt } from "./pick-point.js";
@@ -604,7 +605,9 @@ export function mountWorldPanel(parent, getViewer) {
         words = (await wb.pool.hydro({ params })).words;
       } else {
         previewNote.textContent += " - no worker pool (?workers=0), running on the main thread";
-        words = wb.engine.hydroBake({ handle: wb.world, params });
+        // The BARE world: with the carve on, `wb.world` is carved, and a bake of it is refused
+        // (WB_ERR_CARVED) -- the pool path above bakes the workers' bare world, and so must this.
+        words = wb.engine.hydroBake({ handle: wb.bareWorld ?? wb.world, params });
       }
       const decoded = decodeHydro(words);
       previewLayer = drawPreview(viewer, Cesium, decoded);
@@ -635,7 +638,10 @@ export function mountWorldPanel(parent, getViewer) {
         + outletText + forcedText;
       previewButton.textContent = "hide water preview";
     } catch (error) {
-      previewNote.textContent = `water preview failed: ${error.message}`;
+      // A refusal is named in the carve's own words, so WB_ERR_CARVED reads as a sentence.
+      previewNote.textContent = typeof error.status === "number"
+        ? `water preview refused: ${carveRefusal(error.status).text}`
+        : `water preview failed: ${error.message}`;
     } finally {
       previewButton.disabled = false;
     }

@@ -63,6 +63,10 @@ import {
 import {
   PEAK_SLIDERS, peakReadoutFields, peakTravel, peakPanelFields, peakToParams, peakFromParams,
 } from "./peak-params.js";
+import {
+  waterTravel, waterPanelFields, waterToParams, waterFromParams,
+} from "./water-params.js";
+import { carveOutcomeText } from "./carve-session.js";
 import { debounceLatest, nextQueryString, RELOAD_ONLY, SWAP_DEBOUNCE_MS } from "./live-swap.js";
 import { waterNodeCountFromParams } from "./water.js";
 
@@ -1093,6 +1097,102 @@ function build() {
     paint();
   }
 
+  // === rivers · carve — this swaps live ===================================================
+  //
+  // **Plan 2b: cut the bake's river channels into the ground.** The engine's door is
+  // `wb_world_new_water` (Task 5); `carve-session.js` bakes the bare world for carving, holds the
+  // bake and builds carved worlds from it, and this section only turns it on, moves its one field
+  // and PRINTS what the session says -- the named refusal, the pond account, the wait.
+  //
+  // - **Turning it on bakes** -- over a minute on a large world, on the main thread -- and the note
+  //   says so before the page freezes rather than after.
+  // - **The bank slider never bakes.** Its release rebuilds the carved world from the held bake.
+  // - **Off writes nothing.** `waterToParams(null, ...)` is every field `null`, so an untouched
+  //   panel puts no water parameter into a link and a saved world stays bit-identical.
+  // - **No bank width is written in this file.** The slider starts at `wb_water_preset`'s answer.
+
+  const carveSection = section(body, "rivers · carve");
+  const carveLine = el("label", "wb-row wb-check");
+  const carveToggle = document.createElement("input");
+  carveToggle.type = "checkbox";
+  carveToggle.id = "wb-carve";
+  carveToggle.disabled = true;
+  carveLine.append(carveToggle, el("span", null, "cut the rivers into the ground"));
+  carveSection.append(carveLine);
+  const bankRow = row(carveSection, "bank", "wb-carve-bank", "range",
+    { min: 0, max: 1, step: 1, value: 0, disabled: true });
+  bankRow.out.textContent = "—";
+  /// What the carve is doing or waiting for.
+  const carveWaitNote = el("div", "wb-note", "waiting for the engine…");
+  /// What the session said: a named refusal, and the pond account.
+  const carveNote = el("div", "wb-note", "");
+  carveSection.append(carveWaitNote, carveNote);
+
+  /// The water block the panel describes, or `null` with the carve off.
+  let carveState = null;
+  let waterCanonical = null;
+  /// Repaint the section from the session's last outcome. Replaced by `wireCarve`.
+  let paintCarve = () => {};
+
+  function wireCarve(presets) {
+    const faults = panelFieldFaults(waterPanelFields(presets.canonical));
+    if (faults.length > 0) {
+      carveWaitNote.textContent = `slider travel refused: ${faults.join("; ")}`;
+      return;
+    }
+    waterCanonical = presets.canonical;
+    const travel = waterTravel(presets.canonical).bank_widths;
+    // The block the drawn state asked for -- refused or not, so a refused block is SHOWN.
+    carveState = presets.chosen === null ? null : { ...presets.chosen };
+    carveToggle.checked = carveState !== null;
+    bankRow.input.min = travel.min;
+    bankRow.input.max = travel.max;
+    bankRow.input.step = 1;
+    bankRow.input.value = carveState === null
+      ? travel.canonicalPosition
+      : travel.toPosition(carveState.bank_widths);
+
+    paintCarve = () => {
+      carveToggle.disabled = false;
+      bankRow.input.disabled = carveState === null;
+      // The block's own value, not the slider's: a hand-edited out-of-domain width shows as what
+      // it is, beside the refusal that names it, rather than as the clamped slider end.
+      bankRow.out.textContent = carveState === null ? "off" : travel.format(carveState.bank_widths);
+      const last = presets.last;
+      carveWaitNote.textContent = carveState === null
+        ? "off — the ground is uncut. Turning this on bakes the rivers for carving: over a minute "
+          + "on a large world, with the page frozen until it is done."
+        : last && last.carved
+          ? "on — the bake's channels are cut into the ground. The bank slider rebuilds from the "
+            + "held bake and does not bake again."
+          : "on — not drawn; see below.";
+      carveNote.textContent = carveOutcomeText(last);
+    };
+
+    carveToggle.addEventListener("change", () => {
+      carveState = carveToggle.checked
+        ? { ...presets.canonical, bank_widths: travel.toValue(Number(bankRow.input.value)) }
+        : null;
+      paintCarve();
+      if (carveState !== null && presets.session && presets.session.held === null) {
+        carveWaitNote.textContent = "baking the rivers for carving - over a minute on a large "
+          + "world, and the page will not respond until it is done";
+      }
+    });
+    bankRow.input.addEventListener("input", () => {
+      if (carveState === null) return;
+      carveState = { ...carveState, bank_widths: travel.toValue(Number(bankRow.input.value)) };
+      bankRow.out.textContent = travel.format(carveState.bank_widths);
+    });
+    // The session's own wait message, painted before the main thread blocks on a bake.
+    window.addEventListener("wb-carve-wait", (event) => {
+      carveWaitNote.textContent = event.detail.message;
+      carveToggle.disabled = true;
+      bankRow.input.disabled = true;
+    });
+    paintCarve();
+  }
+
   // === clouds — these rebuild =============================================================
   //
   // **Rebuild-class, not live**, and for the same reason the relief sliders are: the coverage
@@ -1285,6 +1385,9 @@ function build() {
     // RULING 1, held in the one place a generate can break it. On this channel `None` is
     // stronger still: `Tectonics::peak_offset_m` returns 0.0 before it evaluates the term at all.
     ...(peakState && peakCanonical ? peakToParams(peakState, peakCanonical) : {}),
+    // And the carve: off is every water field `null`, so an untouched panel writes no water
+    // parameter at all and the reload takes the absent path -- the saved world is unchanged.
+    ...(waterCanonical ? waterToParams(carveState, waterCanonical) : {}),
   });
 
   // === the live swap ======================================================================
@@ -1305,6 +1408,7 @@ function build() {
     ...(coastState && coastCanonical ? coastToParams(coastState, coastCanonical) : {}),
     ...(gullyState && gullyCanonical ? gullyToParams(gullyState, gullyCanonical) : {}),
     ...(peakState && peakCanonical ? peakToParams(peakState, peakCanonical) : {}),
+    ...(waterCanonical ? waterToParams(carveState, waterCanonical) : {}),
     lakeNodes: lakeNodes.input.value,
   });
 
@@ -1331,10 +1435,15 @@ function build() {
     if (coastCanonical) spec.coast = coastFromParams(nextParams, coastCanonical);
     if (gullyCanonical) spec.gully = gullyFromParams(nextParams, gullyCanonical);
     if (peakCanonical) spec.peaks = peakFromParams(nextParams, peakCanonical);
+    // The carve is state, not spec (the workers keep the bare world), read back out of the same
+    // query string by the same reader boot uses.
+    const carve = waterCanonical ? { carve: waterFromParams(nextParams, waterCanonical) } : {};
     generate.disabled = true;
     swapNote.textContent = "swapping…";
     try {
-      const result = await wb.swap({ spec, waterNodes: waterNodeCountFromParams(nextParams) });
+      const result = await wb.swap({
+        spec, waterNodes: waterNodeCountFromParams(nextParams), ...carve,
+      });
       // **The URL, after the swap rather than before it.** A `replaceState` that ran first would
       // leave the address bar describing a world the engine had refused.
       history.replaceState(null, "", query ? `?${query}` : location.pathname);
@@ -1343,10 +1452,12 @@ function build() {
         : `${result.kind} swap in ${(result.ms / 1000).toFixed(2)} s (${result.reason}). ` +
           "Tiles redraw after this; the camera has not moved.";
       paintWater();
+      paintCarve();
     } catch (error) {
       // A refused block leaves the previous world drawn -- `WorldSwapper` builds before it frees
       // -- so the honest thing to say is that nothing changed, not that the viewer is broken.
       swapNote.textContent = `the engine refused this world; the drawn one is unchanged (${error})`;
+      paintCarve();
     } finally {
       generate.disabled = false;
     }
@@ -1363,6 +1474,9 @@ function build() {
   for (const field of GULLY_SLIDERS) wireLive(gullyRows[field].input);
   for (const field of PEAK_SLIDERS) wireLive(peakRows[field].input);
   wireLive(lakeNodes.input);
+  // The bank slider's release, and the carve switch itself. The switch fires `change` on click.
+  wireLive(bankRow.input);
+  wireLive(carveToggle);
   // The preset buttons move several sliders at once and fire no `change` at all, so they ask for
   // the swap themselves. A "ranges preset" that changed six readouts and left the planet alone
   // would look exactly like a broken preset.
@@ -1434,7 +1548,7 @@ function build() {
   document.body.append(panel);
   return {
     readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
-    wireGully, gullyNote, wirePeaks, peakNote,
+    wireGully, gullyNote, wirePeaks, peakNote, wireCarve, carveWaitNote,
     /// Repainted once boot has published `window.__wb`, so the water note can state what THIS
     /// page actually resolved rather than only what the slider asks for.
     paintWater,
@@ -1491,7 +1605,7 @@ function wireReadout(readout) {
 // dead engine would be the drift hazard again, wearing a different hat.
 const {
   readout, wireRelief, reliefNote, wireTectonics, mountainNote, wireCoast, coastNote,
-  wireGully, gullyNote, wirePeaks, peakNote, paintWater,
+  wireGully, gullyNote, wirePeaks, peakNote, wireCarve, carveWaitNote, paintWater,
 } = build();
 const booted = window.__wbBoot && typeof window.__wbBoot.then === "function"
   ? window.__wbBoot
@@ -1514,6 +1628,9 @@ booted
     const peaks = window.__wb && window.__wb.peaks;
     if (peaks) wirePeaks(peaks);
     else peakNote.textContent = "engine unavailable — the islands cannot be read or set";
+    const carve = window.__wb && window.__wb.carve;
+    if (carve) wireCarve(carve);
+    else carveWaitNote.textContent = "engine unavailable — the carve cannot be read or set";
     paintWater();
   })
   .catch((error) => {
@@ -1523,4 +1640,5 @@ booted
     coastNote.textContent = `engine unavailable — the coastline cannot be set (${error})`;
     gullyNote.textContent = `engine unavailable — the drainage cannot be set (${error})`;
     peakNote.textContent = `engine unavailable — the islands cannot be set (${error})`;
+    carveWaitNote.textContent = `engine unavailable — the carve cannot be set (${error})`;
   });

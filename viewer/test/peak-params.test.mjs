@@ -316,7 +316,7 @@ test("the joint bound is the engine's, asked of the engine", () => {
   // blank page with a handle of 0.
   assert.throws(
     () => engine.newWorld({ ...DEFAULT_WORLD, peaks: { ...canonical, reach_m: reach, lattice_m: lattice } }),
-    /wb_world_new_peak refused.*peaks=WB_ERR_PARAM/s,
+    /wb_world_new_water refused.*peaks=WB_ERR_PARAM/s,
   );
 });
 
@@ -407,11 +407,12 @@ test("no peak number is written down twice in the viewer", () => {
   assert.match(appFile("main.js"), /engine\.peakPreset\("canonical"\)/);
   assert.match(appFile("main.js"), /engine\.peakPreset\("volcanic"\)/);
   assert.match(appFile("engine.js"), /wb_peak_preset/);
-  // **And the constructor really is the widened one.** `newWorld` now calls `wb_world_new_peak`
-  // for every path, the peak channel's own door past `wb_world_new_gully`; a viewer that imported
-  // this module and still called the gully door would pass every other assertion in this file
-  // except the ones that build a world.
-  assert.match(appFile("engine.js"), /wb_world_new_peak\(/);
+  // **And the constructor really is the widened one.** `newWorld` calls the widest door for every
+  // path -- `wb_world_new_peak` was this channel's, and the carve channel widened it once more to
+  // `wb_world_new_water`, which takes every peak argument unchanged; a viewer that imported this
+  // module and still called the gully door would pass every other assertion in this file except
+  // the ones that build a world.
+  assert.match(appFile("engine.js"), /wb_world_new_water\(/);
 });
 
 test("every driven peak field appears somewhere the owner can see it", () => {
