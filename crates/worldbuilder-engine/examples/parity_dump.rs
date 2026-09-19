@@ -133,6 +133,16 @@ fn bake_hydro_native(world: u32, params: &[f64]) -> (u32, u32, Vec<f64>) {
 /// - **`River`** -- the **lowest-id** reach with at least three recorded points whose **middle**
 ///   recorded point answers `River`. The middle, not an end: a mouth sits at a shore, where Ruling
 ///   Q-5 hands the answer to the body, and this point exists to carry a real `reach_id`.
+/// - **`Notch`** (Ruling C-37) -- the **lowest-id** notch with at least two recorded points whose
+///   **middle** answers `River` with `reach_id` at the `NO_REACH` sentinel: a notch no reach runs
+///   through, answered by Ruling C-35's notch clause. That clause has its own candidate walk,
+///   tie-break and depth arithmetic, and gives the sentinel a published meaning ("a notch"), so it
+///   is a branch of its own in Ruling Q-21's sense even though its kind is `River`. **The middle is
+///   the midpoint of the notch's middle leg** (leg `(len - 2) / 2`, the normalised sum of its two
+///   ends), not a recorded point: most notches in these bakes have two or three points, the last
+///   of which is often the water it drains into (Ruling F-3a), and a mid-leg point is where the
+///   clause interpolates its level (`along_leg` strictly between 0 and 1) rather than reading a
+///   recorded one back.
 /// - **`FineFound`** -- the **lowest-id** body with `shore_member_count == 0`, sampled at its
 ///   `anchor`. **This is the point that stands in for the pond, and the substitution is measured,
 ///   not preferred.** Neither parity bake records a body of `BodyKind::Pond`: that kind is an
@@ -187,8 +197,35 @@ fn water_points_from(world: u32, bake: u32, record: &hydrology::HydroRecord)
             break;
         }
     }
+    // `record.notches` has no ids of its own: a notch's id is its position, so the first match in
+    // order IS the lowest-id one.
+    for (id, notch) in record.notches.iter().enumerate() {
+        if notch.points.len() < 2 {
+            continue;
+        }
+        let leg = (notch.points.len() - 2) / 2;
+        let ((lat_a, lon_a, _, _), (lat_b, lon_b, _, _)) = (notch.points[leg], notch.points[leg + 1]);
+        let (a, b) = (SpherePoint::from_latlon(lat_a, lon_a), SpherePoint::from_latlon(lat_b, lon_b));
+        let Some(middle) = SpherePoint::from_vector(&a.vector.add(&b.vector)) else {
+            continue; // antipodal ends: no middle to take
+        };
+        let (lat, lon) = middle.to_latlon();
+        let (status, words) = ask(lat, lon);
+        if status == WB_OK && words[0] == WATER_KIND_RIVER && words[4] == NO_REACH_WORD {
+            eprintln!("WP notch: notch {id} ({} points), middle of leg {leg} at {lat:.6},{lon:.6}: \
+                       River, level {:.3} m (recorded ends {:.3} and {:.3}), depth {:.3} m, reach \
+                       NO_REACH, body {}", notch.points.len(), words[1], notch.points[leg].2,
+                      notch.points[leg + 1].2, words[2], words[3]);
+            points.push(("Notch", lat, lon, status, words));
+            break;
+        }
+    }
     points
 }
+
+/// `water::NO_REACH` as it crosses the boundary: `u32::MAX` in an f64 word. Since Ruling C-35 a
+/// `River` carrying it is a notch's answer (Ruling C-37).
+const NO_REACH_WORD: f64 = 4_294_967_295.0;
 
 /// The lowest-id body with `shore_member_count == 0`, if the record holds one: the body the
 /// `FineFound` point of [`water_points_from`] is chosen for, and the id its guard checks against.
@@ -212,7 +249,7 @@ fn wanted_kind_code(want: &str) -> f64 {
         "SaltLake" => 3.0,
         "SaltFlat" => 4.0,
         "Pond" => 5.0,
-        "River" => WATER_KIND_RIVER,
+        "River" | "Notch" => WATER_KIND_RIVER,
         other => panic!("no kind code for {other}"),
     }
 }
@@ -274,6 +311,14 @@ fn print_water_points(name: &str, world: u32, params: &[f64])
                  bake has moved under this corpus, and a group whose points no longer cover the \
                  kinds they were chosen for proves nothing about those branches",
                 answer[0]
+            );
+        }
+        if *want == "Notch" {
+            assert_eq!(
+                answer[4], NO_REACH_WORD,
+                "{name}: the Notch point at {lat},{lon} names reach {} -- chosen because it was a \
+                 notch's own answer (Ruling C-37), it is now a reach's",
+                answer[4]
             );
         }
         if *want == "River" {
@@ -2901,6 +2946,17 @@ fn main() {
     // this group exists; both bakes hold both, so this is an assertion and not a hope. A kind
     // NEITHER record holds is reported below and is not an error -- there is no bake to take it
     // from, and `BodyKind::Pond` is exactly that case (see `water_points_from`).
+    // Ruling C-37 adds the notch branch: a `River` with `NO_REACH`, which before it no compared
+    // value had ever run. Required of EACH bake, not of either, so the branch cannot drop out of
+    // coverage because one record stopped offering it.
+    for (bake_name, kinds) in [("plain", &plain_kinds), ("ranges", &ranges_kinds)] {
+        assert!(
+            kinds.contains(&"Notch"),
+            "{bake_name}: no notch answers River with NO_REACH at the middle of its middle leg, so \
+             Ruling C-35's notch clause would not cross the native/WASM boundary; refusing to \
+             write the corpus (Ruling C-37)"
+        );
+    }
     for required in ["River", "FineFound"] {
         assert!(
             plain_kinds.contains(&required) || ranges_kinds.contains(&required),
@@ -2908,7 +2964,7 @@ fn main() {
              branch does not otherwise cross the native/WASM boundary at all"
         );
     }
-    for kind in ["Lake", "SaltLake", "SaltFlat", "Pond", "FineFound", "River"] {
+    for kind in ["Lake", "SaltLake", "SaltFlat", "Pond", "FineFound", "River", "Notch"] {
         let plain_has = plain_kinds.contains(&kind);
         let ranges_has = ranges_kinds.contains(&kind);
         if !plain_has && !ranges_has {

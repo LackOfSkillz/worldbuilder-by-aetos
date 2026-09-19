@@ -729,6 +729,14 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
     let mut reaches = Vec::with_capacity(reach_count);
     for _ in 0..reach_count {
         let id = r.u32()?;
+        // **`u32::MAX` is `water::NO_REACH`, and it is refused as a reach's id** (Ruling C-37, N2).
+        // Since Ruling C-35 a `River` answer naming `NO_REACH` *means* a notch's water, so a reach
+        // carrying that id would make its river read as a notch on the wire. No bake writes one --
+        // reach ids are positions, far below it -- but the meaning is published, so the record
+        // that could contradict it is not a record.
+        if id == u32::MAX {
+            return None;
+        }
         let class = word_to_reach_class(r.word()?)?;
         let order = r.u32()?;
         let downstream_kind = r.word()?;
@@ -1136,6 +1144,19 @@ mod tests {
     /// collar. A count past the outline's end is not a bad number to be carried around: it is a
     /// panic in the first reader, and a collar size that wraps to about 4 billion in release. It
     /// is a valid u32, so nothing but this guard refuses it.
+    /// Ruling C-37 (N2): a reach id of `u32::MAX` is `water::NO_REACH`, which a `River` answer now
+    /// uses to mean "a notch" (Ruling C-35). A record carrying it as a real reach is refused; the
+    /// id one below it is an ordinary id and decodes.
+    #[test]
+    fn decode_refuses_a_reach_whose_id_is_the_no_reach_sentinel() {
+        assert_eq!(u32::MAX, crate::water::query::NO_REACH, "the sentinel this refusal protects");
+        let mut record = sample();
+        record.reaches[1].id = u32::MAX - 1;
+        assert!(decode(&encode(&record)).is_some(), "an ordinary large id decodes");
+        record.reaches[1].id = u32::MAX;
+        assert_eq!(decode(&encode(&record)), None, "a reach named NO_REACH would read as a notch");
+    }
+
     #[test]
     fn decode_refuses_a_body_claiming_more_shore_members_than_it_has_outline_points() {
         // Three of four is a legal extent: three members and one collar point.

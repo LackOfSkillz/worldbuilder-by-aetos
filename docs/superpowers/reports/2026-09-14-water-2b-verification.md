@@ -843,9 +843,28 @@ naming none is a notch's. The kinds and the five-word sample are unchanged.
   dry; and the channel samples behind the two texture and water-surface tests now include
   notches.
 
-**Parity: no group moved.** The native dump is byte-identical to `aa1e806`'s. No `water_at` grid
-sample falls in a notch's footprint, and every `water_point` river probe sits on a recorded reach
-point. Native and wasm changed identically, and divergent stays 0.
+**Parity: no group moved at C-35 itself.** The native dump was byte-identical to `aa1e806`'s: no
+`water_at` grid sample falls in a notch's footprint, and every `water_point` river probe sits on a
+recorded reach point. So at that commit nothing compared had run the notch clause, and the claim
+that native and wasm answer a notch identically had no evidence behind it.
+
+**Ruling C-37 supplied it.** Each `water_point` group now carries a `Notch` point, chosen from the
+record: the midpoint of the middle leg of the lowest-id notch whose answer there is River with
+`NO_REACH`. The dump refuses to write the corpus if either bake offers none. Population: the two
+parity bakes (`plain`, 20,000 nodes; `ranges`, 60,000). Method: `parity_dump` natively, replayed
+by `parity.mjs` through the shipped wasm. Host: this report's.
+
+| group | notch | answer, native and wasm alike |
+|---|---|---|
+| `water_point/plain` | notch 0 (2 points), leg 0 midpoint, 75.076694, −10.805361 | River, level 89.563 m (ends 110.345 / 68.780 m), depth 0, NO_BODY, NO_REACH |
+| `water_point/ranges` | notch 1 (3 points), leg 0 midpoint, 9.971640, 32.375525 | River, level 669.961 m (ends 669.966 / 669.956 m), depth 0, NO_BODY, NO_REACH |
+
+Both groups compare 36 values with **0 divergent**: native and wasm answer the notch branch
+identically, and that is now a compared figure, not an inference. The probe discriminates. Two
+wasm-only mutants of the clause, replayed against the unchanged native dump, diverged only at the
+`Notch` points and nowhere else in the corpus:
+- level read at the leg's first point: 3 values (`ranges` level; `plain` level and depth);
+- the dry-depth branch returning 0.5: 2 values (the depth in each group).
 
 ### Ruling C-36: a carved world answers only through the bake it was carved from
 
@@ -935,4 +954,24 @@ with `--release --no-fail-fast`:
 - `gates.yml` carries the new engine rows with a dated comment, and dated notes on the unchanged
   Python and corpus pins.
 - `assert_counts.py` needed no change: no new label.
+
+### Ruling C-37: the notch branch compared, and three minors
+
+- **The `Notch` probe** is described under Ruling C-35 above. The corpus went **179,086 →
+  179,098 / 0 divergent** and `--mutate seed` **170,363 → 170,369** (3 of the 6 new values per
+  group). Every other control is unchanged, each re-derived by running and checked by
+  `assert_counts.py parity`: erosion-k 216, water-pond 60, tectonic-warp 39,702
+  (`water_point/ranges` 2 of 36, as `TCTL` predicted), coast-amplitude 13,128, gully-steer
+  3,752, climate-samples 648, carve-bank 12. Every native line but the two `WP` records is
+  byte-identical to `9a89ae0`'s.
+- **N2.** `record::decode` refuses a reach whose id is `u32::MAX`, which is `NO_REACH`: a River
+  naming it now means a notch. The test `decode_refuses_a_reach_whose_id_is_the_no_reach_sentinel`
+  failed with the refusal disabled.
+- **N3.** `with_water_query`'s doc states the invariant the C-36 tie rests on. A `HYDRO_QUERY`
+  slot a carved world shares is never replaced, kept by `held_bake`'s `strong_count` guard, and
+  names the test that goes red without it.
+- **N4.** The sentence above now cites the probe and its figures.
+- **Engine pins.** One test was added (N2, ungated), so every row moves by +1:
+  907 / 907 / 910 / 1,051 / 1,054, 11 ignored. They were re-derived by `--list` and are
+  recorded in `gates.yml`.
 

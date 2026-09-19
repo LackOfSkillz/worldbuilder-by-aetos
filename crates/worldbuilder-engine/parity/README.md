@@ -277,16 +277,50 @@ it being so.** Two other things changed on every world, block or no block:
 - **The water query's answers moved.** Ruling C-13 reads a river's level along the claiming leg
   rather than at the nearest recorded point, which moves the level between recorded points on
   every world with a river; Ruling C-35 answers `River` in a notch's footprint, which moves the
-  answer at every notch no reach runs through from `none` to water. The corpus sees neither: every
-  `water_point` river probe sits on a recorded point, and no `water_at` grid sample falls in a
-  notch's footprint (the native dump was byte-identical across C-35). The query is a reading of a
-  world, not the world: it generates no terrain, and `GENERATOR_VERSION` versions what the
+  answer at every notch no reach runs through from `none` to water. The corpus did not see
+  either change when it was made: every `water_point` river probe sits on a recorded point, and no
+  `water_at` grid sample falls in a notch's footprint (the native dump was byte-identical across
+  C-35). Since Ruling C-37 a `Notch` probe compares C-35's answer across the boundary (below); it
+  was added after the change, so it pins the new behaviour, not the move. The query is a reading of
+  a world, not the world: it generates no terrain, and `GENERATOR_VERSION` versions what the
   generator makes from a seed and parameters.
 
 So the version stays because the generator's output from the same seed and parameters is
 unchanged; the record's changes are carried by `SCHEMA`, and the query's are behaviour changes of
 a reader. A bump becomes right the day the block's default changes, a separate act that
 invalidates every saved world.
+
+## The notch branch across the boundary (Ruling C-37)
+
+Ruling C-35 gave the water query a notch clause: inside a notch's footprint it answers `River`
+with `reach_id` at the `NO_REACH` sentinel, which now *means* "a notch". The clause has its own
+candidate walk, tie-break and depth arithmetic, and before C-37 no compared value ran it — the
+dump even refused a `River` probe carrying the sentinel. Ruling Q-21 counts branches, not kinds,
+so each `water_point` group now carries a sixth point, **`Notch`**: the midpoint of the middle leg
+of the lowest-id notch (a notch's id is its position) whose answer there is `River` with
+`NO_REACH`. The `River` probe still refuses the sentinel; the `Notch` probe requires it. **The
+dump refuses to write the corpus if either bake offers no such notch.**
+
+| group | notch chosen | answer |
+|---|---|---|
+| `water_point/plain` | notch 0 (2 points), leg 0 midpoint at 75.076694, −10.805361 | River, level 89.563 m (ends 110.345 and 68.780), depth 0, body and reach NO_BODY/NO_REACH |
+| `water_point/ranges` | notch 1 (3 points), leg 0 midpoint at 9.971640, 32.375525 | River, level 669.961 m (ends 669.966 and 669.956), depth 0, NO_BODY/NO_REACH |
+
+Each group went 30 → 36 values, the corpus **179,086 → 179,098**, and `--mutate seed` **170,363
+→ 170,369**. Every other control is unchanged; under `--mutate tectonic-warp`,
+`water_point/ranges` moves 2 of 36, as `TCTL` predicts.
+
+**It discriminates.** Two wasm-only mutants of the notch clause, replayed against the unchanged
+native dump with `--wasm … --no-provenance`, each diverged **only** in the two `water_point`
+groups, only at the `Notch` point:
+
+- the level read at the leg's first recorded point instead of along the leg: 3 values — `ranges`
+  level; `plain` level and depth (the wrong level rose above the landform, so the depth branch
+  moved too);
+- the dry-depth branch returning 0.5 instead of 0: 2 values, the depth in each group.
+
+Both chosen points answer depth 0 on the correct build, so the `level > landform` depth branch is
+exercised by the first mutant, not by the corpus's own answers.
 
 ## Running it
 

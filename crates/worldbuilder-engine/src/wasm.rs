@@ -5500,6 +5500,21 @@ fn held_bake(
 /// asked through any other bake of its ground. The ground is checked first, so a bake of another
 /// world is named for that.
 ///
+/// # The invariant this tie rests on (Ruling C-37, N3)
+///
+/// `Arc::ptr_eq` compares the carved world's `Arc` with **whatever [`HYDRO_QUERY`] holds for the
+/// bake now**, so the tie is only as good as this: **a `HYDRO_QUERY` slot that a carved world
+/// shares is never replaced while that world lives.** [`held_bake`] keeps it by refusing to
+/// overwrite a slot whose `Arc::strong_count` is above one (every other holder releases its clone
+/// before its export returns, so a count above one is a carved world). Replacing the slot -- a
+/// rebuild at another radius, a cache eviction, a "refresh" of any kind -- would make the carved
+/// world's own bake answer `WB_ERR_NOT_CARVED_FROM`, and
+/// `a_carved_world_answers_the_water_query_through_the_bake_it_was_carved_from` is the test that
+/// goes red (the final re-review removed the guard and saw it fail). It cannot break today:
+/// breaking it needs two carves of one bake at two radii, and the ground fingerprint refuses the
+/// second. **Anyone changing the cache's keying or eviction must keep this, or move the tie to
+/// something the cache cannot touch.**
+///
 /// **The verdict is decided here, once per call, and `action` never sees a foreign record.** The
 /// caller passes the world's digest from [`world_ground`] (held with the handle, sampled once per
 /// world); this compares sixteen bytes before `action` runs. `wb_water_tile`'s `action` is the
