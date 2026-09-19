@@ -752,12 +752,13 @@ fn carve_divergence(spec: &CarveSpec, control_world: u32, control_tectonic: &[f6
 
 /// **The drain, confirmed to be the only difference between the two records** (plan 2b Task 7,
 /// fix round). `ordinary` and `carving` are the same world baked with the same params, the second
-/// with `drain_for_carve` set. Ruling C-20 says they may differ in exactly three places: word 0
-/// (`SCHEMA` 7 against `SCHEMA_CARVE` 8), the fine-found bodies the drain drops -- with a pond
-/// that the dropped one's density cell was holding back free to take its place -- and the
-/// header's `ponds_kept`, which counts them. Everything else must be equal: every reach, notch
-/// and fall, the ground fingerprint, every coarse body with its id, every other stat, and every
-/// fine-found body the drain keeps, in the same order.
+/// with `drain_for_carve` set. Ruling C-20 says they may differ in exactly four places: word 0
+/// (`SCHEMA` 7 against `SCHEMA_CARVE` 8); the fine-found bodies the drain drops; the finds a
+/// dropped pond's freed density cell admits in its place, which the ordinary bake turned away and
+/// which must not be drained themselves; and the header's `ponds_kept`, which counts all of it.
+/// Everything else must be equal: every reach, notch and fall, the ground fingerprint, every
+/// coarse body with its id, every other stat, and every fine-found body the drain keeps, in the
+/// same order.
 ///
 /// **"The drain says" is re-derived, not read off the diff.** Each fine-found body of the ordinary
 /// record is put to `hydrology::ponds::drain_deficit_m` against the carving record's own channels,

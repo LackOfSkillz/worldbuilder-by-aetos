@@ -279,6 +279,10 @@ node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate seed      
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate erosion-k   # control 2 (slice 5a): one ULP of erodibility
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate water-pond # control 3 (slice 5b): one field of the manifest
 node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate tectonic-warp # control 4 (mountains): one word of the block
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate coast-amplitude # control 5 (photoreal)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate gully-steer      # control 6 (gully)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate climate-samples  # control 7 (climate)
+node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate carve-bank       # control 8 (water 2b): one word of the water block
 ```
 
 `--mutate erosion-k` bumps `erodibility_per_yr` by exactly one ULP before replaying the
@@ -315,12 +319,6 @@ the run, and **two of the five predictions are zero on purpose**: the gully term
 and `structural_m` is the very signal its steering lattice reads. A structural value that moved
 under this control would mean the term had escaped its layer and was feeding its own input --
 and that substitution, tried as a source mutation on the Rust side, **does not terminate**.
-
-```sh
-node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate coast-amplitude # control 5 (photoreal)
-node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate gully-steer      # control 6 (gully)
-node crates/worldbuilder-engine/parity/parity.mjs native.txt --mutate carve-bank       # control 8 (water 2b)
-```
 
 `--wasm <path>` overrides the artifact; the default is the committed
 `viewer/public/wasm/worldbuilder_engine.wasm`, i.e. the bytes a browser loads.

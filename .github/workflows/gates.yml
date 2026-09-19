@@ -1467,6 +1467,10 @@ jobs:
           # `--ignored`) per configuration, summing each binary's trailer: listed
           # 916/916/919/1057/1060 across 18 binaries; `assert_counts.py cargo-list` printed
           # `count OK` for all five.
+          # 2026-09-19, WATER 2b Task 8 corrections (doc comments in index.rs, ponds.rs and
+          # parity_dump.rs; the parity README): **905/905/908/1046/1049, UNCHANGED**, ignored 11. No
+          # test added. Re-derived by `--list` (and `--ignored`), listed 916/916/919/1057/1060 across
+          # 18 binaries, and each suite run in full with `--no-fail-fast`: all passed, 0 failed.
           - name: no-default-features
             features: "--no-default-features"
             expect: 905

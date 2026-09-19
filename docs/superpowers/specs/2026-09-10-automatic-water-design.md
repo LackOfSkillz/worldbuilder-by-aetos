@@ -498,8 +498,16 @@ before it existed. That is why `GENERATOR_VERSION` was **not** bumped (§7's ver
   statement of that rule. **It supersedes the shore-band dilation below as the *implementation*,
   though not the reason for it.** A band around the shore satisfies §8.3's clause 2 and nothing
   else, so a body wider than about twice its band has interior cells that list it nowhere and the
-  query answers `Ocean` there: the owner's great lake is 3,627 km across with a 58 km band, and the
-  band-only form answered `Ocean` over a region 1,700 km wide.
+  query answers `Ocean` there. **Corrected in plan 2b:** this line said the owner's great lake was
+  "3,627 km across with a 58 km band" and that the band-only form answered `Ocean` "over a region
+  1,700 km wide". 3,627 km is the **radius** of a circle of the lake's area (4.13 × 10⁷ km²), not a
+  width and not the bounding circle, which is 7,616 km (farthest recorded point 7,555 km from the
+  anchor, plus the band). The band is 61.6 km for this body (58 km was the median over all bodies).
+  Re-measured: the nearest shore member is 1,196 km from the anchor, the deepest interior point is
+  1,890 km from any shore member, and 86% of the interior clause 1 admits lies beyond a band plus a
+  cell diagonal of every shore member. So the band-only form left **most of the lake** listed
+  nowhere, not a 1,700 km region; the 1,700 km figure could not be re-derived. The conclusion — the
+  band alone is not enough — is stronger than the old wording said.
 - **The circle is affordable, measured (plan 2a Task 6, three 1,000,000-node stand-ins, 10,000
   area-uniform sample points each):** mean candidates per query **0.17 / 0.24 / 0.41** against this
   section's gate of 50, and the **largest single cell in any of the three indexes holds 20 items**

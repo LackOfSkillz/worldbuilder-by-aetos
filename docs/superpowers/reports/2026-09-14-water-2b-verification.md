@@ -364,6 +364,29 @@ The projected points are the `IndexedRecord` total minus the decoded record and 
 
 ### The inland sea, and the reach that drains it
 
+**What "3,627 km" meant (corrected, Ruling C-30 §2).** Plan 2a's report, spec §8.2 and
+`water/index.rs` called the great lake "3,627 km across with a 58 km band", and said the band-only
+index "answered `Ocean` over a region 1,700 km wide". **3,627 km is a radius, not a width:**
+√(4.1326 × 10⁷ km² / π) = 3,626.9 km, the radius of a circle with the lake's area.
+
+It is **not** the index's bounding-circle radius, which is the farthest recorded point
+(7,554.8 km from the anchor) plus the band: **7,616.3 km**. The band is **61.6 km** for this
+body; 58,083 m was plan 1b-4's median over all 348 coarse bodies.
+
+The claim beside it was re-measured. **Population:** 60,000 points uniform on the bounding cap,
+13,977 of them inside the lake by clause 1. **Method:** the distance from each to every recorded
+shore member. **Host:** Node, from the 86k carving record.
+- The nearest shore member is **1,196 km** from the anchor.
+- The deepest interior point is **1,890 km** from any shore member, at (−6.42°, −15.26°).
+- **86%** of the clause-1 interior lies farther than a band plus a cell diagonal (132 km) from
+  every member.
+
+So a band-only index would have listed most of the lake nowhere. That is a stronger failure than
+a "1,700 km region", and I could not re-derive the 1,700 km figure. The reasoning beside it (the
+band alone is not enough, so Ruling Q-13's bounding circle) holds, and more strongly. The spec and
+the three places in `water/index.rs` now say what each number measures. Plan 2a's report is left
+as the historical record.
+
 **The inland sea and the great lake are one body, body 63.** It is the record's only `forced`
 body, the one the 0°N 0°E outlet matched. From the carving record:
 - `Lake`, fresh, enclosed, level **0.000 m**, depth 4,600 m;
@@ -518,9 +541,20 @@ In the studio's 20k records the same six are reaches 4282, 3939, 494, 4164, 4873
 same bodies by the same metres. **The drain does not touch them**, because it acts on fine-found
 ponds, never on coarse lakes or reaches.
 
-Of the 34 more than 1 m below, **19** enter a lake whose level is exactly 0 m. Task 4b counted 20
-"about 1.0–1.3 m under a lake at 0 m". My filter (more than 1 m below, level exactly 0) gives 19.
-The one-body difference is in how the band was drawn and is not reconciled further.
+Of the 34 more than 1 m below, **19** enter a lake whose level is exactly 0 m.
+
+**Reconciled with Task 4b's 20: 19 is right.** Every one of the 35 inflows arriving below their
+lake was listed with its lake's level printed to the bit. **Exactly 19** of them enter a lake
+whose level is `0.0` (bits `0x0`). Those 19 arrive 1.01–1.26 m under it: reaches 104, 700, 775,
+2597, 2816, 3030, 3061, 3068, 3145, 3157, 3232, 3314, 3319, 3325, 3883, 3896, 4030, 4042 and 4217.
+- No other inflow lies in Task 4b's stated band of "about 1.0–1.3 m". The next nearest is reach
+  387, 1.51 m under body 21, whose level is 78.23 m, not the datum. After it comes reach 4021,
+  1.93 m under a lake at 171.1 m.
+- So **every definition consistent with Task 4b's own words gives 19**: datum lakes, the
+  1.0–1.3 m band, or both.
+- Task 4b's 20 must have counted one more inflow. Reach 387 is the likeliest, because it is the
+  only one within 2 m. That is an inference: Task 4b listed its six largest but not these 20.
+- The breakdown then stands as 34 = **19** datum mouths + **15** others, not 20 + 14.
 
 ---
 
@@ -548,9 +582,35 @@ ring runs more than 1 m **above** the pond's level. **Host:** native.
   level, which is the drain doing its job. The 76 that lie below by less than 1 m are inside
   `refine_vertical_m` and survive by design.
 
-The ordinary crossed-below count here is **1,372** by `d > 0`; Task 4b reported 1,371 from its
-histogram. The one-body difference is not reconciled. It does not touch the drained count, which
-reproduces at 1,311.
+**Reconciled with Task 4b's 1,371: 1,372 is right for the committed rule, and the difference
+cannot change a drained pond.** The committed `ponds::drain_deficit_m` was re-run over the
+ordinary 86k record (byte-identical to the record Task 4b measured), and the result was put into
+Task 4b's own histogram bins:
+
+| deficit bin (m) | (0, 0.01] | (0.01, 0.05] | (0.05, 0.1] | (0.1, 0.2] | **(0.2, 0.5]** | (0.5, 1] | (1, 2] | (2, 5] | > 5 | total |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Task 4b | 0 | 5 | 3 | 8 | **22** | 22 | 61 | 165 | 1,085 | 1,371 |
+| this report | 0 | 5 | 3 | 8 | **23** | 22 | 61 | 165 | 1,085 | **1,372** |
+
+- **The whole difference is one pond, in the (0.2, 0.5] bin.** That is under
+  `refine_vertical_m` (1.0 m), so the pond is kept whichever count is right.
+- Every bin above 1 m agrees, so **both counts give the same 1,311 drained ponds**:
+  1,372 − 61 = 1,311 here, and 1,371 − 60 = 1,311 in Task 4b.
+- The 1,311 is confirmed three independent ways: the rule run here, the bake's own drop, and
+  the studio's `pondChange`.
+- No deficit sits on a bin edge. The 23 in (0.2, 0.5] run 0.229–0.497 m, and there is no value
+  of exactly 0.
+- The smallest deficit is 0.0267 m, as Task 4b said ("from 0.027 m").
+
+So the difference is not a boundary condition or a tolerance. It is the tool. **1,372 comes from
+the function the bake calls, over the record the bake produced.** Task 4b's histogram was taken
+before the rule was final, by a measurement it did not keep, and I cannot say which pond it
+missed.
+
+**The same re-run corrects a second Task 4b figure.** The largest deficit is **299.10 m** (body
+2285), not the "1,089 m" Task 4b gave, and `ponds.rs`'s doc had carried that number too. The count
+with the channel below the pond's own floor reproduces at 1,080. `ponds.rs`'s doc now says
+1,372 / 61 / 299.1 m and notes where Task 4b's figures came from.
 
 ---
 
@@ -636,7 +696,27 @@ comment:
 
 The `python,wasm` suite was run in full at that commit: 1,049 passed, 0 failed, 11 ignored.
 
-**Parity and every control are unmoved by C-30,** and the native dump is byte-identical (§1). The
+**Parity and every control are unmoved by C-30,** and the native dump is byte-identical (§1).
+
+**At the corrections commit that follows C-30**, everything was run in full on the final tree.
+That commit changes doc comments in `index.rs`, `ponds.rs` and `parity_dump.rs`, the parity
+README, the spec and this report:
+- **engine:** 905 / 905 / 908 / 1,046 / 1,049 passed, 0 failed, 11 ignored, `--no-fail-fast`;
+  `--list` gave 916 / 916 / 919 / 1,057 / 1,060 across 18 binaries;
+- **Python:** 577 collected, 168 of them conformance. Run with
+  `WORLDBUILDER_REQUIRE_ENGINE=1`: 577 passed, after `maturin develop --release --features python`
+  rebuilt the `.venv` extension. The first run refused it as STALE, which is the guard working;
+- **viewer:** 381 / 381;
+- **parity:** 179,086 / 0, with every control at its pin (seed 170,363, erosion-k 216,
+  water-pond 60, tectonic-warp 39,702, coast-amplitude 13,128, gully-steer 3,752,
+  climate-samples 648, carve-bank 12). The native dump is byte-identical to the one at
+  `872458f`;
+- **wasm:** rebuilt, `check:wasm` current, EOL guard clean.
+
+The artifact's bytes moved again (artifact-sha256 `fcdc42ed…8d97`, still 484,383 bytes; source
+fingerprint `e7909761…c4c2`), although only comments changed. The inference is that shifted
+source lines move the file:line locations embedded in panic messages. The corpus says no
+behaviour moved. The
 wasm was rebuilt: artifact-sha256 `3fd8a3bc…5b6f`, 484,383 bytes, source fingerprint
 `04c9a6c9…d6ae` over 72 inputs. `check:wasm` reports it current.
 

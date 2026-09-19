@@ -58,8 +58,12 @@
 //!   **Why not a band around each shore member**, which is what spec §8.2 describes and what
 //!   this index shipped with first: it satisfies clause 2 and nothing else. A body wider than
 //!   about twice its band has interior cells that list it nowhere, and the query answers `Ocean`
-//!   there. The owner's great lake is 3,627 km across with a 58 km band, so a query in the
-//!   middle of it answered `Ocean` over a region 1,700 km wide. Task 6 corrects §8.2's text.
+//!   there. The owner's great lake (body 63, 4.13e7 km²; a circle of that area has a radius of
+//!   3,627 km) records its nearest shore point 1,196 km from its anchor and its farthest 7,555 km,
+//!   with a 61.6 km band. Measured in plan 2b's verification: of the lake's interior sampled by
+//!   clause 1, 86% lies more than a band plus a cell diagonal from every shore member, the deepest
+//!   point 1,890 km from one -- so a band-only index leaves most of the lake listed nowhere and the
+//!   query answered `Ocean` there. Task 6 corrects §8.2's text.
 //! - **A reach or a notch** is listed in every cell within its **footprint** of its centre line,
 //!   along every recorded leg: [`crate::water::layer::footprint_m`], which is half its width
 //!   plus the widest bank the water layer may blend (plan 2b). Ruling Q-7: the width of a leg is
@@ -553,8 +557,8 @@ mod tests {
         let bandless = body(2, BodyKind::SaltFlat, 1, 0.0, vec![(20.0, 20.0), (20.1, 20.0)]);
         // Body 3: a lake far wider than its band. Four members on a 3-degree cross -- 333 km,
         // more than six cells out from the anchor -- with a collar half a degree beyond each.
-        // The owner's great lake is this shape at ten times the size: 3,627 km across against a
-        // 58 km band, and nothing within 1,750 km of its middle is a recorded point.
+        // The owner's great lake is this shape far larger: its nearest recorded point is 1,196 km
+        // from its anchor (its farthest 7,555 km) against a 61.6 km band.
         let mut wide = body(3, BodyKind::Lake, 4, BAND_M,
                             vec![(-53.0, -30.0), (-47.0, -30.0), (-50.0, -34.67), (-50.0, -25.33),
                                  (-53.5, -30.0), (-46.5, -30.0), (-50.0, -35.45), (-50.0, -24.55)]);
@@ -639,7 +643,8 @@ mod tests {
     /// throughout a body's interior however far that is from any recorded point. A rule that only
     /// dilated each member by `shore_reach_m` therefore listed a body nowhere in the middle of
     /// anything wider than about twice its band, and the query answered `Ocean` there -- on the
-    /// owner's great lake, 3,627 km across with a 58 km band, over a region 1,700 km wide.
+    /// owner's great lake -- whose interior reaches 1,890 km from any shore member, against a
+    /// 61.6 km band -- over most of the lake.
     ///
     /// The index's job is to offer a superset; the query is what decides. So the body is listed
     /// in every cell within its **bounding circle**: the greatest distance from its anchor to any

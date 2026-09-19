@@ -1046,9 +1046,11 @@ const DRAIN_INDEX_CELL_M: f64 = 200_000.0;
 /// level is a pond on a river, which must survive. It is the record's own precision, echoed in its
 /// header, not a number chosen here -- and it is chosen over a gap in the data because the data has
 /// none. Measured on the owner's world before this rule (1M nodes, 86,000 wetness): of 3,732
-/// fine-found bodies, 3,543 are crossed and 1,371 have the channel below their level, by a
-/// distribution continuous from 0.027 m to 1,089 m with no break near zero; 60 of those lie within
-/// 1 m and survive, and 1,080 have the channel below the pond's own floor. See task-4b-report.md.
+/// fine-found bodies, 3,543 are crossed and 1,372 have the channel below their level, by a
+/// distribution continuous from 0.027 m to 299.1 m with no break near zero; 61 of those lie within
+/// 1 m and survive, 1,311 do not, and 1,080 have the channel below the pond's own floor. (Task 4b's
+/// report said 1,371, 60 and a maximum of 1,089 m, from a measurement made before this function was
+/// final; plan 2b's verification report re-ran this function over the same record.)
 pub fn is_drained(body: &Body, record: &HydroRecord, index: &crate::water::index::WaterIndex,
                   params: &HydroParams) -> bool {
     match drain_deficit_m(body, record, index, params.pond_cell_m * 0.25) {
