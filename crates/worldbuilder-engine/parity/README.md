@@ -184,6 +184,57 @@ rather than quietly fixed.
 The two `worldc` records name one configuration under two names for the same reason the `worldt`
 pair does.
 
+### The two carve rows (plan 2b Task 7), and the version left alone
+
+Until these rows the corpus proved only that the carve **stays out of the canonical path**: the
+water block is opt-in and every group ran with it absent. `carve/plain` and `carve/ranges` compare
+the carve itself. Each `WC` record bakes its world through `wb_hydro_bake` with the thirteen-word
+params layout (word 12, `drain_for_carve`, = 1; `ranges` carries its forced-outlet pair after it),
+builds the carved world through `wb_world_new_water` over that **held** bake with
+`wb_water_preset`'s canonical block, and compares `wb_water_check`'s status plus `wb_elevation_m`
+at 250 m on the carved handle — the real door, not a native shortcut.
+
+The points are chosen **from the record** (Ruling Q-21's rule applied to the carve) and held by
+the layer itself, asked natively beside the door, to what they were chosen for:
+
+| category | chosen as | held to | `plain` | `ranges` |
+|---|---|---|---|---|
+| channel | middle recorded point of each lowest-id reach with ≥ 3 points | query says `River`, layer authority exactly 1, carved **= that point's `bed_m` bit for bit**, below bare | 6, cut 5.70–219.16 m | 6, cut 7.10–91.69 m |
+| bank | one channel width off the same reach's middle leg, perpendicular | authority strictly in (0, 1), query says dry, layer lowered the landform, carved ≠ bare | 6, bare − carved −12.15–26.30 m | 6, −8.08–4.32 m |
+| body | lowest-id bodies holding a recorded reach point whose bed is **below** the landform | carved **= bare bit for bit** (the lake-bed rule) | 5, 0 m (the rule refused up to 2.24 m) | 5, 0 m (refused up to 14.58 m) |
+| notch | middle point of each lowest-position notch, outside every body | carved below bare | 2, cut 35.07–64.13 m | 6, cut 6.70–13.73 m |
+| clear | a fixed scatter's first land points, query dry, index offering no reach or notch | carved **= bare bit for bit** | 6, 0 m | 6, 0 m |
+
+`plain` is 1 + 25 = 26 values, `ranges` 1 + 29 = 30. Every carved value is also recomputed
+through the library's own `Surface::with_water` over the same decoded record, and the dump fails
+if the two disagree. **It refuses to write the corpus if any category has no qualifying point**,
+the guard `water_point/*` already carries.
+
+A bank point can stand **above** its bare parent: detail on a bank is damped by `1 − authority`,
+not removed, so where the bare world's roughness dips, the blended bank is higher. Measured, not
+assumed — the first draft required "carved below bare" there and the dump refused its own corpus.
+
+**Seen failing, wasm side only.** A wasm built with the lake-bed rule disabled
+(`claims.best.is_some() && false`) diverges at exactly the 5 body points of each group and
+nowhere else in the corpus; one with the bank fall-off scaled by 0.999999 at exactly the 6 bank
+points of each. Feeding the wasm door `bank_widths = 2` instead of 1 moves the same 6 bank points
+per group; flipping word 12 to 0 makes the wasm door refuse with `WB_ERR_NOT_BAKED_FOR_CARVING`
+(9) and every value of both groups diverges.
+
+**Controls.** `--mutate seed` moves every point of both groups (29 of 30, 25 of 26 — the door's
+status is `WB_OK` either way, since each planet is joined to its own bake). `--mutate
+tectonic-warp` moves `carve/ranges` by 12 of 30 (channel 4, bank 3, body 1, notch 4, clear 0),
+and **`TCTL`'s eighth field predicts it natively** by running the same door over a bake of the
+warp-0 world; `carve/plain` has no tectonic block and must stay at 0. Every other control leaves
+both groups at 0.
+
+**`GENERATOR_VERSION` is not bumped, and these rows are why that is safe to say.** Its bump test
+(`lib.rs`) is "the same seed *and the same parameters*, run through the new code, would produce a
+different world" — and names "a new generator stage that is off unless explicitly requested" as
+a change that does not bump it. The carve is exactly that: with the block absent every world is
+bit-identical, which is what every other group in this corpus shows, unmoved. A bump becomes
+right the day the block's default changes, a separate act that invalidates every saved world.
+
 ## Running it
 
 ```sh

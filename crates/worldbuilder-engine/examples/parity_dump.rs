@@ -32,6 +32,12 @@
 //! before it is written. A control gate read off the control's own run is a rubber stamp;
 //! both of these are predictions the replaying side has to meet.
 //!
+//! **The `WC` records are the carve itself** (plan 2b Task 7): a world built through
+//! `wb_world_new_water` over a held bake baked *for carving*, sampled at points chosen from the
+//! record by category -- in a channel, on a bank, in a body, at a notch, clear of water -- and
+//! refused if any category stops being covered (see [`carve_points`]). Every earlier group only
+//! proved the carve stays OUT of the canonical path; these compare what it cuts.
+//!
 //! The output is the corpus *and* its answers: every f64 is written as its 16-hex-digit
 //! bit pattern, so the replaying side parses no decimal text and the comparison is exact.
 //! `parity/parity.mjs` reads this file, replays the identical inputs through the committed
@@ -375,6 +381,370 @@ fn divergent_count(
         }
     }
     divergent
+}
+
+// --- plan 2b Task 7: the carve across the boundary ------------------------------------------
+
+/// Points per category in a `WC` group: the lowest-id items of each kind that qualify.
+const WC_PER_CATEGORY: usize = 6;
+
+/// The five things a carve point can be chosen for, in the order the dump reports them.
+const WC_CATEGORIES: [&str; 5] = ["channel", "bank", "body", "notch", "clear"];
+
+/// What a `WC` group is built from on the native side: the world's own arguments, the bake's
+/// params (the thirteen-word-or-longer layout, word 12 = 1), and the water block.
+struct CarveSpec<'a> {
+    name: &'static str,
+    /// The handle the bake runs on -- the bare world these same arguments build.
+    base: u32,
+    tectonic: Option<&'a [f64; WB_TECTONIC_STRIDE]>,
+    params: &'a [f64],
+    block: [f64; WB_WATER_BLOCK_STRIDE],
+}
+
+/// One chosen point: its category, where it is, the carved elevation the door answers, the bare
+/// parent's, and -- for a body point -- how far the channel through it would have cut had the
+/// lake-bed rule not held (`ground - bed`, positive by the guard).
+struct CarvePoint {
+    category: &'static str,
+    lat: f64,
+    lon: f64,
+    carved: f64,
+    bare: f64,
+    would_cut: f64,
+}
+
+/// `wb_water_check` and `wb_world_new_water` for a spec over a held bake: the named status, and
+/// the handle (0 on refusal). Both halves asked, as the viewer's carve session does.
+fn carve_door(spec: &CarveSpec, tectonic: Option<&[f64; WB_TECTONIC_STRIDE]>, bake: u32) -> (u32, u32) {
+    let null = core::ptr::null();
+    let (t_ptr, t_len) = match tectonic {
+        Some(block) => (block.as_ptr(), WB_TECTONIC_STRIDE as u32), // cast-ok: a compile-time sixteen-word stride
+        None => (null, 0),
+    };
+    let block_len = WB_WATER_BLOCK_STRIDE as u32; // cast-ok: a compile-time one-word stride
+    let status = wb_water_check(SEED, RADIUS_M, PLATES, LAND, null, 0, null, 0, t_ptr, t_len,
+                                null, 0, null, 0, null, 0, spec.block.as_ptr(), block_len, bake);
+    let handle = wb_world_new_water(SEED, RADIUS_M, PLATES, LAND, null, 0, null, 0, t_ptr, t_len,
+                                    null, 0, null, 0, null, 0, spec.block.as_ptr(), block_len, bake);
+    assert_eq!(status == WB_OK, handle != 0, "{}: the checker said {status}, the door {handle}", spec.name);
+    (status, handle)
+}
+
+/// The canonical water block, read from `wb_water_preset` rather than written here, so no number
+/// in this file is a transcription of `water/layer.rs`'s own.
+fn water_preset_block() -> [f64; WB_WATER_BLOCK_STRIDE] {
+    let mut block = [0.0f64; WB_WATER_BLOCK_STRIDE];
+    let len = WB_WATER_BLOCK_STRIDE as u32; // cast-ok: a compile-time one-word stride
+    assert_eq!(wb_water_preset(WB_WATER_CANONICAL, block.as_mut_ptr(), len), WB_OK);
+    block
+}
+
+/// The larger of two widths, written as the comparison (no `f64::max`: NaN-asymmetric).
+fn wider(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+/// **The carve's parity group, chosen from the record and REFUSED if it stops testing the carve.**
+///
+/// Five categories, each the lowest-id items of its kind at recorded geometry (Ruling Q-21's rule,
+/// applied to the carve), and each held to what it was chosen for by the layer itself -- asked
+/// natively, beside the door -- so a point that has drifted into open country fails here rather
+/// than comparing a bare elevation and calling it a carve:
+///
+/// - **channel**: the middle recorded point of each lowest-id reach with three or more points,
+///   where the query answers `River`, the layer's authority is exactly 1, and the carved ground is
+///   **that point's own `bed_m`, bit for bit**, below the bare ground.
+/// - **bank**: on the same reaches, the point one channel width off the middle leg's midpoint,
+///   perpendicular to it -- half a width into the canonical bank -- where the layer's authority is
+///   strictly between 0 and 1, the query answers dry ground, and the carve moved the ground.
+/// - **body**: the lowest-id bodies with a recorded reach point inside them (the query answers
+///   that body there) whose bed stands **below** the landform -- a point the channel WOULD cut but
+///   for spec §8.1's lake-bed rule -- and the carved ground is the bare ground, bit for bit.
+/// - **notch**: the middle point of each lowest-id notch, outside every body, where the carve
+///   lowered the ground.
+/// - **clear**: a fixed scatter's first land points that the query calls dry and the index offers
+///   no reach or notch at all -- the carved ground must be the bare ground, bit for bit.
+///
+/// A category with no qualifying point fails the dump. Every carved value is also recomputed
+/// through the library's own `Surface::with_water` over the same decoded record, and the two
+/// must agree -- a second derivation, as `TCTL`'s counts are.
+fn carve_points(spec: &CarveSpec, lib_tectonics: Option<TectonicParams>) -> (u32, Vec<CarvePoint>) {
+    use std::sync::Arc;
+    use worldbuilder_engine::water::layer::{Carve, IndexedRecord, WaterLayer, WaterParams};
+
+    let (bake_status, bake_len, bake_words) = bake_hydro_native(spec.base, spec.params);
+    assert_eq!(bake_status, WB_OK, "{}: the bake for carving must succeed", spec.name);
+    assert!(bake_len > 0);
+    let record = hydrology::record::decode(&bake_words).expect("the record must decode");
+    assert!(record.stats.drained_for_carve, "{}: the WC bake must be baked for carving", spec.name);
+
+    let mut bake: u32 = 0;
+    let len = spec.params.len() as u32; // cast-ok: a small params buffer
+    assert_eq!(wb_hydro_bake(spec.base, spec.params.as_ptr(), len, &mut bake), WB_OK);
+    let (status, carved) = carve_door(spec, spec.tectonic, bake);
+    assert_eq!(status, WB_OK, "{}: the door must carve this world with its own bake", spec.name);
+
+    // The library's side: the bare world, the layer over the same record, and the carved world.
+    let indexed = Arc::new(IndexedRecord::new(record.clone(), RADIUS_M));
+    let params = WaterParams { bank_widths: spec.block[0] };
+    let layer = WaterLayer::new(params, Arc::clone(&indexed));
+    let plates = PLATES as usize; // cast-ok: a corpus-fixed plate count widened to usize
+    let bare_lib = Surface::new(SEED, RADIUS_M, plates, LAND, None, None, lib_tectonics);
+    let carved_lib = Surface::with_water(SEED, RADIUS_M, plates, LAND, None, None, lib_tectonics,
+                                         None, None, None,
+                                         Some(Carve { params, bake: Arc::clone(&indexed) }))
+        .expect("the library joins what the door joined");
+    let cell_m = record.stats.pond_cell_m;
+    // `(cut, authority)` exactly as `Surface::elevation_m` asks it: the landform, and the bare
+    // detail field at the record's pond cell.
+    let layer_at = |p: &SpherePoint| -> (f64, f64) {
+        let bare = |q: &SpherePoint| bare_lib.bake_ground_m(q, Some(cell_m));
+        layer.cut_with(p, bare_lib.structural_m(p), &worldbuilder_engine::water::Detail(&bare))
+    };
+    let query = |lat: f64, lon: f64| -> [f64; WP_STRIDE] {
+        let mut out = [0.0f64; WP_STRIDE];
+        let got = wb_water_at(spec.base, bake, lat, lon, out.as_mut_ptr(), WP_STRIDE as u32); // cast-ok: a compile-time stride of five
+        assert_eq!(got, WB_OK, "{}: the query refused {lat},{lon}", spec.name);
+        out
+    };
+    let sample = |lat: f64, lon: f64| -> (f64, f64) {
+        let carved_m = wb_elevation_m(carved, lat, lon, RES_M);
+        let point = SpherePoint::from_latlon(lat, lon);
+        assert_eq!(carved_m.to_bits(), carved_lib.elevation_m(&point, Some(RES_M)).to_bits(),
+                   "{}: the door and the library carve {lat},{lon} differently", spec.name);
+        (carved_m, wb_elevation_m(spec.base, lat, lon, RES_M))
+    };
+    let no_body = f64::from(u32::MAX);
+
+    let mut points: Vec<CarvePoint> = Vec::new();
+    let take = |points: &mut Vec<CarvePoint>, category: &'static str, lat: f64, lon: f64, would_cut: f64| {
+        let (carved_m, bare_m) = sample(lat, lon);
+        points.push(CarvePoint { category, lat, lon, carved: carved_m, bare: bare_m, would_cut });
+    };
+    let count = |points: &Vec<CarvePoint>, category: &str| points.iter().filter(|p| p.category == category).count();
+
+    // channel and bank, off the same lowest-id reaches.
+    for reach in &record.reaches {
+        if count(&points, "channel") >= WC_PER_CATEGORY && count(&points, "bank") >= WC_PER_CATEGORY {
+            break;
+        }
+        if reach.points.len() < 3 {
+            continue;
+        }
+        let k = reach.points.len() / 2;
+        let mid = &reach.points[k];
+        if count(&points, "channel") < WC_PER_CATEGORY {
+            let answer = query(mid.lat_deg, mid.lon_deg);
+            let (_, authority) = layer_at(&SpherePoint::from_latlon(mid.lat_deg, mid.lon_deg));
+            let (carved_m, bare_m) = sample(mid.lat_deg, mid.lon_deg);
+            if answer[0] == WATER_KIND_RIVER && authority == 1.0
+                && carved_m.to_bits() == mid.bed_m.to_bits() && carved_m < bare_m {
+                take(&mut points, "channel", mid.lat_deg, mid.lon_deg, 0.0);
+            }
+        }
+        if count(&points, "bank") < WC_PER_CATEGORY {
+            let next = &reach.points[k + 1];
+            let a = SpherePoint::from_latlon(mid.lat_deg, mid.lon_deg);
+            let b = SpherePoint::from_latlon(next.lat_deg, next.lon_deg);
+            let (Some(centre), Some(normal)) =
+                (SpherePoint::from_vector(&a.vector.add(&b.vector)), a.vector.cross(&b.vector).normalised())
+            else {
+                continue;
+            };
+            // Half a width into a bank one width wide: the channel's half-width plus half a bank.
+            let width_m = wider(mid.width_m, next.width_m);
+            let off_m = 0.5 * width_m + 0.5 * spec.block[0] * width_m;
+            for side in [1.0, -1.0] {
+                let Some(p) = SpherePoint::from_vector(&centre.vector.add(&normal.scaled(side * off_m / RADIUS_M))) else {
+                    continue;
+                };
+                let (lat, lon) = p.to_latlon();
+                let at = SpherePoint::from_latlon(lat, lon);
+                let (cut, authority) = layer_at(&at);
+                let answer = query(lat, lon);
+                let (carved_m, bare_m) = sample(lat, lon);
+                // The layer must have LOWERED the landform here (`cut < structural`), and the
+                // carve must have moved the ground the door answers. Not "carved below bare":
+                // on a bank detail is damped by `1 - authority`, not removed, so where the bare
+                // world's roughness dips, the blended bank can stand above it (measured: it does,
+                // at some bank points of both worlds).
+                let landform = bare_lib.structural_m(&at);
+                if authority > 0.0 && authority < 1.0 && answer[0] == WATER_KIND_NONE
+                    && cut < landform && carved_m.to_bits() != bare_m.to_bits() {
+                    take(&mut points, "bank", lat, lon, 0.0);
+                    break;
+                }
+            }
+        }
+    }
+
+    // body: one pass over every recorded reach point, the first qualifying point per body.
+    let mut body_first: Vec<(u32, f64, f64, f64)> = Vec::new();
+    for reach in &record.reaches {
+        for rp in &reach.points {
+            let answer = query(rp.lat_deg, rp.lon_deg);
+            if answer[3] == no_body {
+                continue;
+            }
+            let body_id = answer[3] as u32; // cast-ok: a body id the query wrote from a u32
+            if body_first.iter().any(|(id, ..)| *id == body_id) {
+                continue;
+            }
+            let landform = bare_lib.structural_m(&SpherePoint::from_latlon(rp.lat_deg, rp.lon_deg));
+            if rp.bed_m < landform && rp.width_m > 0.0 {
+                body_first.push((body_id, rp.lat_deg, rp.lon_deg, landform - rp.bed_m));
+            }
+        }
+    }
+    body_first.sort_by_key(|(id, ..)| *id);
+    for (_, lat, lon, would_cut) in body_first.into_iter().take(WC_PER_CATEGORY) {
+        take(&mut points, "body", lat, lon, would_cut);
+    }
+
+    // notch: the middle point of each lowest-position notch, outside every body, lowered.
+    let mut notch_at_surface = 0usize;
+    for notch in &record.notches {
+        if count(&points, "notch") >= WC_PER_CATEGORY {
+            break;
+        }
+        if notch.points.is_empty() {
+            continue;
+        }
+        let (lat, lon, surface_m, _) = notch.points[notch.points.len() / 2];
+        if query(lat, lon)[3] != no_body {
+            continue;
+        }
+        let (carved_m, bare_m) = sample(lat, lon);
+        if carved_m < bare_m {
+            take(&mut points, "notch", lat, lon, 0.0);
+            if carved_m.to_bits() == surface_m.to_bits() {
+                notch_at_surface += 1;
+            }
+        }
+    }
+    // Reported, not required: a notch sits on a recorded river or an outlet cut (Ruling 12b-2),
+    // so a reach bed below the notch's own surface can be the deeper cut there -- the layer takes
+    // the lowest -- and the point is still in the notch's channel either way.
+    eprintln!("WC {}: {notch_at_surface} of the notch points carved to exactly the notch's own \
+               surface_m (the rest to a deeper reach bed through the same cut)", spec.name);
+
+    // clear: a fixed scatter, its own generator so no other group's points move.
+    let mut rng = Rng(0x5EED_2B_CA4E_0007);
+    let mut tries = 0usize;
+    while count(&points, "clear") < WC_PER_CATEGORY && tries < 100_000 {
+        tries += 1;
+        let lat = rng.unit() * 180.0 - 90.0;
+        let lon = rng.unit() * 360.0 - 180.0;
+        let p = SpherePoint::from_latlon(lat, lon);
+        let candidates = indexed.index().candidates(&p);
+        if !candidates.reaches.is_empty() || !candidates.notches.is_empty() {
+            continue;
+        }
+        if wb_elevation_m(spec.base, lat, lon, RES_M) <= 0.0 || query(lat, lon)[0] != WATER_KIND_NONE {
+            continue;
+        }
+        take(&mut points, "clear", lat, lon, 0.0);
+    }
+
+    // THE GUARD. Every category covered, and every point doing what it was chosen for.
+    for category in WC_CATEGORIES {
+        assert!(count(&points, category) > 0,
+                "{}: no {category} point qualifies -- a carve group without it would compare \
+                 elevations that never tested that part of the carve", spec.name);
+    }
+    for p in &points {
+        match p.category {
+            "body" | "clear" => assert_eq!(p.carved.to_bits(), p.bare.to_bits(),
+                "{}: the {} point at {},{} was cut ({} -> {})", spec.name, p.category, p.lat, p.lon, p.bare, p.carved),
+            "bank" => assert_ne!(p.carved.to_bits(), p.bare.to_bits(),
+                "{}: the bank point at {},{} was not moved by the carve", spec.name, p.lat, p.lon),
+            _ => assert!(p.carved < p.bare,
+                "{}: the {} point at {},{} was not lowered", spec.name, p.category, p.lat, p.lon),
+        }
+    }
+
+    assert_eq!(wb_world_free(carved), WB_OK);
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    (status, points)
+}
+
+/// Emit one `WC` line and its stderr report.
+fn print_carve(spec: &CarveSpec, status: u32, points: &[CarvePoint]) {
+    let tectonic: Vec<String> = spec.tectonic.map(|t| t.iter().map(|v| hex(*v)).collect()).unwrap_or_default();
+    let params: Vec<String> = spec.params.iter().map(|v| hex(*v)).collect();
+    let block: Vec<String> = spec.block.iter().map(|v| hex(*v)).collect();
+    let mut fields: Vec<String> = Vec::new();
+    for p in points {
+        fields.push(hex(p.lat));
+        fields.push(hex(p.lon));
+        fields.push(hex(p.carved));
+    }
+    // WC <name> <seed> <radius> <plates> <land> <tlen> <t...> <plen> <p...> <blen> <b...>
+    //    <res> <status> <count> [<lat> <lon> <carved elevation>] x count
+    //
+    // Built as one list of fields and joined once, so an empty tectonic block (the `plain` world)
+    // is zero fields rather than an empty string between two spaces.
+    let mut line: Vec<String> = vec!["WC".into(), spec.name.into(), SEED.to_string(), hex(RADIUS_M),
+                                     PLATES.to_string(), hex(LAND), tectonic.len().to_string()];
+    line.extend(tectonic);
+    line.push(params.len().to_string());
+    line.extend(params);
+    line.push(block.len().to_string());
+    line.extend(block);
+    line.push(hex(RES_M));
+    line.push(status.to_string());
+    line.push(points.len().to_string());
+    line.extend(fields);
+    println!("{}", line.join(" "));
+    let order: Vec<&str> = points.iter().map(|p| p.category).collect();
+    eprintln!("WC {}: point order {order:?}", spec.name);
+    for category in WC_CATEGORIES {
+        let chosen: Vec<&CarvePoint> = points.iter().filter(|p| p.category == category).collect();
+        let depths: Vec<f64> = chosen.iter().map(|p| p.bare - p.carved).collect();
+        let deepest = depths.iter().fold(0.0f64, |a, d| if *d > a { *d } else { a });
+        let shallowest = depths.iter().fold(deepest, |a, d| if *d < a { *d } else { a });
+        let would = chosen.iter().map(|p| p.would_cut).fold(0.0f64, |a, d| if d > a { d } else { a });
+        eprintln!(
+            "WC {}: {category} {} points, cut (bare - carved) {shallowest:.6} .. {deepest:.6} m{}",
+            spec.name, chosen.len(),
+            if category == "body" {
+                format!("; deepest cut the lake-bed rule refused (landform - bed): {would:.6} m")
+            } else {
+                String::new()
+            }
+        );
+    }
+}
+
+/// The native prediction for `--mutate tectonic-warp` on a `WC` group: the same points, asked
+/// of the same door over a bake of the warp-0 world, counted as the replaying side counts them
+/// -- one for the checker's status, one per point.
+fn carve_divergence(spec: &CarveSpec, control_world: u32, control_tectonic: &[f64; WB_TECTONIC_STRIDE],
+                    status: u32, points: &[CarvePoint]) -> usize {
+    let mut bake: u32 = 0;
+    let len = spec.params.len() as u32; // cast-ok: a small params buffer
+    if wb_hydro_bake(control_world, spec.params.as_ptr(), len, &mut bake) != WB_OK {
+        return 1 + points.len();
+    }
+    let (got, handle) = carve_door(spec, Some(control_tectonic), bake);
+    let mut moved = usize::from(got != status);
+    let mut by_category = [0usize; WC_CATEGORIES.len()];
+    for p in points {
+        if handle == 0 || wb_elevation_m(handle, p.lat, p.lon, RES_M).to_bits() != p.carved.to_bits() {
+            moved += 1;
+            if let Some(slot) = WC_CATEGORIES.iter().position(|c| *c == p.category) {
+                by_category[slot] += 1;
+            }
+        }
+    }
+    eprintln!("WC {}: under the warp control, moved per category {:?} = {by_category:?}, status {}",
+              spec.name, WC_CATEGORIES, if got == status { "unmoved" } else { "moved" });
+    if handle != 0 {
+        assert_eq!(wb_world_free(handle), WB_OK);
+    }
+    assert_eq!(wb_hydro_free(bake), WB_OK);
+    moved
 }
 
 fn main() {
@@ -1398,10 +1768,38 @@ fn main() {
          that moves nothing, and this corpus refuses to write either."
     );
 
+    // Plan 2b Task 7: the carve on the `ranges` world, emitted here for the reason the `ranges`
+    // `WP` points are -- its prediction under this control belongs in `TCTL` below. The bake is
+    // the `H ranges` bake's own params in the thirteen-word layout (word 12, `drain_for_carve`,
+    // set; the forced pair after it), because only a record baked for carving can be joined.
+    let mut carve_ranges_params = hydro_tectonic_params[..12].to_vec();
+    carve_ranges_params.push(1.0);
+    carve_ranges_params.push(forced_anchor.0);
+    carve_ranges_params.push(forced_anchor.1);
+    let carve_ranges = CarveSpec {
+        name: "ranges",
+        base: tectonic_world,
+        tectonic: Some(&tectonic_ranges),
+        params: &carve_ranges_params,
+        block: water_preset_block(),
+    };
+    let (carve_ranges_status, carve_ranges_points) =
+        carve_points(&carve_ranges, Some(TectonicParams::ranges()));
+    print_carve(&carve_ranges, carve_ranges_status, &carve_ranges_points);
+    let carve_ranges_control = carve_divergence(&carve_ranges, tectonic_control_world,
+        &tectonic_control, carve_ranges_status, &carve_ranges_points);
+    let carve_ranges_total = 1 + carve_ranges_points.len();
+    assert!(
+        carve_ranges_control > 0 && carve_ranges_control < carve_ranges_total,
+        "carve/ranges: the control moved {carve_ranges_control} of {carve_ranges_total}. A control \
+         that moves everything is as uninformative as one that moves nothing, and this corpus \
+         refuses to write either."
+    );
+
     println!(
         "TCTL {control_elevation_ranges} {control_structural_ranges} \
          {control_elevation_belt} {control_structural_belt} {control_tile_belt} \
-         {hydro_ranges_control} {water_points_ranges_control}"
+         {hydro_ranges_control} {water_points_ranges_control} {carve_ranges_control}"
     );
 
     // --- the coast channel: the presets, the checker, and a world built from one -----------
@@ -2356,6 +2754,19 @@ fn main() {
             );
         }
     }
+
+    // Plan 2b Task 7: the carve on the `plain` world, over `HYDRO_PARAMS` baked for carving.
+    let mut carve_plain_params = HYDRO_PARAMS.to_vec();
+    carve_plain_params.push(1.0);
+    let carve_plain = CarveSpec {
+        name: "plain",
+        base: plain,
+        tectonic: None,
+        params: &carve_plain_params,
+        block: water_preset_block(),
+    };
+    let (carve_plain_status, carve_plain_points) = carve_points(&carve_plain, None);
+    print_carve(&carve_plain, carve_plain_status, &carve_plain_points);
 
     println!("version {}", wb_generator_version());
 }

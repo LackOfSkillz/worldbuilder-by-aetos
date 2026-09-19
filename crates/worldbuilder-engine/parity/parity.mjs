@@ -745,6 +745,13 @@ for (const raw of lines) {
       // control that has stopped being one. The native side asks the same recorded points of a
       // bake on the warp-0 world and counts the values that differ. `water_point/plain` has no
       // entry and therefore a prediction of zero -- the `plain` world carries no tectonic block.
+      //
+      // The eighth, `carve/ranges`, is plan 2b Task 7's, for the same reason again: the warp
+      // moves the ground the `ranges` bake for carving runs on and the ground the door carves,
+      // so carved elevations must move. The native side builds the same door over a bake of the
+      // warp-0 world and counts, as this script does, the door's status and each point.
+      // `carve/plain` has no entry and therefore a prediction of zero.
+      if (f.length !== 9) throw new Error(`TCTL carries eight predictions, not ${f.length - 1}`);
       tectonicControl = {
         'elevation/ranges': Number(f[1]),
         'structural/ranges': Number(f[2]),
@@ -753,6 +760,7 @@ for (const raw of lines) {
         'tile/belt': Number(f[5]),
         'hydro/ranges': Number(f[6]),
         'water_point/ranges': Number(f[7]),
+        'carve/ranges': Number(f[8]),
       };
       break;
     }
@@ -1109,6 +1117,105 @@ for (const raw of lines) {
       wb.wb_dealloc(out, stride * 8);
       wb.wb_dealloc(pp, pl * 8);
       wb.wb_dealloc(idp, 4);
+      break;
+    }
+    case 'WC': {
+      // WC <name> <seed> <radius_hex> <plates> <land_hex> <tlen> <tectonic hex...> <params_len>
+      //    <params hex...> <block_len> <block hex...> <res_hex> <status> <count>
+      //    [<lat> <lon> <carved elevation>] x count
+      //
+      // **Plan 2b Task 7: the carve itself, across the boundary.** Every earlier group proved
+      // only that the carve STAYS OUT of the canonical path. This one builds a carved world
+      // through the real door -- `wb_hydro_bake` with the thirteen-word params layout (word 12,
+      // `drain_for_carve`, = 1), then `wb_world_new_water` over that held bake with the water
+      // block -- and compares `wb_elevation_m` on it at points `examples/parity_dump.rs` chose
+      // from the record, by category: inside a channel (cut to the bed), on a bank blend, inside
+      // a body (uncut, the lake-bed rule), at a notch, and well clear of water (untouched). The
+      // dump refuses to write the corpus if any category stops being covered.
+      //
+      // `wb_water_check`'s status is tallied as the group's first value, so a door that refuses
+      // on this side -- a record judged foreign, or not baked for carving -- is a named
+      // divergence rather than a thrown error; every point then counts divergent without reading
+      // anything, the rule `WQ`'s refusal branch follows.
+      //
+      // `--mutate seed` reaches this group through `seed` here AND through the base world the
+      // bake runs on, so the join stays consistent (a world and its own bake) and it is another
+      // planet's carved ground that moves. `--mutate tectonic-warp` rewrites word 14 of a
+      // non-empty tectonic block here exactly as `worldt` does -- the `ranges` bake runs on the
+      // warp-0 world, so the door must build that world too or it would refuse the pairing --
+      // and `TCTL`'s eighth field predicts the result.
+      const name = f[1];
+      const seed = BigInt(f[2]) + (mutate === 'seed' ? 1n : 0n);
+      const radius = f64of(f[3]);
+      const plates = Number(f[4]);
+      const land = f64of(f[5]);
+      let at = 6;
+      const tlen = Number(f[at]); at += 1;
+      const tectonic = f.slice(at, at + tlen); at += tlen;
+      const pl = Number(f[at]); at += 1;
+      const params = f.slice(at, at + pl).map(f64of); at += pl;
+      const blen = Number(f[at]); at += 1;
+      const block = f.slice(at, at + blen); at += blen;
+      const res = f64of(f[at]); at += 1;
+      const status = f[at]; at += 1;
+      const count = Number(f[at]); at += 1;
+      const rest = f.slice(at);
+      if (tlen !== 0 && tlen !== 16) throw new Error(`WC ${name}: a tectonic block is sixteen f64, not ${tlen}`);
+      if (rest.length !== count * 3) {
+        throw new Error(`WC line holds ${rest.length} fields for ${count} points, not ${count * 3}`);
+      }
+      const base = worlds.get(name);
+      if (base === undefined) throw new Error(`WC ${name}: no world of that name to bake on`);
+      group = `carve/${name}`;
+
+      const pp = wb.wb_alloc(pl * 8);
+      const idp = wb.wb_alloc(4);
+      const bp = wb.wb_alloc(blen * 8);
+      const tp = tlen === 0 ? 0 : wb.wb_alloc(tlen * 8);
+      if (pp === 0 || idp === 0 || bp === 0 || (tlen !== 0 && tp === 0)) {
+        throw new Error('wb_alloc refused a WC input buffer');
+      }
+      new Float64Array(wb.memory.buffer, pp, pl).set(params);
+      {
+        const view = mem();
+        block.forEach((hex, i) => view.setBigUint64(bp + i * 8, BigInt('0x' + hex), true));
+        tectonic.forEach((hex, i) => view.setBigUint64(tp + i * 8, BigInt('0x' + hex), true));
+        if (tlen !== 0 && mutate === 'tectonic-warp') {
+          if (tectonicWarp === null) throw new Error('--mutate tectonic-warp needs a TWARP record');
+          view.setFloat64(tp + 14 * 8, tectonicWarp, true);
+        }
+      }
+      // Not tallied, refused: the bake is what the join is made of, and a carve over a bake that
+      // did not happen would compare whatever the allocator left behind.
+      const baked = wb.wb_hydro_bake(base, pp, pl, idp);
+      if (baked !== 0) {
+        throw new Error(`WC ${name}: wb_hydro_bake returned ${baked}; there is no record to carve with`);
+      }
+      const id = mem().getUint32(idp, true);
+      const door = [seed, radius, plates, land, 0, 0, 0, 0, tp, tlen, 0, 0, 0, 0, 0, 0, bp, blen, id];
+      const checked = wb.wb_water_check(...door);
+      tally(String(checked) === status);
+      if (String(checked) !== status) note(`carve ${name} door status`, status, String(checked));
+      const handle = wb.wb_world_new_water(...door);
+      for (let p = 0; p < count; p += 1) {
+        const lat = f64of(rest[p * 3]);
+        const lon = f64of(rest[p * 3 + 1]);
+        const want = rest[p * 3 + 2];
+        if (handle !== 0) {
+          const bits = bitsOf(wb.wb_elevation_m(handle, lat, lon, res));
+          tally(bits === want);
+          if (bits !== want) note(`carve ${name} point ${p}`, want, bits);
+        } else {
+          tally(false);
+          note(`carve ${name} point ${p}`, want, '<the door refused>');
+        }
+      }
+      if (handle !== 0) wb.wb_world_free(handle);
+      wb.wb_hydro_free(id);
+      wb.wb_dealloc(pp, pl * 8);
+      wb.wb_dealloc(idp, 4);
+      wb.wb_dealloc(bp, blen * 8);
+      if (tlen !== 0) wb.wb_dealloc(tp, tlen * 8);
       break;
     }
     case 'version': {
