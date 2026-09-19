@@ -417,6 +417,15 @@ impl Surface {
         self.water.is_some()
     }
 
+    /// **The held bake this world was carved from** -- the very `Arc` `with_water` was handed --
+    /// or `None` for a bare world. Ruling C-36: a carved world answers water queries only against
+    /// this record, and `wasm.rs` decides that by `Arc::ptr_eq` on what this returns, because the
+    /// fingerprint cannot: a carved world fingerprints as its bare parent, and so does every other
+    /// bake of that ground.
+    pub fn carved_from(&self) -> Option<&std::sync::Arc<crate::water::layer::IndexedRecord>> {
+        self.water.as_ref().map(|layer| layer.bake())
+    }
+
     /// The ground before any roughness, which is the same at every scale.
     ///
     /// Args:

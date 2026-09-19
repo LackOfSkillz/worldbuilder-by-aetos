@@ -69,6 +69,12 @@ export const WB_ERR_NOT_BAKED_FOR_CARVING = 9;
 /// ground was cut from a record, so the question belongs to the bare world built from the same
 /// parameters without the water block.
 export const WB_ERR_CARVED = 10;
+/// `wasm.rs`'s eleventh status (Ruling C-36): `wb_water_at` or `wb_water_tile` was asked about a
+/// CARVED world through a bake other than the one it was carved from -- an ordinary bake of the
+/// same ground, or a second carving bake of it. The ground check cannot see this (a carved world
+/// fingerprints as its bare parent), and the answer would come from a record the terrain was not
+/// cut from. The fix is to query through the carving bake the world holds.
+export const WB_ERR_NOT_CARVED_FROM = 11;
 
 const STATUS_NAMES = {
   0: "WB_OK",
@@ -82,6 +88,7 @@ const STATUS_NAMES = {
   8: "WB_ERR_WRONG_WORLD",
   9: "WB_ERR_NOT_BAKED_FOR_CARVING",
   10: "WB_ERR_CARVED",
+  11: "WB_ERR_NOT_CARVED_FROM",
 };
 
 /// Feature record codes, mirrored from `wasm.rs`. A record is eight f64.

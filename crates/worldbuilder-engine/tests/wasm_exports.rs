@@ -6631,11 +6631,12 @@ fn every_status_is_distinct_and_the_viewer_names_every_one() {
         ("WB_ERR_WRONG_WORLD", WB_ERR_WRONG_WORLD),
         ("WB_ERR_NOT_BAKED_FOR_CARVING", WB_ERR_NOT_BAKED_FOR_CARVING),
         ("WB_ERR_CARVED", WB_ERR_CARVED),
+        ("WB_ERR_NOT_CARVED_FROM", WB_ERR_NOT_CARVED_FROM),
     ];
     for (index, (name, value)) in statuses.iter().enumerate() {
         assert_eq!(*value as usize, index, "{name} is not the next number"); // cast-ok: a status code, a small u32
     }
-    // And every `pub const WB_ERR_` in the source is in the list above, so a twelfth cannot
+    // And every `pub const WB_ERR_` in the source is in the list above, so a thirteenth cannot
     // arrive without this test (and so the viewer) hearing of it.
     let source = include_str!("../src/wasm.rs");
     let declared = source.lines().filter(|l| l.starts_with("pub const WB_ERR_")).count();
@@ -7152,5 +7153,104 @@ fn a_carved_world_refuses_every_bake_like_export_and_answers_every_sampling_one(
 
     wb_world_free(carved);
     wb_hydro_free(bake);
+    wb_world_free(world);
+}
+
+// ---- Ruling C-36: a carved world is tied to the bake it was carved from ----------------------
+//
+// A carved world fingerprints as its bare parent, so the ground check accepts every bake of that
+// ground. Before C-36 the final whole-branch review got `WB_OK` from `wb_water_at` on a carved
+// world through an ordinary bake and through a second carving bake, and the query answered from a
+// record the terrain was not cut from: drained ponds standing in cut channels, rivers where
+// nothing was cut. The tie is identity of record -- the `Arc` the carved world holds -- so the
+// three tests below are split by pairing, and each refusal fails on its own before the fix.
+
+const STRIDE_U32: u32 = WB_WATER_STRIDE as u32; // cast-ok: a small stride constant
+
+/// `wb_water_at` at one fixed point: the status and the buffer, which starts `UNWRITTEN`.
+fn water_point(world: u32, bake: u32) -> (u32, [f64; WB_WATER_STRIDE]) {
+    let mut out = [UNWRITTEN; WB_WATER_STRIDE];
+    let status = wb_water_at(world, bake, 29.0, -3.0, out.as_mut_ptr(), STRIDE_U32);
+    (status, out)
+}
+
+/// `wb_water_tile` over a fixed 4x4 grid: the status and the buffer, which starts `UNWRITTEN`.
+fn water_grid(world: u32, bake: u32) -> (u32, Vec<f64>) {
+    let mut out = vec![UNWRITTEN; 4 * 4 * WB_WATER_STRIDE];
+    let len = u32::try_from(out.len()).expect("a small tile");
+    let status = wb_water_tile(world, bake, 30.0, -4.0, 28.0, -2.0, 4, 4, out.as_mut_ptr(), len);
+    (status, out)
+}
+
+/// A carved world asked through `bake` is refused with `WB_ERR_NOT_CARVED_FROM` at the point and
+/// the tile, with nothing written; its bare parent asked through the same bake is answered.
+fn assert_refused_for_the_carve_only(world: u32, carved: u32, bake: u32, what: &str) {
+    let (status, out) = water_point(carved, bake);
+    assert_eq!(status, WB_ERR_NOT_CARVED_FROM, "{what}: the point query was not refused");
+    assert!(out.iter().all(|w| *w == UNWRITTEN), "{what}: a refused point query wrote");
+    let (status, out) = water_grid(carved, bake);
+    assert_eq!(status, WB_ERR_NOT_CARVED_FROM, "{what}: the tile was not refused");
+    assert!(out.iter().all(|w| *w == UNWRITTEN), "{what}: a refused tile wrote");
+    assert_eq!(water_point(world, bake).0, WB_OK,
+               "{what}: the bare parent is judged by its ground alone (Ruling Q-20)");
+}
+
+#[test]
+fn a_carved_world_refuses_the_water_query_through_an_ordinary_bake_of_its_ground() {
+    let world = plain_world();
+    let own = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, own);
+    let ordinary = bake_with(world, &hydro_params(12_000));
+    assert_refused_for_the_carve_only(world, carved, ordinary, "an ordinary bake");
+    for bake in [own, ordinary] {
+        wb_hydro_free(bake);
+    }
+    wb_world_free(carved);
+    wb_world_free(world);
+}
+
+/// Another wetness, and the very same params: the second is bit-identical words in another record,
+/// and is refused as well, because the tie is identity of record and not equal content.
+#[test]
+fn a_carved_world_refuses_the_water_query_through_a_second_carving_bake_of_its_ground() {
+    let world = plain_world();
+    let own = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, own);
+    let mut wetter = hydro_params_for_carving(12_000);
+    wetter[1] = 900.0;
+    let second = bake_with(world, &wetter);
+    let twin = bake_with(world, &hydro_params_for_carving(12_000));
+    assert_eq!(held_words(twin), held_words(own), "fixture is wrong: the twin should be the same words");
+    assert_refused_for_the_carve_only(world, carved, second, "a second carving bake");
+    assert_refused_for_the_carve_only(world, carved, twin, "a bit-identical re-bake");
+    for bake in [own, second, twin] {
+        wb_hydro_free(bake);
+    }
+    wb_world_free(carved);
+    wb_world_free(world);
+}
+
+/// The accepted case: its own bake, point and tile, and the bare parent through it. And the tie
+/// survives a refused carve of the same bake on another planet, whose index build at the other
+/// radius must not evict the record the carved world holds.
+#[test]
+fn a_carved_world_answers_the_water_query_through_the_bake_it_was_carved_from() {
+    let world = plain_world();
+    let own = bake_with(world, &hydro_params_for_carving(12_000));
+    let carved = carved_plain(1.0, own);
+    assert_eq!(water_point(carved, own).0, WB_OK, "a carved world answers against its own bake");
+    assert_eq!(water_grid(carved, own).0, WB_OK);
+    assert_eq!(water_point(world, own).0, WB_OK, "the bare parent answers against it too");
+
+    let null = core::ptr::null();
+    let block = [1.0f64];
+    let elsewhere = wb_world_new_water(SEED, 6_000_000.0, PLATES, LAND, null, 0, null, 0, null, 0,
+                                       null, 0, null, 0, null, 0, block.as_ptr(), 1, own);
+    assert_eq!(elsewhere, 0, "fixture is wrong: another planet was carved by this bake");
+    assert_eq!(water_point(carved, own).0, WB_OK, "the carved world lost its tie to its own bake");
+    assert_eq!(water_grid(carved, own).0, WB_OK);
+
+    wb_hydro_free(own);
+    wb_world_free(carved);
     wb_world_free(world);
 }

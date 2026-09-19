@@ -174,8 +174,9 @@ export function hydroParamsWords(params) {
 /// **Each by its own name** (Ruling C-3). The islands panel's refusal sat in a path a failed boot
 /// swallowed, and the owner read "engine unavailable" for a block the engine had named precisely;
 /// a status with no sentence here would be the same failure one level down. The four the plan
-/// names are first; the two after them are what the door says about a buffer or a bake id the
-/// studio itself got wrong, and are named for the same reason.
+/// names are first, then Ruling C-36's (a carved world's water asked through another bake); the
+/// two after them are what the door says about a buffer or a bake id the studio itself got wrong,
+/// and are named for the same reason.
 export const CARVE_REFUSALS = {
   5: ["WB_ERR_PARAM", `the water block is malformed: the bank width must be above 0 and at most `
     + `${BANK_WIDTHS_CEILING} channel widths (check bankWidths in the address). Nothing was `
@@ -186,6 +187,8 @@ export const CARVE_REFUSALS = {
     + "record keeps the ponds its own channels drain, and carving with it would dam the rivers."],
   10: ["WB_ERR_CARVED", "a bake was asked of a carved world: bakes read the bare ground, and this "
     + "ground has already been cut."],
+  11: ["WB_ERR_NOT_CARVED_FROM", "the carved world's water was asked through a bake it was not "
+    + "carved from: a carved world answers only against its own carving bake."],
   1: ["WB_ERR_HANDLE", "the held bake is gone (freed, or never issued in this engine)."],
   2: ["WB_ERR_BUFFER", "the water block could not be read (a viewer bug, not a setting)."],
 };

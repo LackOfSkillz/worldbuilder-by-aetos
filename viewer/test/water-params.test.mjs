@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   Engine, WB_OK, WB_ERR_HANDLE, WB_ERR_PARAM, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING,
-  WB_ERR_CARVED, WB_HYDRO_PARAMS_STRIDE, WB_HYDRO_PARAMS_CARVE_STRIDE, statusName,
+  WB_ERR_CARVED, WB_ERR_NOT_CARVED_FROM, WB_HYDRO_PARAMS_STRIDE, WB_HYDRO_PARAMS_CARVE_STRIDE, statusName,
 } from "../public/app/engine.js";
 import { panelFieldFaults } from "../public/app/panel-fields.js";
 import {
@@ -284,6 +284,15 @@ test("the 13-word buffer carries the flag, and the flag is what makes a record c
     }
   }
   assert.ok(lowered > 0, "the carved world was not cut anywhere along its own record's reaches");
+  // Ruling C-36: the carved world answers water queries only through the bake it was carved from.
+  // Its ground is its bare parent's, so the ordinary bake passes the ground check -- and is still
+  // refused, by name. The bare world answers through either.
+  const here = { latitudeDeg: 29, longitudeDeg: -3 };
+  engine.waterAt({ bake: { ...forCarving, handle: carved }, ...here });
+  assert.throws(() => engine.waterAt({ bake: { ...plain, handle: carved }, ...here }),
+    /wb_water_at returned WB_ERR_NOT_CARVED_FROM/);
+  engine.waterAt({ bake: plain, ...here });
+  engine.waterAt({ bake: forCarving, ...here });
   engine.hydroFree(forCarving);
   engine.hydroFree(plain);
   for (const h of [bare, carved]) assert.equal(engine.freeWorld(h), WB_OK);
@@ -405,7 +414,8 @@ test("a bake asked of a carved world reaches the owner as WB_ERR_CARVED", async 
 });
 
 test("every refusal the carve can meet has its own name and its own sentence", () => {
-  const statuses = [WB_ERR_PARAM, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING, WB_ERR_CARVED, WB_ERR_HANDLE];
+  const statuses = [WB_ERR_PARAM, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING, WB_ERR_CARVED,
+    WB_ERR_NOT_CARVED_FROM, WB_ERR_HANDLE];
   const texts = new Set();
   for (const status of statuses) {
     const refusal = carveRefusal(status);

@@ -182,6 +182,21 @@ pub const WB_ERR_NOT_BAKED_FOR_CARVING: u32 = 9;
 /// water block. Before plan 2b Task 5 no door built a carved handle, and the bake's refusal was
 /// answered as [`WB_ERR_PARAM`].
 pub const WB_ERR_CARVED: u32 = 10;
+/// **The world is carved, and not from this bake** (Ruling C-36): [`wb_water_at`] or
+/// [`wb_water_tile`] was asked about a carved world through a bake other than the one the world
+/// was carved from -- an ordinary bake of the same ground, or a second bake for carving of it.
+///
+/// **The ground check cannot see this, by design.** A carved world fingerprints exactly as its bare
+/// parent (plan 2b Task 2), so every bake of that ground passes [`WB_ERR_WRONG_WORLD`]'s test. Such
+/// a pairing used to be answered, from a record the ground was not cut from: the ponds the carve
+/// drained stood in its channels, rivers ran where nothing was cut, and the carving bake's own
+/// channels read dry. The tie is **identity of record** -- the one `Arc` the carved world holds --
+/// and not a handle: a carved world is *built from* a specific bake, so which record it answers
+/// against is part of what it is. This does not reopen Ruling Q-20, which declined to tie a *bare*
+/// world to a bake by handle because bare handles are recreated on every slider change; a bare
+/// world is still judged by its ground alone. The fix is to query through the bake the world was
+/// carved from, or to carve again from this one.
+pub const WB_ERR_NOT_CARVED_FROM: u32 = 11;
 
 /// The ceiling on `node_count` for [`wb_erosion_run`]. Not the planetary target -- slice 1p
 /// measured a 20,000,000-node graph at 1.45 GB of arrays and 2.16 GB peak RSS, which does
@@ -5447,17 +5462,36 @@ fn held_bake(
         if table.len() <= slot {
             table.resize_with(slot + 1, || None);
         }
-        table[slot] = Some(Arc::clone(&built));
+        // **A slot a carved world shares is never replaced** (Ruling C-36). A carved world is tied
+        // to the `Arc` it was carved from, and [`with_water_query`] finds that tie by comparing it
+        // with this slot. The slot is replaced only by a build at another radius -- a query or a
+        // carve of this bake on another planet, which is then refused -- and replacing a shared
+        // slot would make the carved world's own bake look like a stranger to it. Every borrow of
+        // a held `Arc` is released before its caller returns, so a count above one here is a
+        // carved world holding it. The build at the other radius is still handed back; it is only
+        // not held.
+        let shared = table[slot].as_ref().is_some_and(|held| Arc::strong_count(held) > 1);
+        if !shared {
+            table[slot] = Some(Arc::clone(&built));
+        }
     });
     Ok(built)
 }
 
 /// Run `action` over the decoded record and the [`water::index::WaterIndex`] for bake `id` at
 /// `radius_m` ([`held_bake`]) -- **if the bake is of the world whose fingerprint is
-/// `world_ground`** (plan 2b, Task 2).
+/// `world_ground`** (plan 2b, Task 2), **and, for a carved world, if it is the very record the
+/// world was carved from** (Ruling C-36).
 ///
-/// `Err` carries [`held_bake`]'s statuses, and `WB_ERR_WRONG_WORLD` for a record whose ground is
-/// not `world_ground` (`record::check_ground`).
+/// `carved_from` is `Surface::carved_from` of the world asked about: `None` for a bare world, which
+/// is judged by its ground alone (Ruling Q-20), and the carved world's own `Arc` otherwise, which
+/// the held bake must *be* -- `Arc::ptr_eq`, not equal content: a second bake of the same ground
+/// with the same parameters is a different bake, and the world was not carved from it.
+///
+/// `Err` carries [`held_bake`]'s statuses, `WB_ERR_WRONG_WORLD` for a record whose ground is not
+/// `world_ground` (`record::check_ground`), and [`WB_ERR_NOT_CARVED_FROM`] for a carved world
+/// asked through any other bake of its ground. The ground is checked first, so a bake of another
+/// world is named for that.
 ///
 /// **The verdict is decided here, once per call, and `action` never sees a foreign record.** The
 /// caller passes the world's digest from [`world_ground`] (held with the handle, sampled once per
@@ -5470,13 +5504,19 @@ fn with_water_query<T>(
     id: u32,
     radius_m: f64,
     world_ground: &[u8; hydrology::record::GROUND_BYTES],
+    carved_from: Option<&Arc<IndexedRecord>>,
     action: impl FnOnce(&hydrology::HydroRecord, &water::index::WaterIndex) -> T,
 ) -> Result<T, u32> {
     let held = held_bake(id, radius_m, Some(world_ground))?;
-    match hydrology::record::check_ground(held.record(), world_ground) {
-        Ok(()) => Ok(action(held.record(), held.index())),
-        Err(_) => Err(WB_ERR_WRONG_WORLD),
+    if hydrology::record::check_ground(held.record(), world_ground).is_err() {
+        return Err(WB_ERR_WRONG_WORLD);
     }
+    if let Some(own) = carved_from {
+        if !Arc::ptr_eq(own, &held) {
+            return Err(WB_ERR_NOT_CARVED_FROM);
+        }
+    }
+    Ok(action(held.record(), held.index()))
 }
 
 /// **Spec §8.3 at one point**: what water is here -- ocean, lake, salt lake, salt flat, pond,
@@ -5514,7 +5554,15 @@ fn with_water_query<T>(
 /// names no live bake (a freed bake included); `WB_ERR_BUFFER` if `out` is null, misaligned or
 /// shorter than [`WB_WATER_STRIDE`]; `WB_ERR_GRID` if the latitude or longitude is not finite;
 /// `WB_ERR_PARAM` if the held record will not decode; [`WB_ERR_WRONG_WORLD`] if the bake was
-/// made from other ground than `world`'s. **Nothing is written on any refusal.**
+/// made from other ground than `world`'s; [`WB_ERR_NOT_CARVED_FROM`] if `world` is carved and
+/// `bake` is not the bake it was carved from (Ruling C-36). **Nothing is written on any refusal.**
+///
+/// # A carved world answers only against its own carving bake
+///
+/// Its ground matches every bake of its bare parent, so the ground check above accepts them all;
+/// but only the bake it was carved from describes the channels cut into it and the ponds drained
+/// for them. Any other is refused with [`WB_ERR_NOT_CARVED_FROM`], decided by identity of record
+/// (the shared `Arc`), not by content and not by handle. A bare world is unaffected.
 ///
 /// # Safety
 /// `out` must be null, or a live 8-aligned allocation of at least `out_len` f64.
@@ -5537,7 +5585,7 @@ pub extern "C" fn wb_water_at(
     let answered = with_world(world, |held| {
         let surface = held.surface();
         let ground = world_ground(world, surface);
-        with_water_query(bake, surface.radius_m, &ground, |record, index| {
+        with_water_query(bake, surface.radius_m, &ground, surface.carved_from(), |record, index| {
             with_ground(surface, record.stats.pond_cell_m, |ground| {
                 let point = SpherePoint::from_latlon(latitude_deg, longitude_deg);
                 let answer = water::water_at(record, index, ground, &point);
@@ -5575,8 +5623,9 @@ pub extern "C" fn wb_water_at(
 /// `WB_OK`; `WB_ERR_GRID` for a zero `rows` or `columns`, a non-finite bound, or a sample count
 /// whose five words do not fit a `usize`; `WB_ERR_BUFFER` for a null, misaligned or short `out`;
 /// `WB_ERR_HANDLE` for an unknown world or bake; `WB_ERR_PARAM` if the held record will not
-/// decode; [`WB_ERR_WRONG_WORLD`] if the bake was made from other ground than `world`'s (see
-/// [`wb_water_at`]). **Nothing is written on any refusal** -- a half-filled tile is worse than
+/// decode; [`WB_ERR_WRONG_WORLD`] if the bake was made from other ground than `world`'s, and
+/// [`WB_ERR_NOT_CARVED_FROM`] if `world` is carved and `bake` is not the bake it was carved from
+/// (both as [`wb_water_at`]). **Nothing is written on any refusal** -- a half-filled tile is worse than
 /// none, because it reads as water.
 ///
 /// **The world check is made once per tile, before the first sample** (Ruling C-10): the world's
@@ -5628,7 +5677,7 @@ pub extern "C" fn wb_water_tile(
     let filled = with_world(world, |held| {
         let surface = held.surface();
         let ground = world_ground(world, surface);
-        with_water_query(bake, surface.radius_m, &ground, |record, index| {
+        with_water_query(bake, surface.radius_m, &ground, surface.carved_from(), |record, index| {
             with_ground(surface, record.stats.pond_cell_m, |ground| {
                 for row in 0..down_count {
                     let down = row as f64; // cast-ok: a grid row index to float, exact for any tile that fits in memory

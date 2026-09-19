@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   Engine, WB_WATER_STRIDE, WB_ERR_WRONG_WORLD, WB_ERR_NOT_BAKED_FOR_CARVING, WB_ERR_CARVED,
+  WB_ERR_NOT_CARVED_FROM,
   decodeWaterSample, statusName, waterTileBytes,
 } from "../public/app/engine.js";
 // The record decoder lives with the preview drawing, not with the boundary: the query answers
@@ -243,6 +244,9 @@ test("the carve's two new refusals have names, and the shipped module has the do
   assert.equal(statusName(WB_ERR_NOT_BAKED_FOR_CARVING), "WB_ERR_NOT_BAKED_FOR_CARVING");
   assert.equal(WB_ERR_CARVED, 10);
   assert.equal(statusName(WB_ERR_CARVED), "WB_ERR_CARVED");
+  // Ruling C-36: a carved world queried through a bake it was not carved from.
+  assert.equal(WB_ERR_NOT_CARVED_FROM, 11);
+  assert.equal(statusName(WB_ERR_NOT_CARVED_FROM), "WB_ERR_NOT_CARVED_FROM");
   for (const name of ["wb_world_new_water", "wb_water_preset", "wb_water_check"]) {
     assert.equal(typeof instance.exports[name], "function", `${name} is not exported`);
   }
