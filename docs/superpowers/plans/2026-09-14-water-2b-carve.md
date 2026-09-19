@@ -223,6 +223,34 @@ git commit -m "Texture defers to a channel instead of damming it"
 
 ---
 
+### Task 4b: A pond a channel drains is not a pond
+
+*Added mid-plan, from what Task 3's lake-bed fix exposed. Rulings C-16 to C-19 in the ledger.*
+
+**Files:**
+- Modify: `crates/worldbuilder-engine/src/hydrology/ponds.rs` (the keep rule), and the tests beside it
+
+**What happened.** Task 3's review found the carve cutting lake beds; the fix stopped the layer cutting any point a body claims. That turned one case from a pit into a **dam**. At 30k nodes a fine-found pond sits at 342.8 m while a reach through its outline has its bed at 135 m. That reach is a **notch** — a cut through a ridge that keeps the drainage continuous — and the pond sits on the ridge top. Cut through, the pond had a 190 m pit in its floor; left uncut, the pond's footprint now blocks the notch and the river runs into a 190 m wall across its own channel.
+
+**The cause is the record, not the carve.** The bake finds that pond in bare terrain, where it is a genuine hollow. But the record describes the **carved** world: a notch is a cut the record says will be made, which is why even plan 2a's bare-world query already answers River at points whose ground stands 200 m above the water. In the carved world the notch drains the pond, so the pond does not exist.
+
+**The fix: a fine-found body whose outline is crossed by a reach or notch whose water level lies below the body's own level is not kept.** It is not a closed hollow once the cut it sits on is made.
+
+- Decide "crossed" with the same geometry the query and the carve use — `claim_bodies` and `along_leg` — never a third copy (Ruling C-12).
+- State the tolerance the level comparison uses, and why: a river flowing *through* a pond at the pond's own level is a pond on a river, not a drained pond, and must survive.
+- **Coarse lakes are out of scope for the drop.** Ruling C-17: measure, on the owner's world and both parity worlds, how far off each coarse lake's level its inflowing reaches arrive, separated from the pond case above, and report it. Rule afterwards with the numbers.
+- **Ruling C-19:** add the fixture Task 4 lacked — a feature over a channel — so the multiplicative damping `(1 − a_f)(1 − a_w)` is pinned against the additive form, which currently passes every test.
+
+**Tests:** the 30k and 60k bakes, where reaches do cross bodies: after the fix, **no sample along any channel stands above the water the query reports there**, which is the dam test, and it must be shown failing against the commit before this task. Also: a pond a river flows through at its own level survives.
+
+**This moves hydro parity values legitimately** — fewer bodies. Divergent must stay 0; report which groups' compared values moved and why, and do not describe it as a regression. The `water-pond` control may move too: say by how much and confirm it moves only through the dropped bodies.
+
+```bash
+git commit -m "A pond a channel drains is not a pond"
+```
+
+---
+
 ### Task 5: The wasm door, and its pins
 
 *Added at pre-flight. The draft plan had no ABI task, yet Task 7's parity group needs a wasm door to bit-compare the carve across the boundary, and Task 8 asks whether the carve is visible in the studio.*
