@@ -5056,6 +5056,13 @@ pub const WB_HYDRO_PARAMS_STRIDE: usize = 12;
 /// for bit, as the 12-word buffer does -- a test holds the two to each other. Any other value but
 /// `1.0` (including `0.5`, `2.0`, NaN) is refused as `WB_ERR_PARAM`: a flag that is neither is a
 /// host bug, and reading it as either answer would be a silently-adjusted parameter.
+///
+/// **Length parity works exactly once, and this is the once.** It has two values, and both are now
+/// taken: even is the 12-word layout, odd the 13-word one. A third layout cannot be told from
+/// either by its length -- a 14-word header plus pairs is even again, and would be read as the
+/// ordinary layout with one more forced outlet. **The next extension needs an explicit tag**: a
+/// layout-version word the decoder reads before anything else, in a buffer shape no current host
+/// sends (so an old buffer still means what it meant), not another length to infer from.
 pub const WB_HYDRO_PARAMS_CARVE_STRIDE: usize = WB_HYDRO_PARAMS_STRIDE + 1;
 
 /// The ceiling on `total_nodes` and `wetness_nodes` for [`wb_hydro_bake`]. Ruling I7 (final

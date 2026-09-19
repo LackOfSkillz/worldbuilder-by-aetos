@@ -223,7 +223,7 @@ fn a_lakes_interior_is_not_cut() {
         assert!(index.candidates(&probe).bodies.contains(&id),
                 "fixture is wrong: body {id} is not a candidate, so `not cut` proves nothing");
         // The query agrees this is inside the body, so the probe really is a lake's interior.
-        let floor = fixture.bodies[id as usize].level_m - 1.0;
+        let floor = fixture.bodies[id as usize].level_m - 1.0; // cast-ok: a two-body fixture id, 0 or 1, used as its position
         let flat = move |_: &SpherePoint| floor;
         let answer = water_at(&fixture, index,
                               &Ground { landform_m: Landform(&flat), detail_m: Detail(&flat) }, &probe);

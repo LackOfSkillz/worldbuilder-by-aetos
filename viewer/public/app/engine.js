@@ -567,7 +567,9 @@ export class Engine {
   /// the peak channel's cheap `checkPeak`: call it after a refusal, or once before a bake that
   /// would otherwise be wasted, **never on a slider drag**. A malformed block is judged before the
   /// world is looked at, so `bake: null` with a block answers `WB_ERR_PARAM` at no build cost for a
-  /// malformed block, and `WB_ERR_HANDLE` (after one bare build and no index) for an admissible one.
+  /// malformed block, and `WB_ERR_HANDLE` for an admissible one -- **also at no build cost**: the
+  /// bake id is resolved (`wasm.rs::held_bake`) before any `Surface` is constructed
+  /// (`wasm.rs::build_surface`), so a missing bake is refused before a world is built.
   checkWater(spec) {
     return this.worldCall(spec, (args) => this.exports.wb_water_check(...args) >>> 0);
   }

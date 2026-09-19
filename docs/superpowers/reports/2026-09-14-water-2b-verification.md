@@ -453,7 +453,7 @@ setting.
 `forcedOutlet=0,0` for this report (next section). Its own `CarveSession` printed `before 3719,
 after 3320, drained 1285, arrived 886, kept 2434` and took 135.5 s for the main-thread bake.
 
-### Is the carve visible in the studio? Yes, in the drawn terrain. Not seen as an image.
+### Is the carve visible in the studio? Yes, in the drawn terrain. Seen as an image later (§9, Ruling C-34).
 
 **Method.** The branch studio was served locally and opened in the desktop app's Chromium pane at
 the owner's planet block, with three changes:
@@ -477,6 +477,9 @@ because the page's main thread was filling carved tiles (Task 6's concern 1, vis
 **no one has looked at an image of the carved owner's world.** What is established is that the
 terrain the studio draws is the carved terrain, at the points read. Whether it *reads* as a river
 to the eye is still the owner's call.
+
+*Later:* a picture was taken after this run, on the default world rather than the owner's, and
+Ruling C-34 records what it showed. See §9.
 
 ---
 
@@ -760,7 +763,176 @@ three.
   of 89,331 by more than 10 m, up to 238 m. They are concentrated in highland lakes. It is
   pre-existing and untouched by the carve, but a carved world that cuts rivers cleanly and leaves
   texture islands in its lakes is inconsistent.
+- **The carve reads as a canal, not a river (Ruling C-34). A finding, and a follow-up; not fixed
+  in this plan.** Someone has now looked at a picture of the carve. Population and method: the
+  studio at :8138 on this branch, the default world (seed 20260904, 12 plates, land 0.29) with
+  `?carve=1`; great river 1911 at 20.0338, −132.1332 (bed 131.2 m, width 177 m, depth 13.0 m),
+  cross-sectioned bare against carved through `wb_elevation_m`, then a screenshot at 2.6 km and
+  −38° pitch with the pane fronted and the side panels hidden. What it showed:
+  - **The carve is visible and exact.** Untouched at ±450 m and beyond, bit for bit; the floor
+    flat at exactly 131.2 m, `bed_m`, across ±120 m; the banks blending between.
+  - **It reads as engineered.** The river crosses a ridge there, so the cut is 233 m deep on a
+    177 m channel: walls of about 53°, a flat bottom, and sharp turns where the channel follows
+    the simplified polyline from leg to leg. A river crossing a ridge does make a gorge, but not
+    this one. The cause is the profile spec §8.1 specifies: one bank width either side whatever
+    the depth, and a polyline with corners.
+  - **No water is drawn in it by default**, so the channel reads as a dry trench.
+
+  Follow-up: a bank profile that widens with cut depth, and smoothing of the centre line through
+  its recorded points. Either moves every carved value, so it is a later plan's decision, not this
+  plan's. The dry-looking channel is a drawing question for §9.1's water rendering. (The query
+  side of "dry" is now fixed: Ruling C-35, §10, makes the query answer water in a notch.)
+- **Below the datum the query and the carve still differ, by design** (`water/layer.rs`, "One
+  exception"). The query answers `Ocean` before any reach or notch, while the layer cuts there at
+  authority 1. Measured natively on `bake_tests::world()` baked for carving at
+  `earth_like(60_000)`, at every reach mid-leg: 3 of 2,169 answered `Ocean`, and 2 of those stand
+  more than 1 m lower in the carved world than in the bare one. There `Ocean`'s depth is read off
+  the uncut landform. The ocean's precedence was deliberately not changed.
 - **Not measured here:**
   - the wasm32 size of the index;
-  - the painted-feature half of §8.2's target;
-  - a visual check of the carved owner's world by a person.
+  - the painted-feature half of §8.2's target.
+
+---
+
+## 10. The final fix wave (Rulings C-35 and C-36)
+
+The final whole-branch review (`aa1e806`) found two blockers and seven minors. Both blockers are
+fixed, each shown failing before its fix.
+
+### Ruling C-35: the query answers water in a notch
+
+A notch is where a lake spills through its rim. The carve cut notches exactly as it cut reaches,
+but the query had no notch clause. So wherever no reach ran through a notch, the query called
+the cut channel dry.
+
+**Measured, by running.** Population: every recorded notch of `bake_tests::world()` (seed
+20,260,904, 6,371 km, 12 plates, 0.29 land). Method: baked for carving at `earth_like(30_000)`
+and `earth_like(60_000)`, carved by its own record at the canonical block, native release build,
+this report's host. Results:
+- 12 notches in all (5 and 7), and 10 lie 97 km to 1,732 km from any recorded reach point. The
+  distance is nearest recorded notch point to nearest recorded reach point. The review said
+  1,782 km; that was not reproduced.
+- At their recorded points, the carved world stands 11.2 m to 55.8 m below the bare one (the
+  deepest point of each notch).
+
+**The fix.** After the reaches, `water_at` asks the notches through the same `line_claim` a
+reach uses: the same `leg_foot`, the same Ruling Q-7 width and the same half of it. So a point is
+in a notch's water exactly where the layer cuts it at full authority. The answer is:
+- `River`, at the notch's cut surface read along the leg by `along_leg`, which is the target the
+  layer cuts to;
+- `reach_id = NO_REACH` and `body_id = NO_BODY`;
+- depth is the level over the landform, or 0 where the cut stands at the surface;
+- `fresh = true`.
+
+A reach that also claims the point answers first, and keeps its id.
+
+**`WaterKind` did not change.** Every other `River` names its reach (Ruling Q-18), so a `River`
+naming none is a notch's. The kinds and the five-word sample are unchanged.
+
+**Seen failing at `aa1e806`, before the fix:**
+- `the_carve_and_the_query_agree_about_where_the_channel_is` now has three notches in its
+  fixture (one no reach touches, one crossing a reach, one a single point). It failed: the query
+  said river=false where the carve's authority was 1.
+- `no_channel_is_dammed_by_a_pond_it_drains` now fails on any dry sample inside a channel, and
+  requires that some sample of a notch no reach runs through was judged. It failed: 1,295 (30k)
+  and 1,253 (60k) samples inside a cut channel were dry, and no notch sample was judged.
+- After the fix: 0 dry inside a channel, and 1,623 (30k) and 1,530 (60k) notch-only samples
+  judged.
+- Also added or extended: a unit test of the notch answer (`query.rs`);
+  `the_query_agrees_with_the_record_at_every_recorded_point` now asserts that no notch point is
+  dry; and the channel samples behind the two texture and water-surface tests now include
+  notches.
+
+**Parity: no group moved.** The native dump is byte-identical to `aa1e806`'s. No `water_at` grid
+sample falls in a notch's footprint, and every `water_point` river probe sits on a recorded reach
+point. Native and wasm changed identically, and divergent stays 0.
+
+### Ruling C-36: a carved world answers only through the bake it was carved from
+
+`with_water_query` compared ground fingerprints only, and a carved world fingerprints as its bare
+parent. The fix: for a carved world (`Surface::carved_from`), the held bake must be the very
+`Arc` the world holds (`Arc::ptr_eq`). Anything else is refused with **`WB_ERR_NOT_CARVED_FROM`
+(11)**. The new status is:
+- named in `engine.js`'s exports and `STATUS_NAMES`;
+- given a sentence in `water-params.js`'s `CARVE_REFUSALS`;
+- pinned by `every_status_is_distinct_and_the_viewer_names_every_one`.
+
+Two further points:
+- **A bare world is still judged by its ground alone**, so Ruling Q-20 stands.
+- **The record cache no longer replaces a slot a carved world shares.** Otherwise a refused carve
+  of the same bake at another radius could evict the carved world's own record, and the tie would
+  refuse its rightful bake. A test covers this.
+
+**Seen failing at `58e83c5`, with only the status constant declared.** Both refusal tests returned
+`WB_OK` where 11 was expected:
+- `a_carved_world_refuses_the_water_query_through_an_ordinary_bake_of_its_ground`;
+- `a_carved_world_refuses_the_water_query_through_a_second_carving_bake_of_its_ground`, which
+  covers both another wetness and a bit-identical re-bake.
+
+The accepted case passes both before and after: `a_carved_world_answers_the_water_query_through_the_bake_it_was_carved_from`.
+The viewer's live check through the shipped wasm (`water-params.test.mjs`) failed against the old
+artifact and passes against the rebuilt one.
+
+### The seven minors
+
+- **4.** `ground_fingerprint`'s two `expect`s are gone, and a status was not added, because none
+  is needed. The hash is now `Blake2b<U16>`, the same BLAKE2b at a 16-byte output: the length
+  still enters the parameter block, so the digest is unchanged. Its `finalize` cannot fail, so
+  there is no failure left to report. The native dump is byte-identical, fingerprint words
+  included.
+- **5.** `layer_tests.rs`'s `id as usize` carries a `// cast-ok:`. **The ledger scanner does not
+  check `as usize`**, which is why it passed. The scanner was not widened in this wave.
+- **6.** `pondChange` returns `null` when the two records' `ground` fingerprints differ. The
+  owner is then told the account is not given, rather than shown a wrong one. A test covers it,
+  and a mutation removing the check turned it red.
+- **7.** `engine.js` and `carve-session.js` now say that an admissible block with no bake costs no
+  build: `build_surface` resolves the bake id before any `Surface` is constructed.
+- **8.** `parity/README.md`'s `GENERATOR_VERSION` rationale now names both halves:
+  - terrain is bit-identical;
+  - every ordinary record changed, versioned by `SCHEMA`;
+  - the query's answers moved (C-13's levels between recorded points; C-35's notches), and these
+    are a reader's behaviour, not the generator's output.
+- **9.** `WB_HYDRO_PARAMS_CARVE_STRIDE`'s doc says length parity works exactly once. The next
+  layout needs an explicit tag.
+- **10.** `layer.rs` no longer claims the query and carve agree "exactly". It names the
+  below-datum exception with the figures in §9. The ocean's precedence is unchanged.
+
+### Pins, every one re-derived by running
+
+**Engine.** Counted per configuration by `cargo test -p worldbuilder-engine <cfg> -- --list`, and
+the same with `--ignored`, summing each binary's trailer (18 binaries each). Each count was
+checked by `assert_counts.py cargo-list` (`count OK` at all five), and each suite was run in full
+with `--release --no-fail-fast`:
+
+| configuration | listed | ignored | **run (`expect`)** | full run |
+|---|---:|---:|---:|---|
+| `--no-default-features` | 917 | 11 | **906** (was 905) | 906 / 0 / 11 |
+| default | 917 | 11 | **906** (was 905) | 906 / 0 / 11 |
+| `--features python` | 920 | 11 | **909** (was 908) | 909 / 0 / 11 |
+| `--features wasm` | 1,061 | 11 | **1,050** (was 1,046) | 1,050 / 0 / 11 |
+| `--features python,wasm` | 1,064 | 11 | **1,053** (was 1,049) | 1,053 / 0 / 11 |
+
+**Other pins:**
+
+| pin | before | **now** |
+|---|---|---|
+| `no_std_math` (the ledger test) | 7 pass | **7 pass** |
+| Python total / conformance | 577 / 168 | **577 / 168**; run 577 passed after `maturin develop` rebuilt the `.venv` extension; `assert_counts.py pytest` `count OK` |
+| Viewer `npm test` | 381 | **381 / 381** (assertions added to existing tests) |
+| Parity | 179,086 / 0 | **179,086 / 0** |
+| `--mutate seed` | 170,363 | **170,363** |
+| `--mutate erosion-k` | 216 | **216** |
+| `--mutate water-pond` | 60 | **60** |
+| `--mutate tectonic-warp` | 39,702 | **39,702** ("exactly as the native side predicted") |
+| `--mutate coast-amplitude` | 13,128 | **13,128** |
+| `--mutate gully-steer` | 3,752 | **3,752** |
+| `--mutate climate-samples` | 648 | **648** |
+| `--mutate carve-bank` | 12 | **12** |
+| `check:wasm` | current | **current** (486,081 bytes, artifact-sha256 `d1c379b9…ce48`, source fingerprint `8d11394d…2fe8` over 72 inputs) |
+| EOL guard | clean | **clean** |
+
+- Every parity figure was checked by `assert_counts.py parity`.
+- `gates.yml` carries the new engine rows with a dated comment, and dated notes on the unchanged
+  Python and corpus pins.
+- `assert_counts.py` needed no change: no new label.
+

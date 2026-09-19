@@ -266,9 +266,27 @@ predicted natively under rule (a) over a bake of the warp-0 world, as `hydro/ran
 **`GENERATOR_VERSION` is not bumped, and these rows are why that is safe to say.** Its bump test
 (`lib.rs`) is "the same seed *and the same parameters*, run through the new code, would produce a
 different world" — and names "a new generator stage that is off unless explicitly requested" as
-a change that does not bump it. The carve is exactly that: with the block absent every world is
-bit-identical, which is what every other group in this corpus shows, unmoved. A bump becomes
-right the day the block's default changes, a separate act that invalidates every saved world.
+a change that does not bump it. The carve is exactly that for **terrain**: with the block absent
+every world's ground is bit-identical, which is what every other group in this corpus shows,
+unmoved. **It is not true of everything this branch touches, and the decision does not rest on
+it being so.** Two other things changed on every world, block or no block:
+
+- **Every ordinary bake's record changed.** SCHEMA 6 → 7 and four words of ground fingerprint in
+  the header (plan 2b Task 1). That is versioned by the record's own `SCHEMA` word, which every
+  reader checks and refuses when unknown — the record's version, not the generator's.
+- **The water query's answers moved.** Ruling C-13 reads a river's level along the claiming leg
+  rather than at the nearest recorded point, which moves the level between recorded points on
+  every world with a river; Ruling C-35 answers `River` in a notch's footprint, which moves the
+  answer at every notch no reach runs through from `none` to water. The corpus sees neither: every
+  `water_point` river probe sits on a recorded point, and no `water_at` grid sample falls in a
+  notch's footprint (the native dump was byte-identical across C-35). The query is a reading of a
+  world, not the world: it generates no terrain, and `GENERATOR_VERSION` versions what the
+  generator makes from a seed and parameters.
+
+So the version stays because the generator's output from the same seed and parameters is
+unchanged; the record's changes are carried by `SCHEMA`, and the query's are behaviour changes of
+a reader. A bump becomes right the day the block's default changes, a separate act that
+invalidates every saved world.
 
 ## Running it
 

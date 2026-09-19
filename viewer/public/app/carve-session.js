@@ -28,8 +28,9 @@
 //   held one is from another world (`WB_ERR_WRONG_WORLD`, i.e. the ground changed).
 // - **`wb_water_check` is never called on a drag.** It is called after a refusal, to name it, and
 //   once before a bake that a malformed block would otherwise waste (a minute, for a typo) -- where
-//   a malformed block costs nothing and an admissible one one bare `Surface` with no bake and no
-//   index.
+//   a malformed block costs nothing, and neither does an admissible one with no bake: the bake id
+//   is resolved before any `Surface` is built (`wasm.rs::build_surface`), so it is refused with
+//   `WB_ERR_HANDLE` before a world exists.
 
 import { decodeHydro } from "./water-preview.js";
 import { carveRefusal, pondChange, pondChangeText } from "./water-params.js";
@@ -180,7 +181,12 @@ export function carveOutcomeText(outcome) {
     parts.push(`${outcome.refusal.text} The bare world is drawn.`);
   } else if (outcome.carved) {
     if (outcome.baked) parts.push(`baked for carving in ${(outcome.bakeMs / 1000).toFixed(1)} s.`);
-    if (outcome.ponds) parts.push(pondChangeText(outcome.ponds));
+    if (outcome.ponds) {
+      parts.push(pondChangeText(outcome.ponds));
+    } else if (outcome.baked) {
+      parts.push("the pond account is not given: the ordinary bake it is counted against was of "
+        + "other ground (a stale worker), so its ponds cannot be compared with these.");
+    }
   }
   return parts.join(" ");
 }

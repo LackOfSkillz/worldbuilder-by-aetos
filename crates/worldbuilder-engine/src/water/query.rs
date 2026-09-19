@@ -108,9 +108,12 @@
 //! A notch is where a lake spills through its rim, and the water layer (plan 2b) cuts it into the
 //! ground exactly as it cuts a reach. §8.3's table has no notch row, and before Ruling C-35 this
 //! query never read `Candidates::notches`, on the assumption that a reach always runs through a
-//! cut channel. It does not: on `bake_tests::world()` at 30,000 and 60,000 nodes, 10 of 12 notches
-//! lie 97 km to 1,782 km from any recorded reach point, because the outflow is below the stream
-//! threshold. The query called every point of them dry while the carve cut them 11-56 m deep.
+//! cut channel. It does not. Measured natively on `bake_tests::world()` baked for carving at
+//! `earth_like(30_000)` and `earth_like(60_000)`: 10 of the 12 notches lie 97 km to 1,732 km from
+//! any recorded reach point (nearest recorded notch point to nearest recorded reach point), because
+//! the outflow is below the stream threshold; the carved world stands 11.2 m to 55.8 m under the
+//! bare one at their recorded points (the deepest point per notch). The query called every point
+//! of them dry.
 //!
 //! So [`notch_claim`] runs after the reaches: within half a notch leg's width of its line -- the
 //! same [`line_claim`] as a reach, so the same footprint the layer cuts at full authority -- the

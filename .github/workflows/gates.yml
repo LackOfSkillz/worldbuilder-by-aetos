@@ -1471,25 +1471,37 @@ jobs:
           # parity_dump.rs; the parity README): **905/905/908/1046/1049, UNCHANGED**, ignored 11. No
           # test added. Re-derived by `--list` (and `--ignored`), listed 916/916/919/1057/1060 across
           # 18 binaries, and each suite run in full with `--no-fail-fast`: all passed, 0 failed.
+          # 2026-09-19, WATER 2b final fix wave (Rulings C-35 and C-36): **905/905/908/1046/1049 ->
+          # 906/906/909/1050/1053**, ignored unchanged at 11. One ungated test in `src/water/query.rs`
+          # (`a_notch_answers_river_at_its_cut_surface_and_names_no_reach`, Ruling C-35's notch
+          # clause), so every row moves by +1; and three in `tests/wasm_exports.rs`, behind `wasm`
+          # (a carved world refuses the query through an ordinary bake of its ground, refuses it
+          # through a second carving bake, and answers it through the bake it was carved from --
+          # Ruling C-36), so the two wasm rows move by +4. The agreement and dam tests were
+          # strengthened in place, not added. Re-derived by `cargo test -p worldbuilder-engine
+          # <cfg> -- --list` (and `--ignored`) per configuration, summing each binary's trailer:
+          # listed 917/917/920/1061/1064 across 18 binaries; `assert_counts.py cargo-list` printed
+          # `count OK` for all five; and each suite run in full with `--no-fail-fast`: 906/906/909/
+          # 1050/1053 passed, 0 failed, 11 ignored.
           - name: no-default-features
             features: "--no-default-features"
-            expect: 905
+            expect: 906
             expect_ignored: 11
           - name: default
             features: ""
-            expect: 905
+            expect: 906
             expect_ignored: 11
           - name: python
             features: "--features python"
-            expect: 908
+            expect: 909
             expect_ignored: 11
           - name: wasm
             features: "--features wasm"
-            expect: 1046
+            expect: 1050
             expect_ignored: 11
           - name: python+wasm
             features: "--features python,wasm"
-            expect: 1049
+            expect: 1053
             expect_ignored: 11
     steps:
       - uses: actions/checkout@v4
@@ -1772,6 +1784,11 @@ jobs:
       # `pytest tests/ -q --collect-only` (577) and on tests/test_conformance.py (168), then run with
       # WORLDBUILDER_REQUIRE_ENGINE=1 under the repo .venv (its extension rebuilt from this tree in
       # Task 7's fix round; nothing under src/ has changed since): 577 passed.
+      # 2026-09-19, WATER 2b final fix wave: **577, conformance 168, both unchanged** -- Rulings C-35
+      # and C-36 add Rust and viewer tests only. Re-counted by `pytest tests/ --collect-only -q`
+      # (577) and on tests/test_conformance.py (168), then run with WORLDBUILDER_REQUIRE_ENGINE=1
+      # under the repo .venv after `maturin develop --release --features python` rebuilt its
+      # extension from this tree: 577 passed; `assert_counts.py pytest` printed `count OK`.
       - name: Assert the suite -- 577 tests, 168 of them conformance
         shell: bash
         run: |
@@ -2234,6 +2251,15 @@ jobs:
       # coarse body and every other header field equal. `ranges` drops 4 of 22 and admits 1
       # (22 -> 19 kept); `plain` drops 1 of 4 (4 -> 3). These are exactly Task 4b's measured
       # 16,971 and 6,040 for the drained records. The `CBANK`/`CBCTL` records add no compared value.
+      # 2026-09-19, WATER 2b final fix wave (Rulings C-35 and C-36): **179,086 / 0, unchanged**, and
+      # every control at its pin (seed 170,363, erosion-k 216, water-pond 60, tectonic-warp 39,702,
+      # coast-amplitude 13,128, gully-steer 3,752, climate-samples 648, carve-bank 12), each
+      # re-derived by running it and checked by `assert_counts.py parity`. C-35 changes the query's
+      # answer inside a notch's footprint, but no compared value moved: the native dump is
+      # byte-identical to aa1e806's, because no `water_at` grid sample and no `water_point` probe
+      # falls in a notch's footprint, and C-36's refusal is reached only by a carved world asked
+      # through another bake, which the corpus never does. The ground fingerprint's hash moved to
+      # a fixed-output type (minor 4); every hydro record's four fingerprint words are unchanged.
       - name: Assert the corpus -- 179,086 values, 0 divergent
         shell: bash
         working-directory: crates/worldbuilder-engine/parity

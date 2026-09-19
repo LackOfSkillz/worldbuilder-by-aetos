@@ -219,7 +219,14 @@ export function carveRefusal(status) {
 ///
 /// Returns `{ before, after, drained, arrived, kept }`: `drained` are in the ordinary record and
 /// not the carved one; `arrived` are the reverse; `kept` are in both.
+///
+/// **Or `null` when the two were baked from different ground** -- their headers' `ground`
+/// fingerprints differ. The ordinary record comes from a pool worker baking from params alone, and
+/// Ruling C-28 declined to reuse the preview's bake precisely because nothing fingerprinted that
+/// comparison: counted across two grounds, every pond would read as drained and every other as new.
+/// No account is better than a wrong one, and the fingerprint makes the check one comparison.
 export function pondChange(ordinary, carving) {
+  if (ordinary.header.ground !== carving.header.ground) return null;
   const key = (body) => `${body.anchor[0]},${body.anchor[1]},${body.levelM}`;
   const ponds = (decoded) => {
     const n = decoded.header.pondsKept;

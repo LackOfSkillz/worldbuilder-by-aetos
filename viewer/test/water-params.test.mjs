@@ -509,6 +509,12 @@ test("turning the carve on tells the owner what it does to their ponds, from the
   const text = carveOutcomeText(outcome);
   assert.ok(text.includes(`${ponds.drained} of ${ponds.before} are drained`), text);
   assert.ok(text.includes(`${ponds.arrived} others`), text);
+  // Two records of different ground are not compared: every pond would read as drained. Ruling
+  // C-28's staleness hazard, closed by the fingerprint both headers carry.
+  const foreign = { ...ordinary, header: { ...ordinary.header, ground: "0".repeat(32) } };
+  assert.notEqual(foreign.header.ground, carving.header.ground);
+  assert.equal(pondChange(foreign, carving), null);
+  assert.match(carveOutcomeText({ ...outcome, ponds: null }), /the pond account is not given/);
   assert.equal(pondChangeText({ before: 5, after: 5, drained: 0, arrived: 0, kept: 5 }),
     "carving changes no pond: all 5 are kept where they were.");
   s.free();

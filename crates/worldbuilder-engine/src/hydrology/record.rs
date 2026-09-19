@@ -33,8 +33,8 @@
 //! - **Reach `fresh`** means "its chain reaches the ocean": following its `downstream` through
 //!   reaches and bodies ends at `Ocean`, not at a closed lake's `Sink`.
 
-use blake2::digest::{Update, VariableOutput};
-use blake2::Blake2bVar;
+use blake2::digest::consts::U16;
+use blake2::{Blake2b, Digest};
 
 use crate::detmath as m;
 use crate::hydrology::reaches::{Downstream, ReachClass};
@@ -197,17 +197,24 @@ pub fn probe_point(index: usize) -> SpherePoint {
 /// (`generation.rs`); BLAKE2 mixes the output length into its initial state, so this is its own
 /// hash and not a prefix of a longer one. A version tag leads the message, so a later probe
 /// scheme cannot collide with this one by construction.
+///
+/// **No failure path, so no status.** This is reachable from five `extern "C"` exports, and
+/// `wasm.rs`'s standard there is a status rather than an `expect`. It used to hold two `expect`s
+/// -- `Blake2bVar::new` and `finalize_variable`, each fallible only on an output length BLAKE2b
+/// refuses. Rather than thread a status nobody could ever see through every caller, the length is
+/// now a type: `Blake2b<U16>` is the same BLAKE2b at a 16-byte output (the output length still
+/// enters the parameter block, so the digest is unchanged, bit for bit -- the parity corpus carries
+/// it in every hydro record), its `finalize` cannot fail, and `[u8; GROUND_BYTES]` only unifies with
+/// its 16-byte output while `GROUND_BYTES` is 16, so changing one without the other does not build.
 pub fn ground_fingerprint(surface: &Surface) -> [u8; GROUND_BYTES] {
-    let mut hasher = Blake2bVar::new(GROUND_BYTES).expect("16 is a valid BLAKE2b output length");
+    let mut hasher = Blake2b::<U16>::new();
     hasher.update(b"worldbuilder hydro ground v1");
     for index in 0..PROBE_COUNT {
         let metres = surface.bake_ground_m(&probe_point(index), None);
         let millimetres = m::floor(metres * 1000.0 + 0.5);
         hasher.update(&millimetres.to_bits().to_le_bytes());
     }
-    let mut out = [0u8; GROUND_BYTES];
-    hasher.finalize_variable(&mut out).expect("output buffer is exactly 16 bytes");
-    out
+    hasher.finalize().into()
 }
 
 fn word_to_u32(w: f64) -> Option<u32> {
