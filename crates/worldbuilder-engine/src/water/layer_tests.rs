@@ -38,11 +38,18 @@ fn reach(id: u32, points: Vec<ReachPoint>) -> ReachLine {
     }
 }
 
+/// A hand-written record. Marked **baked for carving** (Ruling C-20), because nearly every record
+/// here is joined to a carved world; the one test that needs an ordinary record clears the flag.
 fn record(reaches: Vec<ReachLine>, notches: Vec<NotchLine>, bodies: Vec<Body>) -> HydroRecord {
-    HydroRecord {
-        bodies, reaches, notches, falls: Vec::new(),
-        stats: crate::water::query::tests::stats(), ground: [0; 16],
-    }
+    let mut stats = crate::water::query::tests::stats();
+    stats.drained_for_carve = true;
+    HydroRecord { bodies, reaches, notches, falls: Vec::new(), stats, ground: [0; 16] }
+}
+
+/// `params` with Ruling C-20's flag set: a bake for a world that will be carved.
+fn for_carving(mut params: crate::hydrology::HydroParams) -> crate::hydrology::HydroParams {
+    params.drain_for_carve = true;
+    params
 }
 
 fn layer_over(record: HydroRecord) -> WaterLayer {
@@ -546,7 +553,7 @@ fn no_body_is_cut_where_reaches_enter_it() {
     let mut failures: Vec<String> = Vec::new();
     for nodes in [30_000u32, 60_000] {
         let bare = home();
-        let baked = crate::hydrology::bake(&bare, &crate::hydrology::HydroParams::earth_like(nodes))
+        let baked = crate::hydrology::bake(&bare, &for_carving(crate::hydrology::HydroParams::earth_like(nodes)))
             .expect("the bare world bakes");
         let bake = Arc::new(IndexedRecord::new(baked, R));
         let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
@@ -596,7 +603,7 @@ fn no_body_is_cut_where_reaches_enter_it() {
 fn carved_by_its_own_bake(gully: Option<crate::detail::GullyParams>)
                           -> (Surface, Surface, Arc<IndexedRecord>) {
     let bare = Surface::with_gully(20_260_904, R, 12, 0.29, None, None, None, None, gully);
-    let baked = crate::hydrology::bake(&bare, &crate::hydrology::bake_tests::params())
+    let baked = crate::hydrology::bake(&bare, &for_carving(crate::hydrology::bake_tests::params()))
         .expect("the bare world bakes");
     let bake = Arc::new(IndexedRecord::new(baked, R));
     let carved = Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, gully, None,
@@ -758,7 +765,7 @@ fn no_channel_is_dammed_by_a_pond_it_drains() {
     let mut ponds_judged = 0usize;
     for nodes in [30_000u32, 60_000] {
         let bare = home();
-        let baked = crate::hydrology::bake(&bare, &crate::hydrology::HydroParams::earth_like(nodes))
+        let baked = crate::hydrology::bake(&bare, &for_carving(crate::hydrology::HydroParams::earth_like(nodes)))
             .expect("the bare world bakes");
         let tolerance = baked.stats.refine_vertical_m;
         let bake = Arc::new(IndexedRecord::new(baked, R));
@@ -934,4 +941,51 @@ fn a_feature_over_a_channel_damps_detail_by_the_product_of_the_two_authorities()
     assert_eq!(carved.elevation_m(&probe, None).to_bits(), product.to_bits(),
                "elevation {} m is not the multiplicative {product} m (additive would be {additive} m)",
                carved.elevation_m(&probe, None));
+}
+
+// ---- Ruling C-20: the drain is for a world that will be carved -------------------------------
+
+/// **A carved world refuses a record not baked for carving**, by name. Such a record keeps the
+/// hollows its own channels drain, so carving with it brings the dams straight back. A real
+/// ordinary bake of `bake_tests::world()` at `earth_like(30_000)` -- the one with the 194 m wall --
+/// is refused; the same world's bake for carving joins.
+#[test]
+fn a_carved_world_refuses_a_record_not_baked_for_carving() {
+    let bare = home();
+    let join = |params: crate::hydrology::HydroParams| {
+        let baked = crate::hydrology::bake(&bare, &params).expect("the bare world bakes");
+        let bake = Arc::new(IndexedRecord::new(baked, R));
+        Surface::with_water(20_260_904, R, 12, 0.29, None, None, None, None, None, None,
+                            Some(Carve { params: WaterParams::canonical(), bake }))
+            .err()
+    };
+    let params = crate::hydrology::HydroParams::earth_like(30_000);
+    assert_eq!(join(params.clone()), Some(CarveRefused::NotBakedForCarving),
+               "an ordinary record must be refused, not carved");
+    assert_eq!(join(for_carving(params)), None, "the bake for carving joins");
+}
+
+/// **Ruling C-20: an ordinary bake is what it was before the drain existed.** With the flag unset,
+/// `bake_tests::world()` keeps exactly the bodies it kept at `e37575b` -- 14 (5 fine-found) at
+/// `earth_like(30_000)` and 43 (22 fine-found) at `earth_like(60_000)`, counted there -- and its
+/// record says it is ordinary (SCHEMA 7). Not vacuous: some of those kept finds are ones the
+/// drain rule would drop, so it is the flag, and not an absence of drained ponds, that spares them.
+#[test]
+fn an_ordinary_bake_keeps_every_pond_it_kept_before_the_drain() {
+    use crate::hydrology::ponds::is_drained;
+    for (nodes, bodies, fine) in [(30_000u32, 14usize, 5usize), (60_000, 43, 22)] {
+        let params = crate::hydrology::HydroParams::earth_like(nodes);
+        assert!(!params.drain_for_carve, "earth_like is an ordinary bake");
+        let baked = crate::hydrology::bake(&home(), &params).expect("bakes");
+        let found = baked.bodies.iter().filter(|b| b.shore_member_count == 0).count();
+        assert_eq!((baked.bodies.len(), found), (bodies, fine),
+                   "earth_like({nodes}): the ordinary bake's bodies moved from e37575b's");
+        assert!(!baked.stats.drained_for_carve);
+        assert_eq!(crate::hydrology::record::encode(&baked)[0], crate::hydrology::record::SCHEMA);
+        let index = crate::water::index::WaterIndex::build(&baked, R, 200_000.0);
+        let spared = baked.bodies.iter()
+            .filter(|b| b.shore_member_count == 0 && is_drained(b, &baked, &index, &params))
+            .count();
+        assert!(spared > 0, "earth_like({nodes}): vacuous, no kept find is one the drain would drop");
+    }
 }

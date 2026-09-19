@@ -168,6 +168,12 @@ pub enum CarveRefused {
     Radius,
     /// The record was baked from other ground (plan 2b Task 2's refusal, made once, at the join).
     Foreign(crate::hydrology::record::ForeignGround),
+    /// **Ruling C-20: the record was not baked for carving** (`HydroParams::drain_for_carve`
+    /// unset; SCHEMA 7 on the wire rather than `SCHEMA_CARVE`). Such a record keeps the hollows
+    /// its own channels drain, and a carved world built on it has a pond standing across a notch
+    /// as a dam -- 194 m at 30,000 nodes on `bake_tests::world()`. Checked before the ground, so a
+    /// record that is both is named for the kind it is.
+    NotBakedForCarving,
 }
 
 /// The layer itself: a block and the held bake it cuts.

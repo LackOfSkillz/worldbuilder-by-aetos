@@ -90,6 +90,18 @@ use crate::vectors::Vec3;
 /// record to the new shape.
 pub const SCHEMA: f64 = 7.0;
 
+/// **Ruling C-20: word 0 of a record baked for carving** (`BakeStats::drained_for_carve`,
+/// `HydroParams::drain_for_carve`). The layout is [`SCHEMA`]'s, word for word: no word is added
+/// and no offset moves.
+///
+/// **Why word 0 and not a header word of its own.** The ruling requires an ordinary bake to be
+/// bit-identical to the record before Task 4b, and a new header word would move every ordinary
+/// record -- its length, its offsets, the parity corpus. The kind has to be on the wire, and it has
+/// to cost an ordinary record nothing; word 0 is the one word every reader already reads first and
+/// refuses on when it does not recognise it. A reader that predates this refuses a carving record
+/// outright, which is the safe failure: it would otherwise read the record as ordinary.
+pub const SCHEMA_CARVE: f64 = 8.0;
+
 /// Words in the header: everything up to and including the ground fingerprint.
 pub const HEADER_WORDS: usize = 60;
 
@@ -349,7 +361,7 @@ pub fn encode(record: &HydroRecord) -> Vec<f64> {
     let mut out = Vec::new();
     let stats = &record.stats;
 
-    out.push(SCHEMA);
+    out.push(if stats.drained_for_carve { SCHEMA_CARVE } else { SCHEMA });
     out.push(record.bodies.len() as f64);
     out.push(record.reaches.len() as f64);
     out.push(record.notches.len() as f64);
@@ -537,14 +549,19 @@ pub fn decode(words: &[f64]) -> Option<HydroRecord> {
     let mut r = Reader::new(words);
 
     let schema = r.word()?;
-    if schema != SCHEMA {
+    let drained_for_carve = if schema == SCHEMA {
+        false
+    } else if schema == SCHEMA_CARVE {
+        true
+    } else {
         return None;
-    }
+    };
     let body_count = r.u32()? as usize;
     let reach_count = r.u32()? as usize;
     let notch_count = r.u32()? as usize;
     let fall_count = r.u32()? as usize;
     let stats = BakeStats {
+        drained_for_carve,
         nodes: r.u32()?,
         land_nodes: r.u32()?,
         hollows: r.u32()?,
@@ -831,6 +848,7 @@ mod tests {
             notches: vec![NotchLine { points: vec![(1.0, 2.0, 3.0, 0.5), (4.0, 5.0, 6.0, 1.5)] }],
             falls: vec![Fall { reach: 0, at: (1.0, 2.0), height_m: 3.0 }],
             stats: BakeStats {
+                drained_for_carve: false,
                 nodes: 100,
                 land_nodes: 40,
                 hollows: 5,
@@ -1001,8 +1019,27 @@ mod tests {
     #[test]
     fn a_wrong_schema_is_refused() {
         let mut words = encode(&sample());
-        words[0] = SCHEMA + 1.0;
-        assert_eq!(decode(&words), None);
+        for wrong in [SCHEMA - 1.0, SCHEMA_CARVE + 1.0, 7.5, f64::NAN] {
+            words[0] = wrong;
+            assert_eq!(decode(&words), None, "word 0 = {wrong}");
+        }
+    }
+
+    /// **Ruling C-20: word 0 says whether a record was baked for carving, and nothing else moves.**
+    /// An ordinary record is SCHEMA 7 and a carving one `SCHEMA_CARVE`; the rest of the two
+    /// encodings is the same words, and each decodes back to its own flag.
+    #[test]
+    fn word_0_carries_whether_a_record_was_baked_for_carving_and_nothing_else_moves() {
+        let mut ordinary = sample();
+        ordinary.stats.drained_for_carve = false;
+        let mut carving = ordinary.clone();
+        carving.stats.drained_for_carve = true;
+        let (a, b) = (encode(&ordinary), encode(&carving));
+        assert_eq!((a[0], b[0]), (SCHEMA, SCHEMA_CARVE));
+        assert_eq!(a.len(), b.len(), "no word added");
+        assert_eq!(&a[1..], &b[1..], "no other word moved");
+        assert_eq!(decode(&a), Some(ordinary));
+        assert_eq!(decode(&b), Some(carving));
     }
 
     #[test]

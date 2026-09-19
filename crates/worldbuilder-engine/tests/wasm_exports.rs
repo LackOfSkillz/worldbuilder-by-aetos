@@ -6023,6 +6023,10 @@ fn a_hydro_bake_is_held_copied_and_freed() {
     assert!(len >= 60, "at least the header (plan 2b Task 1: 60 words at schema 7)");
     let mut words = vec![0.0f64; len as usize];
     assert_eq!(wb_hydro_copy(id, words.as_mut_ptr(), len), WB_OK);
+    // Word 0 is 7, not `SCHEMA_CARVE`'s 8: the wasm door bakes an ORDINARY record (Ruling C-20),
+    // bit for bit the record it baked before the drain for carving existed. A door that asks for a
+    // bake for carving is plan 2b Task 5's; until then no wasm record is one.
+    assert_eq!(words[0], worldbuilder_engine::hydrology::record::SCHEMA, "schema 7: an ordinary bake");
     assert_eq!(words[0], 7.0, "schema 7");
     // Words 56-59: the ground fingerprint of the world the bake was handed, four little-endian
     // bytes a word -- the same digest the engine computes for that world directly.

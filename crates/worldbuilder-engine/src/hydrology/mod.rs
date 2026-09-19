@@ -98,6 +98,14 @@ pub struct HydroParams {
     /// recorded 11,146,072 bytes against an 8 MB gate at the intermediate 4.0e9 -- see
     /// `earth_like` for the measurements and Ruling S-16.
     pub pond_density_area_m2: f64,
+    /// **Ruling C-20: bake for a world that will be carved.** `false` in `earth_like`, and then the
+    /// bake is exactly what it was before plan 2b's Task 4b, bit for bit. `true` turns on Ruling
+    /// C-16's drain -- a fine-found hollow a recorded channel runs under is not kept
+    /// (`ponds::is_drained`) -- which is right only for the carved world, the one world where that
+    /// channel is cut; in an uncarved world the hollow on the ridge is genuine and stays. The
+    /// record says which it is (`BakeStats::drained_for_carve`, and word 0 on the wire), and
+    /// `Surface::with_water` refuses to carve with a record that was not baked this way.
+    pub drain_for_carve: bool,
 }
 
 impl HydroParams {
@@ -119,6 +127,7 @@ impl HydroParams {
             evaporation_factor: 1.0,
             salt_flat_share: 0.1,
             forced_outlets: Vec::new(),
+            drain_for_carve: false,
             min_stream_nodes: 10.0,
             keep_max_area_m2: 4.0e11,
             refine_step_m: 1_500.0,
@@ -352,9 +361,10 @@ pub struct BakeStats {
     pub ponds_found: u32,
     /// Of those, how many reached the record as bodies. The gap between the two is what the
     /// gates and the cap removed, and it is a large gap by design: about half of all candidates
-    /// are side-clipped alone. Ruling C-16 (plan 2b) is one more gate: a find a recorded channel
-    /// drains -- its water running more than `refine_vertical_m` under the find's level inside
-    /// its ring -- is not a hollow in the world the record describes, and is not kept.
+    /// are side-clipped alone. Ruling C-16 (plan 2b) is one more gate, in a bake for carving only
+    /// (Ruling C-20): a find a recorded channel drains -- its water running more than
+    /// `refine_vertical_m` under the find's level inside its ring -- is not a hollow in the carved
+    /// world, and is not kept.
     pub ponds_kept: u32,
     /// SCHEMA 5: the fine search's seven params, echoed the way the refinement params are (and
     /// not wasm params either -- a wasm bake always uses `earth_like`'s values).
@@ -371,6 +381,11 @@ pub struct BakeStats {
     /// SCHEMA 6, plan 1b-4: the total of every body's collar points (`outline.len() -
     /// shore_member_count`, summed) -- the other half of what the extent cost.
     pub collar_points: u32,
+    /// Ruling C-20: whether this bake ran with `HydroParams::drain_for_carve` -- a record for a
+    /// world that will be carved. On the wire it is word 0 itself, not a word of its own:
+    /// `record::SCHEMA` (7) for an ordinary record, `record::SCHEMA_CARVE` (8) for this kind, with
+    /// the layout otherwise word for word the same (see `SCHEMA_CARVE` for why).
+    pub drained_for_carve: bool,
 }
 
 /// Everything a bake produces: the standing water, the channels, the notches that drain the

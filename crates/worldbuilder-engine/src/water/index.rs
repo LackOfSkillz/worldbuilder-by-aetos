@@ -467,6 +467,7 @@ mod tests {
     fn stats() -> BakeStats {
         let p = HydroParams::earth_like(1_000);
         BakeStats {
+            drained_for_carve: false,
             nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
             streams: 0, rivers: 0, great: 0, max_order: 0,
             bifurcation_min: 0.0, bifurcation_max: 0.0,

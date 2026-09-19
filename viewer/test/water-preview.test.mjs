@@ -141,11 +141,19 @@ test("decodeHydro throws on a schema-2, -4, -5 or -6 header", () => {
   // SCHEMA 4's 43-word header is a PREFIX of SCHEMA 5's 54, which is a prefix of SCHEMA 6's 56,
   // which is a prefix of SCHEMA 7's 60, so a decoder that adapted rather than refused would read
   // a body's first words as later header words -- under SCHEMA 6, as a ground fingerprint.
-  for (const schema of [2, 4, 5, 6]) {
+  for (const schema of [2, 4, 5, 6, 9]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => decodeHydro(tampered), /unsupported schema/);
   }
+  // Ruling C-20: 8 is SCHEMA 7's layout baked for carving -- decoded the same, and saying so.
+  const carving = words.slice();
+  carving[0] = 8;
+  const a = decodeHydro(words);
+  const b = decodeHydro(carving);
+  assert.equal(a.header.drainedForCarve, false);
+  assert.equal(b.header.drainedForCarve, true);
+  assert.deepEqual({ ...b, header: { ...b.header, schema: 7, drainedForCarve: false } }, a);
 });
 
 test("decodeHydro refuses an index or count word above 4294967295, as record.rs's decode does", () => {

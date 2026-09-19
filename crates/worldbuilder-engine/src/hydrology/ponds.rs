@@ -17,10 +17,12 @@
 //! [`Candidate::touches_end`]: Ruling S-10 says Task 5 must not record a side-clipped one, and
 //! flagging rather than filtering keeps the count visible.
 //!
-//! **One gate reads the record rather than the terrain (Ruling C-16, plan 2b).** A hollow the
-//! strips found in bare ground can sit on a ridge a recorded notch or reach cuts through; in the
-//! world the record describes -- the carved one -- that channel drains it. [`is_drained`] asks,
-//! with the query's own body test and the query's own water level, and such a find is not kept.
+//! **One gate reads the record rather than the terrain (Ruling C-16, plan 2b), and only when the
+//! bake is for a world that will be carved (Ruling C-20, `HydroParams::drain_for_carve`).** A
+//! hollow the strips found in bare ground can sit on a ridge a recorded notch or reach cuts
+//! through; in the carved world that channel drains it. [`is_drained`] asks, with the query's own
+//! body test and the query's own water level, and such a find is not kept. In an uncarved world
+//! the channel is never cut and the hollow is genuine, so an ordinary bake never asks.
 
 use crate::detmath as m;
 use crate::hydrology::buckets::BucketIndex;
@@ -934,8 +936,14 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
     // been dropped.
     let density = BucketIndex::new(ground.radius_m, m::sqrt(params.pond_density_area_m2));
     // Ruling C-16's channels: the reaches and notches this record will cut, indexed once. Built
-    // after the strip indexes above are dropped, and at a coarse cell (`DRAIN_INDEX_CELL_M`).
-    let channels = crate::water::index::WaterIndex::build(record, ground.radius_m, DRAIN_INDEX_CELL_M);
+    // after the strip indexes above are dropped, and at a coarse cell (`DRAIN_INDEX_CELL_M`) --
+    // and **only for a bake for a world that will be carved** (Ruling C-20). Otherwise nothing
+    // here is built or asked, and the bake is what it was before the drain existed, bit for bit.
+    let channels = if params.drain_for_carve {
+        Some(crate::water::index::WaterIndex::build(record, ground.radius_m, DRAIN_INDEX_CELL_M))
+    } else {
+        None
+    };
     // The cells already spoken for, sorted so membership is a binary search rather than a hash
     // set: a few thousand entries at most, and nothing here may depend on a hash order.
     let mut taken: Vec<usize> = Vec::new();
@@ -974,11 +982,14 @@ pub fn search(record: &mut HydroRecord, graph: &LandGraph, lake_of: &[u32], grou
             shore_member_count: 0,
             shore_reach_m: 0.0,
         };
-        // Ruling C-16: a hollow a recorded channel drains is not a hollow in the world the record
-        // describes, where that channel is cut. Asked before the density cell is claimed, so a
-        // drained find does not stand in the way of a pond nearby that is really there.
-        if is_drained(&body, record, &channels, params) {
-            continue;
+        // Ruling C-16: a hollow a recorded channel drains is not a hollow in the carved world,
+        // where that channel is cut. Asked before the density cell is claimed, so a drained find
+        // does not stand in the way of a pond nearby that is really there. Ruling C-20: asked only
+        // of a bake for a world that will be carved -- in an uncarved one the hollow is genuine.
+        if let Some(channels) = &channels {
+            if is_drained(&body, record, channels, params) {
+                continue;
+            }
         }
         let cell = density.cell_of(&survivor.anchor);
         match taken.binary_search(&cell) {
@@ -1435,6 +1446,7 @@ mod tests {
             notches: Vec::new(),
             falls: Vec::new(),
             stats: BakeStats {
+                drained_for_carve: false,
                 nodes: 0, land_nodes: 0, hollows: 0, kept: 0, notched: 0, closed: 0,
                 streams: 0, rivers: 0, great: 0, max_order: 0,
                 bifurcation_min: 0.0, bifurcation_max: 0.0,
@@ -1572,6 +1584,8 @@ mod tests {
     /// bowls under a stream at the plain's level (the density-cap test) keep one.
     #[test]
     fn a_bowl_a_channel_drains_is_found_and_not_kept() {
+        // Ruling C-20: in a bake for carving. The other half -- an ordinary bake keeps them -- is
+        // asserted below on the very same ground.
         let deep = bowl(0.0, 3_000.0, 600.0, 5.0);
         let shallow = bowl(0.0, 5_000.0, 600.0, 3.0);
         let h = move |p: &SpherePoint| {
@@ -1579,7 +1593,8 @@ mod tests {
             if a < b { a } else { b }
         };
         let ground = Ground { height_m: &h, radius_m: R, corridor_m: 20_000.0, seed: 1 };
-        let p = params();
+        let mut p = params();
+        p.drain_for_carve = true;
         let graph = graph_under_the_line();
         let lake_of = vec![NO_LAKE; graph.len()];
         let mut record = record_for(reach_along_the_equator_with_beds(10.0, 100.0, 90.0));
@@ -1587,6 +1602,13 @@ mod tests {
         assert_eq!(record.stats.ponds_found, 2, "both bowls are still found");
         assert_eq!(record.stats.ponds_kept, 0, "and the stream through them drains both");
         assert!(record.bodies.is_empty());
+
+        // Ruling C-20: an ordinary bake of the same ground never asks, and keeps exactly what the
+        // density cap keeps -- the deeper bowl, as `the_density_cap_keeps_the_deepest` has it.
+        p.drain_for_carve = false;
+        let mut ordinary = record_for(reach_along_the_equator_with_beds(10.0, 100.0, 90.0));
+        search(&mut ordinary, &graph, &lake_of, &ground, &h, &p);
+        assert_eq!(ordinary.stats.ponds_kept, 1, "an uncarved world keeps the hollow");
     }
 
     /// The line graph with one extra node `north_m` metres off the line at 5,000 m along it. A

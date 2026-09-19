@@ -1,10 +1,10 @@
 worldbuilder_engine.wasm
-bytes: 479918
+bytes: 480279
 exports (36): memory, wb_alloc, wb_bottom_at, wb_climate_calibration, wb_climate_tile_f32, wb_coast_check, wb_coast_preset, wb_dealloc, wb_elevation_m, wb_erosion_run, wb_fill_tile_f32, wb_generator_version, wb_gully_check, wb_gully_preset, wb_hydro_bake, wb_hydro_copy, wb_hydro_free, wb_hydro_len, wb_peak_check, wb_peak_preset, wb_relief_check, wb_relief_preset, wb_structural_m, wb_tectonic_check, wb_tectonic_preset, wb_water_at, wb_water_run, wb_water_tile, wb_world_count, wb_world_free, wb_world_new, wb_world_new_coast, wb_world_new_gully, wb_world_new_peak, wb_world_new_relief, wb_world_new_tectonic
 imports: 0
-built: 2026-09-19T02:00:29.161Z
-artifact-sha256: dec13442ac1c7ecf92c946e186e0e0291a676787a5f0a2e8f543f4829cfdf6c1
-source-fingerprint: cd2afe456717b2812cd6f959f1e709c7089c66eba3e1639448b316cd594557d7
+built: 2026-09-19T02:23:50.546Z
+artifact-sha256: edc4da8b98cfbcb9d3fc487f9db43127ed6f7446529876de65ba0a55dcd8099d
+source-fingerprint: 689e54b99662e978250df37703893b7a27f9c55635798a35c1ba0d2087fe536b
 toolchain: rustc 1.98.0 88d9e12ae178fab0fb5cc050a94da85685d449ea x86_64-pc-windows-msvc
 build: cargo build -p worldbuilder-engine --release --target wasm32-unknown-unknown --no-default-features --features wasm
 fingerprint-inputs: 72

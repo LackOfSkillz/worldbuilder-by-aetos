@@ -101,12 +101,19 @@ test("hydroSummary reads the SCHEMA 5/6 params echo, forced-outlet matches, cros
 test("hydroSummary throws on a schema other than 7 rather than misreading the header", () => {
   const handle = engine.newWorld({ seed: 20260904, radiusM: 6371000, plateCount: 12, landFraction: 0.29 });
   const words = engine.hydroBake({ handle, params: PARAMS });
-  for (const schema of [2, 3, 4, 5, 6, Number.NaN]) {
+  for (const schema of [2, 3, 4, 5, 6, 9, Number.NaN]) {
     const tampered = words.slice();
     tampered[0] = schema;
     assert.throws(() => engine.hydroSummary(tampered), /schema/);
   }
   assert.equal(engine.hydroSummary(words).schema, 7);
+  assert.equal(engine.hydroSummary(words).drainedForCarve, false, "an ordinary bake");
+  // Ruling C-20: word 0 = 8 is the same layout baked for carving, read the same way.
+  const carving = words.slice();
+  carving[0] = 8;
+  const summary = engine.hydroSummary(carving);
+  assert.equal(summary.drainedForCarve, true);
+  assert.deepEqual({ ...summary, schema: 7, drainedForCarve: false }, engine.hydroSummary(words));
   // A fingerprint word that is not a u32 cannot be four bytes.
   for (const bogus of [0.5, -1, 4294967296, Number.NaN]) {
     const tampered = words.slice();

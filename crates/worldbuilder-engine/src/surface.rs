@@ -359,7 +359,9 @@ impl Surface {
     /// all.
     ///
     /// Refuses, with [`crate::water::layer::CarveRefused`], a block that is not admissible, a
-    /// bake indexed at another radius, and a record from other ground. `None` never refuses.
+    /// bake indexed at another radius, a record not baked for carving (Ruling C-20:
+    /// `HydroParams::drain_for_carve` unset), and a record from other ground. `None` never
+    /// refuses.
     #[allow(clippy::too_many_arguments)]
     pub fn with_water(
         world_seed: i64,
@@ -395,6 +397,10 @@ impl Surface {
         }
         if carve.bake.index().radius_m().to_bits() != surface.radius_m.to_bits() {
             return Err(CarveRefused::Radius);
+        }
+        // Ruling C-20: only a record baked for carving describes the carved world.
+        if !carve.bake.record().stats.drained_for_carve {
+            return Err(CarveRefused::NotBakedForCarving);
         }
         // The bare parent's digest: `surface` has no layer yet, so this is the ground a bake of
         // this world would have read.

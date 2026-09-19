@@ -21,6 +21,9 @@
 import { showLayer } from "./globe-layers.js";
 
 const SCHEMA = 7;
+/// Word 0 of a record baked for carving (Ruling C-20, `record.rs`'s `SCHEMA_CARVE`): SCHEMA 7's
+/// layout word for word, so it decodes the same way and says `drainedForCarve`.
+const SCHEMA_CARVE = 8;
 
 /// `u32::MAX`: the largest index or count word `record.rs`'s `word_to_u32` accepts.
 const U32_MAX = 4294967295;
@@ -152,15 +155,16 @@ function readDownstream(cursor) {
   throw new Error(`hydro record: bad downstream kind ${kindWord}`);
 }
 
-/// Decode a `hydroBake` record. Throws on a schema other than 7, on a truncated array, or on
+/// Decode a `hydroBake` record. Throws on a schema other than 7 (or 8, the same layout baked for
+/// carving -- Ruling C-20), on a truncated array, or on
 /// a length mismatch (extra trailing words, or a count that does not add up) -- never returns
 /// a partial record.
 export function decodeHydro(words) {
   const cursor = new Cursor(words);
 
   const schema = cursor.word();
-  if (schema !== SCHEMA) {
-    throw new Error(`hydro record: unsupported schema ${schema} (expected ${SCHEMA})`);
+  if (schema !== SCHEMA && schema !== SCHEMA_CARVE) {
+    throw new Error(`hydro record: unsupported schema ${schema} (expected ${SCHEMA} or ${SCHEMA_CARVE})`);
   }
 
   const bodyCount = cursor.u32();
@@ -170,6 +174,7 @@ export function decodeHydro(words) {
 
   const header = {
     schema,
+    drainedForCarve: schema === SCHEMA_CARVE,
     bodies: bodyCount,
     reaches: reachCount,
     notches: notchCount,

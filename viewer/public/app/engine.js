@@ -1020,8 +1020,10 @@ export class Engine {
   /// are left out for the same reason. The four counts -- both crossing words and both pond
   /// words -- ARE returned: they are counts a bake produced, not params.
   ///
-  /// Throws on a schema other than 7: another schema's header is not these 60 words, and a
-  /// summary read off it would be wrong silently. Throws too on a fingerprint word that is not
+  /// Throws on a schema other than 7 or 8: another schema's header is not these 60 words, and a
+  /// summary read off it would be wrong silently. **Word 0 is 8 for a record baked for carving**
+  /// (Ruling C-20, `record.rs`'s `SCHEMA_CARVE`): the same 60 words in the same places, read the
+  /// same way, and reported here as `drainedForCarve`. Throws too on a fingerprint word that is not
   /// a u32, since it cannot be four bytes.
   ///
   /// Past the header (read in full by `water-preview.js`'s `decodeHydro`), two positions share
@@ -1030,11 +1032,12 @@ export class Engine {
   /// surface (the lowered ground, the water surface through the cut). Likewise body `fresh`
   /// means "not closed", and reach `fresh` means "its chain reaches the ocean".
   hydroSummary(words) {
-    if (words[0] !== 7) {
-      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 7)`);
+    if (words[0] !== 7 && words[0] !== 8) {
+      throw new Error(`hydro record: unsupported schema ${words[0]} (expected 7, or 8 baked for carving)`);
     }
     return {
       schema: words[0],
+      drainedForCarve: words[0] === 8,
       bodies: words[1],
       reaches: words[2],
       notches: words[3],

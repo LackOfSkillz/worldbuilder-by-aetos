@@ -585,6 +585,7 @@ pub fn record_of(stages: &BakeStages, params: &HydroParams) -> HydroRecord {
     };
 
     let stats = BakeStats {
+        drained_for_carve: params.drain_for_carve,
         nodes: graph.len() as u32, // cast-ok: bounded by stream::MAX_NODES, validated above
         land_nodes: land_nodes as u32, // cast-ok: bounded by node count
         hollows: hollows.len() as u32, // cast-ok: at most one hollow per node
