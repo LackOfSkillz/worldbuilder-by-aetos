@@ -2560,7 +2560,7 @@ fn peak_preset_by_selector(preset: u32) -> Option<PeakParams> {
 /// write it.
 pub const WB_WATER_BLOCK_STRIDE: usize = 1;
 
-/// [`wb_water_preset`] selector: `WaterParams::canonical()`, spec Â§8.1's banks blended over one
+/// [`wb_water_preset`] selector: `WaterParams::canonical()`, spec §8.1's banks blended over one
 /// channel width either side. The only preset: the one field was chosen in Task 3, not tuned
 /// against a world, so there is no second named block to offer.
 pub const WB_WATER_CANONICAL: u32 = 0;
@@ -3476,7 +3476,7 @@ pub extern "C" fn wb_peak_check(peak_ptr: *const f64, peak_len: u32) -> u32 {
     }
 }
 
-/// Build a world **carved by a held bake** (spec Â§8.1, plan 2b), or **0** if it refused.
+/// Build a world **carved by a held bake** (spec §8.1, plan 2b), or **0** if it refused.
 ///
 /// Exactly [`wb_world_new_peak`] plus a water block and a bake id, and every one of that
 /// function's domains -- and the five doors before it -- still applies unchanged. This is the
